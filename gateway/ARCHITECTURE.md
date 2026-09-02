@@ -10,7 +10,15 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
     /controlplane          — config compilation, cert rotation, metrics; infrequent, "slow and smart"
     /dataplane              — accept/filter/forward hot path; continuous, "dumb and fast"
 /internal/adapter/{openai,anthropic,gemini,bedrock,vertex,openaicompat}
-                           — bidirectional (canonical↔native) request/response transformers, one per provider
+                           — bidirectional (canonical↔native) request/response transformers, one per provider.
+                             openai and anthropic additionally implement streaming.StreamingAdapter (real,
+                             stateful per-request StreamDecoder each) — gemini/bedrock/openaicompat do not,
+                             and a streaming request routed to one of them returns a typed
+                             dataplane.ErrStreamingNotSupported rather than silently buffering.
+/internal/streaming        — transport-level SSE plumbing, provider-agnostic: canonical ChatCompletionChunk/
+                             ChunkChoice/MessageDelta/ToolCallDelta types, the StreamDecoder/StreamingAdapter
+                             interfaces every streaming-capable adapter implements against, and the actual
+                             Reader (SSE frame parser)/Writer (SSE frame writer, Flush()-per-chunk) — ACTIVE
 /internal/router          — load-balancing strategies (weighted, usage-based, latency-based, cost-based),
                              cooldowns/circuit-breaker, deployment-level and model-group fallback chains
 /internal/ratelimit        — distributed token bucket (Redis + Lua/EVALSHA), hierarchical scope resolution
@@ -74,7 +82,7 @@ One canonical internal schema, OpenAI Chat-Completions-shaped — the dialect vL
 
 1. **Tool-call argument encoding** — OpenAI/DeepSeek/Qwen return a JSON *string*; Anthropic/Gemini/Bedrock return an already-parsed *object*.
 2. **System-prompt placement** — in-array `role:"system"` (OpenAI) vs. top-level `system` param (Anthropic/Bedrock) vs. `systemInstruction` (Gemini).
-3. **Streaming event shape** — OpenAI's homogeneous `delta.content` fragments vs. Anthropic's typed SSE event sequence (needs a stateful per-stream parser tracking open content blocks / accumulating tool-call indices) vs. Bedrock's binary EventStream encoding.
+3. **Streaming event shape** — OpenAI's homogeneous `delta.content` fragments vs. Anthropic's typed SSE event sequence (needs a stateful per-stream parser tracking open content blocks / accumulating tool-call indices) vs. Bedrock's binary EventStream encoding. Real for OpenAI and Anthropic (see `/internal/streaming` above and each adapter's `stream.go`); Bedrock's EventStream case remains a documented hazard, not yet implemented.
 4. **Unknown-field preservation** — e.g. Gemini's `thoughtSignature` must round-trip verbatim across turns or multi-turn tool use silently breaks. Adapters must never strip fields they don't recognize.
 
 Each adapter offers an `additionalModelRequestFields`-style escape hatch (mirroring Bedrock's own Converse API pattern) so a new provider's quirk never requires touching the core pipeline.

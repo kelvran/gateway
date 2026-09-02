@@ -76,6 +76,14 @@ type Config struct {
 	Upstream       UpstreamCaller
 	Logger         *slog.Logger
 	CacheTTL       time.Duration
+	// UpstreamStream is required only for streaming requests on a
+	// cache MISS — a streaming cache HIT never touches it. Left nil, a
+	// Pipeline still handles every non-streaming request and every
+	// streaming cache hit exactly as if it were configured; a streaming
+	// cache-miss request instead fails with ErrStreamingNotConfigured.
+	// This is deliberately optional (not validated in NewPipeline) so
+	// existing non-streaming-only callers/tests don't need updating.
+	UpstreamStream UpstreamStreamCaller
 }
 
 // Pipeline is the wired dataplane request pipeline.
@@ -89,6 +97,7 @@ type Pipeline struct {
 	rrCounters         map[string]*atomic.Uint64
 	costCalc           *costaccounting.Calculator
 	upstream           UpstreamCaller
+	upstreamStream     UpstreamStreamCaller
 	logger             *slog.Logger
 	cacheTTL           time.Duration
 }
@@ -135,6 +144,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		rrCounters:         map[string]*atomic.Uint64{},
 		costCalc:           cfg.CostCalculator,
 		upstream:           cfg.Upstream,
+		upstreamStream:     cfg.UpstreamStream,
 		logger:             logger,
 		cacheTTL:           ttl,
 	}, nil
@@ -363,6 +373,46 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 			return nil, fmt.Errorf("no response unmarshaler registered for provider %q", dep.Provider)
 		}
 		return unmarshal(respBody)
+	}
+}
+
+// NewHTTPUpstreamStreamCaller returns a real, working UpstreamStreamCaller
+// that POSTs the marshaled provider-native (streaming) request to
+// dep.BaseURL and, on a successful (< 300) status, returns the raw response
+// body for the caller to read incrementally as SSE frames — unlike
+// NewHTTPUpstreamCaller, it does not drain or unmarshal the body itself,
+// since that would defeat streaming's entire purpose.
+func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
+	return func(ctx context.Context, dep Deployment, providerReq any) (io.ReadCloser, error) {
+		body, err := json.Marshal(providerReq)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling provider stream request: %w", err)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, dep.BaseURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("building upstream stream request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		setUpstreamAuthHeaders(httpReq, dep)
+
+		httpResp, err := client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("calling upstream %q: %w", dep.BaseURL, err)
+		}
+
+		if httpResp.StatusCode >= 300 {
+			// An error response is not itself a stream — safe (and
+			// necessary, to avoid leaking the connection) to drain and
+			// close it here rather than handing an error body to a caller
+			// expecting SSE frames.
+			defer func() { _ = httpResp.Body.Close() }()
+			errBody, _ := io.ReadAll(httpResp.Body)
+			return nil, fmt.Errorf("upstream %q returned status %d: %s", dep.BaseURL, httpResp.StatusCode, string(errBody))
+		}
+
+		return httpResp.Body, nil
 	}
 }
 

@@ -21,6 +21,17 @@ type Request struct {
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
 	Tools       []Tool    `json:"tools,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
+	// StreamOptions is only ever sent when Stream is true. include_usage
+	// is required for the dataplane to get cost-accounting data on a
+	// streamed response at all — OpenAI only emits a final usage-bearing
+	// chunk when this is explicitly requested, per
+	// internal/adapter/openai/stream.go's documented ASSUMPTION.
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+}
+
+// StreamOptions is OpenAI's native streaming-configuration object.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // Message is OpenAI's native message shape.
@@ -135,13 +146,19 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 	}
 
+	var streamOpts *StreamOptions
+	if req.Stream {
+		streamOpts = &StreamOptions{IncludeUsage: true}
+	}
+
 	return &Request{
-		Model:       req.Model,
-		Messages:    messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Tools:       tools,
-		Stream:      req.Stream,
+		Model:         req.Model,
+		Messages:      messages,
+		Temperature:   req.Temperature,
+		MaxTokens:     req.MaxTokens,
+		Tools:         tools,
+		Stream:        req.Stream,
+		StreamOptions: streamOpts,
 	}, nil
 }
 
