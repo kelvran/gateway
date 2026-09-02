@@ -47,7 +47,7 @@ Revisit Chaos Mesh instead of Toxiproxy only if/when the production deployment t
 
 ## 9. Security/Fuzz Tests
 
-Go native fuzzing (`go test -fuzz`) on every parser that touches untrusted input — the cache-key fabricator and any streaming-response parser are the two highest-value fuzz targets, given `THREAT_MODEL.md`'s cache-poisoning and streaming-statefulness concerns. Hypothesis property-based tests on the Cache's entity/date hard-gate specifically: generate adversarial near-duplicate prompt pairs and assert the hard-gate never lets a semantically-different pair through — this is the test-level enforcement of the CacheAttack/KeyPooling defenses `THREAT_MODEL.md` and `AGENTS.md`'s Boundaries both already commit to.
+Go native fuzzing (`go test -fuzz`) on every parser that touches untrusted input — the cache-key fabricator and any streaming-response parser are the two highest-value fuzz targets, given `THREAT_MODEL.md`'s cache-poisoning and streaming-statefulness concerns. Both are now real: `FuzzKey` (`internal/cache/key_fuzz_test.go`) and `FuzzReaderNeverPanics` (`internal/streaming/reader_fuzz_test.go`, added alongside streaming support — the SSE `Reader` parses bytes an upstream provider controls, the same untrusted-input boundary `FuzzKey` covers on the request side). Hypothesis property-based tests on the Cache's entity/date hard-gate specifically: generate adversarial near-duplicate prompt pairs and assert the hard-gate never lets a semantically-different pair through — this is the test-level enforcement of the CacheAttack/KeyPooling defenses `THREAT_MODEL.md` and `AGENTS.md`'s Boundaries both already commit to.
 
 ## 10. Agent-Conduct Testing (Scoped, Deferred)
 
