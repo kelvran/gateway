@@ -1,21 +1,21 @@
 # Telemetry & Observability
 
-Operator companion to the OTel commitment already made in `gateway/ARCHITECTURE.md` and `evals/ARCHITECTURE.md` — those documents establish *that* Kelvran emits OTel GenAI-convention spans; this document covers what an operator actually does with that.
+Operator companion to the OTel commitment already made in `gateway/ARCHITECTURE.md` and `evals/ARCHITECTURE.md`. For `gateway`, this is now real, per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md` — every `gateway` request (buffered or streaming) emits a real span. `evals` tracing remains aspirational.
 
 ## What Is Emitted
 
-| Signal | Component | OTel namespace |
-|---|---|---|
-| Request/response spans | Gateway | Standard `gen_ai.*` semantic conventions |
-| Agent-run cost attribution | Gateway | Kelvran-custom attributes on top of `gen_ai.*` (e.g. `agent_run_id` via OTel Baggage — see `gateway/ARCHITECTURE.md`'s "Agent-Native Layer") |
-| Cache hit/miss/layer | Gateway (Cache subsystem) | Kelvran-custom — not yet a standardized `gen_ai.*` attribute anywhere upstream |
-| Rollout/judge spans | Evals | Standard `gen_ai.*` plus Kelvran-custom `harness_config` fields (per `evals/ARCHITECTURE.md`'s Data Model) |
+| Signal | Component | OTel namespace | Status |
+|---|---|---|---|
+| Request/response spans | Gateway | Standard `gen_ai.*` semantic conventions (`operation.name`, `provider.name`, `request.model`, `response.model`/`id`/`finish_reasons`, `usage.{input,output}_tokens`) | **Real** |
+| Agent-run cost attribution | Gateway | `kelvran.agent_run_id` via W3C Baggage (`baggage: agent_run_id=<value>` header), plus `kelvran.virtual_key.id`/`kelvran.cost.usd` | **Real** |
+| Cache hit/miss | Gateway | `kelvran.cache.hit` (bool) — not a standardized `gen_ai.*` attribute anywhere upstream | **Real** (hit/miss only; no per-layer breakdown yet — L2/L3 don't exist) |
+| Rollout/judge spans | Evals | Standard `gen_ai.*` plus Kelvran-custom `harness_config` fields (per `evals/ARCHITECTURE.md`'s Data Model) | Not built |
 
 Standard `gen_ai.*` attributes are consumed by any generic OTel-aware backend; Kelvran-custom attributes require Kelvran-aware dashboards/queries to be meaningful — that distinction matters when picking a backend.
 
 ## Supported Exporters
 
-OTLP is the baseline (both `gateway` and `evals` use the native OTel SDKs per their tech-stack tables) — any OTLP-compatible collector/backend works in principle. Validated backends will be listed here once actually tested against a running system; none are yet, since there's no running system.
+`gateway` supports three exporters via its `telemetry:` config section (`docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md`): `stdout` (the default — spans printed locally, nothing shipped anywhere), `otlp` (any OTLP-compatible collector/backend, via `otlp_endpoint`), and `none` (tracing fully disabled). `evals` has no exporter wiring yet. Validated backends beyond "a real OTLP collector accepts the spans" will be listed here once actually tested against a running system with real production-shaped traffic.
 
 ## Key SLIs/SLOs
 
@@ -40,4 +40,4 @@ Prompt/completion content in trace events is opt-in, not default-on — this is 
 
 ## Local Debugging
 
-For local development, a console exporter (print spans to stdout instead of shipping to a backend) is the intended default — complements `docs/operations/DEPLOY.md`'s Compose section, where standing up a full observability backend for local dev would be overkill.
+For local development, the console exporter (print spans to stdout instead of shipping to a backend) is the real default (`telemetry.exporter: "stdout"`, or simply omitting the `telemetry:` section entirely) — complements `docs/operations/DEPLOY.md`'s Compose section, where standing up a full observability backend for local dev would be overkill.

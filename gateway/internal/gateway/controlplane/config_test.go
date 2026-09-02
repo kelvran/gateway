@@ -101,6 +101,32 @@ func TestLoadExampleConfig(t *testing.T) {
 	if priceGPT.PromptPerToken != 0.0000025 || priceGPT.CompletionPerToken != 0.00001 {
 		t.Errorf("gpt-4o price = %+v", priceGPT)
 	}
+
+	if cfg.Telemetry.Exporter != "stdout" {
+		t.Errorf("Telemetry.Exporter = %q, want %q", cfg.Telemetry.Exporter, "stdout")
+	}
+}
+
+// TestLoadWithoutTelemetrySectionDefaultsToZeroValue proves the
+// telemetry: section is genuinely optional — a config that omits it
+// entirely must still load successfully, with Config.Telemetry left at
+// its zero value (internal/telemetry.Init, not this package, is
+// responsible for turning "" into "stdout").
+func TestLoadWithoutTelemetrySectionDefaultsToZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with no telemetry section: %v", err)
+	}
+	if cfg.Telemetry != (TelemetryConfig{}) {
+		t.Errorf("Telemetry = %+v, want the zero value", cfg.Telemetry)
+	}
 }
 
 func TestLoadMissingRequiredField(t *testing.T) {

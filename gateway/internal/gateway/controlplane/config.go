@@ -82,6 +82,18 @@ type VirtualKeyConfig struct {
 	RateLimitRefill float64
 }
 
+// TelemetryConfig configures OTel span export, per
+// docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md. The whole section is
+// optional — a zero-valued TelemetryConfig (Exporter == "") means
+// internal/telemetry.Init applies its own "stdout" default, since that's
+// an operational default, not a config-shape concern this package owns.
+type TelemetryConfig struct {
+	// Exporter is "stdout", "otlp", or "none".
+	Exporter string
+	// OTLPEndpoint is read only when Exporter == "otlp".
+	OTLPEndpoint string
+}
+
 // Config is the gateway's fully-parsed static configuration.
 type Config struct {
 	// ListenAddr is the address http.ListenAndServe binds to (e.g. ":8080").
@@ -92,6 +104,8 @@ type Config struct {
 	Deployments []DeploymentConfig
 	// PriceTable is the static per-model cost table.
 	PriceTable map[string]ModelPriceConfig
+	// Telemetry configures OTel span export. Optional.
+	Telemetry TelemetryConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -166,6 +180,11 @@ func Load(path string) (*Config, error) {
 	}
 	// Sort for deterministic ordering (map iteration order is random).
 	sort.Slice(cfg.Deployments, func(i, j int) bool { return cfg.Deployments[i].Name < cfg.Deployments[j].Name })
+
+	if telemetryRaw, ok := getMap(root, "telemetry"); ok {
+		cfg.Telemetry.Exporter, _ = getString(telemetryRaw, "exporter")
+		cfg.Telemetry.OTLPEndpoint, _ = getString(telemetryRaw, "otlp_endpoint")
+	}
 
 	if priceRaw, ok := getMap(root, "price_table"); ok {
 		for model, raw := range priceRaw {

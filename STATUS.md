@@ -2,7 +2,7 @@
 
 ## Status
 
-🟢 Initial code scaffolding + a deepened test suite + real SSE streaming + real multi-tenant virtual keys/budgets — all complete and verified. `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only). CI now exists (`.github/workflows/ci.yml`), not yet run against a real push. Virtual keys + budgets work is implemented and verified but **not yet committed**.
+🟢 Initial code scaffolding + a deepened test suite + real SSE streaming + real multi-tenant virtual keys/budgets + real OTel tracing/agent_run_id — all complete and verified. `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only). CI now exists (`.github/workflows/ci.yml`), not yet run against a real push. OTel tracing work is implemented and verified but **not yet committed**.
 
 ## IMPORTANT
 
@@ -14,7 +14,7 @@ Unreleased. Neither `gateway` nor `evals` has a tagged version yet — both have
 
 ## Current Phase
 
-Virtual keys + per-key budgets/rate-limits/allowed-models, just landed on top of streaming + the initial scaffolding. Same spec→plan→implement pipeline: `docs/rfcs/2026-09-02-virtual-keys-budgets.md` (spec) → `docs/plans/2026-09-02-virtual-keys-budgets.md` (7-task plan) → implementation. Real multi-tenancy for the first time: hash-matched `identity.VirtualKey`s (config holds `key_hash`, never the raw secret), a new `internal/budget.Tracker`, one `ratelimit.TokenBucket` per key, and `cache.Key()`'s new tenant dimension — shipped in the SAME pass as multi-tenancy itself, so there's no window where more than one tenant existed without cache isolation. Breaking config change: `api_key_env` → `virtual_keys:` (see `docs/users/USER_GUIDE.md` §3).
+Real OTel tracing + `agent_run_id` propagation, just landed on top of virtual keys/budgets + streaming + the initial scaffolding. Same spec→plan→implement pipeline: `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md` (spec) → `docs/plans/2026-09-02-otel-tracing-agent-run-id.md` (5-task plan) → implementation. First external Go dependency `gateway/go.mod` has ever had (the OTel Go SDK). One real span per request (buffered or streaming) carrying GenAI semantic-convention attributes plus `kelvran.*` custom ones — the headline `agent_run_id` propagates in via standard W3C Baggage, never fabricated when the caller doesn't send one. New `telemetry:` config section (`exporter: stdout|otlp|none`, default `stdout`). `api/otel/`'s cross-language contract remains deliberately deferred — no real `evals` consumer exists yet.
 
 ## Verification State (measured, not assumed)
 
@@ -27,14 +27,15 @@ Virtual keys + per-key budgets/rate-limits/allowed-models, just landed on top of
 - `docker build -t kelvran-gateway:scaffold gateway/` — succeeded (multi-stage `golang:1.25-alpine` → `scratch`, ~5MB image); manually smoke-tested (401 on missing auth header) from both the local binary and the built container.
 - Directly read (not just trusted a report on) five files across both passes: `identity.go`'s constant-time comparison, `cache/key.go`'s SHA-256 fabrication, `stats.py`'s Wilson formula, `.golangci.yml`'s exclusion-rule justification, and `test_stats_properties.py`'s Hypothesis invariants — all genuinely correct, not hand-waved.
 - `.github/workflows/ci.yml` exists and mirrors `make verify` exactly, but has not yet run against a real push (no remote configured).
+- OTel tracing, specifically: `cd gateway && go build ./... && go vet ./... && go test ./... -race && golangci-lint run ./...` → all packages `ok`, `0 issues`, race-clean. 20 new tests: `internal/telemetry` (10, including exporter construction for all 3 modes and a real Baggage round-trip), `internal/gateway/controlplane` (1, optional-section proof), `internal/gateway/dataplane` (5 span-assertion tests — success, auth-failure-without-identity, cache-hit, agent_run_id-from-baggage, streaming mirror), `cmd/gateway` (1 real end-to-end HTTP→baggage-header→span integration test). Two real bugs found and fixed in test infrastructure (not production code) while building this — see `DECISIONS.md`'s OTel line and `docs/agents/LOGS.md`'s latest entry for both (OTel's global TracerProvider only re-delegates a Tracer's first real provider; a test binary that never calls `run()` never gets the propagator `Init` would normally set).
 
 ## Last Completed Task
 
-Real multi-tenant virtual keys + per-key budgets/rate-limits/allowed-models for `gateway`, implemented end-to-end (identity rewrite → new budget package → cache tenant-namespacing → dataplane wiring → main.go + integration tests → docs/changelog) per `docs/plans/2026-09-02-virtual-keys-budgets.md`. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Real OTel tracing + `agent_run_id` propagation for `gateway`, implemented end-to-end (new `internal/telemetry` package → controlplane config → dataplane span wiring → cmd/gateway `Init`/context-extraction wiring → docs/changelog) per `docs/plans/2026-09-02-otel-tracing-agent-run-id.md`. See `docs/agents/LOGS.md`'s latest entry for full detail, including two real test-infrastructure bugs found and fixed.
 
 ## Next Action
 
-**Commit the virtual-keys-and-budgets work** — it is implemented and independently verified but still sitting uncommitted in the working tree. After that, no next feature has been decided: OTel/`agent_run_id` propagation, distributed (Redis-backed) rate limiting, and Cache's L2 layer remain open candidates, pending the founder's explicit choice.
+**Commit the OTel tracing work** — it is implemented and independently verified but still sitting uncommitted in the working tree. After that, no next feature has been decided: distributed (Redis-backed) rate limiting and Cache's L2 layer remain the open candidates, pending the founder's explicit choice.
 
 ## Release Runbook
 

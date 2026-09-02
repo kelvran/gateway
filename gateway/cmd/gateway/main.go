@@ -1,18 +1,20 @@
 // Command gateway is Kelvran's single static binary: it loads the static
 // YAML config, wires every internal component (identity, rate limiting,
-// cache, provider adapters, cost accounting, the dataplane pipeline), and
-// serves /v1/chat/completions in both buffered and streaming (SSE) modes.
+// cache, provider adapters, cost accounting, OTel tracing, the dataplane
+// pipeline), and serves /v1/chat/completions in both buffered and
+// streaming (SSE) modes.
 //
 // Streaming (real SSE, per docs/rfcs/2026-09-02-streaming-support.md) is
 // wired for the OpenAI and Anthropic adapters only — a streaming request
 // routed to Gemini/Bedrock/openaicompat returns a typed
 // dataplane.ErrStreamingNotSupported (HTTP 400), never a silent fallback
-// to buffering. Per docs/rfcs/2026-09-02-initial-code-scaffolding.md's
-// scope boundary, this pass remains single-tenant with no guardrails/MCP/
-// OTel wiring yet.
+// to buffering. OTel spans, per
+// docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md, are real for every
+// request (buffered or streaming); guardrails/MCP remain unbuilt.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -35,6 +37,7 @@ import (
 	"github.com/kelvran/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/internal/identity"
+	"github.com/kelvran/gateway/internal/telemetry"
 )
 
 // Rate-limit defaults applied to any virtual key whose config doesn't
@@ -65,6 +68,26 @@ func run(configPath string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+
+	// Init is a process-startup concern, called before buildPipeline (not
+	// inside it) — buildPipeline's signature and behavior stay unchanged
+	// so every integration-test helper that calls it directly keeps
+	// working with the SDK's no-op default tracer, per
+	// docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md.
+	shutdown, err := telemetry.Init(context.Background(), telemetry.Config{
+		Exporter:     cfg.Telemetry.Exporter,
+		OTLPEndpoint: cfg.Telemetry.OTLPEndpoint,
+	})
+	if err != nil {
+		return fmt.Errorf("initializing telemetry: %w", err)
+	}
+	// Best-effort: this binary has no SIGTERM/graceful-shutdown handling
+	// yet (a real, pre-existing gap this RFC's Drawbacks section names,
+	// not something introduced here), so this only actually flushes if
+	// ListenAndServe below returns due to an error, not on a real process
+	// signal. The SDK's batch span processor still exports periodically
+	// regardless.
+	defer func() { _ = shutdown(context.Background()) }()
 
 	pipeline, err := buildPipeline(cfg, logger)
 	if err != nil {
@@ -189,7 +212,8 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 
-		resp, err := p.HandleChatCompletion(r.Context(), r.Header.Get("Authorization"), req)
+		ctx := telemetry.ExtractContext(r.Context(), r)
+		resp, err := p.HandleChatCompletion(ctx, r.Header.Get("Authorization"), req)
 		if err != nil {
 			writeErrorResponse(w, err)
 			return
@@ -225,7 +249,8 @@ func handleStreamingChatCompletion(p *dataplane.Pipeline, w http.ResponseWriter,
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	if err := p.HandleChatCompletionStream(r.Context(), r.Header.Get("Authorization"), req, w); err != nil {
+	ctx := telemetry.ExtractContext(r.Context(), r)
+	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), req, w); err != nil {
 		writeErrorResponse(w, err)
 	}
 }

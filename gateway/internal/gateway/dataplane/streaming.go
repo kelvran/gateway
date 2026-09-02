@@ -18,6 +18,7 @@ import (
 	"github.com/kelvran/gateway/internal/cache"
 	"github.com/kelvran/gateway/internal/identity"
 	"github.com/kelvran/gateway/internal/streaming"
+	"github.com/kelvran/gateway/internal/telemetry"
 )
 
 // ErrStreamingNotSupported is returned when a request asks to stream but
@@ -53,9 +54,11 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		cacheHit bool
 		resp     adapter.ChatResponse
 		vk       *identity.VirtualKey
+		dep      Deployment
 	)
+	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.logRequest(vk, req, resp, cacheHit, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, err)
 	}()
 
 	vk, verifyErr := p.verifier.Verify(authorizationHeader)
@@ -101,13 +104,14 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	dep, found := p.nextDeployment(req.Model)
+	var found bool
+	dep, found = p.nextDeployment(req.Model)
 	if !found {
 		err = fmt.Errorf("dataplane: no deployment configured for model %q", req.Model)
 		return
 	}
 
-	resp, err = p.streamDeploymentWithFallback(ctx, dep, req, sw)
+	resp, dep, err = p.streamDeploymentWithFallback(ctx, dep, req, sw)
 	if err != nil {
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
 		return
@@ -178,16 +182,17 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 // Once a chunk has been written to the client, no fallback is attempted —
 // per the RFC's explicit scope boundary, there is no clean way to retry a
 // partially-delivered stream without risking duplicated content.
-func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer) (adapter.ChatResponse, Deployment, error) {
 	var firstChunkSent bool
 
 	resp, err := p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
 	if err != nil && !firstChunkSent {
 		if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
-			resp, err = p.streamDeployment(ctx, fallbackDep, req, sw, &firstChunkSent)
+			dep = fallbackDep
+			resp, err = p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
 		}
 	}
-	return resp, err
+	return resp, dep, err
 }
 
 // streamDeployment runs the streaming-specific adapter+upstream-call steps

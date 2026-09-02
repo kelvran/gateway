@@ -38,7 +38,12 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              only (no persistence across restarts yet) — ACTIVE
 /internal/provideradapter    — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger
-/internal/telemetry          — OTel helpers; the layer `evals` is allowed to depend on via api/
+/internal/telemetry          — real OTel spans per request (GenAI semantic-convention attributes,
+                             agent_run_id via W3C Baggage) — ACTIVE, per
+                             docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md. The api/ versioned
+                             cross-language contract this line originally pointed at (the layer
+                             `evals` would depend on) remains deliberately deferred — see that RFC's
+                             Motivation section for why: no real evals-side consumer exists yet.
 /internal/mcp                — inbound (expose Kelvran's own APIs as MCP tools) + outbound (broker agent
                              tool calls) brokering — shares identity/costaccounting, not a second gateway
 /internal/guardrail          — pre/post-call middleware interface; PII/content checks
@@ -116,7 +121,7 @@ Pre-call and post-call middleware hooks, independently swappable. Ships with a b
 | Rate-limit / hot cache state | Redis (`go-redis/redis` v9), Lua/EVALSHA scripts |
 | Control-plane config store | Postgres (`pgx`/`sqlc`) |
 | Observability sink | ClickHouse (`clickhouse-go`); acceptable to start on Postgres/Timescale pre-scale |
-| Tracing | OTel Go SDK, GenAI semantic-convention attributes from day one |
+| Tracing | OTel Go SDK, GenAI semantic-convention attributes — **real**, per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md` (the first external Go dependency this module has ever had; exporters: stdout/OTLP/none) |
 | Distribution | Single static binary, scratch/alpine Docker image |
 
 ## Cross-Cutting Contract

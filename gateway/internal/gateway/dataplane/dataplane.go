@@ -27,6 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/kelvran/gateway/internal/adapter"
 	"github.com/kelvran/gateway/internal/adapter/anthropic"
 	"github.com/kelvran/gateway/internal/adapter/openai"
@@ -35,6 +37,7 @@ import (
 	"github.com/kelvran/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/internal/identity"
 	"github.com/kelvran/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/internal/telemetry"
 )
 
 // ErrRateLimited is returned by HandleChatCompletion when the caller's
@@ -207,10 +210,12 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	var (
 		cacheHit bool
 		vk       *identity.VirtualKey
+		dep      Deployment
 	)
 
+	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.logRequest(vk, req, resp, cacheHit, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, err)
 	}()
 
 	vk, verifyErr := p.verifier.Verify(authorizationHeader)
@@ -247,7 +252,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
-	dep, found := p.nextDeployment(req.Model)
+	var found bool
+	dep, found = p.nextDeployment(req.Model)
 	if !found {
 		err = fmt.Errorf("dataplane: no deployment configured for model %q", req.Model)
 		return
@@ -258,7 +264,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// Single fallback to the next deployment for the same model, per
 		// gateway/ARCHITECTURE.md's router step.
 		if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
-			resp, err = p.callDeployment(ctx, fallbackDep, req)
+			dep = fallbackDep
+			resp, err = p.callDeployment(ctx, dep, req)
 		}
 	}
 	if err != nil {
@@ -331,14 +338,73 @@ func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
 	return deps[idx%uint64(len(deps))], true
 }
 
-// logRequest emits the structured JSON log line for one request,
-// including the cost calculation and budget recording on success. It is
-// always called via defer in HandleChatCompletion, so it runs even when
-// err != nil — a partial/failed generation still gets logged, per
+// finalize is the single "a request just finished (or failed)" step,
+// shared by HandleChatCompletion and HandleChatCompletionStream: compute
+// cost once, record it against the caller's budget, record the OTel span
+// (per docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md), end the span,
+// and emit the structured JSON log line — in that order, so the span is
+// still open while telemetry.RecordChatCompletionResult sets its final
+// attributes. Always called via defer, so it runs even when err != nil —
+// a partial/failed generation still gets logged and spanned, per
 // gateway/ARCHITECTURE.md's "ALWAYS runs, even on error/cancel" note. vk
 // is nil when auth itself failed (there is no resolved identity yet in
-// that case) — every other error path has a non-nil vk.
-func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, err error) {
+// that case); dep is the zero value whenever no deployment was ever
+// resolved or called (auth/model/rate-limit/budget rejections, and cache
+// hits, which never touch a deployment at all).
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, err error) {
+	var cost float64
+	if err == nil {
+		cost = p.costCalc.Calculate(req.Model, costaccounting.Usage{
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		})
+		if vk != nil {
+			p.budget.Record(vk.ID, cost)
+		}
+	}
+
+	var virtualKeyID string
+	if vk != nil {
+		virtualKeyID = vk.ID
+	}
+	telemetry.RecordChatCompletionResult(span, telemetry.ChatCompletionResult{
+		VirtualKeyID:   virtualKeyID,
+		Provider:       dep.Provider,
+		DeploymentName: dep.Name,
+		ResponseModel:  resp.Model,
+		ResponseID:     resp.ID,
+		FinishReasons:  finishReasons(resp),
+		InputTokens:    resp.Usage.PromptTokens,
+		OutputTokens:   resp.Usage.CompletionTokens,
+		CacheHit:       cacheHit,
+		CostUSD:        cost,
+		AgentRunID:     telemetry.AgentRunIDFromContext(ctx),
+		Err:            err,
+	})
+	span.End()
+
+	p.logRequest(vk, req, resp, cacheHit, cost, err)
+}
+
+// finishReasons collects every non-empty FinishReason across resp's
+// choices, in order — most responses have exactly one choice, but the
+// canonical schema allows more, and gen_ai.response.finish_reasons is
+// documented as an array for exactly that reason.
+func finishReasons(resp adapter.ChatResponse) []string {
+	var reasons []string
+	for _, c := range resp.Choices {
+		if c.FinishReason != "" {
+			reasons = append(reasons, c.FinishReason)
+		}
+	}
+	return reasons
+}
+
+// logRequest emits the structured JSON log line for one request. cost is
+// precomputed by finalize (0 when err != nil) so it's never calculated
+// twice.
+func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, cost float64, err error) {
 	fields := []any{"model", req.Model, "cache_hit", cacheHit}
 	if vk != nil {
 		fields = append(fields, "virtual_key_id", vk.ID)
@@ -347,15 +413,6 @@ func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, 
 	if err != nil {
 		p.logger.Error("chat_completion", append(fields, "error", err.Error())...)
 		return
-	}
-
-	cost := p.costCalc.Calculate(req.Model, costaccounting.Usage{
-		PromptTokens:     resp.Usage.PromptTokens,
-		CompletionTokens: resp.Usage.CompletionTokens,
-		TotalTokens:      resp.Usage.TotalTokens,
-	})
-	if vk != nil {
-		p.budget.Record(vk.ID, cost)
 	}
 
 	fields = append(fields,
