@@ -26,6 +26,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/kelvran/gateway/internal/adapter/anthropic"
 	"github.com/kelvran/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/internal/gateway/controlplane"
@@ -114,7 +116,7 @@ func newIntegrationServer(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvV
 			},
 		},
 		PriceTable: map[string]controlplane.ModelPriceConfig{
-			"gpt-4o": {PromptPerToken: 0.0000025, CompletionPerToken: 0.00001},
+			"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.0000025"), CompletionPerToken: decimal.RequireFromString("0.00001")},
 		},
 	}
 
@@ -155,7 +157,7 @@ func newIntegrationServerMultiKey(t *testing.T, upstreamURL, upstreamKeyEnvVar s
 			},
 		},
 		PriceTable: map[string]controlplane.ModelPriceConfig{
-			"gpt-4o": {PromptPerToken: 0.0000025, CompletionPerToken: 0.00001},
+			"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.0000025"), CompletionPerToken: decimal.RequireFromString("0.00001")},
 		},
 	}
 
@@ -777,7 +779,7 @@ func TestIntegrationBudgetExceededReturns429DistinctFromRateLimit(t *testing.T) 
 		// request against this test's price_table. A cap of 0.00001
 		// lets the FIRST request through (spend starts at 0) but rejects
 		// the second (0.0000575 already spent > the 0.00001 cap).
-		{Name: "team-tiny-budget", KeyHash: testKeyHash("tiny-budget-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: 0.00001},
+		{Name: "team-tiny-budget", KeyHash: testKeyHash("tiny-budget-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("0.00001")},
 	})
 
 	doRequest := func() (int, string) {

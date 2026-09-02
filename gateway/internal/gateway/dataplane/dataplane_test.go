@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/kelvran/gateway/internal/adapter"
 	"github.com/kelvran/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/internal/budget"
@@ -204,11 +206,11 @@ func TestHandleChatCompletionModelNotAllowedCheckedBeforeRateLimitAndBudget(t *t
 		KeyHash:         testHashOf("team-x-secret"),
 		RateLimitBurst:  0, // already exhausted
 		RateLimitRefill: 0,
-		BudgetUSD:       0.01,
+		BudgetUSD:       decimal.RequireFromString("0.01"),
 		AllowedModels:   map[string]struct{}{"gpt-4o-mini": {}},
 	}}
 	tracker := budget.NewTracker()
-	tracker.Record("team-x", 999) // already over budget too
+	tracker.Record("team-x", decimal.RequireFromString("999")) // already over budget too
 
 	p := newTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
 		t.Fatal("upstream must never be called for a model-not-allowed request")
@@ -249,10 +251,10 @@ func TestHandleChatCompletionPerKeyRateLimitsAreIndependent(t *testing.T) {
 // and never reaches the upstream call.
 func TestHandleChatCompletionBudgetExceededRejectsBeforeUpstream(t *testing.T) {
 	keys := []identity.VirtualKey{
-		{ID: "team-x", KeyHash: testHashOf("team-x-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: 0.01},
+		{ID: "team-x", KeyHash: testHashOf("team-x-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("0.01")},
 	}
 	tracker := budget.NewTracker()
-	tracker.Record("team-x", 1.0) // already well over the 0.01 cap
+	tracker.Record("team-x", decimal.RequireFromString("1.0")) // already well over the 0.01 cap
 
 	p := newTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
 		t.Fatal("upstream must never be called once budget is exceeded")

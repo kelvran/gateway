@@ -37,7 +37,7 @@ func TestRecordChatCompletionResultSuccessSetsAllAttributes(t *testing.T) {
 		InputTokens:    10,
 		OutputTokens:   5,
 		CacheHit:       false,
-		CostUSD:        0.0001,
+		CostUSD:        "0.0001",
 		AgentRunID:     "run-abc123",
 	})
 	span.End()
@@ -76,8 +76,8 @@ func TestRecordChatCompletionResultSuccessSetsAllAttributes(t *testing.T) {
 	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranCacheHit)); !ok || v.AsBool() != false {
 		t.Errorf("%s = %v, ok=%v, want false", AttrKelvranCacheHit, v, ok)
 	}
-	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranCostUSD)); !ok || v.AsFloat64() != 0.0001 {
-		t.Errorf("%s = %v, ok=%v, want 0.0001", AttrKelvranCostUSD, v, ok)
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranCostUSD)); !ok || v.AsString() != "0.0001" {
+		t.Errorf("%s = %v, ok=%v, want %q", AttrKelvranCostUSD, v, ok, "0.0001")
 	}
 	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIResponseFinishReasons)); !ok || len(v.AsStringSlice()) != 1 || v.AsStringSlice()[0] != "stop" {
 		t.Errorf("%s = %v, ok=%v, want [stop]", AttrGenAIResponseFinishReasons, v, ok)
@@ -99,7 +99,10 @@ func TestRecordChatCompletionResultSkipsEmptyOptionalFields(t *testing.T) {
 	_, span := tracer.Start(t.Context(), "test-span")
 	RecordChatCompletionResult(span, ChatCompletionResult{
 		CacheHit: true,
-		CostUSD:  0,
+		// "0", not "" — matches what decimal.Zero.String() actually
+		// produces in real code (dataplane.go's finalize never passes a
+		// truly empty string; a genuinely-zero cost still formats as "0").
+		CostUSD: "0",
 	})
 	span.End()
 

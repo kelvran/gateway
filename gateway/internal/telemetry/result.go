@@ -52,9 +52,15 @@ type ChatCompletionResult struct {
 	InputTokens    int
 	OutputTokens   int
 	CacheHit       bool
-	CostUSD        float64
-	AgentRunID     string
-	Err            error
+	// CostUSD is a pre-formatted decimal string (e.g. "0.0000575"), not a
+	// float64 — per docs/rfcs/2026-09-02-decimal-cost-accounting.md, OTel's
+	// attribute value model has no decimal type, and converting back to
+	// float64 here would reintroduce the exact precision loss that RFC
+	// removes, one hop before the data leaves the process. This also keeps
+	// this package from taking on a dependency on the money-type choice.
+	CostUSD    string
+	AgentRunID string
+	Err        error
 }
 
 // RecordChatCompletionResult sets every attribute only knowable once a
@@ -92,11 +98,15 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	if r.AgentRunID != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranAgentRunID, r.AgentRunID))
 	}
-	// kelvran.cache.hit and kelvran.cost.usd are always meaningful (false/0
-	// are real values, not "unknown"), so these are always set.
+	// kelvran.cache.hit and kelvran.cost.usd are always meaningful (false/
+	// "0" are real values, not "unknown"), so these are always set.
+	// AttrKelvranCostUSD is a string attribute (see CostUSD's doc comment
+	// above) — never attribute.Float64, which would reintroduce the exact
+	// precision loss docs/rfcs/2026-09-02-decimal-cost-accounting.md exists
+	// to remove.
 	attrs = append(attrs,
 		attribute.Bool(AttrKelvranCacheHit, r.CacheHit),
-		attribute.Float64(AttrKelvranCostUSD, r.CostUSD),
+		attribute.String(AttrKelvranCostUSD, r.CostUSD),
 	)
 
 	span.SetAttributes(attrs...)

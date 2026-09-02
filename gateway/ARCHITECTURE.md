@@ -37,7 +37,9 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 /internal/budget             — per-key cumulative USD spend tracking against an optional cap, in-memory
                              only (no persistence across restarts yet) — ACTIVE
 /internal/provideradapter    — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
-/internal/costaccounting     — token/$ metering, Decimal-precision ledger
+/internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
+                             docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
+                             the gateway's second external Go dependency family after OTel)
 /internal/telemetry          — real OTel spans per request (GenAI semantic-convention attributes,
                              agent_run_id via W3C Baggage) — ACTIVE, per
                              docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md. The api/ versioned
@@ -122,6 +124,7 @@ Pre-call and post-call middleware hooks, independently swappable. Ships with a b
 | Control-plane config store | Postgres (`pgx`/`sqlc`) |
 | Observability sink | ClickHouse (`clickhouse-go`); acceptable to start on Postgres/Timescale pre-scale |
 | Tracing | OTel Go SDK, GenAI semantic-convention attributes — **real**, per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md` (the first external Go dependency this module has ever had; exporters: stdout/OTLP/none) |
+| Cost/budget arithmetic | `github.com/shopspring/decimal` — **real**, per `docs/rfcs/2026-09-02-decimal-cost-accounting.md` (the second external Go dependency; zero transitive dependencies) |
 | Distribution | Single static binary, scratch/alpine Docker image |
 
 ## Cross-Cutting Contract

@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 // hashOf is the test-only equivalent of what an operator does once with
@@ -45,7 +47,7 @@ func TestVerifyPreservesConfiguredFields(t *testing.T) {
 		{
 			ID:              "team-alpha",
 			KeyHash:         hashOf("alpha-secret"),
-			BudgetUSD:       50,
+			BudgetUSD:       decimal.RequireFromString("50"),
 			AllowedModels:   map[string]struct{}{"gpt-4o": {}},
 			RateLimitBurst:  10,
 			RateLimitRefill: 5,
@@ -59,7 +61,7 @@ func TestVerifyPreservesConfiguredFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if vk.BudgetUSD != 50 {
+	if !vk.BudgetUSD.Equal(decimal.RequireFromString("50")) {
 		t.Errorf("BudgetUSD = %v, want 50", vk.BudgetUSD)
 	}
 	if _, ok := vk.AllowedModels["gpt-4o"]; !ok {

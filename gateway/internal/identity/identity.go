@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/shopspring/decimal"
 )
 
 const bearerPrefix = "Bearer "
@@ -47,8 +49,9 @@ type VirtualKey struct {
 	// bearer token, from config. Never the raw secret.
 	KeyHash string
 	// BudgetUSD is this key's cumulative spending cap. Zero (or negative)
-	// means unlimited.
-	BudgetUSD float64
+	// means unlimited. Decimal, not float64, per
+	// docs/rfcs/2026-09-02-decimal-cost-accounting.md.
+	BudgetUSD decimal.Decimal
 	// AllowedModels restricts this key to a subset of configured models.
 	// Empty or nil means every configured model is allowed.
 	AllowedModels map[string]struct{}

@@ -25,6 +25,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/shopspring/decimal"
 )
 
 // DeploymentConfig is one upstream deployment: a canonical (client-facing)
@@ -52,9 +54,12 @@ type DeploymentConfig struct {
 }
 
 // ModelPriceConfig is the static per-token price for one model.
+// Decimal, not float64, per docs/rfcs/2026-09-02-decimal-cost-accounting.md
+// — these values are parsed from their original YAML source string via
+// getDecimal, never round-tripped through float64 first.
 type ModelPriceConfig struct {
-	PromptPerToken     float64
-	CompletionPerToken float64
+	PromptPerToken     decimal.Decimal
+	CompletionPerToken decimal.Decimal
 }
 
 // VirtualKeyConfig is one statically-configured virtual key, per
@@ -69,8 +74,8 @@ type VirtualKeyConfig struct {
 	// KeyHash is the hex-encoded SHA-256 digest of the actual secret.
 	KeyHash string
 	// BudgetUSD is this key's cumulative spending cap. Zero means
-	// unlimited.
-	BudgetUSD float64
+	// unlimited. Decimal, not float64 — see ModelPriceConfig's doc comment.
+	BudgetUSD decimal.Decimal
 	// AllowedModels restricts this key to a subset of configured models.
 	// Empty means every configured model is allowed.
 	AllowedModels []string
@@ -141,7 +146,7 @@ func Load(path string) (*Config, error) {
 		if vk.KeyHash == "" {
 			return nil, fmt.Errorf("controlplane: virtual key %q is missing required field %q", name, "key_hash")
 		}
-		vk.BudgetUSD, _ = getFloat(vkMap, "budget_usd")
+		vk.BudgetUSD, _ = getDecimal(vkMap, "budget_usd")
 		if rl, ok := getMap(vkMap, "rate_limit"); ok {
 			vk.RateLimitBurst, _ = getFloat(rl, "burst")
 			vk.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
@@ -192,8 +197,8 @@ func Load(path string) (*Config, error) {
 			if !ok {
 				return nil, fmt.Errorf("controlplane: price_table entry %q must be a mapping", model)
 			}
-			promptPer, _ := getFloat(priceMap, "prompt_per_token")
-			completionPer, _ := getFloat(priceMap, "completion_per_token")
+			promptPer, _ := getDecimal(priceMap, "prompt_per_token")
+			completionPer, _ := getDecimal(priceMap, "completion_per_token")
 			cfg.PriceTable[model] = ModelPriceConfig{
 				PromptPerToken:     promptPer,
 				CompletionPerToken: completionPer,
@@ -212,7 +217,11 @@ func Load(path string) (*Config, error) {
 // multi-line strings — this config's shape never needs any of those.
 
 // parseYAMLMini parses data into a tree of map[string]any, where leaf
-// values are string, float64, or bool.
+// values are string or bool. Numeric scalars are deliberately left as
+// their raw source string (see parseYAMLScalar's doc comment) — this is
+// load-bearing for docs/rfcs/2026-09-02-decimal-cost-accounting.md, not
+// an oversight: money fields must parse from the original decimal text
+// via getDecimal, never through an intermediate float64.
 func parseYAMLMini(data []byte) (map[string]any, error) {
 	root := map[string]any{}
 
@@ -278,17 +287,33 @@ func unquoteYAMLScalar(s string) string {
 	return s
 }
 
-// parseYAMLScalar interprets a scalar value as a bool, float64, or falls
-// back to a (possibly quoted) string.
+// parseYAMLScalar interprets a scalar value as a bool, or falls back to a
+// (possibly quoted) string — deliberately NOT float64. An earlier version
+// of this function eagerly converted numeric-looking scalars to float64
+// here, which meant every money value round-tripped through binary
+// floating point before getDecimal (or even getFloat) ever saw it,
+// silently defeating decimal precision at the exact point money enters
+// the system. Numeric scalars now stay as their raw source string;
+// getFloat/getDecimal each convert from that string at the point of use,
+// with their own precision semantics.
+//
+// Boolean matching is deliberately an explicit set, not
+// strconv.ParseBool: ParseBool also accepts "0"/"1"/"t"/"f" as valid
+// booleans, which collided with genuinely numeric scalars — a config
+// line like "budget_usd: 1" would silently parse as the bool true, fail
+// getFloat/getDecimal's type switch, and fall back to a zero value
+// (which internal/budget.Tracker's own convention treats as "unlimited"
+// budget) — a real bug found while writing
+// docs/rfcs/2026-09-02-decimal-cost-accounting.md, fixed here.
 func parseYAMLScalar(s string) any {
 	if unquoted := unquoteYAMLScalar(s); unquoted != s {
 		return unquoted
 	}
-	if b, err := strconv.ParseBool(s); err == nil {
-		return b
-	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
+	switch s {
+	case "true", "True", "TRUE":
+		return true
+	case "false", "False", "FALSE":
+		return false
 	}
 	return s
 }
@@ -316,6 +341,24 @@ func getFloat(m map[string]any, key string) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// getDecimal reads key as a decimal.Decimal, parsed from its raw source
+// string via decimal.NewFromString — never via an intermediate float64,
+// per docs/rfcs/2026-09-02-decimal-cost-accounting.md. Used only for
+// money fields (price_table entries, budget_usd); non-money numeric
+// fields (rate_limit burst/refill) stay on getFloat.
+func getDecimal(m map[string]any, key string) (decimal.Decimal, bool) {
+	v, ok := m[key]
+	if !ok {
+		return decimal.Zero, false
+	}
+	s, ok := v.(string)
+	if !ok {
+		return decimal.Zero, false
+	}
+	d, err := decimal.NewFromString(s)
+	return d, err == nil
 }
 
 func getMap(m map[string]any, key string) (map[string]any, bool) {

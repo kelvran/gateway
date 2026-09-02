@@ -3,6 +3,7 @@ module github.com/kelvran/gateway
 go 1.25.0
 
 require (
+	github.com/shopspring/decimal v1.4.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.46.0

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 // TestLoadExampleConfig is a real round-trip test against the checked-in
@@ -36,7 +38,7 @@ func TestLoadExampleConfig(t *testing.T) {
 	if alpha.KeyHash != "6701a1ecc6b08958fa24e13f267aac7233d47f390e92e71f8cc8fb3144672cf1" {
 		t.Errorf("team-alpha.KeyHash = %q", alpha.KeyHash)
 	}
-	if alpha.BudgetUSD != 100.0 {
+	if !alpha.BudgetUSD.Equal(decimal.RequireFromString("100.0")) {
 		t.Errorf("team-alpha.BudgetUSD = %v, want 100.0", alpha.BudgetUSD)
 	}
 	if alpha.RateLimitBurst != 20 || alpha.RateLimitRefill != 10 {
@@ -56,7 +58,7 @@ func TestLoadExampleConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("missing virtual key \"team-beta\"")
 	}
-	if beta.BudgetUSD != 0 {
+	if !beta.BudgetUSD.IsZero() {
 		t.Errorf("team-beta.BudgetUSD = %v, want 0 (unlimited)", beta.BudgetUSD)
 	}
 	if len(beta.AllowedModels) != 0 {
@@ -98,7 +100,7 @@ func TestLoadExampleConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("missing price_table entry \"gpt-4o\"")
 	}
-	if priceGPT.PromptPerToken != 0.0000025 || priceGPT.CompletionPerToken != 0.00001 {
+	if !priceGPT.PromptPerToken.Equal(decimal.RequireFromString("0.0000025")) || !priceGPT.CompletionPerToken.Equal(decimal.RequireFromString("0.00001")) {
 		t.Errorf("gpt-4o price = %+v", priceGPT)
 	}
 
@@ -153,6 +155,79 @@ func TestLoadRejectsVirtualKeyMissingHash(t *testing.T) {
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load with a virtual key missing key_hash returned nil error")
+	}
+}
+
+// TestLoadBudgetUSDBareDigitIsNotMisreadAsBool is the load-bearing
+// regression test for the real bug documented in
+// docs/rfcs/2026-09-02-decimal-cost-accounting.md's Motivation: an
+// earlier version of this parser used strconv.ParseBool for boolean
+// detection, which also accepts "0"/"1" as valid booleans. A config line
+// like "budget_usd: 1" would silently parse as the bool true, fail
+// getDecimal's type switch, and fall back to decimal.Zero — which
+// internal/budget.Tracker's own convention treats as "unlimited" budget.
+// A one-digit budget cap must never silently become no cap at all.
+func TestLoadBudgetUSDBareDigitIsNotMisreadAsBool(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: 1\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.VirtualKeys) != 1 {
+		t.Fatalf("len(VirtualKeys) = %d, want 1", len(cfg.VirtualKeys))
+	}
+	got := cfg.VirtualKeys[0].BudgetUSD
+	want := decimal.RequireFromString("1")
+	if !got.Equal(want) {
+		t.Fatalf("BudgetUSD = %v, want %v — a bare \"1\" must parse as the decimal 1, not collide with boolean true and silently fall back to 0 (unlimited)", got, want)
+	}
+}
+
+// TestLoadNumericBooleanLiteralsStillParseCorrectly proves the parser fix
+// (explicit true/false matching instead of strconv.ParseBool) doesn't
+// regress genuine boolean fields — allowed_models' "true" values and
+// rate_limit's numeric burst/refill fields must behave identically to
+// before this change.
+func TestLoadNumericBooleanLiteralsStillParseCorrectly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    rate_limit:\n" +
+		"      burst: 20\n" +
+		"      refill_per_second: 10\n" +
+		"    allowed_models:\n" +
+		"      gpt-4o: true\n" +
+		"      gpt-4o-mini: false\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	vk := cfg.VirtualKeys[0]
+	if vk.RateLimitBurst != 20 || vk.RateLimitRefill != 10 {
+		t.Errorf("rate limit = burst=%v refill=%v, want 20/10", vk.RateLimitBurst, vk.RateLimitRefill)
+	}
+	if len(vk.AllowedModels) != 1 || vk.AllowedModels[0] != "gpt-4o" {
+		t.Errorf("AllowedModels = %v, want exactly [gpt-4o] (gpt-4o-mini: false must be excluded)", vk.AllowedModels)
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/kelvran/gateway/internal/adapter"
@@ -352,7 +353,10 @@ func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
 // resolved or called (auth/model/rate-limit/budget rejections, and cache
 // hits, which never touch a deployment at all).
 func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, err error) {
-	var cost float64
+	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
+	// default on the err != nil path — verified explicitly in
+	// internal/budget's own tests, not assumed here too.
+	var cost decimal.Decimal
 	if err == nil {
 		cost = p.costCalc.Calculate(req.Model, costaccounting.Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
@@ -378,9 +382,13 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		InputTokens:    resp.Usage.PromptTokens,
 		OutputTokens:   resp.Usage.CompletionTokens,
 		CacheHit:       cacheHit,
-		CostUSD:        cost,
-		AgentRunID:     telemetry.AgentRunIDFromContext(ctx),
-		Err:            err,
+		// telemetry stays a dependency-free leaf (no decimal.Decimal
+		// import) per docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md —
+		// the exact decimal string is formatted here, at the boundary,
+		// per docs/rfcs/2026-09-02-decimal-cost-accounting.md.
+		CostUSD:    cost.String(),
+		AgentRunID: telemetry.AgentRunIDFromContext(ctx),
+		Err:        err,
 	})
 	span.End()
 
@@ -402,9 +410,9 @@ func finishReasons(resp adapter.ChatResponse) []string {
 }
 
 // logRequest emits the structured JSON log line for one request. cost is
-// precomputed by finalize (0 when err != nil) so it's never calculated
-// twice.
-func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, cost float64, err error) {
+// precomputed by finalize (decimal.Zero when err != nil) so it's never
+// calculated twice.
+func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, cost decimal.Decimal, err error) {
 	fields := []any{"model", req.Model, "cache_hit", cacheHit}
 	if vk != nil {
 		fields = append(fields, "virtual_key_id", vk.ID)
@@ -419,7 +427,10 @@ func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, 
 		"prompt_tokens", resp.Usage.PromptTokens,
 		"completion_tokens", resp.Usage.CompletionTokens,
 		"total_tokens", resp.Usage.TotalTokens,
-		"cost_usd", cost,
+		// A JSON string, not a bare number — decimal.Decimal.String() is
+		// exact; a deliberate, documented format change from the old
+		// float64 field per docs/rfcs/2026-09-02-decimal-cost-accounting.md.
+		"cost_usd", cost.String(),
 	)
 	p.logger.Info("chat_completion", fields...)
 }
