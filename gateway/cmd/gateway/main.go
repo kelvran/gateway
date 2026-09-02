@@ -32,6 +32,7 @@ import (
 	"github.com/kelvran/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/internal/adapter/openaicompat"
 	"github.com/kelvran/gateway/internal/budget"
+	"github.com/kelvran/gateway/internal/budget/boltstore"
 	"github.com/kelvran/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/internal/gateway/controlplane"
@@ -93,6 +94,14 @@ func run(configPath string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("building pipeline: %w", err)
 	}
+	// Best-effort, same caveat as the telemetry shutdown above: only
+	// exercised on a clean ListenAndServe error return, not a real
+	// process signal (this binary has no SIGTERM handling yet). Every
+	// budget update is already durably persisted synchronously by
+	// Record itself (docs/rfcs/2026-09-03-budget-persistence.md), so
+	// this Close is about releasing the bbolt file's exclusive lock
+	// cleanly, not about flushing unwritten data.
+	defer func() { _ = pipeline.Close() }()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
@@ -167,10 +176,15 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		}
 	}
 
+	budgetTracker, err := newBudgetTracker(cfg.Budget, logger)
+	if err != nil {
+		return nil, fmt.Errorf("constructing budget tracker: %w", err)
+	}
+
 	return dataplane.NewPipeline(dataplane.Config{
 		Verifier:       verifier,
 		VirtualKeys:    virtualKeys,
-		Budget:         budget.NewTracker(),
+		Budget:         budgetTracker,
 		Cache:          inprocess.New(),
 		Adapters:       registry,
 		Deployments:    deployments,
@@ -183,6 +197,28 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}),
 		Logger:         logger,
 	})
+}
+
+// newBudgetTracker constructs a pure in-memory budget.Tracker when
+// cfg.PersistPath is empty (the default — a bare config.yaml with no
+// budget: section behaves identically to before
+// docs/rfcs/2026-09-03-budget-persistence.md existed), or one backed by a
+// bbolt store at cfg.PersistPath otherwise — hydrating any existing spend
+// immediately, so a restart resumes exactly where it left off.
+func newBudgetTracker(cfg controlplane.BudgetConfig, logger *slog.Logger) (*budget.Tracker, error) {
+	if cfg.PersistPath == "" {
+		return budget.NewTracker(), nil
+	}
+	store, err := boltstore.Open(cfg.PersistPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening budget store at %q: %w", cfg.PersistPath, err)
+	}
+	tracker, err := budget.NewTrackerWithStore(context.Background(), store, logger)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("hydrating budget tracker from %q: %w", cfg.PersistPath, err)
+	}
+	return tracker, nil
 }
 
 // chatCompletionsHandler adapts dataplane.Pipeline.HandleChatCompletion to

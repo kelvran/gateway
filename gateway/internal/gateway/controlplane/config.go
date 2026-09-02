@@ -99,6 +99,17 @@ type TelemetryConfig struct {
 	OTLPEndpoint string
 }
 
+// BudgetConfig configures restart-durable budget-spend persistence, per
+// docs/rfcs/2026-09-03-budget-persistence.md. Optional — a zero-valued
+// BudgetConfig (PersistPath == "") means pure in-memory budget tracking,
+// exactly as before that RFC: a bare config.yaml with no budget: section
+// must behave identically to before this feature existed.
+type BudgetConfig struct {
+	// PersistPath is the file path for the bbolt-backed budget store.
+	// Empty means no persistence.
+	PersistPath string
+}
+
 // Config is the gateway's fully-parsed static configuration.
 type Config struct {
 	// ListenAddr is the address http.ListenAndServe binds to (e.g. ":8080").
@@ -111,6 +122,8 @@ type Config struct {
 	PriceTable map[string]ModelPriceConfig
 	// Telemetry configures OTel span export. Optional.
 	Telemetry TelemetryConfig
+	// Budget configures budget-spend persistence. Optional.
+	Budget BudgetConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -189,6 +202,10 @@ func Load(path string) (*Config, error) {
 	if telemetryRaw, ok := getMap(root, "telemetry"); ok {
 		cfg.Telemetry.Exporter, _ = getString(telemetryRaw, "exporter")
 		cfg.Telemetry.OTLPEndpoint, _ = getString(telemetryRaw, "otlp_endpoint")
+	}
+
+	if budgetRaw, ok := getMap(root, "budget"); ok {
+		cfg.Budget.PersistPath, _ = getString(budgetRaw, "persist_path")
 	}
 
 	if priceRaw, ok := getMap(root, "price_table"); ok {

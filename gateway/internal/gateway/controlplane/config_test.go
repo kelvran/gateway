@@ -129,6 +129,30 @@ func TestLoadWithoutTelemetrySectionDefaultsToZeroValue(t *testing.T) {
 	if cfg.Telemetry != (TelemetryConfig{}) {
 		t.Errorf("Telemetry = %+v, want the zero value", cfg.Telemetry)
 	}
+	if cfg.Budget != (BudgetConfig{}) {
+		t.Errorf("Budget = %+v, want the zero value", cfg.Budget)
+	}
+}
+
+// TestLoadBudgetSectionParsesPersistPath proves the budget: section, when
+// present, is parsed correctly — the mirror-image proof to
+// TestLoadWithoutTelemetrySectionDefaultsToZeroValue's "genuinely
+// optional" proof above.
+func TestLoadBudgetSectionParsesPersistPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nbudget:\n  persist_path: \"kelvran-budget.db\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a budget section: %v", err)
+	}
+	if cfg.Budget.PersistPath != "kelvran-budget.db" {
+		t.Errorf("Budget.PersistPath = %q, want %q", cfg.Budget.PersistPath, "kelvran-budget.db")
+	}
 }
 
 func TestLoadMissingRequiredField(t *testing.T) {

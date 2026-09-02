@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/shopspring/decimal v1.4.0
+	go.etcd.io/bbolt v1.5.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.46.0

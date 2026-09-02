@@ -321,6 +321,21 @@ func TestHandleChatCompletionCacheIsolatedAcrossVirtualKeys(t *testing.T) {
 	}
 }
 
+// TestPipelineCloseOnPlainBudgetTrackerIsANoOp proves Close works cleanly
+// on the common (no persistence configured) case every other test in
+// this file already exercises — the real restart-survival proof, with a
+// persistent store configured, is a cmd/gateway integration test per
+// docs/plans/2026-09-03-budget-persistence.md's Task 4.
+func TestPipelineCloseOnPlainBudgetTrackerIsANoOp(t *testing.T) {
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	if err := p.Close(); err != nil {
+		t.Errorf("Close() on a Pipeline with no persistent budget store = %v, want nil", err)
+	}
+}
+
 // compile-time sanity: cache.Cache is used, not redefined, inside this
 // test file's imports.
 var _ cache.Cache = (*inprocess.Cache)(nil)

@@ -34,8 +34,12 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              teams/hierarchical scope (org -> team -> user -> key -> session) remain
                              target-only, per docs/rfcs/2026-09-02-virtual-keys-budgets.md's scope
                              boundary — zero deps upward
-/internal/budget             — per-key cumulative USD spend tracking against an optional cap, in-memory
-                             only (no persistence across restarts yet) — ACTIVE
+/internal/budget             — per-key cumulative USD spend tracking against an optional cap — ACTIVE.
+                             Restart-durable via an optional bbolt-backed store (internal/budget/boltstore,
+                             docs/rfcs/2026-09-03-budget-persistence.md) when `budget.persist_path` is
+                             configured; pure in-memory (resets on restart) otherwise — single-instance
+                             only, a deliberate, bounded stepping stone ahead of the Postgres control-plane
+                             store below, not a replacement for it
 /internal/provideradapter    — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
                              docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
@@ -121,7 +125,8 @@ Pre-call and post-call middleware hooks, independently swappable. Ships with a b
 | Language/runtime | Go 1.25+ |
 | HTTP | `net/http` + `httputil.ReverseProxy`-derived streaming |
 | Rate-limit / hot cache state | Redis (`go-redis/redis` v9), Lua/EVALSHA scripts |
-| Control-plane config store | Postgres (`pgx`/`sqlc`) |
+| Control-plane config store | Postgres (`pgx`/`sqlc`) — still the target for real control-plane state |
+| Budget-spend restart-durability | `go.etcd.io/bbolt` — **real**, per `docs/rfcs/2026-09-03-budget-persistence.md` (single-instance only; the third external Go dependency, near-zero *new* transitive weight since its one real dependency, `golang.org/x/sys`, is already pulled in via OTel) |
 | Observability sink | ClickHouse (`clickhouse-go`); acceptable to start on Postgres/Timescale pre-scale |
 | Tracing | OTel Go SDK, GenAI semantic-convention attributes — **real**, per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md` (the first external Go dependency this module has ever had; exporters: stdout/OTLP/none) |
 | Cost/budget arithmetic | `github.com/shopspring/decimal` — **real**, per `docs/rfcs/2026-09-02-decimal-cost-accounting.md` (the second external Go dependency; zero transitive dependencies) |

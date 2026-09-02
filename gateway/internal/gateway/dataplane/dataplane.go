@@ -183,6 +183,16 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}, nil
 }
 
+// Close releases any resources the Pipeline owns — currently, an optional
+// restart-durable budget store (see internal/budget.Tracker.Close and
+// docs/rfcs/2026-09-03-budget-persistence.md). p.budget is never nil at
+// this point (NewPipeline already validates that), so this always has a
+// real Tracker to close, even one with no store configured (a no-op in
+// that case).
+func (p *Pipeline) Close() error {
+	return p.budget.Close()
+}
+
 // limiterFor returns keyID's rate limiter. Every identity.VirtualKey
 // Verify can ever resolve was present in Config.VirtualKeys at
 // construction time (both are built from the same slice by cmd/gateway),

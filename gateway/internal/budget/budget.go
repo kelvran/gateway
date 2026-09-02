@@ -1,11 +1,8 @@
 // Package budget tracks each virtual key's cumulative USD spend against an
-// optional cap, held in memory for the process lifetime.
-//
-// Per docs/rfcs/2026-09-02-virtual-keys-budgets.md, this is deliberately
-// not persisted: a gateway restart resets every key's spend to zero. A
-// real control-plane store (Postgres, per gateway/ARCHITECTURE.md's Tech
-// Stack) doesn't exist yet — this is a documented Phase 2 gap, not a
-// silently accepted one.
+// optional cap, held in memory for the process lifetime, with optional
+// restart-durable persistence per docs/rfcs/2026-09-03-budget-persistence.md
+// (NewTrackerWithStore) — NewTracker (no store) stays pure in-memory,
+// resetting on restart, exactly as before that RFC.
 //
 // Decimal arithmetic (github.com/shopspring/decimal), not float64, per
 // docs/rfcs/2026-09-02-decimal-cost-accounting.md — repeated float64
@@ -15,25 +12,62 @@
 package budget
 
 import (
+	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/shopspring/decimal"
 )
 
-// Tracker enforces a per-key cumulative USD spending cap. The zero value
-// is not usable; construct with NewTracker. Safe for concurrent use.
-type Tracker struct {
-	mu    sync.Mutex
-	spent map[string]decimal.Decimal
+// Store persists budget spend durably across process restarts. Optional —
+// a Tracker constructed via NewTracker (no store) is unchanged: pure
+// in-memory. See internal/budget/boltstore for the real implementation.
+type Store interface {
+	Load(ctx context.Context) (map[string]decimal.Decimal, error)
+	Save(ctx context.Context, keyID string, spent decimal.Decimal) error
+	Close() error
 }
 
-// NewTracker constructs an empty Tracker.
+// Tracker enforces a per-key cumulative USD spending cap. The zero value
+// is not usable; construct with NewTracker or NewTrackerWithStore. Safe
+// for concurrent use.
+type Tracker struct {
+	mu     sync.Mutex
+	spent  map[string]decimal.Decimal
+	store  Store // nil = pure in-memory, unchanged from before this RFC
+	logger *slog.Logger
+}
+
+// NewTracker constructs an empty, pure in-memory Tracker.
 func NewTracker() *Tracker {
 	return &Tracker{spent: make(map[string]decimal.Decimal)}
 }
 
+// NewTrackerWithStore constructs a Tracker backed by store: existing
+// spend is loaded immediately, so a restart resumes exactly where it left
+// off, and every subsequent Record call persists synchronously before
+// returning — no async-flush window, no data lost between a Record call
+// and a crash. logger defaults to slog.Default() if nil; it is used only
+// to report a Save failure (see Record's doc comment) — a persistence
+// failure never fails the request itself.
+func NewTrackerWithStore(ctx context.Context, store Store, logger *slog.Logger) (*Tracker, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	spent, err := store.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if spent == nil {
+		spent = make(map[string]decimal.Decimal)
+	}
+	return &Tracker{spent: spent, store: store, logger: logger}, nil
+}
+
 // Allow reports whether keyID has remaining budget under capUSD, given its
 // cumulative spend so far. capUSD <= 0 means unlimited (always true).
+// Never touches the store — the read path stays exactly as fast as before
+// persistence existed.
 func (t *Tracker) Allow(keyID string, capUSD decimal.Decimal) bool {
 	if capUSD.Sign() <= 0 {
 		return true
@@ -53,11 +87,35 @@ func (t *Tracker) Allow(keyID string, capUSD decimal.Decimal) bool {
 // observability finalization always runs" principle. A negative costUSD is
 // ignored: spend only ever accumulates upward, since a corrective credit
 // mechanism isn't part of this pass's scope.
+//
+// When a Store is configured, the new total is persisted synchronously
+// before Record returns. A persistence failure is logged
+// ("budget_persist_failed") and Record still returns normally — the
+// in-memory total is already correct for enforcement purposes; only this
+// one update's restart-durability is at risk, a real but non-fatal
+// degradation per docs/rfcs/2026-09-03-budget-persistence.md.
 func (t *Tracker) Record(keyID string, costUSD decimal.Decimal) {
 	if costUSD.Sign() < 0 {
 		return
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.spent[keyID] = t.spent[keyID].Add(costUSD)
+	newTotal := t.spent[keyID].Add(costUSD)
+	t.spent[keyID] = newTotal
+	t.mu.Unlock()
+
+	if t.store == nil {
+		return
+	}
+	if err := t.store.Save(context.Background(), keyID, newTotal); err != nil {
+		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
+	}
+}
+
+// Close releases the underlying store, if any. Safe to call even on a
+// Tracker constructed via NewTracker (no store).
+func (t *Tracker) Close() error {
+	if t.store == nil {
+		return nil
+	}
+	return t.store.Close()
 }
