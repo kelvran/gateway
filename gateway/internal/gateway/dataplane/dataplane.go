@@ -30,15 +30,25 @@ import (
 	"github.com/kelvran/gateway/internal/adapter"
 	"github.com/kelvran/gateway/internal/adapter/anthropic"
 	"github.com/kelvran/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/internal/budget"
 	"github.com/kelvran/gateway/internal/cache"
 	"github.com/kelvran/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/internal/identity"
 	"github.com/kelvran/gateway/internal/ratelimit"
 )
 
-// ErrRateLimited is returned by HandleChatCompletion when the caller has
-// exhausted the configured rate-limit token bucket.
+// ErrRateLimited is returned by HandleChatCompletion when the caller's
+// virtual key has exhausted its own rate-limit token bucket.
 var ErrRateLimited = errors.New("dataplane: rate limit exceeded")
+
+// ErrBudgetExceeded is returned when the caller's virtual key has spent at
+// least its configured BudgetUSD cap. See internal/budget.
+var ErrBudgetExceeded = errors.New("dataplane: budget exceeded")
+
+// ErrModelNotAllowed is returned when the caller's virtual key is
+// configured with a non-empty AllowedModels list that does not include the
+// requested model.
+var ErrModelNotAllowed = errors.New("dataplane: model not allowed for this virtual key")
 
 // Deployment is a resolved upstream route: a concrete provider/endpoint a
 // canonical model can be sent to, with its API key already resolved from
@@ -67,8 +77,18 @@ type UpstreamCaller func(ctx context.Context, dep Deployment, providerReq any) (
 // required except Logger and CacheTTL, which default to slog.Default()
 // and 5 minutes respectively.
 type Config struct {
-	Verifier       *identity.Verifier
-	Limiter        *ratelimit.TokenBucket
+	Verifier *identity.Verifier
+	// VirtualKeys are the same keys Verifier resolves against — passed
+	// separately (rather than exposing an accessor on Verifier) so
+	// NewPipeline can build one *ratelimit.TokenBucket per key without
+	// Verifier needing to know anything about rate limiting. Per
+	// docs/rfcs/2026-09-02-virtual-keys-budgets.md, callers (cmd/gateway)
+	// construct this slice once and pass it to both identity.NewVerifier
+	// and this field — they must describe the same set of keys.
+	VirtualKeys []identity.VirtualKey
+	// Budget tracks each virtual key's cumulative spend against its
+	// configured BudgetUSD cap. See internal/budget.
+	Budget         *budget.Tracker
 	Cache          cache.Cache
 	Adapters       adapter.Registry
 	Deployments    []Deployment
@@ -89,7 +109,8 @@ type Config struct {
 // Pipeline is the wired dataplane request pipeline.
 type Pipeline struct {
 	verifier           *identity.Verifier
-	limiter            *ratelimit.TokenBucket
+	limiters           map[string]*ratelimit.TokenBucket // keyed by identity.VirtualKey.ID
+	budget             *budget.Tracker
 	cache              cache.Cache
 	adapters           adapter.Registry
 	deploymentsByModel map[string][]Deployment
@@ -107,8 +128,10 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	switch {
 	case cfg.Verifier == nil:
 		return nil, fmt.Errorf("dataplane: Config.Verifier is required")
-	case cfg.Limiter == nil:
-		return nil, fmt.Errorf("dataplane: Config.Limiter is required")
+	case len(cfg.VirtualKeys) == 0:
+		return nil, fmt.Errorf("dataplane: Config.VirtualKeys must be non-empty")
+	case cfg.Budget == nil:
+		return nil, fmt.Errorf("dataplane: Config.Budget is required")
 	case cfg.Cache == nil:
 		return nil, fmt.Errorf("dataplane: Config.Cache is required")
 	case cfg.Adapters == nil:
@@ -126,6 +149,11 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		byModel[d.Model] = append(byModel[d.Model], d)
 	}
 
+	limiters := make(map[string]*ratelimit.TokenBucket, len(cfg.VirtualKeys))
+	for _, vk := range cfg.VirtualKeys {
+		limiters[vk.ID] = ratelimit.NewTokenBucket(vk.RateLimitBurst, vk.RateLimitRefill)
+	}
+
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -137,7 +165,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 
 	return &Pipeline{
 		verifier:           cfg.Verifier,
-		limiter:            cfg.Limiter,
+		limiters:           limiters,
+		budget:             cfg.Budget,
 		cache:              cfg.Cache,
 		adapters:           cfg.Adapters,
 		deploymentsByModel: byModel,
@@ -150,26 +179,62 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}, nil
 }
 
+// limiterFor returns keyID's rate limiter. Every identity.VirtualKey
+// Verify can ever resolve was present in Config.VirtualKeys at
+// construction time (both are built from the same slice by cmd/gateway),
+// so this map lookup is an established invariant, not a runtime
+// possibility to handle gracefully — a missing entry here means the
+// Verifier and Config.VirtualKeys were wired from two different slices,
+// which is a wiring bug that should fail loudly, not be silently patched
+// over.
+func (p *Pipeline) limiterFor(keyID string) *ratelimit.TokenBucket {
+	return p.limiters[keyID]
+}
+
+// isModelAllowed reports whether vk is permitted to request model. An
+// empty AllowedModels set means every configured model is allowed.
+func isModelAllowed(vk *identity.VirtualKey, model string) bool {
+	if len(vk.AllowedModels) == 0 {
+		return true
+	}
+	_, ok := vk.AllowedModels[model]
+	return ok
+}
+
 // HandleChatCompletion runs the full request pipeline for one canonical
 // ChatRequest, given the raw Authorization header value.
 func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, req adapter.ChatRequest) (resp adapter.ChatResponse, err error) {
-	var cacheHit bool
+	var (
+		cacheHit bool
+		vk       *identity.VirtualKey
+	)
 
 	defer func() {
-		p.logRequest(req, resp, cacheHit, err)
+		p.logRequest(vk, req, resp, cacheHit, err)
 	}()
 
-	if verifyErr := p.verifier.Verify(authorizationHeader); verifyErr != nil {
+	vk, verifyErr := p.verifier.Verify(authorizationHeader)
+	if verifyErr != nil {
 		err = fmt.Errorf("dataplane: auth: %w", verifyErr)
 		return
 	}
 
-	if !p.limiter.Allow() {
+	if !isModelAllowed(vk, req.Model) {
+		err = fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
+		return
+	}
+
+	if !p.limiterFor(vk.ID).Allow() {
 		err = ErrRateLimited
 		return
 	}
 
-	key := cache.Key(req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	if !p.budget.Allow(vk.ID, vk.BudgetUSD) {
+		err = ErrBudgetExceeded
+		return
+	}
+
+	key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
 
 	if cached, ok, getErr := p.cache.Get(ctx, key); getErr == nil && ok {
 		var cachedResp adapter.ChatResponse
@@ -267,17 +332,20 @@ func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
 }
 
 // logRequest emits the structured JSON log line for one request,
-// including the cost calculation on success. It is always called via
-// defer in HandleChatCompletion, so it runs even when err != nil — a
-// partial/failed generation still gets logged, per
-// gateway/ARCHITECTURE.md's "ALWAYS runs, even on error/cancel" note.
-func (p *Pipeline) logRequest(req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, err error) {
+// including the cost calculation and budget recording on success. It is
+// always called via defer in HandleChatCompletion, so it runs even when
+// err != nil — a partial/failed generation still gets logged, per
+// gateway/ARCHITECTURE.md's "ALWAYS runs, even on error/cancel" note. vk
+// is nil when auth itself failed (there is no resolved identity yet in
+// that case) — every other error path has a non-nil vk.
+func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, err error) {
+	fields := []any{"model", req.Model, "cache_hit", cacheHit}
+	if vk != nil {
+		fields = append(fields, "virtual_key_id", vk.ID)
+	}
+
 	if err != nil {
-		p.logger.Error("chat_completion",
-			"model", req.Model,
-			"cache_hit", cacheHit,
-			"error", err.Error(),
-		)
+		p.logger.Error("chat_completion", append(fields, "error", err.Error())...)
 		return
 	}
 
@@ -286,15 +354,17 @@ func (p *Pipeline) logRequest(req adapter.ChatRequest, resp adapter.ChatResponse
 		CompletionTokens: resp.Usage.CompletionTokens,
 		TotalTokens:      resp.Usage.TotalTokens,
 	})
+	if vk != nil {
+		p.budget.Record(vk.ID, cost)
+	}
 
-	p.logger.Info("chat_completion",
-		"model", req.Model,
-		"cache_hit", cacheHit,
+	fields = append(fields,
 		"prompt_tokens", resp.Usage.PromptTokens,
 		"completion_tokens", resp.Usage.CompletionTokens,
 		"total_tokens", resp.Usage.TotalTokens,
 		"cost_usd", cost,
 	)
+	p.logger.Info("chat_completion", fields...)
 }
 
 // serializeMessages deterministically encodes a request's messages for

@@ -11,10 +11,10 @@ import (
 	"github.com/kelvran/gateway/internal/adapter"
 	"github.com/kelvran/gateway/internal/adapter/gemini"
 	"github.com/kelvran/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/internal/budget"
 	"github.com/kelvran/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/internal/identity"
-	"github.com/kelvran/gateway/internal/ratelimit"
 )
 
 // realOpenAISSEStream is a minimal but genuine OpenAI streaming response:
@@ -34,15 +34,19 @@ func (nopCloserReader) Close() error { return nil }
 
 func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller, deployments []Deployment, adapters adapter.Registry) *Pipeline {
 	t.Helper()
-	verifier, err := identity.NewVerifier("test-key")
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	p, err := NewPipeline(Config{
-		Verifier: verifier,
-		Limiter:  ratelimit.NewTokenBucket(100, 100),
-		Cache:    inprocess.New(),
-		Adapters: adapters,
+		Verifier:    verifier,
+		VirtualKeys: keys,
+		Budget:      budget.NewTracker(),
+		Cache:       inprocess.New(),
+		Adapters:    adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {
 				return deployments
@@ -61,6 +65,142 @@ func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller,
 		t.Fatalf("NewPipeline: %v", err)
 	}
 	return p
+}
+
+func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream UpstreamStreamCaller, deployments []Deployment, adapters adapter.Registry, keys []identity.VirtualKey, tracker *budget.Tracker) *Pipeline {
+	t.Helper()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	p, err := NewPipeline(Config{
+		Verifier:    verifier,
+		VirtualKeys: keys,
+		Budget:      tracker,
+		Cache:       inprocess.New(),
+		Adapters:    adapters,
+		Deployments: func() []Deployment {
+			if deployments != nil {
+				return deployments
+			}
+			return []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+		}(),
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("non-streaming Upstream should never be called by a streaming test")
+			return nil, nil
+		},
+		UpstreamStream: upstreamStream,
+		Logger:         discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	return p
+}
+
+// TestHandleChatCompletionStreamModelNotAllowedCheckedFirst mirrors
+// dataplane_test.go's buffered-path equivalent for the streaming entry
+// point: allowed-models must be checked before rate-limit/budget, and
+// before ever touching UpstreamStream.
+func TestHandleChatCompletionStreamModelNotAllowedCheckedFirst(t *testing.T) {
+	keys := []identity.VirtualKey{{
+		ID:              "team-x",
+		KeyHash:         testHashOf("team-x-secret"),
+		RateLimitBurst:  0, // already exhausted
+		RateLimitRefill: 0,
+		BudgetUSD:       0.01,
+		AllowedModels:   map[string]struct{}{"gpt-4o-mini": {}},
+	}}
+	tracker := budget.NewTracker()
+	tracker.Record("team-x", 999)
+
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		t.Fatal("UpstreamStream must never be called for a model-not-allowed request")
+		return nil, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, tracker)
+
+	rec := httptest.NewRecorder()
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true,
+	}, rec)
+	if !errors.Is(err, ErrModelNotAllowed) {
+		t.Fatalf("err = %v, want ErrModelNotAllowed (must be checked before rate-limit/budget)", err)
+	}
+}
+
+// TestHandleChatCompletionStreamBudgetExceededRejectsBeforeUpstream mirrors
+// dataplane_test.go's buffered-path equivalent for the streaming entry
+// point.
+func TestHandleChatCompletionStreamBudgetExceededRejectsBeforeUpstream(t *testing.T) {
+	keys := []identity.VirtualKey{
+		{ID: "team-x", KeyHash: testHashOf("team-x-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: 0.01},
+	}
+	tracker := budget.NewTracker()
+	tracker.Record("team-x", 1.0)
+
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		t.Fatal("UpstreamStream must never be called once budget is exceeded")
+		return nil, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, tracker)
+
+	rec := httptest.NewRecorder()
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true,
+	}, rec)
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
+	}
+}
+
+// TestHandleChatCompletionStreamCacheIsolatedAcrossVirtualKeys is the
+// streaming-path mirror of dataplane_test.go's load-bearing
+// TestHandleChatCompletionCacheIsolatedAcrossVirtualKeys: two different
+// virtual keys streaming a byte-identical request must each get their own
+// cache entry, proven through the real tee-to-accumulator streaming path,
+// not just the buffered one.
+func TestHandleChatCompletionStreamCacheIsolatedAcrossVirtualKeys(t *testing.T) {
+	var upstreamCalls int
+	keys := []identity.VirtualKey{
+		{ID: "team-alpha", KeyHash: testHashOf("alpha-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+		{ID: "team-beta", KeyHash: testHashOf("beta-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		upstreamCalls++
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, budget.NewTracker())
+
+	req := adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "identical question"}},
+	}
+
+	rec1 := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", req, rec1); err != nil {
+		t.Fatalf("team-alpha first call: %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstreamCalls after team-alpha's first call = %d, want 1", upstreamCalls)
+	}
+
+	// team-beta's identical request must be a real cache MISS (a second
+	// real UpstreamStream call), not served from team-alpha's cache entry.
+	rec2 := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer beta-secret", req, rec2); err != nil {
+		t.Fatalf("team-beta first call: %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls after team-beta's first (should be a MISS) call = %d, want 2 — cross-tenant cache leakage", upstreamCalls)
+	}
+
+	// Each key's own SECOND identical request must now be a fake-streamed
+	// cache hit — upstreamCalls stays at 2.
+	rec3 := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", req, rec3); err != nil {
+		t.Fatalf("team-alpha second call: %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls after team-alpha's second (should be a HIT) call = %d, want still 2", upstreamCalls)
+	}
 }
 
 func TestHandleChatCompletionStreamCacheMissRealStream(t *testing.T) {

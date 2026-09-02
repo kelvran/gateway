@@ -21,9 +21,48 @@ func TestLoadExampleConfig(t *testing.T) {
 	if cfg.ListenAddr != ":8080" {
 		t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, ":8080")
 	}
-	if cfg.APIKeyEnv != "KELVRAN_GATEWAY_API_KEY" {
-		t.Errorf("APIKeyEnv = %q, want %q", cfg.APIKeyEnv, "KELVRAN_GATEWAY_API_KEY")
+
+	if len(cfg.VirtualKeys) != 2 {
+		t.Fatalf("len(VirtualKeys) = %d, want 2", len(cfg.VirtualKeys))
 	}
+	vkByName := map[string]VirtualKeyConfig{}
+	for _, vk := range cfg.VirtualKeys {
+		vkByName[vk.Name] = vk
+	}
+	alpha, ok := vkByName["team-alpha"]
+	if !ok {
+		t.Fatal("missing virtual key \"team-alpha\"")
+	}
+	if alpha.KeyHash != "6701a1ecc6b08958fa24e13f267aac7233d47f390e92e71f8cc8fb3144672cf1" {
+		t.Errorf("team-alpha.KeyHash = %q", alpha.KeyHash)
+	}
+	if alpha.BudgetUSD != 100.0 {
+		t.Errorf("team-alpha.BudgetUSD = %v, want 100.0", alpha.BudgetUSD)
+	}
+	if alpha.RateLimitBurst != 20 || alpha.RateLimitRefill != 10 {
+		t.Errorf("team-alpha rate limit = burst=%v refill=%v, want 20/10", alpha.RateLimitBurst, alpha.RateLimitRefill)
+	}
+	wantModels := []string{"claude-opus-4", "gpt-4o"}
+	if len(alpha.AllowedModels) != len(wantModels) {
+		t.Fatalf("team-alpha.AllowedModels = %v, want %v", alpha.AllowedModels, wantModels)
+	}
+	for i, m := range wantModels {
+		if alpha.AllowedModels[i] != m {
+			t.Errorf("team-alpha.AllowedModels[%d] = %q, want %q", i, alpha.AllowedModels[i], m)
+		}
+	}
+
+	beta, ok := vkByName["team-beta"]
+	if !ok {
+		t.Fatal("missing virtual key \"team-beta\"")
+	}
+	if beta.BudgetUSD != 0 {
+		t.Errorf("team-beta.BudgetUSD = %v, want 0 (unlimited)", beta.BudgetUSD)
+	}
+	if len(beta.AllowedModels) != 0 {
+		t.Errorf("team-beta.AllowedModels = %v, want empty (all models allowed)", beta.AllowedModels)
+	}
+
 	if len(cfg.Deployments) != 2 {
 		t.Fatalf("len(Deployments) = %d, want 2", len(cfg.Deployments))
 	}
@@ -67,21 +106,34 @@ func TestLoadExampleConfig(t *testing.T) {
 func TestLoadMissingRequiredField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	// Missing api_key_env.
+	// Missing virtual_keys entirely.
 	content := "listen_addr: \":8080\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
 	if _, err := Load(path); err == nil {
-		t.Fatal("Load with missing api_key_env returned nil error")
+		t.Fatal("Load with missing virtual_keys returned nil error")
+	}
+}
+
+func TestLoadRejectsVirtualKeyMissingHash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    budget_usd: 10.0\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a virtual key missing key_hash returned nil error")
 	}
 }
 
 func TestLoadRejectsDeploymentMissingFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	content := "listen_addr: \":8080\"\napi_key_env: \"K\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n"
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

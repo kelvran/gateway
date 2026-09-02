@@ -29,19 +29,19 @@ import (
 	"github.com/kelvran/gateway/internal/adapter/gemini"
 	"github.com/kelvran/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/internal/adapter/openaicompat"
+	"github.com/kelvran/gateway/internal/budget"
 	"github.com/kelvran/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/internal/identity"
-	"github.com/kelvran/gateway/internal/ratelimit"
 )
 
-// Rate-limit defaults for this pass. controlplane.Config carries no
-// rate-limit knobs yet (not specified by this scaffolding pass's plan);
-// these are conservative, documented placeholders, not a silent guess —
-// tuning them per deployment is Phase 1 work alongside the Redis-backed
-// distributed limiter.
+// Rate-limit defaults applied to any virtual key whose config doesn't
+// specify its own rate_limit section (RateLimitBurst/Refill both zero).
+// controlplane only parses what the config file says; applying a
+// fallback default is an operational concern that belongs here, not in
+// the parser.
 const (
 	defaultBurstCapacity   = 20
 	defaultRefillPerSecond = 10
@@ -84,11 +84,29 @@ func run(configPath string, logger *slog.Logger) error {
 // buildPipeline resolves every secret referenced by name in cfg from the
 // environment and wires the full dataplane.Pipeline.
 func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pipeline, error) {
-	gatewayAPIKey := os.Getenv(cfg.APIKeyEnv)
-	if gatewayAPIKey == "" {
-		return nil, fmt.Errorf("environment variable %q (gateway API key) is not set", cfg.APIKeyEnv)
+	virtualKeys := make([]identity.VirtualKey, 0, len(cfg.VirtualKeys))
+	for _, vk := range cfg.VirtualKeys {
+		burst, refill := vk.RateLimitBurst, vk.RateLimitRefill
+		if burst <= 0 && refill <= 0 {
+			burst, refill = defaultBurstCapacity, defaultRefillPerSecond
+		}
+		var allowedModels map[string]struct{}
+		if len(vk.AllowedModels) > 0 {
+			allowedModels = make(map[string]struct{}, len(vk.AllowedModels))
+			for _, m := range vk.AllowedModels {
+				allowedModels[m] = struct{}{}
+			}
+		}
+		virtualKeys = append(virtualKeys, identity.VirtualKey{
+			ID:              vk.Name,
+			KeyHash:         vk.KeyHash,
+			BudgetUSD:       vk.BudgetUSD,
+			AllowedModels:   allowedModels,
+			RateLimitBurst:  burst,
+			RateLimitRefill: refill,
+		})
 	}
-	verifier, err := identity.NewVerifier(gatewayAPIKey)
+	verifier, err := identity.NewVerifier(virtualKeys)
 	if err != nil {
 		return nil, fmt.Errorf("constructing identity verifier: %w", err)
 	}
@@ -128,7 +146,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 
 	return dataplane.NewPipeline(dataplane.Config{
 		Verifier:       verifier,
-		Limiter:        ratelimit.NewTokenBucket(defaultBurstCapacity, defaultRefillPerSecond),
+		VirtualKeys:    virtualKeys,
+		Budget:         budget.NewTracker(),
 		Cache:          inprocess.New(),
 		Adapters:       registry,
 		Deployments:    deployments,
@@ -218,8 +237,17 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey):
 		status = http.StatusUnauthorized
-	case errors.Is(err, dataplane.ErrRateLimited):
+	case errors.Is(err, dataplane.ErrRateLimited), errors.Is(err, dataplane.ErrBudgetExceeded):
+		// Both map to 429: OpenAI's own API returns 429 for both literal
+		// rate-limit failures and budget/quota ("insufficient_quota")
+		// failures, and Kelvran's canonical schema explicitly targets
+		// OpenAI-SDK client compatibility — see
+		// docs/rfcs/2026-09-02-virtual-keys-budgets.md's Alternatives
+		// Considered section. The two are distinguished by the error
+		// message body, not the status code.
 		status = http.StatusTooManyRequests
+	case errors.Is(err, dataplane.ErrModelNotAllowed):
+		status = http.StatusForbidden
 	case errors.Is(err, dataplane.ErrStreamingNotSupported):
 		status = http.StatusBadRequest
 	case errors.Is(err, dataplane.ErrStreamingNotConfigured):

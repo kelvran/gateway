@@ -30,7 +30,12 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
     /grpcserver/             — adapter #2 — DORMANT
     /grpcclient/             — adapter #3 — DORMANT
     /internal/               — cache-private: eviction policy, embedding index, storage engine
-/internal/identity          — virtual keys, teams, budgets, tenant resolution — zero deps upward
+/internal/identity          — virtual keys + per-key tenant resolution (real, hash-matched — ACTIVE);
+                             teams/hierarchical scope (org -> team -> user -> key -> session) remain
+                             target-only, per docs/rfcs/2026-09-02-virtual-keys-budgets.md's scope
+                             boundary — zero deps upward
+/internal/budget             — per-key cumulative USD spend tracking against an optional cap, in-memory
+                             only (no persistence across restarts yet) — ACTIVE
 /internal/provideradapter    — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger
 /internal/telemetry          — OTel helpers; the layer `evals` is allowed to depend on via api/
@@ -44,11 +49,14 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 
 ```
 gateway  → cache → { identity, telemetry, costaccounting }
-gateway  → { identity, provideradapter, costaccounting, telemetry }
+gateway  → { identity, budget, provideradapter, costaccounting, telemetry }
 cache    ✗→ provideradapter     (cache is provider-agnostic — keyed on normalized request, not on which
                                   upstream served it)
 cache    ✗→ gateway              (no back-references — this is what makes cache extractable later)
-{identity, telemetry, provideradapter, costaccounting} ✗→ gateway, cache   (shared kernel is a leaf)
+{identity, budget, telemetry, provideradapter, costaccounting} ✗→ gateway, cache   (shared kernel is a leaf)
+budget   ✗→ identity              (budget tracks by key ID string only — it doesn't need to know what a
+                                  VirtualKey is, only that it's a string; keeps both packages independently
+                                  testable and reusable)
 ```
 
 ## Request Lifecycle
@@ -89,7 +97,7 @@ Each adapter offers an `additionalModelRequestFields`-style escape hatch (mirror
 
 ## Cache Subsystem
 
-Cache is a package boundary, **not a network hop**, at every stage until (if ever) `docs/decisions/0002-cache-embedded-in-gateway.md`'s extraction triggers fire. Gateway's request pipeline only ever calls `cache.Cache.Get`/`Put` — never a concrete implementation. Internally: L1 (exact hash, BLAKE3/xxHash, in-process LRU + Redis), L2 (normalized-string match), L3 (embedding + HNSW ANN search, gated by an entity/number/date hard-gate and a freshness/risk model — never a bare similarity threshold; see `PRD.md`'s scope note that L3 must never ship without the hard-gate). Tenant namespace is baked into the vector-index partition itself and enforced at every hop (lookup, write, retry, fallback) — the design decision that defeats cross-tenant leakage.
+Cache is a package boundary, **not a network hop**, at every stage until (if ever) `docs/decisions/0002-cache-embedded-in-gateway.md`'s extraction triggers fire. Gateway's request pipeline only ever calls `cache.Cache.Get`/`Put` — never a concrete implementation. Internally: L1 (exact hash, BLAKE3/xxHash, in-process LRU + Redis — real today), L2 (normalized-string match — not built yet), L3 (embedding + HNSW ANN search, gated by an entity/number/date hard-gate and a freshness/risk model — never a bare similarity threshold; see `PRD.md`'s scope note that L3 must never ship without the hard-gate — not built yet). Tenant namespace is real for L1 today (`cache.Key()`'s leading `tenantID` parameter, per `docs/rfcs/2026-09-02-virtual-keys-budgets.md`) and will be baked into L3's vector-index partition itself the same way, enforced at every hop (lookup, write, retry, fallback) — the design decision that defeats cross-tenant leakage.
 
 ## MCP/A2A Subsystem
 

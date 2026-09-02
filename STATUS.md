@@ -2,7 +2,7 @@
 
 ## Status
 
-🟢 Initial code scaffolding + a deepened test suite + real SSE streaming (OpenAI, Anthropic), now with streaming's own test coverage brought to full parity (unit/integration ×2 providers/regression-golden/fuzz/benchmark/race) — all complete, verified, and **committed**. `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only). CI now exists (`.github/workflows/ci.yml`), not yet run against a real push.
+🟢 Initial code scaffolding + a deepened test suite + real SSE streaming + real multi-tenant virtual keys/budgets — all complete and verified. `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only). CI now exists (`.github/workflows/ci.yml`), not yet run against a real push. Virtual keys + budgets work is implemented and verified but **not yet committed**.
 
 ## IMPORTANT
 
@@ -14,11 +14,12 @@ Unreleased. Neither `gateway` nor `evals` has a tagged version yet — both have
 
 ## Current Phase
 
-Streaming (SSE) support, just landed on top of the initial scaffolding + deepened test suite. Same spec→plan→implement pipeline as scaffolding: `docs/rfcs/2026-09-02-streaming-support.md` (spec) → `docs/plans/2026-09-02-streaming-support.md` (5-task plan) → implementation (a new provider-agnostic `internal/streaming` package; real stateful `StreamDecoder`s for OpenAI and Anthropic; dataplane wiring for both cache-hit fake-streaming and cache-miss real tee-to-client-and-accumulator; 8 real end-to-end integration tests, including one against a genuine Anthropic-shaped mock SSE upstream). Gemini/Bedrock/openaicompat remain non-streaming, returning a typed `ErrStreamingNotSupported`.
+Virtual keys + per-key budgets/rate-limits/allowed-models, just landed on top of streaming + the initial scaffolding. Same spec→plan→implement pipeline: `docs/rfcs/2026-09-02-virtual-keys-budgets.md` (spec) → `docs/plans/2026-09-02-virtual-keys-budgets.md` (7-task plan) → implementation. Real multi-tenancy for the first time: hash-matched `identity.VirtualKey`s (config holds `key_hash`, never the raw secret), a new `internal/budget.Tracker`, one `ratelimit.TokenBucket` per key, and `cache.Key()`'s new tenant dimension — shipped in the SAME pass as multi-tenancy itself, so there's no window where more than one tenant existed without cache isolation. Breaking config change: `api_key_env` → `virtual_keys:` (see `docs/users/USER_GUIDE.md` §3).
 
 ## Verification State (measured, not assumed)
 
 - `make verify` (root) — **passes cleanly**: `golangci-lint run ./...` → `0 issues`; `ruff check .` → `All checks passed!`; `go build/test` → all packages `ok`; `uv run pytest tests/` → **43 passed, 4 skipped** (Docker-sandbox integration tests, skip-by-default unless `RUN_DOCKER_TESTS=1`; separately confirmed 4/4 passing against a real local Docker daemon).
+- Virtual keys + budgets, specifically: `cd gateway && go build ./... && go vet ./... && go test ./... -race && golangci-lint run ./...` → all packages `ok`, `0 issues`, race-clean. New/updated tests: `internal/identity` (11 tests, including hash-casing normalization), `internal/budget` (8 tests, including a 100-goroutine × 100-call concurrent-update race test), `internal/cache` (added the load-bearing cross-tenant isolation test + updated fuzz), `internal/gateway/controlplane` (virtual_keys parsing), `internal/gateway/dataplane` (9 new tests across the buffered and streaming paths — check-ordering, per-key rate-limit independence, budget rejection, and the load-bearing cache-isolation proof), and 3 new real end-to-end HTTP integration tests in `cmd/gateway` (model-not-allowed → 403, budget-exceeded → 429 distinguishable from rate-limit, cross-tenant cache isolation through the real HTTP path).
 - Streaming, specifically: `cd gateway && go build ./... && go vet ./... && go test ./... && golangci-lint run ./...` → all packages `ok`, `0 issues`. `cmd/gateway/integration_test.go` now has 8 real end-to-end HTTP tests (up from 4), including a real streaming request against a genuine OpenAI-shaped mock upstream, a genuine Anthropic-shaped mock upstream (typed `event:`/`data:` frames, no `[DONE]`, matching the real API), a streaming cache-hit (fake-streamed, second upstream call count stays at 1), and a streaming request to an unsupported provider returning a typed 400. One real bug found and fixed during this pass — see `DECISIONS.md`'s streaming line and `docs/agents/LOGS.md`'s latest entry.
 - Streaming test coverage then brought to full parity with every category the initial scaffolding's test-deepening pass established: `FuzzReaderNeverPanics` on the SSE reader (583,023 execs / 20s local run, no crash found), `BenchmarkReaderNext`/`BenchmarkWriteChunk` baselines (~114 ns/op and ~731 ns/op respectively on the dev machine — recorded, not gated), byte-exact golden tests pinning the outbound SSE wire format (both fields present and the null-vs-omitted distinction for `finish_reason` vs. `usage`), and `go test ./... -race` clean across the whole module.
 - Gateway now has real HTTP integration tests (full pipeline through `httptest`, mock upstream only), wire-format regression/golden fixtures for both real adapters, `go test -fuzz` on the cache-key fabricator and YAML config parser (both clean — no crashing input found after 20s each), and cache/rate-limiter benchmarks (recorded baselines, not gated).
@@ -29,11 +30,11 @@ Streaming (SSE) support, just landed on top of the initial scaffolding + deepene
 
 ## Last Completed Task
 
-Real SSE streaming support for `gateway`'s OpenAI and Anthropic adapters, implemented end-to-end (transport package → per-provider decoders → dataplane wiring → 8-test integration suite → docs/changelog), then a second pass closing every remaining test-coverage gap (fuzz, benchmark, byte-exact golden, second-provider integration coverage, `-race`) before considering the feature done — per `docs/plans/2026-09-02-streaming-support.md` and the founder's explicit "test end-to-end from every aspect before moving on" request. Fully committed. See `docs/agents/LOGS.md`'s two latest entries for full detail, including the one real bug found and fixed (Anthropic's `message_delta` was silently discarding `stop_reason`).
+Real multi-tenant virtual keys + per-key budgets/rate-limits/allowed-models for `gateway`, implemented end-to-end (identity rewrite → new budget package → cache tenant-namespacing → dataplane wiring → main.go + integration tests → docs/changelog) per `docs/plans/2026-09-02-virtual-keys-budgets.md`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
 ## Next Action
 
-No next feature has been decided yet. Distributed (Redis-backed) rate limiting is the other RFC-flagged candidate, but this needs the founder's explicit sequencing choice, same as streaming got, before starting.
+**Commit the virtual-keys-and-budgets work** — it is implemented and independently verified but still sitting uncommitted in the working tree. After that, no next feature has been decided: OTel/`agent_run_id` propagation, distributed (Redis-backed) rate limiting, and Cache's L2 layer remain open candidates, pending the founder's explicit choice.
 
 ## Release Runbook
 

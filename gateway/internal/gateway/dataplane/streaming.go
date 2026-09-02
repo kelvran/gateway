@@ -16,6 +16,7 @@ import (
 
 	"github.com/kelvran/gateway/internal/adapter"
 	"github.com/kelvran/gateway/internal/cache"
+	"github.com/kelvran/gateway/internal/identity"
 	"github.com/kelvran/gateway/internal/streaming"
 )
 
@@ -51,17 +52,27 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	var (
 		cacheHit bool
 		resp     adapter.ChatResponse
+		vk       *identity.VirtualKey
 	)
 	defer func() {
-		p.logRequest(req, resp, cacheHit, err)
+		p.logRequest(vk, req, resp, cacheHit, err)
 	}()
 
-	if verifyErr := p.verifier.Verify(authorizationHeader); verifyErr != nil {
+	vk, verifyErr := p.verifier.Verify(authorizationHeader)
+	if verifyErr != nil {
 		err = fmt.Errorf("dataplane: auth: %w", verifyErr)
 		return
 	}
-	if !p.limiter.Allow() {
+	if !isModelAllowed(vk, req.Model) {
+		err = fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
+		return
+	}
+	if !p.limiterFor(vk.ID).Allow() {
 		err = ErrRateLimited
+		return
+	}
+	if !p.budget.Allow(vk.ID, vk.BudgetUSD) {
+		err = ErrBudgetExceeded
 		return
 	}
 
@@ -71,7 +82,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	key := cache.Key(req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
 
 	if cached, ok, getErr := p.cache.Get(ctx, key); getErr == nil && ok {
 		var cachedResp adapter.ChatResponse

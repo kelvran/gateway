@@ -2,17 +2,19 @@ package dataplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"testing"
 
 	"github.com/kelvran/gateway/internal/adapter"
 	"github.com/kelvran/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/internal/budget"
 	"github.com/kelvran/gateway/internal/cache"
 	"github.com/kelvran/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/internal/identity"
-	"github.com/kelvran/gateway/internal/ratelimit"
 )
 
 // discardLogger silences log output during tests.
@@ -24,18 +26,35 @@ type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 
-func newTestPipeline(t *testing.T, upstream UpstreamCaller, deployments []Deployment) *Pipeline {
+// testHashOf is the test-only equivalent of what an operator does once
+// with `openssl rand -hex 32 | sha256sum` per
+// docs/rfcs/2026-09-02-virtual-keys-budgets.md.
+func testHashOf(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
+}
+
+// defaultTestVirtualKeys is a single virtual key (bearer secret "test-key",
+// ID "test-key") with an effectively-unlimited rate limit and no budget
+// cap — the common case for tests that don't care about limiting.
+func defaultTestVirtualKeys() []identity.VirtualKey {
+	return []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+}
+
+func newTestPipelineWithKeysAndBudget(t *testing.T, upstream UpstreamCaller, deployments []Deployment, keys []identity.VirtualKey, tracker *budget.Tracker) *Pipeline {
 	t.Helper()
 
-	verifier, err := identity.NewVerifier("test-key")
+	verifier, err := identity.NewVerifier(keys)
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-
 	p, err := NewPipeline(Config{
-		Verifier: verifier,
-		Limiter:  ratelimit.NewTokenBucket(100, 100), // effectively unlimited for these tests
-		Cache:    inprocess.New(),
+		Verifier:    verifier,
+		VirtualKeys: keys,
+		Budget:      tracker,
+		Cache:       inprocess.New(),
 		Adapters: adapter.Registry{
 			"openai": openai.New(),
 		},
@@ -48,6 +67,16 @@ func newTestPipeline(t *testing.T, upstream UpstreamCaller, deployments []Deploy
 		t.Fatalf("NewPipeline: %v", err)
 	}
 	return p
+}
+
+func newTestPipelineWithKeys(t *testing.T, upstream UpstreamCaller, deployments []Deployment, keys []identity.VirtualKey) *Pipeline {
+	t.Helper()
+	return newTestPipelineWithKeysAndBudget(t, upstream, deployments, keys, budget.NewTracker())
+}
+
+func newTestPipeline(t *testing.T, upstream UpstreamCaller, deployments []Deployment) *Pipeline {
+	t.Helper()
+	return newTestPipelineWithKeys(t, upstream, deployments, defaultTestVirtualKeys())
 }
 
 func fakeOpenAIResponse(model string) *openai.Response {
@@ -74,30 +103,17 @@ func TestHandleChatCompletionRejectsMissingAuth(t *testing.T) {
 }
 
 func TestHandleChatCompletionRejectsRateLimited(t *testing.T) {
-	verifier, err := identity.NewVerifier("test-key")
-	if err != nil {
-		t.Fatalf("NewVerifier: %v", err)
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 0, RateLimitRefill: 0}, // always empty
 	}
-	p, err := NewPipeline(Config{
-		Verifier: verifier,
-		Limiter:  ratelimit.NewTokenBucket(0, 0), // zero burst, zero refill: always empty
-		Cache:    inprocess.New(),
-		Adapters: adapter.Registry{"openai": openai.New()},
-		Deployments: []Deployment{
-			{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
-		},
-		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
-		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
-			t.Fatal("upstream should never be called when rate-limited")
-			return nil, nil
-		},
-		Logger: discardLogger(),
-	})
-	if err != nil {
-		t.Fatalf("NewPipeline: %v", err)
-	}
+	p := newTestPipelineWithKeys(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		t.Fatal("upstream should never be called when rate-limited")
+		return nil, nil
+	}, []Deployment{
+		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}, keys)
 
-	_, err = p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"})
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"})
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err = %v, want ErrRateLimited", err)
 	}
@@ -172,6 +188,134 @@ func TestHandleChatCompletionNoDeploymentForModel(t *testing.T) {
 	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "unknown-model"})
 	if err == nil {
 		t.Fatal("expected an error for an unconfigured model")
+	}
+}
+
+// TestHandleChatCompletionModelNotAllowedCheckedBeforeRateLimitAndBudget
+// proves the check ordering docs/rfcs/2026-09-02-virtual-keys-budgets.md
+// specifies: allowed-models is checked first. The virtual key here also
+// has its rate limit AND budget already exhausted — if the allowed-models
+// check ran anywhere other than first, this request would fail with
+// ErrRateLimited or ErrBudgetExceeded instead, silently hiding which rule
+// actually applies.
+func TestHandleChatCompletionModelNotAllowedCheckedBeforeRateLimitAndBudget(t *testing.T) {
+	keys := []identity.VirtualKey{{
+		ID:              "team-x",
+		KeyHash:         testHashOf("team-x-secret"),
+		RateLimitBurst:  0, // already exhausted
+		RateLimitRefill: 0,
+		BudgetUSD:       0.01,
+		AllowedModels:   map[string]struct{}{"gpt-4o-mini": {}},
+	}}
+	tracker := budget.NewTracker()
+	tracker.Record("team-x", 999) // already over budget too
+
+	p := newTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		t.Fatal("upstream must never be called for a model-not-allowed request")
+		return nil, nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys, tracker)
+
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	if !errors.Is(err, ErrModelNotAllowed) {
+		t.Fatalf("err = %v, want ErrModelNotAllowed (must be checked before rate-limit/budget)", err)
+	}
+}
+
+// TestHandleChatCompletionPerKeyRateLimitsAreIndependent proves exhausting
+// one virtual key's rate limit never affects another key's — the whole
+// point of moving from one global bucket to a per-key map of buckets.
+func TestHandleChatCompletionPerKeyRateLimitsAreIndependent(t *testing.T) {
+	keys := []identity.VirtualKey{
+		{ID: "exhausted", KeyHash: testHashOf("exhausted-secret"), RateLimitBurst: 0, RateLimitRefill: 0},
+		{ID: "fresh", KeyHash: testHashOf("fresh-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	p := newTestPipelineWithKeys(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys)
+
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer exhausted-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("exhausted key: err = %v, want ErrRateLimited", err)
+	}
+
+	_, err = p.HandleChatCompletion(context.Background(), "Bearer fresh-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("fresh key was blocked by the exhausted key's rate limit: %v", err)
+	}
+}
+
+// TestHandleChatCompletionBudgetExceededRejectsBeforeUpstream proves a
+// key that has already spent its cap is rejected with ErrBudgetExceeded
+// and never reaches the upstream call.
+func TestHandleChatCompletionBudgetExceededRejectsBeforeUpstream(t *testing.T) {
+	keys := []identity.VirtualKey{
+		{ID: "team-x", KeyHash: testHashOf("team-x-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: 0.01},
+	}
+	tracker := budget.NewTracker()
+	tracker.Record("team-x", 1.0) // already well over the 0.01 cap
+
+	p := newTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		t.Fatal("upstream must never be called once budget is exceeded")
+		return nil, nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys, tracker)
+
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
+	}
+}
+
+// TestHandleChatCompletionCacheIsolatedAcrossVirtualKeys is the
+// load-bearing test for this whole feature: two different virtual keys
+// sending a byte-identical request must each get their own cache entry —
+// the second key's first request must be a MISS (reaching upstream), not
+// a HIT off the first key's cached response. This proves cache.Key's new
+// tenant dimension (unit-tested in isolation in internal/cache/key_test.go)
+// is actually wired through end-to-end from HandleChatCompletion.
+func TestHandleChatCompletionCacheIsolatedAcrossVirtualKeys(t *testing.T) {
+	var upstreamCalls int
+	keys := []identity.VirtualKey{
+		{ID: "team-alpha", KeyHash: testHashOf("alpha-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+		{ID: "team-beta", KeyHash: testHashOf("beta-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	p := newTestPipelineWithKeys(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys)
+
+	req := adapter.ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []adapter.Message{{Role: "user", Content: "identical question"}},
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-secret", req); err != nil {
+		t.Fatalf("team-alpha first call: %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstreamCalls after team-alpha's first call = %d, want 1", upstreamCalls)
+	}
+
+	// team-beta's identical request must be a cache MISS against
+	// team-alpha's entry — the load-bearing assertion.
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", req); err != nil {
+		t.Fatalf("team-beta first call: %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls after team-beta's first (should be a MISS) call = %d, want 2 — cross-tenant cache leakage", upstreamCalls)
+	}
+
+	// Each key's own SECOND identical request must now be a cache hit.
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-secret", req); err != nil {
+		t.Fatalf("team-alpha second call: %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls after team-alpha's second (should be a HIT) call = %d, want still 2", upstreamCalls)
+	}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", req); err != nil {
+		t.Fatalf("team-beta second call: %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls after team-beta's second (should be a HIT) call = %d, want still 2", upstreamCalls)
 	}
 }
 

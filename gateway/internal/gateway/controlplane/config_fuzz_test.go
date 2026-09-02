@@ -45,6 +45,7 @@ func FuzzLoad(f *testing.F) {
 	f.Add([]byte("unterminated quote: \"never closes\n"))
 	f.Add([]byte("nul\x00byte: value\n"))
 	f.Add([]byte("listen_addr: \":8080\"\napi_key_env: \"K\"\nprice_table:\n  m:\n    prompt_per_token: \"not-a-number\"\n"))
+	f.Add([]byte("listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: 10.0\n    rate_limit:\n      burst: 5\n      refill_per_second: 1\n    allowed_models:\n      gpt-4o: true\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		dir := t.TempDir()

@@ -25,6 +25,7 @@ func FuzzKey(f *testing.F) {
 	// is "\x00" — and non-UTF8 bytes) that are the actual failure modes a
 	// cache-key fabricator should be robust against.
 	type seed struct {
+		tenantID  string
 		model     string
 		messages  string
 		hasTemp   bool
@@ -33,16 +34,16 @@ func FuzzKey(f *testing.F) {
 		maxTok    int64
 	}
 	seeds := []seed{
-		{model: "gpt-4o", messages: `[{"role":"user","content":"hi"}]`, hasTemp: true, temp: 0.5, hasMaxTok: true, maxTok: 100},
-		{model: "", messages: "", hasTemp: false, hasMaxTok: false},
-		{model: "claude-opus-4", messages: "\x00embedded\x00nulls\x00", hasTemp: true, temp: -1.5, hasMaxTok: true, maxTok: -1},
-		{model: "gpt-4o-mini", messages: `not even json`, hasTemp: false, hasMaxTok: true, maxTok: 0},
+		{tenantID: "team-alpha", model: "gpt-4o", messages: `[{"role":"user","content":"hi"}]`, hasTemp: true, temp: 0.5, hasMaxTok: true, maxTok: 100},
+		{tenantID: "", model: "", messages: "", hasTemp: false, hasMaxTok: false},
+		{tenantID: "team-beta", model: "claude-opus-4", messages: "\x00embedded\x00nulls\x00", hasTemp: true, temp: -1.5, hasMaxTok: true, maxTok: -1},
+		{tenantID: "\x00tenant\x00with\x00nulls", model: "gpt-4o-mini", messages: `not even json`, hasTemp: false, hasMaxTok: true, maxTok: 0},
 	}
 	for _, s := range seeds {
-		f.Add(s.model, s.messages, s.hasTemp, s.temp, s.hasMaxTok, s.maxTok)
+		f.Add(s.tenantID, s.model, s.messages, s.hasTemp, s.temp, s.hasMaxTok, s.maxTok)
 	}
 
-	f.Fuzz(func(t *testing.T, model, messages string, hasTemp bool, temp float64, hasMaxTok bool, maxTok int64) {
+	f.Fuzz(func(t *testing.T, tenantID, model, messages string, hasTemp bool, temp float64, hasMaxTok bool, maxTok int64) {
 		var tempPtr *float64
 		if hasTemp {
 			tempPtr = &temp
@@ -56,14 +57,14 @@ func FuzzKey(f *testing.F) {
 		// Property 1: never panics. If Key panics on any input, the
 		// fuzz engine reports it as a failure; there is nothing further
 		// to assert here beyond "the call returns."
-		k1 := Key(model, messages, tempPtr, maxTokPtr)
+		k1 := Key(tenantID, model, messages, tempPtr, maxTokPtr)
 
 		// Property 2: deterministic. The exact same arguments must
 		// produce the exact same key on a second call.
-		k2 := Key(model, messages, tempPtr, maxTokPtr)
+		k2 := Key(tenantID, model, messages, tempPtr, maxTokPtr)
 		if k1 != k2 {
-			t.Fatalf("Key is not deterministic for model=%q messages=%q temp=%v maxTok=%v: %q != %q",
-				model, messages, tempPtr, maxTokPtr, k1, k2)
+			t.Fatalf("Key is not deterministic for tenant=%q model=%q messages=%q temp=%v maxTok=%v: %q != %q",
+				tenantID, model, messages, tempPtr, maxTokPtr, k1, k2)
 		}
 
 		// A hex-encoded SHA-256 digest is always exactly 64 hex chars;

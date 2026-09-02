@@ -57,14 +57,37 @@ type ModelPriceConfig struct {
 	CompletionPerToken float64
 }
 
+// VirtualKeyConfig is one statically-configured virtual key, per
+// docs/rfcs/2026-09-02-virtual-keys-budgets.md. KeyHash is the hex-encoded
+// SHA-256 digest of the actual secret bearer token — never the raw secret
+// — since a virtual key is a credential Kelvran itself issues, not a
+// third party's credential it must protect on someone else's behalf (see
+// that RFC's "Why hashes, not env-var names" section).
+type VirtualKeyConfig struct {
+	// Name uniquely identifies this key within the config file.
+	Name string
+	// KeyHash is the hex-encoded SHA-256 digest of the actual secret.
+	KeyHash string
+	// BudgetUSD is this key's cumulative spending cap. Zero means
+	// unlimited.
+	BudgetUSD float64
+	// AllowedModels restricts this key to a subset of configured models.
+	// Empty means every configured model is allowed.
+	AllowedModels []string
+	// RateLimitBurst and RateLimitRefill configure this key's own
+	// token-bucket rate limiter. Zero means "use the gateway's default"
+	// (resolved by cmd/gateway, not here — this package only parses what
+	// the config file says, it doesn't own operational defaults).
+	RateLimitBurst  float64
+	RateLimitRefill float64
+}
+
 // Config is the gateway's fully-parsed static configuration.
 type Config struct {
 	// ListenAddr is the address http.ListenAndServe binds to (e.g. ":8080").
 	ListenAddr string
-	// APIKeyEnv is the name of the environment variable holding the
-	// gateway's own single static virtual key (see internal/identity).
-	// Never the raw key value.
-	APIKeyEnv string
+	// VirtualKeys are the configured tenants (see internal/identity).
+	VirtualKeys []VirtualKeyConfig
 	// Deployments are the configured upstream routes.
 	Deployments []DeploymentConfig
 	// PriceTable is the static per-model cost table.
@@ -90,10 +113,36 @@ func Load(path string) (*Config, error) {
 	if !ok || cfg.ListenAddr == "" {
 		return nil, fmt.Errorf("controlplane: config missing required field %q", "listen_addr")
 	}
-	cfg.APIKeyEnv, ok = getString(root, "api_key_env")
-	if !ok || cfg.APIKeyEnv == "" {
-		return nil, fmt.Errorf("controlplane: config missing required field %q", "api_key_env")
+	virtualKeysRaw, ok := getMap(root, "virtual_keys")
+	if !ok || len(virtualKeysRaw) == 0 {
+		return nil, fmt.Errorf("controlplane: config must declare at least one virtual key under %q", "virtual_keys")
 	}
+	for name, raw := range virtualKeysRaw {
+		vkMap, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("controlplane: virtual key %q must be a mapping", name)
+		}
+		vk := VirtualKeyConfig{Name: name}
+		vk.KeyHash, _ = getString(vkMap, "key_hash")
+		if vk.KeyHash == "" {
+			return nil, fmt.Errorf("controlplane: virtual key %q is missing required field %q", name, "key_hash")
+		}
+		vk.BudgetUSD, _ = getFloat(vkMap, "budget_usd")
+		if rl, ok := getMap(vkMap, "rate_limit"); ok {
+			vk.RateLimitBurst, _ = getFloat(rl, "burst")
+			vk.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
+		}
+		if am, ok := getMap(vkMap, "allowed_models"); ok {
+			for model, v := range am {
+				if enabled, ok := v.(bool); ok && enabled {
+					vk.AllowedModels = append(vk.AllowedModels, model)
+				}
+			}
+			sort.Strings(vk.AllowedModels)
+		}
+		cfg.VirtualKeys = append(cfg.VirtualKeys, vk)
+	}
+	sort.Slice(cfg.VirtualKeys, func(i, j int) bool { return cfg.VirtualKeys[i].Name < cfg.VirtualKeys[j].Name })
 
 	deploymentsRaw, ok := getMap(root, "deployments")
 	if !ok || len(deploymentsRaw) == 0 {

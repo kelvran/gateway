@@ -14,6 +14,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +30,16 @@ import (
 	"github.com/kelvran/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/internal/gateway/controlplane"
 )
+
+// testKeyHash is the test-only equivalent of what an operator does once
+// with `openssl rand -hex 32 | sha256sum` per
+// docs/rfcs/2026-09-02-virtual-keys-budgets.md: config holds the hash of
+// the secret, never the secret itself. Tests still send the raw secret in
+// the Authorization header, exactly like a real client would.
+func testKeyHash(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
+}
 
 // newMockUpstream starts an httptest.Server that speaks OpenAI's actual
 // Chat Completions wire format (a real JSON response shape, not a
@@ -84,14 +96,54 @@ func newMockUpstream(t *testing.T) (*httptest.Server, *atomic.Int64) {
 // from newMockUpstream instead of a real provider.
 func newIntegrationServer(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvVar string) *httptest.Server {
 	t.Helper()
-
-	const apiKeyEnv = "KELVRAN_INTEGRATION_TEST_GATEWAY_KEY"
-	t.Setenv(apiKeyEnv, gatewayKey)
 	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
 
 	cfg := &controlplane.Config{
 		ListenAddr: ":0",
-		APIKeyEnv:  apiKeyEnv,
+		VirtualKeys: []controlplane.VirtualKeyConfig{
+			{Name: "test-key", KeyHash: testKeyHash(gatewayKey), RateLimitBurst: 100, RateLimitRefill: 100},
+		},
+		Deployments: []controlplane.DeploymentConfig{
+			{
+				Name:          "gpt4o-primary",
+				Model:         "gpt-4o",
+				Provider:      "openai",
+				UpstreamModel: "gpt-4o",
+				BaseURL:       upstreamURL,
+				APIKeyEnv:     upstreamKeyEnvVar,
+			},
+		},
+		PriceTable: map[string]controlplane.ModelPriceConfig{
+			"gpt-4o": {PromptPerToken: 0.0000025, CompletionPerToken: 0.00001},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pipeline, err := buildPipeline(cfg, logger)
+	if err != nil {
+		t.Fatalf("buildPipeline: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newIntegrationServerMultiKey is a general-purpose variant of
+// newIntegrationServer for tests that need full control over multiple
+// virtual keys' configuration (allowed_models, budget_usd, rate limits) —
+// used by the model-not-allowed, budget-exceeded, and cross-tenant
+// cache-isolation integration tests below.
+func newIntegrationServerMultiKey(t *testing.T, upstreamURL, upstreamKeyEnvVar string, keys []controlplane.VirtualKeyConfig) *httptest.Server {
+	t.Helper()
+	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
+
+	cfg := &controlplane.Config{
+		ListenAddr:  ":0",
+		VirtualKeys: keys,
 		Deployments: []controlplane.DeploymentConfig{
 			{
 				Name:          "gpt4o-primary",
@@ -409,14 +461,13 @@ func newMockAnthropicStreamingUpstream(t *testing.T) (*httptest.Server, *atomic.
 // provider must fail before any upstream call is attempted.
 func newIntegrationServerWithProvider(t *testing.T, gatewayKey, upstreamKeyEnvVar, provider, model string) *httptest.Server {
 	t.Helper()
-
-	const apiKeyEnv = "KELVRAN_INTEGRATION_TEST_GATEWAY_KEY_PROVIDER"
-	t.Setenv(apiKeyEnv, gatewayKey)
 	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
 
 	cfg := &controlplane.Config{
 		ListenAddr: ":0",
-		APIKeyEnv:  apiKeyEnv,
+		VirtualKeys: []controlplane.VirtualKeyConfig{
+			{Name: "test-key", KeyHash: testKeyHash(gatewayKey), RateLimitBurst: 100, RateLimitRefill: 100},
+		},
 		Deployments: []controlplane.DeploymentConfig{
 			{
 				Name:          "provider-primary",
@@ -450,14 +501,13 @@ func newIntegrationServerWithProvider(t *testing.T, gatewayKey, upstreamKeyEnvVa
 // its stateful StreamDecoder, not just OpenAI's.
 func newIntegrationServerAnthropic(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvVar string) *httptest.Server {
 	t.Helper()
-
-	const apiKeyEnv = "KELVRAN_INTEGRATION_TEST_GATEWAY_KEY_ANTHROPIC"
-	t.Setenv(apiKeyEnv, gatewayKey)
 	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
 
 	cfg := &controlplane.Config{
 		ListenAddr: ":0",
-		APIKeyEnv:  apiKeyEnv,
+		VirtualKeys: []controlplane.VirtualKeyConfig{
+			{Name: "test-key", KeyHash: testKeyHash(gatewayKey), RateLimitBurst: 100, RateLimitRefill: 100},
+		},
 		Deployments: []controlplane.DeploymentConfig{
 			{
 				Name:          "claude-primary",
@@ -678,5 +728,145 @@ func TestIntegrationStreamingUnsupportedProviderReturnsBadRequest(t *testing.T) 
 	if resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusBadRequest, body)
+	}
+}
+
+// TestIntegrationModelNotAllowedReturnsForbidden drives the real HTTP
+// error path for a virtual key configured with a non-empty
+// allowed_models list that doesn't include the requested model: 403,
+// never reaching the mock upstream.
+func TestIntegrationModelNotAllowedReturnsForbidden(t *testing.T) {
+	upstream, calls := newMockUpstream(t)
+	gw := newIntegrationServerMultiKey(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_I", []controlplane.VirtualKeyConfig{
+		{Name: "team-restricted", KeyHash: testKeyHash("restricted-secret"), RateLimitBurst: 100, RateLimitRefill: 100, AllowedModels: []string{"gpt-4o-mini"}},
+	})
+
+	reqBody := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer restricted-secret")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusForbidden, body)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("mock upstream calls = %d, want 0 (a model-not-allowed request must never reach upstream)", got)
+	}
+}
+
+// TestIntegrationBudgetExceededReturns429DistinctFromRateLimit drives the
+// real HTTP path for a virtual key that spends past its configured
+// BudgetUSD cap: the second request (which pushes cumulative spend over
+// the tiny configured cap) must fail with 429, distinguishable from a
+// rate-limit 429 by its error message body, and never reach the mock
+// upstream a second time.
+func TestIntegrationBudgetExceededReturns429DistinctFromRateLimit(t *testing.T) {
+	upstream, calls := newMockUpstream(t)
+	gw := newIntegrationServerMultiKey(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_J", []controlplane.VirtualKeyConfig{
+		// The mock upstream always returns usage 7 prompt + 4 completion
+		// tokens, costing 7*0.0000025 + 4*0.00001 = 0.0000575 USD per
+		// request against this test's price_table. A cap of 0.00001
+		// lets the FIRST request through (spend starts at 0) but rejects
+		// the second (0.0000575 already spent > the 0.00001 cap).
+		{Name: "team-tiny-budget", KeyHash: testKeyHash("tiny-budget-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: 0.00001},
+	})
+
+	doRequest := func() (int, string) {
+		reqBody := `{"model":"gpt-4o","messages":[{"role":"user","content":"spend some budget"}]}`
+		httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		httpReq.Header.Set("Authorization", "Bearer tiny-budget-secret")
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+
+	status1, body1 := doRequest()
+	if status1 != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200; body: %s", status1, body1)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("mock upstream calls after first request = %d, want 1", got)
+	}
+
+	status2, body2 := doRequest()
+	if status2 != http.StatusTooManyRequests {
+		t.Fatalf("second request status = %d, want %d (budget exceeded); body: %s", status2, http.StatusTooManyRequests, body2)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("mock upstream calls after second (budget-exceeded) request = %d, want still 1", got)
+	}
+	if !strings.Contains(body2, "budget") {
+		t.Errorf("budget-exceeded error body = %q, want it to mention \"budget\" so it's distinguishable from a rate-limit 429", body2)
+	}
+}
+
+// TestIntegrationTwoVirtualKeysDoNotShareCacheEntries is the real-HTTP
+// mirror of dataplane_test.go's load-bearing
+// TestHandleChatCompletionCacheIsolatedAcrossVirtualKeys: two different
+// valid keys sending a byte-identical request each independently get a
+// 200, and the mock upstream's call counter must read 2 (not 1) after
+// both keys' first request — proving no accidental cross-tenant cache
+// sharing through the real HTTP path, not just the dataplane unit test.
+func TestIntegrationTwoVirtualKeysDoNotShareCacheEntries(t *testing.T) {
+	upstream, calls := newMockUpstream(t)
+	gw := newIntegrationServerMultiKey(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_K", []controlplane.VirtualKeyConfig{
+		{Name: "team-alpha", KeyHash: testKeyHash("alpha-http-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+		{Name: "team-beta", KeyHash: testKeyHash("beta-http-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+	})
+
+	reqBody := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"identical across tenants"}]}`)
+	doRequest := func(bearer string) int {
+		httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader(reqBody))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+bearer)
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.ReadAll(resp.Body)
+		return resp.StatusCode
+	}
+
+	if status := doRequest("alpha-http-secret"); status != http.StatusOK {
+		t.Fatalf("team-alpha first request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls after team-alpha's first request = %d, want 1", got)
+	}
+
+	// team-beta's identical request must be a real MISS (a second real
+	// upstream call), not served from team-alpha's cache entry.
+	if status := doRequest("beta-http-secret"); status != http.StatusOK {
+		t.Fatalf("team-beta first request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls after team-beta's first (should be a MISS) request = %d, want 2 — cross-tenant cache leakage", got)
+	}
+
+	// Each key's own second identical request is now a cache hit.
+	if status := doRequest("alpha-http-secret"); status != http.StatusOK {
+		t.Fatalf("team-alpha second request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls after team-alpha's second (should be a HIT) request = %d, want still 2", got)
 	}
 }

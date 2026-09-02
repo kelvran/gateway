@@ -12,9 +12,32 @@ Decide your topology: local dev (Docker Compose) or production (Kubernetes) — 
 
 See `docs/operations/PROVIDERS.md` for the full list of supported providers and what each one needs. Secrets handling: environment variables or a secrets manager only, never a committed config file — see `SECURITY.md`.
 
-## 3. Virtual Keys, Teams, and Budgets
+## 3. Virtual Keys and Budgets
 
-*(Not implemented yet — Phase 1 per `gateway/ARCHITECTURE.md`'s roadmap.)* Intended model: a virtual key belongs to a team, inherits that team's budget/rate-limit ceiling unless overridden, and can be scoped to specific models. Spend is tracked per key and per team; keys can be rotated or revoked without affecting other keys on the same team.
+Real and implemented, per `docs/rfcs/2026-09-02-virtual-keys-budgets.md`. Generate a key yourself — Kelvran never generates or stores the raw secret, only its hash:
+
+```bash
+openssl rand -hex 32                          # this is the secret — give it to the caller, keep it out of config
+printf '%s' '<that secret>' | sha256sum        # this hash goes in config.yaml as key_hash
+```
+
+Add it to `config.yaml` under `virtual_keys:`:
+
+```yaml
+virtual_keys:
+  team-alpha:
+    key_hash: "<the sha256 hash from above>"
+    budget_usd: 100.0          # optional; omit or 0 for unlimited
+    rate_limit:
+      burst: 20
+      refill_per_second: 10
+    allowed_models:            # optional; omit for "every configured model"
+      gpt-4o: true
+```
+
+Clients authenticate with `Authorization: Bearer <the raw secret>` — never the hash. Budget and rate-limit state are tracked **in memory only** and reset on restart; there is no persistent control-plane store yet (see `STATUS.md`/`DECISIONS.md`). A key that exceeds its budget gets HTTP 429 (distinguishable from a rate-limit 429 only by the error message body, per that RFC's OpenAI-SDK-compatibility rationale); a request for a model outside `allowed_models` gets HTTP 403.
+
+**Not implemented yet:** the "teams" hierarchy (a key inheriting a team's budget/rate-limit ceiling) and live, no-restart key provisioning — both remain flat, single-level, static-YAML-only for now, per that RFC's explicit scope boundary.
 
 ## 4. Routing & Failover Configuration
 

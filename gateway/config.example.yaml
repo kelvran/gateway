@@ -10,10 +10,35 @@
 
 listen_addr: ":8080"
 
-# The gateway's own virtual key. Clients must send
-# "Authorization: Bearer <value of this env var>". This pass implements
-# exactly one configured key, single-tenant — see internal/identity.
-api_key_env: "KELVRAN_GATEWAY_API_KEY"
+# Virtual keys are Kelvran-issued tenant credentials, not third-party
+# secrets — the config holds the SHA-256 hash of each key's actual secret,
+# never the secret itself. Generate a real key with:
+#   openssl rand -hex 32                          # the secret you keep
+#   printf '%s' '<that secret>' | sha256sum        # key_hash goes below
+# Clients send "Authorization: Bearer <the raw secret, never the hash>".
+# See docs/rfcs/2026-09-02-virtual-keys-budgets.md and
+# docs/users/USER_GUIDE.md for the full design. The two hashes below are
+# real SHA-256 digests of the made-up example secrets
+# "example-team-alpha-secret-do-not-use" and
+# "example-team-beta-secret-do-not-use" — safe to commit, since a hash of
+# a random secret discloses nothing about the secret itself, but these
+# specific example secrets are public (they're right here in this
+# comment) and must never be used for anything real.
+virtual_keys:
+  team-alpha:
+    key_hash: "6701a1ecc6b08958fa24e13f267aac7233d47f390e92e71f8cc8fb3144672cf1"
+    budget_usd: 100.0
+    rate_limit:
+      burst: 20
+      refill_per_second: 10
+    allowed_models:
+      gpt-4o: true
+      claude-opus-4: true
+
+  team-beta:
+    # No budget_usd/rate_limit/allowed_models: unlimited budget, the
+    # gateway's default rate limit, and every configured model allowed.
+    key_hash: "8e43f8e74a4151a23f77bd21474a038434c56bad8c5d8bc7bb2af0d14fa95095"
 
 # Deployments route a canonical, client-facing model name to a concrete
 # upstream provider/model/endpoint. Multiple deployments may share the
