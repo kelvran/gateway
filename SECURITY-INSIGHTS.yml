@@ -1,0 +1,61 @@
+header:
+  schema-version: "2.0.0"
+  expiration-date: "2027-09-02T00:00:00.000Z"
+  last-updated: "2026-09-02"
+  last-reviewed: "2026-09-02"
+  commit-hash: null
+  project-url: "https://github.com/kelvran/gateway"
+  project-release: null
+  changelog: "https://github.com/kelvran/gateway/tree/main/changelog"
+  license: "https://github.com/kelvran/gateway/blob/main/LICENSE"
+
+project-lifecycle:
+  status: "active"
+  bug-fixes-only: false
+  core-maintainers: []
+  roadmap: "https://github.com/kelvran/gateway/blob/main/PRD.md"
+
+contribution-policy:
+  accepts-pull-requests: true
+  accepts-automated-pull-requests: false
+  contributing-policy: "https://github.com/kelvran/gateway/blob/main/CONTRIBUTING.md"
+  code-of-conduct: "https://github.com/kelvran/gateway/blob/main/CODE_OF_CONDUCT.md"
+
+dependencies:
+  third-party-packages: true
+  dependencies-lists:
+    - "https://github.com/kelvran/gateway/blob/main/go.sum"
+    - "https://github.com/kelvran/evals/blob/main/uv.lock"
+  sbom:
+    - sbom-file: null
+      sbom-format: "SPDX"
+      sbom-url: null
+
+distribution-points:
+  - "https://github.com/kelvran/gateway"
+  - "https://pypi.org/project/kelvran-evals/"
+
+documentation:
+  - "https://github.com/kelvran/gateway/blob/main/README.md"
+  - "https://github.com/kelvran/gateway/blob/main/ARCHITECTURE.md"
+
+security-artifacts:
+  threat-model:
+    threat-model-created: true
+    evidence-url: "https://github.com/kelvran/gateway/blob/main/THREAT_MODEL.md"
+  self-assessment:
+    self-assessment-created: false
+    evidence-url: null
+
+security-contacts:
+  - type: "email"
+    value: "security@kelvran.dev"
+    primary: true
+
+security-testing: []
+
+vulnerability-reporting:
+  accepts-vulnerability-reports: true
+  email-contact: "security@kelvran.dev"
+  security-policy: "https://github.com/kelvran/gateway/blob/main/SECURITY.md"
+  bug-bounty-available: false

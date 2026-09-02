@@ -1,0 +1,26 @@
+[
+  {
+    "id": "golden-capital-of-france",
+    "revision": 1,
+    "task_spec": { "output": "Paris", "match": "exact" },
+    "reference": "Paris",
+    "tier": "golden",
+    "tags": ["geography"]
+  },
+  {
+    "id": "golden-contains-a-number",
+    "revision": 1,
+    "task_spec": { "output": "the answer is 42", "match": "regex", "pattern": "\\d+" },
+    "reference": null,
+    "tier": "golden",
+    "tags": ["format"]
+  },
+  {
+    "id": "golden-wrong-answer",
+    "revision": 1,
+    "task_spec": { "output": "London", "match": "exact" },
+    "reference": "Paris",
+    "tier": "golden",
+    "tags": ["geography"]
+  }
+]

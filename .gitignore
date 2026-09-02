@@ -1,0 +1,26 @@
+# Go
+gateway/kelvran-gateway
+*.exe
+*.test
+*.out
+
+# Python
+evals/.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local env / secrets — never commit these
+.env
+.env.*
+*.local.yaml
+config.yaml
+!config.example.yaml

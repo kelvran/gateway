@@ -1,0 +1,11 @@
+# Directory-scoped review ownership.
+# Populate the right-hand side with actual GitHub usernames/teams once the project has more than one maintainer —
+# left as a structural placeholder for now (pre-scaffolding, solo maintainer).
+
+/gateway/          # gateway maintainers
+/evals/             # evals maintainers
+/api/               # joint review required — changes here affect both deployables simultaneously
+/docs/decisions/    # project lead (ADRs are foundational, hard-to-reverse calls)
+/THREAT_MODEL.md    # project lead + security-focused reviewer once one exists
+/SECURITY.md        # project lead + security-focused reviewer once one exists
+*                   # project lead (default for anything not matched above)
