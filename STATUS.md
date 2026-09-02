@@ -2,7 +2,7 @@
 
 ## Status
 
-🟢 Initial code scaffolding + a deepened test suite + real SSE streaming + real multi-tenant virtual keys/budgets + real OTel tracing/agent_run_id + Decimal-precision cost accounting + restart-durable budget persistence — all complete and verified. `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only). CI now exists (`.github/workflows/ci.yml`), not yet run against a real push. Budget persistence is implemented and verified but **not yet committed**.
+🟢 Initial code scaffolding + a deepened test suite + real SSE streaming + real multi-tenant virtual keys/budgets + real OTel tracing/agent_run_id + Decimal-precision cost accounting + restart-durable budget persistence — all complete, verified, and committed. `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only — reaffirmed a third time 2026-09-03, see `docs/development/BRANCHES.md`). CI exists (`.github/workflows/ci.yml`), still not yet run against a real push — this pass's own research flagged that as the more urgent gap than any branch-topology change.
 
 ## IMPORTANT
 
@@ -37,7 +37,7 @@ Restart-durable budget-spend persistence for `gateway`, implemented end-to-end (
 
 ## Next Action
 
-**Commit the budget-persistence work** — it is implemented and independently verified but still sitting uncommitted in the working tree. After that, the remaining roadmap items are the open candidates: distributed (Redis) rate limiting, release readiness (tag/remote/real CI run — needs the founder's direct involvement), the `api/` cross-language contract, Cache L2/L3 completion, and the evals skeptic-panel — pending the founder's explicit choice.
+Branch strategy reaffirmed a third time (2026-09-03, `docs/development/BRANCHES.md`) — no branch-topology change, but the research surfaced a concrete precondition gap: CI has never run against a real push, which is the exact thing the "solo maintainer may commit direct to trunk" exception assumes is already true. The remaining roadmap items are the open candidates: distributed (Redis) rate limiting, release readiness (tag/remote/real CI run — needs the founder's direct involvement), the `api/` cross-language contract, Cache L2/L3 completion, and the evals skeptic-panel — pending the founder's explicit choice.
 
 ## Release Runbook
 
