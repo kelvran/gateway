@@ -4,9 +4,8 @@ Entries accumulate here under the six [Keep a Changelog](https://keepachangelog.
 
 Versioning: [SemVer](https://semver.org/) — load-bearing for the Go module path/tag (`v0.1.0`, `v0.2.0`, ...).
 
-## Added
-
 - Initial code skeleton per `docs/plans/2026-09-02-initial-code-scaffolding.md`: canonical request/response types; real OpenAI and Anthropic provider adapters with round-trip tests; stubbed Gemini/Bedrock/OpenAI-compat adapters (typed "not implemented" errors); the `cache.Cache` interface with a working in-process L1 exact-match implementation and dormant `grpcserver`/`grpcclient` extraction seams; a single static virtual-key auth check (constant-time comparison); an in-memory token-bucket rate limiter; a non-streaming dataplane pipeline wiring auth → rate-limit → cache → routing (round-robin + single fallback) → adapter → cost accounting → structured JSON logging; a stdlib-only YAML config loader; a multi-stage Dockerfile. Streaming, distributed rate limiting, Decimal-precision cost accounting, MCP/A2A, and guardrails are explicitly deferred — see `docs/rfcs/2026-09-02-initial-code-scaffolding.md`.
+- Test/lint infrastructure: a real end-to-end HTTP integration test suite (`cmd/gateway/integration_test.go`) driving the full pipeline through a real `httptest` server and client against a mock upstream; byte-for-field regression fixtures (`internal/adapter/{openai,anthropic}/testdata/`) pinning both adapters' wire formats independently of the existing round-trip unit tests; `go test -fuzz` targets for the cache-key fabricator and the hand-rolled YAML config parser; `go test -bench` baselines for the in-process cache and the token-bucket rate limiter; and a tuned `.golangci.yml` (v2 schema: errcheck, govet, staticcheck, unused, ineffassign, errorlint, gofmt/goimports) with zero outstanding findings.
 
 ## Changed
 

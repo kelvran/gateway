@@ -2,7 +2,8 @@
 
 Matches evals/ARCHITECTURE.md's Data Model sketch:
 
-    EvalCase { id, revision, task_spec, reference | null, tier: golden|regression|drift_sample, tags }
+    EvalCase { id, revision, task_spec, reference | null,
+               tier: golden|regression|drift_sample, tags }
 
 `EvalCase` instances are immutable once created — a stable `id` at a given
 `revision` never changes shape out from under a dataset. Advancing a case to
@@ -36,7 +37,7 @@ class EvalCase(BaseModel):
     tier: EvalTier
     tags: list[str] = Field(default_factory=list)
 
-    def with_revision(self, revision: int) -> "EvalCase":
+    def with_revision(self, revision: int) -> EvalCase:
         """Return a new `EvalCase` at `revision`, leaving `self` untouched.
 
         Never mutates `self` — revisions are immutable once created.

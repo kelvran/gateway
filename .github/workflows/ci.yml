@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gateway:
+    name: gateway (build, vet, lint, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: gateway/go.sum
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+          working-directory: gateway
+      - name: build + test
+        working-directory: gateway
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./... -race
+
+  evals:
+    name: evals (sync, ruff, pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ruff
+        working-directory: evals
+        run: uvx ruff check .
+      - name: sync + test
+        working-directory: evals
+        run: |
+          uv sync
+          uv run pytest tests/

@@ -21,13 +21,18 @@ import (
 // (docs/decisions/0002-cache-embedded-in-gateway.md).
 func Key(model string, serializedMessages string, temperature *float64, maxTokens *int) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "model=%s\x00messages=%s\x00temperature=", model, serializedMessages)
+	// hash.Hash.Write (which fmt.Fprint[f] calls into here) is documented
+	// to never return an error, so there is nothing a caller could ever
+	// meaningfully do with these return values — discarded explicitly
+	// (rather than left unchecked) so that stays a visible, deliberate
+	// choice instead of something errcheck has to keep flagging.
+	_, _ = fmt.Fprintf(h, "model=%s\x00messages=%s\x00temperature=", model, serializedMessages)
 	if temperature != nil {
-		fmt.Fprintf(h, "%v", *temperature)
+		_, _ = fmt.Fprintf(h, "%v", *temperature)
 	}
-	fmt.Fprint(h, "\x00max_tokens=")
+	_, _ = fmt.Fprint(h, "\x00max_tokens=")
 	if maxTokens != nil {
-		fmt.Fprintf(h, "%v", *maxTokens)
+		_, _ = fmt.Fprintf(h, "%v", *maxTokens)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

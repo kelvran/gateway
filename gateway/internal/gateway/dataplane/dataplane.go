@@ -343,7 +343,12 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 		if err != nil {
 			return nil, fmt.Errorf("calling upstream %q: %w", dep.BaseURL, err)
 		}
-		defer httpResp.Body.Close()
+		// The response body is about to be fully drained by io.ReadAll
+		// below; any error Close returns after that point is not
+		// actionable (there's no reader left to retry or recover), so it
+		// is discarded explicitly rather than left for errcheck to keep
+		// flagging.
+		defer func() { _ = httpResp.Body.Close() }()
 
 		respBody, err := io.ReadAll(httpResp.Body)
 		if err != nil {

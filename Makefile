@@ -1,20 +1,33 @@
-.PHONY: help setup lint test verify
+.PHONY: help setup lint lint-gateway lint-evals test test-gateway test-evals verify
 
 help:
-	@echo "Kelvran is pre-scaffolding — these targets are placeholders, not real commands yet."
-	@echo "  make setup   - intended: bootstrap both toolchains (see scripts/README.md)"
-	@echo "  make lint    - intended: lint gateway/ (Go) and evals/ (Python)"
-	@echo "  make test    - intended: run gateway/ + evals/ test suites (see docs/testing/TESTING.md)"
-	@echo "  make verify  - intended: run exactly what CI runs, in the same order"
+	@echo "Kelvran — real targets as of the test-expansion pass (see docs/agents/LOGS.md)."
+	@echo "  make setup   - bootstrap both toolchains (go mod download + uv sync)"
+	@echo "  make lint    - lint gateway/ (golangci-lint) and evals/ (ruff)"
+	@echo "  make test    - run gateway/ + evals/ test suites (go test + pytest)"
+	@echo "  make verify  - build + vet + lint + test, both deployables — what CI runs"
+	@echo ""
+	@echo "Not yet real: buf breaking (no api/ .proto files exist yet — see api/README.md)."
 
 setup:
-	@echo "not yet scaffolded — see AGENTS.md's Stack section, gateway/ARCHITECTURE.md, evals/ARCHITECTURE.md"
+	cd gateway && go mod download
+	cd evals && uv sync
 
-lint:
-	@echo "not yet scaffolded — see AGENTS.md's Conventions section"
+lint-gateway:
+	cd gateway && go vet ./... && golangci-lint run ./...
 
-test:
-	@echo "not yet scaffolded — see AGENTS.md's Testing section and docs/testing/TESTING.md"
+lint-evals:
+	cd evals && ruff check .
 
-verify:
-	@echo "not yet scaffolded — will run lint + test + buf breaking once CI exists (see scripts/README.md)"
+lint: lint-gateway lint-evals
+
+test-gateway:
+	cd gateway && go build ./... && go test ./...
+
+test-evals:
+	cd evals && uv run pytest tests/
+
+test: test-gateway test-evals
+
+verify: lint test
+	@echo "verify: lint + test passed for both gateway/ and evals/"

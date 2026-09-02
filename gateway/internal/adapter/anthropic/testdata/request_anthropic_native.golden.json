@@ -1,0 +1,55 @@
+{
+  "model": "claude-opus-4-20250514",
+  "system": "You are a helpful assistant that can check the weather.",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What's the weather in Boston?"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01A1B2C3",
+          "name": "get_weather",
+          "input": {"city": "Boston", "unit": "fahrenheit"}
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01A1B2C3",
+          "content": "{\"temperature\":72,\"condition\":\"sunny\"}"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "It's 72°F and sunny in Boston."}
+      ]
+    }
+  ],
+  "max_tokens": 1024,
+  "temperature": 0.4,
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather for a given city",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {"type": "string"},
+          "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+        },
+        "required": ["city"]
+      }
+    }
+  ]
+}

@@ -29,7 +29,13 @@ func TestRejectedUntilRefill(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	b := NewTokenBucketWithClock(2, 1, clock.now) // burst of 2, refill 1/sec
 
-	if !b.Allow() || !b.Allow() {
+	// Two distinct calls, each consuming a separate token — written as
+	// two named results (rather than the equivalent
+	// "!b.Allow() || !b.Allow()") so staticcheck's SA4000
+	// identical-expression check doesn't mistake this for a copy-paste
+	// bug: both calls are intentional and each has its own side effect.
+	firstAllowed, secondAllowed := b.Allow(), b.Allow()
+	if !firstAllowed || !secondAllowed {
 		t.Fatal("expected first two Allow() calls to succeed within burst capacity")
 	}
 
@@ -65,7 +71,11 @@ func TestRefillNeverExceedsCapacity(t *testing.T) {
 
 	// Capacity caps tokens at 2, not unbounded — only two Allow() calls
 	// should succeed before this refill cycle rejects a third.
-	if !b.Allow() || !b.Allow() {
+	// See TestRejectedUntilRefill's comment above: two intentional,
+	// separately-consuming calls, named to avoid staticcheck's SA4000
+	// identical-expression false positive.
+	firstAllowed, secondAllowed := b.Allow(), b.Allow()
+	if !firstAllowed || !secondAllowed {
 		t.Fatal("expected two Allow() calls to succeed at full capacity")
 	}
 	if b.Allow() {

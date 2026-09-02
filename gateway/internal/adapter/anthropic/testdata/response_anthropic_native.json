@@ -1,0 +1,13 @@
+{
+  "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
+  "model": "claude-opus-4-20250514",
+  "role": "assistant",
+  "content": [
+    {"type": "text", "text": "It's 72°F and sunny in Boston."}
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 58,
+    "output_tokens": 12
+  }
+}

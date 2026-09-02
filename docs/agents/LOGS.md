@@ -78,3 +78,19 @@ Next steps / resume point:
 **Verification performed:** confirmed via `git status` before this session that no `.git` directory existed anywhere in the tree (a genuine first init, not a re-init). `.gitignore` covers Go build artifacts, Python `.venv`/`__pycache__`/`.pytest_cache`, and local secrets (`.env*`, `config.yaml` while explicitly un-ignoring `config.example.yaml`).
 
 **Next steps / resume point:** Same as the prior entry — streaming (SSE) support is the confirmed next priority, per the founder's explicit choice. It should get its own RFC/plan pair under `docs/rfcs/`/`docs/plans/`, following the same pipeline used for the initial scaffolding, not be built ad hoc directly on `main`.
+
+---
+
+## [2026-09-02] test suite deepened + real tooling wired — before moving to streaming
+
+**Files touched:** two parallel agents (one per deployable) added: `gateway/cmd/gateway/integration_test.go` (real HTTP integration tests), `gateway/internal/adapter/{openai,anthropic}/testdata/` + `regression_test.go` (golden wire-format fixtures), `gateway/internal/cache/key_fuzz_test.go` + `gateway/internal/gateway/controlplane/config_fuzz_test.go` (fuzz targets), cache/ratelimit benchmarks, `gateway/.golangci.yml`; `evals/tests/test_cli_integration.py`, `evals/tests/test_stats_properties.py` (Hypothesis), `evals/tests/test_llm_judge_prompt_golden.py`, `evals/tests/test_sandbox_error_paths.py`, a real `[tool.ruff]` config in `evals/pyproject.toml`. I then made the `Makefile` targets real (`setup`/`lint`/`lint-gateway`/`lint-evals`/`test`/`test-gateway`/`test-evals`/`verify`), added `.github/workflows/ci.yml` running the same checks, updated `scripts/README.md` and `AGENTS.md`'s Testing section to describe reality instead of placeholders, and updated `DECISIONS.md`.
+
+**Intent/summary:** The founder explicitly asked to test the previous scaffolding end-to-end (unit, integration, regression, "each and every script") before moving on to the next feature (streaming). Ran a 2-agent parallel workflow, each required to actually run every command and report real output — same discipline as the initial-scaffolding pass.
+
+**Decisions made:** Lint tooling picked and wired for real (`golangci-lint` v2, `ruff`) — see the new `DECISIONS.md` line. No architectural decisions revisited.
+
+**Verification performed:** independently re-ran `go build/vet/golangci-lint/test` and `uv sync/pytest/ruff` myself after both agents finished — both clean, matching their reports exactly. Directly read three of the more novel additions (`.golangci.yml`'s exclusion-rule justification, `FuzzKey`'s property documentation, `test_stats_properties.py`'s five Hypothesis invariants) rather than trusting the reports alone — all genuinely sound, not hand-waved. Ran `make verify` end-to-end myself after writing the real Makefile — passes cleanly for both deployables.
+
+**Bugs found:** none in production behavior, in either deployable. Both agents' fixes were lint-driven idiom changes (explicit error-discards, a `TimeoutError` alias modernization, a test-clarity fix for a staticcheck false positive) with zero behavioral change — each explicitly confirmed via the full test suite before and after.
+
+**Next steps / resume point:** Test/tooling deepening is complete and independently verified. Streaming (SSE) support is next — gets its own RFC/plan pair under `docs/rfcs/`/`docs/plans/`, per the founder's explicit sequencing request (test fully, then move on).

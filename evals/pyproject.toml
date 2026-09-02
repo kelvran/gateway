@@ -14,6 +14,7 @@ evals = "evals.cli:main"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.167.1",
     "pytest>=8.0",
 ]
 
@@ -28,3 +29,33 @@ packages = ["evals"]
 markers = [
     "integration: requires a live Docker daemon (skipped unless RUN_DOCKER_TESTS=1)",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+# E/F: pyflakes + pycodestyle core correctness checks.
+# I: import sorting — enforced instead of hand-maintained import order.
+# UP: modern-Python idioms for the 3.12+ floor AGENTS.md commits to
+#     (e.g. `list[str]` / `X | None` over `List[str]` / `Optional[X]`,
+#     which this codebase already uses throughout `models.py`/`stats.py`).
+# B: bugbear — catches real correctness hazards (mutable default
+#     arguments, loop-variable closures) that plain pyflakes misses; this
+#     matters here specifically because `EvalCase` is documented as
+#     immutable-by-convention and `judge()`/`run_in_sandbox()` are
+#     asyncio-orchestrated per AGENTS.md's Python conventions.
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["evals"]
+
+[tool.ruff.lint.per-file-ignores]
+# The golden fixture string is a byte-for-byte capture of the real,
+# already-long (unwrapped) rendered judge prompt from
+# evals/judge/llm_judge.py's `_JUDGE_PROMPT_TEMPLATE` — reflowing it to
+# satisfy E501 would silently break the exact-match assertion the whole
+# test exists to make. A deliberate, narrow suppression on this one file,
+# analogous to the hand-rolled-parser exemption pattern, not a blanket
+# E501 disable.
+"tests/test_llm_judge_prompt_golden.py" = ["E501"]

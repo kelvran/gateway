@@ -1,0 +1,76 @@
+# golangci-lint v2 configuration for gateway/.
+#
+# Tuned to this package's actual conventions, per AGENTS.md's Conventions
+# section for gateway/:
+#   - errors are wrapped with context (fmt.Errorf("...: %w", err)), never
+#     swallowed -> errcheck (unchecked errors) + errorlint (catches error
+#     comparisons/wrapping that break errors.Is/As, e.g. a bare "%v"
+#     where "%w" was meant, or a non-wrapping == comparison against a
+#     sentinel error) enforce this mechanically.
+#   - context.Context is the first parameter on anything that can block
+#     or needs request-scoped values -> govet's own analyzers already
+#     flag the most common mistakes here (e.g. context misuse via the
+#     standard "context" vet pass); a dedicated context-argument-order
+#     linter was considered but deliberately left out of this minimal
+#     config to avoid pulling in a large, noisy default rule set for one
+#     narrow convention — see the exclusions note below for how the one
+#     genuinely intentional deviation from "always check errors"
+#     (the hand-rolled YAML parser's ignored getX ok-booleans, which are
+#     validated by explicit required-field checks immediately after) is
+#     handled instead.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # errcheck, govet, staticcheck, ineffassign, and unused are
+  # golangci-lint v2's own default-enabled set — this section makes that
+  # explicit (rather than relying on an implicit default) so the
+  # intended linter set is legible from this file alone.
+  #
+  # Note on "gosimple": in golangci-lint v2, gosimple's checks (the
+  # "S1xxx" rules) were folded into staticcheck rather than shipping as a
+  # separate linter — enabling staticcheck below is what covers
+  # gosimple's checks now; there is no standalone "gosimple" linter to
+  # enable in this version.
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    # errorlint directly enforces AGENTS.md's "%w" error-wrapping
+    # convention: it flags fmt.Errorf calls that should use %w instead of
+    # %v/%s when wrapping an error, and comparisons/switches on error
+    # values that would break errors.Is/errors.As.
+    - errorlint
+  settings:
+    staticcheck:
+      checks:
+        - all
+  exclusions:
+    rules:
+      # config.go's parseYAMLMini/getString/getFloat/getMap helpers
+      # return an "ok" bool specifically so Load's caller-side code can
+      # apply its own required-vs-optional-field logic (see Load's
+      # explicit "missing required field" checks immediately after each
+      # getString/getMap call). Ignoring that ok in a few optional-field
+      # call sites (e.g. price_table's per-field getFloat) is the
+      # documented, intentional behavior described in config.go's own
+      # comments, not an oversight — narrowly suppressed here rather than
+      # disabling errcheck package-wide.
+      - path: internal/gateway/controlplane/config.go
+        linters:
+          - errcheck
+        text: "Error return value of `.*\\.getString|.*\\.getFloat|.*\\.getMap` is not checked"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/kelvran/gateway

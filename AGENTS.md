@@ -51,12 +51,14 @@ Do not duplicate the content of those architecture docs here — this file point
 
 ## Testing
 
-- `gateway`: `go test ./...` from `gateway/`.
-- `evals`: `uv run pytest` from `evals/`.
-- Cross-contract: `buf breaking` against `api/` (once `.proto` files exist).
-- Full strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`.
+- `make verify` — build + vet + lint + test for both deployables; matches `.github/workflows/ci.yml` exactly.
+- `make test` (or `test-gateway`/`test-evals`) / `make lint` (or `lint-gateway`/`lint-evals`) individually.
+- `gateway`: `go build ./... && go test ./...` from `gateway/`. Includes unit, integration (real HTTP server via `httptest`), regression/golden (adapter wire-format fixtures), and fuzz (`go test -fuzz=...`) tests. `golangci-lint run ./...` (v2, config at `gateway/.golangci.yml`).
+- `evals`: `uv run pytest tests/` from `evals/`. Includes unit, CLI integration (Click `CliRunner`), regression/golden (LLM-judge prompt fixture), and property-based (Hypothesis) tests. Docker-sandbox integration tests are skip-by-default (`RUN_DOCKER_TESTS=1` to opt in). `ruff check .` (config in `evals/pyproject.toml`).
+- Cross-contract: `buf breaking` against `api/` — not yet wired, no `.proto` files exist yet.
+- Full strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`. Script index: `scripts/README.md`.
 
-*(Exact commands will be finalized once the toolchains are actually scaffolded — this section is a placeholder for that, not yet verified against a real build.)*
+*(This section is now verified against a real build — commands above are what `make verify`/CI actually run, not a placeholder.)*
 
 ## Deployment
 

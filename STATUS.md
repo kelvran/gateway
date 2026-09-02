@@ -2,7 +2,7 @@
 
 ## Status
 
-🟢 Initial code scaffolding complete and verified — `gateway` builds/vets/tests clean, `evals` test suite passes. Git now initialized (trunk-based, `main`-only per the reaffirmed `docs/development/BRANCHES.md`); no CI exists yet.
+🟢 Initial code scaffolding + a deepened test suite complete and verified — `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only). CI now exists (`.github/workflows/ci.yml`), not yet run against a real push.
 
 ## IMPORTANT
 
@@ -18,19 +18,20 @@ Initial code scaffolding, just landed. Both documentation batches (45 files) wer
 
 ## Verification State (measured, not assumed)
 
-- `cd gateway && go build ./... && go vet ./... && go test ./...` — all packages `ok`, `go vet` produces zero output. Independently re-run and confirmed, not just taken on the implementing agent's word.
-- `cd evals && uv run pytest tests/` — **30 passed, 4 skipped** (the Docker-sandbox integration tests, skip-by-default unless `RUN_DOCKER_TESTS=1`; separately confirmed passing 4/4 against a real local Docker daemon).
+- `make verify` (root) — **passes cleanly**: `golangci-lint run ./...` → `0 issues`; `ruff check .` → `All checks passed!`; `go build/test` → all packages `ok`; `uv run pytest tests/` → **43 passed, 4 skipped** (Docker-sandbox integration tests, skip-by-default unless `RUN_DOCKER_TESTS=1`; separately confirmed 4/4 passing against a real local Docker daemon).
+- Gateway now has real HTTP integration tests (full pipeline through `httptest`, mock upstream only), wire-format regression/golden fixtures for both real adapters, `go test -fuzz` on the cache-key fabricator and YAML config parser (both clean — no crashing input found after 20s each), and cache/rate-limiter benchmarks (recorded baselines, not gated).
+- Evals now has CLI integration tests, 5 Hypothesis property-based regression tests on the Wilson-interval math, a golden fixture pinning the LLM-judge prompt, and a non-Docker regression test for the sandbox wrapper's missing-binary error path.
 - `docker build -t kelvran-gateway:scaffold gateway/` — succeeded (multi-stage `golang:1.25-alpine` → `scratch`, ~5MB image); manually smoke-tested (401 on missing auth header) from both the local binary and the built container.
-- Directly read (not just trusted a report on) the three most correctness/security-sensitive files: `gateway/internal/identity/identity.go` (constant-time key comparison — correct), `gateway/internal/cache/key.go` (SHA-256 cache-key fabrication — correct, properly decoupled from the adapter package), `evals/evals/stats.py` (Wilson confidence-interval formula — correct, with a documented epsilon clamp).
-- Cross-reference spot-checks on the doc set (from the prior batches) — no known regressions from this session, since no `.md` files were edited except the changelog/`DECISIONS.md`/`LOGS.md`/this file.
+- Directly read (not just trusted a report on) five files across both passes: `identity.go`'s constant-time comparison, `cache/key.go`'s SHA-256 fabrication, `stats.py`'s Wilson formula, `.golangci.yml`'s exclusion-rule justification, and `test_stats_properties.py`'s Hypothesis invariants — all genuinely correct, not hand-waved.
+- `.github/workflows/ci.yml` exists and mirrors `make verify` exactly, but has not yet run against a real push (no remote configured).
 
 ## Last Completed Task
 
-Initial code scaffolding (spec → plan → implementation) for both deployables — see `docs/agents/LOGS.md`'s latest entry for full detail.
+Test suite deepened (unit/integration/regression/fuzz/property-based) and real tooling wired (`golangci-lint`, `ruff`, real `Makefile`, CI workflow) for both deployables, per the founder's explicit request to test the previous scaffolding end-to-end before moving to the next feature. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
 ## Next Action
 
-**Streaming (SSE) support** — confirmed as the next priority. The gateway currently only serves buffered, non-streaming responses; this is the next thing that needs its own RFC/plan pair under `docs/rfcs/`/`docs/plans/`, following the same spec→plan→implement pipeline used for the initial scaffolding — not built ad hoc directly on `main`.
+**Streaming (SSE) support** — confirmed as the next priority, now that testing is verified complete. The gateway currently only serves buffered, non-streaming responses; this is the next thing that needs its own RFC/plan pair under `docs/rfcs/`/`docs/plans/`, following the same spec→plan→implement pipeline used for the initial scaffolding — not built ad hoc directly on `main`.
 
 ## Release Runbook
 
@@ -43,7 +44,7 @@ See `DECISIONS.md` and `docs/decisions/` — not restated here.
 ## Active Blockers
 
 - Project name **Kelvran** still needs a manual USPTO TESS / WHOIS trademark clearance before public registration of the domain/GitHub org/packages — tracked in `DECISIONS.md`, not yet done.
-- Linter choices (Go: likely `golangci-lint`; Python: likely `ruff`) are still not configured — blocking `scripts/README.md`'s real `lint`/`verify` script implementations and `Makefile`'s real targets. Go/Python runtime versions themselves ARE now pinned (see `DECISIONS.md`'s latest entry) — this blocker is narrower than it was.
+- No git remote configured — repo is local-only, so `.github/workflows/ci.yml` has never actually run.
 
 *(Nothing here is vulnerability-shaped; if a future blocker ever is, it routes to `SECURITY.md`'s private channel instead of appearing on this public page.)*
 

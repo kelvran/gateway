@@ -61,7 +61,7 @@ async def run_in_sandbox(
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             process.communicate(), timeout=timeout_s
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         process.kill()
         await process.wait()
         return SandboxResult(exit_code=-1, stdout="", stderr="", timed_out=True)
