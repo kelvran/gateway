@@ -14,6 +14,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/cache"
 	"github.com/kelvran/gateway/gateway/internal/identity"
@@ -51,14 +53,17 @@ type UpstreamStreamCaller func(ctx context.Context, dep Deployment, providerReq 
 // as billable as a buffered one.
 func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, req adapter.ChatRequest, w http.ResponseWriter) (err error) {
 	var (
-		cacheHit bool
-		resp     adapter.ChatResponse
-		vk       *identity.VirtualKey
-		dep      Deployment
+		cacheHit              bool
+		resp                  adapter.ChatResponse
+		vk                    *identity.VirtualKey
+		dep                   Deployment
+		rateLimitFailedOpen   bool
+		fallback              fallbackInfo
+		budgetSpentAtDecision decimal.Decimal
 	)
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
 	}()
 
 	vk, verifyErr := p.verifier.Verify(authorizationHeader)
@@ -70,10 +75,13 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		err = fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
 		return
 	}
-	if !p.checkRateLimit(ctx, vk) {
+	var rateLimitOK bool
+	rateLimitOK, rateLimitFailedOpen = p.checkRateLimit(ctx, vk)
+	if !rateLimitOK {
 		err = ErrRateLimited
 		return
 	}
+	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID)
 	if !p.budget.Allow(vk.ID, vk.BudgetUSD) {
 		err = ErrBudgetExceeded
 		return
@@ -125,7 +133,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	resp, dep, err = p.streamDeploymentWithFallback(ctx, dep, req, sw)
+	resp, dep, fallback, err = p.streamDeploymentWithFallback(ctx, dep, req, sw)
 	if err != nil {
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
 		return
@@ -195,18 +203,24 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 // the same model exactly like the buffered path's single-fallback rule.
 // Once a chunk has been written to the client, no fallback is attempted —
 // per the RFC's explicit scope boundary, there is no clean way to retry a
-// partially-delivered stream without risking duplicated content.
-func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer) (adapter.ChatResponse, Deployment, error) {
+// partially-delivered stream without risking duplicated content. The
+// returned fallbackInfo stays its zero value (happened: false) in that
+// already-streamed case, even though err is still non-nil — a streaming
+// response that errored after its first chunk did NOT fall back, and the
+// two must never be conflated in GatewayDecisionEvent.
+func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
 	var firstChunkSent bool
+	var fallback fallbackInfo
 
 	resp, err := p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
 	if err != nil && !firstChunkSent {
 		if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
+			fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 			dep = fallbackDep
 			resp, err = p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
 		}
 	}
-	return resp, dep, err
+	return resp, dep, fallback, err
 }
 
 // streamDeployment runs the streaming-specific adapter+upstream-call steps

@@ -36,4 +36,43 @@ message GatewayDecisionEvent {
     OUTCOME_UPSTREAM_ERROR = 7;
   }
   Outcome outcome = 6;
+
+  // True iff the rate limiter's backend errored for this request and the
+  // request was allowed through anyway (fail-open), per
+  // docs/rfcs/2026-09-03-distributed-rate-limiting.md's "Fail-open, not
+  // fail-closed" section. false covers BOTH "rate limiter ran and did not
+  // fail open" and "rate limiter never ran for this request" (an Outcome of
+  // OUTCOME_AUTH_FAILED/OUTCOME_MODEL_NOT_ALLOWED means the request never
+  // reached the rate-limit check at all) — those two are intentionally not
+  // distinguished; cross-reference Outcome for that.
+  bool rate_limit_fail_open = 7;
+
+  // fallback_happened, fallback_from_deployment, and fallback_reason
+  // together describe whether this request fell back to a second
+  // deployment. Kelvran's fallback logic attempts at most ONE fallback per
+  // request, never a chain (gateway/ARCHITECTURE.md's router step) — a
+  // fixed 3-field record, not a repeated/list shape.
+  bool fallback_happened = 8;
+  // Name of the deployment first tried and abandoned. "" when
+  // fallback_happened is false. The deployment ULTIMATELY used is not
+  // repeated here — it's already derivable from the OTel span's
+  // DeploymentName/Provider attributes, joinable via trace_id/span_id, per
+  // this message's own "never re-encodes anything already real on that
+  // span" rule.
+  string fallback_from_deployment = 9;
+  // The first attempt's error (err.Error()). "" when fallback_happened is
+  // false. Free text, not an enum — unlike Outcome, these are arbitrary
+  // upstream/provider failures with no existing sentinel-error taxonomy.
+  string fallback_reason = 10;
+
+  // Cumulative USD spend for virtual_key_id at the moment the budget check
+  // decided whether to allow this request — i.e. BEFORE this request's own
+  // cost (if any) is added. Decimal-as-string, matching
+  // docs/rfcs/2026-09-02-decimal-cost-accounting.md's convention. "0" is a
+  // real, meaningful value (a key that has genuinely spent nothing yet),
+  // not a "field absent" sentinel — only meaningful when the budget check
+  // actually ran; cross-reference Outcome (OUTCOME_AUTH_FAILED/
+  // OUTCOME_MODEL_NOT_ALLOWED/OUTCOME_RATE_LIMITED all precede the budget
+  // check and never populate this field).
+  string budget_spent_usd = 11;
 }

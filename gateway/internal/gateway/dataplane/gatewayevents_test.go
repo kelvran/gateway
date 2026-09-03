@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/shopspring/decimal"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	gatewayeventsv1 "github.com/kelvran/gateway/gateway/api/gatewayevents/v1"
@@ -137,6 +142,290 @@ func TestGatewayEventLoggedOnRejectionHasCorrectOutcome(t *testing.T) {
 	}
 	if event.GetVirtualKeyId() != "team-restricted" {
 		t.Errorf("VirtualKeyId = %q, want %q", event.GetVirtualKeyId(), "team-restricted")
+	}
+}
+
+// failingRedisBackend is a ratelimit.RedisBackend whose Allow always
+// errors — simulating a real Redis outage, deterministically, without a
+// real Redis container, so the fail-open path
+// (dataplane.checkRateLimit's second return value) can be exercised in a
+// unit test per docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md.
+type failingRedisBackend struct{}
+
+func (failingRedisBackend) Allow(_ context.Context, _ string, _, _ float64) (bool, error) {
+	return false, errors.New("simulated redis backend failure")
+}
+
+func (failingRedisBackend) Close() error { return nil }
+
+// TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors is the
+// load-bearing proof that a Redis backend error surfaces as
+// RateLimitFailOpen=true on the logged event — auditable in production,
+// not just asserted in docs/rfcs/2026-09-03-distributed-rate-limiting.md's
+// "second, independent control" argument.
+func TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	keys := []identity.VirtualKey{
+		{ID: "team-failopen", KeyHash: testHashOf("team-failopen"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	p, err := NewPipeline(Config{
+		Verifier: verifier,
+		Limiter:  ratelimit.NewRedisKeyLimiter(keyConfigsFromVirtualKeys(keys), failingRedisBackend{}),
+		Budget:   budget.NewTracker(),
+		Cache:    inprocess.New(0),
+		CacheL2:  inprocess.New(0),
+		CacheL3:  inprocess.NewLexicalCache(0),
+		Adapters: adapter.Registry{"openai": openai.New()},
+		Deployments: []Deployment{
+			{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		},
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			return fakeOpenAIResponse("gpt-4o"), nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-failopen", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		t.Fatalf("HandleChatCompletion with a failing Redis backend: %v", err)
+	}
+
+	event := decodeLoggedGatewayEvent(t, &logBuf)
+	if !event.GetRateLimitFailOpen() {
+		t.Error("RateLimitFailOpen = false, want true when the rate limiter's backend errors")
+	}
+}
+
+// TestGatewayEventRateLimitFailOpenFalseOnNormalPass proves the negative
+// case: an ordinary in-memory (non-erroring) rate-limit pass must NOT be
+// misreported as a fail-open.
+func TestGatewayEventRateLimitFailOpenFalseOnNormalPass(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	keys := []identity.VirtualKey{
+		{ID: "team-normal", KeyHash: testHashOf("team-normal"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	p := newTestPipelineWithKeysAndLogger(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, nil, keys, logger)
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-normal", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+
+	event := decodeLoggedGatewayEvent(t, &logBuf)
+	if event.GetRateLimitFailOpen() {
+		t.Error("RateLimitFailOpen = true for a normal in-memory rate-limit pass, want false")
+	}
+}
+
+// TestGatewayEventFallbackDetailPopulatedOnFallback is the load-bearing
+// proof that a real fallback records the ABANDONED (first) deployment's
+// name and error, not the one ultimately used — the exact ordering bug
+// docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md's "what a
+// naive implementation would get wrong" section names explicitly.
+func TestGatewayEventFallbackDetailPopulatedOnFallback(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	keys := []identity.VirtualKey{
+		{ID: "team-fallback", KeyHash: testHashOf("team-fallback"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	deployments := []Deployment{
+		{Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		{Name: "secondary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+	p := newTestPipelineWithKeysAndLogger(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		if dep.Name == "primary" {
+			return nil, errors.New("simulated upstream failure")
+		}
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, deployments, keys, logger)
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-fallback", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		t.Fatalf("expected fallback to succeed, got error: %v", err)
+	}
+
+	event := decodeLoggedGatewayEvent(t, &logBuf)
+	if !event.GetFallbackHappened() {
+		t.Fatal("FallbackHappened = false, want true")
+	}
+	if event.GetFallbackFromDeployment() != "primary" {
+		t.Errorf("FallbackFromDeployment = %q, want %q (the ABANDONED deployment, not the one ultimately used)", event.GetFallbackFromDeployment(), "primary")
+	}
+	if event.GetFallbackReason() == "" {
+		t.Error("FallbackReason is empty, want the first attempt's error text")
+	}
+}
+
+// TestGatewayEventFallbackDetailAbsentWithNoEligibleFallback proves an
+// upstream error with no second deployment to fall back to is NOT
+// misreported as a fallback — the outer "err != nil" is not itself
+// evidence a fallback occurred.
+func TestGatewayEventFallbackDetailAbsentWithNoEligibleFallback(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	keys := []identity.VirtualKey{
+		{ID: "team-nofallback", KeyHash: testHashOf("team-nofallback"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	p := newTestPipelineWithKeysAndLogger(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return nil, errors.New("simulated upstream failure")
+	}, nil, keys, logger)
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-nofallback", adapter.ChatRequest{Model: "gpt-4o"}); err == nil {
+		t.Fatal("expected an upstream error with no eligible fallback deployment")
+	}
+
+	event := decodeLoggedGatewayEvent(t, &logBuf)
+	if event.GetFallbackHappened() {
+		t.Error("FallbackHappened = true with only one deployment configured, want false")
+	}
+	if event.GetFallbackFromDeployment() != "" || event.GetFallbackReason() != "" {
+		t.Errorf("fallback detail fields = (%q, %q), want both empty when no fallback happened", event.GetFallbackFromDeployment(), event.GetFallbackReason())
+	}
+}
+
+// TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend proves
+// budget_spent_usd on a BUDGET_EXCEEDED rejection is the key's real
+// cumulative spend from EARLIER requests, not a placeholder — the load-
+// bearing proof for the field's whole reason to exist ("how close to the
+// cap was this key").
+func TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	keys := []identity.VirtualKey{
+		{ID: "team-budget", KeyHash: testHashOf("team-budget"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("0.0005")},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	// A real, nonzero price table entry — fakeOpenAIResponse's usage
+	// (5 prompt + 3 completion tokens) times this price produces a real,
+	// measurable cost, unlike the empty PriceTable{} most other tests use.
+	priceTable := costaccounting.PriceTable{
+		"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.0001"), CompletionPerToken: decimal.RequireFromString("0.0001")},
+	}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Deployments:    []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}},
+		CostCalculator: costaccounting.NewCalculator(priceTable),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			return fakeOpenAIResponse("gpt-4o"), nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	// First request succeeds and records real spend (5*0.0001 + 3*0.0001 = 0.0008).
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-budget", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		t.Fatalf("first HandleChatCompletion: %v", err)
+	}
+	wantSpent := p.budget.SpentUSD("team-budget")
+	if wantSpent.IsZero() {
+		t.Fatal("expected nonzero spend recorded after the first request")
+	}
+
+	// Second request is rejected — cumulative spend (0.0008) already
+	// exceeds the 0.0005 cap on its own, before this request's own cost
+	// is ever computed (it never is, since the request is rejected) —
+	// budget_spent_usd must reflect that spend AT DECISION TIME, i.e.
+	// exactly wantSpent, not zero, not a different number.
+	logBuf.Reset()
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-budget", adapter.ChatRequest{Model: "gpt-4o"}); err == nil {
+		t.Fatal("expected the second request to be budget-rejected")
+	}
+
+	event := decodeLoggedGatewayEvent(t, &logBuf)
+	if event.GetOutcome() != gatewayeventsv1.GatewayDecisionEvent_OUTCOME_BUDGET_EXCEEDED {
+		t.Fatalf("Outcome = %v, want OUTCOME_BUDGET_EXCEEDED", event.GetOutcome())
+	}
+	gotSpent, parseErr := decimal.NewFromString(event.GetBudgetSpentUsd())
+	if parseErr != nil {
+		t.Fatalf("parsing BudgetSpentUsd %q: %v", event.GetBudgetSpentUsd(), parseErr)
+	}
+	if !gotSpent.Equal(wantSpent) {
+		t.Errorf("BudgetSpentUsd = %s, want %s (the real prior spend at decision time)", gotSpent, wantSpent)
+	}
+}
+
+// TestGatewayEventStreamingFallbackFalseAfterFirstChunkSent is the
+// streaming-specific proof of the exact failure mode
+// docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md names
+// explicitly: a streaming response that already sent a chunk to the
+// client, then errors mid-stream, must report FallbackHappened=false —
+// "this response errored" and "this response fell back" are never the
+// same signal, even though err is non-nil on both.
+func TestGatewayEventStreamingFallbackFalseAfterFirstChunkSent(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	keys := []identity.VirtualKey{
+		{ID: "team-stream", KeyHash: testHashOf("team-stream"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	// Fail partway through the first real content chunk's own bytes, so
+	// at least one full chunk is guaranteed to have already reached the
+	// client before the read error surfaces — mirrors
+	// streaming_test.go's TestHandleChatCompletionStreamNoFallbackAfterFirstByte.
+	firstChunkEnd := strings.Index(realOpenAISSEStream, "\n\n") + len("\n\n")
+	p, err := NewPipeline(Config{
+		Verifier: verifier,
+		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:   budget.NewTracker(),
+		Cache:    inprocess.New(0),
+		CacheL2:  inprocess.New(0),
+		CacheL3:  inprocess.NewLexicalCache(0),
+		Adapters: adapter.Registry{"openai": openai.New()},
+		Deployments: []Deployment{
+			{Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+			{Name: "secondary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		},
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("non-streaming Upstream should never be called by a streaming test")
+			return nil, nil
+		},
+		UpstreamStream: func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+			return nopCloserReader{&failAfterNBytesReader{r: strings.NewReader(realOpenAISSEStream), n: firstChunkEnd + 5}}, nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer team-stream", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true,
+	}, rec)
+	if err == nil {
+		t.Fatal("expected an error from the mid-stream connection loss")
+	}
+
+	event := decodeLoggedGatewayEvent(t, &logBuf)
+	if event.GetFallbackHappened() {
+		t.Error("FallbackHappened = true after a chunk was already sent, want false — errored is not the same as fell back")
 	}
 }
 

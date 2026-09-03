@@ -81,6 +81,22 @@ func (t *Tracker) Allow(keyID string, capUSD decimal.Decimal) bool {
 	return t.spent[keyID].LessThan(capUSD)
 }
 
+// SpentUSD returns keyID's cumulative recorded spend so far. Never touches
+// the store — like Allow, a pure in-memory read. A never-recorded key
+// correctly returns the zero-value decimal.Decimal{} (renders as "0" via
+// String()). Not synchronized with Allow as a single atomic read — under
+// concurrent requests for the same key, a Record call could land between
+// this and a subsequent Allow call. Acceptable here: this is an
+// observability read (per
+// docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md's
+// budget-spend-at-decision-time field), never part of the enforcement
+// decision itself, which Allow alone still makes correctly.
+func (t *Tracker) SpentUSD(keyID string) decimal.Decimal {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.spent[keyID]
+}
+
 // Record adds costUSD to keyID's cumulative spend. Callers record once per
 // request, after cost is known — including on requests that produced
 // partial or zero usage, matching gateway/ARCHITECTURE.md's existing "cost/

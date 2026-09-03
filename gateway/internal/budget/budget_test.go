@@ -67,6 +67,40 @@ func TestAllowPastCapRejected(t *testing.T) {
 	}
 }
 
+// TestSpentUSDNeverRecordedKeyReturnsZero explicitly verifies (rather than
+// assumes) that SpentUSD on a never-recorded key returns the zero-value
+// decimal.Decimal{} — the same implicit-zero guarantee Allow already
+// relies on, checked here for the new getter directly.
+func TestSpentUSDNeverRecordedKeyReturnsZero(t *testing.T) {
+	tr := NewTracker()
+	got := tr.SpentUSD("never-seen")
+	if !got.IsZero() {
+		t.Errorf("SpentUSD for a never-recorded key = %s, want 0", got)
+	}
+}
+
+func TestSpentUSDReflectsRecordedSpendExactly(t *testing.T) {
+	tr := NewTracker()
+	tr.Record("team-alpha", d("3"))
+	tr.Record("team-alpha", d("4"))
+	got := tr.SpentUSD("team-alpha")
+	if !got.Equal(d("7")) {
+		t.Errorf("SpentUSD after recording 3+4 = %s, want 7", got)
+	}
+}
+
+// TestSpentUSDIsReadOnly pins that calling SpentUSD never itself mutates
+// spend — two consecutive calls must return the identical value.
+func TestSpentUSDIsReadOnly(t *testing.T) {
+	tr := NewTracker()
+	tr.Record("team-alpha", d("5"))
+	first := tr.SpentUSD("team-alpha")
+	second := tr.SpentUSD("team-alpha")
+	if !first.Equal(second) {
+		t.Errorf("SpentUSD called twice in a row returned different values: %s then %s", first, second)
+	}
+}
+
 func TestRecordAccumulates(t *testing.T) {
 	tr := NewTracker()
 	tr.Record("team-alpha", d("3"))

@@ -107,6 +107,42 @@ type GatewayDecisionEvent struct {
 	VirtualKeyId   string                       `protobuf:"bytes,4,opt,name=virtual_key_id,json=virtualKeyId,proto3" json:"virtual_key_id,omitempty"`
 	RequestedModel string                       `protobuf:"bytes,5,opt,name=requested_model,json=requestedModel,proto3" json:"requested_model,omitempty"`
 	Outcome        GatewayDecisionEvent_Outcome `protobuf:"varint,6,opt,name=outcome,proto3,enum=gatewayevents.v1.GatewayDecisionEvent_Outcome" json:"outcome,omitempty"`
+	// True iff the rate limiter's backend errored for this request and the
+	// request was allowed through anyway (fail-open), per
+	// docs/rfcs/2026-09-03-distributed-rate-limiting.md's "Fail-open, not
+	// fail-closed" section. false covers BOTH "rate limiter ran and did not
+	// fail open" and "rate limiter never ran for this request" (an Outcome of
+	// OUTCOME_AUTH_FAILED/OUTCOME_MODEL_NOT_ALLOWED means the request never
+	// reached the rate-limit check at all) — those two are intentionally not
+	// distinguished; cross-reference Outcome for that.
+	RateLimitFailOpen bool `protobuf:"varint,7,opt,name=rate_limit_fail_open,json=rateLimitFailOpen,proto3" json:"rate_limit_fail_open,omitempty"`
+	// fallback_happened, fallback_from_deployment, and fallback_reason
+	// together describe whether this request fell back to a second
+	// deployment. Kelvran's fallback logic attempts at most ONE fallback per
+	// request, never a chain (gateway/ARCHITECTURE.md's router step) — a
+	// fixed 3-field record, not a repeated/list shape.
+	FallbackHappened bool `protobuf:"varint,8,opt,name=fallback_happened,json=fallbackHappened,proto3" json:"fallback_happened,omitempty"`
+	// Name of the deployment first tried and abandoned. "" when
+	// fallback_happened is false. The deployment ULTIMATELY used is not
+	// repeated here — it's already derivable from the OTel span's
+	// DeploymentName/Provider attributes, joinable via trace_id/span_id, per
+	// this message's own "never re-encodes anything already real on that
+	// span" rule.
+	FallbackFromDeployment string `protobuf:"bytes,9,opt,name=fallback_from_deployment,json=fallbackFromDeployment,proto3" json:"fallback_from_deployment,omitempty"`
+	// The first attempt's error (err.Error()). "" when fallback_happened is
+	// false. Free text, not an enum — unlike Outcome, these are arbitrary
+	// upstream/provider failures with no existing sentinel-error taxonomy.
+	FallbackReason string `protobuf:"bytes,10,opt,name=fallback_reason,json=fallbackReason,proto3" json:"fallback_reason,omitempty"`
+	// Cumulative USD spend for virtual_key_id at the moment the budget check
+	// decided whether to allow this request — i.e. BEFORE this request's own
+	// cost (if any) is added. Decimal-as-string, matching
+	// docs/rfcs/2026-09-02-decimal-cost-accounting.md's convention. "0" is a
+	// real, meaningful value (a key that has genuinely spent nothing yet),
+	// not a "field absent" sentinel — only meaningful when the budget check
+	// actually ran; cross-reference Outcome (OUTCOME_AUTH_FAILED/
+	// OUTCOME_MODEL_NOT_ALLOWED/OUTCOME_RATE_LIMITED all precede the budget
+	// check and never populate this field).
+	BudgetSpentUsd string `protobuf:"bytes,11,opt,name=budget_spent_usd,json=budgetSpentUsd,proto3" json:"budget_spent_usd,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -183,11 +219,46 @@ func (x *GatewayDecisionEvent) GetOutcome() GatewayDecisionEvent_Outcome {
 	return GatewayDecisionEvent_OUTCOME_UNSPECIFIED
 }
 
+func (x *GatewayDecisionEvent) GetRateLimitFailOpen() bool {
+	if x != nil {
+		return x.RateLimitFailOpen
+	}
+	return false
+}
+
+func (x *GatewayDecisionEvent) GetFallbackHappened() bool {
+	if x != nil {
+		return x.FallbackHappened
+	}
+	return false
+}
+
+func (x *GatewayDecisionEvent) GetFallbackFromDeployment() string {
+	if x != nil {
+		return x.FallbackFromDeployment
+	}
+	return ""
+}
+
+func (x *GatewayDecisionEvent) GetFallbackReason() string {
+	if x != nil {
+		return x.FallbackReason
+	}
+	return ""
+}
+
+func (x *GatewayDecisionEvent) GetBudgetSpentUsd() string {
+	if x != nil {
+		return x.BudgetSpentUsd
+	}
+	return ""
+}
+
 var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfb\x03\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe6\x05\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -195,7 +266,13 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"occurredAt\x12$\n" +
 	"\x0evirtual_key_id\x18\x04 \x01(\tR\fvirtualKeyId\x12'\n" +
 	"\x0frequested_model\x18\x05 \x01(\tR\x0erequestedModel\x12H\n" +
-	"\aoutcome\x18\x06 \x01(\x0e2..gatewayevents.v1.GatewayDecisionEvent.OutcomeR\aoutcome\"\xd8\x01\n" +
+	"\aoutcome\x18\x06 \x01(\x0e2..gatewayevents.v1.GatewayDecisionEvent.OutcomeR\aoutcome\x12/\n" +
+	"\x14rate_limit_fail_open\x18\a \x01(\bR\x11rateLimitFailOpen\x12+\n" +
+	"\x11fallback_happened\x18\b \x01(\bR\x10fallbackHappened\x128\n" +
+	"\x18fallback_from_deployment\x18\t \x01(\tR\x16fallbackFromDeployment\x12'\n" +
+	"\x0ffallback_reason\x18\n" +
+	" \x01(\tR\x0efallbackReason\x12(\n" +
+	"\x10budget_spent_usd\x18\v \x01(\tR\x0ebudgetSpentUsd\"\xd8\x01\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +

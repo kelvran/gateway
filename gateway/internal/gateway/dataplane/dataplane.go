@@ -249,9 +249,14 @@ func (p *Pipeline) Close() error {
 	return errors.Join(budgetErr, limiterErr)
 }
 
-// checkRateLimit reports whether vk may proceed. A Redis backend error
-// (network failure, timeout) is logged and the request is allowed
-// through rather than rejected — see
+// checkRateLimit reports whether vk may proceed, and whether that answer
+// was a fail-open (rate limiter backend errored, request let through
+// anyway) rather than a genuine rate-limit decision — failedOpen is
+// surfaced to the caller specifically so it can reach
+// GatewayDecisionEvent.RateLimitFailOpen, per
+// docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md. A Redis
+// backend error (network failure, timeout) is logged and the request is
+// allowed through rather than rejected — see
 // docs/rfcs/2026-09-03-distributed-rate-limiting.md's "Fail-open, not
 // fail-closed" section for why that's the right default specifically for
 // Kelvran: internal/budget.Tracker's per-key USD cap is a second,
@@ -260,13 +265,26 @@ func (p *Pipeline) Close() error {
 // in-memory mode, p.limiter.Allow never returns an error at all, so this
 // fail-open path is only ever exercised when a Redis backend is
 // configured.
-func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) bool {
+func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) (ok bool, failedOpen bool) {
 	allowed, err := p.limiter.Allow(ctx, vk.ID)
 	if err != nil {
 		p.logger.Warn("ratelimit_backend_unavailable", "key_id", vk.ID, "error", err.Error())
-		return true
+		return true, true
 	}
-	return allowed
+	return allowed, false
+}
+
+// fallbackInfo captures whether a request fell back to a second
+// deployment, and if so which one and why — captured at the one point in
+// the fallback block where the original dep/err are still available,
+// before they're overwritten, per
+// docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md. Kelvran's
+// fallback logic attempts at most one fallback per request, never a
+// chain, so this is a fixed 3-field record, not a repeated/list shape.
+type fallbackInfo struct {
+	happened bool
+	from     string // Deployment.Name first tried and abandoned.
+	reason   string // err.Error() from the first attempt.
 }
 
 // checkCache checks L1 (exact) then L2 (normalized) in that order, per
@@ -414,14 +432,17 @@ func isModelAllowed(vk *identity.VirtualKey, model string) bool {
 // ChatRequest, given the raw Authorization header value.
 func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, req adapter.ChatRequest) (resp adapter.ChatResponse, err error) {
 	var (
-		cacheHit bool
-		vk       *identity.VirtualKey
-		dep      Deployment
+		cacheHit              bool
+		vk                    *identity.VirtualKey
+		dep                   Deployment
+		rateLimitFailedOpen   bool
+		fallback              fallbackInfo
+		budgetSpentAtDecision decimal.Decimal
 	)
 
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
 	}()
 
 	vk, verifyErr := p.verifier.Verify(authorizationHeader)
@@ -435,11 +456,14 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	if !p.checkRateLimit(ctx, vk) {
+	var rateLimitOK bool
+	rateLimitOK, rateLimitFailedOpen = p.checkRateLimit(ctx, vk)
+	if !rateLimitOK {
 		err = ErrRateLimited
 		return
 	}
 
+	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID)
 	if !p.budget.Allow(vk.ID, vk.BudgetUSD) {
 		err = ErrBudgetExceeded
 		return
@@ -483,6 +507,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// Single fallback to the next deployment for the same model, per
 		// gateway/ARCHITECTURE.md's router step.
 		if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
+			fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 			dep = fallbackDep
 			resp, err = p.callDeployment(ctx, dep, req)
 		}
@@ -569,8 +594,14 @@ func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
 // is nil when auth itself failed (there is no resolved identity yet in
 // that case); dep is the zero value whenever no deployment was ever
 // resolved or called (auth/model/rate-limit/budget rejections, and cache
-// hits, which never touch a deployment at all).
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, err error) {
+// hits, which never touch a deployment at all). rateLimitFailedOpen,
+// fallback, and budgetSpentAtDecision feed GatewayDecisionEvent's 3
+// enrichment fields per
+// docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md — all three
+// are zero-valued whenever the corresponding check never ran (e.g. auth
+// failed before the rate-limit check), which is the correct, intentional
+// "not applicable" representation for those fields.
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, err error) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too.
@@ -610,12 +641,17 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	})
 
 	event := &gatewayeventsv1.GatewayDecisionEvent{
-		TraceId:        span.SpanContext().TraceID().String(),
-		SpanId:         span.SpanContext().SpanID().String(),
-		OccurredAt:     timestamppb.Now(),
-		VirtualKeyId:   virtualKeyID,
-		RequestedModel: req.Model,
-		Outcome:        outcomeFor(err),
+		TraceId:                span.SpanContext().TraceID().String(),
+		SpanId:                 span.SpanContext().SpanID().String(),
+		OccurredAt:             timestamppb.Now(),
+		VirtualKeyId:           virtualKeyID,
+		RequestedModel:         req.Model,
+		Outcome:                outcomeFor(err),
+		RateLimitFailOpen:      rateLimitFailedOpen,
+		FallbackHappened:       fallback.happened,
+		FallbackFromDeployment: fallback.from,
+		FallbackReason:         fallback.reason,
+		BudgetSpentUsd:         budgetSpentAtDecision.String(),
 	}
 	span.End()
 
