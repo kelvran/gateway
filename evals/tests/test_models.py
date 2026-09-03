@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from evals.models import EvalCase, Run
+from evals.models import EvalCase, Run, Score
 
 
 def _make_case(**overrides) -> EvalCase:
@@ -122,3 +122,72 @@ def test_run_instances_are_frozen():
     run = _make_run()
     with pytest.raises(ValidationError):
         run.status = "error"  # type: ignore[misc]
+
+
+def _make_score(**overrides) -> Score:
+    defaults = {
+        "eval_case_id": "case-001",
+        "eval_case_revision": 1,
+        "run_id": "run-001",
+        "scorer_id": "exact_match",
+        "scorer_type": "deterministic",
+        "value": True,
+    }
+    defaults.update(overrides)
+    return Score(**defaults)
+
+
+def test_score_construct_with_all_fields():
+    score = _make_score(
+        run_id="run-001",
+        scorer_id="claude-haiku-4-5-20251001",
+        scorer_type="llm_judge",
+        value=True,
+        rationale="matches exactly",
+        bias_mitigations_applied=["cot_forcing", "reference_guided_grading"],
+    )
+    assert score.eval_case_id == "case-001"
+    assert score.eval_case_revision == 1
+    assert score.run_id == "run-001"
+    assert score.scorer_id == "claude-haiku-4-5-20251001"
+    assert score.scorer_type == "llm_judge"
+    assert score.value is True
+    assert score.rationale == "matches exactly"
+    assert score.bias_mitigations_applied == ["cot_forcing", "reference_guided_grading"]
+
+
+def test_score_construct_with_only_required_fields():
+    score = Score(
+        eval_case_id="case-001",
+        eval_case_revision=1,
+        scorer_id="exact_match",
+        scorer_type="deterministic",
+        value=False,
+    )
+    assert score.run_id is None
+    assert score.rationale is None
+    assert score.rubric_axis is None
+    assert score.bias_mitigations_applied == []
+
+
+def test_score_run_id_defaults_to_none_not_a_fabricated_case_id():
+    score = Score(
+        eval_case_id="case-001",
+        eval_case_revision=1,
+        scorer_id="exact_match",
+        scorer_type="deterministic",
+        value=True,
+    )
+    assert score.run_id is None
+    assert score.run_id != score.eval_case_id
+
+
+def test_score_invalid_scorer_type_rejected():
+    with pytest.raises(ValidationError):
+        _make_score(scorer_type="skeptic_panel")
+
+
+def test_score_instances_are_frozen():
+    score = _make_score()
+    with pytest.raises(ValidationError):
+        score.value = False  # type: ignore[misc]

@@ -82,3 +82,38 @@ class Run(BaseModel):
     latency_ms: float
     cost_usd: float | None = None
     error: str | None = None
+
+
+ScorerType = Literal["deterministic", "llm_judge"]
+
+
+class Score(BaseModel):
+    """The result of one scorer's judgment on one `EvalCase`'s output.
+
+    A deliberately narrowed v1 slice of ARCHITECTURE.md's `Score` sketch,
+    per docs/rfcs/2026-09-04-evals-score-model.md:
+
+    - `run_id` is `None`, not a fabricated `EvalCase.id`, when no real
+      `Run` exists behind the scored output (`evals run`'s fixture-baked
+      `task_spec.output` case never touches the Rollout Scheduler) —
+      mirrors `Run.cost_usd`'s own "`None` means not applicable, never a
+      fabricated stand-in" convention. `eval_case_id`/`eval_case_revision`
+      are the universal join key both `evals run` and `evals rollout` can
+      always honestly supply, regardless of whether a `Run` exists.
+    - `scorer_type` is narrowed to the two values this codebase actually
+      produces — no `skeptic_panel`/`human`, both `v2`-scoped per `PRD.md`.
+    - `rubric_axis` stays `None` always in v1 — `judge()` produces one
+      holistic verdict, never a per-axis breakdown.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    eval_case_id: str
+    eval_case_revision: int
+    run_id: str | None = None
+    scorer_id: str
+    scorer_type: ScorerType
+    value: bool
+    rationale: str | None = None
+    rubric_axis: str | None = None
+    bias_mitigations_applied: list[str] = Field(default_factory=list)

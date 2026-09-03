@@ -22,10 +22,10 @@ from pathlib import Path
 import click
 
 from evals.judge.deterministic import exact_match, regex_match
-from evals.judge.llm_judge import judge
-from evals.judge.providers import make_anthropic_call_model
-from evals.models import EvalCase, Run
-from evals.rollout.results_store import append_runs
+from evals.judge.llm_judge import JudgeResult, judge
+from evals.judge.providers import DEFAULT_JUDGE_MODEL, make_anthropic_call_model
+from evals.models import EvalCase, Run, Score
+from evals.results_store import append_runs, append_scores
 from evals.rollout.scheduler import run_suite
 from evals.stats import wilson_interval
 
@@ -87,13 +87,23 @@ def _score_run_deterministic(case: EvalCase, run: Run) -> bool:
     )
 
 
+def _deterministic_scorer_id(case: EvalCase) -> str:
+    match_kind = case.task_spec.get("match", "exact")
+    return "exact_match" if match_kind == "exact" else "regex_match"
+
+
 def _judge_output(
     output: str,
     reference: str | None,
     call_model: Callable[[str], Awaitable[str]],
     case_id: str,
-) -> bool | None:
+) -> JudgeResult | None:
     """Score `output` against `reference` with a real LLM-judge call.
+
+    Returns the full `JudgeResult` (never just `.passed`) so the caller can
+    persist `rationale`/`bias_mitigations_applied` as a `Score` — see
+    docs/rfcs/2026-09-04-evals-score-model.md, which closed the gap where
+    this function used to discard both after extracting only the bool.
 
     Returns `None` when the judge call itself fails (a malformed response,
     an SDK/network error) — the caller counts that as a judged error and
@@ -107,17 +117,16 @@ def _judge_output(
             f"case {case_id!r}: LLM-judge scoring requires a reference"
         )
     try:
-        result = asyncio.run(
+        return asyncio.run(
             judge(output=output, reference=reference, call_model=call_model)
         )
     except Exception:
         return None
-    return result.passed
 
 
 def _judge_case(
     case: EvalCase, call_model: Callable[[str], Awaitable[str]]
-) -> bool | None:
+) -> JudgeResult | None:
     output = case.task_spec.get("output")
     if output is None:
         raise ValueError(f"case {case.id!r}: task_spec has no 'output' to score")
@@ -126,7 +135,7 @@ def _judge_case(
 
 def _judge_run(
     case: EvalCase, run: Run, call_model: Callable[[str], Awaitable[str]]
-) -> bool | None:
+) -> JudgeResult | None:
     return _judge_output(run.stdout.strip(), case.reference, call_model, case.id)
 
 
@@ -158,6 +167,13 @@ def main() -> None:
     ),
 )
 @click.option(
+    "--scores",
+    "scores_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="JSONL file each Score is appended to (created if it doesn't exist).",
+)
+@click.option(
     "--llm-judge",
     is_flag=True,
     default=False,
@@ -168,26 +184,53 @@ def main() -> None:
     ),
 )
 @click.option("--confidence", default=0.95, show_default=True, type=float)
-def run_cmd(suite_path: Path, llm_judge: bool, confidence: float) -> None:
+def run_cmd(
+    suite_path: Path, scores_path: Path, llm_judge: bool, confidence: float
+) -> None:
     """Run a suite of EvalCases and print pass/fail plus a Wilson CI."""
     cases = _load_cases(suite_path)
     call_model = make_anthropic_call_model() if llm_judge else None
 
     successes = 0
     total = 0
+    scores: list[Score] = []
     for case in cases:
         total += 1
         if llm_judge:
-            passed = _judge_case(case, call_model)
-            if passed is None:
+            judge_result = _judge_case(case, call_model)
+            if judge_result is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
                 continue
+            passed = judge_result.passed
+            scores.append(
+                Score(
+                    eval_case_id=case.id,
+                    eval_case_revision=case.revision,
+                    run_id=None,
+                    scorer_id=DEFAULT_JUDGE_MODEL,
+                    scorer_type="llm_judge",
+                    value=passed,
+                    rationale=judge_result.rationale,
+                    bias_mitigations_applied=judge_result.bias_mitigations_applied,
+                )
+            )
         else:
             passed = _score_case_deterministic(case)
+            scores.append(
+                Score(
+                    eval_case_id=case.id,
+                    eval_case_revision=case.revision,
+                    run_id=None,
+                    scorer_id=_deterministic_scorer_id(case),
+                    scorer_type="deterministic",
+                    value=passed,
+                )
+            )
         if passed:
             successes += 1
         click.echo(f"{case.id}: {'PASS' if passed else 'FAIL'}")
 
+    append_scores(scores, scores_path)
     click.echo(format_report(successes, total, confidence=confidence))
 
 
@@ -212,6 +255,13 @@ def run_cmd(suite_path: Path, llm_judge: bool, confidence: float) -> None:
     help="JSONL file each Run is appended to (created if it doesn't exist).",
 )
 @click.option(
+    "--scores",
+    "scores_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="JSONL file each Score is appended to (created if it doesn't exist).",
+)
+@click.option(
     "--llm-judge",
     is_flag=True,
     default=False,
@@ -223,7 +273,11 @@ def run_cmd(suite_path: Path, llm_judge: bool, confidence: float) -> None:
 )
 @click.option("--confidence", default=0.95, show_default=True, type=float)
 def rollout_cmd(
-    suite_path: Path, results_path: Path, llm_judge: bool, confidence: float
+    suite_path: Path,
+    results_path: Path,
+    scores_path: Path,
+    llm_judge: bool,
+    confidence: float,
 ) -> None:
     """Run a suite of EvalCases through the Rollout Scheduler and score them."""
     cases = _load_cases(suite_path)
@@ -234,22 +288,47 @@ def rollout_cmd(
 
     successes = 0
     total = 0
+    scores: list[Score] = []
     for case, run in zip(cases, runs, strict=True):
         total += 1
         if run.status != "completed":
             click.echo(f"{case.id}: {run.status.upper()}")
             continue
         if llm_judge:
-            passed = _judge_run(case, run, call_model)
-            if passed is None:
+            judge_result = _judge_run(case, run, call_model)
+            if judge_result is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
                 continue
+            passed = judge_result.passed
+            scores.append(
+                Score(
+                    eval_case_id=case.id,
+                    eval_case_revision=case.revision,
+                    run_id=run.id,
+                    scorer_id=DEFAULT_JUDGE_MODEL,
+                    scorer_type="llm_judge",
+                    value=passed,
+                    rationale=judge_result.rationale,
+                    bias_mitigations_applied=judge_result.bias_mitigations_applied,
+                )
+            )
         else:
             passed = _score_run_deterministic(case, run)
+            scores.append(
+                Score(
+                    eval_case_id=case.id,
+                    eval_case_revision=case.revision,
+                    run_id=run.id,
+                    scorer_id=_deterministic_scorer_id(case),
+                    scorer_type="deterministic",
+                    value=passed,
+                )
+            )
         if passed:
             successes += 1
         click.echo(f"{case.id}: {'PASS' if passed else 'FAIL'}")
 
+    append_scores(scores, scores_path)
     click.echo(format_report(successes, total, confidence=confidence))
 
 

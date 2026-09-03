@@ -20,12 +20,15 @@ from anthropic import AsyncAnthropic
 # A pinned, dated snapshot id — never a bare alias — so the judge model
 # never silently drifts underneath a suite of results without a
 # deliberate, reviewable bump. Mirrors gateway/internal/guardrail's own
-# guardrailPolicyVersion "bumped by hand" convention.
-_DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001"
+# guardrailPolicyVersion "bumped by hand" convention. Public (not
+# underscore-prefixed) so cli.py can cite the real model id actually
+# called as a Score.scorer_id, per docs/rfcs/2026-09-04-evals-score-
+# model.md's harness-transparency requirement.
+DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001"
 
 
 def make_anthropic_call_model(
-    model: str = _DEFAULT_JUDGE_MODEL,
+    model: str = DEFAULT_JUDGE_MODEL,
     client: AsyncAnthropic | None = None,
 ) -> Callable[[str], Awaitable[str]]:
     """Build a `call_model` closure backed by a real Anthropic API call."""
