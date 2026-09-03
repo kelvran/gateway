@@ -85,9 +85,10 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens)
 
-	if cached, ok, getErr := p.cache.Get(ctx, key); getErr == nil && ok {
+	if cached, ok := p.checkCache(ctx, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -118,7 +119,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 
 	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-		_ = p.cache.Put(ctx, key, encoded, p.cacheTTL)
+		p.writeCache(ctx, l1Key, l2Key, encoded)
 	}
 	return
 }

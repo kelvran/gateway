@@ -48,7 +48,8 @@ func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller,
 		Verifier: verifier,
 		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
 		Budget:   budget.NewTracker(),
-		Cache:    inprocess.New(),
+		Cache:    inprocess.New(0),
+		CacheL2:  inprocess.New(0),
 		Adapters: adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {
@@ -80,7 +81,8 @@ func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream Upst
 		Verifier: verifier,
 		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
 		Budget:   tracker,
-		Cache:    inprocess.New(),
+		Cache:    inprocess.New(0),
+		CacheL2:  inprocess.New(0),
 		Adapters: adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {

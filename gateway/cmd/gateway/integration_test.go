@@ -872,3 +872,61 @@ func TestIntegrationTwoVirtualKeysDoNotShareCacheEntries(t *testing.T) {
 		t.Fatalf("upstream calls after team-alpha's second (should be a HIT) request = %d, want still 2", got)
 	}
 }
+
+// TestIntegrationL2CacheHitOnNormalizedButNotExactRepeat is the real-HTTP
+// proof for docs/rfcs/2026-09-03-cache-l2-normalized-match.md: a second
+// request that's byte-different from the first (added outer whitespace
+// and a trailing "?") but normalization-equivalent must be served from
+// L2, never reaching the mock upstream a second time. A third request
+// with genuinely different content must still be a real miss, proving no
+// false-positive over-matching.
+func TestIntegrationL2CacheHitOnNormalizedButNotExactRepeat(t *testing.T) {
+	upstream, calls := newMockUpstream(t)
+	gw := newIntegrationServer(t, upstream.URL, "l2-http-secret", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_L2")
+
+	doRequest := func(content string) int {
+		reqBody, err := json.Marshal(map[string]any{
+			"model":    "gpt-4o",
+			"messages": []map[string]string{{"role": "user", "content": content}},
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader(reqBody))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		httpReq.Header.Set("Authorization", "Bearer l2-http-secret")
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.ReadAll(resp.Body)
+		return resp.StatusCode
+	}
+
+	if status := doRequest("what is the weather in paris"); status != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls after first request = %d, want 1", got)
+	}
+
+	// Byte-different (outer whitespace + trailing "?"), normalization-
+	// equivalent — must be an L2 hit, not a second real upstream call.
+	if status := doRequest("  what is the weather in paris?  "); status != http.StatusOK {
+		t.Fatalf("second (normalized-equivalent) request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls after second (should be an L2 HIT) request = %d, want still 1", got)
+	}
+
+	// Genuinely different content must still be a real miss.
+	if status := doRequest("what is the weather in london"); status != http.StatusOK {
+		t.Fatalf("third (genuinely different) request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls after third (should be a real MISS) request = %d, want 2 — L2 over-matched on genuinely different content", got)
+	}
+}

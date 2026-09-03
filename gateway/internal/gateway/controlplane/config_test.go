@@ -135,6 +135,40 @@ func TestLoadWithoutTelemetrySectionDefaultsToZeroValue(t *testing.T) {
 	if cfg.RateLimit != (RateLimitConfig{}) {
 		t.Errorf("RateLimit = %+v, want the zero value", cfg.RateLimit)
 	}
+	if cfg.Cache != (CacheConfig{}) {
+		t.Errorf("Cache = %+v, want the zero value", cfg.Cache)
+	}
+}
+
+// TestLoadCacheSectionParsesL1AndNestedL2 proves the cache: section,
+// including its nested l2: sub-section, is parsed correctly — the
+// mirror-image proof to TestLoadWithoutTelemetrySectionDefaultsToZeroValue's
+// "genuinely optional" proof above, per
+// docs/rfcs/2026-09-03-cache-l2-normalized-match.md.
+func TestLoadCacheSectionParsesL1AndNestedL2(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncache:\n  ttl_seconds: 300\n  max_entries: 5000\n  l2:\n    ttl_seconds: 75\n    max_entries: 2000\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a cache section: %v", err)
+	}
+	if cfg.Cache.TTLSeconds != 300 {
+		t.Errorf("Cache.TTLSeconds = %d, want 300", cfg.Cache.TTLSeconds)
+	}
+	if cfg.Cache.MaxEntries != 5000 {
+		t.Errorf("Cache.MaxEntries = %d, want 5000", cfg.Cache.MaxEntries)
+	}
+	if cfg.Cache.L2.TTLSeconds != 75 {
+		t.Errorf("Cache.L2.TTLSeconds = %d, want 75", cfg.Cache.L2.TTLSeconds)
+	}
+	if cfg.Cache.L2.MaxEntries != 2000 {
+		t.Errorf("Cache.L2.MaxEntries = %d, want 2000", cfg.Cache.L2.MaxEntries)
+	}
 }
 
 // TestLoadRateLimitSectionParsesRedisAddr proves the rate_limit: section,

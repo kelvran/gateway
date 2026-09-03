@@ -19,7 +19,7 @@ import (
 // doc comment on why Cache.Get/Put never hand back a pointer into shared
 // memory).
 func BenchmarkPut(b *testing.B) {
-	c := New()
+	c := New(0)
 	ctx := context.Background()
 	value := []byte(`{"id":"chatcmpl-bench","choices":[{"message":{"role":"assistant","content":"hello"}}]}`)
 
@@ -35,7 +35,7 @@ func BenchmarkPut(b *testing.B) {
 // BenchmarkGetHit measures the cost of a cache hit, including the
 // defensive copy Get makes on the way out.
 func BenchmarkGetHit(b *testing.B) {
-	c := New()
+	c := New(0)
 	ctx := context.Background()
 	value := []byte(`{"id":"chatcmpl-bench","choices":[{"message":{"role":"assistant","content":"hello"}}]}`)
 
@@ -59,7 +59,7 @@ func BenchmarkGetHit(b *testing.B) {
 // an empty/cold cache, and the path every never-before-seen request takes
 // before falling through to the upstream call).
 func BenchmarkGetMiss(b *testing.B) {
-	c := New()
+	c := New(0)
 	ctx := context.Background()
 
 	b.ReportAllocs()

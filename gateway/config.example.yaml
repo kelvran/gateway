@@ -77,6 +77,21 @@ telemetry:
 # rate_limit:
 #   redis_addr: "localhost:6379"
 
+# Cache L1 (exact-match) and L2 (normalized-match) — see
+# docs/rfcs/2026-09-03-cache-l2-normalized-match.md. Optional: omit this
+# whole section for L1's default (5-minute TTL, 10,000-entry LRU cap) and
+# L2's default (75-second TTL, 10,000-entry LRU cap). L2 applies only a
+# narrow, deliberately conservative allowlist (outer whitespace trim,
+# Unicode NFC, trailing terminal punctuation strip on the last message) —
+# see the RFC for why internal whitespace collapsing and case-folding
+# were considered and rejected.
+# cache:
+#   ttl_seconds: 300
+#   max_entries: 10000
+#   l2:
+#     ttl_seconds: 75
+#     max_entries: 10000
+
 # Static per-model price table (USD per token), used by
 # internal/costaccounting for this pass's float64 cost calculation.
 # PRD.md's Decimal-precision requirement is a documented Phase 1 upgrade.

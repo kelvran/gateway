@@ -23,12 +23,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/text/unicode/norm"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -102,14 +104,25 @@ type Config struct {
 	Limiter *ratelimit.KeyLimiter
 	// Budget tracks each virtual key's cumulative spend against its
 	// configured BudgetUSD cap. See internal/budget.
-	Budget         *budget.Tracker
-	Cache          cache.Cache
+	Budget *budget.Tracker
+	Cache  cache.Cache
+	// CacheL2 is the normalized-match layer checked on an L1 (Cache) miss,
+	// per docs/rfcs/2026-09-03-cache-l2-normalized-match.md. Required,
+	// like every other dependency here — cmd/gateway always constructs
+	// one (a second inprocess.New(...) call), there is no "L2 disabled"
+	// mode.
+	CacheL2        cache.Cache
 	Adapters       adapter.Registry
 	Deployments    []Deployment
 	CostCalculator *costaccounting.Calculator
 	Upstream       UpstreamCaller
 	Logger         *slog.Logger
 	CacheTTL       time.Duration
+	// CacheL2TTL defaults to 75 seconds when unset — shorter than
+	// CacheTTL's 5-minute default, as defense-in-depth per the RFC's TTL
+	// rationale (not a substitute for the normalization allowlist's own
+	// collision-freedom guarantee).
+	CacheL2TTL time.Duration
 	// UpstreamStream is required only for streaming requests on a
 	// cache MISS — a streaming cache HIT never touches it. Left nil, a
 	// Pipeline still handles every non-streaming request and every
@@ -126,6 +139,7 @@ type Pipeline struct {
 	limiter            *ratelimit.KeyLimiter
 	budget             *budget.Tracker
 	cache              cache.Cache
+	cacheL2            cache.Cache
 	adapters           adapter.Registry
 	deploymentsByModel map[string][]Deployment
 	rrMu               sync.Mutex
@@ -135,6 +149,7 @@ type Pipeline struct {
 	upstreamStream     UpstreamStreamCaller
 	logger             *slog.Logger
 	cacheTTL           time.Duration
+	cacheL2TTL         time.Duration
 }
 
 // NewPipeline validates cfg and constructs a Pipeline.
@@ -148,6 +163,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		return nil, fmt.Errorf("dataplane: Config.Budget is required")
 	case cfg.Cache == nil:
 		return nil, fmt.Errorf("dataplane: Config.Cache is required")
+	case cfg.CacheL2 == nil:
+		return nil, fmt.Errorf("dataplane: Config.CacheL2 is required")
 	case cfg.Adapters == nil:
 		return nil, fmt.Errorf("dataplane: Config.Adapters is required")
 	case len(cfg.Deployments) == 0:
@@ -171,12 +188,17 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
+	l2TTL := cfg.CacheL2TTL
+	if l2TTL <= 0 {
+		l2TTL = 75 * time.Second
+	}
 
 	return &Pipeline{
 		verifier:           cfg.Verifier,
 		limiter:            cfg.Limiter,
 		budget:             cfg.Budget,
 		cache:              cfg.Cache,
+		cacheL2:            cfg.CacheL2,
 		adapters:           cfg.Adapters,
 		deploymentsByModel: byModel,
 		rrCounters:         map[string]*atomic.Uint64{},
@@ -185,6 +207,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		upstreamStream:     cfg.UpstreamStream,
 		logger:             logger,
 		cacheTTL:           ttl,
+		cacheL2TTL:         l2TTL,
 	}, nil
 }
 
@@ -222,6 +245,31 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) 
 		return true
 	}
 	return allowed
+}
+
+// checkCache checks L1 (exact) then L2 (normalized) in that order, per
+// docs/rfcs/2026-09-03-cache-l2-normalized-match.md. An L2 hit is
+// promoted into L1 (best-effort — a promotion failure never affects the
+// response already found) so the next byte-identical repeat becomes an
+// L1 hit.
+func (p *Pipeline) checkCache(ctx context.Context, l1Key, l2Key string) (cached []byte, hit bool) {
+	if cached, ok, getErr := p.cache.Get(ctx, l1Key); getErr == nil && ok {
+		return cached, true
+	}
+	if cached, ok, getErr := p.cacheL2.Get(ctx, l2Key); getErr == nil && ok {
+		_ = p.cache.Put(ctx, l1Key, cached, p.cacheTTL)
+		return cached, true
+	}
+	return nil, false
+}
+
+// writeCache writes encoded to both cache layers, eagerly and
+// best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
+// Lifecycle says write-back covers "all layers." No lazy/async L2
+// population: the response is already in hand.
+func (p *Pipeline) writeCache(ctx context.Context, l1Key, l2Key string, encoded []byte) {
+	_ = p.cache.Put(ctx, l1Key, encoded, p.cacheTTL)
+	_ = p.cacheL2.Put(ctx, l2Key, encoded, p.cacheL2TTL)
 }
 
 // isModelAllowed reports whether vk is permitted to request model. An
@@ -269,9 +317,10 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens)
 
-	if cached, ok, getErr := p.cache.Get(ctx, key); getErr == nil && ok {
+	if cached, ok := p.checkCache(ctx, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -304,7 +353,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	}
 
 	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-		_ = p.cache.Put(ctx, key, encoded, p.cacheTTL)
+		p.writeCache(ctx, l1Key, l2Key, encoded)
 	}
 
 	return
@@ -518,6 +567,52 @@ func serializeMessages(messages []adapter.Message) string {
 	b, err := json.Marshal(messages)
 	if err != nil {
 		panic(fmt.Sprintf("dataplane: marshaling messages for cache key: %v", err))
+	}
+	return string(b)
+}
+
+// trailingTerminalPunctuation is the exact, closed set
+// normalizeMessages's third allowlist operation strips — nothing else,
+// ever, without a new RFC revision. See
+// docs/rfcs/2026-09-03-cache-l2-normalized-match.md's "narrower than this
+// RFC's own grounding research recommended, and why" for why this list
+// is deliberately small.
+const trailingTerminalPunctuation = ".!?"
+
+// normalizeMessages produces the L2 (normalized-match) input to
+// cache.NormalizedKey, applying EXACTLY the 3-operation allowlist
+// docs/rfcs/2026-09-03-cache-l2-normalized-match.md specifies — outer
+// whitespace trim, Unicode NFC, and a single trailing terminal
+// punctuation mark stripped from the last message only. Every other
+// field (Role, ToolCalls, ToolCallID) and every other message's Content
+// is passed through unchanged: a real difference there means a real
+// different request, never something to normalize away.
+//
+// Deliberately does NOT collapse internal whitespace or fold case — both
+// were considered and rejected for v1 because Kelvran serves agent
+// traffic that plausibly includes pasted code, where indentation and
+// identifier case can be genuinely meaningful; see the RFC's Detailed
+// Design section for the concrete collision examples that motivated
+// this.
+func normalizeMessages(messages []adapter.Message) string {
+	normalized := make([]adapter.Message, len(messages))
+	copy(normalized, messages)
+
+	for i := range normalized {
+		content := strings.TrimSpace(normalized[i].Content)
+		content = norm.NFC.String(content)
+		if i == len(normalized)-1 && content != "" {
+			last := content[len(content)-1]
+			if strings.IndexByte(trailingTerminalPunctuation, last) >= 0 {
+				content = content[:len(content)-1]
+			}
+		}
+		normalized[i].Content = content
+	}
+
+	b, err := json.Marshal(normalized)
+	if err != nil {
+		panic(fmt.Sprintf("dataplane: marshaling normalized messages for L2 cache key: %v", err))
 	}
 	return string(b)
 }

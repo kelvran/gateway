@@ -120,6 +120,27 @@ type RateLimitConfig struct {
 	RedisAddr string
 }
 
+// CacheL2Config configures the L2 (normalized-match) cache layer, per
+// docs/rfcs/2026-09-03-cache-l2-normalized-match.md. Optional — a
+// zero-valued CacheL2Config means both fields default (75s TTL, 10,000
+// max entries).
+type CacheL2Config struct {
+	TTLSeconds int
+	MaxEntries int
+}
+
+// CacheConfig configures the L1 (exact-match) cache layer and nests L2's
+// own config, per docs/rfcs/2026-09-03-cache-l2-normalized-match.md.
+// Optional — a zero-valued CacheConfig means L1 defaults exactly as
+// before that RFC (5-minute TTL), now also capacity-bounded (10,000
+// max entries) rather than truly unbounded — a safety improvement applied
+// unconditionally, not gated behind opting in.
+type CacheConfig struct {
+	TTLSeconds int
+	MaxEntries int
+	L2         CacheL2Config
+}
+
 // Config is the gateway's fully-parsed static configuration.
 type Config struct {
 	// ListenAddr is the address http.ListenAndServe binds to (e.g. ":8080").
@@ -136,6 +157,8 @@ type Config struct {
 	Budget BudgetConfig
 	// RateLimit configures distributed rate limiting. Optional.
 	RateLimit RateLimitConfig
+	// Cache configures the L1/L2 cache layers. Optional.
+	Cache CacheConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -222,6 +245,15 @@ func Load(path string) (*Config, error) {
 
 	if rateLimitRaw, ok := getMap(root, "rate_limit"); ok {
 		cfg.RateLimit.RedisAddr, _ = getString(rateLimitRaw, "redis_addr")
+	}
+
+	if cacheRaw, ok := getMap(root, "cache"); ok {
+		cfg.Cache.TTLSeconds, _ = getInt(cacheRaw, "ttl_seconds")
+		cfg.Cache.MaxEntries, _ = getInt(cacheRaw, "max_entries")
+		if l2Raw, ok := getMap(cacheRaw, "l2"); ok {
+			cfg.Cache.L2.TTLSeconds, _ = getInt(l2Raw, "ttl_seconds")
+			cfg.Cache.L2.MaxEntries, _ = getInt(l2Raw, "max_entries")
+		}
 	}
 
 	if priceRaw, ok := getMap(root, "price_table"); ok {
@@ -371,6 +403,22 @@ func getFloat(m map[string]any, key string) (float64, bool) {
 	case string:
 		f, err := strconv.ParseFloat(n, 64)
 		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func getInt(m map[string]any, key string) (int, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case string:
+		i, err := strconv.Atoi(n)
+		return i, err == nil
 	default:
 		return 0, false
 	}

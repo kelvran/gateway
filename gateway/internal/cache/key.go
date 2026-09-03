@@ -36,7 +36,37 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 	// meaningfully do with these return values — discarded explicitly
 	// (rather than left unchecked) so that stays a visible, deliberate
 	// choice instead of something errcheck has to keep flagging.
-	_, _ = fmt.Fprintf(h, "tenant=%s\x00model=%s\x00messages=%s\x00temperature=", tenantID, model, serializedMessages)
+	//
+	// The leading "layer=l1" tag exists so Key and NormalizedKey can never
+	// collide even given byte-identical remaining inputs — cheap
+	// insurance against a future refactor ever sharing one cache.Cache
+	// instance across layers, since today's isolation relies entirely on
+	// L1/L2 living in separate instances, per
+	// docs/rfcs/2026-09-03-cache-l2-normalized-match.md.
+	_, _ = fmt.Fprintf(h, "layer=l1\x00tenant=%s\x00model=%s\x00messages=%s\x00temperature=", tenantID, model, serializedMessages)
+	if temperature != nil {
+		_, _ = fmt.Fprintf(h, "%v", *temperature)
+	}
+	_, _ = fmt.Fprint(h, "\x00max_tokens=")
+	if maxTokens != nil {
+		_, _ = fmt.Fprintf(h, "%v", *maxTokens)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// NormalizedKey fabricates the L2 normalized-match cache key, per
+// docs/rfcs/2026-09-03-cache-l2-normalized-match.md. Same shape and same
+// tenantID discipline as Key (see its doc comment — the KeyPooling
+// cross-tenant leakage class applies identically here); the only
+// difference is normalizedMessages, which the caller (dataplane,
+// per its own normalizeMessages helper) must produce by applying exactly
+// the conservative allowlist that RFC specifies — this function has no
+// opinion on normalization itself, matching Key's own "primitive/
+// serialized inputs only" contract so this package still never needs to
+// import internal/adapter.
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "layer=l2\x00tenant=%s\x00model=%s\x00messages=%s\x00temperature=", tenantID, model, normalizedMessages)
 	if temperature != nil {
 		_, _ = fmt.Fprintf(h, "%v", *temperature)
 	}

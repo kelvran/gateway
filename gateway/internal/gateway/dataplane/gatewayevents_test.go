@@ -158,7 +158,8 @@ func newTestPipelineWithKeysAndLogger(t *testing.T, upstream UpstreamCaller, dep
 		Verifier: verifier,
 		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
 		Budget:   budget.NewTracker(),
-		Cache:    inprocess.New(),
+		Cache:    inprocess.New(0),
+		CacheL2:  inprocess.New(0),
 		Adapters: adapter.Registry{
 			"openai": openai.New(),
 		},

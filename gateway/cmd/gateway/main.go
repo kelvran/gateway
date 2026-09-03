@@ -198,7 +198,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Verifier:       verifier,
 		Limiter:        keyLimiter,
 		Budget:         budgetTracker,
-		Cache:          inprocess.New(),
+		Cache:          inprocess.New(cfg.Cache.MaxEntries),
+		CacheL2:        inprocess.New(cfg.Cache.L2.MaxEntries),
 		Adapters:       registry,
 		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(priceTable),
@@ -209,6 +210,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		// relying instead on the request's own context for cancellation.
 		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}),
 		Logger:         logger,
+		CacheTTL:       time.Duration(cfg.Cache.TTLSeconds) * time.Second,
+		CacheL2TTL:     time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
 	})
 }
 
