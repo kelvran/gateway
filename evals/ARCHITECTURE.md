@@ -8,7 +8,10 @@ Python service. Runs continuous, statistically rigorous evaluation of the agents
 evals/
   pyproject.toml
   uv.lock                    — own workspace manager; zero cross-awareness with the Go side
-  .importlinter               — CI-enforced layer contract (Python analogue of go-arch-lint)
+  .importlinter               — **not built**: the target layer-contract tool (Python analogue of
+                                 gateway/ARCHITECTURE.md's own equally-unbuilt `go-arch-lint` target) —
+                                 no such file exists and nothing references `importlinter` in CI or
+                                 `pyproject.toml` today, confirmed 2026-09-04
   evals/
     contracts/                — GENERATED Python stubs from api/*.proto — no source dependency, ever.
                                  Real for gatewayevents/v1; empty for otel/ (deliberately not built —

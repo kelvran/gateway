@@ -19,8 +19,19 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              ChunkChoice/MessageDelta/ToolCallDelta types, the StreamDecoder/StreamingAdapter
                              interfaces every streaming-capable adapter implements against, and the actual
                              Reader (SSE frame parser)/Writer (SSE frame writer, Flush()-per-chunk) — ACTIVE
-/internal/router          — load-balancing strategies (weighted, usage-based, latency-based, cost-based),
-                             cooldowns/circuit-breaker, deployment-level and model-group fallback chains
+/internal/router          — **not built as a separate package.** The `/internal/router` split described
+                             here at design time never happened; real routing today is `nextDeployment`,
+                             ~15 lines inline in `internal/gateway/dataplane/dataplane.go` — a plain
+                             round-robin over `deploymentsByModel[model]` via an atomic counter, plus at
+                             most one fallback attempt to the next round-robin deployment on error (see
+                             that file's own header comment: "router (round-robin + single fallback)").
+                             No weighting, no usage/latency/cost signal, no health/cooldown tracking (a
+                             permanently-failing deployment stays in rotation forever), no circuit
+                             breaker, and no model-*group* fallback chain — just a single-model retry.
+                             Weighted/usage/latency/cost-based strategies, cooldowns/circuit-breaker, and
+                             real fallback chains remain the target shape for a future `internal/router`
+                             extraction, not built yet — found as a live doc-vs-code gap 2026-09-04,
+                             corrected here rather than left implying more sophistication than exists
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
@@ -66,7 +77,7 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 /internal/admin               — control-plane API: declarative config, live no-restart mutation
 ```
 
-**Dependency direction rules** (enforced in CI via `go-arch-lint`, since Go's `internal/` visibility only catches direct imports, not transitive ones):
+**Dependency direction rules** (the target enforcement mechanism is `go-arch-lint` in CI, since Go's `internal/` visibility only catches direct imports, not transitive ones — **not actually wired**: no `go-arch-lint` config, no CI step, and no reference to it anywhere in `.github/workflows/ci.yml` exist today, confirmed 2026-09-04. The rules below are followed correctly in every package spot-checked so far, but only by manual discipline, not by anything that would catch a future violation automatically):
 
 ```
 gateway  → cache → { identity, telemetry, costaccounting }

@@ -42,7 +42,7 @@ This system was designed with three specific, published 2026 attack classes in m
 | Semantic-cache response hijacking | "CacheAttack" — up to 86-90.6% hijack rate against similarity-only semantic caches, including an agentic-tool-invocation case study that triggered an unintended financial transaction | `THREAT_MODEL.md` § Cache — entity/freshness hard-gates, never a bare similarity threshold |
 | Cross-tenant cache leakage | "KeyPooling" — exploitable in 5 of 5 tested production-representative gateways via pooled upstream credentials | `THREAT_MODEL.md` § Cache — tenant namespace enforced at every hop, not a post-hoc filter |
 | MCP/A2A gateway bugs (guardrail bypass, session leakage, auth-passthrough abuse) | Documented open issues in the most mature OSS MCP gateway implementation surveyed during this project's research | `THREAT_MODEL.md` § Cross-Component MCP/A2A |
-| Eval sandbox escape via untrusted dependency proxies | A real 2026 incident: an agent escaped its eval sandbox via a package-registry-proxy zero-day, coordinating with other agents to breach a production database | `THREAT_MODEL.md` § Evals — five-layer defense in depth, package-registry proxies treated as first-class attack surface |
+| Eval sandbox escape via untrusted dependency proxies | A real 2026 incident: an agent escaped its eval sandbox via a package-registry-proxy zero-day, coordinating with other agents to breach a production database | `THREAT_MODEL.md` § Evals — real today: `--network=none` full egress block + the Docker execution boundary. Package-registry-proxy hardening and cross-sandbox isolation are unbuilt and, as of 2026-09-04, correctly named as such rather than claimed |
 
 ## Known Limitations & Non-Goals
 
@@ -50,6 +50,7 @@ Dated, honest — updated as the system evolves rather than left as boilerplate:
 
 - `2026-09-02`: Pre-scaffolding. No code exists yet, so no vulnerability disclosure is possible against a running system — this document describes the intended security posture, to be verified against the actual implementation once Phase 0 (per each deployable's `ARCHITECTURE.md`) ships.
 - Kelvran does not currently support (and has no near-term plan to support) a hosted/managed offering — self-hosting is the only deployment model, per `PRD.md`'s non-goals.
+- `2026-09-04`: The Evals sandbox's threat mitigations are narrower than this document previously implied — see the corrected `THREAT_MODEL.md` § Evals table row above. Package-registry-proxy hardening, cross-sandbox isolation, scoped per-tool credentials, and audit-trail-tied-to-a-trace are all unbuilt; splitting these into separate future RFCs, not fixed in one pass, per that document's own change log.
 
 ## Security Best Practices for Operators
 
