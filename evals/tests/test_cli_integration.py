@@ -32,7 +32,8 @@ from click.testing import CliRunner
 import evals.cli as cli_module
 import evals.rollout.scheduler as scheduler_module
 from evals.cli import main
-from evals.results_store import load_runs, load_scores
+from evals.models import Score
+from evals.results_store import append_scores, load_runs, load_scores
 from evals.rollout.sandbox import SandboxResult
 
 _CI_PATTERN = re.compile(
@@ -113,6 +114,128 @@ def test_report_respects_custom_confidence_level():
     assert result.exit_code == 0, result.output
     assert "90% CI=" in result.output
     assert _CI_PATTERN.search(result.output) is not None
+
+
+def _write_scores(path, scores):
+    append_scores(scores, path)
+
+
+def _make_score(eval_case_id, scorer_type, value):
+    return Score(
+        eval_case_id=eval_case_id,
+        eval_case_revision=1,
+        scorer_id="exact_match" if scorer_type == "deterministic" else "judge-model",
+        scorer_type=scorer_type,
+        value=value,
+    )
+
+
+def test_report_scores_reads_persisted_deterministic_scores(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(
+        scores_path,
+        [
+            _make_score("c1", "deterministic", True),
+            _make_score("c2", "deterministic", True),
+            _make_score("c3", "deterministic", False),
+        ],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "deterministic: pass_rate=0.6667 (2/3)" in result.output
+    assert _CI_PATTERN.search(result.output) is not None
+
+
+def test_report_scores_never_blends_distinct_scorer_types(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(
+        scores_path,
+        [
+            _make_score("c1", "deterministic", True),
+            _make_score("c2", "deterministic", True),
+            _make_score("c1", "llm_judge", True),
+            _make_score("c2", "llm_judge", False),
+            _make_score("c3", "llm_judge", False),
+        ],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code == 0, result.output
+    # deterministic: 2/2 (blended with llm_judge's 1/3 would read as 3/5 —
+    # confirms the two groups are never combined into one number).
+    assert "deterministic: pass_rate=1.0000 (2/2)" in result.output
+    assert "llm_judge: pass_rate=0.3333 (1/3)" in result.output
+    lines = [line for line in result.output.splitlines() if "pass_rate=" in line]
+    assert len(lines) == 2
+    assert lines[0].startswith("deterministic:")
+    assert lines[1].startswith("llm_judge:")
+
+
+def test_report_scores_empty_file_fails_with_nonzero_exit(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    scores_path.write_text("")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code != 0
+    assert "no Scores found" in result.output
+
+
+def test_report_scores_mutually_exclusive_with_raw_counts(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(scores_path, [_make_score("c1", "deterministic", True)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "report",
+            "--scores",
+            str(scores_path),
+            "--successes",
+            "1",
+            "--total",
+            "1",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_report_successes_without_total_fails_with_nonzero_exit():
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--successes", "1"])
+
+    assert result.exit_code != 0
+    assert "must be given together" in result.output
+
+
+def test_report_with_no_input_mode_fails_with_nonzero_exit():
+    runner = CliRunner()
+    result = runner.invoke(main, ["report"])
+
+    assert result.exit_code != 0
+    assert "Provide either" in result.output
+
+
+def test_report_scores_missing_file_fails_via_click_path_validation():
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["report", "--scores", "tests/fixtures/does-not-exist.jsonl"]
+    )
+
+    assert result.exit_code != 0
+    # click's own exists=True validation must catch this, not the later,
+    # vaguer "no Scores found" ClickException.
+    assert "no Scores found" not in result.output
+    assert "does-not-exist.jsonl" in result.output
 
 
 def test_run_with_llm_judge_scores_via_real_wiring_using_a_fake_provider(

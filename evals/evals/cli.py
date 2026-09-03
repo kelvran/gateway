@@ -6,10 +6,12 @@ into the suite file. `evals rollout --suite <path> --results <path>` uses a
 distinct `task_spec` convention (`{image, command, timeout_s}`) — output
 comes from a real `run_in_sandbox()` execution via the Rollout Scheduler,
 never from the suite file itself; each `Run` is appended to `--results`
-before scoring. `evals report` prints a pass rate from raw counts. All
-three commands that emit a pass rate always print the Wilson confidence
-interval alongside it — per `PRD.md`'s explicit success metric, a bare
-percentage is never emitted on its own.
+before scoring. `evals report` prints a pass rate from raw counts, or from
+a persisted `Score`s JSONL file (`--scores`, one line per distinct
+`scorer_type` present — never blended across `deterministic` and
+`llm_judge`). All three commands that emit a pass rate always print the
+Wilson confidence interval alongside it — per `PRD.md`'s explicit success
+metric, a bare percentage is never emitted on its own.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from evals.judge.deterministic import exact_match, regex_match
 from evals.judge.llm_judge import JudgeResult, judge
 from evals.judge.providers import DEFAULT_JUDGE_MODEL, make_anthropic_call_model
 from evals.models import EvalCase, Run, Score
-from evals.results_store import append_runs, append_scores
+from evals.results_store import append_runs, append_scores, load_scores
 from evals.rollout.scheduler import run_suite
 from evals.stats import wilson_interval
 
@@ -333,11 +335,62 @@ def rollout_cmd(
 
 
 @main.command("report")
-@click.option("--successes", required=True, type=int)
-@click.option("--total", required=True, type=int)
+@click.option("--successes", default=None, type=int)
+@click.option("--total", default=None, type=int)
+@click.option(
+    "--scores",
+    "scores_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Path to a JSONL file of persisted Scores (see --scores on `run`/"
+        "`rollout`). Mutually exclusive with --successes/--total. Every "
+        "Score in the file counts as one trial (no dedup, no eval_case_id "
+        "filtering); reported as one pass_rate/CI line per distinct "
+        "scorer_type found, never blended."
+    ),
+)
 @click.option("--confidence", default=0.95, show_default=True, type=float)
-def report_cmd(successes: int, total: int, confidence: float) -> None:
-    """Print a pass rate together with its Wilson CI, given raw counts."""
+def report_cmd(
+    successes: int | None,
+    total: int | None,
+    scores_path: Path | None,
+    confidence: float,
+) -> None:
+    """Print a pass rate together with its Wilson CI.
+
+    Two mutually exclusive input modes: raw --successes/--total counts, or
+    a persisted --scores JSONL file (grouped and reported one line per
+    scorer_type — deterministic and llm_judge are never blended into one
+    number, since they are different measurement instruments).
+    """
+    counts_partial = (successes is None) != (total is None)
+    counts_given = successes is not None and total is not None
+
+    if counts_partial:
+        raise click.UsageError("--successes and --total must be given together.")
+    if scores_path is not None and counts_given:
+        raise click.UsageError(
+            "--scores is mutually exclusive with --successes/--total."
+        )
+    if scores_path is None and not counts_given:
+        raise click.UsageError(
+            "Provide either --scores, or both --successes and --total."
+        )
+
+    if scores_path is not None:
+        scores = load_scores(scores_path)
+        if not scores:
+            raise click.ClickException(f"{scores_path}: no Scores found")
+        for scorer_type in sorted({s.scorer_type for s in scores}):
+            group = [s for s in scores if s.scorer_type == scorer_type]
+            group_successes = sum(1 for s in group if s.value)
+            click.echo(
+                f"{scorer_type}: "
+                + format_report(group_successes, len(group), confidence=confidence)
+            )
+        return
+
     click.echo(format_report(successes, total, confidence=confidence))
 
 
