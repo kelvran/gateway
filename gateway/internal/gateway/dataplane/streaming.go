@@ -70,7 +70,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		err = fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
 		return
 	}
-	if !p.limiterFor(vk.ID).Allow() {
+	if !p.checkRateLimit(ctx, vk) {
 		err = ErrRateLimited
 		return
 	}

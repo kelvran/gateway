@@ -17,6 +17,7 @@ import (
 	"github.com/kelvran/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/internal/identity"
+	"github.com/kelvran/gateway/internal/ratelimit"
 )
 
 // discardLogger silences log output during tests.
@@ -45,6 +46,23 @@ func defaultTestVirtualKeys() []identity.VirtualKey {
 	}
 }
 
+// keyConfigsFromVirtualKeys converts the test-only identity.VirtualKey
+// shape into the []ratelimit.KeyConfig shape Config.Limiter needs.
+// Production code never does this conversion this way — cmd/gateway's
+// buildPipeline builds ratelimit.KeyConfig directly from
+// controlplane.VirtualKeyConfig, never by way of identity.VirtualKey.
+func keyConfigsFromVirtualKeys(keys []identity.VirtualKey) []ratelimit.KeyConfig {
+	configs := make([]ratelimit.KeyConfig, 0, len(keys))
+	for _, k := range keys {
+		configs = append(configs, ratelimit.KeyConfig{
+			ID:              k.ID,
+			Capacity:        k.RateLimitBurst,
+			RefillPerSecond: k.RateLimitRefill,
+		})
+	}
+	return configs
+}
+
 func newTestPipelineWithKeysAndBudget(t *testing.T, upstream UpstreamCaller, deployments []Deployment, keys []identity.VirtualKey, tracker *budget.Tracker) *Pipeline {
 	t.Helper()
 
@@ -53,10 +71,10 @@ func newTestPipelineWithKeysAndBudget(t *testing.T, upstream UpstreamCaller, dep
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	p, err := NewPipeline(Config{
-		Verifier:    verifier,
-		VirtualKeys: keys,
-		Budget:      tracker,
-		Cache:       inprocess.New(),
+		Verifier: verifier,
+		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:   tracker,
+		Cache:    inprocess.New(),
 		Adapters: adapter.Registry{
 			"openai": openai.New(),
 		},

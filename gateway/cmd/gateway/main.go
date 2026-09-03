@@ -38,6 +38,8 @@ import (
 	"github.com/kelvran/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/internal/identity"
+	"github.com/kelvran/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/internal/ratelimit/redislimiter"
 	"github.com/kelvran/gateway/internal/telemetry"
 )
 
@@ -117,6 +119,7 @@ func run(configPath string, logger *slog.Logger) error {
 // environment and wires the full dataplane.Pipeline.
 func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pipeline, error) {
 	virtualKeys := make([]identity.VirtualKey, 0, len(cfg.VirtualKeys))
+	keyConfigs := make([]ratelimit.KeyConfig, 0, len(cfg.VirtualKeys))
 	for _, vk := range cfg.VirtualKeys {
 		burst, refill := vk.RateLimitBurst, vk.RateLimitRefill
 		if burst <= 0 && refill <= 0 {
@@ -136,6 +139,11 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			AllowedModels:   allowedModels,
 			RateLimitBurst:  burst,
 			RateLimitRefill: refill,
+		})
+		keyConfigs = append(keyConfigs, ratelimit.KeyConfig{
+			ID:              vk.Name,
+			Capacity:        burst,
+			RefillPerSecond: refill,
 		})
 	}
 	verifier, err := identity.NewVerifier(virtualKeys)
@@ -181,9 +189,14 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		return nil, fmt.Errorf("constructing budget tracker: %w", err)
 	}
 
+	keyLimiter, err := newKeyLimiter(cfg.RateLimit, keyConfigs)
+	if err != nil {
+		return nil, fmt.Errorf("constructing rate limiter: %w", err)
+	}
+
 	return dataplane.NewPipeline(dataplane.Config{
 		Verifier:       verifier,
-		VirtualKeys:    virtualKeys,
+		Limiter:        keyLimiter,
 		Budget:         budgetTracker,
 		Cache:          inprocess.New(),
 		Adapters:       registry,
@@ -219,6 +232,27 @@ func newBudgetTracker(cfg controlplane.BudgetConfig, logger *slog.Logger) (*budg
 		return nil, fmt.Errorf("hydrating budget tracker from %q: %w", cfg.PersistPath, err)
 	}
 	return tracker, nil
+}
+
+// newKeyLimiter constructs a pure in-memory ratelimit.KeyLimiter when
+// cfg.RedisAddr is empty (the default — a bare config.yaml with no
+// rate_limit: section behaves identically to before
+// docs/rfcs/2026-09-03-distributed-rate-limiting.md existed), or one
+// backed by Redis at cfg.RedisAddr otherwise. Opening a redislimiter.Limiter
+// never fails on an unreachable address (go-redis dials lazily) — an
+// error here means the address itself is malformed, not that Redis is
+// currently unavailable, which is exactly the distinction this RFC's
+// fail-open policy depends on: gateway startup should not fail-closed on
+// Redis being down.
+func newKeyLimiter(cfg controlplane.RateLimitConfig, keys []ratelimit.KeyConfig) (*ratelimit.KeyLimiter, error) {
+	if cfg.RedisAddr == "" {
+		return ratelimit.NewInMemoryKeyLimiter(keys), nil
+	}
+	backend, err := redislimiter.Open(cfg.RedisAddr)
+	if err != nil {
+		return nil, fmt.Errorf("opening redis rate limiter at %q: %w", cfg.RedisAddr, err)
+	}
+	return ratelimit.NewRedisKeyLimiter(keys, backend), nil
 }
 
 // chatCompletionsHandler adapts dataplane.Pipeline.HandleChatCompletion to

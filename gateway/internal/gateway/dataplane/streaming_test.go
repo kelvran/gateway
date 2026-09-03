@@ -17,6 +17,7 @@ import (
 	"github.com/kelvran/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/internal/identity"
+	"github.com/kelvran/gateway/internal/ratelimit"
 )
 
 // realOpenAISSEStream is a minimal but genuine OpenAI streaming response:
@@ -44,11 +45,11 @@ func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller,
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	p, err := NewPipeline(Config{
-		Verifier:    verifier,
-		VirtualKeys: keys,
-		Budget:      budget.NewTracker(),
-		Cache:       inprocess.New(),
-		Adapters:    adapters,
+		Verifier: verifier,
+		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:   budget.NewTracker(),
+		Cache:    inprocess.New(),
+		Adapters: adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {
 				return deployments
@@ -76,11 +77,11 @@ func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream Upst
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	p, err := NewPipeline(Config{
-		Verifier:    verifier,
-		VirtualKeys: keys,
-		Budget:      tracker,
-		Cache:       inprocess.New(),
-		Adapters:    adapters,
+		Verifier: verifier,
+		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:   tracker,
+		Cache:    inprocess.New(),
+		Adapters: adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {
 				return deployments

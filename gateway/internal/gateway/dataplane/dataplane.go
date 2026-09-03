@@ -82,14 +82,14 @@ type UpstreamCaller func(ctx context.Context, dep Deployment, providerReq any) (
 // and 5 minutes respectively.
 type Config struct {
 	Verifier *identity.Verifier
-	// VirtualKeys are the same keys Verifier resolves against — passed
-	// separately (rather than exposing an accessor on Verifier) so
-	// NewPipeline can build one *ratelimit.TokenBucket per key without
-	// Verifier needing to know anything about rate limiting. Per
-	// docs/rfcs/2026-09-02-virtual-keys-budgets.md, callers (cmd/gateway)
-	// construct this slice once and pass it to both identity.NewVerifier
-	// and this field — they must describe the same set of keys.
-	VirtualKeys []identity.VirtualKey
+	// Limiter enforces each virtual key's own burst/refill rate limit —
+	// either in-memory (ratelimit.NewInMemoryKeyLimiter) or Redis-backed
+	// (ratelimit.NewRedisKeyLimiter), per
+	// docs/rfcs/2026-09-03-distributed-rate-limiting.md. Pre-built by the
+	// caller (cmd/gateway), exactly like Budget below — NewPipeline
+	// itself never needs to know which virtual keys exist to construct
+	// this, only to use it.
+	Limiter *ratelimit.KeyLimiter
 	// Budget tracks each virtual key's cumulative spend against its
 	// configured BudgetUSD cap. See internal/budget.
 	Budget         *budget.Tracker
@@ -113,7 +113,7 @@ type Config struct {
 // Pipeline is the wired dataplane request pipeline.
 type Pipeline struct {
 	verifier           *identity.Verifier
-	limiters           map[string]*ratelimit.TokenBucket // keyed by identity.VirtualKey.ID
+	limiter            *ratelimit.KeyLimiter
 	budget             *budget.Tracker
 	cache              cache.Cache
 	adapters           adapter.Registry
@@ -132,8 +132,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	switch {
 	case cfg.Verifier == nil:
 		return nil, fmt.Errorf("dataplane: Config.Verifier is required")
-	case len(cfg.VirtualKeys) == 0:
-		return nil, fmt.Errorf("dataplane: Config.VirtualKeys must be non-empty")
+	case cfg.Limiter == nil:
+		return nil, fmt.Errorf("dataplane: Config.Limiter is required")
 	case cfg.Budget == nil:
 		return nil, fmt.Errorf("dataplane: Config.Budget is required")
 	case cfg.Cache == nil:
@@ -153,11 +153,6 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		byModel[d.Model] = append(byModel[d.Model], d)
 	}
 
-	limiters := make(map[string]*ratelimit.TokenBucket, len(cfg.VirtualKeys))
-	for _, vk := range cfg.VirtualKeys {
-		limiters[vk.ID] = ratelimit.NewTokenBucket(vk.RateLimitBurst, vk.RateLimitRefill)
-	}
-
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -169,7 +164,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 
 	return &Pipeline{
 		verifier:           cfg.Verifier,
-		limiters:           limiters,
+		limiter:            cfg.Limiter,
 		budget:             cfg.Budget,
 		cache:              cfg.Cache,
 		adapters:           cfg.Adapters,
@@ -183,26 +178,40 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}, nil
 }
 
-// Close releases any resources the Pipeline owns — currently, an optional
+// Close releases any resources the Pipeline owns — an optional
 // restart-durable budget store (see internal/budget.Tracker.Close and
-// docs/rfcs/2026-09-03-budget-persistence.md). p.budget is never nil at
-// this point (NewPipeline already validates that), so this always has a
-// real Tracker to close, even one with no store configured (a no-op in
-// that case).
+// docs/rfcs/2026-09-03-budget-persistence.md) and an optional
+// Redis-backed rate limiter (see internal/ratelimit.KeyLimiter.Close and
+// docs/rfcs/2026-09-03-distributed-rate-limiting.md). p.budget and
+// p.limiter are never nil at this point (NewPipeline already validates
+// both), so this always has real values to close, even ones with
+// nothing to actually release (a no-op in the in-memory/no-store cases).
+// Both Close calls always run, even if the first errors — a resource
+// leak in one must never suppress cleanup of the other.
 func (p *Pipeline) Close() error {
-	return p.budget.Close()
+	budgetErr := p.budget.Close()
+	limiterErr := p.limiter.Close()
+	return errors.Join(budgetErr, limiterErr)
 }
 
-// limiterFor returns keyID's rate limiter. Every identity.VirtualKey
-// Verify can ever resolve was present in Config.VirtualKeys at
-// construction time (both are built from the same slice by cmd/gateway),
-// so this map lookup is an established invariant, not a runtime
-// possibility to handle gracefully — a missing entry here means the
-// Verifier and Config.VirtualKeys were wired from two different slices,
-// which is a wiring bug that should fail loudly, not be silently patched
-// over.
-func (p *Pipeline) limiterFor(keyID string) *ratelimit.TokenBucket {
-	return p.limiters[keyID]
+// checkRateLimit reports whether vk may proceed. A Redis backend error
+// (network failure, timeout) is logged and the request is allowed
+// through rather than rejected — see
+// docs/rfcs/2026-09-03-distributed-rate-limiting.md's "Fail-open, not
+// fail-closed" section for why that's the right default specifically for
+// Kelvran: internal/budget.Tracker's per-key USD cap is a second,
+// independent control that never touches Redis, so a rate-limiter
+// outage alone does not remove every spending control at once. In
+// in-memory mode, p.limiter.Allow never returns an error at all, so this
+// fail-open path is only ever exercised when a Redis backend is
+// configured.
+func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) bool {
+	allowed, err := p.limiter.Allow(ctx, vk.ID)
+	if err != nil {
+		p.logger.Warn("ratelimit_backend_unavailable", "key_id", vk.ID, "error", err.Error())
+		return true
+	}
+	return allowed
 }
 
 // isModelAllowed reports whether vk is permitted to request model. An
@@ -240,7 +249,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	if !p.limiterFor(vk.ID).Allow() {
+	if !p.checkRateLimit(ctx, vk) {
 		err = ErrRateLimited
 		return
 	}

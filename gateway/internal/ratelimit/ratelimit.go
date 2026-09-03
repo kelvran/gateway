@@ -1,11 +1,15 @@
-// Package ratelimit implements a single-instance, in-memory token-bucket
-// rate limiter.
+// Package ratelimit implements per-virtual-key token-bucket rate
+// limiting: a real token-bucket algorithm (refill rate + burst
+// capacity), not a naive fixed-window counter, so burst traffic is
+// handled correctly.
 //
-// Per PRD.md's explicit Phase 0 scope note, distributed (Redis-backed)
-// rate limiting across multiple gateway instances is Phase 1 — this pass
-// is deliberately single-process only. It is still a real token-bucket
-// algorithm (refill rate + burst capacity), not a naive fixed-window
-// counter, so burst traffic is handled correctly.
+// TokenBucket itself is single-process, in-memory only. KeyLimiter sits
+// above it and is what callers actually use: backed by TokenBucket by
+// default (NewInMemoryKeyLimiter), or by a Redis-backed RedisBackend
+// (NewRedisKeyLimiter) when correctness across multiple gateway
+// instances matters — see
+// docs/rfcs/2026-09-03-distributed-rate-limiting.md and
+// internal/ratelimit/redislimiter for the real implementation.
 package ratelimit
 
 import (

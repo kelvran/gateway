@@ -67,6 +67,16 @@ telemetry:
   exporter: "stdout" # "stdout" | "otlp" | "none"
   # otlp_endpoint: "localhost:4318"   # only read when exporter: "otlp"
 
+# Distributed (Redis-backed) rate limiting — see
+# docs/rfcs/2026-09-03-distributed-rate-limiting.md. Optional: omit this
+# whole section (or leave it commented out) for the default in-memory,
+# single-process token bucket, unchanged from before this RFC. Set
+# redis_addr only once you're running more than one gateway instance and
+# need each virtual key's burst/refill cap enforced correctly across all
+# of them.
+# rate_limit:
+#   redis_addr: "localhost:6379"
+
 # Static per-model price table (USD per token), used by
 # internal/costaccounting for this pass's float64 cost calculation.
 # PRD.md's Decimal-precision requirement is a documented Phase 1 upgrade.

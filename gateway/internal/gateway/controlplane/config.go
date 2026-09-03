@@ -110,6 +110,16 @@ type BudgetConfig struct {
 	PersistPath string
 }
 
+// RateLimitConfig configures distributed (Redis-backed) rate limiting,
+// per docs/rfcs/2026-09-03-distributed-rate-limiting.md. Optional — a
+// zero-valued RateLimitConfig (RedisAddr == "") means pure in-memory
+// per-key token buckets, exactly as before this RFC.
+type RateLimitConfig struct {
+	// RedisAddr is the Redis server address ("host:port"). Empty means
+	// no distributed rate limiting.
+	RedisAddr string
+}
+
 // Config is the gateway's fully-parsed static configuration.
 type Config struct {
 	// ListenAddr is the address http.ListenAndServe binds to (e.g. ":8080").
@@ -124,6 +134,8 @@ type Config struct {
 	Telemetry TelemetryConfig
 	// Budget configures budget-spend persistence. Optional.
 	Budget BudgetConfig
+	// RateLimit configures distributed rate limiting. Optional.
+	RateLimit RateLimitConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -206,6 +218,10 @@ func Load(path string) (*Config, error) {
 
 	if budgetRaw, ok := getMap(root, "budget"); ok {
 		cfg.Budget.PersistPath, _ = getString(budgetRaw, "persist_path")
+	}
+
+	if rateLimitRaw, ok := getMap(root, "rate_limit"); ok {
+		cfg.RateLimit.RedisAddr, _ = getString(rateLimitRaw, "redis_addr")
 	}
 
 	if priceRaw, ok := getMap(root, "price_table"); ok {

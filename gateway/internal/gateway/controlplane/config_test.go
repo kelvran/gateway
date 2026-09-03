@@ -132,6 +132,30 @@ func TestLoadWithoutTelemetrySectionDefaultsToZeroValue(t *testing.T) {
 	if cfg.Budget != (BudgetConfig{}) {
 		t.Errorf("Budget = %+v, want the zero value", cfg.Budget)
 	}
+	if cfg.RateLimit != (RateLimitConfig{}) {
+		t.Errorf("RateLimit = %+v, want the zero value", cfg.RateLimit)
+	}
+}
+
+// TestLoadRateLimitSectionParsesRedisAddr proves the rate_limit: section,
+// when present, is parsed correctly — the mirror-image proof to
+// TestLoadWithoutTelemetrySectionDefaultsToZeroValue's "genuinely
+// optional" proof above.
+func TestLoadRateLimitSectionParsesRedisAddr(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nrate_limit:\n  redis_addr: \"localhost:6379\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a rate_limit section: %v", err)
+	}
+	if cfg.RateLimit.RedisAddr != "localhost:6379" {
+		t.Errorf("RateLimit.RedisAddr = %q, want %q", cfg.RateLimit.RedisAddr, "localhost:6379")
+	}
 }
 
 // TestLoadBudgetSectionParsesPersistPath proves the budget: section, when

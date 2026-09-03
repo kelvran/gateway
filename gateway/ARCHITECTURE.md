@@ -21,7 +21,14 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              Reader (SSE frame parser)/Writer (SSE frame writer, Flush()-per-chunk) — ACTIVE
 /internal/router          — load-balancing strategies (weighted, usage-based, latency-based, cost-based),
                              cooldowns/circuit-breaker, deployment-level and model-group fallback chains
-/internal/ratelimit        — distributed token bucket (Redis + Lua/EVALSHA), hierarchical scope resolution
+/internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
+                             docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
+                             (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
+                             a Lua script over go-redis, atomic across any number of gateway instances)
+                             when `rate_limit.redis_addr` is configured — a Redis backend error fails
+                             open (logged, request allowed), since internal/budget's per-key USD cap is
+                             an independent backstop. Hierarchical scope resolution (org/team/user/session)
+                             remains target-only, same boundary as identity's own scope deferral below
 /internal/cache            — Cache's public interface — see "Cache Subsystem" below; this is the ONLY
                              package Gateway's request pipeline is allowed to import from Cache
     /port.go                — type Cache interface { Get, Put } — the sole import surface
@@ -60,14 +67,19 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 
 ```
 gateway  → cache → { identity, telemetry, costaccounting }
-gateway  → { identity, budget, provideradapter, costaccounting, telemetry }
+gateway  → { identity, budget, ratelimit, provideradapter, costaccounting, telemetry }
 cache    ✗→ provideradapter     (cache is provider-agnostic — keyed on normalized request, not on which
                                   upstream served it)
 cache    ✗→ gateway              (no back-references — this is what makes cache extractable later)
-{identity, budget, telemetry, provideradapter, costaccounting} ✗→ gateway, cache   (shared kernel is a leaf)
+{identity, budget, ratelimit, telemetry, provideradapter, costaccounting} ✗→ gateway, cache   (shared kernel is a leaf)
 budget   ✗→ identity              (budget tracks by key ID string only — it doesn't need to know what a
                                   VirtualKey is, only that it's a string; keeps both packages independently
                                   testable and reusable)
+ratelimit ✗→ identity            (same reasoning as budget above — KeyConfig carries a plain key ID string)
+ratelimit/redislimiter ✗→ ratelimit   (the interface (RedisBackend) lives in the consumer package; the
+                                  Redis-specific implementation never imports it back — the same pattern
+                                  budget/boltstore already established, so go-redis stays out of
+                                  ratelimit's own dependency graph in the default, in-memory-only case)
 ```
 
 ## Request Lifecycle
@@ -124,7 +136,8 @@ Pre-call and post-call middleware hooks, independently swappable. Ships with a b
 |---|---|
 | Language/runtime | Go 1.25+ |
 | HTTP | `net/http` + `httputil.ReverseProxy`-derived streaming |
-| Rate-limit / hot cache state | Redis (`go-redis/redis` v9), Lua/EVALSHA scripts |
+| Distributed rate limiting | `github.com/redis/go-redis/v9` + a Lua token-bucket script — **real**, per `docs/rfcs/2026-09-03-distributed-rate-limiting.md` (the fourth external Go dependency; opt-in, isolated to `internal/ratelimit/redislimiter`; unset = in-memory, unchanged) |
+| Hot cache state (future L2/L3) | Redis — not yet built |
 | Control-plane config store | Postgres (`pgx`/`sqlc`) — still the target for real control-plane state |
 | Budget-spend restart-durability | `go.etcd.io/bbolt` — **real**, per `docs/rfcs/2026-09-03-budget-persistence.md` (single-instance only; the third external Go dependency, near-zero *new* transitive weight since its one real dependency, `golang.org/x/sys`, is already pulled in via OTel) |
 | Observability sink | ClickHouse (`clickhouse-go`); acceptable to start on Postgres/Timescale pre-scale |
