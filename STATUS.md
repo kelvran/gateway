@@ -2,7 +2,7 @@
 
 ## Status
 
-🟢 Initial code scaffolding + a deepened test suite + real SSE streaming + real multi-tenant virtual keys/budgets + real OTel tracing/agent_run_id + Decimal-precision cost accounting + restart-durable budget persistence — all complete, verified, and committed. `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only — reaffirmed a third time 2026-09-03, see `docs/development/BRANCHES.md`). CI exists (`.github/workflows/ci.yml`), still not yet run against a real push — this pass's own research flagged that as the more urgent gap than any branch-topology change.
+🟢 Initial code scaffolding + a deepened test suite + real SSE streaming + real multi-tenant virtual keys/budgets + real OTel tracing/agent_run_id + Decimal-precision cost accounting + restart-durable budget persistence — all complete, verified, and committed. `make verify` passes end-to-end for both deployables (build/vet/lint/test). Git initialized (trunk-based, `main`-only — reaffirmed a third time 2026-09-03, see `docs/development/BRANCHES.md`). **Repo is now live and public** at `github.com/kelvran/gateway`; `.github/workflows/ci.yml` has run for real against real pushes — both `gateway` and `evals` jobs green, `-race` enabled — after fixing one genuinely latent bug the first real run caught (`golangci-lint-action@v6` didn't support golangci-lint v2 at all).
 
 ## IMPORTANT
 
@@ -14,7 +14,7 @@ Unreleased. Neither `gateway` nor `evals` has a tagged version yet — both have
 
 ## Current Phase
 
-Restart-durable budget-spend persistence, just landed on top of Decimal-precision cost accounting + OTel tracing + virtual keys/budgets + streaming + the initial scaffolding — the direct continuation of the Decimal fix (the numbers are now exact, and now they also survive a restart). Same spec→plan→implement pipeline: `docs/rfcs/2026-09-03-budget-persistence.md` (spec) → `docs/plans/2026-09-03-budget-persistence.md` (5-task plan) → implementation. `go.etcd.io/bbolt` (third external Go dependency, near-zero *new* transitive weight) backs `budget.Tracker` when a new `budget.persist_path` config field is set — a deliberate, bounded stepping stone ahead of the already-planned Postgres control-plane store, single-instance only, opt-in only (unset = unchanged pure in-memory behavior). Research changed the design mid-flight: the initial SQLite lean was replaced with `bbolt` after research surfaced SQLite's own documented dependency-pinning fragility for this narrow use case.
+Release readiness, just closed: branch strategy reaffirmed a third time via fresh `/deep-research` (`docs/development/BRANCHES.md`), a `kelvran` GitHub org + public `github.com/kelvran/gateway` repo created, `main` pushed, and CI validated against two real runs (the first caught and the second confirmed the fix for a genuine `golangci-lint-action@v6`/golangci-lint-v2 incompatibility). This closes out Phase 1 ("foundational correctness/release hygiene") from the 2026-09-03 phase-audit workflow's roadmap except for one item: distributed (Redis-backed) rate limiting, deferred twice already and still open.
 
 ## Verification State (measured, not assumed)
 
@@ -33,11 +33,11 @@ Restart-durable budget-spend persistence, just landed on top of Decimal-precisio
 
 ## Last Completed Task
 
-Restart-durable budget-spend persistence for `gateway`, implemented end-to-end (new `internal/budget/boltstore` package → `budget.Tracker`/`dataplane.Pipeline` wiring → controlplane config → `cmd/gateway` wiring + the real restart-survival integration test → docs/changelog) per `docs/plans/2026-09-03-budget-persistence.md`. See `docs/agents/LOGS.md`'s latest entry for full detail, including how research changed the storage-backend choice mid-flight (SQLite → bbolt).
+Release readiness: third-pass branch-strategy reaffirmation + first real GitHub remote/CI validation for `gateway`. See `docs/agents/LOGS.md`'s latest entries for full detail, including the workflow self-report discrepancy caught during the branching pass and the real CI bug caught on the first live push.
 
 ## Next Action
 
-Branch strategy reaffirmed a third time (2026-09-03, `docs/development/BRANCHES.md`) — no branch-topology change, but the research surfaced a concrete precondition gap: CI has never run against a real push, which is the exact thing the "solo maintainer may commit direct to trunk" exception assumes is already true. The remaining roadmap items are the open candidates: distributed (Redis) rate limiting, release readiness (tag/remote/real CI run — needs the founder's direct involvement), the `api/` cross-language contract, Cache L2/L3 completion, and the evals skeptic-panel — pending the founder's explicit choice.
+Distributed (Redis-backed) rate limiting is the last open item in Phase 1 ("foundational correctness/release hygiene") — deferred twice already, still deliberately. Other open candidates from the 2026-09-03 phase-audit roadmap: the `api/` cross-language contract (Phase 2), Cache L2/L3 completion (Phase 3), and the evals skeptic-panel (Phase 4) — pending the founder's explicit choice. Tagging a first real release (`gateway/v0.1.0`, `evals/v0.1.0`) is now newly viable (remote + green CI exist) but not yet decided.
 
 ## Release Runbook
 
