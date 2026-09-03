@@ -18,7 +18,13 @@ evals/
                                  the golden-fixture round-trip test docs/testing/TESTING.md §5 promised.
                                  Live production-trace sampling from a running gateway (the transport is
                                  still undecided) remains a documented future slice, not built here
-    rollout/                   — sandboxed agent rollout orchestration
+    rollout/                   — real, v1, per docs/rfcs/2026-09-04-evals-rollout-scheduler.md:
+                                 `sandbox.py`'s Docker-sandboxed execution wrapper, `scheduler.py`'s
+                                 sequential Rollout Scheduler (one EvalCase -> one run_in_sandbox() call
+                                 -> one Run, no concurrency/pool this pass), and `results_store.py`'s
+                                 append-only JSONL persistence. Sandbox Pool (concurrency) and a
+                                 Task/Dataset Registry remain unbuilt — diagram-only, per that RFC's
+                                 own scope boundary
     judge/                     — LLM-judge + statistics (bootstrap resampling, Bayesian model comparison,
                                  confidence intervals, pass@k / pass^k reliability)
 ```
@@ -51,6 +57,8 @@ gateway/cache ✗→ evals                         (never, under any circumstanc
 [Online Eval Service: shadow / canary / drift] ←── production traffic sample (from gateway)
 ```
 
+**Real today**: `Rollout Scheduler` (sequential — no `Sandbox Pool` yet) and a flat-file `Results Store` (no Dashboard), per `docs/rfcs/2026-09-04-evals-rollout-scheduler.md` — scored with the existing deterministic `Scorer` only (no `LLM-judge`/skeptic-panel wiring), no power calculation in the `Stats Engine` beyond Wilson CI. Every other box (`Task/Dataset Registry`, `Trace Collector`, `Golden/Regression Dataset` promotion, `CI/CD Gate`, `Online Eval Service`) remains diagram-only.
+
 \* Skeptic-panel adversarial verification is a v2 feature per `PRD.md`'s scope note — v1 ships a single LLM-judge with bias mitigations (CoT-forcing, reference-guided grading, judge-model ≠ policy-model), but the `Scorer Service`'s interface is designed to accept multiple judges from day one so the panel is an additive change later, not a rewrite.
 
 Two decisions drive this shape, both taken from how the highest-scale operators run this pattern in practice: **generation is decoupled from evaluation** (a rollout produces a trace and terminates; scoring is a separate, resumable job that reads the trace, so a pod eviction never invalidates already-collected data), and **the trace store is structurally distinct from the dataset store but joinable by ID** (a production trace that reveals a bug is promoted directly into the regression dataset, not re-typed by hand).
@@ -69,6 +77,8 @@ Score    { run_id, scorer_id, scorer_type: deterministic|llm_judge|skeptic_panel
            value, rationale, rubric_axis, bias_mitigations_applied: [...] }
 ```
 
+**`EvalCase` and `Run` are real** (`evals/models.py`); `Trace`, `Span`, and `Score` remain unbuilt. `Run`'s real v1 shape (`docs/rfcs/2026-09-04-evals-rollout-scheduler.md`) is deliberately narrower than the sketch above: `harness_config` carries only `{image, command, timeout_s}` — the literal sandbox invocation the Rollout Scheduler actually makes — not the full `scaffold_version`/`tool_budget`/`retry_policy`/`step_budget`/`sandbox_tier` set sketched for a future pluggable multi-step agent harness that doesn't exist yet; `cost_usd` defaults to `None` (not `0.0`), since v1's sandbox-only harness makes no billed call; there is no `Trace`/`Span` field at all, not even an empty placeholder, since `api/otel`'s transport is still undecided.
+
 `harness_config` is a **required** field on `Run`, not optional metadata — harness swaps alone have been shown to move scores 10+ points in comparable systems, so no cross-run comparison is allowed to surface without this visible.
 
 ## Harness-Transparency Design
@@ -86,8 +96,8 @@ Docker (v1, CI/moderate-risk workloads) → gVisor → Firecracker microVM (cust
 | Language/runtime | Python 3.12+ |
 | Orchestration | `asyncio` at v1; Ray Core actors once concurrent-rollout count justifies it |
 | Sandboxing | Docker at v1; gVisor/Firecracker added per the tiering above |
-| Statistics | numpy / scipy / scikit-learn; Wilson/bootstrap confidence intervals |
-| Judge SDKs | Native Anthropic/OpenAI SDKs |
+| Statistics | **Real today**: Wilson confidence intervals, stdlib-only (`math`/`statistics`, zero dependencies). numpy/scipy/scikit-learn (bootstrap resampling, Bayesian model comparison, pass@k/pass^k) remain a future target — not installed, not built |
+| Judge SDKs | **Not yet wired**: `judge()`'s real CoT-forcing/reference-guided prompt logic exists (`evals/judge/llm_judge.py`), but takes `call_model` as an injected callable with zero SDK code behind it — `anthropic`/`openai` are not declared dependencies. Native Anthropic/OpenAI SDKs remain the future target for a real implementation of that callable |
 | Tracing | OTel Python SDK, GenAI semantic conventions, consumed from `api/otel` |
 
 A thin TypeScript client SDK is a plausible later addition for JS/TS-agent instrumentation, mirroring DeepEval's own Python-core/TS-client split — not part of v1.

@@ -43,3 +43,42 @@ class EvalCase(BaseModel):
         Never mutates `self` — revisions are immutable once created.
         """
         return self.model_copy(update={"revision": revision})
+
+
+RunStatus = Literal["completed", "timed_out", "error"]
+
+
+class Run(BaseModel):
+    """The result of executing one `EvalCase` through the Rollout Scheduler.
+
+    A deliberately narrowed v1 slice of ARCHITECTURE.md's full `Run` sketch,
+    per docs/rfcs/2026-09-04-evals-rollout-scheduler.md — every field below
+    is either real today or an honest "not measured" `None`, never a
+    fabricated placeholder:
+
+    - `cost_usd` defaults to `None`, not `0.0`: `run_in_sandbox()` runs a
+      Docker command, not a billed LLM call, so "measured as zero" would be
+      false. `None` means "not applicable to this harness yet."
+    - `harness_config` carries only `{image, command, timeout_s}` — the
+      literal sandbox invocation — not the full `scaffold_version`/
+      `tool_budget`/`retry_policy`/`step_budget`/`sandbox_tier` set the
+      architecture sketch describes for a future pluggable multi-step agent
+      harness that doesn't exist yet.
+    - There is no `Trace`/`Span` field, not even an empty placeholder —
+      `api/otel`'s transport is still undecided, so a stub field here would
+      be dead code with no consumer.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    eval_case_id: str
+    eval_case_revision: int
+    harness_config: dict
+    status: RunStatus
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    latency_ms: float
+    cost_usd: float | None = None
+    error: str | None = None
