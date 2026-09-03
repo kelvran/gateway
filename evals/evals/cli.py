@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import click
 
 from evals.judge.deterministic import exact_match, regex_match
+from evals.judge.llm_judge import judge
+from evals.judge.providers import make_anthropic_call_model
 from evals.models import EvalCase, Run
 from evals.rollout.results_store import append_runs
 from evals.rollout.scheduler import run_suite
@@ -84,6 +87,49 @@ def _score_run_deterministic(case: EvalCase, run: Run) -> bool:
     )
 
 
+def _judge_output(
+    output: str,
+    reference: str | None,
+    call_model: Callable[[str], Awaitable[str]],
+    case_id: str,
+) -> bool | None:
+    """Score `output` against `reference` with a real LLM-judge call.
+
+    Returns `None` when the judge call itself fails (a malformed response,
+    an SDK/network error) — the caller counts that as a judged error and
+    moves on to the next case, mirroring
+    `evals.rollout.scheduler.run_suite`'s "one case's failure never aborts
+    the suite" precedent. A missing reference is a suite-authoring error,
+    not a judge-call failure, so it raises rather than being swallowed.
+    """
+    if reference is None:
+        raise click.ClickException(
+            f"case {case_id!r}: LLM-judge scoring requires a reference"
+        )
+    try:
+        result = asyncio.run(
+            judge(output=output, reference=reference, call_model=call_model)
+        )
+    except Exception:
+        return None
+    return result.passed
+
+
+def _judge_case(
+    case: EvalCase, call_model: Callable[[str], Awaitable[str]]
+) -> bool | None:
+    output = case.task_spec.get("output")
+    if output is None:
+        raise ValueError(f"case {case.id!r}: task_spec has no 'output' to score")
+    return _judge_output(output, case.reference, call_model, case.id)
+
+
+def _judge_run(
+    case: EvalCase, run: Run, call_model: Callable[[str], Awaitable[str]]
+) -> bool | None:
+    return _judge_output(run.stdout.strip(), case.reference, call_model, case.id)
+
+
 def format_report(successes: int, total: int, confidence: float = 0.95) -> str:
     """Format a pass rate together with its Wilson CI — never a bare number."""
     pass_rate = successes / total if total else 0.0
@@ -116,30 +162,28 @@ def main() -> None:
     is_flag=True,
     default=False,
     help=(
-        "Score with the LLM-judge instead of the deterministic scorer. Needs a "
-        "real provider API key and is not wired to a live provider SDK in this "
-        "scaffolding pass — see docs/rfcs/2026-09-02-initial-code-scaffolding.md."
+        "Score with a real Anthropic LLM-judge call instead of the "
+        "deterministic scorer. Requires ANTHROPIC_API_KEY in the "
+        "environment — see evals.judge.providers.make_anthropic_call_model."
     ),
 )
 @click.option("--confidence", default=0.95, show_default=True, type=float)
 def run_cmd(suite_path: Path, llm_judge: bool, confidence: float) -> None:
     """Run a suite of EvalCases and print pass/fail plus a Wilson CI."""
-    if llm_judge:
-        raise click.ClickException(
-            "LLM-judge scoring is not implemented in `evals run` yet — the "
-            "judge() function exists (evals.judge.llm_judge) and is unit "
-            "tested with a mocked call_model, but no live provider SDK is "
-            "wired into the CLI in this scaffolding pass. Not a silent "
-            "no-op: use evals.judge.llm_judge.judge() directly with your "
-            "own call_model until this lands."
-        )
-
     cases = _load_cases(suite_path)
+    call_model = make_anthropic_call_model() if llm_judge else None
+
     successes = 0
     total = 0
     for case in cases:
-        passed = _score_case_deterministic(case)
         total += 1
+        if llm_judge:
+            passed = _judge_case(case, call_model)
+            if passed is None:
+                click.echo(f"{case.id}: JUDGE_ERROR")
+                continue
+        else:
+            passed = _score_case_deterministic(case)
         if passed:
             successes += 1
         click.echo(f"{case.id}: {'PASS' if passed else 'FAIL'}")
@@ -167,12 +211,26 @@ def run_cmd(suite_path: Path, llm_judge: bool, confidence: float) -> None:
     type=click.Path(dir_okay=False, path_type=Path),
     help="JSONL file each Run is appended to (created if it doesn't exist).",
 )
+@click.option(
+    "--llm-judge",
+    is_flag=True,
+    default=False,
+    help=(
+        "Score each completed Run's captured stdout with a real Anthropic "
+        "LLM-judge call instead of the deterministic scorer. Requires "
+        "ANTHROPIC_API_KEY in the environment."
+    ),
+)
 @click.option("--confidence", default=0.95, show_default=True, type=float)
-def rollout_cmd(suite_path: Path, results_path: Path, confidence: float) -> None:
+def rollout_cmd(
+    suite_path: Path, results_path: Path, llm_judge: bool, confidence: float
+) -> None:
     """Run a suite of EvalCases through the Rollout Scheduler and score them."""
     cases = _load_cases(suite_path)
     runs = asyncio.run(run_suite(cases))
     append_runs(runs, results_path)
+
+    call_model = make_anthropic_call_model() if llm_judge else None
 
     successes = 0
     total = 0
@@ -181,7 +239,13 @@ def rollout_cmd(suite_path: Path, results_path: Path, confidence: float) -> None
         if run.status != "completed":
             click.echo(f"{case.id}: {run.status.upper()}")
             continue
-        passed = _score_run_deterministic(case, run)
+        if llm_judge:
+            passed = _judge_run(case, run, call_model)
+            if passed is None:
+                click.echo(f"{case.id}: JUDGE_ERROR")
+                continue
+        else:
+            passed = _score_run_deterministic(case, run)
         if passed:
             successes += 1
         click.echo(f"{case.id}: {'PASS' if passed else 'FAIL'}")

@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.0",
     "click>=8.1",
     "protobuf>=7.36.1",
+    "anthropic>=1.3.0",
 ]
 
 [project.scripts]
@@ -29,6 +30,7 @@ packages = ["evals"]
 [tool.pytest.ini_options]
 markers = [
     "integration: requires a live Docker daemon (skipped unless RUN_DOCKER_TESTS=1)",
+    "llm_integration: requires a live Anthropic API key (skipped unless RUN_LIVE_LLM_TESTS=1)",
 ]
 
 [tool.ruff]

@@ -18,12 +18,14 @@ behind `RUN_DOCKER_TESTS=1`, mirroring `tests/test_sandbox_integration.py`.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 
 import pytest
 from click.testing import CliRunner
 
+import evals.cli as cli_module
 import evals.rollout.scheduler as scheduler_module
 from evals.cli import main
 from evals.rollout.results_store import load_runs
@@ -85,26 +87,92 @@ def test_report_respects_custom_confidence_level():
     assert _CI_PATTERN.search(result.output) is not None
 
 
-def test_llm_judge_flag_fails_with_documented_typed_error_not_a_silent_noop():
+def test_run_with_llm_judge_scores_via_real_wiring_using_a_fake_provider(monkeypatch):
+    responses = iter(
+        [
+            "REASONING: matches exactly.\nVERDICT: PASS\n",
+            "REASONING: does not match.\nVERDICT: FAIL\n",
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        return next(responses)
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
     runner = CliRunner()
     result = runner.invoke(
         main,
-        [
-            "run",
-            "--suite",
-            "tests/fixtures/golden_example.json",
-            "--llm-judge",
-        ],
+        ["run", "--suite", "tests/fixtures/llm_judge_example.json", "--llm-judge"],
     )
+
+    assert result.exit_code == 0, result.output
+    assert "judge-pass-case: PASS" in result.output
+    assert "judge-fail-case: FAIL" in result.output
+    assert "pass_rate=0.5000 (1/2)" in result.output
+    assert _CI_PATTERN.search(result.output) is not None
+
+
+def test_run_llm_judge_requires_a_reference_and_fails_loudly(tmp_path, monkeypatch):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "no-ref-case",
+                    "revision": 1,
+                    "task_spec": {"output": "x"},
+                    "reference": None,
+                    "tier": "golden",
+                }
+            ]
+        )
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        return "REASONING: n/a.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["run", "--suite", str(suite_path), "--llm-judge"])
 
     # `click.ClickException` maps to exit code 1 — a real, typed failure,
     # never a silent no-op that pretends to have scored anything.
     assert result.exit_code == 1
-    assert "LLM-judge scoring is not implemented" in result.output
-    assert "evals.judge.llm_judge" in result.output
-    # No pass-rate line should ever be printed when the command fails
-    # before scoring a single case.
+    assert "requires a reference" in result.output
     assert "pass_rate=" not in result.output
+
+
+def test_run_llm_judge_call_error_marks_judge_error_and_does_not_abort_suite(
+    monkeypatch,
+):
+    call_count = {"n": 0}
+
+    async def flaky_call_model(prompt: str) -> str:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("simulated API failure")
+        return "REASONING: ok.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: flaky_call_model
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["run", "--suite", "tests/fixtures/llm_judge_example.json", "--llm-judge"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "judge-pass-case: JUDGE_ERROR" in result.output
+    assert "judge-fail-case: PASS" in result.output
+    assert "pass_rate=0.5000 (1/2)" in result.output
 
 
 def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch):
@@ -140,6 +208,53 @@ def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch)
     assert persisted[0].eval_case_id == "rollout-echo-hello"
     assert persisted[0].status == "completed"
     assert persisted[0].stdout == "hello-rollout\n"
+
+
+def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
+    tmp_path, monkeypatch
+):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    responses = iter(
+        [
+            "REASONING: matches.\nVERDICT: PASS\n",
+            "REASONING: no match.\nVERDICT: FAIL\n",
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        return next(responses)
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    results_path = tmp_path / "results.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "rollout",
+            "--suite",
+            "tests/fixtures/rollout_example.json",
+            "--results",
+            str(results_path),
+            "--llm-judge",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "rollout-echo-hello: PASS" in result.output
+    assert "rollout-wrong-answer: FAIL" in result.output
+    assert "pass_rate=0.5000 (1/2)" in result.output
+
+    persisted = load_runs(results_path)
+    assert len(persisted) == 2
 
 
 def test_rollout_missing_suite_file_fails_with_nonzero_exit():

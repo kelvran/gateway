@@ -1,0 +1,18 @@
+[
+  {
+    "id": "judge-pass-case",
+    "revision": 1,
+    "task_spec": { "output": "Paris" },
+    "reference": "Paris",
+    "tier": "golden",
+    "tags": ["judge"]
+  },
+  {
+    "id": "judge-fail-case",
+    "revision": 1,
+    "task_spec": { "output": "some other city" },
+    "reference": "Paris",
+    "tier": "golden",
+    "tags": ["judge"]
+  }
+]
