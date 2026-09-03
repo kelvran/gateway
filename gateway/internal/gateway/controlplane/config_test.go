@@ -141,14 +141,15 @@ func TestLoadWithoutTelemetrySectionDefaultsToZeroValue(t *testing.T) {
 }
 
 // TestLoadCacheSectionParsesL1AndNestedL2 proves the cache: section,
-// including its nested l2: sub-section, is parsed correctly — the
+// including its nested l2: and l3: sub-sections, is parsed correctly — the
 // mirror-image proof to TestLoadWithoutTelemetrySectionDefaultsToZeroValue's
 // "genuinely optional" proof above, per
-// docs/rfcs/2026-09-03-cache-l2-normalized-match.md.
+// docs/rfcs/2026-09-03-cache-l2-normalized-match.md and
+// docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md.
 func TestLoadCacheSectionParsesL1AndNestedL2(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncache:\n  ttl_seconds: 300\n  max_entries: 5000\n  l2:\n    ttl_seconds: 75\n    max_entries: 2000\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncache:\n  ttl_seconds: 300\n  max_entries: 5000\n  l2:\n    ttl_seconds: 75\n    max_entries: 2000\n  l3:\n    ttl_seconds: 300\n    max_entries: 1000\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -168,6 +169,12 @@ func TestLoadCacheSectionParsesL1AndNestedL2(t *testing.T) {
 	}
 	if cfg.Cache.L2.MaxEntries != 2000 {
 		t.Errorf("Cache.L2.MaxEntries = %d, want 2000", cfg.Cache.L2.MaxEntries)
+	}
+	if cfg.Cache.L3.TTLSeconds != 300 {
+		t.Errorf("Cache.L3.TTLSeconds = %d, want 300", cfg.Cache.L3.TTLSeconds)
+	}
+	if cfg.Cache.L3.MaxEntries != 1000 {
+		t.Errorf("Cache.L3.MaxEntries = %d, want 1000", cfg.Cache.L3.MaxEntries)
 	}
 }
 

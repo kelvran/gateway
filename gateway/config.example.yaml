@@ -77,19 +77,28 @@ telemetry:
 # rate_limit:
 #   redis_addr: "localhost:6379"
 
-# Cache L1 (exact-match) and L2 (normalized-match) — see
-# docs/rfcs/2026-09-03-cache-l2-normalized-match.md. Optional: omit this
-# whole section for L1's default (5-minute TTL, 10,000-entry LRU cap) and
-# L2's default (75-second TTL, 10,000-entry LRU cap). L2 applies only a
-# narrow, deliberately conservative allowlist (outer whitespace trim,
-# Unicode NFC, trailing terminal punctuation strip on the last message) —
-# see the RFC for why internal whitespace collapsing and case-folding
-# were considered and rejected.
+# Cache L1 (exact-match), L2 (normalized-match), and L3-lite (lexical
+# near-duplicate) — see docs/rfcs/2026-09-03-cache-l2-normalized-match.md
+# and docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md. Optional:
+# omit this whole section for L1's default (5-minute TTL, 10,000-entry LRU
+# cap), L2's default (75-second TTL, 10,000-entry LRU cap), and L3's
+# default (5-minute TTL, 10,000-entry LRU cap PER TENANT — L3's cap is
+# structurally per-tenant, unlike L1/L2's single shared cap, per
+# internal/cache/inprocess.LexicalCache's own tenant-isolation design). L2
+# applies only a narrow, deliberately conservative allowlist (outer
+# whitespace trim, Unicode NFC, trailing terminal punctuation strip on the
+# last message) — see that RFC for why internal whitespace collapsing and
+# case-folding were considered and rejected. L3 never serves a hit without
+# passing its entity/number/date hard gate and freshness/risk model first —
+# see the L3 RFC's "Never" rule in AGENTS.md before touching this.
 # cache:
 #   ttl_seconds: 300
 #   max_entries: 10000
 #   l2:
 #     ttl_seconds: 75
+#     max_entries: 10000
+#   l3:
+#     ttl_seconds: 300
 #     max_entries: 10000
 
 # Static per-model price table (USD per token), used by

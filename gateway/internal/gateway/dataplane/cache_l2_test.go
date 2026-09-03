@@ -156,17 +156,21 @@ func TestL2HitPromotesIntoL1(t *testing.T) {
 func TestWriteCacheWritesBothLayers(t *testing.T) {
 	l1 := inprocess.New(0)
 	l2 := inprocess.New(0)
+	l3 := inprocess.NewLexicalCache(0)
 	ctx := context.Background()
-	p := &Pipeline{cache: l1, cacheL2: l2, cacheTTL: time.Hour, cacheL2TTL: time.Hour}
+	p := &Pipeline{cache: l1, cacheL2: l2, cacheL3: l3, cacheTTL: time.Hour, cacheL2TTL: time.Hour, cacheL3TTL: time.Hour}
 
 	value := []byte(`{"id":"resp-1"}`)
-	p.writeCache(ctx, "l1key", "l2key", value)
+	p.writeCache(ctx, "team-alpha", "l1key", "l2key", []uint64{1, 2, 3}, nil, "gpt-4o", value)
 
 	if _, ok, _ := l1.Get(ctx, "l1key"); !ok {
 		t.Error("writeCache did not populate L1")
 	}
 	if _, ok, _ := l2.Get(ctx, "l2key"); !ok {
 		t.Error("writeCache did not populate L2")
+	}
+	if candidates, _ := l3.Search(ctx, "team-alpha", []uint64{1, 2, 3}, 5); len(candidates) == 0 {
+		t.Error("writeCache did not populate L3")
 	}
 }
 

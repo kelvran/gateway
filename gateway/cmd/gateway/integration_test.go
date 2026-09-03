@@ -930,3 +930,68 @@ func TestIntegrationL2CacheHitOnNormalizedButNotExactRepeat(t *testing.T) {
 		t.Fatalf("upstream calls after third (should be a real MISS) request = %d, want 2 — L2 over-matched on genuinely different content", got)
 	}
 }
+
+// TestIntegrationL3LexicalNearDuplicateHitAndEntityMismatchMiss is the
+// real-HTTP, real-production-wiring (buildPipeline, exactly as
+// cmd/gateway/main.go wires it) proof for
+// docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md: a second
+// request whose only difference from the first is internal whitespace —
+// untouched by L2's narrow allowlist, so L1 and L2 both genuinely miss —
+// is nonetheless served from L3, never reaching the mock upstream a second
+// time. A third request that changes a dollar amount (an entity/number
+// hard-gate mismatch) must still be a real miss, proving L3 never serves a
+// cached response for a different amount just because the surrounding
+// wording is nearly identical.
+func TestIntegrationL3LexicalNearDuplicateHitAndEntityMismatchMiss(t *testing.T) {
+	upstream, calls := newMockUpstream(t)
+	gw := newIntegrationServer(t, upstream.URL, "l3-http-secret", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_L3")
+
+	doRequest := func(content string) int {
+		reqBody, err := json.Marshal(map[string]any{
+			"model":    "gpt-4o",
+			"messages": []map[string]string{{"role": "user", "content": content}},
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader(reqBody))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		httpReq.Header.Set("Authorization", "Bearer l3-http-secret")
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.ReadAll(resp.Body)
+		return resp.StatusCode
+	}
+
+	if status := doRequest("explain how binary search works in a sorted array of $92 items"); status != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls after first request = %d, want 1", got)
+	}
+
+	// Byte-different (extra internal whitespace, untouched by L2's
+	// allowlist) but lexically identical after word-boundary shingling —
+	// must be an L3 hit, not a second real upstream call.
+	if status := doRequest("explain how binary search   works in a sorted array of $92 items"); status != http.StatusOK {
+		t.Fatalf("second (lexically-near-duplicate) request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls after second (should be an L3 HIT) request = %d, want still 1", got)
+	}
+
+	// A different dollar amount is an entity/number hard-gate mismatch —
+	// must still be a real miss, even though the wording is otherwise
+	// near-identical.
+	if status := doRequest("explain how binary search works in a sorted array of $93 items"); status != http.StatusOK {
+		t.Fatalf("third (entity-mismatched) request status = %d, want 200", status)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls after third (should be a real MISS) request = %d, want 2 — L3 served a cache hit across a different dollar amount", got)
+	}
+}

@@ -87,8 +87,21 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 
 	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	if cached, ok := p.checkCache(ctx, l1Key, l2Key); ok {
+		var cachedResp adapter.ChatResponse
+		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
+			resp = cachedResp
+			cacheHit = true
+			err = writeFakeStream(sw, cachedResp)
+			return
+		}
+		// A corrupt cache entry is treated as a miss, not a request
+		// failure — same fallthrough behavior as the buffered path.
+	}
+
+	if cached, ok := p.checkLexicalCache(ctx, vk, req, l3Signature); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -119,7 +132,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 
 	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-		p.writeCache(ctx, l1Key, l2Key, encoded)
+		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, encoded)
 	}
 	return
 }

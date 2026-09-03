@@ -50,6 +50,7 @@ func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller,
 		Budget:   budget.NewTracker(),
 		Cache:    inprocess.New(0),
 		CacheL2:  inprocess.New(0),
+		CacheL3:  inprocess.NewLexicalCache(0),
 		Adapters: adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {
@@ -83,6 +84,7 @@ func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream Upst
 		Budget:   tracker,
 		Cache:    inprocess.New(0),
 		CacheL2:  inprocess.New(0),
+		CacheL3:  inprocess.NewLexicalCache(0),
 		Adapters: adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {

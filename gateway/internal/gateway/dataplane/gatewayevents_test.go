@@ -160,6 +160,7 @@ func newTestPipelineWithKeysAndLogger(t *testing.T, upstream UpstreamCaller, dep
 		Budget:   budget.NewTracker(),
 		Cache:    inprocess.New(0),
 		CacheL2:  inprocess.New(0),
+		CacheL3:  inprocess.NewLexicalCache(0),
 		Adapters: adapter.Registry{
 			"openai": openai.New(),
 		},

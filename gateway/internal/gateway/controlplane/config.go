@@ -129,16 +129,30 @@ type CacheL2Config struct {
 	MaxEntries int
 }
 
+// CacheL3Config configures the L3-lite (lexical near-duplicate) cache
+// layer, per docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md.
+// Optional — a zero-valued CacheL3Config means both fields default (5
+// minutes TTL, 10,000 max entries — the same inprocess.LexicalCache
+// default as L1/L2, applied per tenant rather than globally, since L3's
+// capacity bound is structurally per-tenant; see that package's own doc
+// comment for why).
+type CacheL3Config struct {
+	TTLSeconds int
+	MaxEntries int
+}
+
 // CacheConfig configures the L1 (exact-match) cache layer and nests L2's
-// own config, per docs/rfcs/2026-09-03-cache-l2-normalized-match.md.
+// and L3's own configs, per docs/rfcs/2026-09-03-cache-l2-normalized-match.md
+// and docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md.
 // Optional — a zero-valued CacheConfig means L1 defaults exactly as
-// before that RFC (5-minute TTL), now also capacity-bounded (10,000
+// before those RFCs (5-minute TTL), now also capacity-bounded (10,000
 // max entries) rather than truly unbounded — a safety improvement applied
 // unconditionally, not gated behind opting in.
 type CacheConfig struct {
 	TTLSeconds int
 	MaxEntries int
 	L2         CacheL2Config
+	L3         CacheL3Config
 }
 
 // Config is the gateway's fully-parsed static configuration.
@@ -253,6 +267,10 @@ func Load(path string) (*Config, error) {
 		if l2Raw, ok := getMap(cacheRaw, "l2"); ok {
 			cfg.Cache.L2.TTLSeconds, _ = getInt(l2Raw, "ttl_seconds")
 			cfg.Cache.L2.MaxEntries, _ = getInt(l2Raw, "max_entries")
+		}
+		if l3Raw, ok := getMap(cacheRaw, "l3"); ok {
+			cfg.Cache.L3.TTLSeconds, _ = getInt(l3Raw, "ttl_seconds")
+			cfg.Cache.L3.MaxEntries, _ = getInt(l3Raw, "max_entries")
 		}
 	}
 

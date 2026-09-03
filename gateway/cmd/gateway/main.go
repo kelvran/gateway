@@ -200,6 +200,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Budget:         budgetTracker,
 		Cache:          inprocess.New(cfg.Cache.MaxEntries),
 		CacheL2:        inprocess.New(cfg.Cache.L2.MaxEntries),
+		CacheL3:        inprocess.NewLexicalCache(cfg.Cache.L3.MaxEntries),
 		Adapters:       registry,
 		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(priceTable),
@@ -212,6 +213,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Logger:         logger,
 		CacheTTL:       time.Duration(cfg.Cache.TTLSeconds) * time.Second,
 		CacheL2TTL:     time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
+		CacheL3TTL:     time.Duration(cfg.Cache.L3.TTLSeconds) * time.Second,
 	})
 }
 

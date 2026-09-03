@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,7 +112,11 @@ type Config struct {
 	// like every other dependency here — cmd/gateway always constructs
 	// one (a second inprocess.New(...) call), there is no "L2 disabled"
 	// mode.
-	CacheL2        cache.Cache
+	CacheL2 cache.Cache
+	// CacheL3 is the lexical-near-duplicate layer checked on an L1/L2
+	// miss, per docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md.
+	// Required, like every other dependency here.
+	CacheL3        cache.LexicalCache
 	Adapters       adapter.Registry
 	Deployments    []Deployment
 	CostCalculator *costaccounting.Calculator
@@ -123,6 +128,13 @@ type Config struct {
 	// rationale (not a substitute for the normalization allowlist's own
 	// collision-freedom guarantee).
 	CacheL2TTL time.Duration
+	// CacheL3TTL defaults to 5 minutes when unset — this is a raw
+	// storage TTL (how long an entry can be found at all), distinct from
+	// l3StalenessBudget (how old a FOUND candidate is allowed to be
+	// before the freshness/risk model rejects it); the storage TTL is
+	// deliberately longer than the staleness budget so the risk-model
+	// check, not silent expiry, is what usually decides staleness.
+	CacheL3TTL time.Duration
 	// UpstreamStream is required only for streaming requests on a
 	// cache MISS — a streaming cache HIT never touches it. Left nil, a
 	// Pipeline still handles every non-streaming request and every
@@ -140,6 +152,7 @@ type Pipeline struct {
 	budget             *budget.Tracker
 	cache              cache.Cache
 	cacheL2            cache.Cache
+	cacheL3            cache.LexicalCache
 	adapters           adapter.Registry
 	deploymentsByModel map[string][]Deployment
 	rrMu               sync.Mutex
@@ -150,6 +163,7 @@ type Pipeline struct {
 	logger             *slog.Logger
 	cacheTTL           time.Duration
 	cacheL2TTL         time.Duration
+	cacheL3TTL         time.Duration
 }
 
 // NewPipeline validates cfg and constructs a Pipeline.
@@ -165,6 +179,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		return nil, fmt.Errorf("dataplane: Config.Cache is required")
 	case cfg.CacheL2 == nil:
 		return nil, fmt.Errorf("dataplane: Config.CacheL2 is required")
+	case cfg.CacheL3 == nil:
+		return nil, fmt.Errorf("dataplane: Config.CacheL3 is required")
 	case cfg.Adapters == nil:
 		return nil, fmt.Errorf("dataplane: Config.Adapters is required")
 	case len(cfg.Deployments) == 0:
@@ -192,6 +208,10 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	if l2TTL <= 0 {
 		l2TTL = 75 * time.Second
 	}
+	l3TTL := cfg.CacheL3TTL
+	if l3TTL <= 0 {
+		l3TTL = 5 * time.Minute
+	}
 
 	return &Pipeline{
 		verifier:           cfg.Verifier,
@@ -199,6 +219,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		budget:             cfg.Budget,
 		cache:              cfg.Cache,
 		cacheL2:            cfg.CacheL2,
+		cacheL3:            cfg.CacheL3,
 		adapters:           cfg.Adapters,
 		deploymentsByModel: byModel,
 		rrCounters:         map[string]*atomic.Uint64{},
@@ -208,6 +229,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		logger:             logger,
 		cacheTTL:           ttl,
 		cacheL2TTL:         l2TTL,
+		cacheL3TTL:         l3TTL,
 	}, nil
 }
 
@@ -263,13 +285,119 @@ func (p *Pipeline) checkCache(ctx context.Context, l1Key, l2Key string) (cached 
 	return nil, false
 }
 
-// writeCache writes encoded to both cache layers, eagerly and
+// writeCache writes encoded to all three cache layers, eagerly and
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
-// Lifecycle says write-back covers "all layers." No lazy/async L2
+// Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, l1Key, l2Key string, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, encoded []byte) {
 	_ = p.cache.Put(ctx, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, l2Key, encoded, p.cacheL2TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.cacheL3TTL)
+}
+
+// l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
+// tuning constants — standard textbook MinHash defaults (see
+// docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md's Unresolved
+// Questions: not yet tuned against real traffic, which doesn't exist).
+const (
+	l3ShingleWords  = 3
+	l3SignatureSize = 128
+	l3SearchK       = 5
+	// l3MinSimilarity is THREAT_MODEL.md's "~0.9" floor, applied here to
+	// a Jaccard estimate rather than the embedding-cosine similarity it
+	// was originally specified for — an unvalidated transfer, stated
+	// plainly in the RFC's own Unresolved Questions, not assumed safe.
+	l3MinSimilarity = 0.9
+	// l3StalenessBudget is a single, global staleness budget for this
+	// first pass — the RFC's own freshness-risk-model checklist calls
+	// for per-content-type budgets; this ships one bucket now and defers
+	// real tiering to when calibration data exists.
+	l3StalenessBudget = 24 * time.Hour
+)
+
+// volatileQueryPattern matches queries whose correct answer changes over
+// time in a way no cache TTL can honestly bound — per
+// docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md's freshness/
+// risk-model checklist item 2. A hard bypass straight to upstream, never
+// a soft risk-score adjustment.
+var volatileQueryPattern = regexp.MustCompile(`(?i)\b(weather|price|stock|score|today|current|currently|now|latest)\b`)
+
+// isVolatileQuery reports whether any message matches the volatility
+// keyword list above.
+func isVolatileQuery(messages []adapter.Message) bool {
+	for _, m := range messages {
+		if volatileQueryPattern.MatchString(m.Content) {
+			return true
+		}
+	}
+	return false
+}
+
+// freshnessRiskModel implements docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md's
+// checklist items 1 (staleness budget), 3 (similarity floor), and 5
+// (model-version exact match) — item 2 (volatility bypass) and item 4
+// (entity/number/date hard-gate) are checked separately in
+// checkLexicalCache, since they apply BEFORE and INDEPENDENTLY of this
+// function respectively. A mismatch on any check here is an outright
+// rejection, never partial credit.
+func freshnessRiskModel(writtenAt time.Time, storedModelID, currentModelID string, similarity float64) bool {
+	if time.Since(writtenAt) > l3StalenessBudget {
+		return false
+	}
+	if similarity < l3MinSimilarity {
+		return false
+	}
+	if storedModelID != currentModelID {
+		return false
+	}
+	return true
+}
+
+// checkLexicalCache is Cache L3-lite's own check, run after an L1/L2
+// miss and before the router — per
+// docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md. Every
+// rejection path (volatile bypass, search error, entity/number/date
+// mismatch, freshness/risk-model failure) falls through to a real
+// upstream call, never an unchecked serve — this is Kelvran's single
+// highest-consequence cache check, per AGENTS.md's explicit "Never" rule
+// against weakening it, so every branch here is a hard, visible
+// rejection, not a soft score.
+func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, signature []uint64) (cached []byte, hit bool) {
+	if isVolatileQuery(req.Messages) {
+		return nil, false
+	}
+	candidates, err := p.cacheL3.Search(ctx, vk.ID, signature, l3SearchK)
+	if err != nil {
+		p.logger.Warn("lexical_cache_search_failed", "key_id", vk.ID, "error", err.Error())
+		return nil, false // fail-closed: a search error skips L3, never bypasses the gate
+	}
+	queryFingerprint := Fingerprint(req.Messages)
+	for _, c := range candidates {
+		if !fingerprintsEqual(queryFingerprint, c.Fingerprint) {
+			continue
+		}
+		if !freshnessRiskModel(c.WrittenAt, c.ModelID, req.Model, c.Similarity) {
+			continue
+		}
+		return c.Resp, true
+	}
+	return nil, false
+}
+
+// fingerprintsEqual reports whether two entity/number/date fingerprints
+// are identical sets — an exact match, never a subset/overlap check, per
+// docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md's "deliberately
+// blunt rather than clever" hard-gate design.
+func fingerprintsEqual(a, b map[string]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // isModelAllowed reports whether vk is permitted to request model. An
@@ -319,8 +447,20 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	if cached, ok := p.checkCache(ctx, l1Key, l2Key); ok {
+		var cachedResp adapter.ChatResponse
+		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
+			resp = cachedResp
+			cacheHit = true
+			return
+		}
+		// A corrupt cache entry is treated as a miss, not a request
+		// failure — fall through to the upstream path below.
+	}
+
+	if cached, ok := p.checkLexicalCache(ctx, vk, req, l3Signature); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -353,7 +493,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	}
 
 	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-		p.writeCache(ctx, l1Key, l2Key, encoded)
+		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, encoded)
 	}
 
 	return
