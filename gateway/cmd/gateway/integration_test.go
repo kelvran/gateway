@@ -995,3 +995,40 @@ func TestIntegrationL3LexicalNearDuplicateHitAndEntityMismatchMiss(t *testing.T)
 		t.Fatalf("upstream calls after third (should be a real MISS) request = %d, want 2 — L3 served a cache hit across a different dollar amount", got)
 	}
 }
+
+// TestIntegrationGuardrailBlocksCredentialShapedRequest is the real-HTTP,
+// real-production-wiring (buildPipeline, exactly as cmd/gateway/main.go
+// wires it) proof for
+// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md: a request
+// whose content matches a Block-tier pattern (a real, Luhn-valid test
+// credit-card number) is rejected before ever reaching the mock upstream.
+func TestIntegrationGuardrailBlocksCredentialShapedRequest(t *testing.T) {
+	upstream, calls := newMockUpstream(t)
+	gw := newIntegrationServer(t, upstream.URL, "gr-secret", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_GR")
+
+	reqBody, err := json.Marshal(map[string]any{
+		"model":    "gpt-4o",
+		"messages": []map[string]string{{"role": "user", "content": "my card number is 4111111111111111"}},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer gr-secret")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d for a Block-tier request; body: %s", resp.StatusCode, http.StatusBadRequest, body)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("upstream calls = %d, want 0 — a Block-tier request must never reach the upstream", got)
+	}
+}

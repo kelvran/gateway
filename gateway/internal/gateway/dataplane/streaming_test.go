@@ -16,6 +16,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
+	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
@@ -45,13 +46,14 @@ func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller,
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	p, err := NewPipeline(Config{
-		Verifier: verifier,
-		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
-		Budget:   budget.NewTracker(),
-		Cache:    inprocess.New(0),
-		CacheL2:  inprocess.New(0),
-		CacheL3:  inprocess.NewLexicalCache(0),
-		Adapters: adapters,
+		Verifier:   verifier,
+		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:     budget.NewTracker(),
+		Cache:      inprocess.New(0),
+		CacheL2:    inprocess.New(0),
+		CacheL3:    inprocess.NewLexicalCache(0),
+		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:   adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {
 				return deployments
@@ -79,13 +81,14 @@ func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream Upst
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	p, err := NewPipeline(Config{
-		Verifier: verifier,
-		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
-		Budget:   tracker,
-		Cache:    inprocess.New(0),
-		CacheL2:  inprocess.New(0),
-		CacheL3:  inprocess.NewLexicalCache(0),
-		Adapters: adapters,
+		Verifier:   verifier,
+		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:     tracker,
+		Cache:      inprocess.New(0),
+		CacheL2:    inprocess.New(0),
+		CacheL3:    inprocess.NewLexicalCache(0),
+		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:   adapters,
 		Deployments: func() []Deployment {
 			if deployments != nil {
 				return deployments

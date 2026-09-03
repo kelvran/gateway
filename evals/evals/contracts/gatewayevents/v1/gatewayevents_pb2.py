@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe6\x05\n\x14GatewayDecisionEvent\x12\x19\n\x08trace_id\x18\x01 \x01(\tR\x07traceId\x12\x17\n\x07span_id\x18\x02 \x01(\tR\x06spanId\x12;\n\x0boccurred_at\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\noccurredAt\x12$\n\x0evirtual_key_id\x18\x04 \x01(\tR\x0cvirtualKeyId\x12\'\n\x0frequested_model\x18\x05 \x01(\tR\x0erequestedModel\x12H\n\x07outcome\x18\x06 \x01(\x0e\x32..gatewayevents.v1.GatewayDecisionEvent.OutcomeR\x07outcome\x12/\n\x14rate_limit_fail_open\x18\x07 \x01(\x08R\x11rateLimitFailOpen\x12+\n\x11\x66\x61llback_happened\x18\x08 \x01(\x08R\x10\x66\x61llbackHappened\x12\x38\n\x18\x66\x61llback_from_deployment\x18\t \x01(\tR\x16\x66\x61llbackFromDeployment\x12\'\n\x0f\x66\x61llback_reason\x18\n \x01(\tR\x0e\x66\x61llbackReason\x12(\n\x10\x62udget_spent_usd\x18\x0b \x01(\tR\x0e\x62udgetSpentUsd\"\xd8\x01\n\x07Outcome\x12\x17\n\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n\nOUTCOME_OK\x10\x01\x12\x17\n\x13OUTCOME_AUTH_FAILED\x10\x02\x12\x1d\n\x19OUTCOME_MODEL_NOT_ALLOWED\x10\x03\x12\x18\n\x14OUTCOME_RATE_LIMITED\x10\x04\x12\x1b\n\x17OUTCOME_BUDGET_EXCEEDED\x10\x05\x12\x19\n\x15OUTCOME_NO_DEPLOYMENT\x10\x06\x12\x1a\n\x16OUTCOME_UPSTREAM_ERROR\x10\x07\x42IZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x85\x06\n\x14GatewayDecisionEvent\x12\x19\n\x08trace_id\x18\x01 \x01(\tR\x07traceId\x12\x17\n\x07span_id\x18\x02 \x01(\tR\x06spanId\x12;\n\x0boccurred_at\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\noccurredAt\x12$\n\x0evirtual_key_id\x18\x04 \x01(\tR\x0cvirtualKeyId\x12\'\n\x0frequested_model\x18\x05 \x01(\tR\x0erequestedModel\x12H\n\x07outcome\x18\x06 \x01(\x0e\x32..gatewayevents.v1.GatewayDecisionEvent.OutcomeR\x07outcome\x12/\n\x14rate_limit_fail_open\x18\x07 \x01(\x08R\x11rateLimitFailOpen\x12+\n\x11\x66\x61llback_happened\x18\x08 \x01(\x08R\x10\x66\x61llbackHappened\x12\x38\n\x18\x66\x61llback_from_deployment\x18\t \x01(\tR\x16\x66\x61llbackFromDeployment\x12\'\n\x0f\x66\x61llback_reason\x18\n \x01(\tR\x0e\x66\x61llbackReason\x12(\n\x10\x62udget_spent_usd\x18\x0b \x01(\tR\x0e\x62udgetSpentUsd\"\xf7\x01\n\x07Outcome\x12\x17\n\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n\nOUTCOME_OK\x10\x01\x12\x17\n\x13OUTCOME_AUTH_FAILED\x10\x02\x12\x1d\n\x19OUTCOME_MODEL_NOT_ALLOWED\x10\x03\x12\x18\n\x14OUTCOME_RATE_LIMITED\x10\x04\x12\x1b\n\x17OUTCOME_BUDGET_EXCEEDED\x10\x05\x12\x19\n\x15OUTCOME_NO_DEPLOYMENT\x10\x06\x12\x1a\n\x16OUTCOME_UPSTREAM_ERROR\x10\x07\x12\x1d\n\x19OUTCOME_GUARDRAIL_BLOCKED\x10\x08\x42IZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,7 +34,7 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'ZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1'
   _globals['_GATEWAYDECISIONEVENT']._serialized_start=92
-  _globals['_GATEWAYDECISIONEVENT']._serialized_end=834
+  _globals['_GATEWAYDECISIONEVENT']._serialized_end=865
   _globals['_GATEWAYDECISIONEVENT_OUTCOME']._serialized_start=618
-  _globals['_GATEWAYDECISIONEVENT_OUTCOME']._serialized_end=834
+  _globals['_GATEWAYDECISIONEVENT_OUTCOME']._serialized_end=865
 # @@protoc_insertion_point(module_scope)

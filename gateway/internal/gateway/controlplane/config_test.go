@@ -178,6 +178,52 @@ func TestLoadCacheSectionParsesL1AndNestedL2(t *testing.T) {
 	}
 }
 
+// TestLoadGuardrailsSectionParsesPolicyVersionAndOverrides proves the
+// guardrails: section, when present, is parsed correctly, per
+// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md.
+func TestLoadGuardrailsSectionParsesPolicyVersionAndOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  policy_version: \"v2\"\n  category_overrides:\n    contact_info: \"block\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a guardrails section: %v", err)
+	}
+	if cfg.Guardrails.PolicyVersion != "v2" {
+		t.Errorf("Guardrails.PolicyVersion = %q, want %q", cfg.Guardrails.PolicyVersion, "v2")
+	}
+	if got := cfg.Guardrails.CategoryOverrides["contact_info"]; got != "block" {
+		t.Errorf(`Guardrails.CategoryOverrides["contact_info"] = %q, want "block"`, got)
+	}
+}
+
+// TestLoadWithoutGuardrailsSectionDefaultsToZeroValue is the mirror-image
+// "genuinely optional" proof: a config with no guardrails: section at
+// all must parse successfully with the zero value, never an error.
+func TestLoadWithoutGuardrailsSectionDefaultsToZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load without a guardrails section: %v", err)
+	}
+	if cfg.Guardrails.PolicyVersion != "" {
+		t.Errorf("Guardrails.PolicyVersion = %q, want empty (zero value)", cfg.Guardrails.PolicyVersion)
+	}
+	if len(cfg.Guardrails.CategoryOverrides) != 0 {
+		t.Errorf("Guardrails.CategoryOverrides = %v, want empty", cfg.Guardrails.CategoryOverrides)
+	}
+}
+
 // TestLoadRateLimitSectionParsesRedisAddr proves the rate_limit: section,
 // when present, is parsed correctly — the mirror-image proof to
 // TestLoadWithoutTelemetrySectionDefaultsToZeroValue's "genuinely

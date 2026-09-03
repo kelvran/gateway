@@ -155,6 +155,26 @@ type CacheConfig struct {
 	L3         CacheL3Config
 }
 
+// GuardrailsConfig configures the guardrail pre-call/post-call content
+// checks, per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md.
+// Optional — a zero-valued GuardrailsConfig means the default v1
+// detector set and policy run under a default "v1" PolicyVersion.
+type GuardrailsConfig struct {
+	// PolicyVersion is stamped into every cache write (see
+	// cache.Key/NormalizedKey's guardrailPolicyVersion parameter and
+	// LexicalCandidate.GuardrailPolicyVersion) — bump it whenever
+	// detectors or policy change and a new binary is released, so stale
+	// cache entries written under the old policy are forced misses.
+	// Empty defaults to "v1" (cmd/gateway's own operational default, not
+	// a config-shape concern this package owns).
+	PolicyVersion string
+	// CategoryOverrides maps a Category string ("credential",
+	// "contact_info", etc.) to "block" or "warn", overriding this RFC's
+	// default policy for that category. Empty means every category uses
+	// the RFC's own default (see guardrail.DefaultPolicy).
+	CategoryOverrides map[string]string
+}
+
 // Config is the gateway's fully-parsed static configuration.
 type Config struct {
 	// ListenAddr is the address http.ListenAndServe binds to (e.g. ":8080").
@@ -173,6 +193,8 @@ type Config struct {
 	RateLimit RateLimitConfig
 	// Cache configures the L1/L2 cache layers. Optional.
 	Cache CacheConfig
+	// Guardrails configures the pre-call/post-call content checks. Optional.
+	Guardrails GuardrailsConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -271,6 +293,18 @@ func Load(path string) (*Config, error) {
 		if l3Raw, ok := getMap(cacheRaw, "l3"); ok {
 			cfg.Cache.L3.TTLSeconds, _ = getInt(l3Raw, "ttl_seconds")
 			cfg.Cache.L3.MaxEntries, _ = getInt(l3Raw, "max_entries")
+		}
+	}
+
+	if guardrailsRaw, ok := getMap(root, "guardrails"); ok {
+		cfg.Guardrails.PolicyVersion, _ = getString(guardrailsRaw, "policy_version")
+		if overridesRaw, ok := getMap(guardrailsRaw, "category_overrides"); ok {
+			cfg.Guardrails.CategoryOverrides = make(map[string]string, len(overridesRaw))
+			for category := range overridesRaw {
+				if action, ok := getString(overridesRaw, category); ok {
+					cfg.Guardrails.CategoryOverrides[category] = action
+				}
+			}
 		}
 	}
 

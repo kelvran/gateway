@@ -70,9 +70,12 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 
 ```
 gateway  → cache → { identity, telemetry, costaccounting }
-gateway  → { identity, budget, ratelimit, provideradapter, costaccounting, telemetry }
+gateway  → { identity, budget, ratelimit, provideradapter, costaccounting, telemetry, guardrail }
 cache    ✗→ provideradapter     (cache is provider-agnostic — keyed on normalized request, not on which
                                   upstream served it)
+guardrail ✗→ provideradapter, cache, gateway   (text in, Verdict out — guardrail has no concept of
+                                  pre/post-call or streaming/buffered; that distinction lives in
+                                  gateway/dataplane, per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md)
 cache    ✗→ gateway              (no back-references — this is what makes cache extractable later)
 {identity, budget, ratelimit, telemetry, provideradapter, costaccounting} ✗→ gateway, cache   (shared kernel is a leaf)
 budget   ✗→ identity              (budget tracks by key ID string only — it doesn't need to know what a
@@ -110,7 +113,7 @@ Every capability is a stage in one linear pipeline against a single canonical sc
   → response to client
 ```
 
-Cache lookup happens *before* the router/provider call so a hit never touches an upstream. Guardrails wrap the call symmetrically. Cost/observability finalization is structured to always execute.
+Cache lookup happens *before* the router/provider call so a hit never touches an upstream. Guardrails wrap the call symmetrically — pre-call is identical on both the buffered and streaming paths (the request text is fully known before any upstream call either way). Guardrail post-call is **enforcement-capable on the buffered path only**: on streaming, every chunk is already flushed to the client (non-buffering, chunk-by-chunk, per the upstream-call line above) strictly before a complete response exists to check, so post-call there is audit-only — it can log a Block-tier finding at elevated severity but cannot withhold content already delivered. Cost/observability finalization is structured to always execute.
 
 ## Canonical Schema & Provider Adapters
 
@@ -133,7 +136,7 @@ Shares Gateway's own auth/budget/audit objects rather than being a second gatewa
 
 ## Guardrails Subsystem
 
-Pre-call and post-call middleware hooks, independently swappable. Ships with a basic PII/NER + regex classifier at v1; pluggable to call out to a third-party moderation model later. Fail-closed for regulated content categories, fail-open (with logging) for low-stakes ones.
+Pre-call and post-call middleware hooks — **real**, per `docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md`: a pure-Go, stdlib-only `internal/guardrail` package (regex/checksum PII+secrets detection — email, phone, US SSN, IBAN with a real mod-97 checksum, credit card with a real Luhn checksum, IP address, API-key/secret prefixes with Shannon-entropy gating — plus a keyword/hidden-Unicode prompt-injection heuristic). Deliberately **not** NER and **not** an ML/third-party moderation model in this pass — no mature, no-cgo, no-model-file Go NER library exists today, the same class of gap Cache L3-lite already found and narrowed around for real embeddings; pluggable to call out to a third-party moderation model later, once that architectural decision gets its own RFC. Category-tiered fail-closed (credential/financial_id/government_id) vs. fail-open-with-logging (contact_info/network_id/prompt_injection), on both the detection axis and the detector-error axis — never a single global default, and never inherited from the rate limiter's own fail-open policy (guardrails has no independent second control the way `budget.Tracker` backstops the rate limiter). Post-call is enforcement-capable on the buffered path; on streaming it is audit-only — every chunk is already flushed to the client before a complete response exists to check, a named, accepted residual risk, not silently glossed over. A guardrail policy/detector version bump forces every existing cache entry (L1/L2 via the cache key hash, L3 via a stored, checked provenance field) to become a real miss, never a silent, unchecked serve of a hit whose provenance predates the change.
 
 ## Tech Stack
 

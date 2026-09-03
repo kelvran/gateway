@@ -101,6 +101,23 @@ telemetry:
 #     ttl_seconds: 300
 #     max_entries: 10000
 
+# Guardrails: pre-call/post-call content checks (regex/checksum PII+secrets
+# detection plus a prompt-injection heuristic) — see
+# docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md. Optional: omit
+# this whole section for the RFC's own default detector set and policy
+# under a default "v1" policy_version. policy_version is stamped into
+# every cache write — bump it whenever detectors/policy change and a new
+# binary is released, so stale cache entries are forced misses.
+# category_overrides lets an operator override the default block/warn
+# action for a specific category (e.g. relax contact_info to "warn", or
+# escalate it to "block") — never remove or weaken the entity/freshness
+# hard-gate this section has nothing to do with (that's Cache L3-lite's
+# own, separate mechanism).
+# guardrails:
+#   policy_version: "v1"
+#   category_overrides:
+#     contact_info: "warn"
+
 # Static per-model price table (USD per token), used by
 # internal/costaccounting for this pass's float64 cost calculation.
 # PRD.md's Decimal-precision requirement is a documented Phase 1 upgrade.

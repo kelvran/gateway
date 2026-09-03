@@ -57,11 +57,11 @@ func FuzzKey(f *testing.F) {
 		// Property 1: never panics. If Key panics on any input, the
 		// fuzz engine reports it as a failure; there is nothing further
 		// to assert here beyond "the call returns."
-		k1 := Key(tenantID, model, messages, tempPtr, maxTokPtr)
+		k1 := Key(tenantID, model, messages, tempPtr, maxTokPtr, "v1")
 
 		// Property 2: deterministic. The exact same arguments must
 		// produce the exact same key on a second call.
-		k2 := Key(tenantID, model, messages, tempPtr, maxTokPtr)
+		k2 := Key(tenantID, model, messages, tempPtr, maxTokPtr, "v1")
 		if k1 != k2 {
 			t.Fatalf("Key is not deterministic for tenant=%q model=%q messages=%q temp=%v maxTok=%v: %q != %q",
 				tenantID, model, messages, tempPtr, maxTokPtr, k1, k2)

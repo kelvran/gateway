@@ -12,12 +12,13 @@ import (
 
 // lexicalEntry is one stored Cache L3-lite candidate.
 type lexicalEntry struct {
-	signature   []uint64
-	resp        []byte
-	fingerprint map[string]struct{}
-	writtenAt   time.Time
-	modelID     string
-	expiresAt   time.Time
+	signature              []uint64
+	resp                   []byte
+	fingerprint            map[string]struct{}
+	writtenAt              time.Time
+	modelID                string
+	guardrailPolicyVersion string
+	expiresAt              time.Time
 }
 
 // tenantBucket holds one tenant's own candidate set, independently
@@ -116,11 +117,12 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 		}
 
 		result = append(result, cache.LexicalCandidate{
-			Resp:        respCopy,
-			Similarity:  sc.sim,
-			Fingerprint: fpCopy,
-			WrittenAt:   sc.entry.writtenAt,
-			ModelID:     sc.entry.modelID,
+			Resp:                   respCopy,
+			Similarity:             sc.sim,
+			Fingerprint:            fpCopy,
+			WrittenAt:              sc.entry.writtenAt,
+			ModelID:                sc.entry.modelID,
+			GuardrailPolicyVersion: sc.entry.guardrailPolicyVersion,
 		})
 	}
 	return result, nil
@@ -129,7 +131,7 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 // Put implements cache.LexicalCache. Creates tenantID's bucket on first
 // write; inserting past maxEntries evicts that tenant's own
 // least-recently-used entry — never another tenant's.
-func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, ttl time.Duration) error {
+func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -150,12 +152,13 @@ func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint6
 
 	now := c.now()
 	bucket.entries.PushFront(&lexicalEntry{
-		signature:   sigCopy,
-		resp:        respCopy,
-		fingerprint: fpCopy,
-		writtenAt:   now,
-		modelID:     modelID,
-		expiresAt:   now.Add(ttl),
+		signature:              sigCopy,
+		resp:                   respCopy,
+		fingerprint:            fpCopy,
+		writtenAt:              now,
+		modelID:                modelID,
+		guardrailPolicyVersion: guardrailPolicyVersion,
+		expiresAt:              now.Add(ttl),
 	})
 	if bucket.entries.Len() > c.maxEntries {
 		bucket.entries.Remove(bucket.entries.Back())

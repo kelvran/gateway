@@ -114,6 +114,14 @@ type LexicalCandidate struct {
 	Fingerprint map[string]struct{}
 	WrittenAt   time.Time
 	ModelID     string
+	// GuardrailPolicyVersion is the Engine.Version() in effect when this
+	// entry was written, per
+	// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md. Checked
+	// by the caller (dataplane.checkLexicalCache) as a new, separate
+	// gate alongside the existing ModelID match — never folded into
+	// freshnessRiskModel, which stays scoped to Cache L3-lite's own
+	// checklist.
+	GuardrailPolicyVersion string
 }
 
 // LexicalCache is Cache L3-lite's own interface — deliberately not Cache,
@@ -126,5 +134,5 @@ type LexicalCandidate struct {
 // partition itself, not a post-hoc filter").
 type LexicalCache interface {
 	Search(ctx context.Context, tenantID string, signature []uint64, k int) ([]LexicalCandidate, error)
-	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, ttl time.Duration) error
+	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, ttl time.Duration) error
 }

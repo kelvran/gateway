@@ -42,6 +42,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
+	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
@@ -66,6 +67,12 @@ var ErrModelNotAllowed = errors.New("dataplane: model not allowed for this virtu
 // docs/rfcs/2026-09-03-api-gatewayevents-contract.md's GatewayDecisionEvent —
 // can distinguish this from an upstream error without string-matching.
 var ErrNoDeployment = errors.New("dataplane: no deployment configured for requested model")
+
+// ErrGuardrailBlocked is returned when a pre-call or post-call guardrail
+// check's Block-tier verdict rejects a request, per
+// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md. Never returned
+// for a Warn-tier finding, which never blocks.
+var ErrGuardrailBlocked = errors.New("dataplane: request blocked by guardrail policy")
 
 // Deployment is a resolved upstream route: a concrete provider/endpoint a
 // canonical model can be sent to, with its API key already resolved from
@@ -116,7 +123,16 @@ type Config struct {
 	// CacheL3 is the lexical-near-duplicate layer checked on an L1/L2
 	// miss, per docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md.
 	// Required, like every other dependency here.
-	CacheL3        cache.LexicalCache
+	CacheL3 cache.LexicalCache
+	// Guardrails runs the pre-call/post-call content checks, per
+	// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md. Required,
+	// like every other dependency here, never optional the way
+	// UpstreamStream is — THREAT_MODEL.md/SECURITY.md already classify
+	// guardrail bypass as a named severity item, so this is a hard
+	// dependency, not a rollout-optional one. A config-level "disable"
+	// is expressed as an Engine with zero detectors registered, never
+	// Guardrails == nil.
+	Guardrails     *guardrail.Engine
 	Adapters       adapter.Registry
 	Deployments    []Deployment
 	CostCalculator *costaccounting.Calculator
@@ -153,6 +169,7 @@ type Pipeline struct {
 	cache              cache.Cache
 	cacheL2            cache.Cache
 	cacheL3            cache.LexicalCache
+	guardrails         *guardrail.Engine
 	adapters           adapter.Registry
 	deploymentsByModel map[string][]Deployment
 	rrMu               sync.Mutex
@@ -181,6 +198,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		return nil, fmt.Errorf("dataplane: Config.CacheL2 is required")
 	case cfg.CacheL3 == nil:
 		return nil, fmt.Errorf("dataplane: Config.CacheL3 is required")
+	case cfg.Guardrails == nil:
+		return nil, fmt.Errorf("dataplane: Config.Guardrails is required")
 	case cfg.Adapters == nil:
 		return nil, fmt.Errorf("dataplane: Config.Adapters is required")
 	case len(cfg.Deployments) == 0:
@@ -220,6 +239,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		cache:              cfg.Cache,
 		cacheL2:            cfg.CacheL2,
 		cacheL3:            cfg.CacheL3,
+		guardrails:         cfg.Guardrails,
 		adapters:           cfg.Adapters,
 		deploymentsByModel: byModel,
 		rrCounters:         map[string]*atomic.Uint64{},
@@ -310,7 +330,7 @@ func (p *Pipeline) checkCache(ctx context.Context, l1Key, l2Key string) (cached 
 func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, encoded []byte) {
 	_ = p.cache.Put(ctx, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -397,6 +417,15 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		if !freshnessRiskModel(c.WrittenAt, c.ModelID, req.Model, c.Similarity) {
 			continue
 		}
+		// A new, separate gate from freshnessRiskModel — per
+		// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md, never
+		// folded into that function, which stays scoped to Cache
+		// L3-lite's own checklist. A candidate written under a since-
+		// changed guardrail policy/detector set is a forced miss, never
+		// a silent, unchecked serve.
+		if c.GuardrailPolicyVersion != p.guardrails.Version() {
+			continue
+		}
 		return c.Resp, true
 	}
 	return nil, false
@@ -469,8 +498,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	if cached, ok := p.checkCache(ctx, l1Key, l2Key); ok {
@@ -495,6 +524,18 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
+	// Guardrail pre-call: after L1/L2/L3 all miss, before the router — per
+	// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md, matching
+	// gateway/ARCHITECTURE.md's Request Lifecycle exactly. A cache hit
+	// above never reaches this check at all — its provenance was already
+	// checked under the current policy at write time, per this same RFC's
+	// cache-key/GuardrailPolicyVersion mechanism.
+	if verdict := p.guardrails.Check(ctx, serializeMessages(req.Messages)); verdict.Blocked {
+		p.logger.Warn("guardrail_blocked_precall", "key_id", vk.ID, "finding_count", len(verdict.Findings))
+		err = ErrGuardrailBlocked
+		return
+	}
+
 	var found bool
 	dep, found = p.nextDeployment(req.Model)
 	if !found {
@@ -514,6 +555,15 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	}
 	if err != nil {
 		err = fmt.Errorf("dataplane: upstream call failed for model %q: %w", req.Model, err)
+		return
+	}
+
+	// Guardrail post-call, buffered path: resp is guaranteed fully
+	// populated here and nothing downstream (cache write, return to
+	// client) has happened yet — a Block verdict can still refuse both.
+	if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
+		p.logger.Warn("guardrail_blocked_postcall", "key_id", vk.ID, "finding_count", len(postVerdict.Findings))
+		err = ErrGuardrailBlocked
 		return
 	}
 
@@ -677,6 +727,8 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_BUDGET_EXCEEDED
 	case errors.Is(err, ErrNoDeployment):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_NO_DEPLOYMENT
+	case errors.Is(err, ErrGuardrailBlocked):
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED
 	default:
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR
 	}
@@ -745,6 +797,20 @@ func serializeMessages(messages []adapter.Message) string {
 		panic(fmt.Sprintf("dataplane: marshaling messages for cache key: %v", err))
 	}
 	return string(b)
+}
+
+// serializeResponse extracts a response's text content for the
+// guardrail post-call check, per
+// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md. Deliberately
+// minimal, mirroring serializeMessages' own scope — every choice's
+// message content, newline-joined, not a full JSON re-encoding (the
+// guardrail scans text, not structure).
+func serializeResponse(resp adapter.ChatResponse) string {
+	contents := make([]string, 0, len(resp.Choices))
+	for _, c := range resp.Choices {
+		contents = append(contents, c.Message.Content)
+	}
+	return strings.Join(contents, "\n")
 }
 
 // trailingTerminalPunctuation is the exact, closed set

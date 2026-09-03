@@ -93,8 +93,8 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens)
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	if cached, ok := p.checkCache(ctx, l1Key, l2Key); ok {
@@ -119,6 +119,17 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		}
 		// A corrupt cache entry is treated as a miss, not a request
 		// failure — same fallthrough behavior as the buffered path.
+	}
+
+	// Guardrail pre-call — identical position and reasoning to the
+	// buffered path (dataplane.go's HandleChatCompletion): after L1/L2/L3
+	// all miss, before the router. The request text is fully known here
+	// regardless of streaming/buffered, so there is no half-formed-
+	// content problem on the input side.
+	if verdict := p.guardrails.Check(ctx, serializeMessages(req.Messages)); verdict.Blocked {
+		p.logger.Warn("guardrail_blocked_precall", "key_id", vk.ID, "finding_count", len(verdict.Findings))
+		err = ErrGuardrailBlocked
+		return
 	}
 
 	if p.upstreamStream == nil {
@@ -307,6 +318,19 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 	// Echo back the client-facing canonical model name, matching
 	// callDeployment's convention for the buffered path.
 	resp.Model = req.Model
+
+	// Guardrail post-call, streaming path — audit-only, per
+	// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md's named,
+	// accepted residual risk: every chunk has already been flushed to the
+	// client (sw.WriteChunk, above) strictly before resp is known here —
+	// there is no point in this function where a post-call check can run
+	// before content reaches the client without a buffering layer this
+	// RFC deliberately does not add. This check can only log, at
+	// elevated severity, never withhold what's already been delivered.
+	if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
+		p.logger.Warn("guardrail_blocked_postcall_streaming_audit_only",
+			"deployment", dep.Name, "finding_count", len(postVerdict.Findings))
+	}
 
 	if err := sw.WriteDone(); err != nil {
 		return adapter.ChatResponse{}, fmt.Errorf("writing done sentinel for deployment %q: %w", dep.Name, err)

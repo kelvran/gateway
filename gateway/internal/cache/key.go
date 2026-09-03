@@ -29,7 +29,19 @@ import (
 // import internal/adapter — keeping cache decoupled from the request
 // schema entirely, per its documented extractability goal
 // (docs/decisions/0002-cache-embedded-in-gateway.md).
-func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int) string {
+//
+// guardrailPolicyVersion is folded into the hash the same way
+// tenant/model already are, per
+// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md: L1/L2 have no
+// metadata envelope to attach a stored+checked provenance field to (see
+// internal/cache.Cache's own Get/Put([]byte) contract — no such field
+// exists), so a guardrail policy/detector change is made safe the same
+// way tenant/model isolation already is here — baked into the key
+// itself. A policy-version bump implicitly and wholesale invalidates
+// every existing L1/L2 entry; the existing key-equality check IS the
+// version check, with zero new stored fields or "is this hit still
+// valid" code.
+func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string) string {
 	h := sha256.New()
 	// hash.Hash.Write (which fmt.Fprint[f] calls into here) is documented
 	// to never return an error, so there is nothing a caller could ever
@@ -51,6 +63,7 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 	if maxTokens != nil {
 		_, _ = fmt.Fprintf(h, "%v", *maxTokens)
 	}
+	_, _ = fmt.Fprintf(h, "\x00guardrail_policy=%s", guardrailPolicyVersion)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -64,7 +77,7 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 // opinion on normalization itself, matching Key's own "primitive/
 // serialized inputs only" contract so this package still never needs to
 // import internal/adapter.
-func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int) string {
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "layer=l2\x00tenant=%s\x00model=%s\x00messages=%s\x00temperature=", tenantID, model, normalizedMessages)
 	if temperature != nil {
@@ -74,5 +87,6 @@ func NormalizedKey(tenantID string, model string, normalizedMessages string, tem
 	if maxTokens != nil {
 		_, _ = fmt.Fprintf(h, "%v", *maxTokens)
 	}
+	_, _ = fmt.Fprintf(h, "\x00guardrail_policy=%s", guardrailPolicyVersion)
 	return hex.EncodeToString(h.Sum(nil))
 }

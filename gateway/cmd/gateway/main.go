@@ -10,7 +10,10 @@
 // dataplane.ErrStreamingNotSupported (HTTP 400), never a silent fallback
 // to buffering. OTel spans, per
 // docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md, are real for every
-// request (buffered or streaming); guardrails/MCP remain unbuilt.
+// request (buffered or streaming). Guardrails (pre-call/post-call
+// PII/secrets/prompt-injection checks, per
+// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md) are real; MCP
+// remains unbuilt.
 package main
 
 import (
@@ -37,6 +40,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
+	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit/redislimiter"
@@ -194,6 +198,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		return nil, fmt.Errorf("constructing rate limiter: %w", err)
 	}
 
+	guardrailEngine := newGuardrailEngine(cfg.Guardrails, logger)
+
 	return dataplane.NewPipeline(dataplane.Config{
 		Verifier:       verifier,
 		Limiter:        keyLimiter,
@@ -201,6 +207,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Cache:          inprocess.New(cfg.Cache.MaxEntries),
 		CacheL2:        inprocess.New(cfg.Cache.L2.MaxEntries),
 		CacheL3:        inprocess.NewLexicalCache(cfg.Cache.L3.MaxEntries),
+		Guardrails:     guardrailEngine,
 		Adapters:       registry,
 		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(priceTable),
@@ -258,6 +265,53 @@ func newKeyLimiter(cfg controlplane.RateLimitConfig, keys []ratelimit.KeyConfig)
 		return nil, fmt.Errorf("opening redis rate limiter at %q: %w", cfg.RedisAddr, err)
 	}
 	return ratelimit.NewRedisKeyLimiter(keys, backend), nil
+}
+
+// guardrailDefaultPolicyVersion is the operational default when
+// cfg.PolicyVersion is empty — controlplane.GuardrailsConfig's own
+// zero-value default, applied here since that's an operational default,
+// not a config-shape concern that package owns (mirroring how
+// TelemetryConfig/CacheL2Config's own defaults are resolved in their
+// respective constructors, not in controlplane).
+const guardrailDefaultPolicyVersion = "v1"
+
+// newGuardrailEngine builds the Guardrails Engine from cfg, per
+// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md: the RFC's own
+// default detector set and policy, with cfg.CategoryOverrides applied on
+// top (both the detection AND detector-error action for that category —
+// a single "block"/"warn" knob per category, not two, matching this
+// RFC's own "deliberately simple" v1 posture). An unrecognized category
+// or action string is logged and skipped, never silently ignored and
+// never a fatal startup error — a config typo should not take down the
+// gateway, but it must be visible.
+func newGuardrailEngine(cfg controlplane.GuardrailsConfig, logger *slog.Logger) *guardrail.Engine {
+	version := cfg.PolicyVersion
+	if version == "" {
+		version = guardrailDefaultPolicyVersion
+	}
+
+	policy := guardrail.DefaultPolicy()
+	for categoryStr, actionStr := range cfg.CategoryOverrides {
+		category := guardrail.Category(categoryStr)
+		if _, known := policy.Actions[category]; !known {
+			logger.Warn("guardrail_config_unknown_category", "category", categoryStr)
+			continue
+		}
+		var action guardrail.Action
+		switch actionStr {
+		case "block":
+			action = guardrail.ActionBlock
+		case "warn":
+			action = guardrail.ActionWarn
+		default:
+			logger.Warn("guardrail_config_unknown_action", "category", categoryStr, "action", actionStr)
+			continue
+		}
+		policy.Actions[category] = action
+		policy.ErrorActions[category] = action
+	}
+
+	return guardrail.NewEngine(guardrail.DefaultDetectors(), policy, version, logger)
 }
 
 // chatCompletionsHandler adapts dataplane.Pipeline.HandleChatCompletion to
@@ -352,6 +406,12 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, dataplane.ErrStreamingNotConfigured):
 		status = http.StatusNotImplemented
+	case errors.Is(err, dataplane.ErrGuardrailBlocked):
+		// 400, not the 502 default — a guardrail rejection is a
+		// content-policy decision about THIS request, never an upstream
+		// failure, matching OpenAI's own API convention for
+		// moderation/content-policy rejections.
+		status = http.StatusBadRequest
 	}
 	http.Error(w, err.Error(), status)
 }

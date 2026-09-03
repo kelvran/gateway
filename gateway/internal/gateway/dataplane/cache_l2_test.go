@@ -7,6 +7,7 @@ import (
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
+	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 )
 
@@ -158,7 +159,8 @@ func TestWriteCacheWritesBothLayers(t *testing.T) {
 	l2 := inprocess.New(0)
 	l3 := inprocess.NewLexicalCache(0)
 	ctx := context.Background()
-	p := &Pipeline{cache: l1, cacheL2: l2, cacheL3: l3, cacheTTL: time.Hour, cacheL2TTL: time.Hour, cacheL3TTL: time.Hour}
+	guardrails := guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil)
+	p := &Pipeline{cache: l1, cacheL2: l2, cacheL3: l3, guardrails: guardrails, cacheTTL: time.Hour, cacheL2TTL: time.Hour, cacheL3TTL: time.Hour}
 
 	value := []byte(`{"id":"resp-1"}`)
 	p.writeCache(ctx, "team-alpha", "l1key", "l2key", []uint64{1, 2, 3}, nil, "gpt-4o", value)

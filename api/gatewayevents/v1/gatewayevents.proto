@@ -34,6 +34,11 @@ message GatewayDecisionEvent {
     OUTCOME_BUDGET_EXCEEDED = 5;
     OUTCOME_NO_DEPLOYMENT = 6;
     OUTCOME_UPSTREAM_ERROR = 7;
+    // Per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md: a
+    // pre-call or post-call guardrail Block-tier verdict rejected this
+    // request. Distinct from OUTCOME_UPSTREAM_ERROR so a guardrail
+    // rejection is never misclassified as an upstream failure.
+    OUTCOME_GUARDRAIL_BLOCKED = 8;
   }
   Outcome outcome = 6;
 

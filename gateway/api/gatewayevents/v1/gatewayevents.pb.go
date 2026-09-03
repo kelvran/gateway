@@ -44,6 +44,11 @@ const (
 	GatewayDecisionEvent_OUTCOME_BUDGET_EXCEEDED   GatewayDecisionEvent_Outcome = 5
 	GatewayDecisionEvent_OUTCOME_NO_DEPLOYMENT     GatewayDecisionEvent_Outcome = 6
 	GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR    GatewayDecisionEvent_Outcome = 7
+	// Per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md: a
+	// pre-call or post-call guardrail Block-tier verdict rejected this
+	// request. Distinct from OUTCOME_UPSTREAM_ERROR so a guardrail
+	// rejection is never misclassified as an upstream failure.
+	GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED GatewayDecisionEvent_Outcome = 8
 )
 
 // Enum value maps for GatewayDecisionEvent_Outcome.
@@ -57,6 +62,7 @@ var (
 		5: "OUTCOME_BUDGET_EXCEEDED",
 		6: "OUTCOME_NO_DEPLOYMENT",
 		7: "OUTCOME_UPSTREAM_ERROR",
+		8: "OUTCOME_GUARDRAIL_BLOCKED",
 	}
 	GatewayDecisionEvent_Outcome_value = map[string]int32{
 		"OUTCOME_UNSPECIFIED":       0,
@@ -67,6 +73,7 @@ var (
 		"OUTCOME_BUDGET_EXCEEDED":   5,
 		"OUTCOME_NO_DEPLOYMENT":     6,
 		"OUTCOME_UPSTREAM_ERROR":    7,
+		"OUTCOME_GUARDRAIL_BLOCKED": 8,
 	}
 )
 
@@ -258,7 +265,7 @@ var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe6\x05\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x85\x06\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -272,7 +279,7 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\x18fallback_from_deployment\x18\t \x01(\tR\x16fallbackFromDeployment\x12'\n" +
 	"\x0ffallback_reason\x18\n" +
 	" \x01(\tR\x0efallbackReason\x12(\n" +
-	"\x10budget_spent_usd\x18\v \x01(\tR\x0ebudgetSpentUsd\"\xd8\x01\n" +
+	"\x10budget_spent_usd\x18\v \x01(\tR\x0ebudgetSpentUsd\"\xf7\x01\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -282,7 +289,8 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\x14OUTCOME_RATE_LIMITED\x10\x04\x12\x1b\n" +
 	"\x17OUTCOME_BUDGET_EXCEEDED\x10\x05\x12\x19\n" +
 	"\x15OUTCOME_NO_DEPLOYMENT\x10\x06\x12\x1a\n" +
-	"\x16OUTCOME_UPSTREAM_ERROR\x10\aBIZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3"
+	"\x16OUTCOME_UPSTREAM_ERROR\x10\a\x12\x1d\n" +
+	"\x19OUTCOME_GUARDRAIL_BLOCKED\x10\bBIZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3"
 
 var (
 	file_gatewayevents_v1_gatewayevents_proto_rawDescOnce sync.Once

@@ -19,6 +19,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/cache"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
+	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
@@ -118,7 +119,7 @@ func (failingLexicalCache) Search(_ context.Context, _ string, _ []uint64, _ int
 	return nil, errors.New("simulated L3 backend failure")
 }
 
-func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ time.Duration) error {
+func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ time.Duration) error {
 	return nil
 }
 
@@ -159,12 +160,13 @@ func newTestPipelineWithCacheL3(t *testing.T, upstream UpstreamCaller, l3 cache.
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	p, err := NewPipeline(Config{
-		Verifier: verifier,
-		Limiter:  ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
-		Budget:   budget.NewTracker(),
-		Cache:    inprocess.New(0),
-		CacheL2:  inprocess.New(0),
-		CacheL3:  l3,
+		Verifier:   verifier,
+		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:     budget.NewTracker(),
+		Cache:      inprocess.New(0),
+		CacheL2:    inprocess.New(0),
+		CacheL3:    l3,
+		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
 		Adapters: adapter.Registry{
 			"openai": openai.New(),
 		},
