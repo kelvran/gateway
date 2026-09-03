@@ -10,7 +10,7 @@
 // docs/rfcs/2026-09-02-streaming-support.md for the full design.
 package streaming
 
-import "github.com/kelvran/gateway/internal/adapter"
+import "github.com/kelvran/gateway/gateway/internal/adapter"
 
 // SSEEvent is one already-framed Server-Sent Event read from a provider's
 // raw response body — the "event:" and "data:" fields, nothing more (no

@@ -1,4 +1,4 @@
-module github.com/kelvran/gateway
+module github.com/kelvran/gateway/gateway
 
 go 1.25.0
 

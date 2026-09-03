@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/streaming"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/streaming"
 )
 
 // doneSentinel is the literal (non-JSON) payload OpenAI sends on the SSE

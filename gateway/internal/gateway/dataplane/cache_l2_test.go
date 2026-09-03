@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/cache/inprocess"
-	"github.com/kelvran/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
+	"github.com/kelvran/gateway/gateway/internal/identity"
 )
 
 func TestNormalizeMessagesTrimsOuterWhitespace(t *testing.T) {

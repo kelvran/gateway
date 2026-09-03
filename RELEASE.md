@@ -5,7 +5,7 @@
 **`gateway`:**
 1. Move `gateway/changelog/unreleased.md`'s content into a new `gateway/changelog/<version>.md` (e.g. `0.1.0.md`), dated, self-contained.
 2. Reset `gateway/changelog/unreleased.md` to empty category headers.
-3. Tag the release `gateway/v<version>` (SemVer — load-bearing for the Go module path).
+3. Tag the release `gateway/v<version>` (SemVer — load-bearing for the Go module path: `gateway/go.mod`'s module directive is `github.com/kelvran/gateway/gateway`, not the bare `github.com/kelvran/gateway`, because `go.mod` lives one level below the repo root — the repo itself is named `kelvran/gateway` on GitHub, and Go's own subdirectory-module rule, go.dev/ref/mod's "Mapping versions to commits", requires the declared module path to carry the physical subdirectory as a literal suffix, with the tag prefixed to match. Verified empirically before this convention was adopted: tagging with the bare module path resolved to a synthesized empty stub `go.mod` via the proxy, not the real dependency graph — see `DECISIONS.md`.).
 4. Build and publish the static binary; update the Go module proxy cache picks it up automatically once tagged.
 
 **`evals`:**
@@ -29,9 +29,13 @@ Any release that includes a change to `api/` (the shared OTel/proto contract) mu
 | npm | `gateway` (client SDK, if/when one ships) | `@kelvran/gateway` |
 | PyPI | `evals` | `kelvran-evals` |
 | crates.io | reserved, not actively published yet | `kelvran` |
-| Go module proxy | `gateway` | `github.com/kelvran/gateway` |
+| Go module proxy | `gateway` | `github.com/kelvran/gateway/gateway` |
 
 *(Homebrew formula and any other distribution channel: add here once actually adopted — not a v1 commitment.)*
+
+## Pre-flight Blockers
+
+- **USPTO TESS/WHOIS trademark clearance** (`DECISIONS.md`'s naming-clearance entry) is still open. Scope decision, made explicitly rather than left ambiguous: this blocks a first **PyPI** publish of `kelvran-evals` (a genuinely permanent, admin-unappealable public name/filename claim) but does **not** block pushing `gateway/v<version>`/`evals/v<version>` git tags or creating GitHub Releases on the already-public `github.com/kelvran/gateway` repo — that "GitHub org/repo" prong of the blocker was already crossed when the repo went public, and a git tag/Release on an already-public repo is low-stakes and fully reversible (delete the tag/release) in a way a PyPI publish is not. A caveat worth naming honestly: once a `gateway/v<version>` tag is pushed to the public repo, nothing prevents `proxy.golang.org`/`sum.golang.org` from durably caching it if anyone runs `go get` against it — a byproduct of the already-made repo-publication decision, not something newly incurred by tagging itself.
 
 ## Rollback Procedure
 

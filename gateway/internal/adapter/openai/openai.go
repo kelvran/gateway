@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/kelvran/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
 // Request is OpenAI's native Chat Completions request shape.

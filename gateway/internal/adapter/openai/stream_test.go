@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/streaming"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/streaming"
 )
 
 // TestNewStreamDecoderSatisfiesStreamingAdapter proves *Adapter satisfies

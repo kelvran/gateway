@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelvran/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/cache"
 )
 
 // staticClock advances only when Advance is called — this is what lets the

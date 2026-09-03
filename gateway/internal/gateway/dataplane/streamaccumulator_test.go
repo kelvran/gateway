@@ -3,8 +3,8 @@ package dataplane
 import (
 	"testing"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/streaming"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/streaming"
 )
 
 func strPtr(s string) *string { return &s }

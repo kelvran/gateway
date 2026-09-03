@@ -39,7 +39,7 @@ import (
 // deliberately doesn't follow the usual explicit-dependency-injection
 // convention, because the SDK's no-op default requires zero setup for
 // every test that doesn't care about tracing.
-var Tracer = otel.Tracer("github.com/kelvran/gateway/internal/gateway/dataplane")
+var Tracer = otel.Tracer("github.com/kelvran/gateway/gateway/internal/gateway/dataplane")
 
 // Config selects how spans are exported.
 type Config struct {

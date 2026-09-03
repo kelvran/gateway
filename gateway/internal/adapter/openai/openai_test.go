@@ -3,7 +3,7 @@ package openai
 import (
 	"testing"
 
-	"github.com/kelvran/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
 // TestRoundTrip proves the OpenAI adapter's ToProvider -> FromProvider

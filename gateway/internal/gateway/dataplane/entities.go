@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/kelvran/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
 // Fingerprint extracts a query's entity/number/date signature for Cache

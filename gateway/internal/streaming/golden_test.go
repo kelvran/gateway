@@ -3,7 +3,7 @@ package streaming
 import (
 	"testing"
 
-	"github.com/kelvran/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
 // TestWriteChunkGoldenWireFormat pins the exact byte-for-byte SSE output for

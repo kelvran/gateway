@@ -35,16 +35,16 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	gatewayeventsv1 "github.com/kelvran/gateway/api/gatewayevents/v1"
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/adapter/anthropic"
-	"github.com/kelvran/gateway/internal/adapter/openai"
-	"github.com/kelvran/gateway/internal/budget"
-	"github.com/kelvran/gateway/internal/cache"
-	"github.com/kelvran/gateway/internal/costaccounting"
-	"github.com/kelvran/gateway/internal/identity"
-	"github.com/kelvran/gateway/internal/ratelimit"
-	"github.com/kelvran/gateway/internal/telemetry"
+	gatewayeventsv1 "github.com/kelvran/gateway/gateway/api/gatewayevents/v1"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/budget"
+	"github.com/kelvran/gateway/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/costaccounting"
+	"github.com/kelvran/gateway/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // ErrRateLimited is returned by HandleChatCompletion when the caller's

@@ -14,11 +14,11 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/cache"
-	"github.com/kelvran/gateway/internal/identity"
-	"github.com/kelvran/gateway/internal/streaming"
-	"github.com/kelvran/gateway/internal/telemetry"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/streaming"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // ErrStreamingNotSupported is returned when a request asks to stream but

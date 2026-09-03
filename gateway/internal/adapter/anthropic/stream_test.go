@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/streaming"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/streaming"
 )
 
 // decodeFixture feeds every raw SSE event in the file at path through a

@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/adapter/openai"
-	"github.com/kelvran/gateway/internal/budget"
-	"github.com/kelvran/gateway/internal/cache"
-	"github.com/kelvran/gateway/internal/cache/inprocess"
-	"github.com/kelvran/gateway/internal/costaccounting"
-	"github.com/kelvran/gateway/internal/identity"
-	"github.com/kelvran/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/budget"
+	"github.com/kelvran/gateway/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
+	"github.com/kelvran/gateway/gateway/internal/costaccounting"
+	"github.com/kelvran/gateway/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
 
 // TestHandleChatCompletionLexicalNearDuplicateHitsL3 proves a request whose

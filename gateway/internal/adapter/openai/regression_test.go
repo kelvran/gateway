@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/kelvran/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
 // This file holds REGRESSION tests, distinct from openai_test.go's

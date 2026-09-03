@@ -14,7 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
-	"github.com/kelvran/gateway/internal/gateway/controlplane"
+	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 )
 
 // newIntegrationServerWithRedisRateLimit builds the same real

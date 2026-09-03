@@ -15,9 +15,9 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/adapter/openai"
-	"github.com/kelvran/gateway/internal/telemetry"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // spanRecorder is installed exactly once for this whole test binary, in

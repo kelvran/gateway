@@ -11,8 +11,8 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"github.com/kelvran/gateway/internal/gateway/controlplane"
-	"github.com/kelvran/gateway/internal/gateway/dataplane"
+	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
+	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 )
 
 // newIntegrationServerWithBudgetPersistence builds the same real

@@ -9,7 +9,7 @@ syntax = "proto3";
 
 package gatewayevents.v1;
 
-option go_package = "github.com/kelvran/gateway/api/gatewayevents/v1;gatewayeventsv1";
+option go_package = "github.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1";
 
 import "google/protobuf/timestamp.proto";
 

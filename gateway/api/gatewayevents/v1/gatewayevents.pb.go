@@ -205,7 +205,7 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\x14OUTCOME_RATE_LIMITED\x10\x04\x12\x1b\n" +
 	"\x17OUTCOME_BUDGET_EXCEEDED\x10\x05\x12\x19\n" +
 	"\x15OUTCOME_NO_DEPLOYMENT\x10\x06\x12\x1a\n" +
-	"\x16OUTCOME_UPSTREAM_ERROR\x10\aBAZ?github.com/kelvran/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3"
+	"\x16OUTCOME_UPSTREAM_ERROR\x10\aBIZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3"
 
 var (
 	file_gatewayevents_v1_gatewayevents_proto_rawDescOnce sync.Once

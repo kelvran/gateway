@@ -10,7 +10,7 @@ package gemini
 import (
 	"fmt"
 
-	"github.com/kelvran/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
 // Adapter is an unimplemented stub satisfying adapter.Adapter.

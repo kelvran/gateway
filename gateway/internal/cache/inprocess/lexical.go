@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kelvran/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/cache"
 )
 
 // lexicalEntry is one stored Cache L3-lite candidate.

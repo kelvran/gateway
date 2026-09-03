@@ -28,9 +28,9 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"github.com/kelvran/gateway/internal/adapter/anthropic"
-	"github.com/kelvran/gateway/internal/adapter/openai"
-	"github.com/kelvran/gateway/internal/gateway/controlplane"
+	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 )
 
 // testKeyHash is the test-only equivalent of what an operator does once

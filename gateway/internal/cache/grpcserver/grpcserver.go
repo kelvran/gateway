@@ -15,7 +15,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/kelvran/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/cache"
 )
 
 // errNotImplemented is returned by every method on Server. It is a

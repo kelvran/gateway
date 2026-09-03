@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/streaming"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/streaming"
 )
 
 // streamAccumulator folds a sequence of streaming.ChatCompletionChunks back

@@ -3,12 +3,12 @@ package adapter_test
 import (
 	"testing"
 
-	"github.com/kelvran/gateway/internal/adapter"
-	"github.com/kelvran/gateway/internal/adapter/anthropic"
-	"github.com/kelvran/gateway/internal/adapter/bedrock"
-	"github.com/kelvran/gateway/internal/adapter/gemini"
-	"github.com/kelvran/gateway/internal/adapter/openai"
-	"github.com/kelvran/gateway/internal/adapter/openaicompat"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
+	"github.com/kelvran/gateway/gateway/internal/adapter/bedrock"
+	"github.com/kelvran/gateway/gateway/internal/adapter/gemini"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
 )
 
 // TestAllFiveAdaptersRegister proves all five adapters (two real, three

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelvran/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/cache"
 )
 
 var _ cache.LexicalCache = (*LexicalCache)(nil)

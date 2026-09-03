@@ -3,7 +3,7 @@ package dataplane
 import (
 	"testing"
 
-	"github.com/kelvran/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
 func fingerprintOf(content string) map[string]struct{} {
