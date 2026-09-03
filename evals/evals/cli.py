@@ -94,6 +94,21 @@ def _deterministic_scorer_id(case: EvalCase) -> str:
     return "exact_match" if match_kind == "exact" else "regex_match"
 
 
+def _last_judge_call_cost_usd(
+    call_model: Callable[[str], Awaitable[str]],
+) -> float | None:
+    """Read the real cost of the most recent judge call off `call_model`.
+
+    `call_model` only has to satisfy `Callable[[str], Awaitable[str]]` —
+    `last_call_cost` is an extra attribute the real
+    `evals.judge.providers._AnthropicCallModel` exposes, not part of that
+    base contract, so a test fake (a plain async function) that doesn't
+    have it falls back to `None` here rather than raising.
+    """
+    last_call_cost = getattr(call_model, "last_call_cost", None)
+    return last_call_cost.cost_usd if last_call_cost is not None else None
+
+
 def _judge_output(
     output: str,
     reference: str | None,
@@ -214,6 +229,10 @@ def run_cmd(
                     value=passed,
                     rationale=judge_result.rationale,
                     bias_mitigations_applied=judge_result.bias_mitigations_applied,
+                    # Real, computed cost of this call — see
+                    # _last_judge_call_cost_usd's own docstring for why
+                    # this read is safe under v1's sequential-only loop.
+                    cost_usd=_last_judge_call_cost_usd(call_model),
                 )
             )
         else:
@@ -226,6 +245,10 @@ def run_cmd(
                     scorer_id=_deterministic_scorer_id(case),
                     scorer_type="deterministic",
                     value=passed,
+                    # Exact, certain zero — a deterministic scorer never
+                    # makes an external call. See Score.cost_usd's own
+                    # docstring for why this is 0.0, not None.
+                    cost_usd=0.0,
                 )
             )
         if passed:
@@ -312,6 +335,7 @@ def rollout_cmd(
                     value=passed,
                     rationale=judge_result.rationale,
                     bias_mitigations_applied=judge_result.bias_mitigations_applied,
+                    cost_usd=_last_judge_call_cost_usd(call_model),
                 )
             )
         else:
@@ -324,6 +348,7 @@ def rollout_cmd(
                     scorer_id=_deterministic_scorer_id(case),
                     scorer_type="deterministic",
                     value=passed,
+                    cost_usd=0.0,
                 )
             )
         if passed:

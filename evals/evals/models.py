@@ -104,6 +104,16 @@ class Score(BaseModel):
       produces — no `skeptic_panel`/`human`, both `v2`-scoped per `PRD.md`.
     - `rubric_axis` stays `None` always in v1 — `judge()` produces one
       holistic verdict, never a per-axis breakdown.
+    - `cost_usd` is `0.0` (not `None`) for a `deterministic` score — that
+      scorer makes categorically zero external calls, by construction
+      (`exact_match`/`regex_match` are pure string/regex comparisons), so
+      `0.0` is an exact, certain fact, not an estimate. This is a
+      deliberate divergence from `Run.cost_usd`'s "`None` = not measured,
+      possibly non-zero" convention: the two situations aren't analogous.
+      For `llm_judge`, `cost_usd` is the real, computed cost of that one
+      Anthropic call (`evals.judge.providers.JudgeCallCost`), or `None` if
+      the pinned judge model has no price-table entry — genuinely
+      unmeasured, unlike the deterministic case.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -117,3 +127,4 @@ class Score(BaseModel):
     rationale: str | None = None
     rubric_axis: str | None = None
     bias_mitigations_applied: list[str] = Field(default_factory=list)
+    cost_usd: float | None = None

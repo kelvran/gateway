@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -286,6 +287,76 @@ def test_run_with_llm_judge_scores_via_real_wiring_using_a_fake_provider(
         "reference_guided_grading",
     ]
     assert persisted[1].value is False
+    # No cost is fabricated for a fake provider that doesn't expose
+    # last_call_cost — the plain-async-function fake above has no such
+    # attribute, so cost_usd must fall back to None, not a guess.
+    assert persisted[0].cost_usd is None
+
+
+def test_run_with_llm_judge_persists_real_cost_from_a_cost_exposing_fake(
+    tmp_path, monkeypatch
+):
+    responses = iter(
+        [
+            "REASONING: matches exactly.\nVERDICT: PASS\n",
+            "REASONING: does not match.\nVERDICT: FAIL\n",
+        ]
+    )
+
+    class _FakeCostExposingCallModel:
+        def __init__(self) -> None:
+            self.last_call_cost = None
+
+        async def __call__(self, prompt: str) -> str:
+            self.last_call_cost = SimpleNamespace(cost_usd=0.0001234)
+            return next(responses)
+
+    fake_call_model = _FakeCostExposingCallModel()
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 2
+    assert persisted[0].cost_usd == 0.0001234
+    assert persisted[1].cost_usd == 0.0001234
+
+
+def test_run_deterministic_scores_have_exact_zero_cost(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/golden_example.json",
+            "--scores",
+            str(scores_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 3
+    assert all(s.cost_usd == 0.0 for s in persisted)
 
 
 def test_run_llm_judge_requires_a_reference_and_fails_loudly(tmp_path, monkeypatch):
@@ -417,8 +488,10 @@ def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch)
     assert all(s.scorer_type == "deterministic" for s in persisted_scores)
     assert persisted_scores[0].run_id == persisted_runs[0].id
     assert persisted_scores[0].value is True
+    assert persisted_scores[0].cost_usd == 0.0
     assert persisted_scores[1].run_id == persisted_runs[1].id
     assert persisted_scores[1].value is False
+    assert persisted_scores[1].cost_usd == 0.0
 
 
 def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(

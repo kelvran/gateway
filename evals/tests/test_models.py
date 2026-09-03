@@ -168,6 +168,7 @@ def test_score_construct_with_only_required_fields():
     assert score.rationale is None
     assert score.rubric_axis is None
     assert score.bias_mitigations_applied == []
+    assert score.cost_usd is None
 
 
 def test_score_run_id_defaults_to_none_not_a_fabricated_case_id():
@@ -180,6 +181,19 @@ def test_score_run_id_defaults_to_none_not_a_fabricated_case_id():
     )
     assert score.run_id is None
     assert score.run_id != score.eval_case_id
+
+
+def test_score_cost_usd_can_be_set_explicitly_for_llm_judge():
+    score = _make_score(scorer_type="llm_judge", cost_usd=0.0000075)
+    assert score.cost_usd == 0.0000075
+
+
+def test_score_cost_usd_zero_for_deterministic_is_exact_not_fabricated():
+    score = _make_score(scorer_type="deterministic", cost_usd=0.0)
+    assert score.cost_usd == 0.0
+    # Distinct from None -- 0.0 here is a certain fact (no external call
+    # is ever made by a deterministic scorer), not an unmeasured value.
+    assert score.cost_usd is not None
 
 
 def test_score_invalid_scorer_type_rejected():
