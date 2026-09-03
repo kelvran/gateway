@@ -107,7 +107,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	var found bool
 	dep, found = p.nextDeployment(req.Model)
 	if !found {
-		err = fmt.Errorf("dataplane: no deployment configured for model %q", req.Model)
+		err = fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		return
 	}
 

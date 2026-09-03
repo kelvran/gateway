@@ -26,7 +26,7 @@ Real Redis/Postgres via testcontainers, never mocked at this layer — the point
 
 ## 5. Contract Tests (`api/` boundary)
 
-`buf breaking` in CI is mandatory on any PR touching `api/` — this is not optional and not a "nice to have," per `AGENTS.md`'s Conventions section. On top of that: a golden-fixture round-trip test, where `evals` decodes and `gateway` encodes the same checked-in set of `api/gatewayevents` and `api/otel` messages, confirming both languages' generated bindings agree on the wire format — a lightweight substitute for a full Pact Broker (tracked as an open question in `docs/research/RESEARCH.md` for whether that's ever worth adopting).
+`buf breaking` in CI is mandatory on any PR touching `api/` — this is not optional and not a "nice to have," per `AGENTS.md`'s Conventions section; real since `docs/rfcs/2026-09-03-api-gatewayevents-contract.md`. On top of that: a golden-fixture round-trip test, where `evals` decodes and `gateway` encodes the same checked-in set of `api/gatewayevents` messages, confirming both languages' generated bindings agree on the wire format — real for `gatewayevents` (`evals/tests/test_ingestion_golden_roundtrip.py`, fixture at `evals/tests/fixtures/gateway_decision_event.json`, produced by `gateway`'s own generated bindings, not hand-authored). `api/otel` stays out of scope for this test — that contract remains a deliberate placeholder (see `api/README.md`). A lightweight substitute for a full Pact Broker (tracked as an open question in `docs/research/RESEARCH.md` for whether that's ever worth adopting).
 
 ## 6. End-to-End Tests
 

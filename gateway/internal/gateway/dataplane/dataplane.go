@@ -29,7 +29,10 @@ import (
 
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	gatewayeventsv1 "github.com/kelvran/gateway/api/gatewayevents/v1"
 	"github.com/kelvran/gateway/internal/adapter"
 	"github.com/kelvran/gateway/internal/adapter/anthropic"
 	"github.com/kelvran/gateway/internal/adapter/openai"
@@ -53,6 +56,13 @@ var ErrBudgetExceeded = errors.New("dataplane: budget exceeded")
 // configured with a non-empty AllowedModels list that does not include the
 // requested model.
 var ErrModelNotAllowed = errors.New("dataplane: model not allowed for this virtual key")
+
+// ErrNoDeployment is returned when no configured Deployment routes the
+// requested model. Wrapped (not returned bare) so callers — including
+// outcomeFor's errors.Is classification for
+// docs/rfcs/2026-09-03-api-gatewayevents-contract.md's GatewayDecisionEvent —
+// can distinguish this from an upstream error without string-matching.
+var ErrNoDeployment = errors.New("dataplane: no deployment configured for requested model")
 
 // Deployment is a resolved upstream route: a concrete provider/endpoint a
 // canonical model can be sent to, with its API key already resolved from
@@ -275,7 +285,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	var found bool
 	dep, found = p.nextDeployment(req.Model)
 	if !found {
-		err = fmt.Errorf("dataplane: no deployment configured for model %q", req.Model)
+		err = fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		return
 	}
 
@@ -409,9 +419,42 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		AgentRunID: telemetry.AgentRunIDFromContext(ctx),
 		Err:        err,
 	})
+
+	event := &gatewayeventsv1.GatewayDecisionEvent{
+		TraceId:        span.SpanContext().TraceID().String(),
+		SpanId:         span.SpanContext().SpanID().String(),
+		OccurredAt:     timestamppb.Now(),
+		VirtualKeyId:   virtualKeyID,
+		RequestedModel: req.Model,
+		Outcome:        outcomeFor(err),
+	}
 	span.End()
 
-	p.logRequest(vk, req, resp, cacheHit, cost, err)
+	p.logRequest(vk, req, resp, cacheHit, cost, err, event)
+}
+
+// outcomeFor derives a GatewayDecisionEvent's structured Outcome from
+// the same sentinel errors HandleChatCompletion/HandleChatCompletionStream
+// already return — per docs/rfcs/2026-09-03-api-gatewayevents-contract.md,
+// no new rejection categories, no changes to either method's control
+// flow, only classification of what err already is.
+func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
+	switch {
+	case err == nil:
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_OK
+	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey):
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_AUTH_FAILED
+	case errors.Is(err, ErrModelNotAllowed):
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_MODEL_NOT_ALLOWED
+	case errors.Is(err, ErrRateLimited):
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_RATE_LIMITED
+	case errors.Is(err, ErrBudgetExceeded):
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_BUDGET_EXCEEDED
+	case errors.Is(err, ErrNoDeployment):
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_NO_DEPLOYMENT
+	default:
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR
+	}
 }
 
 // finishReasons collects every non-empty FinishReason across resp's
@@ -431,10 +474,22 @@ func finishReasons(resp adapter.ChatResponse) []string {
 // logRequest emits the structured JSON log line for one request. cost is
 // precomputed by finalize (decimal.Zero when err != nil) so it's never
 // calculated twice.
-func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, cost decimal.Decimal, err error) {
+func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
 	fields := []any{"model", req.Model, "cache_hit", cacheHit}
 	if vk != nil {
 		fields = append(fields, "virtual_key_id", vk.ID)
+	}
+	// gatewayevents_v1 is added on BOTH the error and success paths below
+	// — Outcome is exactly as meaningful for a rejection as for a
+	// success, per docs/rfcs/2026-09-03-api-gatewayevents-contract.md. A
+	// marshal failure (never expected for a validly-constructed proto3
+	// message with no required fields, but the API can still return one)
+	// is logged and the field is simply omitted — it must never block the
+	// rest of this already-real log line.
+	if encoded, marshalErr := protojson.Marshal(event); marshalErr != nil {
+		p.logger.Warn("gatewayevents_marshal_failed", "error", marshalErr.Error())
+	} else {
+		fields = append(fields, "gatewayevents_v1", string(encoded))
 	}
 
 	if err != nil {

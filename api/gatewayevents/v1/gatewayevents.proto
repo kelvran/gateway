@@ -1,0 +1,39 @@
+// api/gatewayevents/v1/gatewayevents.proto
+//
+// Per docs/rfcs/2026-09-03-api-gatewayevents-contract.md: the structured
+// outcome of one gateway request, joinable to the OTel span that already
+// carries gen_ai.*/cost/cache_hit data (see
+// docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md) via trace_id/span_id.
+// This message never re-encodes anything already real on that span.
+syntax = "proto3";
+
+package gatewayevents.v1;
+
+option go_package = "github.com/kelvran/gateway/api/gatewayevents/v1;gatewayeventsv1";
+
+import "google/protobuf/timestamp.proto";
+
+// One per HandleChatCompletion/HandleChatCompletionStream call.
+message GatewayDecisionEvent {
+  string trace_id = 1;
+  string span_id = 2;
+  google.protobuf.Timestamp occurred_at = 3;
+  // virtual_key_id is "" if auth itself failed (no key was resolved).
+  string virtual_key_id = 4;
+  string requested_model = 5;
+
+  // Outcome is derived from the same sentinel errors
+  // internal/gateway/dataplane already returns — no new rejection
+  // categories invented beyond what the code already distinguishes.
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_OK = 1;
+    OUTCOME_AUTH_FAILED = 2;
+    OUTCOME_MODEL_NOT_ALLOWED = 3;
+    OUTCOME_RATE_LIMITED = 4;
+    OUTCOME_BUDGET_EXCEEDED = 5;
+    OUTCOME_NO_DEPLOYMENT = 6;
+    OUTCOME_UPSTREAM_ERROR = 7;
+  }
+  Outcome outcome = 6;
+}

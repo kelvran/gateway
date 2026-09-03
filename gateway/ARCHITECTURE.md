@@ -53,10 +53,13 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              the gateway's second external Go dependency family after OTel)
 /internal/telemetry          — real OTel spans per request (GenAI semantic-convention attributes,
                              agent_run_id via W3C Baggage) — ACTIVE, per
-                             docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md. The api/ versioned
-                             cross-language contract this line originally pointed at (the layer
-                             `evals` would depend on) remains deliberately deferred — see that RFC's
-                             Motivation section for why: no real evals-side consumer exists yet.
+                             docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md. `api/otel/`'s versioned
+                             cross-language contract remains deliberately deferred (OTLP already IS a
+                             real wire format for this data; see that RFC's Motivation section). The
+                             OTHER half of the shared contract — `api/gatewayevents/v1` (structured
+                             per-request decision outcomes, not span data) — is real: `finalize` (see
+                             /internal/gateway/dataplane below) is its producer, per
+                             docs/rfcs/2026-09-03-api-gatewayevents-contract.md
 /internal/mcp                — inbound (expose Kelvran's own APIs as MCP tools) + outbound (broker agent
                              tool calls) brokering — shares identity/costaccounting, not a second gateway
 /internal/guardrail          — pre/post-call middleware interface; PII/content checks

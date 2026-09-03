@@ -1,0 +1,8 @@
+{
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "spanId": "00f067aa0ba902b7",
+  "occurredAt": "2026-09-03T12:00:00Z",
+  "virtualKeyId": "team-fixture",
+  "requestedModel": "gpt-4o",
+  "outcome": "OUTCOME_BUDGET_EXCEEDED"
+}

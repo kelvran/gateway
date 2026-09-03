@@ -7,6 +7,28 @@ on:
     branches: [main]
 
 jobs:
+  proto:
+    name: api (buf lint, breaking, generated-code drift check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # buf breaking's `.git#branch=main` input needs full history,
+          # not just the pushed/PR commit — a shallow clone can leave
+          # "main" unresolvable or pointed at the wrong commit.
+          fetch-depth: 0
+      - uses: bufbuild/buf-setup-action@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: install protoc-gen-go
+        run: go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+      - name: lint + breaking + generated-code drift check
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          make lint-proto
+          make check-proto
+
   gateway:
     name: gateway (build, vet, lint, test)
     runs-on: ubuntu-latest

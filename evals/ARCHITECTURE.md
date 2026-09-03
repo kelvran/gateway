@@ -10,8 +10,14 @@ evals/
   uv.lock                    — own workspace manager; zero cross-awareness with the Go side
   .importlinter               — CI-enforced layer contract (Python analogue of go-arch-lint)
   evals/
-    contracts/                — GENERATED Python stubs from api/*.proto — no source dependency, ever
-    ingestion/                 — consumes api/gatewayevents + api/otel only; production-trace sampling
+    contracts/                — GENERATED Python stubs from api/*.proto — no source dependency, ever.
+                                 Real for gatewayevents/v1; empty for otel/ (deliberately not built —
+                                 see api/README.md)
+    ingestion/                 — real, v1: decode-only, per docs/rfcs/2026-09-03-api-gatewayevents-contract.md
+                                 — decodes a checked-in gatewayevents fixture via the generated bindings,
+                                 the golden-fixture round-trip test docs/testing/TESTING.md §5 promised.
+                                 Live production-trace sampling from a running gateway (the transport is
+                                 still undecided) remains a documented future slice, not built here
     rollout/                   — sandboxed agent rollout orchestration
     judge/                     — LLM-judge + statistics (bootstrap resampling, Bayesian model comparison,
                                  confidence intervals, pass@k / pass^k reliability)
