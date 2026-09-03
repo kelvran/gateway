@@ -50,7 +50,7 @@ See `DECISIONS.md` and `docs/decisions/` — not restated here.
 ## Active Blockers
 
 - Project name **Kelvran** still needs a manual USPTO TESS / WHOIS trademark clearance before public registration of the domain/GitHub org/packages — tracked in `DECISIONS.md`, not yet done.
-- No git remote configured — repo is local-only, so `.github/workflows/ci.yml` has never actually run.
+- ~~No git remote configured~~ — resolved 2026-09-03: repo is now public at `github.com/kelvran/gateway`. First real push immediately caught a genuine latent bug: `.github/workflows/ci.yml` pinned `golangci-lint-action@v6`, which does not support golangci-lint v2's version string at all — the `gateway` lint job failed outright on its first real run. Fixed by bumping to `@v7`; `evals`'s job passed on the first try. Exactly the CI-trustworthiness gap the third branch-strategy research pass (2026-09-03) flagged as more urgent than any branching change.
 
 *(Nothing here is vulnerability-shaped; if a future blocker ever is, it routes to `SECURITY.md`'s private channel instead of appearing on this public page.)*
 
