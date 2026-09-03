@@ -1,5 +1,5 @@
 [project]
-name = "evals"
+name = "kelvran-evals"
 version = "0.1.0"
 description = "Kelvran evals — agent-evaluation system (statistically rigorous rollout scoring, CI/CD quality gates)"
 readme = "ARCHITECTURE.md"

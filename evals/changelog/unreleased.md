@@ -17,4 +17,6 @@ Versioning: [SemVer](https://semver.org/) by default. Revisit CalVer (`YYYY.MM.P
 
 ## Fixed
 
+- `pyproject.toml`'s PyPI distribution name was `evals`, not the `kelvran-evals` name `RELEASE.md`'s Publish Targets table already committed to — found while prepping for the first real release. Fixed the distribution name only; the importable module (`evals`) and the installed CLI command (`evals`) are unchanged, matching the standard "distribution name differs from import name" PyPI pattern.
+
 ## Security
