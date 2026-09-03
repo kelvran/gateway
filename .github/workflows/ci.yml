@@ -18,11 +18,28 @@ jobs:
           # "main" unresolvable or pointed at the wrong commit.
           fetch-depth: 0
       - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
       - name: install protoc-gen-go
         run: go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+      - name: install protoc
+        # buf's `protoc_builtin: python` plugin type shells out to a real
+        # protoc binary for its bundled generators (unlike protoc-gen-go,
+        # a standalone plugin) — ubuntu-latest runners don't ship one.
+        # Version-pinned to match local dev exactly (35.1) — `apt-get
+        # install protobuf-compiler` was tried first and rejected: it
+        # installs whatever protoc version Debian's package repo happens
+        # to carry (confirmed empirically: 3.21.12 on ubuntu-24.04),
+        # which generates structurally different Python code than a
+        # matching-version protoc — a real, reproduced `check-proto`
+        # false-positive-drift risk, not a hypothetical one.
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: lint + breaking + generated-code drift check
         run: |
           export PATH="$PATH:$(go env GOPATH)/bin"
