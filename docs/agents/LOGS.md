@@ -624,3 +624,21 @@ Next steps / resume point:
 **Bugs found:** None — small, well-scoped CLI addition, no surprises.
 
 **Next steps / resume point:** Bedrock's real-adapter question remains, now explicitly greenlit by the user (grounding research already launched in parallel with this pass) — pick up separately. PyPI trademark clearance research also launched in parallel.
+
+---
+
+## [2026-09-04] PyPI trademark-clearance research pass (no code)
+
+**Files touched:** `STATUS.md` (Active Blockers section rewritten with real findings), `DECISIONS.md` (one-line entry). No code — pure research, via a forked agent doing real WHOIS/registry lookups and web searches, not a legal opinion.
+
+**Intent/summary:** The user explicitly asked to work toward resolving the standing PyPI trademark-clearance blocker. I can't perform the actual legal clearance or make the founder's go/no-go call, but could do the real research legwork.
+
+**Findings:** Domains (`kelvran.com`/`.dev`/`.io`/`.ai`) and package namespaces (PyPI `kelvran-evals`/`kelvran`, npm `kelvran`) all confirmed available via direct, real lookups (WHOIS, registry JSON endpoints returning 404). Could not obtain a real USPTO TESS result — the interactive search is a JS SPA unreachable by plain fetch, its backend API 403'd without proper signing, and the official Trademark API needs a USPTO.gov MFA-backed account. One real, named finding: "Grupo Kelvran," an active Dominican Republic construction/luxury-transport company using the name — different industry, not automatically dispositive, but real and worth the founder knowing about.
+
+**Decisions made:** Explicitly did not declare the name "cleared" — a generic web search finding zero software-industry conflicts is not a substitute for a real trademark-database query, and the report says so plainly rather than overstating confidence.
+
+**Verification performed:** N/A (research task, no code).
+
+**Bugs found:** None.
+
+**Next steps / resume point:** Blocker remains open. Founder needs to either run a manual USPTO TESS search or consult a trademark attorney — no further AI-driven research can resolve this.
