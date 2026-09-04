@@ -71,7 +71,7 @@ Previously: `evals report --traces`, explicitly user-directed despite the origin
 
 ## Next Action
 
-The real `bedrock` adapter is implemented and verified (see Verification State above) but **not yet committed/pushed** — that's the immediate next step: `git add` the exact touched files, commit with a `feat(gateway):` conventional-commit message, push, and watch real CI to green, then a final docs-confirmation commit here with the exact commit SHA and CI run ID. This closes all three items the user explicitly selected in the prior turn (Bedrock adapter, PyPI trademark research, `evals report --traces`). Real, deliberately deferred follow-on work: `ConverseStream`/AWS binary event-stream decoding for Bedrock. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — no further AI-driven research can resolve it. Worth a fresh check-in with the user on priorities next, since the explicitly-requested backlog is now exhausted again.
+The real `bedrock` adapter is closed: committed (`688a087`), pushed, confirmed green on a real CI run (`33891926645`, all 3 jobs — `gateway`'s job ran longer than usual, downloading the new AWS SDK dependency for the first time, but passed cleanly). This closes all three items the user explicitly selected in the prior turn (Bedrock adapter, PyPI trademark research, `evals report --traces`). Real, deliberately deferred follow-on work: `ConverseStream`/AWS binary event-stream decoding for Bedrock. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — no further AI-driven research can resolve it. Worth a fresh check-in with the user on priorities next, since the explicitly-requested backlog is now exhausted again.
 
 ## Release Runbook
 
