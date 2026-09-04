@@ -1,0 +1,88 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "What's the weather in Boston?"
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "id": "call_01A1B2C3",
+            "name": "get_weather",
+            "args": {
+              "city": "Boston",
+              "unit": "fahrenheit"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "id": "call_01A1B2C3",
+            "name": "get_weather",
+            "response": {
+              "result": "{\"temperature\":72,\"condition\":\"sunny\"}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "text": "It's 72°F and sunny in Boston."
+        }
+      ]
+    }
+  ],
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a helpful assistant that can check the weather."
+      }
+    ]
+  },
+  "generationConfig": {
+    "temperature": 0.4,
+    "maxOutputTokens": 1024
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Get the current weather for a given city",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string"
+              },
+              "unit": {
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    }
+  ]
+}

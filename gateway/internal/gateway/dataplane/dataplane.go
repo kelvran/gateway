@@ -24,6 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ import (
 	gatewayeventsv1 "github.com/kelvran/gateway/gateway/api/gatewayevents/v1"
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
+	"github.com/kelvran/gateway/gateway/internal/adapter/gemini"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
 	"github.com/kelvran/gateway/gateway/internal/budget"
@@ -884,6 +886,13 @@ var responseUnmarshalers = map[string]func([]byte) (any, error){
 		}
 		return &r, nil
 	},
+	"gemini": func(b []byte) (any, error) {
+		var r gemini.Response
+		if err := json.Unmarshal(b, &r); err != nil {
+			return nil, fmt.Errorf("unmarshaling gemini response: %w", err)
+		}
+		return &r, nil
+	},
 }
 
 // NewHTTPUpstreamCaller returns a real, working UpstreamCaller that POSTs
@@ -932,12 +941,42 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 	}
 }
 
+// streamUpstreamURL returns the URL to use for a streaming upstream call,
+// deriving it from dep.BaseURL for providers whose streaming endpoint is a
+// genuinely different URL (Gemini) rather than a body-flag difference
+// (every other provider today) — per
+// docs/rfcs/2026-09-04-gemini-adapter.md's "real architectural gap"
+// finding: Gemini's REST API uses a distinct URL method suffix
+// (:generateContent vs :streamGenerateContent?alt=sse), confirmed directly
+// against Google's live API discovery document, not a body "stream" flag
+// like OpenAI/Anthropic/openaicompat. Operators configure base_url as the
+// buffered (:generateContent) endpoint; the streaming sibling is derived
+// here, never separately configured.
+func streamUpstreamURL(dep Deployment) (string, error) {
+	if dep.Provider != "gemini" {
+		return dep.BaseURL, nil
+	}
+	u, err := url.Parse(dep.BaseURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing gemini base_url %q: %w", dep.BaseURL, err)
+	}
+	if !strings.HasSuffix(u.Path, ":generateContent") {
+		return "", fmt.Errorf("gemini base_url %q must end in %q for streaming URL derivation", dep.BaseURL, ":generateContent")
+	}
+	u.Path = strings.TrimSuffix(u.Path, ":generateContent") + ":streamGenerateContent"
+	q := u.Query()
+	q.Set("alt", "sse")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
 // NewHTTPUpstreamStreamCaller returns a real, working UpstreamStreamCaller
-// that POSTs the marshaled provider-native (streaming) request to
-// dep.BaseURL and, on a successful (< 300) status, returns the raw response
-// body for the caller to read incrementally as SSE frames — unlike
-// NewHTTPUpstreamCaller, it does not drain or unmarshal the body itself,
-// since that would defeat streaming's entire purpose.
+// that POSTs the marshaled provider-native (streaming) request to the
+// provider's streaming URL (see streamUpstreamURL) and, on a successful
+// (< 300) status, returns the raw response body for the caller to read
+// incrementally as SSE frames — unlike NewHTTPUpstreamCaller, it does not
+// drain or unmarshal the body itself, since that would defeat streaming's
+// entire purpose.
 func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 	return func(ctx context.Context, dep Deployment, providerReq any) (io.ReadCloser, error) {
 		body, err := json.Marshal(providerReq)
@@ -945,7 +984,12 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 			return nil, fmt.Errorf("marshaling provider stream request: %w", err)
 		}
 
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, dep.BaseURL, bytes.NewReader(body))
+		streamURL, err := streamUpstreamURL(dep)
+		if err != nil {
+			return nil, fmt.Errorf("deriving stream URL for deployment %q: %w", dep.Name, err)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, streamURL, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("building upstream stream request: %w", err)
 		}
@@ -955,7 +999,7 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 
 		httpResp, err := client.Do(httpReq)
 		if err != nil {
-			return nil, fmt.Errorf("calling upstream %q: %w", dep.BaseURL, err)
+			return nil, fmt.Errorf("calling upstream %q: %w", streamURL, err)
 		}
 
 		if httpResp.StatusCode >= 300 {
@@ -965,7 +1009,7 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 			// expecting SSE frames.
 			defer func() { _ = httpResp.Body.Close() }()
 			errBody, _ := io.ReadAll(httpResp.Body)
-			return nil, fmt.Errorf("upstream %q returned status %d: %s", dep.BaseURL, httpResp.StatusCode, string(errBody))
+			return nil, fmt.Errorf("upstream %q returned status %d: %s", streamURL, httpResp.StatusCode, string(errBody))
 		}
 
 		return httpResp.Body, nil
@@ -983,6 +1027,8 @@ func setUpstreamAuthHeaders(httpReq *http.Request, dep Deployment) {
 	case "anthropic":
 		httpReq.Header.Set("x-api-key", dep.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
+	case "gemini":
+		httpReq.Header.Set("x-goog-api-key", dep.APIKey)
 	default:
 		httpReq.Header.Set("Authorization", "Bearer "+dep.APIKey)
 	}

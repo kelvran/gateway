@@ -65,8 +65,8 @@ func TestLoadExampleConfig(t *testing.T) {
 		t.Errorf("team-beta.AllowedModels = %v, want empty (all models allowed)", beta.AllowedModels)
 	}
 
-	if len(cfg.Deployments) != 2 {
-		t.Fatalf("len(Deployments) = %d, want 2", len(cfg.Deployments))
+	if len(cfg.Deployments) != 3 {
+		t.Fatalf("len(Deployments) = %d, want 3", len(cfg.Deployments))
 	}
 
 	byName := map[string]DeploymentConfig{}
@@ -94,6 +94,20 @@ func TestLoadExampleConfig(t *testing.T) {
 	}
 	if anthropicDep.UpstreamModel != "claude-opus-4-20250514" {
 		t.Errorf("claude-opus-primary.UpstreamModel = %q", anthropicDep.UpstreamModel)
+	}
+
+	geminiDep, ok := byName["gemini-flash-primary"]
+	if !ok {
+		t.Fatal("missing deployment \"gemini-flash-primary\"")
+	}
+	if geminiDep.Model != "gemini-2.5-flash" || geminiDep.Provider != "gemini" || geminiDep.UpstreamModel != "gemini-2.5-flash" {
+		t.Errorf("gemini-flash-primary = %+v, unexpected fields", geminiDep)
+	}
+	if geminiDep.BaseURL != "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" {
+		t.Errorf("gemini-flash-primary.BaseURL = %q", geminiDep.BaseURL)
+	}
+	if geminiDep.APIKeyEnv != "GEMINI_API_KEY" {
+		t.Errorf("gemini-flash-primary.APIKeyEnv = %q, want %q", geminiDep.APIKeyEnv, "GEMINI_API_KEY")
 	}
 
 	priceGPT, ok := cfg.PriceTable["gpt-4o"]

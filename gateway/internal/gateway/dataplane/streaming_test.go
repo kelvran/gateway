@@ -11,7 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
-	"github.com/kelvran/gateway/gateway/internal/adapter/gemini"
+	"github.com/kelvran/gateway/gateway/internal/adapter/bedrock"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
@@ -259,16 +259,19 @@ func TestHandleChatCompletionStreamCacheMissRealStream(t *testing.T) {
 	}
 }
 
+// Uses "bedrock" — per docs/rfcs/2026-09-04-gemini-adapter.md, gemini is
+// now a real streaming adapter and is deliberately no longer this test's
+// example of a provider that doesn't support streaming.
 func TestHandleChatCompletionStreamUnsupportedProviderReturnsTypedError(t *testing.T) {
 	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
 		t.Fatal("upstream stream should never be called for a provider that doesn't support streaming")
 		return nil, nil
-	}, []Deployment{{Name: "d1", Model: "gemini-pro", Provider: "gemini", UpstreamModel: "gemini-pro", BaseURL: "http://unused"}},
-		adapter.Registry{"gemini": gemini.New()})
+	}, []Deployment{{Name: "d1", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: "claude-bedrock", BaseURL: "http://unused"}},
+		adapter.Registry{"bedrock": bedrock.New()})
 
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
-		Model: "gemini-pro", Stream: true,
+		Model: "claude-bedrock", Stream: true,
 	}, rec)
 	if !errors.Is(err, ErrStreamingNotSupported) {
 		t.Fatalf("err = %v, want ErrStreamingNotSupported", err)

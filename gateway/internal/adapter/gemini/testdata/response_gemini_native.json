@@ -1,0 +1,20 @@
+{
+  "responseId": "resp_01XFDUDYJgAACzvnptvVoYEL",
+  "modelVersion": "gemini-2.5-flash",
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {"text": "It's 72°F and sunny in Boston."}
+        ]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 58,
+    "candidatesTokenCount": 12,
+    "totalTokenCount": 70
+  }
+}

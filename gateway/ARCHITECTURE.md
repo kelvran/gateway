@@ -9,21 +9,35 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 /internal/gateway
     /controlplane          — config compilation, cert rotation, metrics; infrequent, "slow and smart"
     /dataplane              — accept/filter/forward hot path; continuous, "dumb and fast"
-/internal/adapter/{openai,anthropic,gemini,bedrock,vertex,openaicompat}
+/internal/adapter/{openai,anthropic,gemini,bedrock,openaicompat}
                            — bidirectional (canonical↔native) request/response transformers, one per provider.
-                             openai, anthropic, and openaicompat (real as of 2026-09-04, per
-                             docs/rfcs/2026-09-04-openaicompat-adapter.md — for generic self-hosted OpenAI-
-                             compatible runtimes: vLLM, Ollama, TGI, llama.cpp, LocalAI) implement
+                             ("vertex" was named in this list in an earlier pass but was never a real
+                             package — a doc-vs-code staleness instance, corrected here per
+                             docs/agents/AGENTS_LEARNING.md's catalogued pattern. Vertex AI's OAuth2/
+                             service-account credential flow remains a real, separate, unaddressed
+                             surface — see docs/rfcs/2026-09-04-gemini-adapter.md's Unresolved
+                             Questions — this package list names real Go packages only, not future work.)
+                             openai, anthropic, openaicompat (real per docs/rfcs/2026-09-04-openaicompat-
+                             adapter.md — for generic self-hosted OpenAI-compatible runtimes: vLLM, Ollama,
+                             TGI, llama.cpp, LocalAI), and gemini (real per
+                             docs/rfcs/2026-09-04-gemini-adapter.md) all implement
                              streaming.StreamingAdapter (real, stateful per-request StreamDecoder each) —
-                             gemini/bedrock do not, and a streaming request routed to one of them returns a
-                             typed dataplane.ErrStreamingNotSupported rather than silently buffering.
+                             bedrock alone does not, and a streaming request routed to it returns a typed
+                             dataplane.ErrStreamingNotSupported rather than silently buffering.
                              openaicompat is a near-verbatim copy of openai's adapter, deliberately: the
                              wire format itself is uniformly OpenAI-compatible across every self-hosted
                              runtime surveyed while grounding that RFC — real, sourced differences exist
                              only at the response-content level (finish_reason values, tool-calling opt-in
                              gating), not the wire-shape level, and are already handled correctly by the
                              existing design (FinishReason is an open string, not a closed enum; unknown
-                             response fields are ignored by default)
+                             response fields are ignored by default). gemini is a genuine-translation
+                             adapter (like anthropic, not a near-copy) — Gemini's real API has no
+                             "system"/"tool" role, requires resolving a functionResponse's required "name"
+                             field from message history (the canonical role:"tool" message only carries
+                             ToolCallID), and — the one real cross-cutting change no prior adapter needed —
+                             uses a genuinely different URL (:generateContent vs
+                             :streamGenerateContent?alt=sse) for buffered vs. streaming calls, derived at
+                             call time by dataplane.go's streamUpstreamURL rather than a second config field
 /internal/streaming        — transport-level SSE plumbing, provider-agnostic: canonical ChatCompletionChunk/
                              ChunkChoice/MessageDelta/ToolCallDelta types, the StreamDecoder/StreamingAdapter
                              interfaces every streaming-capable adapter implements against, and the actual

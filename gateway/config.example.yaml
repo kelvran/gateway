@@ -62,6 +62,17 @@ deployments:
     base_url: "https://api.anthropic.com/v1/messages"
     api_key_env: "ANTHROPIC_API_KEY"
 
+  gemini-flash-primary:
+    model: "gemini-2.5-flash"
+    provider: "gemini"
+    upstream_model: "gemini-2.5-flash"
+    # Must end in ":generateContent" — the buffered endpoint. The
+    # streaming sibling (":streamGenerateContent?alt=sse") is derived at
+    # call time, never separately configured — see
+    # docs/rfcs/2026-09-04-gemini-adapter.md.
+    base_url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    api_key_env: "GEMINI_API_KEY"
+
 # OTel span export — see docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md
 # and docs/operations/TELEMETRY.md. Optional: omit this whole section for
 # the "stdout" default (spans printed locally, nothing shipped anywhere).

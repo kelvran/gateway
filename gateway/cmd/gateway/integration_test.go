@@ -29,6 +29,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
+	"github.com/kelvran/gateway/gateway/internal/adapter/gemini"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
@@ -711,11 +712,13 @@ func TestIntegrationStreamingCacheHitServesFakeStreamWithoutSecondUpstreamCall(t
 // upstream call is attempted, exactly like dataplane's own
 // TestHandleChatCompletionStreamUnsupportedProviderReturnsTypedError proves
 // at the package level — this proves the same thing through the real HTTP
-// server and its writeErrorResponse status-code mapping.
+// server and its writeErrorResponse status-code mapping. Uses "bedrock" —
+// per docs/rfcs/2026-09-04-gemini-adapter.md, gemini is now a real
+// streaming adapter and is deliberately no longer this test's example.
 func TestIntegrationStreamingUnsupportedProviderReturnsBadRequest(t *testing.T) {
-	gw := newIntegrationServerWithProvider(t, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_F", "gemini", "gemini-pro")
+	gw := newIntegrationServerWithProvider(t, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_F", "bedrock", "claude-bedrock")
 
-	reqBody := `{"model":"gemini-pro","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	reqBody := `{"model":"claude-bedrock","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -1271,5 +1274,390 @@ func TestIntegrationStreamingRequestSucceedsOpenAICompat(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Errorf("mock openaicompat streaming upstream calls = %d, want exactly 1", got)
+	}
+}
+
+// newMockGeminiUpstream decodes into gemini.Request and responds with a
+// real-shaped gemini.Response — the buffered (:generateContent) path.
+func newMockGeminiUpstream(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var calls atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "reading request body", http.StatusBadRequest)
+			return
+		}
+		var req gemini.Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid upstream request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		resp := gemini.Response{
+			ResponseID:   "resp-gemini-integration-test",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []gemini.Candidate{
+				{
+					Content: gemini.Content{
+						Role:  "model",
+						Parts: []gemini.Part{{Text: "hello from the mock Gemini upstream"}},
+					},
+					FinishReason: "STOP",
+				},
+			},
+			UsageMetadata: gemini.UsageMetadata{PromptTokenCount: 7, CandidatesTokenCount: 4, TotalTokenCount: 11},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// newMockGeminiStreamingUpstream asserts the incoming request's URL path
+// and query actually carry :streamGenerateContent and alt=sse — the real,
+// load-bearing proof that dataplane.go's streamUpstreamURL derivation is
+// correctly wired end-to-end, not just unit-tested in isolation — then
+// responds with real Gemini-shaped SSE frames (each a complete
+// GenerateContentResponse, per docs/rfcs/2026-09-04-gemini-adapter.md).
+func newMockGeminiStreamingUpstream(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var calls atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+
+		if !strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+			t.Errorf("streaming request path = %q, want it to end in %q", r.URL.Path, ":streamGenerateContent")
+		}
+		if r.URL.Query().Get("alt") != "sse" {
+			t.Errorf("streaming request query = %q, want alt=sse", r.URL.RawQuery)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "reading request body", http.StatusBadRequest)
+			return
+		}
+		var req gemini.Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid upstream request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "ResponseWriter does not support flushing", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		events := []string{
+			`{"candidates":[{"content":{"role":"model","parts":[{"text":"streamed "}]}}]}`,
+			`{"candidates":[{"content":{"role":"model","parts":[{"text":"gemini"}]}}]}`,
+			`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":6,"candidatesTokenCount":2,"totalTokenCount":8}}`,
+		}
+		for _, e := range events {
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", e); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// newIntegrationServerGemini builds the same real buildPipeline +
+// chatCompletionsHandler wiring as newIntegrationServerOpenAICompat, for a
+// single "gemini" deployment. BaseURL is configured as the buffered
+// (:generateContent) endpoint, per this adapter's own convention — the
+// streaming URL is derived by dataplane.go's streamUpstreamURL, never
+// separately configured.
+func newIntegrationServerGemini(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvVar string) *httptest.Server {
+	t.Helper()
+	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
+
+	cfg := &controlplane.Config{
+		ListenAddr: ":0",
+		VirtualKeys: []controlplane.VirtualKeyConfig{
+			{Name: "test-key", KeyHash: testKeyHash(gatewayKey), RateLimitBurst: 100, RateLimitRefill: 100},
+		},
+		Deployments: []controlplane.DeploymentConfig{
+			{
+				Name:          "gemini-primary",
+				Model:         "gemini-2.5-flash",
+				Provider:      "gemini",
+				UpstreamModel: "gemini-2.5-flash",
+				BaseURL:       upstreamURL + "/v1beta/models/gemini-2.5-flash:generateContent",
+				APIKeyEnv:     upstreamKeyEnvVar,
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pipeline, err := buildPipeline(cfg, logger)
+	if err != nil {
+		t.Fatalf("buildPipeline: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestIntegrationGeminiRequestSucceeds drives a real, non-streaming
+// end-to-end HTTP round trip through the real gemini adapter, proving the
+// dataplane.go responseUnmarshalers + setUpstreamAuthHeaders wiring this
+// RFC added actually works, not just that the adapter's own unit tests
+// pass in isolation.
+func TestIntegrationGeminiRequestSucceeds(t *testing.T) {
+	upstream, calls := newMockGeminiUpstream(t)
+	gw := newIntegrationServerGemini(t, upstream.URL, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_GEM")
+
+	reqBody := `{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"integration hello, gemini"}]}`
+	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer test-gateway-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decoding response body: %v", err)
+	}
+	if len(decoded.Choices) != 1 {
+		t.Fatalf("Choices len = %d, want 1", len(decoded.Choices))
+	}
+	if got := decoded.Choices[0].Message.Content; got != "hello from the mock Gemini upstream" {
+		t.Errorf("Message.Content = %q, want the mock upstream's real content", got)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mock gemini upstream calls = %d, want exactly 1", got)
+	}
+}
+
+// TestIntegrationStreamingRequestSucceedsGemini drives a real end-to-end
+// SSE round trip against the gemini adapter's own StreamDecoder, and — via
+// newMockGeminiStreamingUpstream's own assertions — proves the real
+// streamUpstreamURL derivation actually reached the upstream as a
+// genuinely different URL, not just dep.BaseURL reused unmodified.
+func TestIntegrationStreamingRequestSucceedsGemini(t *testing.T) {
+	upstream, calls := newMockGeminiStreamingUpstream(t)
+	gw := newIntegrationServerGemini(t, upstream.URL, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_GEMS")
+
+	reqBody := `{"model":"gemini-2.5-flash","stream":true,"messages":[{"role":"user","content":"integration streaming hello, gemini"}]}`
+	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer test-gateway-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want %q", ct, "text/event-stream")
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading response body: %v", err)
+	}
+	bodyStr := string(body)
+
+	if !strings.Contains(bodyStr, `"content":"streamed "`) || !strings.Contains(bodyStr, `"content":"gemini"`) {
+		t.Errorf("SSE body missing expected content deltas: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"finish_reason":"stop"`) {
+		t.Errorf("SSE body missing finish_reason: %s", bodyStr)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(bodyStr), "data: [DONE]") {
+		t.Errorf("SSE body does not end with the gateway's own [DONE] sentinel: %s", bodyStr)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mock gemini streaming upstream calls = %d, want exactly 1", got)
+	}
+}
+
+// TestIntegrationGeminiToolCallRoundTrip drives a real two-turn tool-call
+// exchange through the full HTTP pipeline: the first request gets back a
+// functionCall-shaped response; the client (as any real OpenAI-shaped
+// caller would) then sends a second request appending the assistant's
+// tool_calls message plus a role:"tool" result — the exact path this
+// adapter's own FunctionResponse.name-resolution hazard (see
+// docs/rfcs/2026-09-04-gemini-adapter.md) could silently break if
+// implemented wrong. The mock upstream asserts, on the second call, that
+// the resolved functionResponse.name genuinely arrived correctly.
+func TestIntegrationGeminiToolCallRoundTrip(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "reading request body", http.StatusBadRequest)
+			return
+		}
+		var req gemini.Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid upstream request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if n == 1 {
+			resp := gemini.Response{
+				Candidates: []gemini.Candidate{
+					{
+						Content: gemini.Content{
+							Role: "model",
+							Parts: []gemini.Part{
+								{FunctionCall: &gemini.FunctionCall{
+									ID: "call_1", Name: "get_weather",
+									Args: map[string]any{"city": "Boston"},
+								}},
+							},
+						},
+						FinishReason: "STOP",
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// Second call: the real, load-bearing proof. The gateway's own
+		// ToProvider must have resolved the tool result's functionResponse
+		// name from message history — never left empty.
+		var sawFunctionResponse bool
+		for _, c := range req.Contents {
+			for _, p := range c.Parts {
+				if p.FunctionResponse != nil {
+					sawFunctionResponse = true
+					if p.FunctionResponse.Name != "get_weather" {
+						t.Errorf("functionResponse.Name = %q, want %q", p.FunctionResponse.Name, "get_weather")
+					}
+				}
+			}
+		}
+		if !sawFunctionResponse {
+			t.Error("second upstream request contains no functionResponse part")
+		}
+
+		resp := gemini.Response{
+			Candidates: []gemini.Candidate{
+				{
+					Content:      gemini.Content{Role: "model", Parts: []gemini.Part{{Text: "It's 72F and sunny in Boston."}}},
+					FinishReason: "STOP",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(upstream.Close)
+
+	gw := newIntegrationServerGemini(t, upstream.URL, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_GEMTC")
+
+	firstReqBody := `{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"what's the weather in Boston?"}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}`
+	httpReq1, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(firstReqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest 1: %v", err)
+	}
+	httpReq1.Header.Set("Authorization", "Bearer test-gateway-key")
+	httpReq1.Header.Set("Content-Type", "application/json")
+
+	resp1, err := http.DefaultClient.Do(httpReq1)
+	if err != nil {
+		t.Fatalf("Do 1: %v", err)
+	}
+	defer func() { _ = resp1.Body.Close() }()
+	if resp1.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp1.Body)
+		t.Fatalf("first request status = %d, want 200; body: %s", resp1.StatusCode, body)
+	}
+
+	var decoded1 struct {
+		Choices []struct {
+			Message struct {
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp1.Body).Decode(&decoded1); err != nil {
+		t.Fatalf("decoding first response: %v", err)
+	}
+	if len(decoded1.Choices) != 1 || len(decoded1.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("first response = %+v, want exactly one tool call", decoded1)
+	}
+	toolCallID := decoded1.Choices[0].Message.ToolCalls[0].ID
+	toolCallName := decoded1.Choices[0].Message.ToolCalls[0].Function.Name
+	toolCallArgs := decoded1.Choices[0].Message.ToolCalls[0].Function.Arguments
+
+	secondReqBody := fmt.Sprintf(
+		`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"what's the weather in Boston?"},{"role":"assistant","tool_calls":[{"id":%q,"type":"function","function":{"name":%q,"arguments":%q}}]},{"role":"tool","content":"{\"temp_f\":72}","tool_call_id":%q}]}`,
+		toolCallID, toolCallName, toolCallArgs, toolCallID,
+	)
+	httpReq2, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(secondReqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest 2: %v", err)
+	}
+	httpReq2.Header.Set("Authorization", "Bearer test-gateway-key")
+	httpReq2.Header.Set("Content-Type", "application/json")
+
+	resp2, err := http.DefaultClient.Do(httpReq2)
+	if err != nil {
+		t.Fatalf("Do 2: %v", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("second request status = %d, want 200; body: %s", resp2.StatusCode, body)
+	}
+
+	if got := calls.Load(); got != 2 {
+		t.Errorf("mock gemini upstream calls = %d, want exactly 2", got)
 	}
 }

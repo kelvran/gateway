@@ -90,14 +90,17 @@ type StreamDecoder interface {
 }
 
 // StreamingAdapter is the additive capability a provider adapter opts into
-// by also implementing NewStreamDecoder. OpenAI, Anthropic, and openaicompat
-// satisfy this (the last one real as of 2026-09-04, per
-// docs/rfcs/2026-09-04-openaicompat-adapter.md) — Gemini/Bedrock remain
-// stubbed for both non-streaming and streaming, per
-// docs/rfcs/2026-09-02-streaming-support.md's scope boundary. Callers must
-// type-assert to this interface before attempting to stream a request and
-// return a clear, typed error if the assertion fails — never silently fall
-// back to buffering.
+// by also implementing NewStreamDecoder. OpenAI, Anthropic, openaicompat
+// (real per docs/rfcs/2026-09-04-openaicompat-adapter.md), and Gemini (real
+// per docs/rfcs/2026-09-04-gemini-adapter.md) all satisfy this — Bedrock
+// alone remains stubbed for both non-streaming and streaming, per
+// docs/rfcs/2026-09-02-streaming-support.md's original scope boundary.
+// Gemini's stream has no terminal sentinel of its own (its StreamDecoder
+// always returns done=false) — callers must rely on the transport-level
+// io.EOF to end the loop, which this package's own Reader already
+// supports. Callers must type-assert to this interface before attempting
+// to stream a request and return a clear, typed error if the assertion
+// fails — never silently fall back to buffering.
 type StreamingAdapter interface {
 	adapter.Adapter
 	// NewStreamDecoder returns a fresh, request-scoped StreamDecoder. Each
