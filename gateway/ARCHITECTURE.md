@@ -72,10 +72,19 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              per-request decision outcomes, not span data) — is real: `finalize` (see
                              /internal/gateway/dataplane below) is its producer, per
                              docs/rfcs/2026-09-03-api-gatewayevents-contract.md
-/internal/mcp                — inbound (expose Kelvran's own APIs as MCP tools) + outbound (broker agent
-                             tool calls) brokering — shares identity/costaccounting, not a second gateway
+/internal/mcp                — **NOT BUILT.** Zero code exists (confirmed: no such directory under
+                             gateway/internal/), explicitly out of scope for v1 per PRD.md. Intended
+                             design: inbound (expose Kelvran's own APIs as MCP tools) + outbound (broker
+                             agent tool calls) brokering — shares identity/costaccounting, not a second
+                             gateway
 /internal/guardrail          — pre/post-call middleware interface; PII/content checks
-/internal/admin               — control-plane API: declarative config, live no-restart mutation
+/internal/admin               — **NOT BUILT.** Zero code exists. Config is loaded once at startup
+                             (controlplane.Load -> buildPipeline, both called exactly once in
+                             cmd/gateway's run()) and nothing is live-mutable — see
+                             docs/rfcs/2026-09-02-virtual-keys-budgets.md's own Unresolved Questions:
+                             "No live/no-restart key provisioning... /internal/admin's 'declarative
+                             config, live no-restart mutation' remains unbuilt." Intended design:
+                             control-plane API for declarative config + live no-restart mutation
 ```
 
 **Dependency direction rules** (the target enforcement mechanism is `go-arch-lint` in CI, since Go's `internal/` visibility only catches direct imports, not transitive ones — **not actually wired**: no `go-arch-lint` config, no CI step, and no reference to it anywhere in `.github/workflows/ci.yml` exist today, confirmed 2026-09-04. The rules below are followed correctly in every package spot-checked so far, but only by manual discipline, not by anything that would catch a future violation automatically):

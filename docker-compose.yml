@@ -1,0 +1,40 @@
+# Local/dev bring-up for the `gateway` deployable, per
+# docs/operations/DEPLOY.md's "Docker Compose (Local/Dev)" section.
+#
+# `evals` is not a Compose service here — it's a Click CLI, not a
+# long-running process, and has no Dockerfile; `docker compose up`
+# semantics don't fit a one-shot CLI tool. Run it directly:
+#   cd evals && uv run evals --help
+#
+# No `postgres` service: nothing in `gateway/` touches Postgres today —
+# it's a `gateway/ARCHITECTURE.md` Tech Stack *future target* for the
+# control-plane config store, not real yet (config is static YAML,
+# loaded once at startup — see gateway/ARCHITECTURE.md's `/internal/admin`
+# entry).
+
+services:
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # Copy gateway/config.example.yaml -> gateway/config.yaml and fill
+      # in real values first — config.yaml is gitignored on purpose (see
+      # .gitignore), never committed.
+      - ./gateway/config.yaml:/config.yaml:ro
+    # No depends_on by default: a bare config.yaml with no rate_limit:
+    # section runs gateway fully in-memory, needing neither service below.
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    # Only useful once config.yaml sets rate_limit.redis_addr: redis:6379
+    # (gateway/internal/gateway/controlplane/config.go's RateLimitConfig)
+    # — per docs/rfcs/2026-09-03-distributed-rate-limiting.md. Started only
+    # with `docker compose --profile redis up`, never by a bare `up`.
+    profiles: ["redis"]
