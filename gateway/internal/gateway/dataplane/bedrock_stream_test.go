@@ -3,6 +3,7 @@ package dataplane
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -145,7 +146,7 @@ func TestHandleChatCompletionStreamBedrockExceptionFrameSurfacesAsError(t *testi
 	if err == nil {
 		t.Fatal("HandleChatCompletionStream: want error for an exception frame mid-stream, got nil")
 	}
-	if !strings.Contains(err.Error(), "exception") {
-		t.Errorf("error = %v, want it to mention the exception message-type", err)
+	if !errors.Is(err, bedrock.ErrBedrockThrottled) {
+		t.Errorf("error = %v, want errors.Is(err, bedrock.ErrBedrockThrottled)", err)
 	}
 }

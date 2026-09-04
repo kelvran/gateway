@@ -2,7 +2,9 @@ package bedrock
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream/eventstreamapi"
@@ -10,6 +12,60 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/streaming"
 )
+
+// Real Bedrock ConverseStream exception types, confirmed directly against
+// aws-sdk-go-v2's own deserializers.go
+// (awsRestjson1_deserializeEventStreamExceptionConverseStreamOutput) --
+// this is the exact 5-value set ConverseStream itself can send over
+// :exception-type, deliberately narrower than the set some sibling
+// streaming APIs support (InvokeModelWithBidirectionalStream and
+// InvokeModelWithResponseStream also have a modelTimeoutException, which
+// ConverseStream's own deserializer does not dispatch on).
+var (
+	// ErrBedrockThrottled means the request was rate-limited by Bedrock
+	// itself -- retryable, ideally with backoff.
+	ErrBedrockThrottled = errors.New("bedrock: request throttled")
+	// ErrBedrockValidation means the request itself was malformed --
+	// never retryable unmodified.
+	ErrBedrockValidation = errors.New("bedrock: request validation failed")
+	// ErrBedrockServiceUnavailable means a transient Bedrock-side outage
+	// -- retryable.
+	ErrBedrockServiceUnavailable = errors.New("bedrock: service unavailable")
+	// ErrBedrockInternalServer means an unspecified Bedrock-side fault --
+	// retryable, though the specific cause is opaque.
+	ErrBedrockInternalServer = errors.New("bedrock: internal server error")
+	// ErrBedrockModelStreamError means the underlying model itself faulted
+	// mid-stream (distinct from a Bedrock-service-level fault) --
+	// retryable, but a repeat with the same input may fault again.
+	ErrBedrockModelStreamError = errors.New("bedrock: model stream error")
+)
+
+// bedrockStreamExceptionError maps a real ConverseStream :exception-type
+// header value to one of the typed sentinels above, so callers can
+// errors.Is() against a specific category (e.g. a future retry/circuit-
+// breaker policy distinguishing throttling from a malformed request)
+// rather than only ever seeing one generic, unstructured error string.
+// An exception type this decoder doesn't recognize (a future AWS
+// addition, or the "error" message-type's own generic RPC-level framing,
+// which carries no :exception-type header at all) still produces a real
+// error, just not one of the typed sentinels -- forward-compatible, never
+// silently dropped.
+func bedrockStreamExceptionError(exceptionType string, payload []byte) error {
+	switch strings.ToLower(exceptionType) {
+	case "throttlingexception":
+		return fmt.Errorf("%w: %s", ErrBedrockThrottled, string(payload))
+	case "validationexception":
+		return fmt.Errorf("%w: %s", ErrBedrockValidation, string(payload))
+	case "serviceunavailableexception":
+		return fmt.Errorf("%w: %s", ErrBedrockServiceUnavailable, string(payload))
+	case "internalserverexception":
+		return fmt.Errorf("%w: %s", ErrBedrockInternalServer, string(payload))
+	case "modelstreamerrorexception":
+		return fmt.Errorf("%w: %s", ErrBedrockModelStreamError, string(payload))
+	default:
+		return fmt.Errorf("bedrock: upstream stream exception %q: %s", exceptionType, string(payload))
+	}
+}
 
 // messageStartEvent is Converse/ConverseStream's real "messageStart" event
 // payload (confirmed field name against aws-sdk-go-v2's deserializers.go).
@@ -94,9 +150,17 @@ func NewStreamDecoder() *StreamDecoder {
 // single binary-framed implementor).
 func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatCompletionChunk, *adapter.Usage, error) {
 	if v := msg.Headers.Get(eventstreamapi.MessageTypeHeader); v != nil && v.String() != eventstreamapi.EventMessageType {
-		// "error" or "exception" -- a real, typed error, never silently
-		// dropped. No per-exception-type-specific handling this pass,
-		// per the RFC's own named, deliberate scope limit.
+		if v.String() == eventstreamapi.ExceptionMessageType {
+			var exceptionType string
+			if et := msg.Headers.Get(eventstreamapi.ExceptionTypeHeader); et != nil {
+				exceptionType = et.String()
+			}
+			return nil, nil, bedrockStreamExceptionError(exceptionType, msg.Payload)
+		}
+		// The generic "error" message-type -- AWS's RPC-level error
+		// framing, which carries no :exception-type header at all, so no
+		// per-type sentinel is possible here. Still a real, typed-enough
+		// error, never silently dropped.
 		return nil, nil, fmt.Errorf("bedrock: upstream stream %s: %s", v.String(), string(msg.Payload))
 	}
 

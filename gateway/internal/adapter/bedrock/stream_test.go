@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -191,24 +192,95 @@ func TestDecodeMetadataProducesUsage(t *testing.T) {
 	}
 }
 
-// TestDecodeExceptionMessageTypeReturnsError proves an AWS-side
-// exception/error frame surfaces as a real, typed error -- never
-// silently dropped.
-func TestDecodeExceptionMessageTypeReturnsError(t *testing.T) {
-	msg := eventstream.Message{
+// newExceptionMessage builds a real eventstream.Message for one of
+// ConverseStream's real ":exception-type" values.
+func newExceptionMessage(exceptionType, payload string) eventstream.Message {
+	return eventstream.Message{
 		Headers: eventstream.Headers{
 			{Name: ":message-type", Value: eventstream.StringValue("exception")},
-			{Name: ":exception-type", Value: eventstream.StringValue("throttlingException")},
+			{Name: ":exception-type", Value: eventstream.StringValue(exceptionType)},
 		},
-		Payload: []byte(`{"message":"rate exceeded"}`),
+		Payload: []byte(payload),
+	}
+}
+
+// TestDecodeExceptionTypesMapToTypedSentinels proves each of ConverseStream's
+// 5 real :exception-type values (confirmed directly against
+// aws-sdk-go-v2's own deserializers.go) maps to its own distinguishable
+// sentinel error via errors.Is -- never one generic, unstructured error
+// string a caller can't distinguish from another.
+func TestDecodeExceptionTypesMapToTypedSentinels(t *testing.T) {
+	tests := []struct {
+		exceptionType string
+		want          error
+	}{
+		{"throttlingException", ErrBedrockThrottled},
+		{"validationException", ErrBedrockValidation},
+		{"serviceUnavailableException", ErrBedrockServiceUnavailable},
+		{"internalServerException", ErrBedrockInternalServer},
+		{"modelStreamErrorException", ErrBedrockModelStreamError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.exceptionType, func(t *testing.T) {
+			msg := newExceptionMessage(tt.exceptionType, `{"message":"detail"}`)
+
+			_, _, err := NewStreamDecoder().Decode(msg)
+			if err == nil {
+				t.Fatalf("Decode: want error for exception type %q, got nil", tt.exceptionType)
+			}
+			if !errors.Is(err, tt.want) {
+				t.Errorf("Decode: error = %v, want errors.Is(err, %v)", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "detail") {
+				t.Errorf("error = %v, want it to still carry the real payload detail", err)
+			}
+		})
+	}
+}
+
+// TestDecodeUnrecognizedExceptionTypeStillReturnsRealError proves a
+// future AWS-added exception type this decoder doesn't yet know about
+// still produces a real, non-nil error -- forward-compatible, never
+// silently dropped, just not one of the typed sentinels.
+func TestDecodeUnrecognizedExceptionTypeStillReturnsRealError(t *testing.T) {
+	msg := newExceptionMessage("someFutureExceptionType", `{"message":"detail"}`)
+
+	_, _, err := NewStreamDecoder().Decode(msg)
+	if err == nil {
+		t.Fatal("Decode: want error for an unrecognized exception type, got nil")
+	}
+	for _, sentinel := range []error{
+		ErrBedrockThrottled, ErrBedrockValidation, ErrBedrockServiceUnavailable,
+		ErrBedrockInternalServer, ErrBedrockModelStreamError,
+	} {
+		if errors.Is(err, sentinel) {
+			t.Errorf("error = %v, want it to NOT match sentinel %v", err, sentinel)
+		}
+	}
+	if !strings.Contains(err.Error(), "someFutureExceptionType") {
+		t.Errorf("error = %v, want it to mention the real exception type", err)
+	}
+}
+
+// TestDecodeGenericErrorMessageTypeReturnsError proves the "error"
+// message-type (AWS's RPC-level framing, which carries no
+// :exception-type header at all) still surfaces as a real error, never
+// silently dropped, even though no per-type sentinel is possible for it.
+func TestDecodeGenericErrorMessageTypeReturnsError(t *testing.T) {
+	msg := eventstream.Message{
+		Headers: eventstream.Headers{
+			{Name: ":message-type", Value: eventstream.StringValue("error")},
+		},
+		Payload: []byte(`{"message":"generic RPC-level error"}`),
 	}
 
 	_, _, err := NewStreamDecoder().Decode(msg)
 	if err == nil {
-		t.Fatal("Decode: want error for an exception message-type, got nil")
+		t.Fatal("Decode: want error for the generic error message-type, got nil")
 	}
-	if !strings.Contains(err.Error(), "exception") {
-		t.Errorf("error = %v, want it to mention the exception message-type", err)
+	if !strings.Contains(err.Error(), "error") {
+		t.Errorf("error = %v, want it to mention the error message-type", err)
 	}
 }
 

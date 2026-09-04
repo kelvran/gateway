@@ -26,7 +26,7 @@ Tier 1, fourth item done: real `otelhttp` middleware wired into `cmd/gateway/mai
 
 Tier 1, fifth item done: a second (OpenAI) LLM-judge provider for `evals` — `providers.py` gained `make_openai_call_model()`, mirroring the existing Anthropic provider's design exactly, zero signature change to `judge()`. Confirmed the real, installed `openai` SDK's field names via introspection before writing code; default model `gpt-4o-mini`, priced from a live fetch of OpenAI's current pricing page. `cli.py` deliberately left unwired to it (no `--judge-provider` flag) — the RFC only asked for the follow-on function itself to be unblocked. 8 new tests, zero regressions (158 passed, up from 150, 11 skipped unchanged).
 
-Next: the last Tier 1 item — per-exception-type Bedrock streaming errors — then Tier 1 is fully closed.
+Tier 1, sixth and final item done: per-exception-type Bedrock streaming error handling — `bedrock.StreamDecoder.Decode` now maps ConverseStream's 5 real `:exception-type` values to their own typed sentinels (confirmed against `aws-sdk-go-v2`'s own source to be exactly this set, not the 6-value set a sibling streaming API supports). **Tier 1 of the ranked backlog audit is now fully closed** — all 6 items shipped: sandbox `--read-only`/`--tmpfs`, `go-arch-lint`, `.importlinter`, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock errors.
 
 Previously: real Bedrock `ConverseStream` streaming support, closing the follow-on the buffered Bedrock adapter pass explicitly deferred (see `docs/rfcs/2026-09-04-bedrock-converse-stream.md`). Committed `92a80af`, confirmed green on CI run `33903861251`.
 
@@ -76,13 +76,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 1, fifth item: a second (OpenAI) LLM-judge provider for `evals`. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 1, sixth and final item: per-exception-type Bedrock streaming error handling. This closes Tier 1 entirely. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: Tier 1, fourth item — real `otelhttp` middleware for `cmd/gateway`. Committed `941eec4`, confirmed green on CI run `33924205802`.
+Previously: Tier 1, fifth item — a second (OpenAI) LLM-judge provider for `evals`. Committed `3da6116`, confirmed green on CI run `33925763225`.
 
 ## Next Action
 
-The OpenAI judge provider is closed: committed (`3da6116`), pushed, confirmed green on CI run `33925763225`. Last Tier 1 item: per-exception-type Bedrock streaming errors — a small, self-contained, no-external-blocker unit. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The per-exception-type Bedrock error handling is ready to commit + push + watch CI. Once that lands, Tier 1 is fully closed and the ranked backlog moves to Tier 2 (medium-effort items: graceful SIGTERM shutdown, rolling-window budget reset, Score-level judge caching + real SPRT, admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops). Worth a fresh check-in with the user before continuing into Tier 2, since Tier 1 (the small, safe, no-blocker tier) is now exhausted. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 

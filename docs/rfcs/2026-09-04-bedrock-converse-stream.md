@@ -138,7 +138,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 
 ## Unresolved Questions
 
-- Per-exception-type-specific error handling (throttling vs. validation vs. other) — deferred; a generic typed error is the honest, correct-if-blunt first pass.
+- Per-exception-type-specific error handling — real as of 2026-09-05: `bedrock.StreamDecoder.Decode` maps each of ConverseStream's 5 real `:exception-type` values (`throttlingException`, `validationException`, `serviceUnavailableException`, `internalServerException`, `modelStreamErrorException` — confirmed directly against `aws-sdk-go-v2`'s own `deserializers.go`, deliberately narrower than the 6-value set some sibling streaming APIs support) to its own typed sentinel error (`ErrBedrockThrottled`, etc.), so a caller can `errors.Is()` against a specific category rather than only ever seeing one generic, unstructured error string. An unrecognized exception type still produces a real error, just not a typed sentinel — forward-compatible, never silently dropped.
 - Citation/`reasoningContent`/guardrail-trace streaming events — no canonical-schema equivalent exists; deferred alongside the buffered adapter's own named multi-modal gap.
 - Whether a second binary-framed provider ever justifies promoting this pattern into a shared `internal/streaming` abstraction — not decided here, revisit only with real second-consumer evidence.
 
