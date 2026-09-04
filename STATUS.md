@@ -82,7 +82,7 @@ Previously: Tier 1, fifth item — a second (OpenAI) LLM-judge provider for `eva
 
 ## Next Action
 
-The per-exception-type Bedrock error handling is ready to commit + push + watch CI. Once that lands, Tier 1 is fully closed and the ranked backlog moves to Tier 2 (medium-effort items: graceful SIGTERM shutdown, rolling-window budget reset, Score-level judge caching + real SPRT, admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops). Worth a fresh check-in with the user before continuing into Tier 2, since Tier 1 (the small, safe, no-blocker tier) is now exhausted. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Per-exception-type Bedrock error handling is closed: committed (`5e7acdf`), pushed, confirmed green on CI run `33927254694` (all 3 jobs). **Tier 1 of the ranked backlog is now fully closed.** The ranked backlog moves to Tier 2 next (medium-effort items: graceful SIGTERM shutdown, rolling-window budget reset, Score-level judge caching + real SPRT, admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops). Worth a fresh check-in with the user before continuing into Tier 2, since Tier 1 (the small, safe, no-blocker tier) is now exhausted. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
