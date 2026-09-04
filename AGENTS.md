@@ -68,4 +68,4 @@ Two artifacts, versioned independently via their own `changelog/` folders, conne
 
 *(Living list — add here as they're discovered; promote anything that recurs 3+ times from `docs/agents/MEMORY.md` up to here.)*
 
-- None yet — nothing has recurred 3+ times in `docs/agents/MEMORY.md` to warrant promotion here.
+- **Doc-vs-code staleness.** A doc (`THREAT_MODEL.md`, `SECURITY.md`, `*/ARCHITECTURE.md`, or a root-level status file) asserting a capability/status in the present tense after the code it described was deferred, narrowed, or never matched — recurred 6 times by 2026-09-04 (Guardrails, the evals STRIDE table, `gateway`'s router doc, `evals`' `.importlinter` claim, `THREAT_MODEL.md`'s Gateway rows, and a repo-wide "pre-scaffolding" sweep). Promoted here per `docs/agents/AGENTS_LEARNING.md` §8's rule — see that file's §1/§2/§3/§5 for the full root-cause analysis and mitigation strategy. Mitigation in short: before trusting a doc's present-tense claim, check the actual code; when a feature ships/narrows/defers, grep every `*.md` for its keyword, not just the one architecture doc most obviously about it.
