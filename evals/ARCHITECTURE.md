@@ -8,10 +8,19 @@ Python service. Runs continuous, statistically rigorous evaluation of the agents
 evals/
   pyproject.toml
   uv.lock                    — own workspace manager; zero cross-awareness with the Go side
-  .importlinter               — **not built**: the target layer-contract tool (Python analogue of
-                                 gateway/ARCHITECTURE.md's own equally-unbuilt `go-arch-lint` target) —
-                                 no such file exists and nothing references `importlinter` in CI or
-                                 `pyproject.toml` today, confirmed 2026-09-04
+  .importlinter               — real as of 2026-09-05, per gateway's own equivalent `go-arch-lint`
+                                 wiring: 1 layers contract (cli > {rollout.scheduler, ingestion.decode}
+                                 > {tracing, results_store, rollout.cache, rollout.sandbox, judge.*}
+                                 > {models, stats}, built from the real, verified import graph, not
+                                 assumed) plus 2 independence contracts (judge's 3 scoring strategies
+                                 never depend on each other; rollout's cache and sandbox stay decoupled).
+                                 `evals/contracts/` (generated, no `__init__.py`, PEP 420 namespace
+                                 package) is deliberately left undeclared — no layering constraint
+                                 makes sense for generated code nobody hand-edits. Wired into
+                                 `.github/workflows/ci.yml`'s `evals` job and `make lint-evals` via
+                                 `uvx --from import-linter lint-imports`, matching the existing
+                                 `uvx ruff check .` convention rather than adding a permanent
+                                 `pyproject.toml` dependency for a CI-time-only static checker
   evals/
     contracts/                — GENERATED Python stubs from api/*.proto — no source dependency, ever.
                                  Real for gatewayevents/v1; empty for otel/ (deliberately not built —

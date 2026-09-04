@@ -17,7 +17,7 @@ lint-gateway:
 	cd gateway && go vet ./... && golangci-lint run ./... && go run github.com/fe3dback/go-arch-lint@v1.18.0 check
 
 lint-evals:
-	cd evals && ruff check .
+	cd evals && ruff check . && uvx --with-editable . --from import-linter lint-imports
 
 lint-proto:
 	cd api && buf lint && buf breaking --against '../.git#branch=main,subdir=api'

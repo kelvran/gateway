@@ -20,7 +20,9 @@ Tier 1, first item done: `evals/evals/rollout/sandbox.py`'s `run_in_sandbox()` n
 
 Tier 1, second item done: real `go-arch-lint` v1.18.0 dependency-direction enforcement wired into `gateway`'s CI job and `make lint-gateway`, closing the gap `gateway/ARCHITECTURE.md` already named as "not actually wired." Building the config from a directly-verified import graph (not the doc's own prose) caught 2 real doc-vs-code staleness instances in that same rules table (`provideradapter`/bare `gateway` — both stale package names, corrected to `internal/adapter`/`internal/gateway/dataplane`+`controlplane`). Sanity-checked the config catches real violations (temporarily injected one, confirmed it was flagged, reverted) before trusting a clean pass.
 
-Next: the rest of Tier 1 — `.importlinter` CI wiring for evals, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock streaming errors — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
+Tier 1, third item done: real `.importlinter` v2.15 layer-contract enforcement wired into `evals`'s CI job and `make lint-evals` — closing the gap `evals/ARCHITECTURE.md` already named as the Python analogue of `go-arch-lint`. Built from the real, verified import graph; generated protobuf stubs (no `__init__.py`) deliberately left undeclared, since `import-linter` genuinely cannot resolve a namespace package as a layer. Sanity-checked the same way as `go-arch-lint`: injected a real violation, confirmed it was caught, reverted.
+
+Next: the rest of Tier 1 — `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock streaming errors — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
 
 Previously: real Bedrock `ConverseStream` streaming support, closing the follow-on the buffered Bedrock adapter pass explicitly deferred (see `docs/rfcs/2026-09-04-bedrock-converse-stream.md`). Committed `92a80af`, confirmed green on CI run `33903861251`.
 
@@ -70,13 +72,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 1, second item: real `go-arch-lint` dependency-direction enforcement wired into CI for `gateway`. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 1, third item: real `.importlinter` layer-contract enforcement wired into CI for `evals`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: Tier 1, first item — real `--read-only`/`--tmpfs` sandbox hardening for `evals`. Committed `c443654`, confirmed green on CI run `33911153371`.
+Previously: Tier 1, second item — real `go-arch-lint` dependency-direction enforcement wired into CI for `gateway`. Committed `cefcc09`, confirmed green on CI run `33920900881`.
 
 ## Next Action
 
-The go-arch-lint wiring is closed: committed (`cefcc09`), pushed, confirmed green on CI run `33920900881` (the new step passed in the real pipeline too, not just locally). Continuing Tier 1: `.importlinter` CI wiring for evals, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The import-linter wiring is ready to commit + push + watch CI. Continuing Tier 1: `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 

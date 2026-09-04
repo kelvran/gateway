@@ -82,6 +82,9 @@ jobs:
       - name: ruff
         working-directory: evals
         run: uvx ruff check .
+      - name: import-linter (layer-contract enforcement)
+        working-directory: evals
+        run: uvx --with-editable . --from import-linter lint-imports
       - name: sync + test
         working-directory: evals
         run: |

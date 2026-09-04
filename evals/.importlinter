@@ -1,0 +1,26 @@
+[importlinter]
+root_package = evals
+
+[importlinter:contract:layers]
+name = High-level layered architecture
+type = layers
+layers =
+    evals.cli
+    evals.rollout.scheduler | evals.ingestion.decode
+    evals.tracing | evals.results_store | evals.rollout.cache | evals.rollout.sandbox | evals.judge.deterministic | evals.judge.llm_judge | evals.judge.providers
+    evals.models | evals.stats
+
+[importlinter:contract:judge-independence]
+name = Judge scoring strategies never depend on each other
+type = independence
+modules =
+    evals.judge.deterministic
+    evals.judge.llm_judge
+    evals.judge.providers
+
+[importlinter:contract:rollout-independence]
+name = Rollout cache and sandbox execution stay decoupled
+type = independence
+modules =
+    evals.rollout.cache
+    evals.rollout.sandbox
