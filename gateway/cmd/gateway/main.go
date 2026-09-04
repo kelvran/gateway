@@ -4,14 +4,19 @@
 // pipeline), and serves /v1/chat/completions in both buffered and
 // streaming (SSE) modes.
 //
-// Streaming (real SSE, per docs/rfcs/2026-09-02-streaming-support.md) is
-// wired for the OpenAI and Anthropic adapters only — a streaming request
-// routed to Gemini/Bedrock/openaicompat returns a typed
+// Streaming (real SSE for OpenAI/Anthropic/Gemini/openaicompat, real
+// binary application/vnd.amazon.eventstream for Bedrock via a separate
+// path, per docs/rfcs/2026-09-02-streaming-support.md and
+// docs/rfcs/2026-09-04-bedrock-converse-stream.md) is wired for every
+// registered provider adapter — a streaming request to a future provider
+// added without a streaming implementation returns a typed
 // dataplane.ErrStreamingNotSupported (HTTP 400), never a silent fallback
 // to buffering. OTel spans, per
 // docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md, are real for every
-// request (buffered or streaming). Guardrails (pre-call/post-call
-// PII/secrets/prompt-injection checks, per
+// request (buffered or streaming), including a real outer HTTP-server
+// span (otelhttp middleware, per that RFC's own named future addition)
+// nested around the existing per-request GenAI span. Guardrails
+// (pre-call/post-call PII/secrets/prompt-injection checks, per
 // docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md) are real; MCP
 // remains unbuilt.
 package main
@@ -27,6 +32,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
@@ -114,10 +121,24 @@ func run(configPath string, logger *slog.Logger) error {
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
 
 	logger.Info("gateway listening", "addr", cfg.ListenAddr)
-	if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddr, wrapHTTPServerSpan(mux)); err != nil {
 		return fmt.Errorf("http server: %w", err)
 	}
 	return nil
+}
+
+// wrapHTTPServerSpan adds a generic HTTP-server-level span (via otelhttp)
+// around every request the server handles, nesting the existing
+// per-request GenAI span (started inside chatCompletionsHandler) as a
+// child of it — the future addition docs/rfcs/2026-09-02-otel-tracing-
+// agent-run-id.md named and deliberately deferred ("one span per request,
+// not a full HTTP-server-level span nested around it"). Uses the global
+// TracerProvider/TextMapPropagator telemetry.Init already installed —
+// no explicit otelhttp.With* option needed, matching this codebase's own
+// established no-manual-provider-threading convention (see
+// internal/telemetry's package-level Tracer var).
+func wrapHTTPServerSpan(handler http.Handler) http.Handler {
+	return otelhttp.NewHandler(handler, "gateway.http")
 }
 
 // buildPipeline resolves every secret referenced by name in cfg from the

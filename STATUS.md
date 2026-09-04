@@ -22,7 +22,9 @@ Tier 1, second item done: real `go-arch-lint` v1.18.0 dependency-direction enfor
 
 Tier 1, third item done: real `.importlinter` v2.15 layer-contract enforcement wired into `evals`'s CI job and `make lint-evals` — closing the gap `evals/ARCHITECTURE.md` already named as the Python analogue of `go-arch-lint`. Built from the real, verified import graph; generated protobuf stubs (no `__init__.py`) deliberately left undeclared, since `import-linter` genuinely cannot resolve a namespace package as a layer. Sanity-checked the same way as `go-arch-lint`: injected a real violation, confirmed it was caught, reverted.
 
-Next: the rest of Tier 1 — `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock streaming errors — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
+Tier 1, fourth item done: real `otelhttp` middleware wired into `cmd/gateway/main.go` (`wrapHTTPServerSpan`) — closes the follow-on the OTel RFC named as "a legitimate, independent future addition." New end-to-end test proves real nesting (matching `TraceID`/`ParentSpanID`), not just "2 spans exist," sanity-checked by temporarily disabling the wrapping and confirming the test fails.
+
+Next: the rest of Tier 1 — a second LLM-judge provider, per-exception-type Bedrock streaming errors — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
 
 Previously: real Bedrock `ConverseStream` streaming support, closing the follow-on the buffered Bedrock adapter pass explicitly deferred (see `docs/rfcs/2026-09-04-bedrock-converse-stream.md`). Committed `92a80af`, confirmed green on CI run `33903861251`.
 
@@ -72,13 +74,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 1, third item: real `.importlinter` layer-contract enforcement wired into CI for `evals`. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 1, fourth item: real `otelhttp` middleware for `cmd/gateway`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: Tier 1, second item — real `go-arch-lint` dependency-direction enforcement wired into CI for `gateway`. Committed `cefcc09`, confirmed green on CI run `33920900881`.
+Previously: Tier 1, third item — real `.importlinter` layer-contract enforcement wired into CI for `evals`. Committed `afd1062`, confirmed green on CI run `33922394932`.
 
 ## Next Action
 
-The import-linter wiring is closed: committed (`afd1062`), pushed, confirmed green on CI run `33922394932`. Continuing Tier 1: `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The otelhttp middleware is ready to commit + push + watch CI. Continuing Tier 1: a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
