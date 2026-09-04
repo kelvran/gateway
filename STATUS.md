@@ -72,7 +72,7 @@ Previously: real `gateway/internal/adapter/bedrock` adapter (buffered/non-stream
 
 ## Next Action
 
-Real Bedrock `ConverseStream` streaming is implemented, verified (build/vet/lint/test all clean except the pre-existing, unrelated rootless-Docker failure), and ready to commit + push + watch CI. Once that lands, the actionable, unblocked backlog is exhausted again: the two known remaining items are multi-modal content-block support (real, but a bigger blast radius across every adapter — touches every adapter's `ToProvider`/`FromProvider`, not a single self-contained package) and the founder-blocked PyPI trademark question (still pending the founder's own TESS search or attorney review — no further AI-driven research can resolve it). Worth a fresh check-in with the user on priorities next.
+Real Bedrock `ConverseStream` streaming is closed: committed (`92a80af`), pushed, confirmed green on a real CI run (`33903861251`, all 3 jobs — `gateway`/`evals`/`api`). The actionable, unblocked backlog is exhausted again: the two known remaining items are multi-modal content-block support (real, but a bigger blast radius across every adapter — touches every adapter's `ToProvider`/`FromProvider`, not a single self-contained package) and the founder-blocked PyPI trademark question (still pending the founder's own TESS search or attorney review — no further AI-driven research can resolve it). Worth a fresh check-in with the user on priorities next.
 
 ## Release Runbook
 
