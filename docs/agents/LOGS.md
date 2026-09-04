@@ -686,3 +686,17 @@ Next steps / resume point:
 **Bugs found:** 4 real documentation-vs-code contradictions (not code bugs) — see Decisions above. All 4 fixed in this pass.
 
 **Next steps / resume point:** Commit + push + watch CI (docs-only, expect all 3 jobs green trivially), then proceed to Tier 1 of the ranking: evals sandbox `--read-only`/`--tmpfs`, `go-arch-lint` + `.importlinter` CI wiring, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — user has authorized proceeding through these without re-confirming each one.
+
+## [2026-09-05] Tier 1, item 1: real evals sandbox `--read-only`/`--tmpfs` hardening
+
+**Files touched:** `evals/evals/rollout/sandbox.py` (module docstring, `run_in_sandbox`'s own docstring, `docker_args` gained `--read-only` + `--tmpfs=/tmp:rw,exec,nosuid,size=64m`). `evals/tests/test_sandbox_integration.py` (+2 tests: `test_run_in_sandbox_root_filesystem_is_read_only`, `test_run_in_sandbox_tmp_is_still_writable`). `THREAT_MODEL.md` (Evals Information Disclosure row updated from "Partial" naming this as unbuilt, to naming it real; new Review Cadence & Change Log entry). `DECISIONS.md`, `STATUS.md`.
+
+**Intent/summary:** First item of Tier 1 in the user-approved, value-ranked backlog list — closes the exact gap `THREAT_MODEL.md` already named by name ("Docker's own default `--rm` per-container writable-layer lifecycle applies, but this is Docker's default semantics, not a Kelvran-built ephemeral-filesystem guarantee (no `--read-only`/`--tmpfs`)").
+
+**Decisions made:** `--read-only` alone would break any real task command that writes a scratch file (a common, ordinary thing for a sandboxed command to do, not an edge case) — paired with a `--tmpfs=/tmp` mount so ordinary temp-file usage keeps working while nothing persists past the container's lifetime, matching standard Docker security guidance for exactly this "immutable root + writable scratch" pattern. Sized the tmpfs at 64m and added `exec,nosuid` mount options — permissive enough not to break real usage, without being unbounded. Did not attempt to determine or special-case additional writable paths beyond `/tmp` for hypothetical future task commands — YAGNI; if a real task genuinely needs another writable mount, that's a concrete, evidence-based follow-up, not something to guess at now.
+
+**Verification performed:** `RUN_DOCKER_TESTS=1 uv run pytest tests/test_sandbox_integration.py -v` → **7 passed** (5 pre-existing + 2 new), first run, no fixture changes needed. Full suite against a real Docker daemon: `RUN_DOCKER_TESTS=1 uv run pytest tests/ -v` → **160 passed, 1 skipped** (only the live-LLM-key-gated test remains skipped) — zero regressions, including the real end-to-end `test_rollout_against_a_real_docker_daemon` and `test_run_suite_against_a_real_docker_daemon` CLI-level tests. Default (non-Docker) gate: `uv run pytest tests/` → **150 passed, 11 skipped** (up from 9 — the 2 new tests are correctly Docker-gated too). `ruff check .` → `All checks passed!`.
+
+**Bugs found:** None — a clean, additive hardening change with zero interaction with any other existing behavior.
+
+**Next steps / resume point:** Continue Tier 1: `go-arch-lint`/`.importlinter` CI wiring, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors.

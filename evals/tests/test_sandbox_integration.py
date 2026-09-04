@@ -92,6 +92,38 @@ def test_run_in_sandbox_timeout_actually_stops_the_container():
     )
 
 
+def test_run_in_sandbox_root_filesystem_is_read_only():
+    # Writing outside /tmp must fail -- the container's root filesystem is
+    # immutable (--read-only), the real gap THREAT_MODEL.md's Evals
+    # Information Disclosure row named until 2026-09-05.
+    result = asyncio.run(
+        run_in_sandbox(
+            image=_IMAGE,
+            command=["sh", "-c", "echo data > /etc/should-not-write"],
+            timeout_s=15,
+        )
+    )
+    assert result.timed_out is False
+    assert result.exit_code != 0
+    assert "Read-only file system" in result.stderr
+
+
+def test_run_in_sandbox_tmp_is_still_writable():
+    # /tmp must remain usable for ordinary scratch-file work despite the
+    # read-only root filesystem -- proves --tmpfs=/tmp actually took
+    # effect, not just that --read-only didn't break everything.
+    result = asyncio.run(
+        run_in_sandbox(
+            image=_IMAGE,
+            command=["sh", "-c", "echo data > /tmp/scratch && cat /tmp/scratch"],
+            timeout_s=15,
+        )
+    )
+    assert result.timed_out is False
+    assert result.exit_code == 0
+    assert "data" in result.stdout
+
+
 def test_run_in_sandbox_blocks_network_egress():
     # --network=none means DNS resolution itself should fail; wget's exit
     # code will be nonzero rather than the command succeeding.

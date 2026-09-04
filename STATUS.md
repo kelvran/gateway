@@ -16,7 +16,9 @@ Real source code now exists in `gateway/` and `evals/`, but it is a **deliberate
 
 A full repo-wide backlog audit (7-agent dynamic workflow: 6 independent angles — PRD.md v1 scope, every RFC's own Unresolved Questions, STATUS.md/DECISIONS.md, THREAT_MODEL.md/SECURITY.md, in-code TODO/stub markers, evals-specific gaps — each verifying its own claims against live code, plus one synthesis pass) produced a ranked, categorized punch list of every remaining Kelvran work item, and surfaced 4 real doc-vs-code staleness bugs along the way. The user asked for the items ranked by value and to proceed through them in flow. Tier 0 of that ranking (documentation-accuracy fixes, near-zero cost) is done: corrected `THREAT_MODEL.md`'s Cache Repudiation row (claimed cache-hit provenance — age/similarity/layer — is surfaced; only a flat boolean ever leaves the cache decision) and Denial-of-Service row (claimed request coalescing/singleflight exists; zero such code anywhere, confirmed via grep and a direct read of `checkCache`) — neither had been caught by the 2026-09-04 correction sweep that fixed the neighboring rows. Also corrected `evals/ARCHITECTURE.md`'s skeptic-panel footnote (overstated `judge()`'s single-callable DI seam as a pre-built multi-judge interface) and added a `DECISIONS.md` entry flagging that several later entries had misattributed Cache L2's real deferral reason (a demonstrated collision risk) to "no production telemetry" (the L3 embedding deferral's actual reason, conflated with L2's different one).
 
-Next: Tier 1 of the same ranking — small, safe, no-external-blocker items (evals sandbox `--read-only`/`--tmpfs`, `go-arch-lint`/`.importlinter` CI wiring, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock streaming errors), proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
+Tier 1, first item done: `evals/evals/rollout/sandbox.py`'s `run_in_sandbox()` now passes `--read-only`/`--tmpfs=/tmp` — a genuine Kelvran-built ephemeral-filesystem guarantee, closing the exact gap `THREAT_MODEL.md`'s Evals Information Disclosure row named. Two new regression tests against a real Docker daemon; all 160 `evals` tests pass (`RUN_DOCKER_TESTS=1`), zero regressions.
+
+Next: the rest of Tier 1 — `go-arch-lint`/`.importlinter` CI wiring, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock streaming errors — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
 
 Previously: real Bedrock `ConverseStream` streaming support, closing the follow-on the buffered Bedrock adapter pass explicitly deferred (see `docs/rfcs/2026-09-04-bedrock-converse-stream.md`). Committed `92a80af`, confirmed green on CI run `33903861251`.
 
@@ -66,13 +68,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 0 of the ranked backlog audit — 4 documentation-accuracy fixes (`THREAT_MODEL.md` Cache Repudiation + Denial-of-Service rows, `evals/ARCHITECTURE.md` skeptic-panel footnote, a `DECISIONS.md` misattribution correction). See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 1, first item: real `--read-only`/`--tmpfs` sandbox hardening for `evals`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: real Bedrock `ConverseStream` streaming support — closes the follow-on the buffered Bedrock adapter pass explicitly deferred. Committed `92a80af`, confirmed green on CI run `33903861251`.
+Previously: Tier 0 of the ranked backlog audit — 4 documentation-accuracy fixes (`THREAT_MODEL.md` Cache Repudiation + Denial-of-Service rows, `evals/ARCHITECTURE.md` skeptic-panel footnote, a `DECISIONS.md` misattribution correction). Committed `fc76f09`, confirmed green on CI run `33910176816`.
 
 ## Next Action
 
-Tier 0 doc fixes are ready to commit + push + watch CI (pure prose, no build/test surface). Then proceed into Tier 1 of the ranked backlog: evals sandbox `--read-only`/`--tmpfs`, `go-arch-lint`/`.importlinter` CI wiring, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The sandbox hardening fix is ready to commit + push + watch CI. Then continue Tier 1: `go-arch-lint`/`.importlinter` CI wiring, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 

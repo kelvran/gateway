@@ -20,6 +20,17 @@ resource bound — confirmed empirically with a real Docker daemon (`docker
 ps` still showed the container `Up` after the CLI process was killed).
 Fixed by capturing the real container ID via `--cidfile` and issuing a
 real `docker kill <id>` on timeout, not just killing the CLI wrapper.
+
+Real gap closed 2026-09-05, per THREAT_MODEL.md's Evals "Information
+Disclosure" row: the ephemeral-filesystem guarantee was previously just
+Docker's own default `--rm` writable-layer lifecycle, not a Kelvran-built
+one — a sandboxed command could freely write anywhere in the container's
+root filesystem (persisting for the container's lifetime, a real avenue
+for tampering with the image's own binaries or staging data for
+exfiltration via some other channel). Every run now also passes
+`--read-only` (the container's root filesystem is immutable) plus a
+`--tmpfs=/tmp` mount (ordinary scratch-file usage — the common case for
+real commands — still works, just never persists past the container).
 """
 
 from __future__ import annotations
@@ -83,7 +94,8 @@ async def _docker_kill(container_id: str) -> None:
 async def run_in_sandbox(
     image: str, command: list[str], timeout_s: int
 ) -> SandboxResult:
-    """Run `command` inside `image` via `docker run --rm --network=none`.
+    """Run `command` inside `image` via `docker run --rm --network=none
+    --read-only --tmpfs=/tmp`.
 
     Enforces `timeout_s` as a real wall-clock timeout on the whole
     container run — on timeout, the actual container is stopped via a
@@ -110,6 +122,8 @@ async def run_in_sandbox(
         "run",
         "--rm",
         "--network=none",
+        "--read-only",
+        "--tmpfs=/tmp:rw,exec,nosuid,size=64m",
         f"--cidfile={cid_path}",
         image,
         *command,
