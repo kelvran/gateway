@@ -18,7 +18,9 @@ A full repo-wide backlog audit (7-agent dynamic workflow: 6 independent angles �
 
 Tier 1, first item done: `evals/evals/rollout/sandbox.py`'s `run_in_sandbox()` now passes `--read-only`/`--tmpfs=/tmp` — a genuine Kelvran-built ephemeral-filesystem guarantee, closing the exact gap `THREAT_MODEL.md`'s Evals Information Disclosure row named. Two new regression tests against a real Docker daemon; all 160 `evals` tests pass (`RUN_DOCKER_TESTS=1`), zero regressions.
 
-Next: the rest of Tier 1 — `go-arch-lint`/`.importlinter` CI wiring, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock streaming errors — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
+Tier 1, second item done: real `go-arch-lint` v1.18.0 dependency-direction enforcement wired into `gateway`'s CI job and `make lint-gateway`, closing the gap `gateway/ARCHITECTURE.md` already named as "not actually wired." Building the config from a directly-verified import graph (not the doc's own prose) caught 2 real doc-vs-code staleness instances in that same rules table (`provideradapter`/bare `gateway` — both stale package names, corrected to `internal/adapter`/`internal/gateway/dataplane`+`controlplane`). Sanity-checked the config catches real violations (temporarily injected one, confirmed it was flagged, reverted) before trusting a clean pass.
+
+Next: the rest of Tier 1 — `.importlinter` CI wiring for evals, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock streaming errors — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
 
 Previously: real Bedrock `ConverseStream` streaming support, closing the follow-on the buffered Bedrock adapter pass explicitly deferred (see `docs/rfcs/2026-09-04-bedrock-converse-stream.md`). Committed `92a80af`, confirmed green on CI run `33903861251`.
 
@@ -68,13 +70,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 1, first item: real `--read-only`/`--tmpfs` sandbox hardening for `evals`. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 1, second item: real `go-arch-lint` dependency-direction enforcement wired into CI for `gateway`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: Tier 0 of the ranked backlog audit — 4 documentation-accuracy fixes (`THREAT_MODEL.md` Cache Repudiation + Denial-of-Service rows, `evals/ARCHITECTURE.md` skeptic-panel footnote, a `DECISIONS.md` misattribution correction). Committed `fc76f09`, confirmed green on CI run `33910176816`.
+Previously: Tier 1, first item — real `--read-only`/`--tmpfs` sandbox hardening for `evals`. Committed `c443654`, confirmed green on CI run `33911153371`.
 
 ## Next Action
 
-The sandbox hardening fix is closed: committed (`c443654`), pushed, confirmed green on CI run `33911153371`. Continuing Tier 1: `go-arch-lint`/`.importlinter` CI wiring, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The go-arch-lint wiring is ready to commit + push + watch CI. Continuing Tier 1: `.importlinter` CI wiring for evals, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 

@@ -1,0 +1,75 @@
+version: 3
+workdir: internal
+
+allow:
+  depOnAnyVendor: true
+
+excludeFiles:
+  - "^.*_test\\.go$"
+
+components:
+  identity:         { in: identity }
+  budget:           { in: [budget, budget/**] }
+  ratelimit:        { in: [ratelimit, ratelimit/**] }
+  router:           { in: router }
+  costaccounting:   { in: costaccounting }
+  guardrail:        { in: guardrail }
+  telemetry:        { in: telemetry }
+  cache:            { in: cache }
+  cache-inprocess:  { in: cache/inprocess }
+  cache-grpcserver: { in: cache/grpcserver }
+  cache-grpcclient: { in: cache/grpcclient }
+  adapter:          { in: adapter }
+  adapter-impl:     { in: adapter/*/** }
+  streaming:        { in: streaming }
+  controlplane:     { in: gateway/controlplane }
+  dataplane:        { in: gateway/dataplane }
+  gatewayevents:    { in: ../api/gatewayevents/v1 }
+
+# Components deliberately absent from `deps:` below (identity, budget,
+# ratelimit, router, costaccounting, guardrail, telemetry, cache, adapter,
+# controlplane) are pure leaves per gateway/ARCHITECTURE.md's dependency
+# direction rules: a component with no entry here may depend on nothing
+# else in this project (verified against go-arch-lint's own source --
+# checker_imports.go denies any project-internal import for a component
+# absent from this map; it is not "unchecked"). Listing them here anyway
+# with an empty mayDependOn would only produce a benign self-inspection
+# notice that skips the real check entirely (validator_deps.go), so they
+# are omitted on purpose, not forgotten.
+#
+# cache's 3 real implementations (inprocess/grpcserver/grpcclient) are
+# each their own component, not lumped into `cache` itself, since
+# go-arch-lint never grants implicit same-component self-import rights --
+# each is a genuinely separate Go package that imports the base `cache`
+# package's interface types, and needs to say so explicitly.
+deps:
+  cache-inprocess:
+    mayDependOn:
+      - cache
+  cache-grpcserver:
+    mayDependOn:
+      - cache
+  cache-grpcclient:
+    mayDependOn:
+      - cache
+  streaming:
+    mayDependOn:
+      - adapter
+  adapter-impl:
+    mayDependOn:
+      - adapter
+      - streaming
+  dataplane:
+    mayDependOn:
+      - adapter
+      - adapter-impl
+      - budget
+      - cache
+      - costaccounting
+      - gatewayevents
+      - guardrail
+      - identity
+      - ratelimit
+      - router
+      - streaming
+      - telemetry

@@ -60,6 +60,9 @@ jobs:
         with:
           version: v2.12.2
           working-directory: gateway
+      - name: go-arch-lint (dependency-direction enforcement)
+        working-directory: gateway
+        run: go run github.com/fe3dback/go-arch-lint@v1.18.0 check
       - name: build + test
         working-directory: gateway
         run: |

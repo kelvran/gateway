@@ -138,21 +138,29 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              control-plane API for declarative config + live no-restart mutation
 ```
 
-**Dependency direction rules** (the target enforcement mechanism is `go-arch-lint` in CI, since Go's `internal/` visibility only catches direct imports, not transitive ones — **not actually wired**: no `go-arch-lint` config, no CI step, and no reference to it anywhere in `.github/workflows/ci.yml` exist today, confirmed 2026-09-04. The rules below are followed correctly in every package spot-checked so far, but only by manual discipline, not by anything that would catch a future violation automatically):
+**Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose:
 
 ```
-gateway  → cache → { identity, telemetry, costaccounting }
-gateway  → { identity, budget, ratelimit, router, provideradapter, costaccounting, telemetry, guardrail }
-cache    ✗→ provideradapter     (cache is provider-agnostic — keyed on normalized request, not on which
-                                  upstream served it)
-guardrail ✗→ provideradapter, cache, gateway   (text in, Verdict out — guardrail has no concept of
+dataplane → cache, adapter, adapter/{anthropic,bedrock,gemini,openai,openaicompat}, streaming,
+            budget, ratelimit, router, costaccounting, telemetry, guardrail, identity,
+            api/gatewayevents/v1
+adapter/{anthropic,bedrock,gemini,openai,openaicompat} → adapter, streaming
+streaming → adapter                (canonical ChatCompletionChunk/StreamDecoder types live in adapter)
+cache/{inprocess,grpcserver,grpcclient} → cache   (each a real implementation of cache's own interfaces)
+cache     ✗→ adapter             (cache is provider-agnostic — keyed on normalized request, not on which
+                                  upstream served it; verified: cache has ZERO internal cross-package
+                                  imports at all, a stricter, cleaner leaf than an earlier pass of this
+                                  doc's own prose implied)
+guardrail ✗→ adapter, cache, dataplane   (text in, Verdict out — guardrail has no concept of
                                   pre/post-call or streaming/buffered; that distinction lives in
                                   gateway/dataplane, per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md)
-cache    ✗→ gateway              (no back-references — this is what makes cache extractable later)
-router   ✗→ gateway, cache       (router.Deployment is its own decoupled type, never dataplane.Deployment —
+cache     ✗→ dataplane            (no back-references — this is what makes cache extractable later)
+router    ✗→ dataplane, cache     (router.Deployment is its own decoupled type, never dataplane.Deployment —
                                   mirrors ratelimit.KeyConfig's existing decoupling from identity.VirtualKey)
-{identity, budget, ratelimit, router, telemetry, provideradapter, costaccounting} ✗→ gateway, cache   (shared kernel is a leaf)
-budget   ✗→ identity              (budget tracks by key ID string only — it doesn't need to know what a
+{identity, budget, ratelimit, router, telemetry, adapter, costaccounting, controlplane, guardrail}
+          ✗→ dataplane, cache     (shared kernel is a leaf — verified: every one of these packages has
+                                  zero internal cross-package imports of its own)
+budget    ✗→ identity              (budget tracks by key ID string only — it doesn't need to know what a
                                   VirtualKey is, only that it's a string; keeps both packages independently
                                   testable and reusable)
 ratelimit ✗→ identity            (same reasoning as budget above — KeyConfig carries a plain key ID string)

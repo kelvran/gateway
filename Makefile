@@ -14,7 +14,7 @@ setup:
 	cd evals && uv sync
 
 lint-gateway:
-	cd gateway && go vet ./... && golangci-lint run ./...
+	cd gateway && go vet ./... && golangci-lint run ./... && go run github.com/fe3dback/go-arch-lint@v1.18.0 check
 
 lint-evals:
 	cd evals && ruff check .
