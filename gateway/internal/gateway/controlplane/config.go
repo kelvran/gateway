@@ -50,7 +50,26 @@ type DeploymentConfig struct {
 	BaseURL string
 	// APIKeyEnv is the name of the environment variable holding this
 	// deployment's upstream provider API key. Never the raw key value.
+	// Required for every provider except "bedrock", per
+	// docs/rfcs/2026-09-04-bedrock-adapter.md: Bedrock's real
+	// authentication is AWS SigV4 request signing, which needs
+	// AccessKeyIDEnv/SecretAccessKeyEnv instead of a single bearer secret.
 	APIKeyEnv string
+	// AccessKeyIDEnv/SecretAccessKeyEnv are the names of the environment
+	// variables holding this deployment's AWS access key ID / secret
+	// access key. Never the raw values. Required only when Provider ==
+	// "bedrock".
+	AccessKeyIDEnv     string
+	SecretAccessKeyEnv string
+	// SessionTokenEnv is the name of the environment variable holding an
+	// AWS session token, for temporary/STS-issued credentials. Optional
+	// even for "bedrock" deployments — most real deployments use
+	// long-lived IAM user credentials with no session token at all.
+	SessionTokenEnv string
+	// Region is the AWS region SigV4 signing is computed against.
+	// Required only when Provider == "bedrock". Not a secret — a plain
+	// config value, unlike every *Env field above.
+	Region string
 	// Weight controls this deployment's share of routing selection among
 	// deployments serving the same Model, per PRD.md's "static + weighted
 	// routing" v1 scope line and docs/rfcs/2026-09-04-weighted-routing.md.
@@ -270,8 +289,19 @@ func Load(path string) (*Config, error) {
 		dep.UpstreamModel, _ = getString(depMap, "upstream_model")
 		dep.BaseURL, _ = getString(depMap, "base_url")
 		dep.APIKeyEnv, _ = getString(depMap, "api_key_env")
-		if dep.Model == "" || dep.Provider == "" || dep.UpstreamModel == "" || dep.BaseURL == "" || dep.APIKeyEnv == "" {
-			return nil, fmt.Errorf("controlplane: deployment %q is missing one of model/provider/upstream_model/base_url/api_key_env", name)
+		dep.AccessKeyIDEnv, _ = getString(depMap, "access_key_id_env")
+		dep.SecretAccessKeyEnv, _ = getString(depMap, "secret_access_key_env")
+		dep.SessionTokenEnv, _ = getString(depMap, "session_token_env")
+		dep.Region, _ = getString(depMap, "region")
+		if dep.Model == "" || dep.Provider == "" || dep.UpstreamModel == "" || dep.BaseURL == "" {
+			return nil, fmt.Errorf("controlplane: deployment %q is missing one of model/provider/upstream_model/base_url", name)
+		}
+		if dep.Provider == "bedrock" {
+			if dep.AccessKeyIDEnv == "" || dep.SecretAccessKeyEnv == "" || dep.Region == "" {
+				return nil, fmt.Errorf("controlplane: deployment %q (provider bedrock) is missing one of access_key_id_env/secret_access_key_env/region", name)
+			}
+		} else if dep.APIKeyEnv == "" {
+			return nil, fmt.Errorf("controlplane: deployment %q is missing api_key_env", name)
 		}
 		dep.Weight, _ = getInt(depMap, "weight")
 		if dep.Weight < 0 {

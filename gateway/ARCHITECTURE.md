@@ -22,8 +22,22 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              TGI, llama.cpp, LocalAI), and gemini (real per
                              docs/rfcs/2026-09-04-gemini-adapter.md) all implement
                              streaming.StreamingAdapter (real, stateful per-request StreamDecoder each) —
-                             bedrock alone does not, and a streaming request routed to it returns a typed
-                             dataplane.ErrStreamingNotSupported rather than silently buffering.
+                             bedrock alone does not (real per docs/rfcs/2026-09-04-bedrock-adapter.md for
+                             its buffered Converse API only — ConverseStream's real AWS binary
+                             application/vnd.amazon.eventstream framing is deliberately deferred to a
+                             follow-on RFC, not SSE-compatible the way every other provider's streaming is),
+                             and a streaming request routed to it returns a typed
+                             dataplane.ErrStreamingNotSupported rather than silently buffering. bedrock is
+                             also the first adapter needing a genuine Deployment/config-schema change —
+                             AWS SigV4 request signing needs an access-key-id/secret-access-key/region
+                             credential shape, not the single bearer-token secret every other provider
+                             fits (DeploymentConfig.AccessKeyIDEnv/SecretAccessKeyEnv/SessionTokenEnv/
+                             Region; dataplane.go's setUpstreamAuthHeaders now signs over the real request
+                             body and can genuinely fail, unlike every other provider's infallible header-
+                             setting branch). The real AWS SigV4 service-signing name for Bedrock Runtime
+                             is "amazonbedrockfrontendservice", confirmed directly against aws-sdk-go-v2
+                             source — not "bedrock," a plausible-sounding but wrong guess the initial
+                             grounding research made and this RFC's own research trail corrects.
                              openaicompat is a near-verbatim copy of openai's adapter, deliberately: the
                              wire format itself is uniformly OpenAI-compatible across every self-hosted
                              runtime surveyed while grounding that RFC — real, sourced differences exist

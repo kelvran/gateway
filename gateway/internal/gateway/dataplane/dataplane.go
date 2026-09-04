@@ -18,6 +18,8 @@ package dataplane
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +31,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/text/unicode/norm"
@@ -38,6 +42,7 @@ import (
 	gatewayeventsv1 "github.com/kelvran/gateway/gateway/api/gatewayevents/v1"
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
+	"github.com/kelvran/gateway/gateway/internal/adapter/bedrock"
 	"github.com/kelvran/gateway/gateway/internal/adapter/gemini"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
@@ -87,6 +92,17 @@ type Deployment struct {
 	UpstreamModel string
 	BaseURL       string
 	APIKey        string
+	// AccessKeyID/SecretAccessKey/SessionToken are resolved AWS
+	// credential values, populated only for Provider == "bedrock" —
+	// see docs/rfcs/2026-09-04-bedrock-adapter.md. SessionToken is empty
+	// for the common case of long-lived IAM user credentials.
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+	// Region is the AWS region SigV4 signing is computed against. Not a
+	// secret — populated directly from config, never resolved from an
+	// env var the way the credential fields above are.
+	Region string
 }
 
 // UpstreamCaller performs the actual upstream HTTP call for one
@@ -893,6 +909,13 @@ var responseUnmarshalers = map[string]func([]byte) (any, error){
 		}
 		return &r, nil
 	},
+	"bedrock": func(b []byte) (any, error) {
+		var r bedrock.Response
+		if err := json.Unmarshal(b, &r); err != nil {
+			return nil, fmt.Errorf("unmarshaling bedrock response: %w", err)
+		}
+		return &r, nil
+	},
 }
 
 // NewHTTPUpstreamCaller returns a real, working UpstreamCaller that POSTs
@@ -912,7 +935,9 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 			return nil, fmt.Errorf("building upstream request: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		setUpstreamAuthHeaders(httpReq, dep)
+		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, body); err != nil {
+			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
+		}
 
 		httpResp, err := client.Do(httpReq)
 		if err != nil {
@@ -995,7 +1020,9 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		setUpstreamAuthHeaders(httpReq, dep)
+		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, body); err != nil {
+			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
+		}
 
 		httpResp, err := client.Do(httpReq)
 		if err != nil {
@@ -1016,20 +1043,50 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 	}
 }
 
+// bedrockSigningName is the real AWS SigV4 service-signing name for
+// Bedrock Runtime, confirmed directly against aws-sdk-go-v2's own
+// endpoint-resolution source (service/bedrockruntime/endpoints.go) — it
+// is the unconditional fallback used because zero per-region SigningName
+// overrides exist anywhere in that package's endpoint-resolution table,
+// not "bedrock" as a plausible-sounding guess would suggest. Getting this
+// exactly right matters: a wrong service name fails signing with a real
+// AWS-side SignatureDoesNotMatch/InvalidSignatureException, not a local
+// error this codebase's own tests can catch without a live AWS account.
+// See docs/rfcs/2026-09-04-bedrock-adapter.md's Motivation section.
+const bedrockSigningName = "amazonbedrockfrontendservice"
+
 // setUpstreamAuthHeaders sets the provider-specific auth header(s) for an
 // outgoing upstream request. Anthropic's Messages API uses an "x-api-key"
 // header plus a required "anthropic-version" header rather than a Bearer
 // token — this is exactly the kind of per-provider quirk
 // gateway/ARCHITECTURE.md's adapter escape hatch exists for, applied here
 // at the transport layer since it's about auth, not request-body shape.
-func setUpstreamAuthHeaders(httpReq *http.Request, dep Deployment) {
+//
+// Bedrock is the one provider whose auth can genuinely fail: AWS SigV4
+// signs over a hash of the request body itself (hence the body parameter,
+// unused by every other provider), and the signer call can return an
+// error — every other case below is infallible, matching this function's
+// pre-existing (void) contract as closely as possible.
+func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Deployment, body []byte) error {
 	switch dep.Provider {
 	case "anthropic":
 		httpReq.Header.Set("x-api-key", dep.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
 	case "gemini":
 		httpReq.Header.Set("x-goog-api-key", dep.APIKey)
+	case "bedrock":
+		payloadHash := sha256.Sum256(body)
+		creds := aws.Credentials{
+			AccessKeyID:     dep.AccessKeyID,
+			SecretAccessKey: dep.SecretAccessKey,
+			SessionToken:    dep.SessionToken,
+		}
+		signer := v4.NewSigner()
+		if err := signer.SignHTTP(ctx, creds, httpReq, hex.EncodeToString(payloadHash[:]), bedrockSigningName, dep.Region, time.Now()); err != nil {
+			return fmt.Errorf("signing bedrock request for deployment %q: %w", dep.Name, err)
+		}
 	default:
 		httpReq.Header.Set("Authorization", "Bearer "+dep.APIKey)
 	}
+	return nil
 }

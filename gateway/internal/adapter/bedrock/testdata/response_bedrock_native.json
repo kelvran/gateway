@@ -1,0 +1,16 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {"text": "It's 72°F and sunny in Boston."}
+      ]
+    }
+  },
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 58,
+    "outputTokens": 12,
+    "totalTokens": 70
+  }
+}

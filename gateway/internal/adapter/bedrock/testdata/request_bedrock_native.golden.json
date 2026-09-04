@@ -1,0 +1,90 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "text": "What's the weather in Boston?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "toolUse": {
+            "toolUseId": "tooluse_01A1B2C3",
+            "name": "get_weather",
+            "input": {
+              "city": "Boston",
+              "unit": "fahrenheit"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "toolResult": {
+            "toolUseId": "tooluse_01A1B2C3",
+            "content": [
+              {
+                "text": "{\"temperature\":72,\"condition\":\"sunny\"}"
+              }
+            ],
+            "status": "success"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "text": "It's 72°F and sunny in Boston."
+        }
+      ]
+    }
+  ],
+  "system": [
+    {
+      "text": "You are a helpful assistant that can check the weather."
+    }
+  ],
+  "inferenceConfig": {
+    "temperature": 0.4,
+    "maxTokens": 1024
+  },
+  "toolConfig": {
+    "tools": [
+      {
+        "toolSpec": {
+          "name": "get_weather",
+          "description": "Get the current weather for a given city",
+          "inputSchema": {
+            "json": {
+              "properties": {
+                "city": {
+                  "type": "string"
+                },
+                "unit": {
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

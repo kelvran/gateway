@@ -167,19 +167,36 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	deployments := make([]dataplane.Deployment, 0, len(cfg.Deployments))
 	routerDeployments := make([]router.Deployment, 0, len(cfg.Deployments))
 	for _, d := range cfg.Deployments {
-		key := os.Getenv(d.APIKeyEnv)
-		if key == "" {
-			logger.Warn("deployment's upstream API key env var is not set; calls to this deployment will fail",
-				"deployment", d.Name, "env_var", d.APIKeyEnv)
-		}
-		deployments = append(deployments, dataplane.Deployment{
+		dep := dataplane.Deployment{
 			Name:          d.Name,
 			Model:         d.Model,
 			Provider:      d.Provider,
 			UpstreamModel: d.UpstreamModel,
 			BaseURL:       d.BaseURL,
-			APIKey:        key,
-		})
+			Region:        d.Region,
+		}
+		if d.Provider == "bedrock" {
+			dep.AccessKeyID = os.Getenv(d.AccessKeyIDEnv)
+			if dep.AccessKeyID == "" {
+				logger.Warn("deployment's AWS access key ID env var is not set; calls to this deployment will fail",
+					"deployment", d.Name, "env_var", d.AccessKeyIDEnv)
+			}
+			dep.SecretAccessKey = os.Getenv(d.SecretAccessKeyEnv)
+			if dep.SecretAccessKey == "" {
+				logger.Warn("deployment's AWS secret access key env var is not set; calls to this deployment will fail",
+					"deployment", d.Name, "env_var", d.SecretAccessKeyEnv)
+			}
+			if d.SessionTokenEnv != "" {
+				dep.SessionToken = os.Getenv(d.SessionTokenEnv)
+			}
+		} else {
+			dep.APIKey = os.Getenv(d.APIKeyEnv)
+			if dep.APIKey == "" {
+				logger.Warn("deployment's upstream API key env var is not set; calls to this deployment will fail",
+					"deployment", d.Name, "env_var", d.APIKeyEnv)
+			}
+		}
+		deployments = append(deployments, dep)
 		routerDeployments = append(routerDeployments, router.Deployment{
 			Name:   d.Name,
 			Model:  d.Model,

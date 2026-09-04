@@ -73,6 +73,21 @@ deployments:
     base_url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     api_key_env: "GEMINI_API_KEY"
 
+  claude-bedrock-primary:
+    model: "claude-bedrock"
+    provider: "bedrock"
+    upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    base_url: "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse"
+    # Bedrock has no single bearer secret — AWS SigV4 signing needs an
+    # access-key-id/secret-access-key credential pair (plus an optional
+    # session_token_env for temporary/STS credentials) instead of
+    # api_key_env. region is a plain, non-secret value, never an env var
+    # name — see docs/rfcs/2026-09-04-bedrock-adapter.md.
+    access_key_id_env: "AWS_ACCESS_KEY_ID"
+    secret_access_key_env: "AWS_SECRET_ACCESS_KEY"
+    # session_token_env: "AWS_SESSION_TOKEN"   # optional; only for temporary/STS credentials
+    region: "us-east-1"
+
 # OTel span export — see docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md
 # and docs/operations/TELEMETRY.md. Optional: omit this whole section for
 # the "stdout" default (spans printed locally, nothing shipped anywhere).

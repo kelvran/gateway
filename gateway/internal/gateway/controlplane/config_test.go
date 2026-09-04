@@ -3,6 +3,7 @@ package controlplane
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -65,8 +66,8 @@ func TestLoadExampleConfig(t *testing.T) {
 		t.Errorf("team-beta.AllowedModels = %v, want empty (all models allowed)", beta.AllowedModels)
 	}
 
-	if len(cfg.Deployments) != 3 {
-		t.Fatalf("len(Deployments) = %d, want 3", len(cfg.Deployments))
+	if len(cfg.Deployments) != 4 {
+		t.Fatalf("len(Deployments) = %d, want 4", len(cfg.Deployments))
 	}
 
 	byName := map[string]DeploymentConfig{}
@@ -108,6 +109,23 @@ func TestLoadExampleConfig(t *testing.T) {
 	}
 	if geminiDep.APIKeyEnv != "GEMINI_API_KEY" {
 		t.Errorf("gemini-flash-primary.APIKeyEnv = %q, want %q", geminiDep.APIKeyEnv, "GEMINI_API_KEY")
+	}
+
+	bedrockDep, ok := byName["claude-bedrock-primary"]
+	if !ok {
+		t.Fatal("missing deployment \"claude-bedrock-primary\"")
+	}
+	if bedrockDep.Provider != "bedrock" || bedrockDep.UpstreamModel != "anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Errorf("claude-bedrock-primary = %+v, unexpected fields", bedrockDep)
+	}
+	if bedrockDep.APIKeyEnv != "" {
+		t.Errorf("claude-bedrock-primary.APIKeyEnv = %q, want empty for bedrock", bedrockDep.APIKeyEnv)
+	}
+	if bedrockDep.AccessKeyIDEnv != "AWS_ACCESS_KEY_ID" || bedrockDep.SecretAccessKeyEnv != "AWS_SECRET_ACCESS_KEY" {
+		t.Errorf("claude-bedrock-primary credential env fields = %+v, unexpected", bedrockDep)
+	}
+	if bedrockDep.Region != "us-east-1" {
+		t.Errorf("claude-bedrock-primary.Region = %q, want %q", bedrockDep.Region, "us-east-1")
 	}
 
 	priceGPT, ok := cfg.PriceTable["gpt-4o"]
@@ -460,5 +478,159 @@ func TestLoadRejectsNegativeDeploymentWeight(t *testing.T) {
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load with a negative deployment weight returned nil error")
+	}
+}
+
+func minimalBedrockDeploymentConfig(extraDeploymentLines string) string {
+	return "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"bedrock\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\n" +
+		"    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n" +
+		"    region: \"us-east-1\"\n" +
+		extraDeploymentLines
+}
+
+// TestLoadBedrockDeploymentDoesNotRequireAPIKeyEnv proves the real,
+// provider-conditional relaxation: a bedrock deployment parses
+// successfully with no api_key_env at all, per
+// docs/rfcs/2026-09-04-bedrock-adapter.md -- Bedrock's real
+// authentication is AWS SigV4, which needs
+// access_key_id_env/secret_access_key_env/region instead.
+func TestLoadBedrockDeploymentDoesNotRequireAPIKeyEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalBedrockDeploymentConfig("")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Deployments) != 1 {
+		t.Fatalf("len(Deployments) = %d, want 1", len(cfg.Deployments))
+	}
+	dep := cfg.Deployments[0]
+	if dep.APIKeyEnv != "" {
+		t.Errorf("APIKeyEnv = %q, want empty for a bedrock deployment", dep.APIKeyEnv)
+	}
+	if dep.AccessKeyIDEnv != "AWS_ACCESS_KEY_ID" || dep.SecretAccessKeyEnv != "AWS_SECRET_ACCESS_KEY" || dep.Region != "us-east-1" {
+		t.Errorf("bedrock credential fields = %+v, unexpected", dep)
+	}
+}
+
+// TestLoadBedrockDeploymentMissingAccessKeyIDEnvFails proves the real,
+// provider-conditional requirement: a bedrock deployment missing
+// access_key_id_env is a real config error.
+func TestLoadBedrockDeploymentMissingAccessKeyIDEnvFails(t *testing.T) {
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"bedrock\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n" +
+		"    region: \"us-east-1\"\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with a bedrock deployment missing access_key_id_env returned nil error")
+	}
+	if !strings.Contains(err.Error(), "access_key_id_env") {
+		t.Errorf("error = %v, want it to name access_key_id_env", err)
+	}
+}
+
+// TestLoadBedrockDeploymentMissingRegionFails proves region is real and
+// required for bedrock, not silently optional.
+func TestLoadBedrockDeploymentMissingRegionFails(t *testing.T) {
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"bedrock\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\n" +
+		"    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a bedrock deployment missing region returned nil error")
+	}
+}
+
+// TestLoadNonBedrockDeploymentStillRequiresAPIKeyEnv is the decisive
+// backward-compatibility proof: every non-bedrock provider's existing
+// api_key_env requirement is completely unchanged.
+func TestLoadNonBedrockDeploymentStillRequiresAPIKeyEnv(t *testing.T) {
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with a non-bedrock deployment missing api_key_env returned nil error")
+	}
+	if !strings.Contains(err.Error(), "api_key_env") {
+		t.Errorf("error = %v, want it to name api_key_env", err)
+	}
+}
+
+// TestLoadBedrockDeploymentWithSessionTokenEnv proves the optional
+// session-token env var parses when present.
+func TestLoadBedrockDeploymentWithSessionTokenEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := minimalBedrockDeploymentConfig("    session_token_env: \"AWS_SESSION_TOKEN\"\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].SessionTokenEnv; got != "AWS_SESSION_TOKEN" {
+		t.Errorf("SessionTokenEnv = %q, want %q", got, "AWS_SESSION_TOKEN")
 	}
 }
