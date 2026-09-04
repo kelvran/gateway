@@ -18,7 +18,12 @@ services:
       context: ./gateway
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      # Bound to loopback only, not 0.0.0.0 — gateway has real bearer-
+      # token auth (virtual keys), but there's no reason a local-dev
+      # bring-up should default to being reachable from other machines
+      # on the network. Change to "8080:8080" locally if you genuinely
+      # need LAN access (e.g. testing from another device).
+      - "127.0.0.1:8080:8080"
     env_file:
       - .env
     volumes:
@@ -31,9 +36,15 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    # Only useful once config.yaml sets rate_limit.redis_addr: redis:6379
+    # Deliberately no `ports:` — redis:7-alpine has no authentication
+    # configured (no requirepass/ACL) and Compose's default port
+    # publishing binds to 0.0.0.0, which would make an unauthenticated
+    # Redis reachable from any network interface, not just this host.
+    # gateway reaches it over the internal Compose network at
+    # "redis:6379" (no host port needed for that — only the service
+    # name has to resolve, and it does, by default, with zero
+    # additional config). Only useful once config.yaml sets
+    # rate_limit.redis_addr: redis:6379
     # (gateway/internal/gateway/controlplane/config.go's RateLimitConfig)
     # — per docs/rfcs/2026-09-03-distributed-rate-limiting.md. Started only
     # with `docker compose --profile redis up`, never by a bare `up`.
