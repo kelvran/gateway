@@ -24,7 +24,9 @@ Tier 1, third item done: real `.importlinter` v2.15 layer-contract enforcement w
 
 Tier 1, fourth item done: real `otelhttp` middleware wired into `cmd/gateway/main.go` (`wrapHTTPServerSpan`) — closes the follow-on the OTel RFC named as "a legitimate, independent future addition." New end-to-end test proves real nesting (matching `TraceID`/`ParentSpanID`), not just "2 spans exist," sanity-checked by temporarily disabling the wrapping and confirming the test fails.
 
-Next: the rest of Tier 1 — a second LLM-judge provider, per-exception-type Bedrock streaming errors — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project.
+Tier 1, fifth item done: a second (OpenAI) LLM-judge provider for `evals` — `providers.py` gained `make_openai_call_model()`, mirroring the existing Anthropic provider's design exactly, zero signature change to `judge()`. Confirmed the real, installed `openai` SDK's field names via introspection before writing code; default model `gpt-4o-mini`, priced from a live fetch of OpenAI's current pricing page. `cli.py` deliberately left unwired to it (no `--judge-provider` flag) — the RFC only asked for the follow-on function itself to be unblocked. 8 new tests, zero regressions (158 passed, up from 150, 11 skipped unchanged).
+
+Next: the last Tier 1 item — per-exception-type Bedrock streaming errors — then Tier 1 is fully closed.
 
 Previously: real Bedrock `ConverseStream` streaming support, closing the follow-on the buffered Bedrock adapter pass explicitly deferred (see `docs/rfcs/2026-09-04-bedrock-converse-stream.md`). Committed `92a80af`, confirmed green on CI run `33903861251`.
 
@@ -74,13 +76,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 1, fourth item: real `otelhttp` middleware for `cmd/gateway`. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 1, fifth item: a second (OpenAI) LLM-judge provider for `evals`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: Tier 1, third item — real `.importlinter` layer-contract enforcement wired into CI for `evals`. Committed `afd1062`, confirmed green on CI run `33922394932`.
+Previously: Tier 1, fourth item — real `otelhttp` middleware for `cmd/gateway`. Committed `941eec4`, confirmed green on CI run `33924205802`.
 
 ## Next Action
 
-The otelhttp middleware is closed: committed (`941eec4`), pushed, confirmed green on CI run `33924205802`. Continuing Tier 1: a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The OpenAI judge provider is ready to commit + push + watch CI. Last Tier 1 item: per-exception-type Bedrock streaming errors — a small, self-contained, no-external-blocker unit. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 

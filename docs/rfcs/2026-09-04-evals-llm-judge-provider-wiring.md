@@ -110,7 +110,7 @@ A new, separate `llm_integration` marker registered in `evals/pyproject.toml`'s 
 ## Unresolved Questions
 
 - Whether/how a future nightly or cost-budgeted CI job should exercise `--llm-judge` for real on a schedule, rather than remaining permanently opt-in-only — deliberately not decided here, the same "gated on real need, not a fixed timeline" posture this project has applied to every other deferred item (a real embedding-based L3, Guardrails' own ML-moderation tier).
-- Whether a second provider (OpenAI) is ever worth adding, and under what trigger — not designed here; `call_model`'s existing DI shape means it's a same-shaped follow-on, not a blocked one.
+- A second provider (OpenAI) is real as of 2026-09-05, exactly as predicted here — a same-shaped `make_openai_call_model` follow-on function in `providers.py`, zero signature changes anywhere else. `cli.py` deliberately left unwired to it (no `--judge-provider` flag) — this RFC never asked for one, only for the follow-on function to be "not blocked," which it now isn't.
 - The `Score` model + persistence (this RFC's own Alternatives Considered #3) is the natural next-next pick, but its exact shape (whether it should record a judge call's real cost, closing this RFC's own Drawbacks item about `Run.cost_usd` staying `None`) is left to that future RFC.
 - The `THREAT_MODEL.md` Evals STRIDE-table doc correction, and the further split of its full five-layer vision into 3-to-5 separately-scoped future RFCs — named here, not designed here.
 
