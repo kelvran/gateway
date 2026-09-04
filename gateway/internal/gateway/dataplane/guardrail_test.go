@@ -192,6 +192,7 @@ func TestCacheHitsAreForcedMissesAfterGuardrailPolicyVersionChanges(t *testing.T
 			CacheL3:        l3,
 			Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), policyVersion, nil),
 			Adapters:       adapter.Registry{"openai": openai.New()},
+			Router:         testRouter(deployments),
 			Deployments:    deployments,
 			CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 			Upstream:       upstream,

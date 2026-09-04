@@ -378,3 +378,73 @@ func TestLoadRejectsDeploymentMissingFields(t *testing.T) {
 		t.Fatal("Load with incomplete deployment returned nil error")
 	}
 }
+
+func minimalDeploymentConfig(extraDeploymentLines string) string {
+	return "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n" +
+		extraDeploymentLines
+}
+
+// TestLoadDeploymentWeightUnsetDefaultsToZero proves a deployment with no
+// weight key parses to Weight: 0 — the "unset" sentinel router.New
+// normalizes to 1, not something this package resolves itself, per
+// docs/rfcs/2026-09-04-weighted-routing.md.
+func TestLoadDeploymentWeightUnsetDefaultsToZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Deployments) != 1 {
+		t.Fatalf("len(Deployments) = %d, want 1", len(cfg.Deployments))
+	}
+	if got := cfg.Deployments[0].Weight; got != 0 {
+		t.Errorf("Weight = %d, want 0 (unset)", got)
+	}
+}
+
+// TestLoadDeploymentWeightParsesPositiveValue proves an explicit weight
+// key parses through.
+func TestLoadDeploymentWeightParsesPositiveValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    weight: 3\n")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].Weight; got != 3 {
+		t.Errorf("Weight = %d, want 3", got)
+	}
+}
+
+// TestLoadRejectsNegativeDeploymentWeight proves a negative weight is a
+// real config error, never silently clamped.
+func TestLoadRejectsNegativeDeploymentWeight(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    weight: -1\n")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a negative deployment weight returned nil error")
+	}
+}

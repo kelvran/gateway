@@ -176,18 +176,20 @@ func TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
+	deployments := []Deployment{
+		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
 	p, err := NewPipeline(Config{
-		Verifier:   verifier,
-		Limiter:    ratelimit.NewRedisKeyLimiter(keyConfigsFromVirtualKeys(keys), failingRedisBackend{}),
-		Budget:     budget.NewTracker(),
-		Cache:      inprocess.New(0),
-		CacheL2:    inprocess.New(0),
-		CacheL3:    inprocess.NewLexicalCache(0),
-		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
-		Adapters:   adapter.Registry{"openai": openai.New()},
-		Deployments: []Deployment{
-			{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
-		},
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewRedisKeyLimiter(keyConfigsFromVirtualKeys(keys), failingRedisBackend{}),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
 			return fakeOpenAIResponse("gpt-4o"), nil
@@ -318,6 +320,7 @@ func TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend(t *testing.T) {
 	priceTable := costaccounting.PriceTable{
 		"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.0001"), CompletionPerToken: decimal.RequireFromString("0.0001")},
 	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
 	p, err := NewPipeline(Config{
 		Verifier:       verifier,
 		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
@@ -327,7 +330,8 @@ func TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend(t *testing.T) {
 		CacheL3:        inprocess.NewLexicalCache(0),
 		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
 		Adapters:       adapter.Registry{"openai": openai.New()},
-		Deployments:    []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(priceTable),
 		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
 			return fakeOpenAIResponse("gpt-4o"), nil
@@ -393,19 +397,21 @@ func TestGatewayEventStreamingFallbackFalseAfterFirstChunkSent(t *testing.T) {
 	// client before the read error surfaces — mirrors
 	// streaming_test.go's TestHandleChatCompletionStreamNoFallbackAfterFirstByte.
 	firstChunkEnd := strings.Index(realOpenAISSEStream, "\n\n") + len("\n\n")
+	deployments := []Deployment{
+		{Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		{Name: "secondary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
 	p, err := NewPipeline(Config{
-		Verifier:   verifier,
-		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
-		Budget:     budget.NewTracker(),
-		Cache:      inprocess.New(0),
-		CacheL2:    inprocess.New(0),
-		CacheL3:    inprocess.NewLexicalCache(0),
-		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
-		Adapters:   adapter.Registry{"openai": openai.New()},
-		Deployments: []Deployment{
-			{Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
-			{Name: "secondary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
-		},
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
 			t.Fatal("non-streaming Upstream should never be called by a streaming test")
@@ -459,6 +465,7 @@ func newTestPipelineWithKeysAndLogger(t *testing.T, upstream UpstreamCaller, dep
 		Adapters: adapter.Registry{
 			"openai": openai.New(),
 		},
+		Router:         testRouter(deployments),
 		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 		Upstream:       upstream,

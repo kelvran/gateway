@@ -159,6 +159,7 @@ func newTestPipelineWithCacheL3(t *testing.T, upstream UpstreamCaller, l3 cache.
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
 	p, err := NewPipeline(Config{
 		Verifier:   verifier,
 		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
@@ -170,7 +171,8 @@ func newTestPipelineWithCacheL3(t *testing.T, upstream UpstreamCaller, l3 cache.
 		Adapters: adapter.Registry{
 			"openai": openai.New(),
 		},
-		Deployments:    []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 		Upstream:       upstream,
 		Logger:         discardLogger(),

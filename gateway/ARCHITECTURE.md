@@ -19,19 +19,20 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              ChunkChoice/MessageDelta/ToolCallDelta types, the StreamDecoder/StreamingAdapter
                              interfaces every streaming-capable adapter implements against, and the actual
                              Reader (SSE frame parser)/Writer (SSE frame writer, Flush()-per-chunk) — ACTIVE
-/internal/router          — **not built as a separate package.** The `/internal/router` split described
-                             here at design time never happened; real routing today is `nextDeployment`,
-                             ~15 lines inline in `internal/gateway/dataplane/dataplane.go` — a plain
-                             round-robin over `deploymentsByModel[model]` via an atomic counter, plus at
-                             most one fallback attempt to the next round-robin deployment on error (see
-                             that file's own header comment: "router (round-robin + single fallback)").
-                             No weighting, no usage/latency/cost signal, no health/cooldown tracking (a
-                             permanently-failing deployment stays in rotation forever), no circuit
-                             breaker, and no model-*group* fallback chain — just a single-model retry.
-                             Weighted/usage/latency/cost-based strategies, cooldowns/circuit-breaker, and
-                             real fallback chains remain the target shape for a future `internal/router`
-                             extraction, not built yet — found as a live doc-vs-code gap 2026-09-04,
-                             corrected here rather than left implying more sophistication than exists
+/internal/router          — **ACTIVE**, per docs/rfcs/2026-09-04-weighted-routing.md: weighted round-robin
+                             deployment selection (the LVS/IPVS `wrr.c` smooth-WRR algorithm — O(1) state
+                             per deployment, no goroutine, no ticker), closing the "weighted" half of
+                             PRD.md's v1 routing scope line ("static + weighted routing; a single fallback
+                             chain"). `dataplane.Pipeline.nextDeployment` is now a thin wrapper delegating
+                             to `router.Router.Select`; the old inline atomic-counter round-robin and
+                             `deploymentsByModel` map it replaced are gone. Equal weights (including the
+                             unset/default case) provably degrade to the exact same sequence the old
+                             round-robin produced — proven by hand-trace in the RFC, not merely assumed.
+                             Still not built, deliberately: usage/latency/cost-based selection signals,
+                             consecutive-failure/cooldown circuit-breaker tracking, and model-*group*
+                             fallback chains — none of these are named in PRD.md's v1 allowlist. The
+                             existing single-model, single-fallback retry (dataplane.go/streaming.go) is
+                             unchanged and already satisfies "a single fallback chain"
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
@@ -81,14 +82,16 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 
 ```
 gateway  → cache → { identity, telemetry, costaccounting }
-gateway  → { identity, budget, ratelimit, provideradapter, costaccounting, telemetry, guardrail }
+gateway  → { identity, budget, ratelimit, router, provideradapter, costaccounting, telemetry, guardrail }
 cache    ✗→ provideradapter     (cache is provider-agnostic — keyed on normalized request, not on which
                                   upstream served it)
 guardrail ✗→ provideradapter, cache, gateway   (text in, Verdict out — guardrail has no concept of
                                   pre/post-call or streaming/buffered; that distinction lives in
                                   gateway/dataplane, per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md)
 cache    ✗→ gateway              (no back-references — this is what makes cache extractable later)
-{identity, budget, ratelimit, telemetry, provideradapter, costaccounting} ✗→ gateway, cache   (shared kernel is a leaf)
+router   ✗→ gateway, cache       (router.Deployment is its own decoupled type, never dataplane.Deployment —
+                                  mirrors ratelimit.KeyConfig's existing decoupling from identity.VirtualKey)
+{identity, budget, ratelimit, router, telemetry, provideradapter, costaccounting} ✗→ gateway, cache   (shared kernel is a leaf)
 budget   ✗→ identity              (budget tracks by key ID string only — it doesn't need to know what a
                                   VirtualKey is, only that it's a string; keeps both packages independently
                                   testable and reusable)
@@ -113,7 +116,8 @@ Every capability is a stage in one linear pipeline against a single canonical sc
     with a hard volatility bypass — never real embedding-based semantic matching, see Cache Subsystem
     below) → hit → log, return
   → guardrail pre-call (PII/content check)
-  → router (load-balance / fallback-chain / circuit-breaker selects a healthy deployment)
+  → router (weighted round-robin selects a deployment; a single fallback attempt on error —
+    no circuit breaker, no health/cooldown tracking, per docs/rfcs/2026-09-04-weighted-routing.md)
   → provider adapter: canonical → provider-native request translation
   → upstream call (streaming: non-buffering pass-through, chunk-by-chunk, explicit Flush() per chunk)
   → provider adapter: provider-native response/chunk → canonical translation (stateful per-stream parser)

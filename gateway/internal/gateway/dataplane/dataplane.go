@@ -4,9 +4,10 @@
 // guardrails/MCP (not built yet — Phase 1+ per PRD.md):
 //
 //	auth -> rate-limit -> cache lookup (L1 exact) -> hit? return
-//	     -> miss -> router (round-robin + single fallback) -> adapter
-//	     -> upstream HTTP call -> adapter (response) -> cache write-back
-//	     -> structured JSON log (incl. cost) -> response
+//	     -> miss -> router (weighted round-robin + single fallback, via
+//	        internal/router, per docs/rfcs/2026-09-04-weighted-routing.md)
+//	     -> adapter -> upstream HTTP call -> adapter (response)
+//	     -> cache write-back -> structured JSON log (incl. cost) -> response
 //
 // Cost/observability finalization (the log line) always runs, even on
 // error, via a deferred closure over named return values — mirroring
@@ -25,8 +26,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -45,6 +44,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/router"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
@@ -132,8 +132,14 @@ type Config struct {
 	// dependency, not a rollout-optional one. A config-level "disable"
 	// is expressed as an Engine with zero detectors registered, never
 	// Guardrails == nil.
-	Guardrails     *guardrail.Engine
-	Adapters       adapter.Registry
+	Guardrails *guardrail.Engine
+	Adapters   adapter.Registry
+	// Router selects which Deployment serves the next request for a
+	// given model — weighted round-robin, per
+	// docs/rfcs/2026-09-04-weighted-routing.md. Required, like every
+	// other dependency here; built by the caller (cmd/gateway) from the
+	// same Deployments list below.
+	Router         *router.Router
 	Deployments    []Deployment
 	CostCalculator *costaccounting.Calculator
 	Upstream       UpstreamCaller
@@ -163,24 +169,23 @@ type Config struct {
 
 // Pipeline is the wired dataplane request pipeline.
 type Pipeline struct {
-	verifier           *identity.Verifier
-	limiter            *ratelimit.KeyLimiter
-	budget             *budget.Tracker
-	cache              cache.Cache
-	cacheL2            cache.Cache
-	cacheL3            cache.LexicalCache
-	guardrails         *guardrail.Engine
-	adapters           adapter.Registry
-	deploymentsByModel map[string][]Deployment
-	rrMu               sync.Mutex
-	rrCounters         map[string]*atomic.Uint64
-	costCalc           *costaccounting.Calculator
-	upstream           UpstreamCaller
-	upstreamStream     UpstreamStreamCaller
-	logger             *slog.Logger
-	cacheTTL           time.Duration
-	cacheL2TTL         time.Duration
-	cacheL3TTL         time.Duration
+	verifier          *identity.Verifier
+	limiter           *ratelimit.KeyLimiter
+	budget            *budget.Tracker
+	cache             cache.Cache
+	cacheL2           cache.Cache
+	cacheL3           cache.LexicalCache
+	guardrails        *guardrail.Engine
+	adapters          adapter.Registry
+	router            *router.Router
+	deploymentsByName map[string]Deployment
+	costCalc          *costaccounting.Calculator
+	upstream          UpstreamCaller
+	upstreamStream    UpstreamStreamCaller
+	logger            *slog.Logger
+	cacheTTL          time.Duration
+	cacheL2TTL        time.Duration
+	cacheL3TTL        time.Duration
 }
 
 // NewPipeline validates cfg and constructs a Pipeline.
@@ -202,6 +207,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		return nil, fmt.Errorf("dataplane: Config.Guardrails is required")
 	case cfg.Adapters == nil:
 		return nil, fmt.Errorf("dataplane: Config.Adapters is required")
+	case cfg.Router == nil:
+		return nil, fmt.Errorf("dataplane: Config.Router is required")
 	case len(cfg.Deployments) == 0:
 		return nil, fmt.Errorf("dataplane: Config.Deployments must be non-empty")
 	case cfg.CostCalculator == nil:
@@ -210,9 +217,9 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		return nil, fmt.Errorf("dataplane: Config.Upstream is required")
 	}
 
-	byModel := map[string][]Deployment{}
+	byName := map[string]Deployment{}
 	for _, d := range cfg.Deployments {
-		byModel[d.Model] = append(byModel[d.Model], d)
+		byName[d.Name] = d
 	}
 
 	logger := cfg.Logger
@@ -233,23 +240,23 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}
 
 	return &Pipeline{
-		verifier:           cfg.Verifier,
-		limiter:            cfg.Limiter,
-		budget:             cfg.Budget,
-		cache:              cfg.Cache,
-		cacheL2:            cfg.CacheL2,
-		cacheL3:            cfg.CacheL3,
-		guardrails:         cfg.Guardrails,
-		adapters:           cfg.Adapters,
-		deploymentsByModel: byModel,
-		rrCounters:         map[string]*atomic.Uint64{},
-		costCalc:           cfg.CostCalculator,
-		upstream:           cfg.Upstream,
-		upstreamStream:     cfg.UpstreamStream,
-		logger:             logger,
-		cacheTTL:           ttl,
-		cacheL2TTL:         l2TTL,
-		cacheL3TTL:         l3TTL,
+		verifier:          cfg.Verifier,
+		limiter:           cfg.Limiter,
+		budget:            cfg.Budget,
+		cache:             cfg.Cache,
+		cacheL2:           cfg.CacheL2,
+		cacheL3:           cfg.CacheL3,
+		guardrails:        cfg.Guardrails,
+		adapters:          cfg.Adapters,
+		router:            cfg.Router,
+		deploymentsByName: byName,
+		costCalc:          cfg.CostCalculator,
+		upstream:          cfg.Upstream,
+		upstreamStream:    cfg.UpstreamStream,
+		logger:            logger,
+		cacheTTL:          ttl,
+		cacheL2TTL:        l2TTL,
+		cacheL3TTL:        l3TTL,
 	}, nil
 }
 
@@ -611,25 +618,17 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	return resp, nil
 }
 
-// nextDeployment round-robins across the deployments configured for
-// model. The second return value is false if no deployment is configured
-// for model at all.
+// nextDeployment selects the next deployment for model via p.router
+// (weighted round-robin, per docs/rfcs/2026-09-04-weighted-routing.md).
+// The second return value is false if no deployment is configured for
+// model at all.
 func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
-	deps := p.deploymentsByModel[model]
-	if len(deps) == 0 {
+	name, ok := p.router.Select(model)
+	if !ok {
 		return Deployment{}, false
 	}
-
-	p.rrMu.Lock()
-	counter, ok := p.rrCounters[model]
-	if !ok {
-		counter = &atomic.Uint64{}
-		p.rrCounters[model] = counter
-	}
-	p.rrMu.Unlock()
-
-	idx := counter.Add(1) - 1
-	return deps[idx%uint64(len(deps))], true
+	dep, ok := p.deploymentsByName[name]
+	return dep, ok
 }
 
 // finalize is the single "a request just finished (or failed)" step,

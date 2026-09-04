@@ -42,9 +42,10 @@ virtual_keys:
 
 # Deployments route a canonical, client-facing model name to a concrete
 # upstream provider/model/endpoint. Multiple deployments may share the
-# same "model" value; the dataplane round-robins across them and falls
-# back to the next one on error (gateway/ARCHITECTURE.md's Request
-# Lifecycle router step).
+# same "model" value; the dataplane weighted-round-robins across them
+# (see docs/rfcs/2026-09-04-weighted-routing.md) and falls back to the
+# next one on error (gateway/ARCHITECTURE.md's Request Lifecycle router
+# step).
 deployments:
   gpt4o-primary:
     model: "gpt-4o"
@@ -52,6 +53,7 @@ deployments:
     upstream_model: "gpt-4o"
     base_url: "https://api.openai.com/v1/chat/completions"
     api_key_env: "OPENAI_API_KEY"
+    # weight: 1   # optional; omit for equal-weight round-robin (today's default)
 
   claude-opus-primary:
     model: "claude-opus-4"

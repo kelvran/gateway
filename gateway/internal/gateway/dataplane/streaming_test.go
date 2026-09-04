@@ -45,21 +45,20 @@ func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller,
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
+	if deployments == nil {
+		deployments = []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	}
 	p, err := NewPipeline(Config{
-		Verifier:   verifier,
-		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
-		Budget:     budget.NewTracker(),
-		Cache:      inprocess.New(0),
-		CacheL2:    inprocess.New(0),
-		CacheL3:    inprocess.NewLexicalCache(0),
-		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
-		Adapters:   adapters,
-		Deployments: func() []Deployment {
-			if deployments != nil {
-				return deployments
-			}
-			return []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
-		}(),
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapters,
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
 			t.Fatal("non-streaming Upstream should never be called by a streaming test")
@@ -80,21 +79,20 @@ func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream Upst
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
+	if deployments == nil {
+		deployments = []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	}
 	p, err := NewPipeline(Config{
-		Verifier:   verifier,
-		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
-		Budget:     tracker,
-		Cache:      inprocess.New(0),
-		CacheL2:    inprocess.New(0),
-		CacheL3:    inprocess.NewLexicalCache(0),
-		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
-		Adapters:   adapters,
-		Deployments: func() []Deployment {
-			if deployments != nil {
-				return deployments
-			}
-			return []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
-		}(),
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         tracker,
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapters,
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
 			t.Fatal("non-streaming Upstream should never be called by a streaming test")

@@ -19,6 +19,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/router"
 )
 
 // discardLogger silences log output during tests.
@@ -64,6 +65,21 @@ func keyConfigsFromVirtualKeys(keys []identity.VirtualKey) []ratelimit.KeyConfig
 	return configs
 }
 
+// testRouter builds a router.Router from deployments, weight 0 for every
+// one (normalized to 1 by router.New) — preserving today's exact
+// round-robin sequence, per
+// docs/rfcs/2026-09-04-weighted-routing.md's degrade proof. Every test
+// helper in this package that builds a Pipeline uses this rather than a
+// weighted router, since none of these tests are testing weighting
+// itself (that's internal/router's own router_test.go).
+func testRouter(deployments []Deployment) *router.Router {
+	rd := make([]router.Deployment, 0, len(deployments))
+	for _, d := range deployments {
+		rd = append(rd, router.Deployment{Name: d.Name, Model: d.Model})
+	}
+	return router.New(rd)
+}
+
 func newTestPipelineWithKeysAndBudget(t *testing.T, upstream UpstreamCaller, deployments []Deployment, keys []identity.VirtualKey, tracker *budget.Tracker) *Pipeline {
 	t.Helper()
 
@@ -82,6 +98,7 @@ func newTestPipelineWithKeysAndBudget(t *testing.T, upstream UpstreamCaller, dep
 		Adapters: adapter.Registry{
 			"openai": openai.New(),
 		},
+		Router:         testRouter(deployments),
 		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 		Upstream:       upstream,

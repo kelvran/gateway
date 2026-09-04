@@ -51,6 +51,14 @@ type DeploymentConfig struct {
 	// APIKeyEnv is the name of the environment variable holding this
 	// deployment's upstream provider API key. Never the raw key value.
 	APIKeyEnv string
+	// Weight controls this deployment's share of routing selection among
+	// deployments serving the same Model, per PRD.md's "static + weighted
+	// routing" v1 scope line and docs/rfcs/2026-09-04-weighted-routing.md.
+	// Zero (unset in YAML) means "use the default weight of 1" —
+	// normalized in internal/router, not here, matching this file's
+	// existing looseness (getInt's silent-swallow-on-malformed-string
+	// behavior). A negative value is a config error.
+	Weight int
 }
 
 // ModelPriceConfig is the static per-token price for one model.
@@ -264,6 +272,10 @@ func Load(path string) (*Config, error) {
 		dep.APIKeyEnv, _ = getString(depMap, "api_key_env")
 		if dep.Model == "" || dep.Provider == "" || dep.UpstreamModel == "" || dep.BaseURL == "" || dep.APIKeyEnv == "" {
 			return nil, fmt.Errorf("controlplane: deployment %q is missing one of model/provider/upstream_model/base_url/api_key_env", name)
+		}
+		dep.Weight, _ = getInt(depMap, "weight")
+		if dep.Weight < 0 {
+			return nil, fmt.Errorf("controlplane: deployment %q has a negative weight %d", name, dep.Weight)
 		}
 		cfg.Deployments = append(cfg.Deployments, dep)
 	}

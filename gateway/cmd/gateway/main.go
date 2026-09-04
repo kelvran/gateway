@@ -44,6 +44,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit/redislimiter"
+	"github.com/kelvran/gateway/gateway/internal/router"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
@@ -164,6 +165,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	}
 
 	deployments := make([]dataplane.Deployment, 0, len(cfg.Deployments))
+	routerDeployments := make([]router.Deployment, 0, len(cfg.Deployments))
 	for _, d := range cfg.Deployments {
 		key := os.Getenv(d.APIKeyEnv)
 		if key == "" {
@@ -178,7 +180,13 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			BaseURL:       d.BaseURL,
 			APIKey:        key,
 		})
+		routerDeployments = append(routerDeployments, router.Deployment{
+			Name:   d.Name,
+			Model:  d.Model,
+			Weight: d.Weight,
+		})
 	}
+	depRouter := router.New(routerDeployments)
 
 	priceTable := costaccounting.PriceTable{}
 	for model, price := range cfg.PriceTable {
@@ -209,6 +217,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		CacheL3:        inprocess.NewLexicalCache(cfg.Cache.L3.MaxEntries),
 		Guardrails:     guardrailEngine,
 		Adapters:       registry,
+		Router:         depRouter,
 		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(priceTable),
 		Upstream:       dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: 60 * time.Second}),
