@@ -68,4 +68,4 @@ Two artifacts, versioned independently via their own `changelog/` folders, conne
 
 *(Living list — add here as they're discovered; promote anything that recurs 3+ times from `docs/agents/MEMORY.md` up to here.)*
 
-- None yet — pre-scaffolding.
+- None yet — nothing has recurred 3+ times in `docs/agents/MEMORY.md` to warrant promotion here.

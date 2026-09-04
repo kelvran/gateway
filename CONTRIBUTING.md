@@ -42,4 +42,4 @@ See `AGENTS.md` for the authoritative Go/Python conventions — this file doesn'
 
 ## CI Gates
 
-*(To be documented once CI actually exists — pre-scaffolding as of this writing. Expected shape, per `AGENTS.md`: `go test ./...` for `gateway`, `uv run pytest` for `evals`, `buf breaking` for any `api/` change, all required to pass before merge.)* Full test-pyramid strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`.
+Real and running (`.github/workflows/ci.yml`, green on every push to `main` — see `STATUS.md`): `golangci-lint run ./...` + `go build ./... && go test ./...` for `gateway`; `ruff check .` + `uv run pytest tests/` for `evals`; `buf lint`/`buf breaking` + generated-code drift check for any `api/` change. Mirrors root `make verify` exactly. Full test-pyramid strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`.

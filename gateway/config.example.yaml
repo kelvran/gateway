@@ -121,8 +121,10 @@ telemetry:
 #     contact_info: "warn"
 
 # Static per-model price table (USD per token), used by
-# internal/costaccounting for this pass's float64 cost calculation.
-# PRD.md's Decimal-precision requirement is a documented Phase 1 upgrade.
+# internal/costaccounting for Decimal-precision cost calculation — see
+# docs/rfcs/2026-09-02-decimal-cost-accounting.md. Each value below is
+# parsed from its original YAML source string via decimal.NewFromString,
+# never round-tripped through float64 first.
 price_table:
   gpt-4o:
     prompt_per_token: 0.0000025

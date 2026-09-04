@@ -14,7 +14,7 @@ Each of these already has a full argument written elsewhere — this list is the
 - **Embed, don't duplicate, until evidence says otherwise.** Cache lives inside Gateway until a real, measured trigger fires — never split a component out because it "would be cleaner." Argued in full: `docs/decisions/0002-cache-embedded-in-gateway.md`.
 - **Security-first defaults on the two highest-priority known threat classes.** Cross-tenant isolation and semantic-cache correctness (per `THREAT_MODEL.md`) are never traded away for a feature or a benchmark number.
 - **A versioned contract, never shared code, across the Go/Python boundary.** `api/` is the only crossing point. Argued in full: `docs/decisions/0001-monorepo-two-deployables.md`, `docs/decisions/0003-go-python-split.md`.
-- **Dated honesty over confident vagueness.** `SECURITY.md`'s "Known Limitations" section, `UPGRADE.md`/`DEPRECATED.md`'s "nothing yet" stubs, and this project's own pre-scaffolding status are all stated plainly rather than glossed over.
+- **Dated honesty over confident vagueness.** `SECURITY.md`'s "Known Limitations" section, `UPGRADE.md`/`DEPRECATED.md`'s "nothing yet" stubs, and every doc-vs-code gap found and corrected in this project's own history (`DECISIONS.md`, `docs/agents/LOGS.md`) are all stated plainly rather than glossed over.
 
 ## Decision Priority Framework
 

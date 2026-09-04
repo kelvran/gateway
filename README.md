@@ -2,7 +2,7 @@
 
 **A unified AI infrastructure platform: an LLM gateway with an embedded, risk-gated cache, and an agent-evaluation system built on adversarial verification — one architecture, not three integrations.**
 
-> **Status: pre-scaffolding.** This repository currently contains only documentation (`PRD.md`, `DESIGN.md`, `ARCHITECTURE.md`, and everything else linked below). No source code has been written yet. Everything in this README describing behavior, commands, or output is the intended shape, not a tested reality — check `docs/agents/LOGS.md` for the most recent real progress.
+> **Status: real, released, actively developed.** `gateway/v0.1.0` and `evals/v0.1.0` are tagged, released, and live at `github.com/kelvran/gateway` — CI runs green on every push. This is still a deliberately narrow v1 slice, not a feature-complete platform: `docs/rfcs/2026-09-02-initial-code-scaffolding.md` is the authoritative list of what's real vs. intentionally stubbed vs. not built at all, and `STATUS.md` is the current, continuously-updated snapshot of what's shipped since that tag. Check `docs/agents/LOGS.md` for the most recent real progress and `docs/users/USER_GUIDE.md` for what's genuinely implemented vs. still intended.
 
 ## Why Kelvran
 

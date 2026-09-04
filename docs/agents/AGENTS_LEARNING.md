@@ -2,7 +2,7 @@
 
 This document captures recurring mistakes, their root causes, and the prevention rules that came out of them — a mistake→fix→rule loop, distinct from `docs/agents/LOGS.md` (raw chronological session history), `docs/agents/MEMORY.md` (curated durable facts), and `DECISIONS.md`/`docs/decisions/` (architectural decisions and their rationale). If something belongs in one of those three, it belongs there and not here — this file is specifically for behavior corrections that recur or are likely to recur.
 
-Seeded empty. No entries are fabricated to fill space — an empty Evolution Log honestly reflects a pre-scaffolding project with no development mistakes yet to learn from.
+Seeded empty, and still empty as of 2026-09-04 despite real code and real bugs having shipped since — this file is specifically for *recurring* mistakes (see the header above), and no single mistake found and fixed so far (several are logged individually in `DECISIONS.md`/`docs/agents/LOGS.md`) has repeated. No entries are fabricated to fill space.
 
 ---
 
