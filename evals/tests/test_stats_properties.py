@@ -16,10 +16,12 @@ fuzzing's-sake.
 
 from __future__ import annotations
 
+import random
+
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from evals.stats import _EPSILON, wilson_interval
+from evals.stats import _EPSILON, two_checkpoint_early_stop, wilson_interval
 
 # Keep `total` in a range large enough to be a meaningful sample size but
 # small enough that float arithmetic near the tails stays well-conditioned
@@ -143,3 +145,110 @@ def test_interval_contains_the_point_estimate_up_to_the_documented_clamp(
     point_estimate = successes / total
     lower, upper = wilson_interval(successes, total, confidence=confidence)
     assert lower - _EPSILON <= point_estimate <= upper + _EPSILON
+
+
+# --- two_checkpoint_early_stop (see the RFC) ---
+
+
+@given(
+    trials_run=st.integers(min_value=0, max_value=50),
+    min_trials=st.integers(min_value=1, max_value=25),
+    max_trials_offset=st.integers(min_value=0, max_value=25),
+    successes_frac=st.floats(min_value=0.0, max_value=1.0, allow_nan=False),
+    baseline=st.floats(min_value=0.01, max_value=0.99, allow_nan=False),
+)
+@settings(max_examples=300)
+def test_never_stops_outside_the_two_checkpoints(
+    trials_run, min_trials, max_trials_offset, successes_frac, baseline
+):
+    # The single most important structural guarantee: no matter what the
+    # tally looks like, a decision can only ever fire at exactly
+    # trials_run == min_trials or == max_trials -- never in between, never
+    # before, never after. This is what makes the function safe to call
+    # after every single trial without the caller having to track which
+    # trial count is a real checkpoint.
+    max_trials = min_trials + max_trials_offset
+    successes = round(successes_frac * trials_run)
+    result = two_checkpoint_early_stop(
+        successes, trials_run, min_trials, max_trials, baseline
+    )
+    if trials_run not in (min_trials, max_trials) or trials_run == 0:
+        assert result is False
+
+
+def test_naive_continuous_recheck_would_have_failed_this_exact_test():
+    """Documents, executably, why this feature needed correcting before any
+    code shipped: the ORIGINALLY-FLOATED design (recompute wilson_interval
+    after every trial, stop at first exclusion of the baseline) inflates
+    the true false-positive rate far above the nominal level under the
+    null hypothesis (successes drawn at exactly the baseline rate) -- this
+    is the textbook optional-stopping/peeking problem
+    (docs/rfcs/2026-09-04-evals-rollout-cost-mitigation.md's Motivation).
+    Simulated here directly, not asserted from citation alone.
+    """
+    rng = random.Random(20260904)
+    baseline = 0.5
+    confidence = 0.95
+    n_trials = 200
+    n_simulations = 300
+
+    naive_false_stops = 0
+    for _ in range(n_simulations):
+        successes = 0
+        stopped = False
+        for trial in range(1, n_trials + 1):
+            if rng.random() < baseline:
+                successes += 1
+            # The naive, rejected design: a PLAIN (uncorrected)
+            # wilson_interval call, rechecked after every single trial.
+            lower, upper = wilson_interval(successes, trial, confidence=confidence)
+            if not (lower <= baseline <= upper):
+                stopped = True
+                break
+        if stopped:
+            naive_false_stops += 1
+
+    naive_false_stop_rate = naive_false_stops / n_simulations
+    # Under the null (true rate == baseline), a VALID 95%-confidence
+    # procedure should false-stop at roughly 5%. The naive continuous
+    # recheck should blow well past that -- this assertion is the
+    # concrete, executable proof of the Motivation section's claim, not a
+    # restatement of it.
+    assert naive_false_stop_rate > 0.20
+
+
+@given(baseline=st.floats(min_value=0.3, max_value=0.7, allow_nan=False))
+@settings(max_examples=5, deadline=None)
+def test_two_checkpoint_design_keeps_false_stop_rate_bounded_under_the_null(baseline):
+    """The regression test that proves the fix: under the null hypothesis
+    (successes drawn at exactly `baseline`), the two-checkpoint,
+    Bonferroni-corrected design's empirical false-stop rate stays at or
+    below the nominal (1 - confidence) level, unlike the naive design
+    proven unsound above.
+    """
+    confidence = 0.95
+    min_trials, max_trials = 20, 100
+    n_simulations = 400
+    rng = random.Random(hash(("two_checkpoint", baseline)) & 0xFFFFFFFF)
+
+    false_stops = 0
+    for _ in range(n_simulations):
+        successes = 0
+        stopped_early = False
+        for trial in range(1, max_trials + 1):
+            if rng.random() < baseline:
+                successes += 1
+            if two_checkpoint_early_stop(
+                successes, trial, min_trials, max_trials, baseline, confidence
+            ):
+                stopped_early = True
+                break
+        false_stops += 1 if stopped_early else 0
+
+    false_stop_rate = false_stops / n_simulations
+    # Nominal false-positive budget is (1 - confidence) = 0.05. Allow real
+    # Monte Carlo slack (this is a statistical claim, not an exact
+    # equality) -- the point is "not wildly inflated like the naive
+    # design," proven at roughly 3x the nominal budget as a generous
+    # ceiling, still far below the naive design's >20% measured above.
+    assert false_stop_rate < 0.15

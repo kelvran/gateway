@@ -29,8 +29,8 @@ from evals.judge.deterministic import exact_match, regex_match
 from evals.judge.llm_judge import JudgeResult, judge
 from evals.judge.providers import DEFAULT_JUDGE_MODEL, make_anthropic_call_model
 from evals.models import EvalCase, Run, Score
-from evals.results_store import append_runs, append_scores, load_scores
-from evals.rollout.scheduler import run_suite
+from evals.results_store import append_runs, append_scores, load_runs, load_scores
+from evals.rollout.scheduler import EarlyStopConfig, run_suite
 from evals.stats import wilson_interval
 
 
@@ -150,12 +150,6 @@ def _judge_case(
     if output is None:
         raise ValueError(f"case {case.id!r}: task_spec has no 'output' to score")
     return _judge_output(output, case.reference, call_model, case.id)
-
-
-def _judge_run(
-    case: EvalCase, run: Run, call_model: Callable[[str], Awaitable[str]]
-) -> JudgeResult | None:
-    return _judge_output(run.stdout.strip(), case.reference, call_model, case.id)
 
 
 def format_report(successes: int, total: int, confidence: float = 0.95) -> str:
@@ -317,33 +311,123 @@ def run_cmd(
     ),
 )
 @click.option("--confidence", default=0.95, show_default=True, type=float)
+@click.option(
+    "--use-cache",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip re-running an EvalCase whose (task_spec, harness_config) hash "
+        "already has a completed Run in --results. Never applied to "
+        'tier="drift_sample" cases. Off by default — existing invocations '
+        "without this flag behave exactly as today. See "
+        "docs/rfcs/2026-09-04-evals-rollout-cost-mitigation.md."
+    ),
+)
+@click.option(
+    "--early-stop-min-trials",
+    default=None,
+    type=int,
+    help=(
+        "First early-stop checkpoint: no stop decision for a repeated-"
+        "trial group (grouped by eval_case_id+revision) before this many "
+        "trials. Must be given together with --early-stop-max-trials and "
+        "--early-stop-baseline-pass-rate."
+    ),
+)
+@click.option(
+    "--early-stop-max-trials",
+    default=None,
+    type=int,
+    help="Second early-stop checkpoint: the trial count a group stops at regardless.",
+)
+@click.option(
+    "--early-stop-baseline-pass-rate",
+    default=None,
+    type=float,
+    help=(
+        "Baseline pass rate a group's running rate is checked against at "
+        "each checkpoint (Bonferroni-corrected — never a continuous "
+        "per-trial recheck; see the RFC above for why)."
+    ),
+)
 def rollout_cmd(
     suite_path: Path,
     results_path: Path,
     scores_path: Path,
     llm_judge: bool,
     confidence: float,
+    use_cache: bool,
+    early_stop_min_trials: int | None,
+    early_stop_max_trials: int | None,
+    early_stop_baseline_pass_rate: float | None,
 ) -> None:
     """Run a suite of EvalCases through the Rollout Scheduler and score them."""
-    cases = _load_cases(suite_path)
-    runs = asyncio.run(run_suite(cases))
-    append_runs(runs, results_path)
+    early_stop_params = (
+        early_stop_min_trials,
+        early_stop_max_trials,
+        early_stop_baseline_pass_rate,
+    )
+    early_stop_given = sum(p is not None for p in early_stop_params)
+    if early_stop_given not in (0, len(early_stop_params)):
+        raise click.UsageError(
+            "--early-stop-min-trials, --early-stop-max-trials, and "
+            "--early-stop-baseline-pass-rate must be given together."
+        )
 
+    cases = _load_cases(suite_path)
     call_model = make_anthropic_call_model() if llm_judge else None
+
+    cached_runs = None
+    if use_cache:
+        cached_runs = {
+            r.cache_key: r
+            for r in load_runs(results_path)
+            if r.status == "completed" and not r.from_cache and r.cache_key is not None
+        }
 
     successes = 0
     total = 0
     scores: list[Score] = []
-    for case, run in zip(cases, runs, strict=True):
+
+    async def _score_and_record(case: EvalCase, run: Run) -> bool:
+        """Grade one real trial exactly once, whether awaited from inside
+        `run_suite` (early-stop active, via `EarlyStopConfig.score_fn`) or
+        from the post-hoc loop below (early-stop inactive) — never both,
+        avoiding the double-billing risk a naive implementation would
+        introduce for --llm-judge. Never called for a status="skipped"
+        Run either way, so `total` here always matches a
+        genuinely-attempted trial count.
+
+        Deliberately async and calling `judge()` directly (never via
+        `_judge_run`/`_judge_output`, which drive their own internal
+        `asyncio.run()`): this function can be invoked from inside
+        `run_suite`'s own already-running event loop when early-stopping
+        is active, and a nested `asyncio.run()` call in that situation
+        raises "cannot be called from a running event loop" — a real bug
+        caught by this project's own test suite before shipping, not a
+        hypothetical.
+        """
+        nonlocal successes, total
         total += 1
         if run.status != "completed":
             click.echo(f"{case.id}: {run.status.upper()}")
-            continue
+            return False
         if llm_judge:
-            judge_result = _judge_run(case, run, call_model)
+            if case.reference is None:
+                raise click.ClickException(
+                    f"case {case.id!r}: LLM-judge scoring requires a reference"
+                )
+            try:
+                judge_result = await judge(
+                    output=run.stdout.strip(),
+                    reference=case.reference,
+                    call_model=call_model,
+                )
+            except Exception:
+                judge_result = None
             if judge_result is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
-                continue
+                return False
             passed = judge_result.passed
             scores.append(
                 Score(
@@ -374,6 +458,36 @@ def rollout_cmd(
         if passed:
             successes += 1
         click.echo(f"{case.id}: {'PASS' if passed else 'FAIL'}")
+        return passed
+
+    async def _run_and_score() -> list[Run]:
+        if early_stop_given:
+            early_stop = EarlyStopConfig(
+                min_trials=early_stop_min_trials,
+                max_trials=early_stop_max_trials,
+                baseline_pass_rate=early_stop_baseline_pass_rate,
+                score_fn=_score_and_record,
+                confidence=confidence,
+            )
+            runs = await run_suite(
+                cases, cached_runs=cached_runs, early_stop=early_stop
+            )
+            # Scoring already happened inside run_suite via score_fn above
+            # — this loop is purely for operator visibility into skipped
+            # trials, and deliberately never touches successes/total (a
+            # "skipped" Run was never attempted, so it must never affect
+            # either).
+            for case, run in zip(cases, runs, strict=True):
+                if run.status == "skipped":
+                    click.echo(f"{case.id}: SKIPPED")
+        else:
+            runs = await run_suite(cases, cached_runs=cached_runs)
+            for case, run in zip(cases, runs, strict=True):
+                await _score_and_record(case, run)
+        return runs
+
+    runs = asyncio.run(_run_and_score())
+    append_runs(runs, results_path)
 
     append_scores(scores, scores_path)
     click.echo(format_report(successes, total, confidence=confidence))

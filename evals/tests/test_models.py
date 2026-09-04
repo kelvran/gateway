@@ -126,6 +126,45 @@ def test_run_instances_are_frozen():
         run.status = "error"  # type: ignore[misc]
 
 
+def test_run_cache_fields_default_to_falsy_none():
+    run = _make_run()
+    assert run.cache_key is None
+    assert run.from_cache is False
+    assert run.cache_source_run_id is None
+
+
+def test_run_skip_reason_defaults_to_none():
+    run = _make_run()
+    assert run.skip_reason is None
+
+
+def test_run_status_accepts_skipped():
+    run = _make_run(status="skipped", skip_reason="early-stopped")
+    assert run.status == "skipped"
+    assert run.skip_reason == "early-stopped"
+
+
+def test_old_shape_run_json_line_still_validates_with_new_fields_defaulted():
+    """The load-bearing backward-compat proof for
+    docs/rfcs/2026-09-04-evals-rollout-cost-mitigation.md: a `Run` JSONL
+    line written before cache_key/from_cache/cache_source_run_id/
+    skip_reason existed must still `model_validate_json` cleanly, with
+    every new field resolving to its declared default — never a
+    validation error, never a silently-wrong value.
+    """
+    old_shape_json = (
+        '{"id": "run-001", "eval_case_id": "case-001", "eval_case_revision": 1, '
+        '"harness_config": {"image": "alpine:3.20", "command": ["echo", "hi"]}, '
+        '"status": "completed", "exit_code": 0, "stdout": "hi\\n", "stderr": "", '
+        '"latency_ms": 42.0, "cost_usd": null, "error": null}'
+    )
+    run = Run.model_validate_json(old_shape_json)
+    assert run.skip_reason is None
+    assert run.cache_key is None
+    assert run.from_cache is False
+    assert run.cache_source_run_id is None
+
+
 def _make_score(**overrides) -> Score:
     defaults = {
         "eval_case_id": "case-001",

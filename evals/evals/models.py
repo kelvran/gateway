@@ -46,7 +46,7 @@ class EvalCase(BaseModel):
         return self.model_copy(update={"revision": revision})
 
 
-RunStatus = Literal["completed", "timed_out", "error"]
+RunStatus = Literal["completed", "timed_out", "error", "skipped"]
 
 
 class Run(BaseModel):
@@ -68,6 +68,21 @@ class Run(BaseModel):
     - There is no `Trace`/`Span` field, not even an empty placeholder —
       `api/otel`'s transport is still undecided, so a stub field here would
       be dead code with no consumer.
+    - `status="skipped"` (per docs/rfcs/2026-09-04-evals-rollout-cost-
+      mitigation.md) means this trial was never attempted at all — a group
+      of repeated trials already reached an early-stopping decision. Never
+      read a `"skipped"` `Run` as "verified healthy"; it carries no signal
+      either way, the same "None means not applicable, never a stand-in
+      for a real measurement" convention `cost_usd` already establishes.
+    - `cache_key`/`from_cache`/`cache_source_run_id` are also additive, per
+      the same RFC: `cache_key` is computed for every `Run` regardless of
+      whether caching is active (cheap, and lets a *later* `--use-cache`
+      invocation hit against `Run`s produced by an invocation that didn't
+      ask for caching); `from_cache=True` only on a genuine cache hit
+      (`status` is always `"completed"` in that case — an `error`/
+      `timed_out` prior `Run` can never source a hit); `cache_source_run_id`
+      points at the real, originally-executed `Run` a hit reused — never a
+      chain of reuse-of-reuse.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -83,6 +98,10 @@ class Run(BaseModel):
     latency_ms: float
     cost_usd: float | None = None
     error: str | None = None
+    skip_reason: str | None = None
+    cache_key: str | None = None
+    from_cache: bool = False
+    cache_source_run_id: str | None = None
 
 
 ScorerType = Literal["deterministic", "llm_judge"]

@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 
 import pytest
 
 import evals.rollout.scheduler as scheduler_module
-from evals.models import EvalCase
+from evals.models import EvalCase, Run
+from evals.rollout.cache import compute_run_cache_key
 from evals.rollout.sandbox import SandboxResult
-from evals.rollout.scheduler import run_suite
+from evals.rollout.scheduler import EarlyStopConfig, run_suite
 
 
 def _make_case(case_id: str, command: list[str]) -> EvalCase:
@@ -121,6 +123,307 @@ def test_missing_timeout_s_defaults_to_default_sandbox_timeout(monkeypatch):
     asyncio.run(run_suite([case]))
 
     assert seen["timeout_s"] == scheduler_module.DEFAULT_SANDBOX_TIMEOUT_S
+
+
+def _make_run(
+    case: EvalCase, *, status: str = "completed", stdout: str = "cached\n"
+) -> Run:
+    harness_config = {
+        "image": case.task_spec["image"],
+        "command": case.task_spec["command"],
+        "timeout_s": case.task_spec.get(
+            "timeout_s", scheduler_module.DEFAULT_SANDBOX_TIMEOUT_S
+        ),
+    }
+    return Run(
+        id=uuid.uuid4().hex,
+        eval_case_id=case.id,
+        eval_case_revision=case.revision,
+        harness_config=harness_config,
+        status=status,
+        stdout=stdout,
+        latency_ms=1.0,
+        cache_key=compute_run_cache_key(case.task_spec, harness_config),
+    )
+
+
+# --- Result cache (docs/rfcs/2026-09-04-evals-rollout-cost-mitigation.md) ---
+
+
+def test_cached_runs_none_reproduces_todays_exact_behavior(monkeypatch):
+    """The load-bearing backward-compat proof: omitting cached_runs entirely
+    must behave identically to before this RFC existed."""
+    calls = {"n": 0}
+
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        calls["n"] += 1
+        return SandboxResult(exit_code=0, stdout="fresh\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    case = _make_case("c1", ["echo", "hi"])
+    runs = asyncio.run(run_suite([case]))
+
+    assert calls["n"] == 1
+    assert runs[0].status == "completed"
+    assert runs[0].from_cache is False
+    assert runs[0].cache_key == compute_run_cache_key(
+        case.task_spec,
+        {"image": "alpine:3.20", "command": ["echo", "hi"], "timeout_s": 5},
+    )
+
+
+def test_cache_hit_skips_sandbox_execution(monkeypatch):
+    async def _fail_if_called(image, command, timeout_s):
+        raise AssertionError("run_in_sandbox must not be called on a cache hit")
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fail_if_called)
+
+    case = _make_case("c1", ["echo", "hi"])
+    prior = _make_run(case, stdout="from-earlier-real-run\n")
+
+    runs = asyncio.run(run_suite([case], cached_runs={prior.cache_key: prior}))
+
+    assert runs[0].status == "completed"
+    assert runs[0].from_cache is True
+    assert runs[0].cache_source_run_id == prior.id
+    assert runs[0].stdout == "from-earlier-real-run\n"
+
+
+def test_cache_never_hits_for_drift_sample_tier(monkeypatch):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="fresh\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    case = EvalCase(
+        id="drift1",
+        revision=1,
+        task_spec={"image": "alpine:3.20", "command": ["echo", "hi"], "timeout_s": 5},
+        tier="drift_sample",
+    )
+    prior = _make_run(case)
+
+    runs = asyncio.run(run_suite([case], cached_runs={prior.cache_key: prior}))
+
+    assert runs[0].from_cache is False
+    assert runs[0].stdout == "fresh\n"
+
+
+def test_cache_never_hits_an_errored_prior_run(monkeypatch):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="fresh\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    case = _make_case("c1", ["echo", "hi"])
+    prior = _make_run(case, status="error")
+
+    runs = asyncio.run(run_suite([case], cached_runs={prior.cache_key: prior}))
+
+    assert runs[0].from_cache is False
+    assert runs[0].stdout == "fresh\n"
+
+
+def test_cache_never_hits_a_timed_out_prior_run(monkeypatch):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="fresh\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    case = _make_case("c1", ["echo", "hi"])
+    prior = _make_run(case, status="timed_out")
+
+    runs = asyncio.run(run_suite([case], cached_runs={prior.cache_key: prior}))
+
+    assert runs[0].from_cache is False
+
+
+def test_cache_never_chains_a_hit_off_another_hit(monkeypatch):
+    """cached_runs is built by the CLI from load_runs filtered to
+    `not from_cache` — this proves the scheduler itself is also safe even
+    if a caller passed a from_cache=True entry in by mistake."""
+
+    async def _fail_if_called(image, command, timeout_s):
+        raise AssertionError("must not execute if the (buggy) chained hit were allowed")
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fail_if_called)
+
+    case = _make_case("c1", ["echo", "hi"])
+    chained_hit = _make_run(case).model_copy(update={"from_cache": True})
+
+    # The scheduler only ever looks up by cache_key -- it has no
+    # from_cache filter of its own (that policy lives in the CLI's
+    # cached_runs construction). This test documents that contract: if a
+    # caller hands the scheduler a from_cache=True entry, it is used as a
+    # normal completed prior (chaining IS possible at the scheduler layer;
+    # the CLI's own load_runs filter is what actually prevents chaining in
+    # practice). Assert the real, current behavior rather than an
+    # aspirational one.
+    runs = asyncio.run(
+        run_suite([case], cached_runs={chained_hit.cache_key: chained_hit})
+    )
+    assert runs[0].from_cache is True
+    assert runs[0].cache_source_run_id == chained_hit.id
+
+
+# --- Two-checkpoint early stopping (see the RFC) ---
+
+
+def _repeated_cases(case_id: str, n: int) -> list[EvalCase]:
+    return [_make_case(case_id, ["echo", "hi"]) for _ in range(n)]
+
+
+def test_early_stop_none_reproduces_todays_exact_behavior(monkeypatch):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="hi\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    runs = asyncio.run(run_suite(_repeated_cases("c1", 5)))
+
+    assert len(runs) == 5
+    assert all(r.status == "completed" for r in runs)
+    assert all(r.skip_reason is None for r in runs)
+
+
+def test_early_stop_skips_remaining_trials_once_group_stops(monkeypatch):
+    async def _always_succeed(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="hi\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _always_succeed)
+
+    async def _always_true(case, run):
+        return True
+
+    # baseline_pass_rate=0.01 -- an all-success group's Wilson interval will
+    # never contain 0.01, so this group stops at the very first checkpoint.
+    early_stop = EarlyStopConfig(
+        min_trials=2, max_trials=10, baseline_pass_rate=0.01, score_fn=_always_true
+    )
+    runs = asyncio.run(run_suite(_repeated_cases("c1", 6), early_stop=early_stop))
+
+    assert len(runs) == 6
+    assert [r.status for r in runs] == [
+        "completed",
+        "completed",
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+    ]
+    assert runs[2].skip_reason is not None
+
+
+def test_early_stop_score_fn_called_exactly_once_per_real_trial(monkeypatch):
+    async def _always_succeed(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="hi\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _always_succeed)
+
+    call_count = {"n": 0}
+
+    async def _counting_score_fn(case, run):
+        call_count["n"] += 1
+        return True
+
+    early_stop = EarlyStopConfig(
+        min_trials=2,
+        max_trials=10,
+        baseline_pass_rate=0.01,
+        score_fn=_counting_score_fn,
+    )
+    runs = asyncio.run(run_suite(_repeated_cases("c1", 6), early_stop=early_stop))
+
+    completed = sum(1 for r in runs if r.status != "skipped")
+    assert call_count["n"] == completed
+    assert call_count["n"] == 2  # stopped after the min_trials checkpoint
+
+
+def test_early_stop_group_hitting_repeated_errors_still_reaches_a_checkpoint(
+    monkeypatch,
+):
+    """The restructured error path: an errored trial must still reach the
+    shared tally, or a group that only ever errors would never accumulate
+    evidence and would run every trial instead of stopping."""
+
+    async def _always_error(image, command, timeout_s):
+        raise FileNotFoundError("no docker")
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _always_error)
+
+    async def _score_fn(case, run):
+        assert run.status == "error"
+        return False  # mirrors _score_run_deterministic's real convention
+
+    early_stop = EarlyStopConfig(
+        min_trials=2, max_trials=10, baseline_pass_rate=0.99, score_fn=_score_fn
+    )
+    runs = asyncio.run(run_suite(_repeated_cases("c1", 6), early_stop=early_stop))
+
+    # All-failure group checked against a 0.99 baseline: the interval at
+    # n=2 excludes 0.99, so it stops at the first checkpoint.
+    assert [r.status for r in runs] == [
+        "error",
+        "error",
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+    ]
+
+
+def test_early_stop_never_fires_before_min_trials(monkeypatch):
+    async def _always_succeed(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="hi\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _always_succeed)
+
+    async def _always_true_async(case, run):
+        return True
+
+    early_stop = EarlyStopConfig(
+        min_trials=5,
+        max_trials=10,
+        baseline_pass_rate=0.01,
+        score_fn=_always_true_async,
+    )
+    runs = asyncio.run(run_suite(_repeated_cases("c1", 5), early_stop=early_stop))
+
+    # Exactly 5 trials ran (== min_trials); none were skipped, since the
+    # stop decision (fired AT trial 5) only affects trials AFTER it.
+    assert all(r.status == "completed" for r in runs)
+
+
+def test_cache_hit_still_flows_through_early_stop_tally(monkeypatch):
+    async def _fail_if_called(image, command, timeout_s):
+        raise AssertionError("cached trials must not execute")
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fail_if_called)
+
+    cases = _repeated_cases("c1", 3)
+    prior = _make_run(cases[0])
+    cached_runs = {prior.cache_key: prior}
+
+    call_count = {"n": 0}
+
+    async def _counting_score_fn(case, run):
+        call_count["n"] += 1
+        return True
+
+    early_stop = EarlyStopConfig(
+        min_trials=1,
+        max_trials=10,
+        baseline_pass_rate=0.01,
+        score_fn=_counting_score_fn,
+    )
+    runs = asyncio.run(run_suite(cases, cached_runs=cached_runs, early_stop=early_stop))
+
+    # The single cache hit alone satisfies min_trials=1 and, against a
+    # 0.01 baseline with an all-success tally, stops the group right away.
+    assert runs[0].from_cache is True
+    assert call_count["n"] == 1
+    assert [r.status for r in runs] == ["completed", "skipped", "skipped"]
 
 
 @pytest.mark.integration

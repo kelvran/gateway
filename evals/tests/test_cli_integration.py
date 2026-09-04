@@ -579,6 +579,222 @@ def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
     ]
 
 
+def _repeated_trial_suite_path(tmp_path, n: int, case_id: str = "repeated-case"):
+    suite_path = tmp_path / "repeated_suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": case_id,
+                    "revision": 1,
+                    "task_spec": {
+                        "image": "alpine:3.20",
+                        "command": ["echo", "hello-rollout"],
+                        "timeout_s": 30,
+                        "match": "exact",
+                    },
+                    "reference": "hello-rollout",
+                    "tier": "golden",
+                }
+                for _ in range(n)
+            ]
+        )
+    )
+    return suite_path
+
+
+def test_rollout_use_cache_skips_second_invocations_sandbox_calls(
+    tmp_path, monkeypatch
+):
+    call_count = {"n": 0}
+
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        call_count["n"] += 1
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    args = [
+        "rollout",
+        "--suite",
+        "tests/fixtures/rollout_example.json",
+        "--results",
+        str(results_path),
+        "--scores",
+        str(scores_path),
+        "--use-cache",
+    ]
+    runner = CliRunner()
+
+    first = runner.invoke(main, args)
+    assert first.exit_code == 0, first.output
+    assert call_count["n"] == 2
+
+    second = runner.invoke(main, args)
+    assert second.exit_code == 0, second.output
+    # Both real cases hit the cache on the second invocation -- no new
+    # sandbox calls at all.
+    assert call_count["n"] == 2
+
+    persisted_runs = load_runs(results_path)
+    assert len(persisted_runs) == 4
+    assert persisted_runs[2].from_cache is True
+    assert persisted_runs[3].from_cache is True
+
+
+def test_rollout_without_use_cache_reruns_everything_every_time(tmp_path, monkeypatch):
+    call_count = {"n": 0}
+
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        call_count["n"] += 1
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    args = [
+        "rollout",
+        "--suite",
+        "tests/fixtures/rollout_example.json",
+        "--results",
+        str(results_path),
+        "--scores",
+        str(scores_path),
+    ]
+    runner = CliRunner()
+    runner.invoke(main, args)
+    runner.invoke(main, args)
+
+    assert call_count["n"] == 4
+
+
+def test_rollout_early_stop_flags_must_be_given_together(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    results_path = tmp_path / "results.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "rollout",
+            "--suite",
+            "tests/fixtures/rollout_example.json",
+            "--results",
+            str(results_path),
+            "--scores",
+            str(scores_path),
+            "--early-stop-min-trials",
+            "2",
+            # deliberately omitting the other two flags
+        ],
+    )
+    assert result.exit_code != 0
+    assert "must be given together" in result.output
+
+
+def test_rollout_early_stop_skips_remaining_trials_and_total_excludes_them(
+    tmp_path, monkeypatch
+):
+    async def _always_succeed(image, command, timeout_s):
+        return SandboxResult(
+            exit_code=0, stdout="hello-rollout\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _always_succeed)
+
+    suite_path = _repeated_trial_suite_path(tmp_path, n=6)
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "rollout",
+            "--suite",
+            str(suite_path),
+            "--results",
+            str(results_path),
+            "--scores",
+            str(scores_path),
+            "--early-stop-min-trials",
+            "2",
+            "--early-stop-max-trials",
+            "10",
+            "--early-stop-baseline-pass-rate",
+            "0.01",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("SKIPPED") == 4
+    # total must reflect only the 2 real trials that actually ran -- the 4
+    # never-attempted skipped trials must not count in the denominator.
+    assert "(2/2)" in result.output
+
+    persisted_runs = load_runs(results_path)
+    assert len(persisted_runs) == 6
+    assert sum(1 for r in persisted_runs if r.status == "skipped") == 4
+
+    persisted_scores = load_scores(scores_path)
+    assert len(persisted_scores) == 2  # never scored for skipped runs
+
+
+def test_rollout_early_stop_with_llm_judge_never_double_calls_judge(
+    tmp_path, monkeypatch
+):
+    async def _always_succeed(image, command, timeout_s):
+        return SandboxResult(
+            exit_code=0, stdout="hello-rollout\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _always_succeed)
+
+    judge_call_count = {"n": 0}
+
+    async def fake_call_model(prompt: str) -> str:
+        judge_call_count["n"] += 1
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    suite_path = _repeated_trial_suite_path(tmp_path, n=6)
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "rollout",
+            "--suite",
+            str(suite_path),
+            "--results",
+            str(results_path),
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--early-stop-min-trials",
+            "2",
+            "--early-stop-max-trials",
+            "10",
+            "--early-stop-baseline-pass-rate",
+            "0.01",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # Exactly 2 real (non-skipped) trials ran before the group stopped --
+    # the judge must be called exactly twice, never 4 times (double-billing).
+    assert judge_call_count["n"] == 2
+
+
 def test_rollout_missing_suite_file_fails_with_nonzero_exit():
     runner = CliRunner()
     result = runner.invoke(
