@@ -76,7 +76,7 @@ Previously: Tier 1, first item — real `--read-only`/`--tmpfs` sandbox hardenin
 
 ## Next Action
 
-The go-arch-lint wiring is ready to commit + push + watch CI. Continuing Tier 1: `.importlinter` CI wiring for evals, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The go-arch-lint wiring is closed: committed (`cefcc09`), pushed, confirmed green on CI run `33920900881` (the new step passed in the real pipeline too, not just locally). Continuing Tier 1: `.importlinter` CI wiring for evals, `otelhttp` middleware, a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
