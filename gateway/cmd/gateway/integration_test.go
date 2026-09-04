@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/shopspring/decimal"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
@@ -458,47 +459,6 @@ func newMockAnthropicStreamingUpstream(t *testing.T) (*httptest.Server, *atomic.
 	return srv, &calls
 }
 
-// newIntegrationServerWithProvider builds the same real buildPipeline +
-// chatCompletionsHandler wiring as newIntegrationServer, but for a single
-// deployment of an arbitrary provider — used to drive the real HTTP error
-// path for a provider that does not implement streaming (gemini, in the
-// current scaffolding). BaseURL is never dialed: an unsupported-streaming
-// provider must fail before any upstream call is attempted.
-func newIntegrationServerWithProvider(t *testing.T, gatewayKey, upstreamKeyEnvVar, provider, model string) *httptest.Server {
-	t.Helper()
-	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
-
-	cfg := &controlplane.Config{
-		ListenAddr: ":0",
-		VirtualKeys: []controlplane.VirtualKeyConfig{
-			{Name: "test-key", KeyHash: testKeyHash(gatewayKey), RateLimitBurst: 100, RateLimitRefill: 100},
-		},
-		Deployments: []controlplane.DeploymentConfig{
-			{
-				Name:          "provider-primary",
-				Model:         model,
-				Provider:      provider,
-				UpstreamModel: model,
-				BaseURL:       "http://unused",
-				APIKeyEnv:     upstreamKeyEnvVar,
-			},
-		},
-	}
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	pipeline, err := buildPipeline(cfg, logger)
-	if err != nil {
-		t.Fatalf("buildPipeline: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
-
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 // newIntegrationServerAnthropic builds the same real buildPipeline +
 // chatCompletionsHandler wiring as newIntegrationServer, but for a single
 // "anthropic" deployment instead of "openai" — used to drive a real,
@@ -704,37 +664,6 @@ func TestIntegrationStreamingCacheHitServesFakeStreamWithoutSecondUpstreamCall(t
 	}
 	if !strings.HasSuffix(strings.TrimSpace(body2), "data: [DONE]") {
 		t.Errorf("fake-streamed cache-hit body does not end with [DONE] sentinel: %s", body2)
-	}
-}
-
-// TestIntegrationStreamingUnsupportedProviderReturnsBadRequest drives the
-// real HTTP error path for a provider whose adapter does not implement
-// streaming.StreamingAdapter: the request must fail with 400 before any
-// upstream call is attempted, exactly like dataplane's own
-// TestHandleChatCompletionStreamUnsupportedProviderReturnsTypedError proves
-// at the package level — this proves the same thing through the real HTTP
-// server and its writeErrorResponse status-code mapping. Uses "bedrock" —
-// per docs/rfcs/2026-09-04-gemini-adapter.md, gemini is now a real
-// streaming adapter and is deliberately no longer this test's example.
-func TestIntegrationStreamingUnsupportedProviderReturnsBadRequest(t *testing.T) {
-	gw := newIntegrationServerWithProvider(t, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_F", "bedrock", "claude-bedrock")
-
-	reqBody := `{"model":"claude-bedrock","stream":true,"messages":[{"role":"user","content":"hi"}]}`
-	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer test-gateway-key")
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusBadRequest, body)
 	}
 }
 
@@ -1802,6 +1731,140 @@ func TestIntegrationBedrockRequestSucceeds(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Errorf("mock bedrock upstream calls = %d, want exactly 1", got)
+	}
+}
+
+// bedrockStreamWireEvent and encodeBedrockStreamWireFixture mirror
+// dataplane's own bedrockWireEvent/encodeBedrockWireFixture helpers,
+// duplicated here rather than shared across packages since cmd/gateway
+// and internal/gateway/dataplane are both internal, test-only-scoped, and
+// this is the only place either package needs to build one of these
+// fixtures from outside dataplane's own tests.
+func bedrockStreamWireEvent(eventType, payload string) eventstream.Message {
+	return eventstream.Message{
+		Headers: eventstream.Headers{
+			{Name: ":message-type", Value: eventstream.StringValue("event")},
+			{Name: ":event-type", Value: eventstream.StringValue(eventType)},
+		},
+		Payload: []byte(payload),
+	}
+}
+
+func encodeBedrockStreamWireFixture(t *testing.T, msgs []eventstream.Message) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	enc := eventstream.NewEncoder()
+	for _, m := range msgs {
+		if err := enc.Encode(&buf, m); err != nil {
+			t.Fatalf("encoding fixture event: %v", err)
+		}
+	}
+	return buf.Bytes()
+}
+
+// newMockBedrockStreamingUpstream asserts the real, path-SEGMENT-derived
+// /converse-stream URL and the real
+// Accept: application/vnd.amazon.eventstream header actually reached the
+// upstream call -- the same load-bearing proof
+// newMockGeminiStreamingUpstream provides for Gemini's own (colon-suffix)
+// URL derivation -- then responds with a genuine binary
+// application/vnd.amazon.eventstream body built via eventstream.Encoder.
+func newMockBedrockStreamingUpstream(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var calls atomic.Int64
+
+	wire := encodeBedrockStreamWireFixture(t, []eventstream.Message{
+		bedrockStreamWireEvent("messageStart", `{"role":"assistant"}`),
+		bedrockStreamWireEvent("contentBlockStart", `{"contentBlockIndex":0,"start":{}}`),
+		bedrockStreamWireEvent("contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"streamed "}}`),
+		bedrockStreamWireEvent("contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"bedrock"}}`),
+		bedrockStreamWireEvent("contentBlockStop", `{"contentBlockIndex":0}`),
+		bedrockStreamWireEvent("messageStop", `{"stopReason":"end_turn"}`),
+		bedrockStreamWireEvent("metadata", `{"usage":{"inputTokens":6,"outputTokens":2,"totalTokens":8}}`),
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+
+		if !strings.HasSuffix(r.URL.Path, "/converse-stream") {
+			t.Errorf("streaming request path = %q, want it to end in %q", r.URL.Path, "/converse-stream")
+		}
+		if got := r.Header.Get("Accept"); got != "application/vnd.amazon.eventstream" {
+			t.Errorf("Accept header = %q, want %q", got, "application/vnd.amazon.eventstream")
+		}
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256") {
+			t.Errorf("Authorization header = %q, want it to start with AWS4-HMAC-SHA256", r.Header.Get("Authorization"))
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "reading request body", http.StatusBadRequest)
+			return
+		}
+		var req bedrock.Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid upstream request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(wire)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// TestIntegrationStreamingRequestSucceedsBedrock drives a real end-to-end
+// binary ConverseStream round trip against the bedrock adapter's own
+// StreamDecoder and streamDeploymentBedrock -- via
+// newMockBedrockStreamingUpstream's own assertions, proves the real
+// /converse-stream URL derivation and the eventstream Accept header
+// actually reached the upstream, not just dep.BaseURL reused unmodified.
+func TestIntegrationStreamingRequestSucceedsBedrock(t *testing.T) {
+	upstream, calls := newMockBedrockStreamingUpstream(t)
+	gw := newIntegrationServerBedrock(t, upstream.URL, "test-gateway-key",
+		"KELVRAN_INTEGRATION_TEST_BEDROCK_STREAM_ACCESS_KEY", "KELVRAN_INTEGRATION_TEST_BEDROCK_STREAM_SECRET_KEY")
+
+	reqBody := `{"model":"anthropic.claude-3-5-sonnet-20241022-v2:0","stream":true,"messages":[{"role":"user","content":"integration streaming hello, bedrock"}]}`
+	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer test-gateway-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want %q", ct, "text/event-stream")
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading response body: %v", err)
+	}
+	bodyStr := string(body)
+
+	if !strings.Contains(bodyStr, `"content":"streamed "`) || !strings.Contains(bodyStr, `"content":"bedrock"`) {
+		t.Errorf("SSE body missing expected content deltas: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"finish_reason":"stop"`) {
+		t.Errorf("SSE body missing finish_reason: %s", bodyStr)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(bodyStr), "data: [DONE]") {
+		t.Errorf("SSE body does not end with the gateway's own [DONE] sentinel: %s", bodyStr)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mock bedrock streaming upstream calls = %d, want exactly 1", got)
 	}
 }
 

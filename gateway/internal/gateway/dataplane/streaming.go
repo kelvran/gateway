@@ -14,9 +14,11 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/shopspring/decimal"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/bedrock"
 	"github.com/kelvran/gateway/gateway/internal/cache"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/streaming"
@@ -25,9 +27,13 @@ import (
 
 // ErrStreamingNotSupported is returned when a request asks to stream but
 // the resolved deployment's provider adapter does not implement
-// streaming.StreamingAdapter (Gemini, Bedrock, and openaicompat, in the
-// current scaffolding) — never silently falls back to buffering, per
-// docs/rfcs/2026-09-02-streaming-support.md's explicit scope boundary.
+// streaming.StreamingAdapter -- every provider currently registered in
+// cmd/gateway/main.go (openai, anthropic, gemini, openaicompat, and
+// bedrock via its own binary-framed streamDeploymentBedrock path) does, so
+// this only fires for a future provider added without a streaming
+// implementation, or a misconfigured registry entry for "bedrock" whose
+// value isn't *bedrock.Adapter. Never silently falls back to buffering,
+// per docs/rfcs/2026-09-02-streaming-support.md's explicit scope boundary.
 var ErrStreamingNotSupported = errors.New("dataplane: streaming not supported for this provider")
 
 // ErrStreamingNotConfigured is returned when Config.UpstreamStream was left
@@ -242,6 +248,10 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 // *firstChunkSent is set to true the moment any chunk is successfully
 // written to the client, so the caller can enforce the fallback rule above.
 func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool) (adapter.ChatResponse, error) {
+	if dep.Provider == "bedrock" {
+		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent)
+	}
+
 	a, ok := p.adapters[dep.Provider]
 	if !ok {
 		return adapter.ChatResponse{}, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
@@ -299,6 +309,91 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		}
 	}
 
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage)
+}
+
+// streamDeploymentBedrock is streamDeployment's Bedrock-specific sibling:
+// Bedrock's ConverseStream wire format is binary
+// (application/vnd.amazon.eventstream), not the SSE framing every other
+// streaming provider uses, so it cannot be driven by streamDeployment's
+// streaming.Reader loop above -- see
+// docs/rfcs/2026-09-04-bedrock-converse-stream.md's Detailed Design for why
+// a shared interface across both framings isn't warranted for a single
+// binary-framed implementor. Everything after decoding (accumulation,
+// client tee, final-response assembly) is identical, via the shared
+// finishStreamedResponse.
+func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool) (adapter.ChatResponse, error) {
+	a, ok := p.adapters[dep.Provider]
+	if !ok {
+		return adapter.ChatResponse{}, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
+	}
+	bedrockAdapter, ok := a.(*bedrock.Adapter)
+	if !ok {
+		return adapter.ChatResponse{}, fmt.Errorf("%w: provider %q", ErrStreamingNotSupported, dep.Provider)
+	}
+
+	upstreamReq := req
+	upstreamReq.Model = dep.UpstreamModel
+	upstreamReq.Stream = true
+
+	providerReq, err := bedrockAdapter.ToProvider(upstreamReq)
+	if err != nil {
+		return adapter.ChatResponse{}, fmt.Errorf("adapter %q ToProvider: %w", dep.Provider, err)
+	}
+
+	body, err := p.upstreamStream(ctx, dep, providerReq)
+	if err != nil {
+		return adapter.ChatResponse{}, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
+	}
+	defer func() { _ = body.Close() }()
+
+	decoder := bedrock.NewStreamDecoder()
+	eventDecoder := eventstream.NewDecoder()
+	acc := newStreamAccumulator()
+	var finalUsage *adapter.Usage
+
+	// payloadBuf is reused across Decode calls per eventstream.Decoder's own
+	// doc comment -- safe because each message's Payload is fully consumed
+	// (unmarshaled by decoder.Decode, below) before the next Decode call
+	// overwrites the same backing array.
+	var payloadBuf []byte
+	for {
+		msg, readErr := eventDecoder.Decode(body, payloadBuf)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return adapter.ChatResponse{}, fmt.Errorf("reading binary event stream from deployment %q: %w", dep.Name, readErr)
+		}
+		payloadBuf = msg.Payload
+
+		chunks, usage, decErr := decoder.Decode(msg)
+		if decErr != nil {
+			return adapter.ChatResponse{}, fmt.Errorf("decoding stream from deployment %q: %w", dep.Name, decErr)
+		}
+		if usage != nil {
+			finalUsage = usage
+		}
+		for _, c := range chunks {
+			acc.add(c)
+			if writeErr := sw.WriteChunk(c); writeErr != nil {
+				return adapter.ChatResponse{}, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
+			}
+			*firstChunkSent = true
+		}
+	}
+
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage)
+}
+
+// finishStreamedResponse builds the final ChatResponse from an
+// accumulator and finalUsage, runs the audit-only post-call guardrail
+// check, and writes the client-facing done sentinel — the provider-
+// agnostic tail shared by streamDeployment (SSE-framed providers) and
+// streamDeploymentBedrock (binary-framed) per
+// docs/rfcs/2026-09-04-bedrock-converse-stream.md: none of this logic
+// depends on how chunks actually arrived.
+func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage) (adapter.ChatResponse, error) {
 	var usage adapter.Usage
 	if finalUsage != nil {
 		usage = *finalUsage

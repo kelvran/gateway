@@ -968,8 +968,8 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 
 // streamUpstreamURL returns the URL to use for a streaming upstream call,
 // deriving it from dep.BaseURL for providers whose streaming endpoint is a
-// genuinely different URL (Gemini) rather than a body-flag difference
-// (every other provider today) — per
+// genuinely different URL (Gemini, Bedrock) rather than a body-flag
+// difference (every other provider today) — per
 // docs/rfcs/2026-09-04-gemini-adapter.md's "real architectural gap"
 // finding: Gemini's REST API uses a distinct URL method suffix
 // (:generateContent vs :streamGenerateContent?alt=sse), confirmed directly
@@ -977,22 +977,35 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 // like OpenAI/Anthropic/openaicompat. Operators configure base_url as the
 // buffered (:generateContent) endpoint; the streaming sibling is derived
 // here, never separately configured.
+//
+// Bedrock's derivation is a real path-SEGMENT swap (/converse ->
+// /converse-stream), confirmed directly against aws-sdk-go-v2's own
+// serializers.go source — genuinely different in shape from Gemini's
+// colon-suffix swap, not a copy-paste of it, per
+// docs/rfcs/2026-09-04-bedrock-converse-stream.md.
 func streamUpstreamURL(dep Deployment) (string, error) {
-	if dep.Provider != "gemini" {
+	switch dep.Provider {
+	case "gemini":
+		u, err := url.Parse(dep.BaseURL)
+		if err != nil {
+			return "", fmt.Errorf("parsing gemini base_url %q: %w", dep.BaseURL, err)
+		}
+		if !strings.HasSuffix(u.Path, ":generateContent") {
+			return "", fmt.Errorf("gemini base_url %q must end in %q for streaming URL derivation", dep.BaseURL, ":generateContent")
+		}
+		u.Path = strings.TrimSuffix(u.Path, ":generateContent") + ":streamGenerateContent"
+		q := u.Query()
+		q.Set("alt", "sse")
+		u.RawQuery = q.Encode()
+		return u.String(), nil
+	case "bedrock":
+		if !strings.HasSuffix(dep.BaseURL, "/converse") {
+			return "", fmt.Errorf("bedrock base_url %q must end in %q for streaming URL derivation", dep.BaseURL, "/converse")
+		}
+		return strings.TrimSuffix(dep.BaseURL, "/converse") + "/converse-stream", nil
+	default:
 		return dep.BaseURL, nil
 	}
-	u, err := url.Parse(dep.BaseURL)
-	if err != nil {
-		return "", fmt.Errorf("parsing gemini base_url %q: %w", dep.BaseURL, err)
-	}
-	if !strings.HasSuffix(u.Path, ":generateContent") {
-		return "", fmt.Errorf("gemini base_url %q must end in %q for streaming URL derivation", dep.BaseURL, ":generateContent")
-	}
-	u.Path = strings.TrimSuffix(u.Path, ":generateContent") + ":streamGenerateContent"
-	q := u.Query()
-	q.Set("alt", "sse")
-	u.RawQuery = q.Encode()
-	return u.String(), nil
 }
 
 // NewHTTPUpstreamStreamCaller returns a real, working UpstreamStreamCaller
@@ -1019,7 +1032,15 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 			return nil, fmt.Errorf("building upstream stream request: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Accept", "text/event-stream")
+		if dep.Provider == "bedrock" {
+			// Real, current binary event-stream content type — confirmed
+			// against AWS's own docs/SDK, per
+			// docs/rfcs/2026-09-04-bedrock-converse-stream.md. Every other
+			// provider's streaming responses are text-based SSE.
+			httpReq.Header.Set("Accept", "application/vnd.amazon.eventstream")
+		} else {
+			httpReq.Header.Set("Accept", "text/event-stream")
+		}
 		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, body); err != nil {
 			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
 		}

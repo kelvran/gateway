@@ -90,11 +90,18 @@ type StreamDecoder interface {
 }
 
 // StreamingAdapter is the additive capability a provider adapter opts into
-// by also implementing NewStreamDecoder. OpenAI, Anthropic, openaicompat
-// (real per docs/rfcs/2026-09-04-openaicompat-adapter.md), and Gemini (real
-// per docs/rfcs/2026-09-04-gemini-adapter.md) all satisfy this — Bedrock
-// alone remains stubbed for both non-streaming and streaming, per
-// docs/rfcs/2026-09-02-streaming-support.md's original scope boundary.
+// by also implementing NewStreamDecoder, for the SSE-framed providers:
+// OpenAI, Anthropic, Gemini (real per
+// docs/rfcs/2026-09-04-gemini-adapter.md), and openaicompat (real per
+// docs/rfcs/2026-09-04-openaicompat-adapter.md). Bedrock also streams
+// (real per docs/rfcs/2026-09-04-bedrock-converse-stream.md) but does NOT
+// implement this interface — its wire format is binary
+// (application/vnd.amazon.eventstream), not SSE, so it is decoded by a
+// genuinely separate path (bedrock.StreamDecoder, driven directly by
+// dataplane's streamDeploymentBedrock) rather than this package's
+// SSEEvent-shaped contract. See that RFC's Detailed Design for why a
+// shared interface across both framings isn't warranted for a single
+// binary-framed implementor.
 // Gemini's stream has no terminal sentinel of its own (its StreamDecoder
 // always returns done=false) — callers must rely on the transport-level
 // io.EOF to end the loop, which this package's own Reader already

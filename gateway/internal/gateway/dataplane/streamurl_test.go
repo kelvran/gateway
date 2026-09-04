@@ -60,7 +60,7 @@ func TestStreamUpstreamURLGeminiRejectsUnexpectedSuffix(t *testing.T) {
 // TestStreamUpstreamURLNonGeminiProvidersUnchanged is the decisive
 // backward-compatibility proof, mirroring the weighted-router RFC's own
 // "degrades to identical behavior" precedent: every provider that isn't
-// Gemini must get back exactly dep.BaseURL, unmodified.
+// Gemini or Bedrock must get back exactly dep.BaseURL, unmodified.
 func TestStreamUpstreamURLNonGeminiProvidersUnchanged(t *testing.T) {
 	for _, provider := range []string{"openai", "anthropic", "openaicompat"} {
 		dep := Deployment{
@@ -74,5 +74,41 @@ func TestStreamUpstreamURLNonGeminiProvidersUnchanged(t *testing.T) {
 		if got != dep.BaseURL {
 			t.Errorf("streamUpstreamURL(%s) = %q, want unchanged %q", provider, got, dep.BaseURL)
 		}
+	}
+}
+
+// TestStreamUpstreamURLBedrockDerivesStreamingEndpoint proves the real,
+// path-SEGMENT swap docs/rfcs/2026-09-04-bedrock-converse-stream.md's
+// Motivation section names: Bedrock's streaming endpoint is
+// /converse-stream, not a colon-suffix swap like Gemini's — confirmed
+// directly against aws-sdk-go-v2's own serializers.go source.
+func TestStreamUpstreamURLBedrockDerivesStreamingEndpoint(t *testing.T) {
+	dep := Deployment{
+		Provider: "bedrock",
+		BaseURL:  "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse",
+	}
+
+	got, err := streamUpstreamURL(dep)
+	if err != nil {
+		t.Fatalf("streamUpstreamURL: %v", err)
+	}
+	want := "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse-stream"
+	if got != want {
+		t.Errorf("streamUpstreamURL() = %q, want %q", got, want)
+	}
+}
+
+// TestStreamUpstreamURLBedrockRejectsUnexpectedSuffix proves a
+// misconfigured base_url (not ending in /converse) fails loudly rather
+// than silently producing a malformed streaming URL.
+func TestStreamUpstreamURLBedrockRejectsUnexpectedSuffix(t *testing.T) {
+	dep := Deployment{
+		Provider: "bedrock",
+		BaseURL:  "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+	}
+
+	_, err := streamUpstreamURL(dep)
+	if err == nil {
+		t.Fatal("streamUpstreamURL: want error for base_url not ending in \"/converse\", got nil")
 	}
 }

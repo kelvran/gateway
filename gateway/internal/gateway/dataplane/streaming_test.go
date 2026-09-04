@@ -11,7 +11,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
-	"github.com/kelvran/gateway/gateway/internal/adapter/bedrock"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
@@ -262,16 +261,31 @@ func TestHandleChatCompletionStreamCacheMissRealStream(t *testing.T) {
 // Uses "bedrock" — per docs/rfcs/2026-09-04-gemini-adapter.md, gemini is
 // now a real streaming adapter and is deliberately no longer this test's
 // example of a provider that doesn't support streaming.
+// nonStreamingAdapter is a minimal adapter.Adapter stand-in for a provider
+// that hasn't implemented streaming.StreamingAdapter. Every adapter
+// actually registered in cmd/gateway/main.go now streams (openai,
+// anthropic, gemini, openaicompat, and bedrock via its own binary-framed
+// path) — there is no longer a real, production example of this scenario,
+// so this test needs its own deliberately non-streaming fixture to keep
+// exercising streamDeployment's generic ErrStreamingNotSupported branch.
+type nonStreamingAdapter struct{}
+
+func (nonStreamingAdapter) ToProvider(adapter.ChatRequest) (any, error) { return nil, nil }
+func (nonStreamingAdapter) FromProvider(any) (adapter.ChatResponse, error) {
+	return adapter.ChatResponse{}, nil
+}
+func (nonStreamingAdapter) Name() string { return "non-streaming" }
+
 func TestHandleChatCompletionStreamUnsupportedProviderReturnsTypedError(t *testing.T) {
 	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
 		t.Fatal("upstream stream should never be called for a provider that doesn't support streaming")
 		return nil, nil
-	}, []Deployment{{Name: "d1", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: "claude-bedrock", BaseURL: "http://unused"}},
-		adapter.Registry{"bedrock": bedrock.New()})
+	}, []Deployment{{Name: "d1", Model: "claude-legacy", Provider: "legacy-buffered-only", UpstreamModel: "claude-legacy", BaseURL: "http://unused"}},
+		adapter.Registry{"legacy-buffered-only": nonStreamingAdapter{}})
 
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
-		Model: "claude-bedrock", Stream: true,
+		Model: "claude-legacy", Stream: true,
 	}, rec)
 	if !errors.Is(err, ErrStreamingNotSupported) {
 		t.Fatalf("err = %v, want ErrStreamingNotSupported", err)

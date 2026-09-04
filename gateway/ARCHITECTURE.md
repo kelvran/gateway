@@ -21,14 +21,28 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              adapter.md — for generic self-hosted OpenAI-compatible runtimes: vLLM, Ollama,
                              TGI, llama.cpp, LocalAI), and gemini (real per
                              docs/rfcs/2026-09-04-gemini-adapter.md) all implement
-                             streaming.StreamingAdapter (real, stateful per-request StreamDecoder each) —
-                             bedrock alone does not (real per docs/rfcs/2026-09-04-bedrock-adapter.md for
-                             its buffered Converse API only — ConverseStream's real AWS binary
-                             application/vnd.amazon.eventstream framing is deliberately deferred to a
-                             follow-on RFC, not SSE-compatible the way every other provider's streaming is),
-                             and a streaming request routed to it returns a typed
-                             dataplane.ErrStreamingNotSupported rather than silently buffering. bedrock is
-                             also the first adapter needing a genuine Deployment/config-schema change —
+                             streaming.StreamingAdapter (real, stateful per-request StreamDecoder each).
+                             bedrock also streams — both its buffered Converse API (real per
+                             docs/rfcs/2026-09-04-bedrock-adapter.md) and ConverseStream (real per
+                             docs/rfcs/2026-09-04-bedrock-converse-stream.md) — but deliberately does NOT
+                             implement streaming.StreamingAdapter: ConverseStream's real wire format is
+                             binary (application/vnd.amazon.eventstream), not SSE, so bedrock.StreamDecoder
+                             is a concrete, non-interface type decoding eventstream.Message directly, driven
+                             by a genuinely separate dispatch — dataplane's streamDeployment special-cases
+                             `dep.Provider == "bedrock"` at its own top and forwards to a sibling
+                             streamDeploymentBedrock, mirroring the existing per-provider-string-switch
+                             convention setUpstreamAuthHeaders/streamUpstreamURL already use, rather than
+                             forcing a shared interface across two incompatible wire framings for a single
+                             binary-framed implementor. Bedrock's streaming URL is also a path-SEGMENT swap
+                             (/converse -> /converse-stream, confirmed against aws-sdk-go-v2's own
+                             serializers.go) — a genuinely different derivation from Gemini's colon-suffix
+                             swap (:generateContent -> :streamGenerateContent), both handled by the same
+                             streamUpstreamURL function. dataplane.ErrStreamingNotSupported (a typed 400,
+                             never a silent buffering fallback) is still real code but currently only fires
+                             for a future provider added without a streaming implementation, or a
+                             misconfigured registry entry for "bedrock" whose value isn't *bedrock.Adapter —
+                             every provider actually registered in cmd/gateway/main.go streams today. bedrock
+                             is also the first adapter needing a genuine Deployment/config-schema change —
                              AWS SigV4 request signing needs an access-key-id/secret-access-key/region
                              credential shape, not the single bearer-token secret every other provider
                              fits (DeploymentConfig.AccessKeyIDEnv/SecretAccessKeyEnv/SessionTokenEnv/
@@ -180,9 +194,9 @@ Cache lookup happens *before* the router/provider call so a hit never touches an
 
 One canonical internal schema, OpenAI Chat-Completions-shaped — the dialect vLLM/TGI/Ollama/DeepSeek/Together/Groq already speak natively, making self-hosted integration nearly adapter-free. Each adapter is a pure-function pair (`ToProvider()`/`FromProvider()`) that must explicitly own four normalization points that break silently if missed:
 
-1. **Tool-call argument encoding** — OpenAI/DeepSeek/Qwen return a JSON *string*; Anthropic/Gemini/Bedrock return an already-parsed *object*.
+1. **Tool-call argument encoding** — on the buffered path, OpenAI/DeepSeek/Qwen return a JSON *string*; Anthropic/Gemini/Bedrock return an already-parsed *object*. On the **streaming** path this splits differently and is a genuinely separate hazard: OpenAI, openaicompat, and Bedrock all send arguments as an *accumulating JSON-string fragment* across chunks (confirmed for Bedrock against the real `ToolUseBlockDelta.Input *string` wire field); Anthropic accumulates a string fragment too (its own `input_json_delta` events); Gemini alone sends a *complete object per chunk*, never fragmented — the one provider where streaming and buffered tool-call shape genuinely match.
 2. **System-prompt placement** — in-array `role:"system"` (OpenAI) vs. top-level `system` param (Anthropic/Bedrock) vs. `systemInstruction` (Gemini).
-3. **Streaming event shape** — OpenAI's homogeneous `delta.content` fragments vs. Anthropic's typed SSE event sequence (needs a stateful per-stream parser tracking open content blocks / accumulating tool-call indices) vs. Bedrock's binary EventStream encoding. Real for OpenAI and Anthropic (see `/internal/streaming` above and each adapter's `stream.go`); Bedrock's EventStream case remains a documented hazard, not yet implemented.
+3. **Streaming event shape** — OpenAI's homogeneous `delta.content` fragments vs. Anthropic's typed SSE event sequence (needs a stateful per-stream parser tracking open content blocks / accumulating tool-call indices) vs. Bedrock's binary EventStream encoding (real per docs/rfcs/2026-09-04-bedrock-converse-stream.md — decoded by `bedrock.StreamDecoder`, a genuinely stateless decoder since every Bedrock event is self-describing, unlike Anthropic's). Real for OpenAI, Anthropic, Gemini, openaicompat, and Bedrock (see `/internal/streaming` above and each adapter's `stream.go`).
 4. **Unknown-field preservation** — e.g. Gemini's `thoughtSignature` must round-trip verbatim across turns or multi-turn tool use silently breaks. Adapters must never strip fields they don't recognize.
 
 Each adapter offers an `additionalModelRequestFields`-style escape hatch (mirroring Bedrock's own Converse API pattern) so a new provider's quirk never requires touching the core pipeline.
