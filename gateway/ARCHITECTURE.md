@@ -11,10 +11,19 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
     /dataplane              — accept/filter/forward hot path; continuous, "dumb and fast"
 /internal/adapter/{openai,anthropic,gemini,bedrock,vertex,openaicompat}
                            — bidirectional (canonical↔native) request/response transformers, one per provider.
-                             openai and anthropic additionally implement streaming.StreamingAdapter (real,
-                             stateful per-request StreamDecoder each) — gemini/bedrock/openaicompat do not,
-                             and a streaming request routed to one of them returns a typed
-                             dataplane.ErrStreamingNotSupported rather than silently buffering.
+                             openai, anthropic, and openaicompat (real as of 2026-09-04, per
+                             docs/rfcs/2026-09-04-openaicompat-adapter.md — for generic self-hosted OpenAI-
+                             compatible runtimes: vLLM, Ollama, TGI, llama.cpp, LocalAI) implement
+                             streaming.StreamingAdapter (real, stateful per-request StreamDecoder each) —
+                             gemini/bedrock do not, and a streaming request routed to one of them returns a
+                             typed dataplane.ErrStreamingNotSupported rather than silently buffering.
+                             openaicompat is a near-verbatim copy of openai's adapter, deliberately: the
+                             wire format itself is uniformly OpenAI-compatible across every self-hosted
+                             runtime surveyed while grounding that RFC — real, sourced differences exist
+                             only at the response-content level (finish_reason values, tool-calling opt-in
+                             gating), not the wire-shape level, and are already handled correctly by the
+                             existing design (FinishReason is an open string, not a closed enum; unknown
+                             response fields are ignored by default)
 /internal/streaming        — transport-level SSE plumbing, provider-agnostic: canonical ChatCompletionChunk/
                              ChunkChoice/MessageDelta/ToolCallDelta types, the StreamDecoder/StreamingAdapter
                              interfaces every streaming-capable adapter implements against, and the actual

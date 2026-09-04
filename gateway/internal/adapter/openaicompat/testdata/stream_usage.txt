@@ -1,0 +1,9 @@
+data: {"id":"chatcmpl-local-usage1","object":"chat.completion.chunk","created":1701300200,"model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-local-usage1","object":"chat.completion.chunk","created":1701300200,"model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{"content":"7"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-local-usage1","object":"chat.completion.chunk","created":1701300200,"model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-local-usage1","object":"chat.completion.chunk","created":1701300200,"model":"llama-3.1-70b-instruct","choices":[],"usage":{"prompt_tokens":14,"completion_tokens":1,"total_tokens":15}}
+
+data: [DONE]

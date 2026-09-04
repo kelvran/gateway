@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-local-stream1","object":"chat.completion.chunk","created":1701300000,"model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-local-stream1","object":"chat.completion.chunk","created":1701300000,"model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{"content":"Howdy"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-local-stream1","object":"chat.completion.chunk","created":1701300000,"model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{"content":", partner"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-local-stream1","object":"chat.completion.chunk","created":1701300000,"model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-local-stream1","object":"chat.completion.chunk","created":1701300000,"model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+

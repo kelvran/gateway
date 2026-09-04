@@ -90,8 +90,9 @@ type StreamDecoder interface {
 }
 
 // StreamingAdapter is the additive capability a provider adapter opts into
-// by also implementing NewStreamDecoder. Only OpenAI and Anthropic satisfy
-// this in the current scaffolding — Gemini/Bedrock/openaicompat remain
+// by also implementing NewStreamDecoder. OpenAI, Anthropic, and openaicompat
+// satisfy this (the last one real as of 2026-09-04, per
+// docs/rfcs/2026-09-04-openaicompat-adapter.md) — Gemini/Bedrock remain
 // stubbed for both non-streaming and streaming, per
 // docs/rfcs/2026-09-02-streaming-support.md's scope boundary. Callers must
 // type-assert to this interface before attempting to stream a request and

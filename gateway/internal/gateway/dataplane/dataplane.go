@@ -38,6 +38,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
@@ -873,6 +874,13 @@ var responseUnmarshalers = map[string]func([]byte) (any, error){
 		var r anthropic.Response
 		if err := json.Unmarshal(b, &r); err != nil {
 			return nil, fmt.Errorf("unmarshaling anthropic response: %w", err)
+		}
+		return &r, nil
+	},
+	"openaicompat": func(b []byte) (any, error) {
+		var r openaicompat.Response
+		if err := json.Unmarshal(b, &r); err != nil {
+			return nil, fmt.Errorf("unmarshaling openaicompat response: %w", err)
 		}
 		return &r, nil
 	},

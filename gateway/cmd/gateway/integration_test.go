@@ -30,6 +30,7 @@ import (
 
 	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 )
 
@@ -1030,5 +1031,245 @@ func TestIntegrationGuardrailBlocksCredentialShapedRequest(t *testing.T) {
 	}
 	if got := calls.Load(); got != 0 {
 		t.Errorf("upstream calls = %d, want 0 — a Block-tier request must never reach the upstream", got)
+	}
+}
+
+// newMockOpenAICompatUpstream starts an httptest.Server that speaks the
+// same OpenAI-shaped wire format newMockUpstream does, but decodes into
+// openaicompat.Request/Response — proving the real openaicompat adapter
+// (not just the openai one) round-trips against a real HTTP call, per
+// docs/rfcs/2026-09-04-openaicompat-adapter.md.
+func newMockOpenAICompatUpstream(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var calls atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "reading request body", http.StatusBadRequest)
+			return
+		}
+		var req openaicompat.Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid upstream request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		resp := openaicompat.Response{
+			ID:    "chatcmpl-openaicompat-integration-test",
+			Model: req.Model,
+			Choices: []openaicompat.Choice{
+				{
+					Index:        0,
+					Message:      openaicompat.Message{Role: "assistant", Content: "hello from the self-hosted mock upstream"},
+					FinishReason: "stop",
+				},
+			},
+			Usage: openaicompat.Usage{PromptTokens: 7, CompletionTokens: 4, TotalTokens: 11},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// newMockOpenAICompatStreamingUpstream mirrors newMockStreamingUpstream,
+// decoding into openaicompat.Request instead — the wire shape is
+// identical (SSE, "[DONE]" sentinel, stream_options.include_usage), per
+// this RFC's own grounding research confirming that shape is uniform
+// across every self-hosted runtime surveyed.
+func newMockOpenAICompatStreamingUpstream(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var calls atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "reading request body", http.StatusBadRequest)
+			return
+		}
+		var req openaicompat.Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid upstream request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if !req.Stream {
+			http.Error(w, "expected a streaming request", http.StatusBadRequest)
+			return
+		}
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "ResponseWriter does not support flushing", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		events := []string{
+			fmt.Sprintf(`{"id":"chatcmpl-openaicompat-streaming-integration-test","model":%q,"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`, req.Model),
+			fmt.Sprintf(`{"id":"chatcmpl-openaicompat-streaming-integration-test","model":%q,"choices":[{"index":0,"delta":{"content":"self-hosted "},"finish_reason":null}]}`, req.Model),
+			fmt.Sprintf(`{"id":"chatcmpl-openaicompat-streaming-integration-test","model":%q,"choices":[{"index":0,"delta":{"content":"stream"},"finish_reason":null}]}`, req.Model),
+			fmt.Sprintf(`{"id":"chatcmpl-openaicompat-streaming-integration-test","model":%q,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`, req.Model),
+			fmt.Sprintf(`{"id":"chatcmpl-openaicompat-streaming-integration-test","model":%q,"choices":[],"usage":{"prompt_tokens":6,"completion_tokens":2,"total_tokens":8}}`, req.Model),
+		}
+		for _, e := range events {
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", e); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+			return
+		}
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// newIntegrationServerOpenAICompat builds the same real buildPipeline +
+// chatCompletionsHandler wiring as newIntegrationServer, but for a single
+// "openaicompat" deployment — modeled on newIntegrationServerAnthropic
+// (the "second provider" builder precedent), since openaicompat is the
+// third real provider adapter, not the default.
+func newIntegrationServerOpenAICompat(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvVar string) *httptest.Server {
+	t.Helper()
+	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
+
+	cfg := &controlplane.Config{
+		ListenAddr: ":0",
+		VirtualKeys: []controlplane.VirtualKeyConfig{
+			{Name: "test-key", KeyHash: testKeyHash(gatewayKey), RateLimitBurst: 100, RateLimitRefill: 100},
+		},
+		Deployments: []controlplane.DeploymentConfig{
+			{
+				Name:          "self-hosted-primary",
+				Model:         "llama-3.1-70b-instruct",
+				Provider:      "openaicompat",
+				UpstreamModel: "llama-3.1-70b-instruct",
+				BaseURL:       upstreamURL,
+				APIKeyEnv:     upstreamKeyEnvVar,
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pipeline, err := buildPipeline(cfg, logger)
+	if err != nil {
+		t.Fatalf("buildPipeline: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestIntegrationOpenAICompatRequestSucceeds drives a real, non-streaming
+// end-to-end HTTP round trip through the real openaicompat adapter — the
+// direct analogue of TestIntegrationWellFormedRequestSucceeds, proving the
+// dataplane.go responseUnmarshalers wiring this RFC added actually works,
+// not just that the adapter's own unit tests pass in isolation.
+func TestIntegrationOpenAICompatRequestSucceeds(t *testing.T) {
+	upstream, calls := newMockOpenAICompatUpstream(t)
+	gw := newIntegrationServerOpenAICompat(t, upstream.URL, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_OC")
+
+	reqBody := `{"model":"llama-3.1-70b-instruct","messages":[{"role":"user","content":"integration hello, openaicompat"}]}`
+	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer test-gateway-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decoding response body: %v", err)
+	}
+	if len(decoded.Choices) != 1 {
+		t.Fatalf("Choices len = %d, want 1", len(decoded.Choices))
+	}
+	if got := decoded.Choices[0].Message.Content; got != "hello from the self-hosted mock upstream" {
+		t.Errorf("Message.Content = %q, want the mock upstream's real content", got)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mock openaicompat upstream calls = %d, want exactly 1", got)
+	}
+}
+
+// TestIntegrationStreamingRequestSucceedsOpenAICompat drives the same real
+// end-to-end SSE round trip as TestIntegrationStreamingRequestSucceeds,
+// but against the openaicompat adapter's own StreamDecoder instead of
+// openai's — proving the streaming path is genuinely provider-agnostic
+// for this third real adapter too, not just the first two.
+func TestIntegrationStreamingRequestSucceedsOpenAICompat(t *testing.T) {
+	upstream, calls := newMockOpenAICompatStreamingUpstream(t)
+	gw := newIntegrationServerOpenAICompat(t, upstream.URL, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_OCS")
+
+	reqBody := `{"model":"llama-3.1-70b-instruct","stream":true,"messages":[{"role":"user","content":"integration streaming hello, openaicompat"}]}`
+	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer test-gateway-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want %q", ct, "text/event-stream")
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading response body: %v", err)
+	}
+	bodyStr := string(body)
+
+	if !strings.Contains(bodyStr, `"content":"self-hosted "`) || !strings.Contains(bodyStr, `"content":"stream"`) {
+		t.Errorf("SSE body missing expected content deltas: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"finish_reason":"stop"`) {
+		t.Errorf("SSE body missing finish_reason: %s", bodyStr)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(bodyStr), "data: [DONE]") {
+		t.Errorf("SSE body does not end with the gateway's own [DONE] sentinel: %s", bodyStr)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mock openaicompat streaming upstream calls = %d, want exactly 1", got)
 	}
 }

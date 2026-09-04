@@ -1,0 +1,54 @@
+{
+  "model": "llama-3.1-70b-instruct",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant that can check the weather."
+    },
+    {
+      "role": "user",
+      "content": "What's the weather in Austin?"
+    },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "id": "call_xyz789",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Austin\",\"unit\":\"fahrenheit\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "{\"temperature\":95,\"condition\":\"sunny\"}",
+      "tool_call_id": "call_xyz789"
+    },
+    {
+      "role": "assistant",
+      "content": "It's 95°F and sunny in Austin."
+    }
+  ],
+  "temperature": 0.3,
+  "max_tokens": 1024,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a given city",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {"type": "string"},
+            "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+          },
+          "required": ["city"]
+        }
+      }
+    }
+  ]
+}

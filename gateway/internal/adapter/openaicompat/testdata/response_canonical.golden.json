@@ -1,0 +1,19 @@
+{
+  "id": "chatcmpl-local-9f2a1b",
+  "model": "llama-3.1-70b-instruct",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "It's 95°F and sunny in Austin."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 61,
+    "completion_tokens": 10,
+    "total_tokens": 71
+  }
+}
