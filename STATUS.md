@@ -82,7 +82,7 @@ Previously: Tier 1, fourth item — real `otelhttp` middleware for `cmd/gateway`
 
 ## Next Action
 
-The OpenAI judge provider is ready to commit + push + watch CI. Last Tier 1 item: per-exception-type Bedrock streaming errors — a small, self-contained, no-external-blocker unit. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The OpenAI judge provider is closed: committed (`3da6116`), pushed, confirmed green on CI run `33925763225`. Last Tier 1 item: per-exception-type Bedrock streaming errors — a small, self-contained, no-external-blocker unit. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
