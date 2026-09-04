@@ -80,7 +80,7 @@ Previously: Tier 1, third item — real `.importlinter` layer-contract enforceme
 
 ## Next Action
 
-The otelhttp middleware is ready to commit + push + watch CI. Continuing Tier 1: a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The otelhttp middleware is closed: committed (`941eec4`), pushed, confirmed green on CI run `33924205802`. Continuing Tier 1: a second (OpenAI) LLM-judge provider, per-exception-type Bedrock streaming errors — each a small, self-contained, no-external-blocker unit, shipped one at a time with the project's established implement→verify→commit→push→CI discipline. The user has authorized proceeding through the ranked list "in flow" without re-confirming each step. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
