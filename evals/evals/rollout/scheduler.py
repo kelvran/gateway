@@ -210,6 +210,7 @@ async def run_suite(
                             image=harness_config["image"],
                             command=harness_config["command"],
                             exit_code=None,
+                            container_id=None,
                             error=str(exc),
                         )
                     )
@@ -238,6 +239,7 @@ async def run_suite(
                         image=harness_config["image"],
                         command=harness_config["command"],
                         exit_code=result.exit_code,
+                        container_id=result.container_id,
                         error=None,
                     )
                 )

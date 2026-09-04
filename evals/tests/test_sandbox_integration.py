@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 
 import pytest
 
@@ -29,6 +30,24 @@ pytestmark = [
 _IMAGE = "alpine:3.20"
 
 
+def _container_is_running(container_id: str) -> bool:
+    """True only if `container_id` genuinely still exists and is running.
+
+    A "No such container" result (already reaped by --rm) is treated as
+    definitely-not-running, not an error -- that's the expected steady
+    state once a container has exited or been killed.
+    """
+    result = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return result.stdout.strip() == "true"
+
+
 def test_run_in_sandbox_returns_stdout_on_success():
     result = asyncio.run(
         run_in_sandbox(image=_IMAGE, command=["echo", "hello-sandbox"], timeout_s=30)
@@ -36,6 +55,8 @@ def test_run_in_sandbox_returns_stdout_on_success():
     assert result.timed_out is False
     assert result.exit_code == 0
     assert "hello-sandbox" in result.stdout
+    assert result.container_id is not None
+    assert len(result.container_id) == 64
 
 
 def test_run_in_sandbox_reports_nonzero_exit_code():
@@ -50,6 +71,25 @@ def test_run_in_sandbox_enforces_timeout():
     )
     assert result.timed_out is True
     assert result.exit_code == -1
+
+
+def test_run_in_sandbox_timeout_actually_stops_the_container():
+    """The load-bearing regression test for the real bug fixed 2026-09-04:
+    killing the local `docker run` CLI process alone does NOT stop the
+    container -- confirmed empirically against a real Docker daemon
+    before this fix (the container kept running for its full `sleep`
+    duration after the CLI process was killed). This proves the real
+    container is genuinely gone, not just that the Python call returned.
+    """
+    result = asyncio.run(
+        run_in_sandbox(image=_IMAGE, command=["sleep", "30"], timeout_s=2)
+    )
+    assert result.timed_out is True
+    assert result.container_id is not None
+    assert not _container_is_running(result.container_id), (
+        "container is still running after a reported timeout -- "
+        "the timeout did not actually bound resource usage"
+    )
 
 
 def test_run_in_sandbox_blocks_network_egress():

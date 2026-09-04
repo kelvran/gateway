@@ -181,14 +181,21 @@ class Span(BaseModel):
     OTel spans (per `api/otel`'s still-undecided transport), never as a
     live export pipeline.
 
-    Only fields genuinely obtainable from today's `run_in_sandbox()` are
-    included — no `container_id`/`process_pid`, even though those are real
-    OTel semantic-convention attributes: neither is obtainable without
-    changing `sandbox.py`'s `docker run --rm` invocation, out of this
-    RFC's scope. `gen_ai.operation.name` is deliberately never used —
-    confirmed, via direct inspection of the OTel semantic-conventions
-    registry, to be a namespace for LLM/model-inference operations only,
-    not applicable to a container-sandbox execution.
+    `container_id` (added 2026-09-04, alongside a real bug fix in
+    `sandbox.py`: killing the local `docker run` CLI process on timeout
+    did not stop the container itself — confirmed empirically against a
+    real Docker daemon) is the real Docker container ID, captured via
+    `--cidfile`, matching the stable `container.id` semantic convention.
+    `process_pid` remains deliberately excluded — even now that a real
+    PID is technically obtainable from the local `docker run` CLI
+    process, that PID identifies the CLI *client* process, not the
+    containerized command's own process, and OTel's `process.pid`
+    convention means the latter — attaching the former would be a real,
+    honest-sounding-but-wrong value, worse than omitting the field.
+    `gen_ai.operation.name` is deliberately never used — confirmed, via
+    direct inspection of the OTel semantic-conventions registry, to be a
+    namespace for LLM/model-inference operations only, not applicable to
+    a container-sandbox execution.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -204,4 +211,5 @@ class Span(BaseModel):
     process_command_args: list[str]
     process_exit_code: int | None = None
     container_image_name: str
+    container_id: str | None = None
     error: str | None = None

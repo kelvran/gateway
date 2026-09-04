@@ -920,3 +920,10 @@ def test_rollout_against_a_real_docker_daemon(tmp_path):
 
     persisted_scores = load_scores(scores_path)
     assert len(persisted_scores) == 2
+
+    persisted_spans = load_spans(traces_path)
+    assert len(persisted_spans) == 2
+    for span in persisted_spans:
+        assert span.status == "OK"
+        assert span.container_id is not None
+        assert len(span.container_id) == 64

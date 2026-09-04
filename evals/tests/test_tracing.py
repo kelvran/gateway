@@ -17,10 +17,12 @@ def test_success_round_trip_produces_ok_status_with_real_ids():
         image="alpine:3.20",
         command=["echo", "hi"],
         exit_code=0,
+        container_id="deadbeefcafe",
         error=None,
     )
     assert result.status == "OK"
     assert result.process_exit_code == 0
+    assert result.container_id == "deadbeefcafe"
     assert result.error is None
     assert _HEX16.match(result.span_id)
     assert _HEX32.match(result.trace_id)
@@ -35,10 +37,12 @@ def test_error_round_trip_produces_error_status_with_no_exit_code():
         image="alpine:3.20",
         command=["false"],
         exit_code=None,
+        container_id=None,
         error="docker binary not found",
     )
     assert result.status == "ERROR"
     assert result.process_exit_code is None
+    assert result.container_id is None
     assert result.error == "docker binary not found"
 
 
@@ -50,6 +54,7 @@ def test_two_sequential_spans_get_distinct_real_ids():
         image="alpine:3.20",
         command=["echo", "a"],
         exit_code=0,
+        container_id="deadbeefcafe",
         error=None,
     )
     span_b = tracing.start_sandbox_span(image="alpine:3.20", command=["echo", "b"])
@@ -59,6 +64,7 @@ def test_two_sequential_spans_get_distinct_real_ids():
         image="alpine:3.20",
         command=["echo", "b"],
         exit_code=0,
+        container_id="deadbeefcafe",
         error=None,
     )
     assert result_a.span_id != result_b.span_id
@@ -79,6 +85,7 @@ def test_tracer_is_a_module_level_singleton():
         image="alpine:3.20",
         command=["echo", "a"],
         exit_code=0,
+        container_id="deadbeefcafe",
         error=None,
     )
     processor_after_first = tracing._processor
@@ -89,6 +96,7 @@ def test_tracer_is_a_module_level_singleton():
         image="alpine:3.20",
         command=["echo", "b"],
         exit_code=0,
+        container_id="deadbeefcafe",
         error=None,
     )
     assert tracing._processor is processor_after_first

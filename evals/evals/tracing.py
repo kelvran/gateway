@@ -75,19 +75,24 @@ def finish_sandbox_span(
     image: str,
     command: list[str],
     exit_code: int | None,
+    container_id: str | None,
     error: str | None,
 ) -> Span:
     """End `otel_span` and return the finished `evals.models.Span`.
 
     Exactly one of `exit_code`/`error` is meaningful: `error` set means
     `run_in_sandbox()` itself raised (nothing ever ran, no exit code
-    exists); otherwise `exit_code` is the real result.
+    exists); otherwise `exit_code` is the real result. `container_id` is
+    `None` only if the container never reached the point of being
+    created -- never a fabricated placeholder.
     """
     if error is not None:
         otel_span.set_status(Status(StatusCode.ERROR, description=error))
     else:
         otel_span.set_attribute("process.exit.code", exit_code)
         otel_span.set_status(Status(StatusCode.OK))
+    if container_id is not None:
+        otel_span.set_attribute("container.id", container_id)
     otel_span.end()
 
     finished = _processor.last_span
@@ -107,5 +112,6 @@ def finish_sandbox_span(
         process_command_args=command,
         process_exit_code=exit_code,
         container_image_name=image,
+        container_id=container_id,
         error=error,
     )
