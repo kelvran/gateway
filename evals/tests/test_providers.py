@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 
 from evals.judge.providers import (
     DEFAULT_JUDGE_MODEL,
@@ -100,7 +101,9 @@ def test_call_model_records_last_call_cost_from_real_usage():
     assert call_model.last_call_cost.input_tokens == 1000
     assert call_model.last_call_cost.output_tokens == 500
     # 1000 input tokens @ $1/MTok + 500 output tokens @ $5/MTok.
-    expected = (1000 * 1.00 + 500 * 5.00) / 1_000_000
+    expected = (
+        Decimal(1000) * Decimal("1.00") + Decimal(500) * Decimal("5.00")
+    ) / Decimal(1_000_000)
     assert call_model.last_call_cost.cost_usd == expected
 
 
@@ -131,4 +134,4 @@ def test_compute_cost_usd_computes_real_price_for_default_judge_model():
     cost = _compute_cost_usd(DEFAULT_JUDGE_MODEL, usage)
 
     # 2M input tokens @ $1/MTok + 1M output tokens @ $5/MTok = $2 + $5.
-    assert cost == 7.00
+    assert cost == Decimal("7.00")

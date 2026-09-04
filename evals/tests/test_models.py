@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
@@ -184,15 +186,15 @@ def test_score_run_id_defaults_to_none_not_a_fabricated_case_id():
 
 
 def test_score_cost_usd_can_be_set_explicitly_for_llm_judge():
-    score = _make_score(scorer_type="llm_judge", cost_usd=0.0000075)
-    assert score.cost_usd == 0.0000075
+    score = _make_score(scorer_type="llm_judge", cost_usd=Decimal("0.0000075"))
+    assert score.cost_usd == Decimal("0.0000075")
 
 
 def test_score_cost_usd_zero_for_deterministic_is_exact_not_fabricated():
-    score = _make_score(scorer_type="deterministic", cost_usd=0.0)
-    assert score.cost_usd == 0.0
-    # Distinct from None -- 0.0 here is a certain fact (no external call
-    # is ever made by a deterministic scorer), not an unmeasured value.
+    score = _make_score(scorer_type="deterministic", cost_usd=Decimal("0"))
+    assert score.cost_usd == Decimal("0")
+    # Distinct from None -- 0 here is a certain fact (no external call is
+    # ever made by a deterministic scorer), not an unmeasured value.
     assert score.cost_usd is not None
 
 

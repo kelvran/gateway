@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from decimal import Decimal
 
 from anthropic import AsyncAnthropic
 from anthropic.types import Usage
@@ -41,25 +42,34 @@ DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001"
 # (gateway/internal/guardrail). RE-VERIFY AGAINST https://claude.com/pricing
 # BEFORE TRUSTING THIS IN PRODUCTION, especially after 2026-10-15 (Haiku
 # 4.5's earliest possible Anthropic-committed retirement date).
-_JUDGE_MODEL_PRICE_PER_MTOK_USD: dict[str, tuple[float, float]] = {
-    DEFAULT_JUDGE_MODEL: (1.00, 5.00),  # (input, output)
+#
+# Decimal, built from strings (never a float literal) -- per
+# docs/rfcs/2026-09-04-evals-score-model.md's own documented lesson,
+# constructing a Decimal from a float intermediate (Decimal(1.00), not
+# Decimal("1.00")) reintroduces the exact binary imprecision Decimal
+# exists to prevent.
+_JUDGE_MODEL_PRICE_PER_MTOK_USD: dict[str, tuple[Decimal, Decimal]] = {
+    DEFAULT_JUDGE_MODEL: (Decimal("1.00"), Decimal("5.00")),  # (input, output)
 }
 
 
-def _compute_cost_usd(model: str, usage: Usage) -> float | None:
+def _compute_cost_usd(model: str, usage: Usage) -> Decimal | None:
     """Compute a judge call's real cost from its response `usage`.
 
     Returns `None` for an unpriced model — honestly "not measured," never
-    a fabricated `0.0` — mirroring the "`None` = not applicable" convention
-    `Run.cost_usd`/`Score` already use elsewhere in this codebase.
+    a fabricated `0` — mirroring the "`None` = not applicable" convention
+    `Run.cost_usd`/`Score` already use elsewhere in this codebase. Division
+    by 1,000,000 (a power of ten) is always exact for `Decimal`, never
+    rounds.
     """
     prices = _JUDGE_MODEL_PRICE_PER_MTOK_USD.get(model)
     if prices is None:
         return None
     input_price, output_price = prices
     return (
-        usage.input_tokens * input_price + usage.output_tokens * output_price
-    ) / 1_000_000
+        Decimal(usage.input_tokens) * input_price
+        + Decimal(usage.output_tokens) * output_price
+    ) / Decimal(1_000_000)
 
 
 @dataclass(frozen=True)
@@ -68,7 +78,7 @@ class JudgeCallCost:
 
     input_tokens: int
     output_tokens: int
-    cost_usd: float | None
+    cost_usd: Decimal | None
 
 
 class _AnthropicCallModel:

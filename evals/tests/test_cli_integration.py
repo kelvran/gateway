@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -121,13 +122,14 @@ def _write_scores(path, scores):
     append_scores(scores, path)
 
 
-def _make_score(eval_case_id, scorer_type, value):
+def _make_score(eval_case_id, scorer_type, value, cost_usd=Decimal("0")):
     return Score(
         eval_case_id=eval_case_id,
         eval_case_revision=1,
         scorer_id="exact_match" if scorer_type == "deterministic" else "judge-model",
         scorer_type=scorer_type,
         value=value,
+        cost_usd=cost_usd,
     )
 
 
@@ -147,6 +149,7 @@ def test_report_scores_reads_persisted_deterministic_scores(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "deterministic: pass_rate=0.6667 (2/3)" in result.output
+    assert "total_cost_usd=0" in result.output
     assert _CI_PATTERN.search(result.output) is not None
 
 
@@ -157,9 +160,9 @@ def test_report_scores_never_blends_distinct_scorer_types(tmp_path):
         [
             _make_score("c1", "deterministic", True),
             _make_score("c2", "deterministic", True),
-            _make_score("c1", "llm_judge", True),
-            _make_score("c2", "llm_judge", False),
-            _make_score("c3", "llm_judge", False),
+            _make_score("c1", "llm_judge", True, cost_usd=Decimal("0.001")),
+            _make_score("c2", "llm_judge", False, cost_usd=Decimal("0.002")),
+            _make_score("c3", "llm_judge", False, cost_usd=Decimal("0.003")),
         ],
     )
 
@@ -175,6 +178,28 @@ def test_report_scores_never_blends_distinct_scorer_types(tmp_path):
     assert len(lines) == 2
     assert lines[0].startswith("deterministic:")
     assert lines[1].startswith("llm_judge:")
+    # Cost is summed within each group, never across groups.
+    assert "total_cost_usd=0" in lines[0]
+    assert "total_cost_usd=0.006" in lines[1]
+
+
+def test_report_scores_notes_unknown_cost_entries_rather_than_treating_as_zero(
+    tmp_path,
+):
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(
+        scores_path,
+        [
+            _make_score("c1", "llm_judge", True, cost_usd=Decimal("0.001")),
+            _make_score("c2", "llm_judge", True, cost_usd=None),
+        ],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "total_cost_usd=0.001 (1 unknown excluded)" in result.output
 
 
 def test_report_scores_empty_file_fails_with_nonzero_exit(tmp_path):
@@ -334,8 +359,8 @@ def test_run_with_llm_judge_persists_real_cost_from_a_cost_exposing_fake(
 
     persisted = load_scores(scores_path)
     assert len(persisted) == 2
-    assert persisted[0].cost_usd == 0.0001234
-    assert persisted[1].cost_usd == 0.0001234
+    assert persisted[0].cost_usd == Decimal("0.0001234")
+    assert persisted[1].cost_usd == Decimal("0.0001234")
 
 
 def test_run_deterministic_scores_have_exact_zero_cost(tmp_path):
@@ -356,7 +381,7 @@ def test_run_deterministic_scores_have_exact_zero_cost(tmp_path):
 
     persisted = load_scores(scores_path)
     assert len(persisted) == 3
-    assert all(s.cost_usd == 0.0 for s in persisted)
+    assert all(s.cost_usd == Decimal("0") for s in persisted)
 
 
 def test_run_llm_judge_requires_a_reference_and_fails_loudly(tmp_path, monkeypatch):
@@ -488,10 +513,10 @@ def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch)
     assert all(s.scorer_type == "deterministic" for s in persisted_scores)
     assert persisted_scores[0].run_id == persisted_runs[0].id
     assert persisted_scores[0].value is True
-    assert persisted_scores[0].cost_usd == 0.0
+    assert persisted_scores[0].cost_usd == Decimal("0")
     assert persisted_scores[1].run_id == persisted_runs[1].id
     assert persisted_scores[1].value is False
-    assert persisted_scores[1].cost_usd == 0.0
+    assert persisted_scores[1].cost_usd == Decimal("0")
 
 
 def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(

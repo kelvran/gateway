@@ -9,9 +9,10 @@ never from the suite file itself; each `Run` is appended to `--results`
 before scoring. `evals report` prints a pass rate from raw counts, or from
 a persisted `Score`s JSONL file (`--scores`, one line per distinct
 `scorer_type` present — never blended across `deterministic` and
-`llm_judge`). All three commands that emit a pass rate always print the
-Wilson confidence interval alongside it — per `PRD.md`'s explicit success
-metric, a bare percentage is never emitted on its own.
+`llm_judge` — including that group's real total `cost_usd`). All three
+commands that emit a pass rate always print the Wilson confidence interval
+alongside it — per `PRD.md`'s explicit success metric, a bare percentage
+is never emitted on its own.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from decimal import Decimal
 from pathlib import Path
 
 import click
@@ -96,7 +98,7 @@ def _deterministic_scorer_id(case: EvalCase) -> str:
 
 def _last_judge_call_cost_usd(
     call_model: Callable[[str], Awaitable[str]],
-) -> float | None:
+) -> Decimal | None:
     """Read the real cost of the most recent judge call off `call_model`.
 
     `call_model` only has to satisfy `Callable[[str], Awaitable[str]]` —
@@ -164,6 +166,24 @@ def format_report(successes: int, total: int, confidence: float = 0.95) -> str:
         f"pass_rate={pass_rate:.4f} ({successes}/{total}) "
         f"{confidence:.0%} CI=[{lower:.4f}, {upper:.4f}]"
     )
+
+
+def _format_group_cost(scores: list[Score]) -> str:
+    """Sum a `Score` group's real `cost_usd` for `report --scores`.
+
+    Per docs/rfcs/2026-09-04-evals-score-model.md's own named revisit
+    trigger ("the moment evals gets a suite-level cost aggregation...
+    Decimal should be adopted immediately"), which this crosses. A `Score`
+    with `cost_usd=None` (currently unreachable in v1 — only one priced
+    judge model exists) is excluded from the sum and counted explicitly,
+    never silently treated as zero.
+    """
+    known_costs = [s.cost_usd for s in scores if s.cost_usd is not None]
+    unknown_count = len(scores) - len(known_costs)
+    total_cost = sum(known_costs, start=Decimal("0"))
+    if unknown_count:
+        return f"total_cost_usd={total_cost} ({unknown_count} unknown excluded)"
+    return f"total_cost_usd={total_cost}"
 
 
 @click.group()
@@ -247,8 +267,8 @@ def run_cmd(
                     value=passed,
                     # Exact, certain zero — a deterministic scorer never
                     # makes an external call. See Score.cost_usd's own
-                    # docstring for why this is 0.0, not None.
-                    cost_usd=0.0,
+                    # docstring for why this is Decimal("0"), not None.
+                    cost_usd=Decimal("0"),
                 )
             )
         if passed:
@@ -348,7 +368,7 @@ def rollout_cmd(
                     scorer_id=_deterministic_scorer_id(case),
                     scorer_type="deterministic",
                     value=passed,
-                    cost_usd=0.0,
+                    cost_usd=Decimal("0"),
                 )
             )
         if passed:
@@ -371,8 +391,8 @@ def rollout_cmd(
         "Path to a JSONL file of persisted Scores (see --scores on `run`/"
         "`rollout`). Mutually exclusive with --successes/--total. Every "
         "Score in the file counts as one trial (no dedup, no eval_case_id "
-        "filtering); reported as one pass_rate/CI line per distinct "
-        "scorer_type found, never blended."
+        "filtering); reported as one pass_rate/CI/total_cost_usd line per "
+        "distinct scorer_type found, never blended."
     ),
 )
 @click.option("--confidence", default=0.95, show_default=True, type=float)
@@ -413,6 +433,7 @@ def report_cmd(
             click.echo(
                 f"{scorer_type}: "
                 + format_report(group_successes, len(group), confidence=confidence)
+                + f" {_format_group_cost(group)}"
             )
         return
 
