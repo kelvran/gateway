@@ -35,6 +35,7 @@ from evals.results_store import (
     append_spans,
     load_runs,
     load_scores,
+    load_spans,
 )
 from evals.rollout.scheduler import EarlyStopConfig, run_suite
 from evals.stats import wilson_interval
@@ -184,6 +185,33 @@ def _format_group_cost(scores: list[Score]) -> str:
     if unknown_count:
         return f"total_cost_usd={total_cost} ({unknown_count} unknown excluded)"
     return f"total_cost_usd={total_cost}"
+
+
+def _format_span_report(spans: list[Span], confidence: float) -> str:
+    """Format a `report --traces` line: a Wilson-CI-bearing OK rate (per
+    PRD.md's "never a bare percentage" convention, applied here too) plus
+    average sandbox execution duration.
+
+    Deliberately labeled `ok_rate`, not `pass_rate` — a Span's OK/ERROR
+    status measures whether the sandbox execution itself completed
+    without error, a real infra-reliability signal, never an eval-quality
+    judgment the way `Score.value`/`Run` pass/fail is. Never grouped (no
+    `scorer_type`-like partition exists on `Span`) — one aggregate line,
+    mirroring `--successes`/`--total`'s own single-line simplicity.
+    """
+    total = len(spans)
+    ok_count = sum(1 for s in spans if s.status == "OK")
+    ok_rate = ok_count / total if total else 0.0
+    lower, upper = wilson_interval(ok_count, total, confidence=confidence)
+    avg_duration_ms = (
+        sum((s.end_time_unix_nano - s.start_time_unix_nano) / 1_000_000 for s in spans)
+        / total
+    )
+    return (
+        f"spans: ok_rate={ok_rate:.4f} ({ok_count}/{total}) "
+        f"{confidence:.0%} CI=[{lower:.4f}, {upper:.4f}] "
+        f"avg_duration_ms={avg_duration_ms:.2f}"
+    )
 
 
 @click.group()
@@ -527,10 +555,23 @@ def rollout_cmd(
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help=(
         "Path to a JSONL file of persisted Scores (see --scores on `run`/"
-        "`rollout`). Mutually exclusive with --successes/--total. Every "
-        "Score in the file counts as one trial (no dedup, no eval_case_id "
-        "filtering); reported as one pass_rate/CI/total_cost_usd line per "
-        "distinct scorer_type found, never blended."
+        "`rollout`). Mutually exclusive with --successes/--total and "
+        "--traces. Every Score in the file counts as one trial (no dedup, "
+        "no eval_case_id filtering); reported as one pass_rate/CI/"
+        "total_cost_usd line per distinct scorer_type found, never blended."
+    ),
+)
+@click.option(
+    "--traces",
+    "traces_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Path to a JSONL file of persisted Spans (see --traces on "
+        "`rollout`). Mutually exclusive with --successes/--total and "
+        "--scores. Reports the OK-vs-ERROR rate (with Wilson CI) across "
+        "every real sandbox execution, plus average duration — an infra-"
+        "reliability signal, never an eval-quality judgment."
     ),
 )
 @click.option("--confidence", default=0.95, show_default=True, type=float)
@@ -538,28 +579,39 @@ def report_cmd(
     successes: int | None,
     total: int | None,
     scores_path: Path | None,
+    traces_path: Path | None,
     confidence: float,
 ) -> None:
     """Print a pass rate together with its Wilson CI.
 
-    Two mutually exclusive input modes: raw --successes/--total counts, or
+    Three mutually exclusive input modes: raw --successes/--total counts,
     a persisted --scores JSONL file (grouped and reported one line per
     scorer_type — deterministic and llm_judge are never blended into one
-    number, since they are different measurement instruments).
+    number, since they are different measurement instruments), or a
+    persisted --traces JSONL file (an aggregate OK-rate line, never
+    grouped — no scorer_type-like partition exists on Span).
     """
     counts_partial = (successes is None) != (total is None)
-    counts_given = successes is not None and total is not None
-
     if counts_partial:
         raise click.UsageError("--successes and --total must be given together.")
-    if scores_path is not None and counts_given:
+
+    counts_given = successes is not None and total is not None
+    modes_given = sum((counts_given, scores_path is not None, traces_path is not None))
+    if modes_given > 1:
         raise click.UsageError(
-            "--scores is mutually exclusive with --successes/--total."
+            "--scores, --traces, and --successes/--total are mutually exclusive."
         )
-    if scores_path is None and not counts_given:
+    if modes_given == 0:
         raise click.UsageError(
-            "Provide either --scores, or both --successes and --total."
+            "Provide one of --scores, --traces, or both --successes and --total."
         )
+
+    if traces_path is not None:
+        spans = load_spans(traces_path)
+        if not spans:
+            raise click.ClickException(f"{traces_path}: no Spans found")
+        click.echo(_format_span_report(spans, confidence))
+        return
 
     if scores_path is not None:
         scores = load_scores(scores_path)

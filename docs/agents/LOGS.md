@@ -608,3 +608,19 @@ Next steps / resume point:
 **Bugs found:** The DoS-relevant timeout bug described above — the main finding of this pass, not a byproduct.
 
 **Next steps / resume point:** `evals report --traces` and Bedrock's own real-adapter question (a founder call) remain from the same inventory sweep, neither started.
+
+---
+
+## [2026-09-04] `evals report --traces`
+
+**Files touched:** Modified `evals/evals/cli.py` (`report_cmd` gains a third mode; new `_format_span_report` helper), `evals/tests/test_cli_integration.py` (new `_make_span` fixture + 4 new tests; one existing test's exact-string assertion updated for the now-3-way "Provide one of..." usage error).
+
+**Intent/summary:** Explicitly user-directed, despite the original `docs/rfcs/2026-09-04-evals-trace-span-model.md`'s own "no consumer needs this yet" deferral — the user chose to build it anyway when asked. Mirrors `report --scores`'s CLI shape (a new mutually-exclusive `--traces <path>` mode) but not its exact reporting semantics, since `Span` has no `scorer_type`-like grouping key and no pass/fail concept in the same sense a `Score.value` has.
+
+**Decisions made:** Labeled the headline metric `ok_rate`, deliberately never `pass_rate` — a `Span`'s `OK`/`ERROR` status measures whether the sandbox execution itself completed without error (an infra-reliability signal), never an eval-quality judgment; reusing `pass_rate`'s wording would have silently conflated the two. Never grouped (unlike `--scores`) — no partition key exists on `Span` the way `scorer_type` does on `Score`; one aggregate line, mirroring `--successes`/`--total`'s own single-line simplicity. Added a genuinely new metric no other `report` mode shows: average sandbox execution duration (`end_time_unix_nano - start_time_unix_nano`), since `Span` is the only entity carrying real wall-clock start/end timestamps. Still Wilson-CI-bearing, per `PRD.md`'s "never a bare percentage" convention applied consistently. Generalized `report_cmd`'s mutual-exclusivity validation from a 2-mode to a true 3-mode check; one pre-existing test's exact-string usage-error assertion ("Provide either" → "Provide one of") updated to match, a deliberate, expected consequence of the message now covering 3 modes, not a regression.
+
+**Verification performed:** `cd evals && uv run pytest tests/ -v` → **150 passed, 9 skipped**; `ruff check .` → `All checks passed!`. Zero regressions — every pre-existing `report`/`run`/`rollout` test passed unmodified except the one intentionally-updated usage-error string. New tests prove: a real `ok_rate`/CI/`avg_duration_ms` line for a real 2-OK/1-ERROR span set (exact-string-matched, not just substring-checked); an empty traces file fails loudly (`no Spans found`); `--traces` is mutually exclusive with both `--scores` and `--successes`/`--total`.
+
+**Bugs found:** None — small, well-scoped CLI addition, no surprises.
+
+**Next steps / resume point:** Bedrock's real-adapter question remains, now explicitly greenlit by the user (grounding research already launched in parallel with this pass) — pick up separately. PyPI trademark clearance research also launched in parallel.

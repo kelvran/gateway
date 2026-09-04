@@ -34,8 +34,14 @@ from click.testing import CliRunner
 import evals.cli as cli_module
 import evals.rollout.scheduler as scheduler_module
 from evals.cli import main
-from evals.models import Score
-from evals.results_store import append_scores, load_runs, load_scores, load_spans
+from evals.models import Score, Span
+from evals.results_store import (
+    append_scores,
+    append_spans,
+    load_runs,
+    load_scores,
+    load_spans,
+)
 from evals.rollout.sandbox import SandboxResult
 
 _CI_PATTERN = re.compile(
@@ -248,7 +254,7 @@ def test_report_with_no_input_mode_fails_with_nonzero_exit():
     result = runner.invoke(main, ["report"])
 
     assert result.exit_code != 0
-    assert "Provide either" in result.output
+    assert "Provide one of" in result.output
 
 
 def test_report_scores_missing_file_fails_via_click_path_validation():
@@ -262,6 +268,84 @@ def test_report_scores_missing_file_fails_via_click_path_validation():
     # vaguer "no Scores found" ClickException.
     assert "no Scores found" not in result.output
     assert "does-not-exist.jsonl" in result.output
+
+
+def _make_span(status="OK", start_ns=0, duration_ms=10):
+    return Span(
+        span_id="a" * 16,
+        trace_id="b" * 32,
+        run_id="run-001",
+        name="sandbox.exec",
+        start_time_unix_nano=start_ns,
+        end_time_unix_nano=start_ns + duration_ms * 1_000_000,
+        status=status,
+        process_command_args=["echo", "hi"],
+        container_image_name="alpine:3.20",
+    )
+
+
+def test_report_traces_reads_persisted_spans(tmp_path):
+    traces_path = tmp_path / "traces.jsonl"
+    append_spans(
+        [
+            _make_span(status="OK", duration_ms=10),
+            _make_span(status="OK", duration_ms=20),
+            _make_span(status="ERROR", duration_ms=5),
+        ],
+        traces_path,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--traces", str(traces_path)])
+
+    assert result.exit_code == 0, result.output
+    # Wilson CI verified via the exact expected string, not _CI_PATTERN --
+    # that regex is scoped to the "pass_rate=" label, which this
+    # deliberately never uses (see _format_span_report's docstring).
+    assert result.output.strip() == (
+        "spans: ok_rate=0.6667 (2/3) 95% CI=[0.2077, 0.9385] avg_duration_ms=11.67"
+    )
+
+
+def test_report_traces_empty_file_fails_with_nonzero_exit(tmp_path):
+    traces_path = tmp_path / "traces.jsonl"
+    traces_path.write_text("")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--traces", str(traces_path)])
+
+    assert result.exit_code != 0
+    assert "no Spans found" in result.output
+
+
+def test_report_traces_mutually_exclusive_with_scores(tmp_path):
+    traces_path = tmp_path / "traces.jsonl"
+    append_spans([_make_span()], traces_path)
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(scores_path, [_make_score("c1", "deterministic", True)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["report", "--traces", str(traces_path), "--scores", str(scores_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_report_traces_mutually_exclusive_with_raw_counts(tmp_path):
+    traces_path = tmp_path / "traces.jsonl"
+    append_spans([_make_span()], traces_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["report", "--traces", str(traces_path), "--successes", "1", "--total", "1"],
+    )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
 
 
 def test_run_with_llm_judge_scores_via_real_wiring_using_a_fake_provider(

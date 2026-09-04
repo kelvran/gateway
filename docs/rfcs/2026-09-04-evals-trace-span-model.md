@@ -101,7 +101,7 @@ A small, self-contained module: the module-level `TracerProvider`/`_CapturingSpa
 - `container.id`/`process.pid` remain real, named gaps (see Drawbacks) — closing them requires a separate, scoped change to `sandbox.py`'s `docker run` invocation, not bundled here.
 - Whether spans should ever be exported to a real OTLP collector (rather than only persisted as JSONL) is explicitly not decided here — this RFC's `TracerProvider` has zero exporters wired, by design, and stays that way until a real consumer exists.
 - `Trace{spans:[Span]}`'s eventual shape once a multi-step harness exists is left to that future RFC.
-- A query/report command over persisted `Span`s (mirroring `evals report --scores`) — no consumer needs this yet; left as a real, deliberate gap.
+- ~~A query/report command over persisted `Span`s (mirroring `evals report --scores`) — no consumer needs this yet; left as a real, deliberate gap.~~ **Resolved 2026-09-04**: `evals report --traces` now real — an aggregate, never-grouped OK-rate-with-Wilson-CI line plus average sandbox execution duration, deliberately labeled `ok_rate` (not `pass_rate`) since a `Span`'s status measures sandbox-execution reliability, not eval quality.
 
 ## Research Trail
 
