@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from evals.models import EvalCase, Run, Score
+from evals.models import EvalCase, Run, Score, Span
 
 
 def _make_case(**overrides) -> EvalCase:
@@ -246,3 +246,64 @@ def test_score_instances_are_frozen():
     score = _make_score()
     with pytest.raises(ValidationError):
         score.value = False  # type: ignore[misc]
+
+
+def _make_span(**overrides) -> Span:
+    defaults = {
+        "span_id": "a" * 16,
+        "trace_id": "b" * 32,
+        "run_id": "run-001",
+        "name": "sandbox.exec",
+        "start_time_unix_nano": 1_000_000,
+        "end_time_unix_nano": 2_000_000,
+        "status": "OK",
+        "process_command_args": ["echo", "hello"],
+        "container_image_name": "alpine:3.20",
+    }
+    defaults.update(overrides)
+    return Span(**defaults)
+
+
+def test_span_construct_with_all_fields():
+    span = _make_span(
+        parent_span_id="c" * 16,
+        process_exit_code=0,
+        error=None,
+    )
+    assert span.span_id == "a" * 16
+    assert span.trace_id == "b" * 32
+    assert span.parent_span_id == "c" * 16
+    assert span.run_id == "run-001"
+    assert span.name == "sandbox.exec"
+    assert span.start_time_unix_nano == 1_000_000
+    assert span.end_time_unix_nano == 2_000_000
+    assert span.status == "OK"
+    assert span.process_command_args == ["echo", "hello"]
+    assert span.process_exit_code == 0
+    assert span.container_image_name == "alpine:3.20"
+    assert span.error is None
+
+
+def test_span_construct_with_only_required_fields():
+    span = _make_span()
+    assert span.parent_span_id is None
+    assert span.process_exit_code is None
+    assert span.error is None
+
+
+def test_span_error_status_carries_no_exit_code():
+    span = _make_span(status="ERROR", error="docker binary not found")
+    assert span.status == "ERROR"
+    assert span.process_exit_code is None
+    assert span.error == "docker binary not found"
+
+
+def test_span_invalid_status_rejected():
+    with pytest.raises(ValidationError):
+        _make_span(status="RUNNING")
+
+
+def test_span_instances_are_frozen():
+    span = _make_span()
+    with pytest.raises(ValidationError):
+        span.status = "ERROR"  # type: ignore[misc]

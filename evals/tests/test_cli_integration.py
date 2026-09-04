@@ -35,7 +35,7 @@ import evals.cli as cli_module
 import evals.rollout.scheduler as scheduler_module
 from evals.cli import main
 from evals.models import Score
-from evals.results_store import append_scores, load_runs, load_scores
+from evals.results_store import append_scores, load_runs, load_scores, load_spans
 from evals.rollout.sandbox import SandboxResult
 
 _CI_PATTERN = re.compile(
@@ -482,6 +482,7 @@ def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch)
 
     results_path = tmp_path / "results.jsonl"
     scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -493,6 +494,8 @@ def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch)
             str(results_path),
             "--scores",
             str(scores_path),
+            "--traces",
+            str(traces_path),
         ],
     )
 
@@ -517,6 +520,54 @@ def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch)
     assert persisted_scores[1].run_id == persisted_runs[1].id
     assert persisted_scores[1].value is False
     assert persisted_scores[1].cost_usd == Decimal("0")
+
+    persisted_spans = load_spans(traces_path)
+    assert len(persisted_spans) == 2
+    assert persisted_spans[0].run_id == persisted_runs[0].id
+    assert persisted_spans[0].status == "OK"
+    assert persisted_spans[1].run_id == persisted_runs[1].id
+    assert persisted_spans[1].status == "OK"
+
+
+def test_rollout_use_cache_second_invocations_cache_hits_produce_no_new_spans(
+    tmp_path, monkeypatch
+):
+    call_count = {"n": 0}
+
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        call_count["n"] += 1
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
+    args = [
+        "rollout",
+        "--suite",
+        "tests/fixtures/rollout_example.json",
+        "--results",
+        str(results_path),
+        "--scores",
+        str(scores_path),
+        "--traces",
+        str(traces_path),
+        "--use-cache",
+    ]
+    runner = CliRunner()
+
+    first = runner.invoke(main, args)
+    assert first.exit_code == 0, first.output
+    second = runner.invoke(main, args)
+    assert second.exit_code == 0, second.output
+
+    # 2 real executions total (both from the first invocation) -- the
+    # second invocation's 2 cases are both cache hits, so zero new spans.
+    persisted_spans = load_spans(traces_path)
+    assert len(persisted_spans) == 2
 
 
 def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
@@ -545,6 +596,7 @@ def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
 
     results_path = tmp_path / "results.jsonl"
     scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -556,6 +608,8 @@ def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
             str(results_path),
             "--scores",
             str(scores_path),
+            "--traces",
+            str(traces_path),
             "--llm-judge",
         ],
     )
@@ -618,6 +672,7 @@ def test_rollout_use_cache_skips_second_invocations_sandbox_calls(
 
     results_path = tmp_path / "results.jsonl"
     scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
     args = [
         "rollout",
         "--suite",
@@ -626,6 +681,8 @@ def test_rollout_use_cache_skips_second_invocations_sandbox_calls(
         str(results_path),
         "--scores",
         str(scores_path),
+        "--traces",
+        str(traces_path),
         "--use-cache",
     ]
     runner = CliRunner()
@@ -659,6 +716,7 @@ def test_rollout_without_use_cache_reruns_everything_every_time(tmp_path, monkey
 
     results_path = tmp_path / "results.jsonl"
     scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
     args = [
         "rollout",
         "--suite",
@@ -667,6 +725,8 @@ def test_rollout_without_use_cache_reruns_everything_every_time(tmp_path, monkey
         str(results_path),
         "--scores",
         str(scores_path),
+        "--traces",
+        str(traces_path),
     ]
     runner = CliRunner()
     runner.invoke(main, args)
@@ -677,6 +737,7 @@ def test_rollout_without_use_cache_reruns_everything_every_time(tmp_path, monkey
 
 def test_rollout_early_stop_flags_must_be_given_together(tmp_path):
     scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
     results_path = tmp_path / "results.jsonl"
     runner = CliRunner()
     result = runner.invoke(
@@ -689,6 +750,8 @@ def test_rollout_early_stop_flags_must_be_given_together(tmp_path):
             str(results_path),
             "--scores",
             str(scores_path),
+            "--traces",
+            str(traces_path),
             "--early-stop-min-trials",
             "2",
             # deliberately omitting the other two flags
@@ -711,6 +774,7 @@ def test_rollout_early_stop_skips_remaining_trials_and_total_excludes_them(
     suite_path = _repeated_trial_suite_path(tmp_path, n=6)
     results_path = tmp_path / "results.jsonl"
     scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -722,6 +786,8 @@ def test_rollout_early_stop_skips_remaining_trials_and_total_excludes_them(
             str(results_path),
             "--scores",
             str(scores_path),
+            "--traces",
+            str(traces_path),
             "--early-stop-min-trials",
             "2",
             "--early-stop-max-trials",
@@ -768,6 +834,7 @@ def test_rollout_early_stop_with_llm_judge_never_double_calls_judge(
     suite_path = _repeated_trial_suite_path(tmp_path, n=6)
     results_path = tmp_path / "results.jsonl"
     scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -779,6 +846,8 @@ def test_rollout_early_stop_with_llm_judge_never_double_calls_judge(
             str(results_path),
             "--scores",
             str(scores_path),
+            "--traces",
+            str(traces_path),
             "--llm-judge",
             "--early-stop-min-trials",
             "2",
@@ -807,6 +876,8 @@ def test_rollout_missing_suite_file_fails_with_nonzero_exit():
             "unused.jsonl",
             "--scores",
             "unused_scores.jsonl",
+            "--traces",
+            "unused_traces.jsonl",
         ],
     )
 
@@ -822,6 +893,7 @@ def test_rollout_missing_suite_file_fails_with_nonzero_exit():
 def test_rollout_against_a_real_docker_daemon(tmp_path):
     results_path = tmp_path / "results.jsonl"
     scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -833,6 +905,8 @@ def test_rollout_against_a_real_docker_daemon(tmp_path):
             str(results_path),
             "--scores",
             str(scores_path),
+            "--traces",
+            str(traces_path),
         ],
     )
 

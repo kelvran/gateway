@@ -426,6 +426,98 @@ def test_cache_hit_still_flows_through_early_stop_tally(monkeypatch):
     assert [r.status for r in runs] == ["completed", "skipped", "skipped"]
 
 
+def test_span_sink_none_reproduces_todays_exact_behavior(monkeypatch):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="hi\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    runs = asyncio.run(run_suite([_make_case("c1", ["echo", "hi"])]))
+
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+
+
+def test_span_sink_records_one_ok_span_per_successful_real_execution(monkeypatch):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="hi\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    span_sink = []
+    runs = asyncio.run(
+        run_suite([_make_case("c1", ["echo", "hi"])], span_sink=span_sink)
+    )
+
+    assert len(span_sink) == 1
+    assert span_sink[0].run_id == runs[0].id
+    assert span_sink[0].status == "OK"
+    assert span_sink[0].process_exit_code == 0
+    assert span_sink[0].error is None
+
+
+def test_span_sink_records_one_error_span_per_sandbox_launch_failure(monkeypatch):
+    async def _raise_file_not_found(image, command, timeout_s):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _raise_file_not_found)
+
+    span_sink = []
+    runs = asyncio.run(
+        run_suite([_make_case("c1", ["echo", "hi"])], span_sink=span_sink)
+    )
+
+    assert len(span_sink) == 1
+    assert span_sink[0].run_id == runs[0].id
+    assert span_sink[0].status == "ERROR"
+    assert span_sink[0].process_exit_code is None
+    assert span_sink[0].error is not None
+    assert "docker" in span_sink[0].error
+
+
+def test_span_sink_records_nothing_for_a_cache_hit(monkeypatch):
+    async def _fail_if_called(image, command, timeout_s):
+        raise AssertionError("run_in_sandbox must not be called on a cache hit")
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fail_if_called)
+
+    case = _make_case("c1", ["echo", "hi"])
+    prior = _make_run(case, stdout="from-earlier-real-run\n")
+
+    span_sink = []
+    runs = asyncio.run(
+        run_suite([case], cached_runs={prior.cache_key: prior}, span_sink=span_sink)
+    )
+
+    assert runs[0].from_cache is True
+    assert span_sink == []
+
+
+def test_span_sink_records_nothing_for_an_early_stop_skip(monkeypatch):
+    async def _always_succeed(image, command, timeout_s):
+        return SandboxResult(exit_code=0, stdout="hi\n", stderr="", timed_out=False)
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _always_succeed)
+
+    async def _always_true(case, run):
+        return True
+
+    early_stop = EarlyStopConfig(
+        min_trials=2, max_trials=10, baseline_pass_rate=0.01, score_fn=_always_true
+    )
+    span_sink = []
+    runs = asyncio.run(
+        run_suite(_repeated_cases("c1", 6), early_stop=early_stop, span_sink=span_sink)
+    )
+
+    skipped_count = sum(1 for r in runs if r.status == "skipped")
+    real_count = len(runs) - skipped_count
+    assert skipped_count > 0
+    # Exactly one span per genuinely-executed trial, zero for the skips.
+    assert len(span_sink) == real_count
+    assert all(s.status == "OK" for s in span_sink)
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(
     os.environ.get("RUN_DOCKER_TESTS") != "1",
@@ -438,3 +530,19 @@ def test_run_suite_against_a_real_docker_daemon():
     assert len(runs) == 1
     assert runs[0].status == "completed"
     assert "hello-scheduler" in runs[0].stdout
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.environ.get("RUN_DOCKER_TESTS") != "1",
+    reason="requires a live Docker daemon; set RUN_DOCKER_TESTS=1 to run",
+)
+def test_run_suite_span_sink_against_a_real_docker_daemon():
+    case = _make_case("real-c1", ["echo", "hello-scheduler"])
+    span_sink = []
+    runs = asyncio.run(run_suite([case], span_sink=span_sink))
+
+    assert len(span_sink) == 1
+    assert span_sink[0].run_id == runs[0].id
+    assert span_sink[0].status == "OK"
+    assert span_sink[0].process_exit_code == 0

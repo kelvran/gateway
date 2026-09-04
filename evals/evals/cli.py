@@ -28,8 +28,14 @@ import click
 from evals.judge.deterministic import exact_match, regex_match
 from evals.judge.llm_judge import JudgeResult, judge
 from evals.judge.providers import DEFAULT_JUDGE_MODEL, make_anthropic_call_model
-from evals.models import EvalCase, Run, Score
-from evals.results_store import append_runs, append_scores, load_runs, load_scores
+from evals.models import EvalCase, Run, Score, Span
+from evals.results_store import (
+    append_runs,
+    append_scores,
+    append_spans,
+    load_runs,
+    load_scores,
+)
 from evals.rollout.scheduler import EarlyStopConfig, run_suite
 from evals.stats import wilson_interval
 
@@ -301,6 +307,18 @@ def run_cmd(
     help="JSONL file each Score is appended to (created if it doesn't exist).",
 )
 @click.option(
+    "--traces",
+    "traces_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=(
+        "JSONL file each real sandbox-execution Span is appended to "
+        "(created if it doesn't exist). One Span per genuinely-executed "
+        "trial -- never for a cache hit or an early-stop skip. See "
+        "docs/rfcs/2026-09-04-evals-trace-span-model.md."
+    ),
+)
+@click.option(
     "--llm-judge",
     is_flag=True,
     default=False,
@@ -354,6 +372,7 @@ def rollout_cmd(
     suite_path: Path,
     results_path: Path,
     scores_path: Path,
+    traces_path: Path,
     llm_judge: bool,
     confidence: float,
     use_cache: bool,
@@ -388,6 +407,7 @@ def rollout_cmd(
     successes = 0
     total = 0
     scores: list[Score] = []
+    span_sink: list[Span] = []
 
     async def _score_and_record(case: EvalCase, run: Run) -> bool:
         """Grade one real trial exactly once, whether awaited from inside
@@ -470,7 +490,10 @@ def rollout_cmd(
                 confidence=confidence,
             )
             runs = await run_suite(
-                cases, cached_runs=cached_runs, early_stop=early_stop
+                cases,
+                cached_runs=cached_runs,
+                early_stop=early_stop,
+                span_sink=span_sink,
             )
             # Scoring already happened inside run_suite via score_fn above
             # — this loop is purely for operator visibility into skipped
@@ -481,7 +504,7 @@ def rollout_cmd(
                 if run.status == "skipped":
                     click.echo(f"{case.id}: SKIPPED")
         else:
-            runs = await run_suite(cases, cached_runs=cached_runs)
+            runs = await run_suite(cases, cached_runs=cached_runs, span_sink=span_sink)
             for case, run in zip(cases, runs, strict=True):
                 await _score_and_record(case, run)
         return runs
@@ -490,6 +513,7 @@ def rollout_cmd(
     append_runs(runs, results_path)
 
     append_scores(scores, scores_path)
+    append_spans(span_sink, traces_path)
     click.echo(format_report(successes, total, confidence=confidence))
 
 

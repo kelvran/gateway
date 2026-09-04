@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from evals.models import Run, Score
+from evals.models import Run, Score, Span
 
 
 def _append_models[ModelT: BaseModel](models: list[ModelT], path: Path) -> None:
@@ -66,3 +66,13 @@ def append_scores(scores: list[Score], path: Path) -> None:
 def load_scores(path: Path) -> list[Score]:
     """Load every `Score` recorded at `path`, in append order."""
     return _load_models(Score, path)
+
+
+def append_spans(spans: list[Span], path: Path) -> None:
+    """Append each `Span` in `spans` to `path` as one JSON line."""
+    _append_models(spans, path)
+
+
+def load_spans(path: Path) -> list[Span]:
+    """Load every `Span` recorded at `path`, in append order."""
+    return _load_models(Span, path)

@@ -33,7 +33,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from evals.models import EvalCase, Run
+from evals import tracing
+from evals.models import EvalCase, Run, Span
 from evals.rollout.cache import compute_run_cache_key
 from evals.rollout.sandbox import run_in_sandbox
 from evals.stats import two_checkpoint_early_stop
@@ -85,13 +86,20 @@ async def run_suite(
     *,
     cached_runs: dict[str, Run] | None = None,
     early_stop: EarlyStopConfig | None = None,
+    span_sink: list[Span] | None = None,
 ) -> list[Run]:
     """Execute every case in `cases` sequentially, returning one `Run` each.
 
-    `cached_runs`/`early_stop` are both keyword-only and both default to
-    `None` — omitting either (or both) reproduces the exact behavior this
-    function had before docs/rfcs/2026-09-04-evals-rollout-cost-
+    `cached_runs`/`early_stop`/`span_sink` are all keyword-only and all
+    default to `None` — omitting all three reproduces the exact behavior
+    this function had before docs/rfcs/2026-09-04-evals-rollout-cost-
     mitigation.md.
+
+    `span_sink`, per docs/rfcs/2026-09-04-evals-trace-span-model.md: when
+    given, exactly one `Span` is appended for every real
+    `run_in_sandbox()` attempt (success or exception) -- never for a cache
+    hit or an early-stop skip, neither of which represents a real
+    execution to trace.
     """
     runs: list[Run] = []
     group_tallies: dict[tuple[str, int], tuple[int, int]] = {}
@@ -164,6 +172,14 @@ async def run_suite(
             )
             runs.append(run)
         else:
+            run_id = uuid.uuid4().hex
+            otel_span = (
+                tracing.start_sandbox_span(
+                    image=harness_config["image"], command=harness_config["command"]
+                )
+                if span_sink is not None
+                else None
+            )
             start = time.monotonic()
             try:
                 result = await run_in_sandbox(
@@ -176,7 +192,7 @@ async def run_suite(
                 # scoreable Run, not an aborted suite.
                 latency_ms = (time.monotonic() - start) * 1000
                 run = Run(
-                    id=uuid.uuid4().hex,
+                    id=run_id,
                     eval_case_id=case.id,
                     eval_case_revision=case.revision,
                     harness_config=harness_config,
@@ -186,12 +202,23 @@ async def run_suite(
                     cache_key=cache_key,
                 )
                 runs.append(run)
+                if otel_span is not None:
+                    span_sink.append(
+                        tracing.finish_sandbox_span(
+                            otel_span,
+                            run_id=run_id,
+                            image=harness_config["image"],
+                            command=harness_config["command"],
+                            exit_code=None,
+                            error=str(exc),
+                        )
+                    )
                 await tally_and_maybe_stop(case, run)
                 continue
 
             latency_ms = (time.monotonic() - start) * 1000
             run = Run(
-                id=uuid.uuid4().hex,
+                id=run_id,
                 eval_case_id=case.id,
                 eval_case_revision=case.revision,
                 harness_config=harness_config,
@@ -203,6 +230,17 @@ async def run_suite(
                 cache_key=cache_key,
             )
             runs.append(run)
+            if otel_span is not None:
+                span_sink.append(
+                    tracing.finish_sandbox_span(
+                        otel_span,
+                        run_id=run_id,
+                        image=harness_config["image"],
+                        command=harness_config["command"],
+                        exit_code=result.exit_code,
+                        error=None,
+                    )
+                )
 
         await tally_and_maybe_stop(case, run)
 

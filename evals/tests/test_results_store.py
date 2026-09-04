@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from evals.models import Run, Score
-from evals.results_store import append_runs, append_scores, load_runs, load_scores
+from evals.models import Run, Score, Span
+from evals.results_store import (
+    append_runs,
+    append_scores,
+    append_spans,
+    load_runs,
+    load_scores,
+    load_spans,
+)
 
 
 def _make_run(run_id: str) -> Run:
@@ -27,6 +34,21 @@ def _make_score(scorer_id: str) -> Score:
         scorer_id=scorer_id,
         scorer_type="deterministic",
         value=True,
+    )
+
+
+def _make_span(span_id: str) -> Span:
+    return Span(
+        span_id=span_id,
+        trace_id="b" * 32,
+        run_id="run-001",
+        name="sandbox.exec",
+        start_time_unix_nano=1_000_000,
+        end_time_unix_nano=2_000_000,
+        status="OK",
+        process_command_args=["echo", "hi"],
+        process_exit_code=0,
+        container_image_name="alpine:3.20",
     )
 
 
@@ -82,3 +104,30 @@ def test_append_scores_accumulates_across_calls_rather_than_overwriting(
     loaded = load_scores(path)
 
     assert [s.scorer_id for s in loaded] == ["exact_match", "regex_match"]
+
+
+def test_load_spans_on_nonexistent_path_returns_empty_list(tmp_path: Path):
+    assert load_spans(tmp_path / "does-not-exist.jsonl") == []
+
+
+def test_append_then_load_round_trips_spans(tmp_path: Path):
+    path = tmp_path / "traces.jsonl"
+    spans = [_make_span("s1"), _make_span("s2")]
+
+    append_spans(spans, path)
+    loaded = load_spans(path)
+
+    assert loaded == spans
+
+
+def test_append_spans_accumulates_across_calls_rather_than_overwriting(
+    tmp_path: Path,
+):
+    path = tmp_path / "traces.jsonl"
+
+    append_spans([_make_span("s1")], path)
+    append_spans([_make_span("s2"), _make_span("s3")], path)
+
+    loaded = load_spans(path)
+
+    assert [s.span_id for s in loaded] == ["s1", "s2", "s3"]
