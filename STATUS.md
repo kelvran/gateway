@@ -70,7 +70,7 @@ Previously: Tier 2, first item — real graceful shutdown (SIGTERM/SIGINT handli
 
 ## Next Action
 
-Rolling-window budget reset is ready to commit + push + watch CI. Continuing Tier 2: Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Rolling-window budget reset is closed: committed (`e638465`), pushed, confirmed green on CI run `33955988259`. Continuing Tier 2: Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
