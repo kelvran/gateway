@@ -62,7 +62,7 @@ budget:
   persist_path: "kelvran-budget.db"   # optional; omit for pure in-memory (today's behavior)
 ```
 
-`buildPipeline` (not a new call in `run()`, unlike `telemetry.Init` — this has no global side effect, so it stays exactly where every other dependency `buildPipeline` already constructs lives) opens the store when `persist_path` is set, otherwise constructs `budget.NewTracker()` exactly as today — every existing integration-test call site that never sets this field needs zero changes. `dataplane.Pipeline` gains a `Close() error` (cascading to `budget.Tracker.Close()`), and `run()` defers it — the same "best-effort, only exercised on a clean `ListenAndServe` return, not a real SIGTERM" caveat the OTel RFC's shutdown func already has, stated here rather than implied.
+`buildPipeline` (not a new call in `run()`, unlike `telemetry.Init` — this has no global side effect, so it stays exactly where every other dependency `buildPipeline` already constructs lives) opens the store when `persist_path` is set, otherwise constructs `budget.NewTracker()` exactly as today — every existing integration-test call site that never sets this field needs zero changes. `dataplane.Pipeline` gains a `Close() error` (cascading to `budget.Tracker.Close()`), and `run()` defers it. Originally best-effort only (exercised on a clean `ListenAndServe` return, not a real SIGTERM), matching the OTel RFC's shutdown func's own original caveat — both became real on every exit path once `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md`'s graceful-shutdown gap was closed on 2026-09-05.
 
 ## Drawbacks
 

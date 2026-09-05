@@ -31,6 +31,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -65,6 +67,14 @@ const (
 	defaultRefillPerSecond = 10
 )
 
+// gracefulShutdownTimeout bounds how long an in-flight request (most
+// realistically a long streaming SSE/eventstream response) gets to
+// finish after a SIGTERM/SIGINT before the process force-exits
+// regardless. A fixed default, not a config field — nothing in this
+// codebase's own tests runs anywhere close to it, and a config knob
+// nobody has asked for yet would be premature.
+const gracefulShutdownTimeout = 30 * time.Second
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the gateway's YAML config file")
 	flag.Parse()
@@ -96,35 +106,64 @@ func run(configPath string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("initializing telemetry: %w", err)
 	}
-	// Best-effort: this binary has no SIGTERM/graceful-shutdown handling
-	// yet (a real, pre-existing gap this RFC's Drawbacks section names,
-	// not something introduced here), so this only actually flushes if
-	// ListenAndServe below returns due to an error, not on a real process
-	// signal. The SDK's batch span processor still exports periodically
-	// regardless.
+	// Real as of 2026-09-05 (previously best-effort only, a gap this
+	// RFC's own Drawbacks section named): flushes on both a clean
+	// ListenAndServe error return AND a real SIGTERM/SIGINT, since
+	// server.Shutdown below now always returns before this defer runs,
+	// on every exit path.
 	defer func() { _ = shutdown(context.Background()) }()
 
 	pipeline, err := buildPipeline(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("building pipeline: %w", err)
 	}
-	// Best-effort, same caveat as the telemetry shutdown above: only
-	// exercised on a clean ListenAndServe error return, not a real
-	// process signal (this binary has no SIGTERM handling yet). Every
-	// budget update is already durably persisted synchronously by
-	// Record itself (docs/rfcs/2026-09-03-budget-persistence.md), so
-	// this Close is about releasing the bbolt file's exclusive lock
-	// cleanly, not about flushing unwritten data.
+	// Real on every exit path as of 2026-09-05, same reasoning as the
+	// telemetry shutdown above. Every budget update is already durably
+	// persisted synchronously by Record itself
+	// (docs/rfcs/2026-09-03-budget-persistence.md), so this Close is
+	// about releasing the bbolt file's exclusive lock cleanly, not about
+	// flushing unwritten data.
 	defer func() { _ = pipeline.Close() }()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
 
-	logger.Info("gateway listening", "addr", cfg.ListenAddr)
-	if err := http.ListenAndServe(cfg.ListenAddr, wrapHTTPServerSpan(mux)); err != nil {
-		return fmt.Errorf("http server: %w", err)
+	server := &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: wrapHTTPServerSpan(mux),
 	}
-	return nil
+
+	// ctx is canceled the moment a real SIGTERM/SIGINT arrives. stop
+	// un-registers the signal handler once this function is done reacting
+	// to one, restoring Go's own default (exit) behavior for anything
+	// received afterward — including a second, impatient signal during
+	// the graceful drain below, which should still be able to force-kill
+	// the process rather than being silently absorbed forever.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		logger.Info("gateway listening", "addr", cfg.ListenAddr)
+		serveErr <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		stop()
+		logger.Info("gateway shutting down", "reason", context.Cause(ctx))
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("graceful shutdown: %w", err)
+		}
+		return nil
+	}
 }
 
 // wrapHTTPServerSpan adds a generic HTTP-server-level span (via otelhttp)

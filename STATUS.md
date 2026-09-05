@@ -14,23 +14,11 @@ Real source code now exists in `gateway/` and `evals/`, but it is a **deliberate
 
 ## Current Phase
 
-A full repo-wide backlog audit (7-agent dynamic workflow: 6 independent angles — PRD.md v1 scope, every RFC's own Unresolved Questions, STATUS.md/DECISIONS.md, THREAT_MODEL.md/SECURITY.md, in-code TODO/stub markers, evals-specific gaps — each verifying its own claims against live code, plus one synthesis pass) produced a ranked, categorized punch list of every remaining Kelvran work item, and surfaced 4 real doc-vs-code staleness bugs along the way. The user asked for the items ranked by value and to proceed through them in flow. Tier 0 of that ranking (documentation-accuracy fixes, near-zero cost) is done: corrected `THREAT_MODEL.md`'s Cache Repudiation row (claimed cache-hit provenance — age/similarity/layer — is surfaced; only a flat boolean ever leaves the cache decision) and Denial-of-Service row (claimed request coalescing/singleflight exists; zero such code anywhere, confirmed via grep and a direct read of `checkCache`) — neither had been caught by the 2026-09-04 correction sweep that fixed the neighboring rows. Also corrected `evals/ARCHITECTURE.md`'s skeptic-panel footnote (overstated `judge()`'s single-callable DI seam as a pre-built multi-judge interface) and added a `DECISIONS.md` entry flagging that several later entries had misattributed Cache L2's real deferral reason (a demonstrated collision risk) to "no production telemetry" (the L3 embedding deferral's actual reason, conflated with L2's different one).
+Working through a repo-wide backlog audit's ranked punch list (produced by a 7-agent dynamic workflow, then approved by the user for "proceed through them in flow"): Tier 0 (4 doc-accuracy fixes) and Tier 1 (6 small, no-blocker items: evals sandbox `--read-only`/`--tmpfs`, `go-arch-lint`, `.importlinter`, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock errors) are **fully closed**. Now on Tier 2 (medium-effort, no-blocker items), first item done: real graceful shutdown (SIGTERM/SIGINT handling) for `cmd/gateway` — `run()` uses `signal.NotifyContext` + `http.Server.Shutdown` (30s drain) instead of a bare `ListenAndServe`, so telemetry-flush and `pipeline.Close()` now run on every real exit path. Proved end-to-end via a self-signaling integration test; sanity-checked by temporarily reverting and confirming a real SIGTERM killed the whole test process outright without the fix.
 
-Tier 1, first item done: `evals/evals/rollout/sandbox.py`'s `run_in_sandbox()` now passes `--read-only`/`--tmpfs=/tmp` — a genuine Kelvran-built ephemeral-filesystem guarantee, closing the exact gap `THREAT_MODEL.md`'s Evals Information Disclosure row named. Two new regression tests against a real Docker daemon; all 160 `evals` tests pass (`RUN_DOCKER_TESTS=1`), zero regressions.
+Remaining Tier 2 items: rolling-window budget reset, Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops.
 
-Tier 1, second item done: real `go-arch-lint` v1.18.0 dependency-direction enforcement wired into `gateway`'s CI job and `make lint-gateway`, closing the gap `gateway/ARCHITECTURE.md` already named as "not actually wired." Building the config from a directly-verified import graph (not the doc's own prose) caught 2 real doc-vs-code staleness instances in that same rules table (`provideradapter`/bare `gateway` — both stale package names, corrected to `internal/adapter`/`internal/gateway/dataplane`+`controlplane`). Sanity-checked the config catches real violations (temporarily injected one, confirmed it was flagged, reverted) before trusting a clean pass.
-
-Tier 1, third item done: real `.importlinter` v2.15 layer-contract enforcement wired into `evals`'s CI job and `make lint-evals` — closing the gap `evals/ARCHITECTURE.md` already named as the Python analogue of `go-arch-lint`. Built from the real, verified import graph; generated protobuf stubs (no `__init__.py`) deliberately left undeclared, since `import-linter` genuinely cannot resolve a namespace package as a layer. Sanity-checked the same way as `go-arch-lint`: injected a real violation, confirmed it was caught, reverted.
-
-Tier 1, fourth item done: real `otelhttp` middleware wired into `cmd/gateway/main.go` (`wrapHTTPServerSpan`) — closes the follow-on the OTel RFC named as "a legitimate, independent future addition." New end-to-end test proves real nesting (matching `TraceID`/`ParentSpanID`), not just "2 spans exist," sanity-checked by temporarily disabling the wrapping and confirming the test fails.
-
-Tier 1, fifth item done: a second (OpenAI) LLM-judge provider for `evals` — `providers.py` gained `make_openai_call_model()`, mirroring the existing Anthropic provider's design exactly, zero signature change to `judge()`. Confirmed the real, installed `openai` SDK's field names via introspection before writing code; default model `gpt-4o-mini`, priced from a live fetch of OpenAI's current pricing page. `cli.py` deliberately left unwired to it (no `--judge-provider` flag) — the RFC only asked for the follow-on function itself to be unblocked. 8 new tests, zero regressions (158 passed, up from 150, 11 skipped unchanged).
-
-Tier 1, sixth and final item done: per-exception-type Bedrock streaming error handling — `bedrock.StreamDecoder.Decode` now maps ConverseStream's 5 real `:exception-type` values to their own typed sentinels (confirmed against `aws-sdk-go-v2`'s own source to be exactly this set, not the 6-value set a sibling streaming API supports). **Tier 1 of the ranked backlog audit is now fully closed** — all 6 items shipped: sandbox `--read-only`/`--tmpfs`, `go-arch-lint`, `.importlinter`, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock errors.
-
-Previously: real Bedrock `ConverseStream` streaming support, closing the follow-on the buffered Bedrock adapter pass explicitly deferred (see `docs/rfcs/2026-09-04-bedrock-converse-stream.md`). Committed `92a80af`, confirmed green on CI run `33903861251`.
-
-Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `DECISIONS.md` (one line per decision) — not restated here beyond the current + immediately-previous phase, to keep this section from growing unbounded.
+Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `DECISIONS.md` (one line per decision) — not restated here beyond the current phase, to keep this section from growing unbounded.
 
 ## Verification State (measured, not assumed)
 
@@ -76,13 +64,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 1, sixth and final item: per-exception-type Bedrock streaming error handling. This closes Tier 1 entirely. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 2, first item: real graceful shutdown (SIGTERM/SIGINT handling) for `cmd/gateway`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: Tier 1, fifth item — a second (OpenAI) LLM-judge provider for `evals`. Committed `3da6116`, confirmed green on CI run `33925763225`.
+Previously: Tier 1, sixth and final item — per-exception-type Bedrock streaming error handling, closing Tier 1 entirely. Committed `5e7acdf`, confirmed green on CI run `33927254694`.
 
 ## Next Action
 
-Per-exception-type Bedrock error handling is closed: committed (`5e7acdf`), pushed, confirmed green on CI run `33927254694` (all 3 jobs). **Tier 1 of the ranked backlog is now fully closed.** The ranked backlog moves to Tier 2 next (medium-effort items: graceful SIGTERM shutdown, rolling-window budget reset, Score-level judge caching + real SPRT, admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops). Worth a fresh check-in with the user before continuing into Tier 2, since Tier 1 (the small, safe, no-blocker tier) is now exhausted. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Graceful shutdown is ready to commit + push + watch CI. Continuing Tier 2: rolling-window budget reset, Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
