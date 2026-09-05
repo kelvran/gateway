@@ -73,7 +73,7 @@ Previously: Tier 2, third item — real `Score`-level (LLM-judge) result caching
 
 ## Next Action
 
-Multi-axis judging is implemented and fully verified locally (177 passed/11 skipped; real-Docker 69 passed; import-linter clean) but **not yet committed/pushed/CI-confirmed** — that's the immediate next step. After that, continuing Tier 2: real SPRT/anytime-valid sequential testing, an admin API v1 slice, bootstrap/Bayesian eval stats, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. (Vertex AI OAuth2 auth was dropped from the active backlog per the brainstorming check-in.) The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Multi-axis judging is closed: committed (`5bc2ffd`), pushed, confirmed green on CI run `33960909939` (all 3 jobs). Continuing Tier 2: real SPRT/anytime-valid sequential testing, an admin API v1 slice, bootstrap/Bayesian eval stats, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. (Vertex AI OAuth2 auth was dropped from the active backlog per the brainstorming check-in.) The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
