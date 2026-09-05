@@ -555,6 +555,136 @@ def test_run_llm_judge_call_error_marks_judge_error_and_does_not_abort_suite(
     assert persisted[0].value is True
 
 
+def test_run_use_score_cache_second_invocation_makes_no_new_judge_calls(
+    tmp_path, monkeypatch
+):
+    call_count = {"n": 0}
+
+    async def fake_call_model(prompt: str) -> str:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "REASONING: matches exactly.\nVERDICT: PASS\n"
+        return "REASONING: does not match.\nVERDICT: FAIL\n"
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    args = [
+        "run",
+        "--suite",
+        "tests/fixtures/llm_judge_example.json",
+        "--scores",
+        str(scores_path),
+        "--llm-judge",
+        "--use-score-cache",
+    ]
+    runner = CliRunner()
+
+    first = runner.invoke(main, args)
+    assert first.exit_code == 0, first.output
+    assert call_count["n"] == 2
+
+    second = runner.invoke(main, args)
+    assert second.exit_code == 0, second.output
+    # Both cases hit the score cache on the second invocation -- no new
+    # judge calls at all.
+    assert call_count["n"] == 2
+    assert "judge-pass-case: PASS" in second.output
+    assert "judge-fail-case: FAIL" in second.output
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 4
+    assert persisted[2].from_cache is True
+    assert persisted[2].cost_usd == Decimal("0")
+    assert persisted[2].value == persisted[0].value
+    assert persisted[2].rationale == persisted[0].rationale
+    assert persisted[3].from_cache is True
+
+
+def test_run_without_use_score_cache_rejudges_every_time(tmp_path, monkeypatch):
+    call_count = {"n": 0}
+
+    async def fake_call_model(prompt: str) -> str:
+        call_count["n"] += 1
+        return "REASONING: ok.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    args = [
+        "run",
+        "--suite",
+        "tests/fixtures/llm_judge_example.json",
+        "--scores",
+        str(scores_path),
+        "--llm-judge",
+    ]
+    runner = CliRunner()
+    runner.invoke(main, args)
+    runner.invoke(main, args)
+
+    assert call_count["n"] == 4
+
+
+def test_rollout_use_score_cache_second_invocation_makes_no_new_judge_calls(
+    tmp_path, monkeypatch
+):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    call_count = {"n": 0}
+
+    async def fake_call_model(prompt: str) -> str:
+        call_count["n"] += 1
+        return "REASONING: ok.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
+    args = [
+        "rollout",
+        "--suite",
+        "tests/fixtures/rollout_example.json",
+        "--results",
+        str(results_path),
+        "--scores",
+        str(scores_path),
+        "--traces",
+        str(traces_path),
+        "--llm-judge",
+        "--use-score-cache",
+    ]
+    runner = CliRunner()
+
+    first = runner.invoke(main, args)
+    assert first.exit_code == 0, first.output
+    assert call_count["n"] == 2
+
+    second = runner.invoke(main, args)
+    assert second.exit_code == 0, second.output
+    # Every real Run is re-executed (no --use-cache here), but each one's
+    # captured stdout is byte-identical to the first invocation's, so the
+    # judge call itself is skipped both times on the second pass.
+    assert call_count["n"] == 2
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 4
+    assert persisted[2].from_cache is True
+    assert persisted[3].from_cache is True
+
+
 def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch):
     async def _fake_run_in_sandbox(image, command, timeout_s):
         # command is ["echo", <word>] for both fixture cases.

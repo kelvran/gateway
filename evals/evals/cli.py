@@ -20,13 +20,15 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
 import click
 
+from evals.judge.cache import compute_score_cache_key
 from evals.judge.deterministic import exact_match, regex_match
-from evals.judge.llm_judge import JudgeResult, judge
+from evals.judge.llm_judge import judge
 from evals.judge.providers import DEFAULT_JUDGE_MODEL, make_anthropic_call_model
 from evals.models import EvalCase, Run, Score, Span
 from evals.results_store import (
@@ -103,6 +105,25 @@ def _deterministic_scorer_id(case: EvalCase) -> str:
     return "exact_match" if match_kind == "exact" else "regex_match"
 
 
+def _load_cached_scores(scores_path: Path) -> dict[str, Score]:
+    """Build the `--use-score-cache` lookup table from `scores_path`,
+    mirroring `rollout_cmd`'s own `cached_runs` construction pattern
+    exactly (see `load_runs(results_path)` there): only real `llm_judge`
+    Scores that are themselves NOT cache hits are eligible sources — the
+    same "never chain a hit off a hit" discipline `Run.from_cache`
+    filtering already established, applied here for the identical reason.
+    Safe to call even if `scores_path` doesn't exist yet (a fresh file is
+    a valid starting state, per `load_scores`'s own doc comment).
+    """
+    return {
+        s.score_cache_key: s
+        for s in load_scores(scores_path)
+        if s.scorer_type == "llm_judge"
+        and not s.from_cache
+        and s.score_cache_key is not None
+    }
+
+
 def _last_judge_call_cost_usd(
     call_model: Callable[[str], Awaitable[str]],
 ) -> Decimal | None:
@@ -118,45 +139,99 @@ def _last_judge_call_cost_usd(
     return last_call_cost.cost_usd if last_call_cost is not None else None
 
 
-def _judge_output(
-    output: str,
-    reference: str | None,
-    call_model: Callable[[str], Awaitable[str]],
-    case_id: str,
-) -> JudgeResult | None:
-    """Score `output` against `reference` with a real LLM-judge call.
-
-    Returns the full `JudgeResult` (never just `.passed`) so the caller can
-    persist `rationale`/`bias_mitigations_applied` as a `Score` — see
-    docs/rfcs/2026-09-04-evals-score-model.md, which closed the gap where
-    this function used to discard both after extracting only the bool.
-
-    Returns `None` when the judge call itself fails (a malformed response,
-    an SDK/network error) — the caller counts that as a judged error and
-    moves on to the next case, mirroring
-    `evals.rollout.scheduler.run_suite`'s "one case's failure never aborts
-    the suite" precedent. A missing reference is a suite-authoring error,
-    not a judge-call failure, so it raises rather than being swallowed.
+@dataclass(frozen=True)
+class _JudgeOutcome:
+    """The uniform result of judging one case, whether via a real
+    `judge()` call or a `--use-score-cache` hit — lets both `run_cmd` and
+    `rollout_cmd` build their `Score` from one shape regardless of which
+    path produced it, per docs/rfcs/2026-09-05-evals-score-cache.md.
     """
-    if reference is None:
-        raise click.ClickException(
-            f"case {case_id!r}: LLM-judge scoring requires a reference"
+
+    passed: bool
+    rationale: str | None
+    bias_mitigations_applied: list[str]
+    cost_usd: Decimal | None
+    score_cache_key: str | None
+    from_cache: bool
+
+
+async def _judge_with_cache(
+    output: str,
+    reference: str,
+    scorer_id: str,
+    call_model: Callable[[str], Awaitable[str]],
+    cached_scores: dict[str, Score] | None,
+) -> _JudgeOutcome | None:
+    """Score `output` against `reference` with a real LLM-judge call,
+    reusing a prior cached `Score` instead when `--use-score-cache` is
+    active and a real hit exists for the exact same
+    `(output, reference, scorer_id)` — see
+    `evals.judge.cache.compute_score_cache_key`.
+
+    Deliberately a plain `async def`, awaited directly, never driving its
+    own internal `asyncio.run()` — `rollout_cmd`'s `_score_and_record` may
+    call this from inside `run_suite`'s own already-running event loop
+    when early-stopping is active, and a nested `asyncio.run()` there
+    raises "cannot be called from a running event loop" (a real bug this
+    project's own test suite already caught once, for the direct `judge()`
+    call this function now replaces).
+
+    Returns `None` when the judge call itself fails (a malformed
+    response, an SDK/network error) — the caller counts that as a judged
+    error and moves on, mirroring `evals.rollout.scheduler.run_suite`'s
+    "one case's failure never aborts the suite" precedent. Never raised
+    for a cache hit, since no call was made to fail.
+    """
+    cache_key = compute_score_cache_key(output, reference, scorer_id)
+    cached = cached_scores.get(cache_key) if cached_scores is not None else None
+    if cached is not None:
+        return _JudgeOutcome(
+            passed=cached.value,
+            rationale=cached.rationale,
+            bias_mitigations_applied=cached.bias_mitigations_applied,
+            # Exact, certain zero -- no new API call was made. Mirrors a
+            # deterministic Score's own "exact fact, not an estimate"
+            # cost_usd convention, not a new one.
+            cost_usd=Decimal("0"),
+            score_cache_key=cache_key,
+            from_cache=True,
         )
     try:
-        return asyncio.run(
-            judge(output=output, reference=reference, call_model=call_model)
-        )
+        result = await judge(output=output, reference=reference, call_model=call_model)
     except Exception:
         return None
+    return _JudgeOutcome(
+        passed=result.passed,
+        rationale=result.rationale,
+        bias_mitigations_applied=result.bias_mitigations_applied,
+        cost_usd=_last_judge_call_cost_usd(call_model),
+        score_cache_key=cache_key,
+        from_cache=False,
+    )
 
 
 def _judge_case(
-    case: EvalCase, call_model: Callable[[str], Awaitable[str]]
-) -> JudgeResult | None:
+    case: EvalCase,
+    call_model: Callable[[str], Awaitable[str]],
+    cached_scores: dict[str, Score] | None,
+) -> _JudgeOutcome | None:
+    """`run_cmd`'s own entry point into `_judge_with_cache` — synchronous,
+    since `run_cmd` itself never runs inside an event loop (unlike
+    `rollout_cmd`'s `_score_and_record`, which awaits `_judge_with_cache`
+    directly), so wrapping it in `asyncio.run()` here is safe.
+    """
     output = case.task_spec.get("output")
     if output is None:
         raise ValueError(f"case {case.id!r}: task_spec has no 'output' to score")
-    return _judge_output(output, case.reference, call_model, case.id)
+    if case.reference is None:
+        raise click.ClickException(
+            f"case {case.id!r}: LLM-judge scoring requires a reference"
+        )
+    return asyncio.run(
+        _judge_with_cache(
+            output, case.reference, DEFAULT_JUDGE_MODEL, call_model, cached_scores
+        )
+    )
 
 
 def format_report(successes: int, total: int, confidence: float = 0.95) -> str:
@@ -248,13 +323,30 @@ def main() -> None:
         "environment — see evals.judge.providers.make_anthropic_call_model."
     ),
 )
+@click.option(
+    "--use-score-cache",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip re-calling the LLM judge for a case whose "
+        "(output, reference, scorer_id) already has a real (non-cached) "
+        "Score in --scores. Off by default — existing invocations without "
+        "this flag behave exactly as today. See "
+        "docs/rfcs/2026-09-05-evals-score-cache.md."
+    ),
+)
 @click.option("--confidence", default=0.95, show_default=True, type=float)
 def run_cmd(
-    suite_path: Path, scores_path: Path, llm_judge: bool, confidence: float
+    suite_path: Path,
+    scores_path: Path,
+    llm_judge: bool,
+    use_score_cache: bool,
+    confidence: float,
 ) -> None:
     """Run a suite of EvalCases and print pass/fail plus a Wilson CI."""
     cases = _load_cases(suite_path)
     call_model = make_anthropic_call_model() if llm_judge else None
+    cached_scores = _load_cached_scores(scores_path) if use_score_cache else None
 
     successes = 0
     total = 0
@@ -262,11 +354,11 @@ def run_cmd(
     for case in cases:
         total += 1
         if llm_judge:
-            judge_result = _judge_case(case, call_model)
-            if judge_result is None:
+            outcome = _judge_case(case, call_model, cached_scores)
+            if outcome is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
                 continue
-            passed = judge_result.passed
+            passed = outcome.passed
             scores.append(
                 Score(
                     eval_case_id=case.id,
@@ -275,12 +367,11 @@ def run_cmd(
                     scorer_id=DEFAULT_JUDGE_MODEL,
                     scorer_type="llm_judge",
                     value=passed,
-                    rationale=judge_result.rationale,
-                    bias_mitigations_applied=judge_result.bias_mitigations_applied,
-                    # Real, computed cost of this call — see
-                    # _last_judge_call_cost_usd's own docstring for why
-                    # this read is safe under v1's sequential-only loop.
-                    cost_usd=_last_judge_call_cost_usd(call_model),
+                    rationale=outcome.rationale,
+                    bias_mitigations_applied=outcome.bias_mitigations_applied,
+                    cost_usd=outcome.cost_usd,
+                    score_cache_key=outcome.score_cache_key,
+                    from_cache=outcome.from_cache,
                 )
             )
         else:
@@ -370,6 +461,18 @@ def run_cmd(
     ),
 )
 @click.option(
+    "--use-score-cache",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip re-calling the LLM judge for a case whose "
+        "(output, reference, scorer_id) already has a real (non-cached) "
+        "Score in --scores. Off by default — existing invocations without "
+        "this flag behave exactly as today. See "
+        "docs/rfcs/2026-09-05-evals-score-cache.md."
+    ),
+)
+@click.option(
     "--early-stop-min-trials",
     default=None,
     type=int,
@@ -404,6 +507,7 @@ def rollout_cmd(
     llm_judge: bool,
     confidence: float,
     use_cache: bool,
+    use_score_cache: bool,
     early_stop_min_trials: int | None,
     early_stop_max_trials: int | None,
     early_stop_baseline_pass_rate: float | None,
@@ -431,6 +535,7 @@ def rollout_cmd(
             for r in load_runs(results_path)
             if r.status == "completed" and not r.from_cache and r.cache_key is not None
         }
+    cached_scores = _load_cached_scores(scores_path) if use_score_cache else None
 
     successes = 0
     total = 0
@@ -446,14 +551,13 @@ def rollout_cmd(
         Run either way, so `total` here always matches a
         genuinely-attempted trial count.
 
-        Deliberately async and calling `judge()` directly (never via
-        `_judge_run`/`_judge_output`, which drive their own internal
-        `asyncio.run()`): this function can be invoked from inside
-        `run_suite`'s own already-running event loop when early-stopping
-        is active, and a nested `asyncio.run()` call in that situation
-        raises "cannot be called from a running event loop" — a real bug
-        caught by this project's own test suite before shipping, not a
-        hypothetical.
+        Deliberately async and calling `_judge_with_cache` directly (never
+        via `_judge_case`, which drives its own internal `asyncio.run()`):
+        this function can be invoked from inside `run_suite`'s own
+        already-running event loop when early-stopping is active, and a
+        nested `asyncio.run()` call in that situation raises "cannot be
+        called from a running event loop" — a real bug caught by this
+        project's own test suite before shipping, not a hypothetical.
         """
         nonlocal successes, total
         total += 1
@@ -465,18 +569,17 @@ def rollout_cmd(
                 raise click.ClickException(
                     f"case {case.id!r}: LLM-judge scoring requires a reference"
                 )
-            try:
-                judge_result = await judge(
-                    output=run.stdout.strip(),
-                    reference=case.reference,
-                    call_model=call_model,
-                )
-            except Exception:
-                judge_result = None
-            if judge_result is None:
+            outcome = await _judge_with_cache(
+                run.stdout.strip(),
+                case.reference,
+                DEFAULT_JUDGE_MODEL,
+                call_model,
+                cached_scores,
+            )
+            if outcome is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
                 return False
-            passed = judge_result.passed
+            passed = outcome.passed
             scores.append(
                 Score(
                     eval_case_id=case.id,
@@ -485,9 +588,11 @@ def rollout_cmd(
                     scorer_id=DEFAULT_JUDGE_MODEL,
                     scorer_type="llm_judge",
                     value=passed,
-                    rationale=judge_result.rationale,
-                    bias_mitigations_applied=judge_result.bias_mitigations_applied,
-                    cost_usd=_last_judge_call_cost_usd(call_model),
+                    rationale=outcome.rationale,
+                    bias_mitigations_applied=outcome.bias_mitigations_applied,
+                    cost_usd=outcome.cost_usd,
+                    score_cache_key=outcome.score_cache_key,
+                    from_cache=outcome.from_cache,
                 )
             )
         else:

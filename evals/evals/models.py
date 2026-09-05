@@ -141,6 +141,20 @@ class Score(BaseModel):
       immediately"). Price-table constants in `providers.py` are built
       from strings (`Decimal("1.00")`), never float literals, to avoid
       reintroducing the exact imprecision Decimal exists to prevent.
+    - `score_cache_key`/`from_cache` are additive, per docs/rfcs/2026-09-05
+      -evals-score-cache.md, mirroring `Run.cache_key`/`Run.from_cache`'s
+      own exact precedent: `score_cache_key` is computed for every real
+      `llm_judge` score regardless of whether `--use-score-cache` is
+      active (cheap, and lets a *later* cached invocation hit against
+      `Score`s an earlier, non-caching invocation produced) — always
+      `None` for a `deterministic` score, since that scorer is already
+      free and instant, with nothing worth caching. `from_cache=True` only
+      on a genuine cache hit, in which case `cost_usd` is the exact,
+      certain `Decimal("0")` (no new API call was made) — the same
+      "exact fact, not an estimate" reasoning already applied to a
+      `deterministic` score's `cost_usd` above, not a new convention.
+      Unlike `Run`, there is no `cache_source_score_id` — `Score` has no
+      `id` field of its own for a hit to point back at.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -155,6 +169,8 @@ class Score(BaseModel):
     rubric_axis: str | None = None
     bias_mitigations_applied: list[str] = Field(default_factory=list)
     cost_usd: Decimal | None = None
+    score_cache_key: str | None = None
+    from_cache: bool = False
 
 
 SpanStatus = Literal["UNSET", "OK", "ERROR"]

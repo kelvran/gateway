@@ -16,7 +16,9 @@ Real source code now exists in `gateway/` and `evals/`, but it is a **deliberate
 
 Working through a repo-wide backlog audit's ranked punch list (produced by a 7-agent dynamic workflow, then approved by the user for "proceed through them in flow"): Tier 0 (4 doc-accuracy fixes) and Tier 1 (6 small, no-blocker items) are **fully closed**. Now on Tier 2 (medium-effort, no-blocker items) — done so far: (1) real graceful shutdown (SIGTERM/SIGINT handling) for `cmd/gateway`, proved end-to-end via a self-signaling integration test; (2) real rolling-window budget reset (e.g. "monthly" budgets) — a new per-key `budget_reset_interval_seconds` turns `budget_usd` into a real rolling window instead of a lifetime cap, checked lazily on each request (mirroring `ratelimit.TokenBucket`'s own lazy-refill design, not a background scheduler). The reset window's own boundary is deliberately not persisted (only cumulative spend is) — a named, self-limiting gap, not a new bypass.
 
-Remaining Tier 2 items: Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops.
+(3) real `Score`-level (LLM-judge) result caching — a new `--use-score-cache` flag on `evals run`/`evals rollout` skips re-calling the LLM judge for a case whose `(output, reference, scorer_id)` already has a real Score on file, independent of `--use-cache`'s Run-level equivalent.
+
+Remaining Tier 2 items: real SPRT/anytime-valid sequential testing, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops.
 
 Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `DECISIONS.md` (one line per decision) — not restated here beyond the current phase, to keep this section from growing unbounded.
 
@@ -64,13 +66,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 2, second item: real rolling-window budget reset for `gateway`. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 2, third item: real `Score`-level (LLM-judge) result caching for `evals`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: Tier 2, first item — real graceful shutdown (SIGTERM/SIGINT handling) for `cmd/gateway`. Committed `5346f18`, confirmed green on CI run `33953919207`.
+Previously: Tier 2, second item — real rolling-window budget reset for `gateway`. Committed `e638465`, confirmed green on CI run `33955988259`.
 
 ## Next Action
 
-Rolling-window budget reset is closed: committed (`e638465`), pushed, confirmed green on CI run `33955988259`. Continuing Tier 2: Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Score-level caching is ready to commit + push + watch CI. Continuing Tier 2: real SPRT/anytime-valid sequential testing, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
