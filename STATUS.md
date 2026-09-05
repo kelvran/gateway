@@ -84,7 +84,7 @@ Previously: item 17 — cache hits and singleflight-coalesced followers never re
 
 ## Next Action
 
-Item 7 is implemented, verified, and documented in this session; not yet committed/pushed/CI-watched — that's the immediate next step. Remaining work: the 4 ground-truthed implementable items in effort order — `gen_ai.provider.name` validation (smallest), CI version matrix (pure YAML), TPM rate-limit dimension (Small-Medium), Golden/Regression Dataset promotion (evals, independent of gateway work) — then item 14 (multi-modal `Message` content, needs a short RFC first). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Item 7 is closed: committed (`7f537c0`), pushed, confirmed green on CI run `33990730757` (all 3 jobs). Remaining work: the 4 ground-truthed implementable items in effort order — `gen_ai.provider.name` validation (smallest), CI version matrix (pure YAML), TPM rate-limit dimension (Small-Medium), Golden/Regression Dataset promotion (evals, independent of gateway work) — then item 14 (multi-modal `Message` content, needs a short RFC first). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
