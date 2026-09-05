@@ -98,3 +98,65 @@ def test_build_judge_prompt_forces_reasoning_before_verdict():
     assert reasoning_index < verdict_index
     assert "out" in prompt
     assert "ref" in prompt
+
+
+def test_build_judge_prompt_with_no_axis_is_byte_identical_to_before():
+    # The default (axis=None) path must reproduce the exact original
+    # holistic prompt -- multi-axis judging is additive, never a change
+    # in behavior for existing callers that never pass axis.
+    with_default = build_judge_prompt(output="out", reference="ref")
+    with_explicit_none = build_judge_prompt(output="out", reference="ref", axis=None)
+    assert with_default == with_explicit_none
+    assert "dimension" not in with_default
+
+
+def test_build_judge_prompt_with_axis_names_the_axis_and_forces_reasoning_first():
+    prompt = build_judge_prompt(output="out", reference="ref", axis="safety")
+    reasoning_index = prompt.index("REASONING:")
+    verdict_index = prompt.index("VERDICT:")
+    assert reasoning_index < verdict_index
+    assert "safety" in prompt
+    assert "out" in prompt
+    assert "ref" in prompt
+
+
+def test_judge_with_axis_scopes_the_prompt_to_that_axis():
+    seen_prompts: list[str] = []
+
+    async def capturing_call_model(prompt: str) -> str:
+        seen_prompts.append(prompt)
+        return "REASONING: ok.\nVERDICT: PASS\n"
+
+    asyncio.run(
+        judge(
+            output="candidate-text",
+            reference="reference-text",
+            call_model=capturing_call_model,
+            axis="completeness",
+        )
+    )
+
+    assert len(seen_prompts) == 1
+    assert "completeness" in seen_prompts[0]
+
+
+def test_judge_with_different_axes_can_disagree():
+    # The same output/reference pair can genuinely pass on one axis and
+    # fail on another -- proving the two calls are independently scoped,
+    # not both silently reusing one cached holistic verdict.
+    responses = iter(
+        ["REASONING: fine.\nVERDICT: PASS\n", "REASONING: nope.\nVERDICT: FAIL\n"]
+    )
+
+    async def call_model(prompt: str) -> str:
+        return next(responses)
+
+    correctness_result = asyncio.run(
+        judge(output="x", reference="x", call_model=call_model, axis="correctness")
+    )
+    safety_result = asyncio.run(
+        judge(output="x", reference="x", call_model=call_model, axis="safety")
+    )
+
+    assert correctness_result.passed is True
+    assert safety_result.passed is False

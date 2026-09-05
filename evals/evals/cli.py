@@ -124,6 +124,23 @@ def _load_cached_scores(scores_path: Path) -> dict[str, Score]:
     }
 
 
+def _parse_judge_axes(raw: str | None) -> list[str] | None:
+    """Parse `--judge-axes`' comma-separated value into a real list, or
+    `None` if the flag was never given — `evals.judge.llm_judge.judge()`'s
+    own `axis=None` meaning "one holistic verdict" reproduced at the CLI
+    layer. Whitespace around each axis name is stripped; an axis name
+    containing only whitespace is dropped rather than producing a
+    confusing blank axis.
+    """
+    if raw is None:
+        return None
+    axes = [a.strip() for a in raw.split(",")]
+    axes = [a for a in axes if a]
+    if not axes:
+        raise click.UsageError("--judge-axes was given but contains no real axis names")
+    return axes
+
+
 def _last_judge_call_cost_usd(
     call_model: Callable[[str], Awaitable[str]],
 ) -> Decimal | None:
@@ -153,6 +170,7 @@ class _JudgeOutcome:
     cost_usd: Decimal | None
     score_cache_key: str | None
     from_cache: bool
+    axis: str | None = None
 
 
 async def _judge_with_cache(
@@ -161,12 +179,20 @@ async def _judge_with_cache(
     scorer_id: str,
     call_model: Callable[[str], Awaitable[str]],
     cached_scores: dict[str, Score] | None,
+    axis: str | None = None,
 ) -> _JudgeOutcome | None:
     """Score `output` against `reference` with a real LLM-judge call,
     reusing a prior cached `Score` instead when `--use-score-cache` is
     active and a real hit exists for the exact same
-    `(output, reference, scorer_id)` — see
+    `(output, reference, scorer_id, axis)` — see
     `evals.judge.cache.compute_score_cache_key`.
+
+    `axis`, when given, scopes this one call to a single named rubric
+    dimension (per docs/rfcs/2026-09-05-evals-multi-axis-judging.md) — the
+    caller (`_judge_case`/`_score_and_record`) is responsible for calling
+    this once per configured axis, never once trying to cover several.
+    `None` (the default) reproduces the exact original holistic-verdict
+    behavior.
 
     Deliberately a plain `async def`, awaited directly, never driving its
     own internal `asyncio.run()` — `rollout_cmd`'s `_score_and_record` may
@@ -182,7 +208,7 @@ async def _judge_with_cache(
     "one case's failure never aborts the suite" precedent. Never raised
     for a cache hit, since no call was made to fail.
     """
-    cache_key = compute_score_cache_key(output, reference, scorer_id)
+    cache_key = compute_score_cache_key(output, reference, scorer_id, axis=axis)
     cached = cached_scores.get(cache_key) if cached_scores is not None else None
     if cached is not None:
         return _JudgeOutcome(
@@ -195,9 +221,12 @@ async def _judge_with_cache(
             cost_usd=Decimal("0"),
             score_cache_key=cache_key,
             from_cache=True,
+            axis=axis,
         )
     try:
-        result = await judge(output=output, reference=reference, call_model=call_model)
+        result = await judge(
+            output=output, reference=reference, call_model=call_model, axis=axis
+        )
     except Exception:
         return None
     return _JudgeOutcome(
@@ -207,17 +236,52 @@ async def _judge_with_cache(
         cost_usd=_last_judge_call_cost_usd(call_model),
         score_cache_key=cache_key,
         from_cache=False,
+        axis=axis,
     )
+
+
+async def _judge_all_axes(
+    output: str,
+    reference: str,
+    call_model: Callable[[str], Awaitable[str]],
+    cached_scores: dict[str, Score] | None,
+    axes: list[str] | None,
+) -> list[_JudgeOutcome] | None:
+    """Judge `output` against `reference` once per configured axis (or
+    once, holistically, if `axes` is `None`) — one `_judge_with_cache`
+    call per axis, per docs/rfcs/2026-09-05-evals-multi-axis-judging.md's
+    one-call-per-axis design, never one call trying to cover several.
+
+    Returns `None` if ANY axis's judge call fails — the whole case is
+    treated as `JUDGE_ERROR`, mirroring the pre-existing single-axis
+    all-or-nothing behavior, rather than persisting a confusing partial
+    set of per-axis `Score`s for one case.
+    """
+    if axes is None:
+        outcome = await _judge_with_cache(
+            output, reference, DEFAULT_JUDGE_MODEL, call_model, cached_scores
+        )
+        return None if outcome is None else [outcome]
+    outcomes: list[_JudgeOutcome] = []
+    for axis in axes:
+        outcome = await _judge_with_cache(
+            output, reference, DEFAULT_JUDGE_MODEL, call_model, cached_scores, axis=axis
+        )
+        if outcome is None:
+            return None
+        outcomes.append(outcome)
+    return outcomes
 
 
 def _judge_case(
     case: EvalCase,
     call_model: Callable[[str], Awaitable[str]],
     cached_scores: dict[str, Score] | None,
-) -> _JudgeOutcome | None:
-    """`run_cmd`'s own entry point into `_judge_with_cache` — synchronous,
+    axes: list[str] | None = None,
+) -> list[_JudgeOutcome] | None:
+    """`run_cmd`'s own entry point into `_judge_all_axes` — synchronous,
     since `run_cmd` itself never runs inside an event loop (unlike
-    `rollout_cmd`'s `_score_and_record`, which awaits `_judge_with_cache`
+    `rollout_cmd`'s `_score_and_record`, which awaits `_judge_all_axes`
     directly), so wrapping it in `asyncio.run()` here is safe.
     """
     output = case.task_spec.get("output")
@@ -228,9 +292,7 @@ def _judge_case(
             f"case {case.id!r}: LLM-judge scoring requires a reference"
         )
     return asyncio.run(
-        _judge_with_cache(
-            output, case.reference, DEFAULT_JUDGE_MODEL, call_model, cached_scores
-        )
+        _judge_all_axes(output, case.reference, call_model, cached_scores, axes)
     )
 
 
@@ -335,18 +397,31 @@ def main() -> None:
         "docs/rfcs/2026-09-05-evals-score-cache.md."
     ),
 )
+@click.option(
+    "--judge-axes",
+    default=None,
+    help=(
+        "Comma-separated rubric axes (e.g. correctness,safety) to judge "
+        "independently, one real LLM-judge call per axis, instead of one "
+        "holistic verdict. Only meaningful together with --llm-judge. "
+        "Omit for the original single-verdict behavior, unchanged. See "
+        "docs/rfcs/2026-09-05-evals-multi-axis-judging.md."
+    ),
+)
 @click.option("--confidence", default=0.95, show_default=True, type=float)
 def run_cmd(
     suite_path: Path,
     scores_path: Path,
     llm_judge: bool,
     use_score_cache: bool,
+    judge_axes: str | None,
     confidence: float,
 ) -> None:
     """Run a suite of EvalCases and print pass/fail plus a Wilson CI."""
     cases = _load_cases(suite_path)
     call_model = make_anthropic_call_model() if llm_judge else None
     cached_scores = _load_cached_scores(scores_path) if use_score_cache else None
+    axes = _parse_judge_axes(judge_axes)
 
     successes = 0
     total = 0
@@ -354,26 +429,35 @@ def run_cmd(
     for case in cases:
         total += 1
         if llm_judge:
-            outcome = _judge_case(case, call_model, cached_scores)
-            if outcome is None:
+            outcomes = _judge_case(case, call_model, cached_scores, axes)
+            if outcomes is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
                 continue
-            passed = outcome.passed
-            scores.append(
-                Score(
-                    eval_case_id=case.id,
-                    eval_case_revision=case.revision,
-                    run_id=None,
-                    scorer_id=DEFAULT_JUDGE_MODEL,
-                    scorer_type="llm_judge",
-                    value=passed,
-                    rationale=outcome.rationale,
-                    bias_mitigations_applied=outcome.bias_mitigations_applied,
-                    cost_usd=outcome.cost_usd,
-                    score_cache_key=outcome.score_cache_key,
-                    from_cache=outcome.from_cache,
+            # A case passes only if every configured axis passes -- a
+            # response isn't good if it fails one dimension even though
+            # it's correct on every other one. Single-axis (axes=None)
+            # degenerates to exactly today's one-outcome behavior.
+            passed = all(o.passed for o in outcomes)
+            for outcome in outcomes:
+                scores.append(
+                    Score(
+                        eval_case_id=case.id,
+                        eval_case_revision=case.revision,
+                        run_id=None,
+                        scorer_id=DEFAULT_JUDGE_MODEL,
+                        scorer_type="llm_judge",
+                        value=outcome.passed,
+                        rationale=outcome.rationale,
+                        bias_mitigations_applied=outcome.bias_mitigations_applied,
+                        cost_usd=outcome.cost_usd,
+                        score_cache_key=outcome.score_cache_key,
+                        from_cache=outcome.from_cache,
+                        rubric_axis=outcome.axis,
+                    )
                 )
-            )
+                if outcome.axis is not None:
+                    verdict = "PASS" if outcome.passed else "FAIL"
+                    click.echo(f"{case.id} [{outcome.axis}]: {verdict}")
         else:
             passed = _score_case_deterministic(case)
             scores.append(
@@ -473,6 +557,17 @@ def run_cmd(
     ),
 )
 @click.option(
+    "--judge-axes",
+    default=None,
+    help=(
+        "Comma-separated rubric axes (e.g. correctness,safety) to judge "
+        "independently, one real LLM-judge call per axis, instead of one "
+        "holistic verdict. Only meaningful together with --llm-judge. "
+        "Omit for the original single-verdict behavior, unchanged. See "
+        "docs/rfcs/2026-09-05-evals-multi-axis-judging.md."
+    ),
+)
+@click.option(
     "--early-stop-min-trials",
     default=None,
     type=int,
@@ -508,6 +603,7 @@ def rollout_cmd(
     confidence: float,
     use_cache: bool,
     use_score_cache: bool,
+    judge_axes: str | None,
     early_stop_min_trials: int | None,
     early_stop_max_trials: int | None,
     early_stop_baseline_pass_rate: float | None,
@@ -536,6 +632,7 @@ def rollout_cmd(
             if r.status == "completed" and not r.from_cache and r.cache_key is not None
         }
     cached_scores = _load_cached_scores(scores_path) if use_score_cache else None
+    axes = _parse_judge_axes(judge_axes)
 
     successes = 0
     total = 0
@@ -551,7 +648,7 @@ def rollout_cmd(
         Run either way, so `total` here always matches a
         genuinely-attempted trial count.
 
-        Deliberately async and calling `_judge_with_cache` directly (never
+        Deliberately async and calling `_judge_all_axes` directly (never
         via `_judge_case`, which drives its own internal `asyncio.run()`):
         this function can be invoked from inside `run_suite`'s own
         already-running event loop when early-stopping is active, and a
@@ -569,32 +666,36 @@ def rollout_cmd(
                 raise click.ClickException(
                     f"case {case.id!r}: LLM-judge scoring requires a reference"
                 )
-            outcome = await _judge_with_cache(
-                run.stdout.strip(),
-                case.reference,
-                DEFAULT_JUDGE_MODEL,
-                call_model,
-                cached_scores,
+            outcomes = await _judge_all_axes(
+                run.stdout.strip(), case.reference, call_model, cached_scores, axes
             )
-            if outcome is None:
+            if outcomes is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
                 return False
-            passed = outcome.passed
-            scores.append(
-                Score(
-                    eval_case_id=case.id,
-                    eval_case_revision=case.revision,
-                    run_id=run.id,
-                    scorer_id=DEFAULT_JUDGE_MODEL,
-                    scorer_type="llm_judge",
-                    value=passed,
-                    rationale=outcome.rationale,
-                    bias_mitigations_applied=outcome.bias_mitigations_applied,
-                    cost_usd=outcome.cost_usd,
-                    score_cache_key=outcome.score_cache_key,
-                    from_cache=outcome.from_cache,
+            # A case passes only if every configured axis passes -- see
+            # run_cmd's identical AND-semantics for why. axes=None
+            # degenerates to exactly today's one-outcome behavior.
+            passed = all(o.passed for o in outcomes)
+            for outcome in outcomes:
+                scores.append(
+                    Score(
+                        eval_case_id=case.id,
+                        eval_case_revision=case.revision,
+                        run_id=run.id,
+                        scorer_id=DEFAULT_JUDGE_MODEL,
+                        scorer_type="llm_judge",
+                        value=outcome.passed,
+                        rationale=outcome.rationale,
+                        bias_mitigations_applied=outcome.bias_mitigations_applied,
+                        cost_usd=outcome.cost_usd,
+                        score_cache_key=outcome.score_cache_key,
+                        from_cache=outcome.from_cache,
+                        rubric_axis=outcome.axis,
+                    )
                 )
-            )
+                if outcome.axis is not None:
+                    verdict = "PASS" if outcome.passed else "FAIL"
+                    click.echo(f"{case.id} [{outcome.axis}]: {verdict}")
         else:
             passed = _score_run_deterministic(case, run)
             scores.append(

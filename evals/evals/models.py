@@ -122,8 +122,12 @@ class Score(BaseModel):
       always honestly supply, regardless of whether a `Run` exists.
     - `scorer_type` is narrowed to the two values this codebase actually
       produces — no `skeptic_panel`/`human`, both `v2`-scoped per `PRD.md`.
-    - `rubric_axis` stays `None` always in v1 — `judge()` produces one
-      holistic verdict, never a per-axis breakdown.
+    - `rubric_axis` is `None` for a holistic verdict (the default), or the
+      configured axis name (e.g. `"correctness"`, `"safety"`) when
+      `evals.cli`'s `--judge-axes` requested one real `judge()` call per
+      axis instead of one call covering all of them — per docs/rfcs/2026-
+      09-05-evals-multi-axis-judging.md. Always `None` for a
+      `deterministic` score, which has no concept of a rubric axis.
     - `cost_usd` is `Decimal("0")` (not `None`) for a `deterministic` score
       — that scorer makes categorically zero external calls, by
       construction (`exact_match`/`regex_match` are pure string/regex

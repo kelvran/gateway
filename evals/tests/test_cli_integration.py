@@ -630,6 +630,184 @@ def test_run_without_use_score_cache_rejudges_every_time(tmp_path, monkeypatch):
     assert call_count["n"] == 4
 
 
+def test_run_with_judge_axes_scores_each_axis_independently_and_ands_the_verdict(
+    tmp_path, monkeypatch
+):
+    # judge-pass-case: PASS on both axes -> overall PASS.
+    # judge-fail-case: PASS on correctness but FAIL on safety -> overall
+    # FAIL -- proving the case-level verdict is a real AND across axes,
+    # not just a copy of the first axis's result.
+    responses = iter(
+        [
+            "REASONING: fine.\nVERDICT: PASS\n",  # judge-pass-case/correctness
+            "REASONING: fine.\nVERDICT: PASS\n",  # judge-pass-case/safety
+            "REASONING: fine.\nVERDICT: PASS\n",  # judge-fail-case/correctness
+            "REASONING: risky.\nVERDICT: FAIL\n",  # judge-fail-case/safety
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        return next(responses)
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--judge-axes",
+            "correctness,safety",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "judge-pass-case [correctness]: PASS" in result.output
+    assert "judge-pass-case [safety]: PASS" in result.output
+    assert "judge-pass-case: PASS" in result.output
+    assert "judge-fail-case [correctness]: PASS" in result.output
+    assert "judge-fail-case [safety]: FAIL" in result.output
+    assert "judge-fail-case: FAIL" in result.output
+    assert "pass_rate=0.5000 (1/2)" in result.output
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 4
+    assert [s.rubric_axis for s in persisted] == [
+        "correctness",
+        "safety",
+        "correctness",
+        "safety",
+    ]
+    assert [s.value for s in persisted] == [True, True, True, False]
+    assert all(s.eval_case_id == "judge-pass-case" for s in persisted[:2])
+    assert all(s.eval_case_id == "judge-fail-case" for s in persisted[2:])
+
+
+def test_run_with_judge_axes_any_axis_error_marks_the_whole_case_judge_error(
+    tmp_path, monkeypatch
+):
+    call_count = {"n": 0}
+
+    async def flaky_call_model(prompt: str) -> str:
+        call_count["n"] += 1
+        # The first axis call for judge-pass-case succeeds; its second
+        # axis call fails -- the whole case must become JUDGE_ERROR with
+        # no partial Score persisted, mirroring the pre-existing
+        # single-axis all-or-nothing behavior.
+        if call_count["n"] == 2:
+            raise RuntimeError("simulated API failure")
+        return "REASONING: fine.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: flaky_call_model
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--judge-axes",
+            "correctness,safety",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "judge-pass-case: JUDGE_ERROR" in result.output
+
+    persisted = load_scores(scores_path)
+    # judge-pass-case contributes zero Scores (its safety call failed);
+    # judge-fail-case still contributes its own two.
+    assert len(persisted) == 2
+    assert all(s.eval_case_id == "judge-fail-case" for s in persisted)
+
+
+def test_run_with_judge_axes_use_score_cache_discriminates_by_axis(
+    tmp_path, monkeypatch
+):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "axis-case",
+                    "revision": 1,
+                    "task_spec": {"output": "Paris"},
+                    "reference": "Paris",
+                    "tier": "golden",
+                }
+            ]
+        )
+    )
+    scores_path = tmp_path / "scores.jsonl"
+
+    call_count = {"n": 0}
+
+    async def fake_call_model(prompt: str) -> str:
+        call_count["n"] += 1
+        return "REASONING: ok.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    runner = CliRunner()
+    base_args = [
+        "run",
+        "--suite",
+        str(suite_path),
+        "--scores",
+        str(scores_path),
+        "--llm-judge",
+        "--use-score-cache",
+    ]
+
+    first = runner.invoke(main, [*base_args, "--judge-axes", "correctness,safety"])
+    assert first.exit_code == 0, first.output
+    assert call_count["n"] == 2
+
+    second = runner.invoke(main, [*base_args, "--judge-axes", "correctness,safety"])
+    assert second.exit_code == 0, second.output
+    # Both axes hit the score cache on the second invocation -- zero new
+    # judge calls at all.
+    assert call_count["n"] == 2
+
+    third = runner.invoke(main, [*base_args, "--judge-axes", "safety,tone"])
+    assert third.exit_code == 0, third.output
+    # "safety" was already judged above and is a cache hit; "tone" has
+    # never been judged under this axis before, so exactly one new call is
+    # made -- the cache genuinely discriminates axis-by-axis, not just by
+    # (output, reference, scorer_id).
+    assert call_count["n"] == 3
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 6
+    assert [s.rubric_axis for s in persisted] == [
+        "correctness",
+        "safety",
+        "correctness",
+        "safety",
+        "safety",
+        "tone",
+    ]
+    assert persisted[4].from_cache is True
+    assert persisted[5].from_cache is False
+
+
 def test_rollout_use_score_cache_second_invocation_makes_no_new_judge_calls(
     tmp_path, monkeypatch
 ):
@@ -845,6 +1023,86 @@ def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
         "cot_forcing",
         "reference_guided_grading",
     ]
+
+
+def test_rollout_with_judge_axes_scores_each_axis_independently_and_ands_the_verdict(
+    tmp_path, monkeypatch
+):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    # rollout-echo-hello: PASS on both axes -> overall PASS.
+    # rollout-wrong-answer: PASS on correctness but FAIL on safety ->
+    # overall FAIL. Deliberately ordered with the *first* axis passing and
+    # a *later* axis failing -- a buggy "just use the first axis's
+    # verdict" implementation would wrongly report PASS here, so this is
+    # a real AND-across-axes proof, not just two axes that happen to both
+    # fail already.
+    responses = iter(
+        [
+            "REASONING: fine.\nVERDICT: PASS\n",  # rollout-echo-hello/correctness
+            "REASONING: fine.\nVERDICT: PASS\n",  # rollout-echo-hello/safety
+            "REASONING: fine.\nVERDICT: PASS\n",  # rollout-wrong-answer/correctness
+            "REASONING: risky.\nVERDICT: FAIL\n",  # rollout-wrong-answer/safety
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        return next(responses)
+
+    monkeypatch.setattr(
+        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+    )
+
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "rollout",
+            "--suite",
+            "tests/fixtures/rollout_example.json",
+            "--results",
+            str(results_path),
+            "--scores",
+            str(scores_path),
+            "--traces",
+            str(traces_path),
+            "--llm-judge",
+            "--judge-axes",
+            "correctness,safety",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "rollout-echo-hello [correctness]: PASS" in result.output
+    assert "rollout-echo-hello [safety]: PASS" in result.output
+    assert "rollout-echo-hello: PASS" in result.output
+    assert "rollout-wrong-answer [correctness]: PASS" in result.output
+    assert "rollout-wrong-answer [safety]: FAIL" in result.output
+    assert "rollout-wrong-answer: FAIL" in result.output
+    assert "pass_rate=0.5000 (1/2)" in result.output
+
+    persisted_runs = load_runs(results_path)
+    assert len(persisted_runs) == 2
+
+    persisted_scores = load_scores(scores_path)
+    assert len(persisted_scores) == 4
+    assert [s.rubric_axis for s in persisted_scores] == [
+        "correctness",
+        "safety",
+        "correctness",
+        "safety",
+    ]
+    assert [s.value for s in persisted_scores] == [True, True, True, False]
+    assert all(s.run_id == persisted_runs[0].id for s in persisted_scores[:2])
+    assert all(s.run_id == persisted_runs[1].id for s in persisted_scores[2:])
 
 
 def _repeated_trial_suite_path(tmp_path, n: int, case_id: str = "repeated-case"):
