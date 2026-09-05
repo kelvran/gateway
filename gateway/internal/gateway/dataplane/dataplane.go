@@ -625,11 +625,12 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		rateLimitFailedOpen   bool
 		fallback              fallbackInfo
 		budgetSpentAtDecision decimal.Decimal
+		billable              bool
 	)
 
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err)
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -682,7 +683,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
-	resp, dep, fallback, err = p.runMissPath(ctx, vk, req, l1Key, l2Key, l3Signature)
+	resp, dep, fallback, billable, err = p.runMissPath(ctx, vk, req, l1Key, l2Key, l3Signature)
 	return
 }
 
@@ -727,8 +728,18 @@ type cacheMissOutcome struct {
 // golang.org/x/sync/singleflight for HTTP request coalescing accepts
 // (e.g. groupcache); a detached context outliving any single caller would
 // need its own timeout policy this project has no need for yet.
-func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key, l2Key string, l3Signature []uint64) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
-	result, err, _ := p.missGroup.Do(l1Key, func() (any, error) {
+// billable reports whether resp came from this specific call's own real,
+// unshared execution of the closure below (true), or was a coalesced
+// follower's copy of another caller's in-flight result (false) — per
+// docs/rfcs/2026-09-05-gateway-cost-double-counting.md. Each caller's own
+// stack-local billable is only ever written by that same caller's own
+// closure, never shared across goroutines — singleflight.Group.Do simply
+// never invokes a follower's closure at all, so a follower's billable
+// stays false with no synchronization needed.
+func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key, l2Key string, l3Signature []uint64) (resp adapter.ChatResponse, dep Deployment, fallback fallbackInfo, billable bool, err error) {
+	result, doErr, _ := p.missGroup.Do(l1Key, func() (any, error) {
+		billable = true
+
 		// Guardrail pre-call: after L1/L2/L3 all miss, before the router — per
 		// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md, matching
 		// gateway/ARCHITECTURE.md's Request Lifecycle exactly. A cache hit
@@ -774,11 +785,11 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 
 		return cacheMissOutcome{resp: resp, dep: dep, fallback: fallback}, nil
 	})
-	if err != nil {
-		return adapter.ChatResponse{}, Deployment{}, fallbackInfo{}, err
+	if doErr != nil {
+		return adapter.ChatResponse{}, Deployment{}, fallbackInfo{}, false, doErr
 	}
 	outcome := result.(cacheMissOutcome)
-	return outcome.resp, outcome.dep, outcome.fallback, nil
+	return outcome.resp, outcome.dep, outcome.fallback, billable, nil
 }
 
 // callDeployment runs the adapter+upstream-call steps for one deployment:
@@ -849,8 +860,17 @@ func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
 // docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md — all three
 // are zero-valued whenever the corresponding check never ran (e.g. auth
 // failed before the rate-limit check), which is the correct, intentional
-// "not applicable" representation for those fields.
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, err error) {
+// "not applicable" representation for those fields. billable reports
+// whether resp came from a genuine, unshared upstream call this specific
+// request itself paid for — false for every cache hit (L1/L2/L3) and
+// every coalesced singleflight follower — per
+// docs/rfcs/2026-09-05-gateway-cost-double-counting.md: cost is still
+// computed and reported via telemetry/the log line either way (real,
+// informational "what this would have cost" data, e.g. for a
+// cache-savings dashboard), but budget.Record is only ever called when
+// billable is true, so a virtual key's tracked spend reflects genuine
+// upstream cost, never a notional replay of it.
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, err error) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too.
@@ -861,7 +881,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			CompletionTokens: resp.Usage.CompletionTokens,
 			TotalTokens:      resp.Usage.TotalTokens,
 		})
-		if vk != nil {
+		if vk != nil && billable {
 			p.budget.Record(vk.ID, cost, vk.BudgetResetInterval)
 		}
 	}

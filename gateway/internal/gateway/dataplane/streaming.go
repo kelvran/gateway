@@ -66,10 +66,11 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		rateLimitFailedOpen   bool
 		fallback              fallbackInfo
 		budgetSpentAtDecision decimal.Decimal
+		billable              bool
 	)
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err)
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -155,6 +156,11 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
 		return
 	}
+	// The streaming path has no singleflight coalescing (unlike
+	// runMissPath's buffered miss path) — every completed stream is its
+	// own real, unshared upstream call, so it's always billable, per
+	// docs/rfcs/2026-09-05-gateway-cost-double-counting.md.
+	billable = true
 
 	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
 		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, encoded)
