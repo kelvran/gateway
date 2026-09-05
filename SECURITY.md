@@ -6,7 +6,7 @@ Report privately via [GitHub Security Advisories](https://github.com/kelvran/gat
 
 Please include: affected component (Gateway/Cache/Evals/MCP-A2A), affected version, a minimal reproduction, and your assessment of impact. We do not require PGP-encrypted reports.
 
-**Acknowledgement / resolution targets** (finalized once the project has its first real release — until then, treat as aspirational, not contractual): acknowledgement within 3 business days; a fix or mitigation plan communicated within 14 days for Critical/High severity.
+**Acknowledgement / resolution targets** (real and contractual as of `gateway/v0.1.0`/`evals/v0.1.0`, tagged 2026-09-03 — the "first real release" condition below has been met): acknowledgement within 3 business days; a fix or mitigation plan communicated within 14 days for Critical/High severity.
 
 ## Vulnerability Severity Taxonomy
 
@@ -49,6 +49,7 @@ This system was designed with three specific, published 2026 attack classes in m
 Dated, honest — updated as the system evolves rather than left as boilerplate:
 
 - `2026-09-02`: Pre-scaffolding. No code exists yet, so no vulnerability disclosure is possible against a running system — this document describes the intended security posture, to be verified against the actual implementation once Phase 0 (per each deployable's `ARCHITECTURE.md`) ships.
+- `2026-09-05` (corrected — stale since the 2026-09-03 release): the line above no longer describes reality. `gateway/v0.1.0`/`evals/v0.1.0` shipped 2026-09-03 with real attack surface a report could target today — virtual keys/budgets (`internal/identity`/`internal/budget`), the live-mutable Admin API (`internal/admin`, per `docs/rfcs/2026-09-05-gateway-admin-api.md`), and the Evals sandbox executor (`evals/rollout/sandbox.py`). This document's own severity taxonomy and threat-class table above are real, verified security posture, not aspirational — see `THREAT_MODEL.md` for the current, actively-reviewed detail.
 - Kelvran does not currently support (and has no near-term plan to support) a hosted/managed offering — self-hosting is the only deployment model, per `PRD.md`'s non-goals.
 - `2026-09-04`: The Evals sandbox's threat mitigations are narrower than this document previously implied — see the corrected `THREAT_MODEL.md` § Evals table row above. Package-registry-proxy hardening, cross-sandbox isolation, scoped per-tool credentials, and audit-trail-tied-to-a-trace are all unbuilt; splitting these into separate future RFCs, not fixed in one pass, per that document's own change log.
 

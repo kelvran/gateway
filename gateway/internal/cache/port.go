@@ -2,7 +2,7 @@
 // Gateway's request pipeline is allowed to import from Cache, per
 // gateway/ARCHITECTURE.md's package layout and dependency-direction rules.
 //
-// This package must never import internal/provideradapter or anything
+// This package must never import internal/adapter or anything
 // provider-specific: Cache is keyed on a normalized request, not on which
 // upstream served it, per docs/decisions/0002-cache-embedded-in-gateway.md.
 package cache

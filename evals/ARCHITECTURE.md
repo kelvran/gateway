@@ -45,8 +45,22 @@ evals/
                                  -> one Run, no concurrency/pool this pass). Sandbox Pool (concurrency)
                                  and a Task/Dataset Registry remain unbuilt — diagram-only, per that
                                  RFC's own scope boundary
-    judge/                     — LLM-judge + statistics (bootstrap resampling, Bayesian model comparison,
-                                 confidence intervals, pass@k / pass^k reliability)
+    judge/                     — real, v1: `deterministic.py` (exact/regex matching), `llm_judge.py`
+                                 (single-LLM-judge scoring, per docs/rfcs/2026-09-04-evals-llm-judge-
+                                 provider-wiring.md), `providers.py` (Anthropic + OpenAI call_model
+                                 wiring), `cache.py` (score-level result caching, per
+                                 docs/rfcs/2026-09-05-evals-score-cache.md). **Corrected 2026-09-05**:
+                                 this entry previously claimed bootstrap resampling/Bayesian model
+                                 comparison/pass@k reliability live here — none of that exists anywhere
+                                 in the repo (confirmed: zero matches for bootstrap/bayesian/pass@k
+                                 outside tests), and this package has never contained any statistics
+                                 code at all. The real, shipped statistics (`wilson_interval`,
+                                 `mixture_sprt_early_stop`) live in a separate top-level `stats.py`
+                                 module (not listed in this tree, matching its own existing convention
+                                 of also omitting `models.py`/`cli.py`), imported directly by `cli.py`
+                                 and by `rollout/scheduler.py`, never by anything under `judge/`.
+                                 Bootstrap resampling/Bayesian model comparison remain unbuilt, per the
+                                 Tech Stack table's own already-correct "not installed, not built" note
 ```
 
 **Dependency direction rules:**

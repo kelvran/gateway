@@ -110,7 +110,7 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              configured; pure in-memory (resets on restart) otherwise — single-instance
                              only, a deliberate, bounded stepping stone ahead of the Postgres control-plane
                              store below, not a replacement for it
-/internal/provideradapter    — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
+/internal/adapter            — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
                              docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
                              the gateway's second external Go dependency family after OTel)
@@ -128,7 +128,8 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              design: inbound (expose Kelvran's own APIs as MCP tools) + outbound (broker
                              agent tool calls) brokering — shares identity/costaccounting, not a second
                              gateway
-/internal/guardrail          — pre/post-call middleware interface; PII/content checks
+/internal/guardrail          — pre/post-call middleware interface; PII/content checks — ACTIVE, per
+                             docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md
 /internal/admin               — Real, per docs/rfcs/2026-09-05-gateway-admin-api.md: an optional,
                              off-by-default HTTP surface on its own separate net.Listener (never the
                              client-facing gateway's mux/port) exposing read-only config introspection
@@ -200,8 +201,12 @@ Every capability is a stage in one linear pipeline against a single canonical sc
   → provider adapter: provider-native response/chunk → canonical translation (stateful per-stream parser)
   → guardrail post-call
   → cache write-back (all layers)
-  → cost/observability finalize (OTel span close, Decimal cost calc, session roll-up) — ALWAYS runs,
-    even on error/cancel, via Go `defer` — a partial generation still consumed billable output tokens
+  → cost/observability finalize (OTel span close, Decimal cost calc, budget record, gatewayevents log
+    line) — ALWAYS runs, even on error/cancel, via Go `defer` — a partial generation still consumed
+    billable output tokens. **Corrected 2026-09-05**: no session- or agent_run_id-level cost roll-up
+    happens here or anywhere in the codebase (confirmed: zero matches for roll-up/rollup/session_cost
+    across the module) — finalize is purely per-request; aggregating cost across a session/run today
+    requires an operator to sum spans or gatewayevents downstream themselves
   → response to client
 ```
 
