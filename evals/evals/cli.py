@@ -783,12 +783,33 @@ def rollout_cmd(
     ),
 )
 @click.option("--confidence", default=0.95, show_default=True, type=float)
+@click.option(
+    "--fail-under",
+    default=None,
+    type=float,
+    help=(
+        "Real CI/CD gate: exit non-zero if a reported rate's Wilson "
+        "LOWER bound (not the bare point estimate) is below this "
+        "threshold. Using the lower bound, not the point estimate, means "
+        "the gate only passes when we are actually --confidence-certain "
+        "the true rate clears the bar — a deliberately narrower, "
+        "already-computed-CI-backed check, not the full power "
+        "calculation evals/ARCHITECTURE.md's own Data Model section "
+        "names as the aspiration (see docs/rfcs/2026-09-05-evals-report-"
+        "fail-under.md). In --scores mode, every scorer_type group is "
+        "checked independently — one group failing fails the whole "
+        "command, never averaged/blended across groups. Off by default: "
+        "omitting this flag reproduces today's exact always-exit-0 "
+        "behavior."
+    ),
+)
 def report_cmd(
     successes: int | None,
     total: int | None,
     scores_path: Path | None,
     traces_path: Path | None,
     confidence: float,
+    fail_under: float | None,
 ) -> None:
     """Print a pass rate together with its Wilson CI.
 
@@ -814,14 +835,20 @@ def report_cmd(
             "Provide one of --scores, --traces, or both --successes and --total."
         )
 
+    # (label, successes, total) triples checked against --fail-under
+    # after everything is printed — never short-circuited mid-report, so
+    # an operator always sees every real number before a gate failure,
+    # per docs/rfcs/2026-09-05-evals-report-fail-under.md.
+    gate_checks: list[tuple[str, int, int]] = []
+
     if traces_path is not None:
         spans = load_spans(traces_path)
         if not spans:
             raise click.ClickException(f"{traces_path}: no Spans found")
         click.echo(_format_span_report(spans, confidence))
-        return
-
-    if scores_path is not None:
+        ok_count = sum(1 for s in spans if s.status == "OK")
+        gate_checks.append(("traces ok_rate", ok_count, len(spans)))
+    elif scores_path is not None:
         scores = load_scores(scores_path)
         if not scores:
             raise click.ClickException(f"{scores_path}: no Scores found")
@@ -833,9 +860,24 @@ def report_cmd(
                 + format_report(group_successes, len(group), confidence=confidence)
                 + f" {_format_group_cost(group)}"
             )
-        return
+            gate_checks.append((scorer_type, group_successes, len(group)))
+    else:
+        click.echo(format_report(successes, total, confidence=confidence))
+        gate_checks.append(("pass_rate", successes, total))
 
-    click.echo(format_report(successes, total, confidence=confidence))
+    if fail_under is not None:
+        failures = []
+        for label, group_successes, group_total in gate_checks:
+            lower, _ = wilson_interval(
+                group_successes, group_total, confidence=confidence
+            )
+            if lower < fail_under:
+                failures.append(
+                    f"{label}: Wilson lower bound {lower:.4f} "
+                    f"< --fail-under {fail_under:.4f}"
+                )
+        if failures:
+            raise click.ClickException("CI/CD gate failed:\n" + "\n".join(failures))
 
 
 if __name__ == "__main__":

@@ -124,6 +124,43 @@ def test_report_respects_custom_confidence_level():
     assert _CI_PATTERN.search(result.output) is not None
 
 
+def test_report_fail_under_passes_when_lower_bound_clears_the_bar():
+    # 8/10 -> Wilson lower bound is 0.4902 (the exact reference value
+    # test_report_prints_pass_rate_with_ci_never_a_bare_percentage
+    # already pins). A --fail-under comfortably below that must exit 0.
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["report", "--successes", "8", "--total", "10", "--fail-under", "0.4"],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_report_fail_under_gates_on_the_lower_bound_not_the_point_estimate():
+    # 8/10's point estimate is 0.8 (would clear 0.6), but its real Wilson
+    # lower bound is 0.4902 (would NOT clear 0.6) -- this is the load-
+    # bearing proof that --fail-under checks the lower bound, per
+    # docs/rfcs/2026-09-05-evals-report-fail-under.md, not the naive
+    # point estimate a less careful implementation might use instead.
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["report", "--successes", "8", "--total", "10", "--fail-under", "0.6"],
+    )
+    assert result.exit_code != 0
+    assert "0.4902" in result.output
+    assert "0.6000" in result.output
+
+
+def test_report_fail_under_omitted_reproduces_exact_zero_exit_behavior():
+    # The single most important backward-compatibility proof: omitting
+    # --fail-under entirely must behave exactly as before it existed,
+    # even for a low pass rate that a gate WOULD have failed.
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--successes", "1", "--total", "10"])
+    assert result.exit_code == 0, result.output
+
+
 def _write_scores(path, scores):
     append_scores(scores, path)
 
@@ -187,6 +224,69 @@ def test_report_scores_never_blends_distinct_scorer_types(tmp_path):
     # Cost is summed within each group, never across groups.
     assert "total_cost_usd=0" in lines[0]
     assert "total_cost_usd=0.006" in lines[1]
+
+
+def test_report_scores_fail_under_checks_each_scorer_type_group_independently(
+    tmp_path,
+):
+    # Reuses test_report_scores_never_blends_distinct_scorer_types's own
+    # fixture exactly: deterministic 2/2 (Wilson lower bound 0.3424),
+    # llm_judge 1/3 (Wilson lower bound 0.0615) -- verified directly
+    # against evals.stats.wilson_interval, not guessed. A --fail-under of
+    # 0.3 clears deterministic's lower bound but not llm_judge's, so the
+    # whole command must fail even though one group alone would pass --
+    # never averaged/blended across groups.
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(
+        scores_path,
+        [
+            _make_score("c1", "deterministic", True),
+            _make_score("c2", "deterministic", True),
+            _make_score("c1", "llm_judge", True, cost_usd=Decimal("0.001")),
+            _make_score("c2", "llm_judge", False, cost_usd=Decimal("0.002")),
+            _make_score("c3", "llm_judge", False, cost_usd=Decimal("0.003")),
+        ],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["report", "--scores", str(scores_path), "--fail-under", "0.3"]
+    )
+
+    assert result.exit_code != 0
+    # Both real numbers are still printed before the gate failure -- an
+    # operator sees every group's real report, never a silent short-
+    # circuit that hides the passing group's own numbers.
+    assert "deterministic: pass_rate=1.0000 (2/2)" in result.output
+    assert "llm_judge: pass_rate=0.3333 (1/3)" in result.output
+    assert "llm_judge" in result.output.split("CI/CD gate failed")[-1]
+    assert "deterministic" not in result.output.split("CI/CD gate failed")[-1]
+
+
+def test_report_traces_fail_under_checked_against_ok_rate(tmp_path):
+    # 2/3 OK -> Wilson lower bound 0.2077, the exact reference value
+    # test_report_traces_reads_persisted_spans already pins.
+    traces_path = tmp_path / "traces.jsonl"
+    append_spans(
+        [
+            _make_span(status="OK", duration_ms=10),
+            _make_span(status="OK", duration_ms=20),
+            _make_span(status="ERROR", duration_ms=5),
+        ],
+        traces_path,
+    )
+
+    runner = CliRunner()
+    passing = runner.invoke(
+        main, ["report", "--traces", str(traces_path), "--fail-under", "0.2"]
+    )
+    assert passing.exit_code == 0, passing.output
+
+    failing = runner.invoke(
+        main, ["report", "--traces", str(traces_path), "--fail-under", "0.5"]
+    )
+    assert failing.exit_code != 0
+    assert "0.2077" in failing.output
 
 
 def test_report_scores_notes_unknown_cost_entries_rather_than_treating_as_zero(
