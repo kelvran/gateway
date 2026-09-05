@@ -80,7 +80,7 @@ Previously: item 2 — cache concurrent-miss stampede protection. Committed `c50
 
 ## Next Action
 
-Cache-hit provenance is implemented and fully verified locally (build/vet/lint/go-arch-lint clean; every package green under `-race` except the pre-existing, unrelated Redis-container failure) but **not yet committed/pushed/CI-confirmed** — that's the immediate next step. After that, continuing the fresh audit's recommended order: (4) evals CI/CD gate, (5) rate-limit fail-open metric, then the remaining Medium/Large items per the ranked list above (including items 17-18, both found as adjacent side-discoveries while shipping items 2-3). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Cache-hit provenance is closed: committed (`e90c994`), pushed, confirmed green on CI run `33973335771` (all 3 jobs). Continuing the fresh audit's recommended order: (4) evals CI/CD gate, (5) rate-limit fail-open metric, then the remaining Medium/Large items per the ranked list above (including items 17-18, both found as adjacent side-discoveries while shipping items 2-3). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
