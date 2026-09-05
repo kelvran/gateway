@@ -78,7 +78,7 @@ Previously: Tier 2, final item — real mixture-SPRT early-stopping for `evals`.
 
 ## Next Action
 
-Batch 1 (doc fixes) is implemented and locally verified (go build/vet clean; no test-suite impact) but **not yet committed/pushed/CI-confirmed** — that's the immediate next step. After that, continuing the fresh audit's recommended order: (2) cache concurrent-miss stampede/singleflight, (3) cache-hit provenance telemetry, (4) evals CI/CD gate, (5) rate-limit fail-open metric, then the remaining Medium/Large items per the ranked list above. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Batch 1 (doc fixes) is closed: committed (`01886b8`), pushed, confirmed green on CI run `33970028476` (all 3 jobs). Continuing the fresh audit's recommended order: (2) cache concurrent-miss stampede/singleflight, (3) cache-hit provenance telemetry, (4) evals CI/CD gate, (5) rate-limit fail-open metric, then the remaining Medium/Large items per the ranked list above. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
