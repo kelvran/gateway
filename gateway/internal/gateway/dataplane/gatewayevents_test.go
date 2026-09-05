@@ -12,6 +12,10 @@ import (
 	"testing"
 
 	"github.com/shopspring/decimal"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	gatewayeventsv1 "github.com/kelvran/gateway/gateway/api/gatewayevents/v1"
@@ -23,6 +27,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // TestOutcomeForClassifiesEverySentinelError proves outcomeFor's
@@ -207,6 +212,87 @@ func TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors(t *testing.T) {
 	event := decodeLoggedGatewayEvent(t, &logBuf)
 	if !event.GetRateLimitFailOpen() {
 		t.Error("RateLimitFailOpen = false, want true when the rate limiter's backend errors")
+	}
+}
+
+// TestRateLimitFailOpenIncrementsMetricCounter is the load-bearing proof
+// for the aggregate, alertable signal itself — per
+// docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md,
+// telemetry.RecordRateLimitFailOpen exists specifically so an operator can
+// alert on "how many times has this happened recently" without scanning
+// logs/traces. A ManualReader installed as the global MeterProvider before
+// the request runs proves the real otel.Meter obtained at telemetry
+// package-init time (before any real provider existed) still delegates to
+// it — the same re-delegation guarantee this codebase already relies on
+// for Tracer.
+func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prevProvider := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	defer otel.SetMeterProvider(prevProvider)
+
+	testKeyID := "team-failopen-metric"
+	keys := []identity.VirtualKey{
+		{ID: testKeyID, KeyHash: testHashOf(testKeyID), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{
+		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewRedisKeyLimiter(keyConfigsFromVirtualKeys(keys), failingRedisBackend{}),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			return fakeOpenAIResponse("gpt-4o"), nil
+		},
+		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	authHeader := "Bearer " + testKeyID
+	if _, err := p.HandleChatCompletion(context.Background(), authHeader, adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		t.Fatalf("HandleChatCompletion with a failing Redis backend: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("reader.Collect: %v", err)
+	}
+
+	var found bool
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "kelvran.ratelimit.fail_open" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("kelvran.ratelimit.fail_open data type = %T, want metricdata.Sum[int64]", m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				keyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
+				if dp.Value == 1 && hasAttr && keyID.AsString() == testKeyID {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("kelvran.ratelimit.fail_open counter did not record a value of 1 for the expected key_id")
 	}
 }
 

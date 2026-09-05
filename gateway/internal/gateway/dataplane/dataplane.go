@@ -419,6 +419,13 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) 
 	allowed, err := p.limiter.Allow(ctx, vk.ID)
 	if err != nil {
 		p.logger.Warn("ratelimit_backend_unavailable", "key_id", vk.ID, "error", err.Error())
+		// A real, aggregate-friendly metric alongside the log line above,
+		// per docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md
+		// — the structured log/GatewayDecisionEvent field already
+		// existed per-request; this is what lets an operator alert on
+		// "how many times has this happened recently" without scanning
+		// every log line or trace.
+		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
 		return true, true
 	}
 	return allowed, false

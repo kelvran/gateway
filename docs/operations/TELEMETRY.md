@@ -9,13 +9,14 @@ Operator companion to the OTel commitment already made in `gateway/ARCHITECTURE.
 | Request/response spans | Gateway | Standard `gen_ai.*` semantic conventions (`operation.name`, `provider.name`, `request.model`, `response.model`/`id`/`finish_reasons`, `usage.{input,output}_tokens`) | **Real** |
 | Agent-run cost attribution | Gateway | `kelvran.agent_run_id` via W3C Baggage (`baggage: agent_run_id=<value>` header), plus `kelvran.virtual_key.id`/`kelvran.cost.usd` | **Real** |
 | Cache hit/miss + provenance | Gateway | `kelvran.cache.hit` (bool), `kelvran.cache.layer` ("L1"/"L2"/"L3", set only on a hit), `kelvran.cache.similarity`/`kelvran.cache.age_ms` (L3 hits only — real Jaccard estimate + age captured at write time) — none are standardized `gen_ai.*` attributes | **Real**, per `docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md`. L1/L2 report their layer but not an age — neither currently captures a write-time timestamp, a named future extension |
+| Rate-limiter fail-open (metric) | Gateway | `kelvran.ratelimit.fail_open` — an OTel **Metrics** counter (not a span attribute), attributed with `kelvran.virtual_key.id`, incremented every time `checkRateLimit`'s Redis backend errors and the request is allowed through fail-open | **Real**, per `docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md` — the first (and, as of this writing, only) use of OTel Metrics in this codebase; every other signal above is a span attribute |
 | Rollout/judge spans | Evals | Standard `gen_ai.*` plus Kelvran-custom `harness_config` fields (per `evals/ARCHITECTURE.md`'s Data Model) | Not built |
 
 Standard `gen_ai.*` attributes are consumed by any generic OTel-aware backend; Kelvran-custom attributes require Kelvran-aware dashboards/queries to be meaningful — that distinction matters when picking a backend.
 
 ## Supported Exporters
 
-`gateway` supports three exporters via its `telemetry:` config section (`docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md`): `stdout` (the default — spans printed locally, nothing shipped anywhere), `otlp` (any OTLP-compatible collector/backend, via `otlp_endpoint`), and `none` (tracing fully disabled). `evals` has no exporter wiring yet. Validated backends beyond "a real OTLP collector accepts the spans" will be listed here once actually tested against a running system with real production-shaped traffic.
+`gateway` supports three exporters via its `telemetry:` config section (`docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md`): `stdout` (the default — spans printed locally, nothing shipped anywhere), `otlp` (any OTLP-compatible collector/backend, via `otlp_endpoint`), and `none` (tracing fully disabled). The same `Exporter`/`OTLPEndpoint` setting now also drives the separate OTel Metrics pipeline added per `docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md` — one config knob, two signal types, sharing the same exporter-kind decision. `evals` has no exporter wiring yet. Validated backends beyond "a real OTLP collector accepts the spans" will be listed here once actually tested against a running system with real production-shaped traffic.
 
 ## Key SLIs/SLOs
 
