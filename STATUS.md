@@ -82,7 +82,7 @@ Previously: item 4 — a real CI/CD gate for `evals report`. Committed `5c973f3`
 
 ## Next Action
 
-Item 5 is implemented, verified, and documented in this session; not yet committed/pushed/CI-watched — that's the immediate next step. After that, continue the fresh audit's recommended order into the remaining Trivial-Medium items (6-13) and item 14 (multi-modal `Message` content, needs a short RFC first), plus items 17-18 (adjacent side-discoveries from shipping items 2-3). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Item 5 is closed: committed (`653418e`), pushed, confirmed green on CI run `33978116089` (all 3 jobs — `gateway`, `evals`, `api`). Continuing the fresh audit's recommended order into the remaining Trivial-Medium items (6-13) and item 14 (multi-modal `Message` content, needs a short RFC first), plus items 17-18 (adjacent side-discoveries from shipping items 2-3). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
