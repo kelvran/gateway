@@ -85,7 +85,7 @@ Previously: item 7 — soft budget-cap warning threshold, log-only. Committed `7
 
 ## Next Action
 
-The `gen_ai.provider.name` item is implemented, verified, and documented in this session; not yet committed/pushed/CI-watched — that's the immediate next step. Remaining work: the 2 ground-truthed implementable items — Go/Python CI version matrix (pure YAML, smallest remaining), TPM rate-limit dimension (Small-Medium, gateway) — then Golden/Regression Dataset promotion (evals, independent of gateway work), then item 14 (multi-modal `Message` content, needs a short RFC first). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The `gen_ai.provider.name` item is closed: committed (`25ec9e9`), pushed, confirmed green on CI run `33991985061` (all 3 jobs). Remaining work: the 2 ground-truthed implementable items — Go/Python CI version matrix (pure YAML, smallest remaining), TPM rate-limit dimension (Small-Medium, gateway) — then Golden/Regression Dataset promotion (evals, independent of gateway work), then item 14 (multi-modal `Message` content, needs a short RFC first). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
