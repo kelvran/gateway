@@ -79,7 +79,7 @@ Previously: Batch 1 — 6 doc-staleness fixes. Committed `01886b8`, confirmed gr
 
 ## Next Action
 
-Cache stampede protection is implemented and fully verified locally (build/vet/lint/go-arch-lint clean; every package green under `-race` except the pre-existing, unrelated Redis-container failure; 3 new tests, zero flakes across repeated runs) but **not yet committed/pushed/CI-confirmed** — that's the immediate next step. After that, continuing the fresh audit's recommended order: (3) cache-hit provenance telemetry, (4) evals CI/CD gate, (5) rate-limit fail-open metric, then the remaining Medium/Large items per the ranked list above (including newly-added item 17, the budget/cache-hit cost double-counting policy question). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Cache stampede protection is closed: committed (`c50fb79`), pushed, confirmed green on CI run `33971358299` (all 3 jobs). Continuing the fresh audit's recommended order: (3) cache-hit provenance telemetry, (4) evals CI/CD gate, (5) rate-limit fail-open metric, then the remaining Medium/Large items per the ranked list above (including newly-added item 17, the budget/cache-hit cost double-counting policy question). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
