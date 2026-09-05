@@ -1,6 +1,6 @@
 # Telemetry & Observability
 
-Operator companion to the OTel commitment already made in `gateway/ARCHITECTURE.md` and `evals/ARCHITECTURE.md`. For `gateway`, this is now real, per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md` — every `gateway` request (buffered or streaming) emits a real span. `evals` tracing remains aspirational.
+Operator companion to the OTel commitment already made in `gateway/ARCHITECTURE.md` and `evals/ARCHITECTURE.md`. For `gateway`, this is now real, per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md` — every `gateway` request (buffered or streaming) emits a real span. **Corrected 2026-09-05**: `evals` tracing is also now real, per `docs/rfcs/2026-09-04-evals-trace-span-model.md` — `evals/evals/tracing.py` wraps every `run_in_sandbox()` call in a self-contained `Span` (no gateway/cross-service dependency, no OTel Collector transport — a deliberate, self-instrumenting design, not the standardized wire-format `gen_ai.*` spans `gateway` emits), persisted via `rollout --traces` and readable via `report --traces`.
 
 ## What Is Emitted
 
@@ -10,7 +10,7 @@ Operator companion to the OTel commitment already made in `gateway/ARCHITECTURE.
 | Agent-run cost attribution | Gateway | `kelvran.agent_run_id` via W3C Baggage (`baggage: agent_run_id=<value>` header), plus `kelvran.virtual_key.id`/`kelvran.cost.usd` | **Real** |
 | Cache hit/miss + provenance | Gateway | `kelvran.cache.hit` (bool), `kelvran.cache.layer` ("L1"/"L2"/"L3", set only on a hit), `kelvran.cache.similarity`/`kelvran.cache.age_ms` (L3 hits only — real Jaccard estimate + age captured at write time) — none are standardized `gen_ai.*` attributes | **Real**, per `docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md`. L1/L2 report their layer but not an age — neither currently captures a write-time timestamp, a named future extension |
 | Rate-limiter fail-open (metric) | Gateway | `kelvran.ratelimit.fail_open` — an OTel **Metrics** counter (not a span attribute), attributed with `kelvran.virtual_key.id`, incremented every time `checkRateLimit`'s Redis backend errors and the request is allowed through fail-open | **Real**, per `docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md` — the first (and, as of this writing, only) use of OTel Metrics in this codebase; every other signal above is a span attribute |
-| Rollout/judge spans | Evals | Standard `gen_ai.*` plus Kelvran-custom `harness_config` fields (per `evals/ARCHITECTURE.md`'s Data Model) | Not built |
+| Sandbox-execution spans | Evals | Real OTel-SDK-generated `span_id`/`trace_id` (`evals.tracing`, no OTLP exporter wired — SDK used purely as a correct ID/timestamp/status generator, not a live export pipeline), joined to `Run.id`; `process.exit_code`/`container.id` conventions — deliberately **not** `gen_ai.*` (confirmed against the semantic-conventions registry to be LLM/model-inference-only, not applicable to a container-sandbox execution) | **Real**, per `docs/rfcs/2026-09-04-evals-trace-span-model.md`. No `Trace` wrapper yet — today's harness makes exactly one sandbox call per `Run`; a multi-step harness is the named trigger for introducing one |
 
 Standard `gen_ai.*` attributes are consumed by any generic OTel-aware backend; Kelvran-custom attributes require Kelvran-aware dashboards/queries to be meaningful — that distinction matters when picking a backend.
 

@@ -923,4 +923,18 @@ Next steps / resume point:
 
 **Next steps / resume point:** Continue the audit's recommended order into the remaining Trivial/Medium items (TPM rate-limit dimension; soft-vs-hard budget-cap distinction — needs a quick product decision first; Golden/Regression Dataset promotion; `gen_ai.provider.name` enum validation; a Go/Python CI version matrix), then item 14 (Large, needs a short RFC first: multi-modal content field on the canonical `Message` schema). Two adjacent items surfaced in earlier passes remain untouched: the budget/cache-hit cost double-counting policy question, and `docs/operations/TELEMETRY.md`'s evals-tracing doc-staleness item.
 
+## [2026-09-05] Fresh backlog audit item 18: `docs/operations/TELEMETRY.md` evals-tracing doc-staleness
+
+**Files touched:** `docs/operations/TELEMETRY.md` (line 3 intro sentence corrected; Rollout/judge-spans row rewritten). `DECISIONS.md`.
+
+**Intent/summary:** Item 18, a doc-staleness fix found (but out of scope) while shipping item 3, now cleared before continuing into the remaining bundled Trivial-Medium items. `evals` tracing has been real since `docs/rfcs/2026-09-04-evals-trace-span-model.md` shipped, but the doc still said "aspirational"/"Not built."
+
+**Decisions made:** Corrected two independent wrong claims in the same row, not just the "Not built" status: the row also claimed standard `gen_ai.*` attributes plus a `harness_config` field, neither of which is real — verified directly against `evals/evals/models.py`'s `Span` class (no `harness_config` field exists) and the class's own docstring (deliberately never uses `gen_ai.*`, confirmed against the semantic-conventions registry to be LLM/inference-only, not applicable to a sandbox execution — the identical finding already made correcting `PRD.md` in item 1 of this audit). Rewrote the row to name the real fields and the real "ID/timestamp/status generator only, no OTLP exporter, no `Trace` wrapper yet" design instead.
+
+**Verification performed:** Pure prose change, no code touched — confirmed via `git diff --stat` (2 lines changed in one file). Re-grepped the file afterward for "aspirational"/"Not built" to confirm no remaining stale claim (one unrelated match remains, `SECURITY.md`'s SLA framing, correctly out of scope).
+
+**Bugs found:** None — documentation-only.
+
+**Next steps / resume point:** Continue into the remaining bundled items (TPM rate-limit dimension; soft-vs-hard budget-cap distinction — needs a product decision; Golden/Regression Dataset promotion; `gen_ai.provider.name` enum validation; Go/Python CI version matrix), item 14 (multi-modal `Message` content, needs a short RFC), and item 17 (budget/cache-hit cost double-counting — needs a product decision). Given these are only one-line-described in the audit's ranked list, ground-truthing each against the live repo before implementing (matching this session's own established discipline) is the immediate next step, run as a parallel research pass rather than sequentially.
+
 **Next steps / resume point:** Continue the audit's recommended order: (5) a live metric at the rate-limiter fail-open path (currently logged, never counted); then the remaining Medium/Large items per `STATUS.md`'s ranked list, including items 17-18 (budget/cache-hit double-counting policy question; `docs/operations/TELEMETRY.md`'s stale evals-tracing claim).
