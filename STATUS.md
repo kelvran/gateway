@@ -72,7 +72,7 @@ Previously: Tier 2, second item — real rolling-window budget reset for `gatewa
 
 ## Next Action
 
-Score-level caching is ready to commit + push + watch CI. Continuing Tier 2: real SPRT/anytime-valid sequential testing, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Score-level caching is closed: committed (`4fdef22`), pushed, confirmed green on CI run `33958355742` (all 3 jobs). Continuing Tier 2: real SPRT/anytime-valid sequential testing, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
