@@ -36,6 +36,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/text/unicode/norm"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -215,6 +216,11 @@ type Pipeline struct {
 	cacheTTL          time.Duration
 	cacheL2TTL        time.Duration
 	cacheL3TTL        time.Duration
+	// missGroup deduplicates concurrent identical cache misses — see
+	// runMissPath's own doc comment. Zero value is ready to use, per
+	// golang.org/x/sync/singleflight's own documented contract; no
+	// construction needed in NewPipeline.
+	missGroup singleflight.Group
 }
 
 // NewPipeline validates cfg and constructs a Pipeline.
@@ -648,54 +654,103 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
-	// Guardrail pre-call: after L1/L2/L3 all miss, before the router — per
-	// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md, matching
-	// gateway/ARCHITECTURE.md's Request Lifecycle exactly. A cache hit
-	// above never reaches this check at all — its provenance was already
-	// checked under the current policy at write time, per this same RFC's
-	// cache-key/GuardrailPolicyVersion mechanism.
-	if verdict := p.guardrails.Check(ctx, serializeMessages(req.Messages)); verdict.Blocked {
-		p.logger.Warn("guardrail_blocked_precall", "key_id", vk.ID, "finding_count", len(verdict.Findings))
-		err = ErrGuardrailBlocked
-		return
-	}
-
-	var found bool
-	dep, found = p.nextDeployment(req.Model)
-	if !found {
-		err = fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
-		return
-	}
-
-	resp, err = p.callDeployment(ctx, dep, req)
-	if err != nil {
-		// Single fallback to the next deployment for the same model, per
-		// gateway/ARCHITECTURE.md's router step.
-		if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
-			fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
-			dep = fallbackDep
-			resp, err = p.callDeployment(ctx, dep, req)
-		}
-	}
-	if err != nil {
-		err = fmt.Errorf("dataplane: upstream call failed for model %q: %w", req.Model, err)
-		return
-	}
-
-	// Guardrail post-call, buffered path: resp is guaranteed fully
-	// populated here and nothing downstream (cache write, return to
-	// client) has happened yet — a Block verdict can still refuse both.
-	if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
-		p.logger.Warn("guardrail_blocked_postcall", "key_id", vk.ID, "finding_count", len(postVerdict.Findings))
-		err = ErrGuardrailBlocked
-		return
-	}
-
-	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, encoded)
-	}
-
+	resp, dep, fallback, err = p.runMissPath(ctx, vk, req, l1Key, l2Key, l3Signature)
 	return
+}
+
+// cacheMissOutcome bundles everything HandleChatCompletion needs after a
+// real cache-miss execution — returned as runMissPath's shared result so
+// every coalesced waiter gets the same dep/fallback, not just the same
+// resp.
+type cacheMissOutcome struct {
+	resp     adapter.ChatResponse
+	dep      Deployment
+	fallback fallbackInfo
+}
+
+// runMissPath executes the real, expensive cache-miss path (guardrail
+// pre-call, router+fallback, upstream call, guardrail post-call, cache
+// write-back) for l1Key, deduplicating concurrent identical misses via
+// singleflight: N concurrent requests for the same (tenant, model, exact
+// messages, temperature, max_tokens, guardrail policy version) never each
+// independently hit the guardrail engine and upstream provider — only the
+// first caller for a given l1Key actually runs this body; every other
+// concurrent caller for the same key blocks and receives the same result,
+// closing THREAT_MODEL.md's Cache Denial-of-Service row ("cache-miss
+// storms causing redundant expensive upstream calls").
+//
+// Coalescing is keyed on l1Key (the EXACT-match cache key), not l2Key —
+// deliberately narrower than it could be: two concurrent requests that
+// are merely normalized-equivalent (would share an L2 hit once either one
+// completes) are NOT coalesced with each other in v1, only byte-identical
+// ones — a real, named scope limit, not an oversight; broadening this to
+// l2Key needs writing into two different L1 keys from one shared
+// execution, a genuinely separate design question. l1Key already bakes
+// in the tenant ID (vk.ID), so this can never coalesce two different
+// tenants' requests together — no cross-tenant call sharing, by
+// construction, matching this codebase's existing tenant-isolation
+// discipline elsewhere in Cache.
+//
+// A real, accepted tradeoff, not hidden: only the first (leader) caller's
+// ctx is actually used for the shared guardrail checks and upstream call —
+// if the leader's own request is canceled, every coalesced waiter's call
+// fails too, even though their own individual contexts may still be live.
+// This is the same tradeoff every production use of
+// golang.org/x/sync/singleflight for HTTP request coalescing accepts
+// (e.g. groupcache); a detached context outliving any single caller would
+// need its own timeout policy this project has no need for yet.
+func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key, l2Key string, l3Signature []uint64) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
+	result, err, _ := p.missGroup.Do(l1Key, func() (any, error) {
+		// Guardrail pre-call: after L1/L2/L3 all miss, before the router — per
+		// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md, matching
+		// gateway/ARCHITECTURE.md's Request Lifecycle exactly. A cache hit
+		// above never reaches this check at all — its provenance was already
+		// checked under the current policy at write time, per this same RFC's
+		// cache-key/GuardrailPolicyVersion mechanism.
+		if verdict := p.guardrails.Check(ctx, serializeMessages(req.Messages)); verdict.Blocked {
+			p.logger.Warn("guardrail_blocked_precall", "key_id", vk.ID, "finding_count", len(verdict.Findings))
+			return nil, ErrGuardrailBlocked
+		}
+
+		dep, found := p.nextDeployment(req.Model)
+		if !found {
+			return nil, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
+		}
+
+		resp, err := p.callDeployment(ctx, dep, req)
+		var fallback fallbackInfo
+		if err != nil {
+			// Single fallback to the next deployment for the same model, per
+			// gateway/ARCHITECTURE.md's router step.
+			if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
+				fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
+				dep = fallbackDep
+				resp, err = p.callDeployment(ctx, dep, req)
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("dataplane: upstream call failed for model %q: %w", req.Model, err)
+		}
+
+		// Guardrail post-call, buffered path: resp is guaranteed fully
+		// populated here and nothing downstream (cache write, return to
+		// client) has happened yet — a Block verdict can still refuse both.
+		if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
+			p.logger.Warn("guardrail_blocked_postcall", "key_id", vk.ID, "finding_count", len(postVerdict.Findings))
+			return nil, ErrGuardrailBlocked
+		}
+
+		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
+			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, encoded)
+		}
+
+		return cacheMissOutcome{resp: resp, dep: dep, fallback: fallback}, nil
+	})
+	if err != nil {
+		return adapter.ChatResponse{}, Deployment{}, fallbackInfo{}, err
+	}
+	outcome := result.(cacheMissOutcome)
+	return outcome.resp, outcome.dep, outcome.fallback, nil
 }
 
 // callDeployment runs the adapter+upstream-call steps for one deployment:
