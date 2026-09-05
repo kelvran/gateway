@@ -249,7 +249,7 @@ func TestHandleChatCompletionModelNotAllowedCheckedBeforeRateLimitAndBudget(t *t
 		AllowedModels:   map[string]struct{}{"gpt-4o-mini": {}},
 	}}
 	tracker := budget.NewTracker()
-	tracker.Record("team-x", decimal.RequireFromString("999")) // already over budget too
+	tracker.Record("team-x", decimal.RequireFromString("999"), 0) // already over budget too
 
 	p := newTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
 		t.Fatal("upstream must never be called for a model-not-allowed request")
@@ -293,7 +293,7 @@ func TestHandleChatCompletionBudgetExceededRejectsBeforeUpstream(t *testing.T) {
 		{ID: "team-x", KeyHash: testHashOf("team-x-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("0.01")},
 	}
 	tracker := budget.NewTracker()
-	tracker.Record("team-x", decimal.RequireFromString("1.0")) // already well over the 0.01 cap
+	tracker.Record("team-x", decimal.RequireFromString("1.0"), 0) // already well over the 0.01 cap
 
 	p := newTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
 		t.Fatal("upstream must never be called once budget is exceeded")

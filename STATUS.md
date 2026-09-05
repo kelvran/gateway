@@ -14,9 +14,9 @@ Real source code now exists in `gateway/` and `evals/`, but it is a **deliberate
 
 ## Current Phase
 
-Working through a repo-wide backlog audit's ranked punch list (produced by a 7-agent dynamic workflow, then approved by the user for "proceed through them in flow"): Tier 0 (4 doc-accuracy fixes) and Tier 1 (6 small, no-blocker items: evals sandbox `--read-only`/`--tmpfs`, `go-arch-lint`, `.importlinter`, `otelhttp` middleware, a second LLM-judge provider, per-exception-type Bedrock errors) are **fully closed**. Now on Tier 2 (medium-effort, no-blocker items), first item done: real graceful shutdown (SIGTERM/SIGINT handling) for `cmd/gateway` — `run()` uses `signal.NotifyContext` + `http.Server.Shutdown` (30s drain) instead of a bare `ListenAndServe`, so telemetry-flush and `pipeline.Close()` now run on every real exit path. Proved end-to-end via a self-signaling integration test; sanity-checked by temporarily reverting and confirming a real SIGTERM killed the whole test process outright without the fix.
+Working through a repo-wide backlog audit's ranked punch list (produced by a 7-agent dynamic workflow, then approved by the user for "proceed through them in flow"): Tier 0 (4 doc-accuracy fixes) and Tier 1 (6 small, no-blocker items) are **fully closed**. Now on Tier 2 (medium-effort, no-blocker items) — done so far: (1) real graceful shutdown (SIGTERM/SIGINT handling) for `cmd/gateway`, proved end-to-end via a self-signaling integration test; (2) real rolling-window budget reset (e.g. "monthly" budgets) — a new per-key `budget_reset_interval_seconds` turns `budget_usd` into a real rolling window instead of a lifetime cap, checked lazily on each request (mirroring `ratelimit.TokenBucket`'s own lazy-refill design, not a background scheduler). The reset window's own boundary is deliberately not persisted (only cumulative spend is) — a named, self-limiting gap, not a new bypass.
 
-Remaining Tier 2 items: rolling-window budget reset, Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops.
+Remaining Tier 2 items: Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops.
 
 Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `DECISIONS.md` (one line per decision) — not restated here beyond the current phase, to keep this section from growing unbounded.
 
@@ -64,13 +64,13 @@ Full phase history lives in `docs/agents/LOGS.md` (one entry per feature) and `D
 
 ## Last Completed Task
 
-Tier 2, first item: real graceful shutdown (SIGTERM/SIGINT handling) for `cmd/gateway`. See `docs/agents/LOGS.md`'s latest entry for full detail.
+Tier 2, second item: real rolling-window budget reset for `gateway`. See `docs/agents/LOGS.md`'s latest entry for full detail.
 
-Previously: Tier 1, sixth and final item — per-exception-type Bedrock streaming error handling, closing Tier 1 entirely. Committed `5e7acdf`, confirmed green on CI run `33927254694`.
+Previously: Tier 2, first item — real graceful shutdown (SIGTERM/SIGINT handling) for `cmd/gateway`. Committed `5346f18`, confirmed green on CI run `33953919207`.
 
 ## Next Action
 
-Graceful shutdown is closed: committed (`5346f18`), pushed, confirmed green on CI run `33953919207` (all 3 jobs — the self-signaling SIGTERM test passed on the real Linux CI runner too, not just locally). Continuing Tier 2: rolling-window budget reset, Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Rolling-window budget reset is ready to commit + push + watch CI. Continuing Tier 2: Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 

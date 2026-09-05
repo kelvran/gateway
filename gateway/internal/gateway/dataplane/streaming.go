@@ -87,8 +87,8 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		err = ErrRateLimited
 		return
 	}
-	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID)
-	if !p.budget.Allow(vk.ID, vk.BudgetUSD) {
+	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
+	if !p.budget.Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) {
 		err = ErrBudgetExceeded
 		return
 	}

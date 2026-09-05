@@ -346,7 +346,7 @@ func TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend(t *testing.T) {
 	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-budget", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
-	wantSpent := p.budget.SpentUSD("team-budget")
+	wantSpent := p.budget.SpentUSD("team-budget", 0)
 	if wantSpent.IsZero() {
 		t.Fatal("expected nonzero spend recorded after the first request")
 	}

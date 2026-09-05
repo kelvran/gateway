@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -52,6 +53,12 @@ type VirtualKey struct {
 	// means unlimited. Decimal, not float64, per
 	// docs/rfcs/2026-09-02-decimal-cost-accounting.md.
 	BudgetUSD decimal.Decimal
+	// BudgetResetInterval, when positive, makes BudgetUSD a rolling window
+	// (e.g. 30*24*time.Hour for a "monthly" budget) rather than a
+	// lifetime-of-the-process cap — see internal/budget.Tracker's own
+	// resetIfNeeded. Zero (the default) preserves the original,
+	// never-resets behavior exactly.
+	BudgetResetInterval time.Duration
 	// AllowedModels restricts this key to a subset of configured models.
 	// Empty or nil means every configured model is allowed.
 	AllowedModels map[string]struct{}

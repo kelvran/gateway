@@ -42,6 +42,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	if !alpha.BudgetUSD.Equal(decimal.RequireFromString("100.0")) {
 		t.Errorf("team-alpha.BudgetUSD = %v, want 100.0", alpha.BudgetUSD)
 	}
+	if alpha.BudgetResetIntervalSeconds != 2592000 {
+		t.Errorf("team-alpha.BudgetResetIntervalSeconds = %d, want 2592000 (30 days)", alpha.BudgetResetIntervalSeconds)
+	}
 	if alpha.RateLimitBurst != 20 || alpha.RateLimitRefill != 10 {
 		t.Errorf("team-alpha rate limit = burst=%v refill=%v, want 20/10", alpha.RateLimitBurst, alpha.RateLimitRefill)
 	}
@@ -353,6 +356,47 @@ func TestLoadBudgetUSDBareDigitIsNotMisreadAsBool(t *testing.T) {
 	want := decimal.RequireFromString("1")
 	if !got.Equal(want) {
 		t.Fatalf("BudgetUSD = %v, want %v — a bare \"1\" must parse as the decimal 1, not collide with boolean true and silently fall back to 0 (unlimited)", got, want)
+	}
+}
+
+// TestLoadBudgetResetIntervalSecondsUnsetDefaultsToZero proves a virtual
+// key with no budget_reset_interval_seconds key parses to 0 — the
+// existing "lifetime cap, never resets" default, exactly as before this
+// field existed.
+func TestLoadBudgetResetIntervalSecondsUnsetDefaultsToZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: 10\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.VirtualKeys[0].BudgetResetIntervalSeconds; got != 0 {
+		t.Errorf("BudgetResetIntervalSeconds = %d, want 0 (unset)", got)
+	}
+}
+
+// TestLoadBudgetResetIntervalSecondsParsesPositiveValue proves an
+// explicit budget_reset_interval_seconds key parses through — e.g. a
+// 30-day "monthly" rolling window as 2592000 seconds.
+func TestLoadBudgetResetIntervalSecondsParsesPositiveValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: 10\n    budget_reset_interval_seconds: 2592000\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.VirtualKeys[0].BudgetResetIntervalSeconds; got != 2592000 {
+		t.Errorf("BudgetResetIntervalSeconds = %d, want 2592000", got)
 	}
 }
 

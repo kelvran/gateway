@@ -28,6 +28,14 @@ virtual_keys:
   team-alpha:
     key_hash: "6701a1ecc6b08958fa24e13f267aac7233d47f390e92e71f8cc8fb3144672cf1"
     budget_usd: 100.0
+    # Optional; omit for the original lifetime-of-the-process cap (never
+    # resets, only a restart — or nothing at all, without persistence —
+    # clears it). A positive value here turns budget_usd into a real
+    # rolling window instead: 2592000 (30 days) approximates a "monthly"
+    # budget, per docs/rfcs/2026-09-02-virtual-keys-budgets.md's own named
+    # future work. Checked lazily on each request, not a background
+    # scheduler — see internal/budget.Tracker's resetIfNeeded.
+    budget_reset_interval_seconds: 2592000
     rate_limit:
       burst: 20
       refill_per_second: 10

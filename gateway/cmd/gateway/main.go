@@ -198,12 +198,13 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			}
 		}
 		virtualKeys = append(virtualKeys, identity.VirtualKey{
-			ID:              vk.Name,
-			KeyHash:         vk.KeyHash,
-			BudgetUSD:       vk.BudgetUSD,
-			AllowedModels:   allowedModels,
-			RateLimitBurst:  burst,
-			RateLimitRefill: refill,
+			ID:                  vk.Name,
+			KeyHash:             vk.KeyHash,
+			BudgetUSD:           vk.BudgetUSD,
+			BudgetResetInterval: time.Duration(vk.BudgetResetIntervalSeconds) * time.Second,
+			AllowedModels:       allowedModels,
+			RateLimitBurst:      burst,
+			RateLimitRefill:     refill,
 		})
 		keyConfigs = append(keyConfigs, ratelimit.KeyConfig{
 			ID:              vk.Name,

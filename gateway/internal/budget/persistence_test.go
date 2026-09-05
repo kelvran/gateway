@@ -71,10 +71,10 @@ func TestNewTrackerWithStoreHydratesExistingSpend(t *testing.T) {
 
 	// Allow must immediately reflect the hydrated spend, without any
 	// Record call — a cap of exactly the hydrated amount must reject.
-	if tr.Allow("team-alpha", d("7.5")) {
+	if tr.Allow("team-alpha", d("7.5"), 0) {
 		t.Error("Allow(cap=7.5) after hydrating spend=7.5 = true, want false")
 	}
-	if !tr.Allow("team-alpha", d("7.51")) {
+	if !tr.Allow("team-alpha", d("7.51"), 0) {
 		t.Error("Allow(cap=7.51) after hydrating spend=7.5 = false, want true")
 	}
 }
@@ -102,8 +102,8 @@ func TestRecordPersistsCumulativeTotalToStore(t *testing.T) {
 		t.Fatalf("NewTrackerWithStore: %v", err)
 	}
 
-	tr.Record("team-alpha", d("3"))
-	tr.Record("team-alpha", d("4"))
+	tr.Record("team-alpha", d("3"), 0)
+	tr.Record("team-alpha", d("4"), 0)
 
 	if len(store.saveCalls) != 2 {
 		t.Fatalf("len(saveCalls) = %d, want 2", len(store.saveCalls))
@@ -134,16 +134,16 @@ func TestRecordLogsButContinuesOnPersistFailure(t *testing.T) {
 		t.Fatalf("NewTrackerWithStore: %v", err)
 	}
 
-	tr.Record("team-alpha", d("5")) // must not panic despite the failing store
+	tr.Record("team-alpha", d("5"), 0) // must not panic despite the failing store
 
 	// Allow(cap=5) correctly returns false here too (spend == cap is a
 	// strict boundary, per TestAllowBoundaryExactlyAtCap) — that's not
 	// what this test is checking. Use a cap strictly above the recorded
 	// spend to prove the in-memory update actually happened.
-	if !tr.Allow("team-alpha", d("5.01")) {
+	if !tr.Allow("team-alpha", d("5.01"), 0) {
 		t.Error("in-memory spend was not updated despite the persist failure — Allow should still see it")
 	}
-	if tr.Allow("team-alpha", d("4.99")) {
+	if tr.Allow("team-alpha", d("4.99"), 0) {
 		t.Error("Allow(cap=4.99) = true after recording spend=5 — in-memory spend was not updated at all")
 	}
 	if !bytes.Contains(logBuf.Bytes(), []byte("budget_persist_failed")) {

@@ -120,7 +120,7 @@ func TestHandleChatCompletionStreamModelNotAllowedCheckedFirst(t *testing.T) {
 		AllowedModels:   map[string]struct{}{"gpt-4o-mini": {}},
 	}}
 	tracker := budget.NewTracker()
-	tracker.Record("team-x", decimal.RequireFromString("999"))
+	tracker.Record("team-x", decimal.RequireFromString("999"), 0)
 
 	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
 		t.Fatal("UpstreamStream must never be called for a model-not-allowed request")
@@ -144,7 +144,7 @@ func TestHandleChatCompletionStreamBudgetExceededRejectsBeforeUpstream(t *testin
 		{ID: "team-x", KeyHash: testHashOf("team-x-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("0.01")},
 	}
 	tracker := budget.NewTracker()
-	tracker.Record("team-x", decimal.RequireFromString("1.0"))
+	tracker.Record("team-x", decimal.RequireFromString("1.0"), 0)
 
 	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
 		t.Fatal("UpstreamStream must never be called once budget is exceeded")

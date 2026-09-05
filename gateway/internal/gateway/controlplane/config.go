@@ -103,6 +103,13 @@ type VirtualKeyConfig struct {
 	// BudgetUSD is this key's cumulative spending cap. Zero means
 	// unlimited. Decimal, not float64 — see ModelPriceConfig's doc comment.
 	BudgetUSD decimal.Decimal
+	// BudgetResetIntervalSeconds, when positive, makes BudgetUSD a rolling
+	// window (e.g. 2592000 for a 30-day "monthly" budget) rather than a
+	// lifetime-of-the-process cap. Zero (the default) preserves the
+	// original, never-resets behavior exactly. A plain int-seconds field,
+	// matching this file's existing TTLSeconds convention (CacheConfig,
+	// CacheL2Config, CacheL3Config) rather than a duration string.
+	BudgetResetIntervalSeconds int
 	// AllowedModels restricts this key to a subset of configured models.
 	// Empty means every configured model is allowed.
 	AllowedModels []string
@@ -258,6 +265,7 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("controlplane: virtual key %q is missing required field %q", name, "key_hash")
 		}
 		vk.BudgetUSD, _ = getDecimal(vkMap, "budget_usd")
+		vk.BudgetResetIntervalSeconds, _ = getInt(vkMap, "budget_reset_interval_seconds")
 		if rl, ok := getMap(vkMap, "rate_limit"); ok {
 			vk.RateLimitBurst, _ = getFloat(rl, "burst")
 			vk.RateLimitRefill, _ = getFloat(rl, "refill_per_second")

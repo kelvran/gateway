@@ -518,8 +518,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID)
-	if !p.budget.Allow(vk.ID, vk.BudgetUSD) {
+	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
+	if !p.budget.Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) {
 		err = ErrBudgetExceeded
 		return
 	}
@@ -681,7 +681,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			TotalTokens:      resp.Usage.TotalTokens,
 		})
 		if vk != nil {
-			p.budget.Record(vk.ID, cost)
+			p.budget.Record(vk.ID, cost, vk.BudgetResetInterval)
 		}
 	}
 
