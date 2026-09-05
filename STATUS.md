@@ -70,7 +70,7 @@ Previously: Tier 1, sixth and final item — per-exception-type Bedrock streamin
 
 ## Next Action
 
-Graceful shutdown is ready to commit + push + watch CI. Continuing Tier 2: rolling-window budget reset, Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Graceful shutdown is closed: committed (`5346f18`), pushed, confirmed green on CI run `33953919207` (all 3 jobs — the self-signaling SIGTERM test passed on the real Linux CI runner too, not just locally). Continuing Tier 2: rolling-window budget reset, Score-level judge caching + real SPRT, an admin API v1 slice, `rubric_axis`/multi-axis judge scoring, bootstrap/Bayesian eval stats, Vertex AI OAuth2 auth, Cache L2 extra normalization ops — proceeding one at a time with the same implement→verify→commit→push→CI discipline used throughout this project. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
