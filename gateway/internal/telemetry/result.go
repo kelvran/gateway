@@ -45,6 +45,38 @@ const (
 	AttrKelvranCacheAgeMs      = "kelvran.cache.age_ms"
 )
 
+// genAIProviderNameOverrides maps Kelvran's own internal provider
+// identifier (Deployment.Provider / adapter.Registry's key) to
+// gen_ai.provider.name's real well-known enum value, per
+// docs/rfcs/2026-09-05-gateway-gen-ai-provider-name-validation.md —
+// resolving the exact gap docs/rfcs/2026-09-02-otel-tracing-agent-run-
+// id.md's own Unresolved Questions first named ("a future non-standard
+// provider name wouldn't be caught"). Confirmed directly against the
+// real registry (open-telemetry/semantic-conventions's
+// model/gen-ai/deprecated/registry-deprecated.yaml), not assumed: only
+// "bedrock"/"gemini" need remapping — "openai"/"anthropic" already
+// match the spec's well-known values verbatim, exactly as that original
+// RFC's own reasoning said. "openaicompat" has no well-known value in
+// the registry at all (a self-hosted, wire-protocol-compatible runtime
+// isn't a distinct GenAI provider in OTel's vocabulary) — passed
+// through verbatim by genAIProviderName below rather than forced into a
+// wrong mapping.
+var genAIProviderNameOverrides = map[string]string{
+	"bedrock": "aws.bedrock",
+	"gemini":  "gcp.gemini",
+}
+
+// genAIProviderName returns provider's gen_ai.provider.name value,
+// remapped via genAIProviderNameOverrides where Kelvran's own internal
+// identifier differs from the spec's well-known value, or returned
+// verbatim otherwise.
+func genAIProviderName(provider string) string {
+	if mapped, ok := genAIProviderNameOverrides[provider]; ok {
+		return mapped
+	}
+	return provider
+}
+
 // ChatCompletionResult carries only primitive values — never
 // identity.VirtualKey or adapter.ChatResponse directly — so this package
 // stays a dependency-free leaf (see the package doc). Every field is
@@ -99,7 +131,7 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 		attrs = append(attrs, attribute.String(AttrKelvranVirtualKeyID, r.VirtualKeyID))
 	}
 	if r.Provider != "" {
-		attrs = append(attrs, attribute.String(AttrGenAIProviderName, r.Provider))
+		attrs = append(attrs, attribute.String(AttrGenAIProviderName, genAIProviderName(r.Provider)))
 	}
 	if r.DeploymentName != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranDeploymentName, r.DeploymentName))

@@ -288,6 +288,16 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	deployments := make([]dataplane.Deployment, 0, len(cfg.Deployments))
 	routerDeployments := make([]router.Deployment, 0, len(cfg.Deployments))
 	for _, d := range cfg.Deployments {
+		// Fail fast at startup, not per-request, per
+		// docs/rfcs/2026-09-05-gateway-gen-ai-provider-name-validation.md
+		// — before this check, an unregistered provider produced a
+		// generic error only once a real request happened to route to
+		// that deployment (dataplane.callDeployment's own "no adapter
+		// registered" error), which could sit unnoticed until traffic
+		// actually hit it.
+		if _, ok := registry[d.Provider]; !ok {
+			return nil, fmt.Errorf("deployment %q: no adapter registered for provider %q", d.Name, d.Provider)
+		}
 		dep := dataplane.Deployment{
 			Name:          d.Name,
 			Model:         d.Model,

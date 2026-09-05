@@ -165,3 +165,56 @@ func TestRecordChatCompletionResultErrorRecordsErrorAndSetsStatus(t *testing.T) 
 		t.Error("no \"exception\" event recorded — RecordError did not fire")
 	}
 }
+
+// TestGenAIProviderNameRemapsToWellKnownRegistryValues is the
+// load-bearing proof for docs/rfcs/2026-09-05-gateway-gen-ai-provider-
+// name-validation.md: Kelvran's own internal provider identifiers for
+// bedrock/gemini don't match the real OTel semantic-conventions
+// registry's well-known gen_ai.provider.name values, and must be
+// remapped on the way out; openai/anthropic already match verbatim and
+// must NOT be altered; openaicompat has no well-known value in the
+// registry at all and must pass through verbatim rather than being
+// forced into a wrong mapping.
+func TestGenAIProviderNameRemapsToWellKnownRegistryValues(t *testing.T) {
+	cases := []struct {
+		internal string
+		want     string
+	}{
+		{"openai", "openai"},
+		{"anthropic", "anthropic"},
+		{"bedrock", "aws.bedrock"},
+		{"gemini", "gcp.gemini"},
+		{"openaicompat", "openaicompat"},
+	}
+	for _, c := range cases {
+		if got := genAIProviderName(c.internal); got != c.want {
+			t.Errorf("genAIProviderName(%q) = %q, want %q", c.internal, got, c.want)
+		}
+	}
+}
+
+// TestRecordChatCompletionResultRemapsProviderOnSpan proves the mapping
+// actually reaches the real emitted span attribute, not just the
+// helper function in isolation.
+func TestRecordChatCompletionResultRemapsProviderOnSpan(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
+	tracer := tp.Tracer("result_test")
+
+	_, span := tracer.Start(t.Context(), "test-span")
+	RecordChatCompletionResult(span, ChatCompletionResult{Provider: "bedrock"})
+	span.End()
+
+	ended := sr.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("len(sr.Ended()) = %d, want 1", len(ended))
+	}
+	v, ok := attrValue(t, ended[0].Attributes(), attribute.Key(AttrGenAIProviderName))
+	if !ok {
+		t.Fatal("gen_ai.provider.name attribute not set")
+	}
+	if v.AsString() != "aws.bedrock" {
+		t.Errorf("gen_ai.provider.name = %q, want %q", v.AsString(), "aws.bedrock")
+	}
+}
