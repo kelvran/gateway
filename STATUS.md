@@ -73,7 +73,7 @@ Previously: Tier 2, fifth item — the Admin API v1 slice for `gateway`. Committ
 
 ## Next Action
 
-Real mixture-SPRT early-stopping is implemented and fully verified locally (181 passed/11 skipped; real-Docker 69 passed; ruff/import-linter clean) but **not yet committed/pushed/CI-confirmed** — that's the immediate next step. After that, **no further approved work is queued**: all three brainstormed items (multi-axis judging, Admin API v1, real SPRT) are shipped. Lower-priority, not yet started: bootstrap/Bayesian eval stats, Cache L2 extra normalization ops. The next session should re-run a backlog audit or get fresh direction from the user rather than assuming continuation. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Real mixture-SPRT early-stopping is closed: committed (`f3a165c`), pushed, confirmed green on CI run `33967645985` (all 3 jobs). **No further approved work is queued**: all three brainstormed items (multi-axis judging, Admin API v1, real SPRT) are shipped. Lower-priority, not yet started: bootstrap/Bayesian eval stats, Cache L2 extra normalization ops. The next session should re-run a backlog audit or get fresh direction from the user rather than assuming continuation. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
