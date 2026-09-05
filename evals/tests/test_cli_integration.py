@@ -1224,9 +1224,9 @@ def test_rollout_early_stop_flags_must_be_given_together(tmp_path):
             str(scores_path),
             "--traces",
             str(traces_path),
-            "--early-stop-min-trials",
-            "2",
-            # deliberately omitting the other two flags
+            "--early-stop-max-trials",
+            "10",
+            # deliberately omitting --early-stop-baseline-pass-rate
         ],
     )
     assert result.exit_code != 0
@@ -1260,12 +1260,10 @@ def test_rollout_early_stop_skips_remaining_trials_and_total_excludes_them(
             str(scores_path),
             "--traces",
             str(traces_path),
-            "--early-stop-min-trials",
-            "2",
             "--early-stop-max-trials",
             "10",
             "--early-stop-baseline-pass-rate",
-            "0.01",
+            "0.1",
         ],
     )
 
@@ -1273,6 +1271,9 @@ def test_rollout_early_stop_skips_remaining_trials_and_total_excludes_them(
     assert result.output.count("SKIPPED") == 4
     # total must reflect only the 2 real trials that actually ran -- the 4
     # never-attempted skipped trials must not count in the denominator.
+    # (An all-success group's mSPRT check against baseline=0.1 crosses
+    # its threshold at exactly trial 2 -- verified directly against
+    # evals.stats.mixture_sprt_early_stop, not guessed.)
     assert "(2/2)" in result.output
 
     persisted_runs = load_runs(results_path)
@@ -1321,12 +1322,10 @@ def test_rollout_early_stop_with_llm_judge_never_double_calls_judge(
             "--traces",
             str(traces_path),
             "--llm-judge",
-            "--early-stop-min-trials",
-            "2",
             "--early-stop-max-trials",
             "10",
             "--early-stop-baseline-pass-rate",
-            "0.01",
+            "0.1",
         ],
     )
 

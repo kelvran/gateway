@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from evals.stats import two_checkpoint_early_stop, wilson_interval
+from evals.stats import mixture_sprt_early_stop, wilson_interval
 
 
 def test_known_reference_8_of_10_at_95_percent():
@@ -65,102 +65,123 @@ def test_larger_n_narrows_interval_for_same_proportion():
     assert (upper_large - lower_large) < (upper_small - lower_small)
 
 
-# --- two_checkpoint_early_stop (see the RFC) ---
-
-
-def test_never_stops_before_min_trials():
-    # An all-success group checked against a baseline far below 1.0 would
-    # stop immediately under a naive continuous recheck -- this proves it
-    # does NOT, for any trial count short of min_trials.
-    for trials_run in range(1, 5):
-        assert not two_checkpoint_early_stop(
-            successes=trials_run,
-            trials_run=trials_run,
-            min_trials=5,
-            max_trials=20,
-            baseline_pass_rate=0.1,
-        )
-
-
-def test_never_stops_strictly_between_the_two_checkpoints():
-    for trials_run in range(6, 20):
-        assert not two_checkpoint_early_stop(
-            successes=trials_run,
-            trials_run=trials_run,
-            min_trials=5,
-            max_trials=20,
-            baseline_pass_rate=0.1,
-        )
+# --- mixture_sprt_early_stop ---
+# See docs/rfcs/2026-09-05-evals-mixture-sprt-early-stopping.md
 
 
 def test_trials_run_zero_never_stops():
-    assert not two_checkpoint_early_stop(
+    assert not mixture_sprt_early_stop(
         successes=0,
         trials_run=0,
-        min_trials=0,
-        max_trials=10,
         baseline_pass_rate=0.5,
     )
 
 
-def test_checkpoint_decision_matches_a_direct_bonferroni_corrected_wilson_call():
-    # Cross-check against the real wilson_interval function directly,
-    # rather than re-deriving the statistic -- this is a correctness proof
-    # of the Bonferroni wiring, not a re-implementation.
-    successes, trials_run, min_trials, max_trials = 2, 5, 5, 20
-    confidence = 0.95
-    baseline = 0.9
+def test_baseline_pass_rate_out_of_open_unit_interval_raises():
+    for bad_baseline in (0.0, 1.0, -0.1, 1.1):
+        with pytest.raises(ValueError):
+            mixture_sprt_early_stop(5, 10, baseline_pass_rate=bad_baseline)
 
-    corrected = 1 - (1 - confidence) / 2
-    lower, upper = wilson_interval(successes, trials_run, confidence=corrected)
-    expected = not (lower <= baseline <= upper)
+
+def test_confidence_out_of_open_unit_interval_raises():
+    for bad_confidence in (0.0, 1.0, -0.1, 1.1):
+        with pytest.raises(ValueError):
+            mixture_sprt_early_stop(
+                5, 10, baseline_pass_rate=0.5, confidence=bad_confidence
+            )
+
+
+def test_non_positive_relative_mixing_variance_raises():
+    for bad_value in (0.0, -1.0):
+        with pytest.raises(ValueError):
+            mixture_sprt_early_stop(
+                5, 10, baseline_pass_rate=0.5, relative_mixing_variance=bad_value
+            )
+
+
+def test_successes_out_of_range_raises():
+    with pytest.raises(ValueError):
+        mixture_sprt_early_stop(successes=11, trials_run=10, baseline_pass_rate=0.5)
+    with pytest.raises(ValueError):
+        mixture_sprt_early_stop(successes=-1, trials_run=10, baseline_pass_rate=0.5)
+
+
+def test_likelihood_ratio_matches_a_hand_computed_reference_value():
+    # Independently re-derive the closed-form mSPRT likelihood ratio
+    # inline, rather than re-using any of the function's own internals --
+    # a correctness proof of the formula, not a re-implementation.
+    successes, trials_run, baseline, confidence, relative_mixing_variance = (
+        7,
+        10,
+        0.4,
+        0.95,
+        1.0,
+    )
+    null_variance = baseline * (1 - baseline)
+    mixing_variance = relative_mixing_variance * null_variance
+    n = trials_run
+    theta = successes / n - baseline
+    n_tau_sq = n * mixing_variance
+    denom = null_variance + n_tau_sq
+    expected_ratio = math.sqrt(null_variance / denom) * math.exp(
+        (n * n_tau_sq * theta**2) / (2 * null_variance * denom)
+    )
+    expected_stop = expected_ratio >= 1 / (1 - confidence)
 
     assert (
-        two_checkpoint_early_stop(
-            successes, trials_run, min_trials, max_trials, baseline, confidence
+        mixture_sprt_early_stop(
+            successes, trials_run, baseline, confidence, relative_mixing_variance
         )
-        == expected
+        == expected_stop
     )
 
 
-def test_degenerate_single_checkpoint_uses_plain_confidence_not_bonferroni():
-    # min_trials == max_trials: only one real checkpoint exists, so no
-    # correction should be applied -- using the Bonferroni-adjusted
-    # confidence here would be needlessly conservative for a single check.
-    successes, trials_run = 8, 10
+def test_observed_rate_exactly_at_baseline_never_stops_for_any_trial_count():
+    # theta = 0 makes the exponential term exp(0) = 1, so the likelihood
+    # ratio reduces to sqrt(null_variance / (null_variance + n*mixing_variance)),
+    # which is always < 1 -- and therefore always < 1/alpha for any
+    # alpha < 1. An exact-match observed rate can never trigger a stop,
+    # regardless of how many trials have run.
     baseline = 0.5
-    confidence = 0.95
-
-    lower, upper = wilson_interval(successes, trials_run, confidence=confidence)
-    expected = not (lower <= baseline <= upper)
-
-    assert (
-        two_checkpoint_early_stop(
-            successes, trials_run, trials_run, trials_run, baseline, confidence
-        )
-        == expected
-    )
+    for n in (1, 2, 5, 10, 100, 1000):
+        successes = round(n * baseline)
+        assert not mixture_sprt_early_stop(successes, n, baseline)
 
 
-def test_stops_when_interval_excludes_baseline_at_max_trials():
-    # 10/10 successes vs. a baseline of 0.1 is an extreme, unambiguous case
-    # -- the interval at n=10 cannot possibly contain 0.1.
-    assert two_checkpoint_early_stop(
-        successes=10,
-        trials_run=10,
-        min_trials=5,
-        max_trials=10,
+def test_stops_for_an_extreme_deviation_with_enough_trials():
+    # 20/20 successes vs. a baseline of 0.1 is an extreme, unambiguous
+    # case a real sequential test must eventually flag.
+    assert mixture_sprt_early_stop(
+        successes=20,
+        trials_run=20,
         baseline_pass_rate=0.1,
     )
 
 
-def test_does_not_stop_when_interval_contains_baseline_at_max_trials():
-    # 5/10 successes vs. a baseline of 0.5 -- the point estimate IS the
-    # baseline, so the interval must contain it.
-    assert not two_checkpoint_early_stop(
-        successes=5,
-        trials_run=10,
-        min_trials=5,
-        max_trials=10,
+def test_does_not_stop_for_a_small_ambiguous_sample():
+    # A single trial can never give a valid test enough evidence against
+    # a middling baseline.
+    assert not mixture_sprt_early_stop(
+        successes=1,
+        trials_run=1,
         baseline_pass_rate=0.5,
     )
+
+
+def test_relative_mixing_variance_changes_detection_speed_not_the_decision_rule():
+    # Different mixing variances can legitimately disagree on whether a
+    # given (successes, trials_run) has crossed the threshold yet -- this
+    # is the documented power/speed tradeoff, not a bug. Values found by a
+    # real numeric sweep against the function itself, not guessed: a
+    # too-tightly-concentrated mixing variance (0.05x the null variance)
+    # has NOT yet crossed the threshold for this case, while the
+    # literature-recommended default (1.0x) already has.
+    successes, trials_run, baseline = 3, 5, 0.1
+    tight = mixture_sprt_early_stop(
+        successes, trials_run, baseline, relative_mixing_variance=0.05
+    )
+    default = mixture_sprt_early_stop(
+        successes, trials_run, baseline, relative_mixing_variance=1.0
+    )
+    assert tight is False
+    assert default is True

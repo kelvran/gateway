@@ -19,11 +19,12 @@ is missing) is caught and turned into a `Run` with `status="error"`, and
 the scheduler moves on to the next case.
 
 Two additional, both off-by-default mechanisms, per
-docs/rfcs/2026-09-04-evals-rollout-cost-mitigation.md: an opt-in result
-cache (`cached_runs`) and a statistically-sound two-checkpoint
+docs/rfcs/2026-09-04-evals-rollout-cost-mitigation.md and
+docs/rfcs/2026-09-05-evals-mixture-sprt-early-stopping.md: an opt-in
+result cache (`cached_runs`) and a real anytime-valid (mixture-SPRT)
 early-stopping rule (`early_stop`) for repeated trials of the same
 `(eval_case_id, eval_case_revision)`. Both default to `None`, in which case
-`run_suite`'s behavior is byte-for-byte identical to before this RFC.
+`run_suite`'s behavior is byte-for-byte identical to before either RFC.
 """
 
 from __future__ import annotations
@@ -37,16 +38,24 @@ from evals import tracing
 from evals.models import EvalCase, Run, Span
 from evals.rollout.cache import compute_run_cache_key
 from evals.rollout.sandbox import run_in_sandbox
-from evals.stats import two_checkpoint_early_stop
+from evals.stats import mixture_sprt_early_stop
 
 DEFAULT_SANDBOX_TIMEOUT_S = 30
 
 
 @dataclass(frozen=True)
 class EarlyStopConfig:
-    """Config for two-checkpoint early stopping within one repeated-trial
-    group. See `evals.stats.two_checkpoint_early_stop` for the statistical
-    mechanism and why it is not a continuous per-trial recheck.
+    """Config for real, anytime-valid (mixture-SPRT) early stopping within
+    one repeated-trial group. See `evals.stats.mixture_sprt_early_stop`
+    for the statistical mechanism — checked after every single trial, not
+    just at pre-declared checkpoints, per
+    docs/rfcs/2026-09-05-evals-mixture-sprt-early-stopping.md.
+
+    `max_trials` is a plain resource/cost ceiling, not a statistical
+    checkpoint — a group that reaches it without the mSPRT itself
+    deciding to stop is force-stopped anyway (see `_stop_after` below).
+    There is deliberately no `min_trials`: the mSPRT's guarantee holds
+    from the very first trial, so no floor is statistically needed.
 
     `score_fn` is async (`run_suite` is already running inside an event
     loop by the time it's called, so a synchronous callable that itself
@@ -59,25 +68,26 @@ class EarlyStopConfig:
     `evals.cli._score_run_deterministic` convention exactly, not a new
     judgment call: an errored/timed-out trial still counts as one real
     trial in the group's tally (so a run of transient infra errors can
-    still reach a checkpoint decision instead of the group never
+    still reach a stopping decision instead of the group never
     accumulating evidence at all), but never as a success.
     """
 
-    min_trials: int
     max_trials: int
     baseline_pass_rate: float
     score_fn: Callable[[EvalCase, Run], Awaitable[bool]]
     confidence: float = 0.95
+    relative_mixing_variance: float = 1.0
 
 
 def _stop_after(early_stop: EarlyStopConfig, successes: int, trials_run: int) -> bool:
-    return two_checkpoint_early_stop(
+    if trials_run >= early_stop.max_trials:
+        return True
+    return mixture_sprt_early_stop(
         successes,
         trials_run,
-        early_stop.min_trials,
-        early_stop.max_trials,
         early_stop.baseline_pass_rate,
         early_stop.confidence,
+        early_stop.relative_mixing_variance,
     )
 
 

@@ -296,10 +296,11 @@ def test_early_stop_skips_remaining_trials_once_group_stops(monkeypatch):
     async def _always_true(case, run):
         return True
 
-    # baseline_pass_rate=0.01 -- an all-success group's Wilson interval will
-    # never contain 0.01, so this group stops at the very first checkpoint.
+    # baseline_pass_rate=0.1 -- an all-success group's mSPRT check crosses
+    # its threshold at trial 2 (verified directly against
+    # evals.stats.mixture_sprt_early_stop, not guessed).
     early_stop = EarlyStopConfig(
-        min_trials=2, max_trials=10, baseline_pass_rate=0.01, score_fn=_always_true
+        max_trials=10, baseline_pass_rate=0.1, score_fn=_always_true
     )
     runs = asyncio.run(run_suite(_repeated_cases("c1", 6), early_stop=early_stop))
 
@@ -328,19 +329,18 @@ def test_early_stop_score_fn_called_exactly_once_per_real_trial(monkeypatch):
         return True
 
     early_stop = EarlyStopConfig(
-        min_trials=2,
         max_trials=10,
-        baseline_pass_rate=0.01,
+        baseline_pass_rate=0.1,
         score_fn=_counting_score_fn,
     )
     runs = asyncio.run(run_suite(_repeated_cases("c1", 6), early_stop=early_stop))
 
     completed = sum(1 for r in runs if r.status != "skipped")
     assert call_count["n"] == completed
-    assert call_count["n"] == 2  # stopped after the min_trials checkpoint
+    assert call_count["n"] == 2  # the mSPRT crossed its threshold at trial 2
 
 
-def test_early_stop_group_hitting_repeated_errors_still_reaches_a_checkpoint(
+def test_early_stop_group_hitting_repeated_errors_still_accumulates_evidence(
     monkeypatch,
 ):
     """The restructured error path: an errored trial must still reach the
@@ -357,12 +357,12 @@ def test_early_stop_group_hitting_repeated_errors_still_reaches_a_checkpoint(
         return False  # mirrors _score_run_deterministic's real convention
 
     early_stop = EarlyStopConfig(
-        min_trials=2, max_trials=10, baseline_pass_rate=0.99, score_fn=_score_fn
+        max_trials=10, baseline_pass_rate=0.9, score_fn=_score_fn
     )
     runs = asyncio.run(run_suite(_repeated_cases("c1", 6), early_stop=early_stop))
 
-    # All-failure group checked against a 0.99 baseline: the interval at
-    # n=2 excludes 0.99, so it stops at the first checkpoint.
+    # All-failure group checked against a 0.9 baseline: the mSPRT crosses
+    # its threshold at trial 2 (verified directly, not guessed).
     assert [r.status for r in runs] == [
         "error",
         "error",
@@ -373,26 +373,37 @@ def test_early_stop_group_hitting_repeated_errors_still_reaches_a_checkpoint(
     ]
 
 
-def test_early_stop_never_fires_before_min_trials(monkeypatch):
+def test_early_stop_max_trials_force_stops_a_group_the_mSPRT_itself_never_flags(
+    monkeypatch,
+):
+    """max_trials is a plain resource ceiling now, not a second statistical
+    checkpoint -- per docs/rfcs/2026-09-05-evals-mixture-sprt-early-
+    stopping.md. An ambiguous group whose running pass rate stays pinned
+    at the baseline never gives the mSPRT a reason to stop on its own
+    (verified directly against evals.stats.mixture_sprt_early_stop for
+    this exact alternating pattern up to n=10), so every trial up to
+    max_trials=10 must run for real, and only the trials beyond that
+    ceiling are skipped.
+    """
+
     async def _always_succeed(image, command, timeout_s):
         return SandboxResult(exit_code=0, stdout="hi\n", stderr="", timed_out=False)
 
     monkeypatch.setattr(scheduler_module, "run_in_sandbox", _always_succeed)
 
-    async def _always_true_async(case, run):
-        return True
+    call_count = {"n": 0}
+
+    async def _alternating_score_fn(case, run):
+        call_count["n"] += 1
+        return call_count["n"] % 2 == 1  # pins the running rate at 0.5
 
     early_stop = EarlyStopConfig(
-        min_trials=5,
-        max_trials=10,
-        baseline_pass_rate=0.01,
-        score_fn=_always_true_async,
+        max_trials=10, baseline_pass_rate=0.5, score_fn=_alternating_score_fn
     )
-    runs = asyncio.run(run_suite(_repeated_cases("c1", 5), early_stop=early_stop))
+    runs = asyncio.run(run_suite(_repeated_cases("c1", 12), early_stop=early_stop))
 
-    # Exactly 5 trials ran (== min_trials); none were skipped, since the
-    # stop decision (fired AT trial 5) only affects trials AFTER it.
-    assert all(r.status == "completed" for r in runs)
+    assert [r.status for r in runs] == ["completed"] * 10 + ["skipped"] * 2
+    assert call_count["n"] == 10
 
 
 def test_cache_hit_still_flows_through_early_stop_tally(monkeypatch):
@@ -412,15 +423,15 @@ def test_cache_hit_still_flows_through_early_stop_tally(monkeypatch):
         return True
 
     early_stop = EarlyStopConfig(
-        min_trials=1,
         max_trials=10,
         baseline_pass_rate=0.01,
         score_fn=_counting_score_fn,
     )
     runs = asyncio.run(run_suite(cases, cached_runs=cached_runs, early_stop=early_stop))
 
-    # The single cache hit alone satisfies min_trials=1 and, against a
-    # 0.01 baseline with an all-success tally, stops the group right away.
+    # The single cache hit alone, against a 0.01 baseline with an
+    # all-success tally, already crosses the mSPRT's threshold at n=1
+    # (verified directly) -- stops the group right away.
     assert runs[0].from_cache is True
     assert call_count["n"] == 1
     assert [r.status for r in runs] == ["completed", "skipped", "skipped"]
@@ -503,7 +514,7 @@ def test_span_sink_records_nothing_for_an_early_stop_skip(monkeypatch):
         return True
 
     early_stop = EarlyStopConfig(
-        min_trials=2, max_trials=10, baseline_pass_rate=0.01, score_fn=_always_true
+        max_trials=10, baseline_pass_rate=0.01, score_fn=_always_true
     )
     span_sink = []
     runs = asyncio.run(

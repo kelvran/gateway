@@ -65,65 +65,99 @@ def wilson_interval(
     return lower, upper
 
 
-def two_checkpoint_early_stop(
+def mixture_sprt_early_stop(
     successes: int,
     trials_run: int,
-    min_trials: int,
-    max_trials: int,
     baseline_pass_rate: float,
     confidence: float = 0.95,
+    relative_mixing_variance: float = 1.0,
 ) -> bool:
-    """Decide whether a group of repeated trials should stop now.
+    """Decide whether a group of repeated trials should stop now, via a
+    real mixture sequential probability ratio test (mSPRT) — Robbins
+    (1970), popularized for production A/B testing by Johari, Koomen,
+    Pekelis & Walsh (KDD 2017), the same paper this project's own prior
+    two-checkpoint design already cited as the authoritative source for
+    why naively rechecking `wilson_interval` after every trial inflates
+    the true false-positive rate (the classical optional-stopping /
+    peeking failure mode).
 
-    Per docs/rfcs/2026-09-04-evals-rollout-cost-mitigation.md: this is
-    deliberately NOT "recompute `wilson_interval` after every trial and
-    stop at first exclusion of `baseline_pass_rate`" — that is the
-    classical optional-stopping / peeking failure mode (Armitage,
-    McPherson & Rowe 1969; Johari, Koomen, Pekelis & Walsh, KDD 2017),
-    which inflates the true false-positive rate well above `1 - confidence`
-    because a fixed-sample confidence interval like `wilson_interval` is
-    only valid at one pre-committed sample size.
+    Unlike that prior design, this is checked after *every single trial*,
+    with no pre-declared checkpoints and no Bonferroni correction: by
+    Ville's inequality, the mSPRT likelihood ratio is a nonnegative
+    martingale under the null, so `P(exists n: stop) <= 1 - confidence`
+    holds *simultaneously at every trial count* — the actual anytime-valid
+    property the old design's checkpoint restriction was a conservative
+    workaround for, not a full substitute.
 
-    Instead, this checks *only* at exactly two pre-declared checkpoints —
-    `trials_run == min_trials` and `trials_run == max_trials` — and never
-    on any other trial count, so a caller invoking this after every single
-    trial still gets the correct, alpha-controlled two-checkpoint
-    procedure without having to track which trial count is a real
-    checkpoint itself. Bonferroni correction: the two checks split the
-    total false-positive budget `1 - confidence` evenly between them (each
-    checkpoint uses `confidence' = 1 - (1 - confidence) / 2`), so the
-    *combined* false-positive probability across both checkpoints stays
-    bounded by `1 - confidence` (union bound) — simple, stdlib-only, and
-    provably valid, at the cost of being more conservative than a
-    non-uniform group-sequential boundary (O'Brien-Fleming) would be. When
-    `min_trials == max_trials` (a degenerate single checkpoint), no
-    correction is applied, since only one check exists.
+    The null-hypothesis variance `baseline_pass_rate * (1 -
+    baseline_pass_rate)` is used FIXED, never re-estimated from this
+    group's own running data — see docs/rfcs/2026-09-05-evals-mixture-
+    sprt-early-stopping.md's "A deliberate choice" section: an
+    online-estimated variance only gives an asymptotically-valid test,
+    with real, measurable false-positive inflation at low trial counts
+    unless a substantial warmup is spent first — a cost this early-
+    stopping mechanism exists specifically to avoid paying.
 
     Args:
         successes: successful trials so far in this group.
-        trials_run: total trials so far in this group (>= successes).
-        min_trials: the first checkpoint — no stop decision before this.
-        max_trials: the second checkpoint — the group's hard ceiling.
+        trials_run: total trials so far in this group (>= successes). 0
+            never stops (no data yet).
         baseline_pass_rate: the pass rate this group's running rate is
-            checked against. No default: this project has no production
-            traffic yet to calibrate one, per the RFC's Unresolved
-            Questions — the operator must always supply it explicitly.
-        confidence: confidence level in (0, 1), passed straight through to
-            `wilson_interval` (with the Bonferroni adjustment above).
+            tested against. Must be in the open interval (0, 1) — a
+            baseline of exactly 0 or 1 gives zero null variance, a
+            degenerate test this project has no reason to support. No
+            default: this project has no production traffic yet to
+            calibrate one — the operator must always supply it
+            explicitly.
+        confidence: confidence level in (0, 1). The false-positive rate is
+            bounded by `1 - confidence`, at every trial count.
+        relative_mixing_variance: the mSPRT's mixing-distribution
+            variance, as a multiple of the null variance (Johari et al.'s
+            own stated rule of thumb: "on the order of" it, hence a
+            default of 1.0). Tunes detection speed/power only — provably
+            never affects the false-positive-rate guarantee above, for
+            any positive value.
 
     Returns:
-        True only if `trials_run` is exactly `min_trials` or `max_trials`
-        AND the (possibly Bonferroni-corrected) Wilson interval at that
-        trial count excludes `baseline_pass_rate`. False otherwise,
-        including for every trial count in between the two checkpoints.
+        True if the mSPRT likelihood ratio at this trial count has
+        crossed `1 / (1 - confidence)` — a real, valid stop decision.
+        False otherwise, including `trials_run == 0`.
+
+    Raises:
+        ValueError: if `baseline_pass_rate`/`confidence` is not in the
+            open interval (0, 1), `relative_mixing_variance` is not
+            positive, or `successes` is out of `[0, trials_run]`.
     """
-    if trials_run == 0 or trials_run not in (min_trials, max_trials):
+    if not 0 < baseline_pass_rate < 1:
+        raise ValueError("baseline_pass_rate must be in the open interval (0, 1)")
+    if not 0 < confidence < 1:
+        raise ValueError("confidence must be in the open interval (0, 1)")
+    if relative_mixing_variance <= 0:
+        raise ValueError("relative_mixing_variance must be > 0")
+    if not 0 <= successes <= trials_run:
+        raise ValueError("successes must satisfy 0 <= successes <= trials_run")
+
+    if trials_run == 0:
         return False
 
-    checkpoint_confidence = (
-        confidence if min_trials == max_trials else 1 - (1 - confidence) / 2
+    null_variance = baseline_pass_rate * (1 - baseline_pass_rate)
+    mixing_variance = relative_mixing_variance * null_variance
+    n = trials_run
+    observed_effect = successes / n - baseline_pass_rate
+
+    n_times_mixing_variance = n * mixing_variance
+    denominator = null_variance + n_times_mixing_variance
+    # Computed in log-space, not as a raw likelihood ratio compared
+    # against 1/alpha directly: an extreme deviation with enough trials
+    # drives the real (non-log) ratio's exponent well past what
+    # math.exp can represent (a real OverflowError, caught by this
+    # module's own property-based test suite, not a hypothetical), while
+    # the log-likelihood-ratio itself stays a perfectly ordinary,
+    # representable float at every input this function accepts.
+    log_likelihood_ratio = 0.5 * math.log(null_variance / denominator) + (
+        (n * n_times_mixing_variance * observed_effect**2)
+        / (2 * null_variance * denominator)
     )
-    lower, upper = wilson_interval(
-        successes, trials_run, confidence=checkpoint_confidence
-    )
-    return not (lower <= baseline_pass_rate <= upper)
+
+    alpha = 1 - confidence
+    return log_likelihood_ratio >= -math.log(alpha)

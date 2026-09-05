@@ -568,30 +568,36 @@ def run_cmd(
     ),
 )
 @click.option(
-    "--early-stop-min-trials",
-    default=None,
-    type=int,
-    help=(
-        "First early-stop checkpoint: no stop decision for a repeated-"
-        "trial group (grouped by eval_case_id+revision) before this many "
-        "trials. Must be given together with --early-stop-max-trials and "
-        "--early-stop-baseline-pass-rate."
-    ),
-)
-@click.option(
     "--early-stop-max-trials",
     default=None,
     type=int,
-    help="Second early-stop checkpoint: the trial count a group stops at regardless.",
+    help=(
+        "Resource ceiling: a repeated-trial group (grouped by "
+        "eval_case_id+revision) is force-stopped at this many trials "
+        "regardless of the mSPRT's own decision. Must be given together "
+        "with --early-stop-baseline-pass-rate."
+    ),
 )
 @click.option(
     "--early-stop-baseline-pass-rate",
     default=None,
     type=float,
     help=(
-        "Baseline pass rate a group's running rate is checked against at "
-        "each checkpoint (Bonferroni-corrected — never a continuous "
-        "per-trial recheck; see the RFC above for why)."
+        "Baseline pass rate a group's running rate is tested against, "
+        "via a real anytime-valid mixture-SPRT check after every single "
+        "trial — never a fixed checkpoint; see "
+        "docs/rfcs/2026-09-05-evals-mixture-sprt-early-stopping.md."
+    ),
+)
+@click.option(
+    "--early-stop-relative-mixing-variance",
+    default=1.0,
+    show_default=True,
+    type=float,
+    help=(
+        "mSPRT mixing-distribution variance, as a multiple of the null "
+        "variance. Tunes detection speed/power only — never affects the "
+        "false-positive-rate guarantee, for any positive value."
     ),
 )
 def rollout_cmd(
@@ -604,21 +610,17 @@ def rollout_cmd(
     use_cache: bool,
     use_score_cache: bool,
     judge_axes: str | None,
-    early_stop_min_trials: int | None,
     early_stop_max_trials: int | None,
     early_stop_baseline_pass_rate: float | None,
+    early_stop_relative_mixing_variance: float,
 ) -> None:
     """Run a suite of EvalCases through the Rollout Scheduler and score them."""
-    early_stop_params = (
-        early_stop_min_trials,
-        early_stop_max_trials,
-        early_stop_baseline_pass_rate,
-    )
+    early_stop_params = (early_stop_max_trials, early_stop_baseline_pass_rate)
     early_stop_given = sum(p is not None for p in early_stop_params)
     if early_stop_given not in (0, len(early_stop_params)):
         raise click.UsageError(
-            "--early-stop-min-trials, --early-stop-max-trials, and "
-            "--early-stop-baseline-pass-rate must be given together."
+            "--early-stop-max-trials and --early-stop-baseline-pass-rate "
+            "must be given together."
         )
 
     cases = _load_cases(suite_path)
@@ -717,11 +719,11 @@ def rollout_cmd(
     async def _run_and_score() -> list[Run]:
         if early_stop_given:
             early_stop = EarlyStopConfig(
-                min_trials=early_stop_min_trials,
                 max_trials=early_stop_max_trials,
                 baseline_pass_rate=early_stop_baseline_pass_rate,
                 score_fn=_score_and_record,
                 confidence=confidence,
+                relative_mixing_variance=early_stop_relative_mixing_variance,
             )
             runs = await run_suite(
                 cases,
