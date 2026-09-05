@@ -133,9 +133,12 @@ func TestL2HitPromotesIntoL1(t *testing.T) {
 
 	p := &Pipeline{cache: l1, cacheL2: l2, cacheTTL: time.Hour}
 
-	cached, hit := p.checkCache(ctx, l1Key, l2Key)
+	cached, layer, hit := p.checkCache(ctx, l1Key, l2Key)
 	if !hit {
 		t.Fatal("checkCache did not report a hit for a value present in L2")
+	}
+	if layer != "L2" {
+		t.Errorf("checkCache layer = %q, want %q", layer, "L2")
 	}
 	if string(cached) != string(value) {
 		t.Errorf("checkCache returned %q, want %q", cached, value)

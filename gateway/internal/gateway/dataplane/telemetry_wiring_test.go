@@ -156,6 +156,73 @@ func TestHandleChatCompletionEmitsSpanWithCacheHitTrue(t *testing.T) {
 	if v, ok := spanAttr(t, spans[1].Attributes(), telemetry.AttrKelvranCacheHit); !ok || v.AsBool() != true {
 		t.Errorf("second call's %s = %v, ok=%v, want true", telemetry.AttrKelvranCacheHit, v, ok)
 	}
+	// Per docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md: a real
+	// miss must never carry a cache_layer attribute at all (never a
+	// fabricated ""), and a real L1 hit (a byte-identical repeat) must
+	// report "L1" specifically, not just true/false.
+	if _, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranCacheLayer); ok {
+		t.Error("first call (a real miss) has a kelvran.cache.layer attribute set at all")
+	}
+	if v, ok := spanAttr(t, spans[1].Attributes(), telemetry.AttrKelvranCacheLayer); !ok || v.AsString() != "L1" {
+		t.Errorf("second call's %s = %v, ok=%v, want %q", telemetry.AttrKelvranCacheLayer, v, ok, "L1")
+	}
+	// L1 hits never carry similarity/age — those are L3-only, per
+	// ChatCompletionResult.CacheSimilarity's own doc comment.
+	if _, ok := spanAttr(t, spans[1].Attributes(), telemetry.AttrKelvranCacheSimilarity); ok {
+		t.Error("an L1 hit has a kelvran.cache.similarity attribute set — similarity is L3-only")
+	}
+}
+
+// TestHandleChatCompletionEmitsSpanWithL3CacheProvenance proves the other
+// half of docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md: an L3
+// (lexical near-duplicate) hit reports its real, write-time-captured
+// similarity and age, not just a bare cache_hit=true.
+func TestHandleChatCompletionEmitsSpanWithL3CacheProvenance(t *testing.T) {
+	before := len(spanRecorder.Ended())
+
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	// Internal-whitespace-only difference — an L1/L2 miss but a genuine
+	// L3 lexical near-duplicate. Reuses lexical_cache_test.go's own
+	// proven fixture text exactly (TestHandleChatCompletionLexicalNear
+	// DuplicateHitsL3), rather than a new, unverified pair of sentences.
+	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "Explain how binary search works in a sorted array"}}}
+	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "Explain how binary search   works in a sorted array"}}}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	spans := spansSince(before)
+	if len(spans) != 2 {
+		t.Fatalf("len(spans) = %d, want 2", len(spans))
+	}
+	attrs := spans[1].Attributes()
+	if v, ok := spanAttr(t, attrs, telemetry.AttrKelvranCacheHit); !ok || v.AsBool() != true {
+		t.Fatalf("second call's %s = %v, ok=%v, want true (expected a real L3 hit)", telemetry.AttrKelvranCacheHit, v, ok)
+	}
+	if v, ok := spanAttr(t, attrs, telemetry.AttrKelvranCacheLayer); !ok || v.AsString() != "L3" {
+		t.Fatalf("second call's %s = %v, ok=%v, want %q", telemetry.AttrKelvranCacheLayer, v, ok, "L3")
+	}
+	simV, ok := spanAttr(t, attrs, telemetry.AttrKelvranCacheSimilarity)
+	if !ok {
+		t.Fatal("an L3 hit has no kelvran.cache.similarity attribute at all")
+	}
+	if sim := simV.AsFloat64(); sim <= 0 || sim > 1 {
+		t.Errorf("kelvran.cache.similarity = %v, want a real Jaccard estimate in (0, 1]", sim)
+	}
+	ageV, ok := spanAttr(t, attrs, telemetry.AttrKelvranCacheAgeMs)
+	if !ok {
+		t.Fatal("an L3 hit has no kelvran.cache.age_ms attribute at all")
+	}
+	if age := ageV.AsFloat64(); age < 0 {
+		t.Errorf("kelvran.cache.age_ms = %v, want >= 0", age)
+	}
 }
 
 func TestHandleChatCompletionEmitsSpanWithAgentRunIDFromBaggage(t *testing.T) {

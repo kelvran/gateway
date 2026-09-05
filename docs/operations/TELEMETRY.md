@@ -8,7 +8,7 @@ Operator companion to the OTel commitment already made in `gateway/ARCHITECTURE.
 |---|---|---|---|
 | Request/response spans | Gateway | Standard `gen_ai.*` semantic conventions (`operation.name`, `provider.name`, `request.model`, `response.model`/`id`/`finish_reasons`, `usage.{input,output}_tokens`) | **Real** |
 | Agent-run cost attribution | Gateway | `kelvran.agent_run_id` via W3C Baggage (`baggage: agent_run_id=<value>` header), plus `kelvran.virtual_key.id`/`kelvran.cost.usd` | **Real** |
-| Cache hit/miss | Gateway | `kelvran.cache.hit` (bool) — not a standardized `gen_ai.*` attribute anywhere upstream | **Real** (hit/miss only; no per-layer breakdown yet — L2/L3 don't exist) |
+| Cache hit/miss + provenance | Gateway | `kelvran.cache.hit` (bool), `kelvran.cache.layer` ("L1"/"L2"/"L3", set only on a hit), `kelvran.cache.similarity`/`kelvran.cache.age_ms` (L3 hits only — real Jaccard estimate + age captured at write time) — none are standardized `gen_ai.*` attributes | **Real**, per `docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md`. L1/L2 report their layer but not an age — neither currently captures a write-time timestamp, a named future extension |
 | Rollout/judge spans | Evals | Standard `gen_ai.*` plus Kelvran-custom `harness_config` fields (per `evals/ARCHITECTURE.md`'s Data Model) | Not built |
 
 Standard `gen_ai.*` attributes are consumed by any generic OTel-aware backend; Kelvran-custom attributes require Kelvran-aware dashboards/queries to be meaningful — that distinction matters when picking a backend.

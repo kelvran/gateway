@@ -33,6 +33,16 @@ const (
 	AttrKelvranCacheHit       = "kelvran.cache.hit"
 	AttrKelvranCostUSD        = "kelvran.cost.usd"
 	AttrKelvranDeploymentName = "kelvran.deployment.name"
+	// AttrKelvranCacheLayer/CacheSimilarity/CacheAgeMs are per
+	// docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md: which cache
+	// layer (if any) served this request, and — for Cache L3-lite only,
+	// where the data is already captured at write time — the estimated
+	// similarity and age of the served entry. See
+	// ChatCompletionResult.CacheLayer's own doc comment for why
+	// similarity/age are L3-only.
+	AttrKelvranCacheLayer      = "kelvran.cache.layer"
+	AttrKelvranCacheSimilarity = "kelvran.cache.similarity"
+	AttrKelvranCacheAgeMs      = "kelvran.cache.age_ms"
 )
 
 // ChatCompletionResult carries only primitive values — never
@@ -52,6 +62,20 @@ type ChatCompletionResult struct {
 	InputTokens    int
 	OutputTokens   int
 	CacheHit       bool
+	// CacheLayer is "L1"/"L2"/"L3", or "" when CacheHit is false. Set
+	// unconditionally by the caller (never inferred here) so this package
+	// stays a dependency-free leaf with zero cache-layer knowledge of its
+	// own, per this file's own existing "primitive values only" rule.
+	CacheLayer string
+	// CacheSimilarity/CacheAgeMs are only ever meaningful when
+	// CacheLayer == "L3" — L1 is an exact byte match (no similarity
+	// concept applies) and L2's normalized-match layer doesn't currently
+	// capture a write-time age at all. Left at their zero value (0.0) for
+	// any other CacheLayer, and RecordChatCompletionResult only emits
+	// their attributes when CacheLayer == "L3", never a fabricated 0.0
+	// for L1/L2.
+	CacheSimilarity float64
+	CacheAgeMs      float64
 	// CostUSD is a pre-formatted decimal string (e.g. "0.0000575"), not a
 	// float64 — per docs/rfcs/2026-09-02-decimal-cost-accounting.md, OTel's
 	// attribute value model has no decimal type, and converting back to
@@ -108,6 +132,19 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 		attribute.Bool(AttrKelvranCacheHit, r.CacheHit),
 		attribute.String(AttrKelvranCostUSD, r.CostUSD),
 	)
+	if r.CacheLayer != "" {
+		attrs = append(attrs, attribute.String(AttrKelvranCacheLayer, r.CacheLayer))
+	}
+	// Similarity/age are only ever real, write-time-captured data for an
+	// L3 hit — see CacheSimilarity/CacheAgeMs's own doc comment. Never
+	// emitted for L1/L2/no-hit, which would otherwise report a
+	// fabricated 0.0 rather than a genuinely absent value.
+	if r.CacheLayer == "L3" {
+		attrs = append(attrs,
+			attribute.Float64(AttrKelvranCacheSimilarity, r.CacheSimilarity),
+			attribute.Float64(AttrKelvranCacheAgeMs, r.CacheAgeMs),
+		)
+	}
 
 	span.SetAttributes(attrs...)
 

@@ -59,7 +59,7 @@ type UpstreamStreamCaller func(ctx context.Context, dep Deployment, providerReq 
 // as billable as a buffered one.
 func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, req adapter.ChatRequest, w http.ResponseWriter) (err error) {
 	var (
-		cacheHit              bool
+		cacheInfo             cacheProvenance
 		resp                  adapter.ChatResponse
 		vk                    *identity.VirtualKey
 		dep                   Deployment
@@ -69,7 +69,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	)
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -103,11 +103,11 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
-	if cached, ok := p.checkCache(ctx, l1Key, l2Key); ok {
+	if cached, layer, ok := p.checkCache(ctx, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
-			cacheHit = true
+			cacheInfo = cacheProvenance{Layer: layer}
 			err = writeFakeStream(sw, cachedResp)
 			return
 		}
@@ -115,11 +115,11 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// failure — same fallthrough behavior as the buffered path.
 	}
 
-	if cached, ok := p.checkLexicalCache(ctx, vk, req, l3Signature); ok {
+	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l3Signature); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
-			cacheHit = true
+			cacheInfo = cacheProvenance{Layer: "L3", Similarity: similarity, AgeMs: ageMs}
 			err = writeFakeStream(sw, cachedResp)
 			return
 		}

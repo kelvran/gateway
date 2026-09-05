@@ -437,20 +437,41 @@ type fallbackInfo struct {
 	reason   string // err.Error() from the first attempt.
 }
 
+// cacheProvenance records which cache layer (if any) served this request,
+// and — for Cache L3-lite specifically, where the data is already
+// captured at write time (LexicalCandidate.Similarity/WrittenAt) — the
+// similarity score and age of the served entry, per
+// docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md. Layer == "" means
+// no cache hit (a real upstream call happened, possibly coalesced via
+// runMissPath). Similarity/AgeMs are only ever populated for
+// Layer == "L3": L1 is an exact byte match (no similarity concept
+// applies) and L2's own normalized-match layer, like L1, doesn't
+// currently capture a write-time age at all — widening cache.Cache's
+// interface to do so is a real, separate future change, not bundled into
+// this one.
+type cacheProvenance struct {
+	Layer      string
+	Similarity float64
+	AgeMs      float64
+}
+
+// Hit reports whether any cache layer served this request.
+func (c cacheProvenance) Hit() bool { return c.Layer != "" }
+
 // checkCache checks L1 (exact) then L2 (normalized) in that order, per
 // docs/rfcs/2026-09-03-cache-l2-normalized-match.md. An L2 hit is
 // promoted into L1 (best-effort — a promotion failure never affects the
 // response already found) so the next byte-identical repeat becomes an
 // L1 hit.
-func (p *Pipeline) checkCache(ctx context.Context, l1Key, l2Key string) (cached []byte, hit bool) {
+func (p *Pipeline) checkCache(ctx context.Context, l1Key, l2Key string) (cached []byte, layer string, hit bool) {
 	if cached, ok, getErr := p.cache.Get(ctx, l1Key); getErr == nil && ok {
-		return cached, true
+		return cached, "L1", true
 	}
 	if cached, ok, getErr := p.cacheL2.Get(ctx, l2Key); getErr == nil && ok {
 		_ = p.cache.Put(ctx, l1Key, cached, p.cacheTTL)
-		return cached, true
+		return cached, "L2", true
 	}
-	return nil, false
+	return nil, "", false
 }
 
 // writeCache writes encoded to all three cache layers, eagerly and
@@ -530,14 +551,14 @@ func freshnessRiskModel(writtenAt time.Time, storedModelID, currentModelID strin
 // highest-consequence cache check, per AGENTS.md's explicit "Never" rule
 // against weakening it, so every branch here is a hard, visible
 // rejection, not a soft score.
-func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, signature []uint64) (cached []byte, hit bool) {
+func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, signature []uint64) (cached []byte, similarity float64, ageMs float64, hit bool) {
 	if isVolatileQuery(req.Messages) {
-		return nil, false
+		return nil, 0, 0, false
 	}
 	candidates, err := p.cacheL3.Search(ctx, vk.ID, signature, l3SearchK)
 	if err != nil {
 		p.logger.Warn("lexical_cache_search_failed", "key_id", vk.ID, "error", err.Error())
-		return nil, false // fail-closed: a search error skips L3, never bypasses the gate
+		return nil, 0, 0, false // fail-closed: a search error skips L3, never bypasses the gate
 	}
 	queryFingerprint := Fingerprint(req.Messages)
 	for _, c := range candidates {
@@ -556,9 +577,9 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		if c.GuardrailPolicyVersion != p.guardrails.Version() {
 			continue
 		}
-		return c.Resp, true
+		return c.Resp, c.Similarity, float64(time.Since(c.WrittenAt).Milliseconds()), true
 	}
-	return nil, false
+	return nil, 0, 0, false
 }
 
 // fingerprintsEqual reports whether two entity/number/date fingerprints
@@ -591,7 +612,7 @@ func isModelAllowed(vk *identity.VirtualKey, model string) bool {
 // ChatRequest, given the raw Authorization header value.
 func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, req adapter.ChatRequest) (resp adapter.ChatResponse, err error) {
 	var (
-		cacheHit              bool
+		cacheInfo             cacheProvenance
 		vk                    *identity.VirtualKey
 		dep                   Deployment
 		rateLimitFailedOpen   bool
@@ -601,7 +622,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -632,22 +653,22 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
-	if cached, ok := p.checkCache(ctx, l1Key, l2Key); ok {
+	if cached, layer, ok := p.checkCache(ctx, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
-			cacheHit = true
+			cacheInfo = cacheProvenance{Layer: layer}
 			return
 		}
 		// A corrupt cache entry is treated as a miss, not a request
 		// failure — fall through to the upstream path below.
 	}
 
-	if cached, ok := p.checkLexicalCache(ctx, vk, req, l3Signature); ok {
+	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l3Signature); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
-			cacheHit = true
+			cacheInfo = cacheProvenance{Layer: "L3", Similarity: similarity, AgeMs: ageMs}
 			return
 		}
 		// A corrupt cache entry is treated as a miss, not a request
@@ -822,7 +843,7 @@ func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
 // are zero-valued whenever the corresponding check never ran (e.g. auth
 // failed before the rate-limit check), which is the correct, intentional
 // "not applicable" representation for those fields.
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, err error) {
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, err error) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too.
@@ -843,15 +864,18 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		virtualKeyID = vk.ID
 	}
 	telemetry.RecordChatCompletionResult(span, telemetry.ChatCompletionResult{
-		VirtualKeyID:   virtualKeyID,
-		Provider:       dep.Provider,
-		DeploymentName: dep.Name,
-		ResponseModel:  resp.Model,
-		ResponseID:     resp.ID,
-		FinishReasons:  finishReasons(resp),
-		InputTokens:    resp.Usage.PromptTokens,
-		OutputTokens:   resp.Usage.CompletionTokens,
-		CacheHit:       cacheHit,
+		VirtualKeyID:    virtualKeyID,
+		Provider:        dep.Provider,
+		DeploymentName:  dep.Name,
+		ResponseModel:   resp.Model,
+		ResponseID:      resp.ID,
+		FinishReasons:   finishReasons(resp),
+		InputTokens:     resp.Usage.PromptTokens,
+		OutputTokens:    resp.Usage.CompletionTokens,
+		CacheHit:        cacheInfo.Hit(),
+		CacheLayer:      cacheInfo.Layer,
+		CacheSimilarity: cacheInfo.Similarity,
+		CacheAgeMs:      cacheInfo.AgeMs,
 		// telemetry stays a dependency-free leaf (no decimal.Decimal
 		// import) per docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md —
 		// the exact decimal string is formatted here, at the boundary,
@@ -876,7 +900,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	}
 	span.End()
 
-	p.logRequest(vk, req, resp, cacheHit, cost, err, event)
+	p.logRequest(vk, req, resp, cacheInfo, cost, err, event)
 }
 
 // outcomeFor derives a GatewayDecisionEvent's structured Outcome from
@@ -922,8 +946,14 @@ func finishReasons(resp adapter.ChatResponse) []string {
 // logRequest emits the structured JSON log line for one request. cost is
 // precomputed by finalize (decimal.Zero when err != nil) so it's never
 // calculated twice.
-func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheHit bool, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
-	fields := []any{"model", req.Model, "cache_hit", cacheHit}
+func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
+	fields := []any{"model", req.Model, "cache_hit", cacheInfo.Hit()}
+	if cacheInfo.Hit() {
+		fields = append(fields, "cache_layer", cacheInfo.Layer)
+		if cacheInfo.Layer == "L3" {
+			fields = append(fields, "cache_similarity", cacheInfo.Similarity, "cache_age_ms", cacheInfo.AgeMs)
+		}
+	}
 	if vk != nil {
 		fields = append(fields, "virtual_key_id", vk.ID)
 	}
