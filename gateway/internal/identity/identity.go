@@ -59,6 +59,18 @@ type VirtualKey struct {
 	// resetIfNeeded. Zero (the default) preserves the original,
 	// never-resets behavior exactly.
 	BudgetResetInterval time.Duration
+	// BudgetWarnPercent, when positive, is the fraction of BudgetUSD (e.g.
+	// 0.8 for 80%) at which dataplane logs a budget_warn_threshold_crossed
+	// warning on every billable completion while spend remains at or
+	// above it — log-only, per docs/rfcs/2026-09-05-gateway-budget-warn-
+	// threshold.md: no new API surface, the request is never rejected or
+	// altered. Expressed as a percentage of BudgetUSD rather than a
+	// second absolute USD value so it stays proportional automatically if
+	// BudgetUSD is ever changed — an absolute threshold would silently
+	// drift out of sync with the cap it's meant to warn about. Zero (the
+	// default) disables the warning entirely; meaningless when BudgetUSD
+	// itself is zero/unlimited (nothing to warn a percentage of).
+	BudgetWarnPercent float64
 	// AllowedModels restricts this key to a subset of configured models.
 	// Empty or nil means every configured model is allowed.
 	AllowedModels map[string]struct{}

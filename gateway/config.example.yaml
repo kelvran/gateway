@@ -36,6 +36,14 @@ virtual_keys:
     # future work. Checked lazily on each request, not a background
     # scheduler — see internal/budget.Tracker's resetIfNeeded.
     budget_reset_interval_seconds: 2592000
+    # Optional; omit to disable. A fraction of budget_usd (0.8 = 80%) at
+    # which the gateway logs a budget_warn_threshold_crossed warning on
+    # every request while spend stays at or above it — log-only, the
+    # request is never rejected or altered, per
+    # docs/rfcs/2026-09-05-gateway-budget-warn-threshold.md. Expressed as
+    # a percentage of budget_usd, not a second absolute dollar figure, so
+    # it can't drift out of sync if budget_usd is ever changed.
+    budget_warn_percent: 0.8
     rate_limit:
       burst: 20
       refill_per_second: 10

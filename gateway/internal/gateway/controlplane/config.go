@@ -110,6 +110,14 @@ type VirtualKeyConfig struct {
 	// matching this file's existing TTLSeconds convention (CacheConfig,
 	// CacheL2Config, CacheL3Config) rather than a duration string.
 	BudgetResetIntervalSeconds int
+	// BudgetWarnPercent, when positive, is the fraction of BudgetUSD (e.g.
+	// 0.8 for 80%) at which dataplane logs a warning on every billable
+	// completion while spend remains at or above it — log-only, per
+	// docs/rfcs/2026-09-05-gateway-budget-warn-threshold.md. Zero (the
+	// default) disables it. A percentage of BudgetUSD, not a second
+	// absolute USD value, so it can't drift out of sync if BudgetUSD is
+	// ever changed.
+	BudgetWarnPercent float64
 	// AllowedModels restricts this key to a subset of configured models.
 	// Empty means every configured model is allowed.
 	AllowedModels []string
@@ -291,6 +299,7 @@ func Load(path string) (*Config, error) {
 		}
 		vk.BudgetUSD, _ = getDecimal(vkMap, "budget_usd")
 		vk.BudgetResetIntervalSeconds, _ = getInt(vkMap, "budget_reset_interval_seconds")
+		vk.BudgetWarnPercent, _ = getFloat(vkMap, "budget_warn_percent")
 		if rl, ok := getMap(vkMap, "rate_limit"); ok {
 			vk.RateLimitBurst, _ = getFloat(rl, "burst")
 			vk.RateLimitRefill, _ = getFloat(rl, "refill_per_second")

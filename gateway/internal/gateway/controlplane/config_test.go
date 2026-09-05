@@ -45,6 +45,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	if alpha.BudgetResetIntervalSeconds != 2592000 {
 		t.Errorf("team-alpha.BudgetResetIntervalSeconds = %d, want 2592000 (30 days)", alpha.BudgetResetIntervalSeconds)
 	}
+	if alpha.BudgetWarnPercent != 0.8 {
+		t.Errorf("team-alpha.BudgetWarnPercent = %v, want 0.8", alpha.BudgetWarnPercent)
+	}
 	if alpha.RateLimitBurst != 20 || alpha.RateLimitRefill != 10 {
 		t.Errorf("team-alpha rate limit = burst=%v refill=%v, want 20/10", alpha.RateLimitBurst, alpha.RateLimitRefill)
 	}

@@ -261,6 +261,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			KeyHash:             vk.KeyHash,
 			BudgetUSD:           vk.BudgetUSD,
 			BudgetResetInterval: time.Duration(vk.BudgetResetIntervalSeconds) * time.Second,
+			BudgetWarnPercent:   vk.BudgetWarnPercent,
 			AllowedModels:       allowedModels,
 			RateLimitBurst:      burst,
 			RateLimitRefill:     refill,

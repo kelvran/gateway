@@ -883,6 +883,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		})
 		if vk != nil && billable {
 			p.budget.Record(vk.ID, cost, vk.BudgetResetInterval)
+			p.checkBudgetWarnThreshold(vk)
 		}
 	}
 
@@ -928,6 +929,31 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	span.End()
 
 	p.logRequest(vk, req, resp, cacheInfo, cost, err, event)
+}
+
+// checkBudgetWarnThreshold logs a budget_warn_threshold_crossed warning
+// once vk's spend (after the real charge finalize just recorded) is at
+// or above vk.BudgetWarnPercent of its BudgetUSD cap — log-only, per
+// docs/rfcs/2026-09-05-gateway-budget-warn-threshold.md: never rejects
+// or alters the request, no new API surface. Re-logs on every billable
+// completion while spend remains over threshold, rather than tracking
+// "already warned this period" state — matches this codebase's existing
+// ratelimit_backend_unavailable precedent of logging every occurrence
+// rather than only the first.
+func (p *Pipeline) checkBudgetWarnThreshold(vk *identity.VirtualKey) {
+	if vk.BudgetWarnPercent <= 0 || !vk.BudgetUSD.IsPositive() {
+		return
+	}
+	spent := p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
+	warnAt := vk.BudgetUSD.Mul(decimal.NewFromFloat(vk.BudgetWarnPercent))
+	if spent.GreaterThanOrEqual(warnAt) {
+		p.logger.Warn("budget_warn_threshold_crossed",
+			"key_id", vk.ID,
+			"spent_usd", spent.String(),
+			"budget_usd", vk.BudgetUSD.String(),
+			"warn_percent", vk.BudgetWarnPercent,
+		)
+	}
 }
 
 // outcomeFor derives a GatewayDecisionEvent's structured Outcome from

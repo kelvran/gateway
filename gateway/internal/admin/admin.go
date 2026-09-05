@@ -39,6 +39,7 @@ type virtualKeyRequest struct {
 	KeyHash                    string            `json:"key_hash"`
 	BudgetUSD                  decimal.Decimal   `json:"budget_usd"`
 	BudgetResetIntervalSeconds int               `json:"budget_reset_interval_seconds"`
+	BudgetWarnPercent          float64           `json:"budget_warn_percent"`
 	AllowedModels              []string          `json:"allowed_models"`
 	RateLimit                  *rateLimitRequest `json:"rate_limit"`
 }
@@ -138,6 +139,7 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 			KeyHash:             req.KeyHash,
 			BudgetUSD:           req.BudgetUSD,
 			BudgetResetInterval: secondsToDuration(req.BudgetResetIntervalSeconds),
+			BudgetWarnPercent:   req.BudgetWarnPercent,
 			AllowedModels:       allowedModels,
 			RateLimitBurst:      burst,
 			RateLimitRefill:     refill,
