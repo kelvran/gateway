@@ -81,7 +81,7 @@ Previously: item 3 — cache-hit provenance in telemetry. Committed `e90c994`, c
 
 ## Next Action
 
-The `evals report --fail-under` gate is implemented and fully verified locally (186 passed/11 skipped; ruff/import-linter clean) but **not yet committed/pushed/CI-confirmed** — that's the immediate next step. After that, continuing the fresh audit's recommended order: (5) a live metric at the rate-limiter fail-open path; then the remaining Medium/Large items per the ranked list above (including items 17-18, both found as adjacent side-discoveries while shipping items 2-3). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The `evals report --fail-under` gate is closed: committed (`5c973f3`), pushed, confirmed green on CI run `33974775958` (all 3 jobs). Continuing the fresh audit's recommended order: (5) a live metric at the rate-limiter fail-open path; then the remaining Medium/Large items per the ranked list above (including items 17-18, both found as adjacent side-discoveries while shipping items 2-3). The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
