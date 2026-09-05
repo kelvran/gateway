@@ -72,7 +72,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
 	}()
 
-	vk, verifyErr := p.verifier.Verify(authorizationHeader)
+	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
 	if verifyErr != nil {
 		err = fmt.Errorf("dataplane: auth: %w", verifyErr)
 		return

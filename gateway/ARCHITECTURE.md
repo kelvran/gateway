@@ -129,13 +129,19 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              agent tool calls) brokering — shares identity/costaccounting, not a second
                              gateway
 /internal/guardrail          — pre/post-call middleware interface; PII/content checks
-/internal/admin               — **NOT BUILT.** Zero code exists. Config is loaded once at startup
-                             (controlplane.Load -> buildPipeline, both called exactly once in
-                             cmd/gateway's run()) and nothing is live-mutable — see
-                             docs/rfcs/2026-09-02-virtual-keys-budgets.md's own Unresolved Questions:
-                             "No live/no-restart key provisioning... /internal/admin's 'declarative
-                             config, live no-restart mutation' remains unbuilt." Intended design:
-                             control-plane API for declarative config + live no-restart mutation
+/internal/admin               — Real, per docs/rfcs/2026-09-05-gateway-admin-api.md: an optional,
+                             off-by-default HTTP surface on its own separate net.Listener (never the
+                             client-facing gateway's mux/port) exposing read-only config introspection
+                             (GET /admin/config — safe to return wholesale, since Config never holds a
+                             raw secret) plus the one section made live-mutable in v1, virtual keys
+                             (POST/DELETE /admin/virtual_keys/{name}, via a new
+                             dataplane.Pipeline.UpsertVirtualKey/DeleteVirtualKey pair built around
+                             identity.Verifier becoming an atomic.Pointer). Auth is a deliberately
+                             separate static bearer credential from client-facing virtual keys — never
+                             delegates to identity.Verifier. Admin mutations are in-memory-only in v1
+                             (lost on restart, reverting to config.yaml); every other config section
+                             (guardrails, budgets' shape, rate limits, routing, cache, price table,
+                             telemetry) stays static-YAML-only, named explicitly as later follow-on work
 ```
 
 **Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose:
@@ -168,6 +174,9 @@ ratelimit/redislimiter ✗→ ratelimit   (the interface (RedisBackend) lives in
                                   Redis-specific implementation never imports it back — the same pattern
                                   budget/boltstore already established, so go-redis stays out of
                                   ratelimit's own dependency graph in the default, in-memory-only case)
+admin → controlplane, dataplane, identity, ratelimit   (the HTTP handler layer for GET /admin/config and
+                                  POST/DELETE /admin/virtual_keys/{name}; never imported BY any of those
+                                  four — admin is a top-level consumer, not a shared-kernel package)
 ```
 
 ## Request Lifecycle

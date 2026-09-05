@@ -190,3 +190,34 @@ func TestNewVerifierNormalizesHashCasing(t *testing.T) {
 		t.Errorf("NewVerifier with same hash in different casing = %v, want ErrDuplicateKeyHash", err)
 	}
 }
+
+func TestKeysReturnsEveryConfiguredKey(t *testing.T) {
+	v, err := NewVerifier([]VirtualKey{
+		{ID: "team-alpha", KeyHash: hashOf("alpha-secret"), BudgetUSD: decimal.NewFromInt(10)},
+		{ID: "team-beta", KeyHash: hashOf("beta-secret"), BudgetUSD: decimal.NewFromInt(20)},
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	keys := v.Keys()
+	if len(keys) != 2 {
+		t.Fatalf("Keys() returned %d keys, want 2", len(keys))
+	}
+
+	byID := make(map[string]VirtualKey, len(keys))
+	for _, k := range keys {
+		byID[k.ID] = k
+	}
+	if got := byID["team-alpha"].BudgetUSD; !got.Equal(decimal.NewFromInt(10)) {
+		t.Errorf("team-alpha BudgetUSD = %v, want 10", got)
+	}
+	if got := byID["team-beta"].BudgetUSD; !got.Equal(decimal.NewFromInt(20)) {
+		t.Errorf("team-beta BudgetUSD = %v, want 20", got)
+	}
+	// team-alpha's KeyHash round-trips through Keys() exactly as
+	// normalized by NewVerifier (lowercase), not the raw input.
+	if byID["team-alpha"].KeyHash != hashOf("alpha-secret") {
+		t.Errorf("team-alpha KeyHash = %q, want the normalized hash of alpha-secret", byID["team-alpha"].KeyHash)
+	}
+}

@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -187,8 +188,17 @@ type Config struct {
 }
 
 // Pipeline is the wired dataplane request pipeline.
+//
+// verifier is an atomic.Pointer, not a bare *identity.Verifier, so a
+// virtual-key mutation via internal/admin (docs/rfcs/2026-09-05-gateway-
+// admin-api.md) can swap it live: identity.Verifier is itself immutable
+// once constructed, so UpsertVirtualKey/DeleteVirtualKey build a whole
+// new Verifier from the current key set plus the one change, then Store
+// it — every in-flight request that already Load'd the old pointer keeps
+// running against a consistent, unchanged key set; every new request
+// sees the new one. No lock, no partial-update window within one request.
 type Pipeline struct {
-	verifier          *identity.Verifier
+	verifier          atomic.Pointer[identity.Verifier]
 	limiter           *ratelimit.KeyLimiter
 	budget            *budget.Tracker
 	cache             cache.Cache
@@ -258,8 +268,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		l3TTL = 5 * time.Minute
 	}
 
-	return &Pipeline{
-		verifier:          cfg.Verifier,
+	p := &Pipeline{
 		limiter:           cfg.Limiter,
 		budget:            cfg.Budget,
 		cache:             cfg.Cache,
@@ -276,7 +285,9 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		cacheTTL:          ttl,
 		cacheL2TTL:        l2TTL,
 		cacheL3TTL:        l3TTL,
-	}, nil
+	}
+	p.verifier.Store(cfg.Verifier)
+	return p, nil
 }
 
 // Close releases any resources the Pipeline owns — an optional
@@ -293,6 +304,93 @@ func (p *Pipeline) Close() error {
 	budgetErr := p.budget.Close()
 	limiterErr := p.limiter.Close()
 	return errors.Join(budgetErr, limiterErr)
+}
+
+// ErrCannotDeleteLastVirtualKey is returned by DeleteVirtualKey when name
+// is the only remaining configured virtual key — refused, rather than
+// leaving the gateway with no possible way for any client to
+// authenticate and no remaining way back in via this same admin API.
+var ErrCannotDeleteLastVirtualKey = errors.New("dataplane: cannot delete the last remaining virtual key")
+
+// ErrVirtualKeyNotFound is returned by DeleteVirtualKey when name does
+// not match any currently-configured virtual key.
+var ErrVirtualKeyNotFound = errors.New("dataplane: virtual key not found")
+
+// UpsertVirtualKey adds vk as a new virtual key, or replaces the existing
+// one with the same ID, live — no process restart, per
+// docs/rfcs/2026-09-05-gateway-admin-api.md. rateLimit configures vk's own
+// token-bucket parameters for internal/ratelimit.KeyLimiter.
+//
+// rateLimit is registered with the rate limiter BEFORE the new Verifier
+// is swapped in — never the other way around. p.verifier.Load() is what
+// makes an ID resolvable to callers of HandleChatCompletion at all, and
+// checkRateLimit calls p.limiter.Allow(ctx, vk.ID) with no burst/refill
+// parameters of its own; an ID that became resolvable before its rate
+// limiter entry existed would hit the exact nil-bucket/zero-capacity
+// hazard docs/rfcs/2026-09-05-gateway-admin-api.md's Design section
+// found and named, not a hypothetical.
+func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.KeyConfig) error {
+	current := p.verifier.Load().Keys()
+	updated := make([]identity.VirtualKey, 0, len(current)+1)
+	replaced := false
+	for _, k := range current {
+		if k.ID == vk.ID {
+			updated = append(updated, vk)
+			replaced = true
+			continue
+		}
+		updated = append(updated, k)
+	}
+	if !replaced {
+		updated = append(updated, vk)
+	}
+
+	newVerifier, err := identity.NewVerifier(updated)
+	if err != nil {
+		return fmt.Errorf("dataplane: UpsertVirtualKey: %w", err)
+	}
+
+	p.limiter.Register(rateLimit)
+	p.verifier.Store(newVerifier)
+	return nil
+}
+
+// DeleteVirtualKey removes the virtual key identified by name, live — no
+// process restart. Returns ErrCannotDeleteLastVirtualKey, changing
+// nothing, if name is the only remaining key (identity.NewVerifier's own
+// "at least one virtual key is required" rule, reused directly rather
+// than duplicating a second check here).
+//
+// The removed key's internal/ratelimit.KeyLimiter bucket/config entry is
+// deliberately left in place rather than cleaned up — a bounded,
+// per-key-sized amount of retained memory (one TokenBucket, or one
+// KeyConfig struct) that is simply never accessed again, since the
+// Verifier no longer resolves that ID to anything. Named explicitly as a
+// real, self-limiting v1 gap rather than solved here — cleanup only
+// matters if virtual-key churn ever becomes high-volume, which nothing
+// about this feature's own use case implies.
+func (p *Pipeline) DeleteVirtualKey(name string) error {
+	current := p.verifier.Load().Keys()
+	updated := make([]identity.VirtualKey, 0, len(current))
+	found := false
+	for _, k := range current {
+		if k.ID == name {
+			found = true
+			continue
+		}
+		updated = append(updated, k)
+	}
+	if !found {
+		return fmt.Errorf("%w: %q", ErrVirtualKeyNotFound, name)
+	}
+
+	newVerifier, err := identity.NewVerifier(updated)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrCannotDeleteLastVirtualKey, err)
+	}
+
+	p.verifier.Store(newVerifier)
+	return nil
 }
 
 // checkRateLimit reports whether vk may proceed, and whether that answer
@@ -500,7 +598,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		p.finalize(ctx, span, vk, dep, req, resp, cacheHit, rateLimitFailedOpen, fallback, budgetSpentAtDecision, err)
 	}()
 
-	vk, verifyErr := p.verifier.Verify(authorizationHeader)
+	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
 	if verifyErr != nil {
 		err = fmt.Errorf("dataplane: auth: %w", verifyErr)
 		return

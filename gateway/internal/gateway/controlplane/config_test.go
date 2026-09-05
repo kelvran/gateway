@@ -678,3 +678,48 @@ func TestLoadBedrockDeploymentWithSessionTokenEnv(t *testing.T) {
 		t.Errorf("SessionTokenEnv = %q, want %q", got, "AWS_SESSION_TOKEN")
 	}
 }
+
+// TestLoadWithoutAdminSectionDefaultsToZeroValue proves admin: is
+// genuinely optional — a bare config with no admin: section at all must
+// parse with a zero-valued AdminConfig, mirroring
+// TestLoadWithoutTelemetrySectionDefaultsToZeroValue's own proof for a
+// different optional section.
+func TestLoadWithoutAdminSectionDefaultsToZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load without an admin section: %v", err)
+	}
+	if cfg.Admin != (AdminConfig{}) {
+		t.Errorf("Admin = %+v, want the zero value", cfg.Admin)
+	}
+}
+
+// TestLoadAdminSectionParsesListenAddrAndTokenEnv proves the admin:
+// section, when present, is parsed correctly — the mirror-image proof to
+// TestLoadWithoutAdminSectionDefaultsToZeroValue above.
+func TestLoadAdminSectionParsesListenAddrAndTokenEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  listen_addr: \"127.0.0.1:8081\"\n  token_env: \"KELVRAN_ADMIN_TOKEN\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with an admin section: %v", err)
+	}
+	if cfg.Admin.ListenAddr != "127.0.0.1:8081" {
+		t.Errorf("Admin.ListenAddr = %q, want %q", cfg.Admin.ListenAddr, "127.0.0.1:8081")
+	}
+	if cfg.Admin.TokenEnv != "KELVRAN_ADMIN_TOKEN" {
+		t.Errorf("Admin.TokenEnv = %q, want %q", cfg.Admin.TokenEnv, "KELVRAN_ADMIN_TOKEN")
+	}
+}

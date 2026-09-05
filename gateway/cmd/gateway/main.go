@@ -43,6 +43,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter/gemini"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
+	"github.com/kelvran/gateway/gateway/internal/admin"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/budget/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
@@ -74,6 +75,13 @@ const (
 // codebase's own tests runs anywhere close to it, and a config knob
 // nobody has asked for yet would be premature.
 const gracefulShutdownTimeout = 30 * time.Second
+
+// defaultAdminListenAddr is used when cfg.Admin.TokenEnv is set but
+// cfg.Admin.ListenAddr is left empty — loopback-only, never a wildcard
+// address, per docs/rfcs/2026-09-05-gateway-admin-api.md's "never
+// internet-facing by default" rule: reaching the admin surface from
+// outside the host requires a deliberate, explicit listen_addr choice.
+const defaultAdminListenAddr = "127.0.0.1:8081"
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the gateway's YAML config file")
@@ -133,6 +141,28 @@ func run(configPath string, logger *slog.Logger) error {
 		Handler: wrapHTTPServerSpan(mux),
 	}
 
+	// adminServer is nil unless cfg.Admin.TokenEnv is set — the whole
+	// admin surface is off by default, per
+	// docs/rfcs/2026-09-05-gateway-admin-api.md, matching every other
+	// optional subsystem's convention. A separate *http.Server on its own
+	// listener, never the same mux/port as the client-facing server
+	// above — see that RFC's "never internet-facing by default" section.
+	var adminServer *http.Server
+	if cfg.Admin.TokenEnv != "" {
+		adminToken := os.Getenv(cfg.Admin.TokenEnv)
+		if adminToken == "" {
+			return fmt.Errorf("admin.token_env %q is set but resolves to an empty environment variable — refusing to start an unauthenticated admin server", cfg.Admin.TokenEnv)
+		}
+		adminListenAddr := cfg.Admin.ListenAddr
+		if adminListenAddr == "" {
+			adminListenAddr = defaultAdminListenAddr
+		}
+		adminServer = &http.Server{
+			Addr:    adminListenAddr,
+			Handler: admin.Handler(cfg, pipeline, adminToken),
+		}
+	}
+
 	// ctx is canceled the moment a real SIGTERM/SIGINT arrives. stop
 	// un-registers the signal handler once this function is done reacting
 	// to one, restoring Go's own default (exit) behavior for anything
@@ -148,18 +178,47 @@ func run(configPath string, logger *slog.Logger) error {
 		serveErr <- server.ListenAndServe()
 	}()
 
+	// adminServeErr is never sent to when adminServer is nil — a select
+	// on it simply never fires, so it costs nothing to always include.
+	adminServeErr := make(chan error, 1)
+	if adminServer != nil {
+		go func() {
+			logger.Info("admin server listening", "addr", adminServer.Addr)
+			adminServeErr <- adminServer.ListenAndServe()
+		}()
+	}
+
+	// shutdownBoth drains the main server, and the admin server too if
+	// one was started, within one shared deadline. Safe to call on
+	// adminServer even if its own ListenAndServe already returned
+	// (Shutdown on an unserved/already-stopped *http.Server is a no-op).
+	shutdownBoth := func() error {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
+		defer cancel()
+		mainErr := server.Shutdown(shutdownCtx)
+		if adminServer == nil {
+			return mainErr
+		}
+		return errors.Join(mainErr, adminServer.Shutdown(shutdownCtx))
+	}
+
 	select {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_ = shutdownBoth()
 			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
+	case err := <-adminServeErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_ = shutdownBoth()
+			return fmt.Errorf("admin http server: %w", err)
 		}
 		return nil
 	case <-ctx.Done():
 		stop()
 		logger.Info("gateway shutting down", "reason", context.Cause(ctx))
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
+		if err := shutdownBoth(); err != nil {
 			return fmt.Errorf("graceful shutdown: %w", err)
 		}
 		return nil

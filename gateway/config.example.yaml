@@ -154,6 +154,24 @@ telemetry:
 #   category_overrides:
 #     contact_info: "warn"
 
+# Admin HTTP surface: read-only config introspection (GET /admin/config)
+# plus live, no-restart virtual-key mutation (POST/DELETE
+# /admin/virtual_keys/{name}) — see
+# docs/rfcs/2026-09-05-gateway-admin-api.md. Optional: omit this whole
+# section (the default) for no admin server at all. token_env names the
+# environment variable holding the admin bearer credential — a completely
+# separate credential space from the client-facing virtual_keys above;
+# a client's virtual key never authenticates against this surface, and
+# vice versa. If this section is present but the named env var resolves
+# empty at startup, the gateway refuses to start rather than running an
+# unauthenticated admin surface. listen_addr defaults to
+# "127.0.0.1:8081" (loopback-only) when omitted — reaching it from
+# outside the host requires a deliberate, explicit choice, never a
+# default.
+# admin:
+#   listen_addr: "127.0.0.1:8081"
+#   token_env: "KELVRAN_ADMIN_TOKEN"
+
 # Static per-model price table (USD per token), used by
 # internal/costaccounting for Decimal-precision cost calculation — see
 # docs/rfcs/2026-09-02-decimal-cost-accounting.md. Each value below is

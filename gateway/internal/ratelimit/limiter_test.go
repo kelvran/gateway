@@ -112,3 +112,76 @@ func TestCloseOnlyCallsBackendInRedisMode(t *testing.T) {
 		t.Fatalf("Close() on an in-memory KeyLimiter error = %v, want nil (no-op)", err)
 	}
 }
+
+// TestInMemoryAllowOnUnregisteredKeyDeniesRatherThanPanics proves the real
+// hazard docs/rfcs/2026-09-05-gateway-admin-api.md's Register method
+// exists to close: before that pass, Allow on a keyID nothing ever built
+// a bucket for dereferenced a nil *TokenBucket's own mutex and panicked.
+// This can only happen once a caller (the admin API) can make identity
+// and the rate limiter diverge — never possible with a config-built
+// KeyLimiter alone, since it and identity.Verifier are always built from
+// the same key list in lockstep.
+func TestInMemoryAllowOnUnregisteredKeyDeniesRatherThanPanics(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 5, RefillPerSecond: 1}})
+
+	allowed, err := l.Allow(context.Background(), "never-registered")
+	if err != nil {
+		t.Fatalf("Allow() error = %v, want nil", err)
+	}
+	if allowed {
+		t.Fatal("Allow() on an unregistered key = true, want false (deny, never a fabricated allow)")
+	}
+}
+
+func TestRegisterInMemoryModeMakesANewKeyImmediatelyUsable(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 5, RefillPerSecond: 1}})
+
+	l.Register(KeyConfig{ID: "team-beta", Capacity: 2, RefillPerSecond: 0})
+
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		allowed, err := l.Allow(ctx, "team-beta")
+		if err != nil || !allowed {
+			t.Fatalf("Allow() #%d = (%v, %v), want (true, nil) — Register should have given team-beta its own 2-token bucket", i+1, allowed, err)
+		}
+	}
+	if allowed, _ := l.Allow(ctx, "team-beta"); allowed {
+		t.Fatal("Allow() succeeded after team-beta's registered 2-token capacity was exhausted")
+	}
+}
+
+func TestRegisterInMemoryModeResetsAnExistingKeysBucketToFullCapacity(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 1, RefillPerSecond: 0}})
+	ctx := context.Background()
+
+	if allowed, _ := l.Allow(ctx, "team-alpha"); !allowed {
+		t.Fatal("first Allow() should have succeeded (fresh bucket)")
+	}
+	if allowed, _ := l.Allow(ctx, "team-alpha"); allowed {
+		t.Fatal("second Allow() should have failed (capacity exhausted)")
+	}
+
+	// An admin update to the same key ID -- even with the identical
+	// capacity -- is a deliberate reset to full capacity, not a
+	// no-op merge with whatever tokens happened to be left.
+	l.Register(KeyConfig{ID: "team-alpha", Capacity: 1, RefillPerSecond: 0})
+
+	if allowed, _ := l.Allow(ctx, "team-alpha"); !allowed {
+		t.Fatal("Allow() after Register() = false, want true (Register resets to full capacity)")
+	}
+}
+
+func TestRegisterRedisModeUpdatesTheConfigBackendSees(t *testing.T) {
+	backend := &fakeBackend{}
+	l := NewRedisKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 1, RefillPerSecond: 1}}, backend)
+
+	l.Register(KeyConfig{ID: "team-beta", Capacity: 9, RefillPerSecond: 3})
+
+	if _, err := l.Allow(context.Background(), "team-beta"); err != nil {
+		t.Fatalf("Allow() error = %v", err)
+	}
+	if backend.recordedCapacity != 9 || backend.recordedRefillPerSecond != 3 {
+		t.Fatalf("backend saw capacity=%v refill=%v, want 9/3 — Register() must reach the backend-facing configs map, not just the in-memory bucket map",
+			backend.recordedCapacity, backend.recordedRefillPerSecond)
+	}
+}

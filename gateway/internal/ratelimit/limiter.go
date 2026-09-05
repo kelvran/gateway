@@ -1,6 +1,9 @@
 package ratelimit
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // KeyConfig is one virtual key's rate-limit parameters — the same
 // burst/refill values controlplane.VirtualKeyConfig carries, passed here
@@ -28,7 +31,14 @@ type RedisBackend interface {
 // RedisBackend (per NewRedisKeyLimiter, per
 // docs/rfcs/2026-09-03-distributed-rate-limiting.md). Callers never need
 // to know which — both are driven through the same Allow method.
+//
+// mu guards configs/buckets against concurrent access between Allow and
+// Register — the two maps were originally build-once-at-construction and
+// read-only for the rest of the process lifetime, which needed no lock;
+// Register (per docs/rfcs/2026-09-05-gateway-admin-api.md's live virtual-
+// key mutation) is what first makes them live-mutable.
 type KeyLimiter struct {
+	mu      sync.RWMutex
 	configs map[string]KeyConfig
 	buckets map[string]*TokenBucket // non-nil in in-memory mode only
 	backend RedisBackend            // non-nil in Redis mode only
@@ -66,10 +76,44 @@ func NewRedisKeyLimiter(keys []KeyConfig, backend RedisBackend) *KeyLimiter {
 // caller's specific policy.
 func (l *KeyLimiter) Allow(ctx context.Context, keyID string) (bool, error) {
 	if l.backend != nil {
+		l.mu.RLock()
 		cfg := l.configs[keyID]
+		l.mu.RUnlock()
 		return l.backend.Allow(ctx, keyID, cfg.Capacity, cfg.RefillPerSecond)
 	}
-	return l.buckets[keyID].Allow(), nil
+	l.mu.RLock()
+	bucket := l.buckets[keyID]
+	l.mu.RUnlock()
+	// bucket is nil for a keyID nothing ever registered — an unreachable
+	// case for a normally-built config (identity.Verifier and KeyLimiter
+	// are always built from the same key list), but Register (see below)
+	// is what first makes it possible for the two to diverge, so this
+	// stays a graceful "always deny," never the nil-pointer panic
+	// TokenBucket.Allow would otherwise hit dereferencing its own mutex.
+	if bucket == nil {
+		return false, nil
+	}
+	return bucket.Allow(), nil
+}
+
+// Register upserts cfg's rate-limit parameters for one key, live: a new
+// in-memory TokenBucket (in-memory mode, replacing any existing bucket for
+// this ID outright — an explicit admin update resetting the key to full
+// burst capacity is the correct, intended effect, not a bug) or a new
+// configs entry (Redis mode, read by every subsequent Allow call for this
+// ID). Thread-safe — see docs/rfcs/2026-09-05-gateway-admin-api.md for why
+// this exists: a virtual key added or updated via the live admin API must
+// have its rate-limit entry registered here BEFORE the corresponding
+// identity.Verifier swap that makes the ID resolvable at all, closing the
+// nil-bucket/zero-capacity hazard Allow's own doc comment above names.
+func (l *KeyLimiter) Register(cfg KeyConfig) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.backend != nil {
+		l.configs[cfg.ID] = cfg
+		return
+	}
+	l.buckets[cfg.ID] = NewTokenBucket(cfg.Capacity, cfg.RefillPerSecond)
 }
 
 // Close releases the backend's resources, if any. A no-op in in-memory

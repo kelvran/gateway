@@ -153,3 +153,17 @@ func (v *Verifier) Verify(authorizationHeader string) (*VirtualKey, error) {
 	}
 	return key, nil
 }
+
+// Keys returns every VirtualKey this Verifier was constructed with, in no
+// particular order. Safe to call concurrently — a Verifier's own map is
+// built once by NewVerifier and never mutated afterward, so reads here
+// never race with anything (including a caller that goes on to build a
+// brand-new Verifier from a modified copy of this slice, per
+// docs/rfcs/2026-09-05-gateway-admin-api.md's live virtual-key mutation).
+func (v *Verifier) Keys() []VirtualKey {
+	keys := make([]VirtualKey, 0, len(v.keys))
+	for _, k := range v.keys {
+		keys = append(keys, *k)
+	}
+	return keys
+}

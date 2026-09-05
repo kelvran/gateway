@@ -209,6 +209,29 @@ type GuardrailsConfig struct {
 	CategoryOverrides map[string]string
 }
 
+// AdminConfig configures the optional admin HTTP surface (read-only
+// config introspection plus live virtual-key mutation), per
+// docs/rfcs/2026-09-05-gateway-admin-api.md. Optional — a zero-valued
+// AdminConfig (TokenEnv == "") means the admin server is not started at
+// all, matching every other optional subsystem's convention (Redis,
+// boltstore, OTel).
+type AdminConfig struct {
+	// ListenAddr is the address the admin HTTP server binds to, on its
+	// own separate net.Listener — never the same mux/port as
+	// ListenAddr's client-facing gateway. Empty defaults to
+	// "127.0.0.1:8081" (loopback-only) when TokenEnv is set — cmd/gateway's
+	// own operational default, not a config-shape concern this package
+	// owns, mirroring how TelemetryConfig's Exporter default is resolved.
+	ListenAddr string
+	// TokenEnv is the name of the environment variable holding the admin
+	// bearer credential — never a raw secret in config, matching
+	// DeploymentConfig.APIKeyEnv's own convention. Required for the admin
+	// server to start at all; if set but the named env var resolves
+	// empty, cmd/gateway fails startup rather than running an
+	// unauthenticated admin surface.
+	TokenEnv string
+}
+
 // Config is the gateway's fully-parsed static configuration.
 type Config struct {
 	// ListenAddr is the address http.ListenAndServe binds to (e.g. ":8080").
@@ -229,6 +252,8 @@ type Config struct {
 	Cache CacheConfig
 	// Guardrails configures the pre-call/post-call content checks. Optional.
 	Guardrails GuardrailsConfig
+	// Admin configures the optional admin HTTP surface. Optional.
+	Admin AdminConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -356,6 +381,11 @@ func Load(path string) (*Config, error) {
 				}
 			}
 		}
+	}
+
+	if adminRaw, ok := getMap(root, "admin"); ok {
+		cfg.Admin.ListenAddr, _ = getString(adminRaw, "listen_addr")
+		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
 	}
 
 	if priceRaw, ok := getMap(root, "price_table"); ok {

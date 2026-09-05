@@ -24,6 +24,7 @@ components:
   streaming:        { in: streaming }
   controlplane:     { in: gateway/controlplane }
   dataplane:        { in: gateway/dataplane }
+  admin:            { in: admin }
   gatewayevents:    { in: ../api/gatewayevents/v1 }
 
 # Components deliberately absent from `deps:` below (identity, budget,
@@ -73,3 +74,9 @@ deps:
       - router
       - streaming
       - telemetry
+  admin:
+    mayDependOn:
+      - controlplane
+      - dataplane
+      - identity
+      - ratelimit
