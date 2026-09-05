@@ -72,7 +72,7 @@ Previously: Tier 2, fourth item — multi-axis LLM-judge scoring for `evals`. Co
 
 ## Next Action
 
-The Admin API v1 slice is implemented and fully verified locally (build/vet/lint/go-arch-lint clean; every package green under `-race` except the pre-existing, unrelated Redis-container failure) but **not yet committed/pushed/CI-confirmed** — that's the immediate next step. After that, one Tier 2 item remains from the brainstorming session: real SPRT/anytime-valid sequential testing (replacing `stats.py`'s two-checkpoint early-stopping rule) — the one most likely to need its own grounding-research pass first, given the statistical-correctness stakes. Lower-priority, not yet started: bootstrap/Bayesian eval stats, Cache L2 extra normalization ops. (Vertex AI OAuth2 auth was dropped from the active backlog per the brainstorming check-in.) The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+The Admin API v1 slice is closed: committed (`edf2a43`), pushed, confirmed green on CI run `33964689580` (all 3 jobs). One Tier 2 item remains from the brainstorming session: real SPRT/anytime-valid sequential testing (replacing `stats.py`'s two-checkpoint early-stopping rule) — the one most likely to need its own grounding-research pass first, given the statistical-correctness stakes. Lower-priority, not yet started: bootstrap/Bayesian eval stats, Cache L2 extra normalization ops. (Vertex AI OAuth2 auth was dropped from the active backlog per the brainstorming check-in.) The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
