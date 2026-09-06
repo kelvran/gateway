@@ -428,7 +428,17 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) 
 		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
 		return true, true
 	}
-	return allowed, false
+	if !allowed {
+		return false, false
+	}
+	// TPM dimension, per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md:
+	// a plain, non-erroring bool — AllowTPM never touches a backend in
+	// v1 (in-memory-only), so there's no fail-open case to handle here,
+	// unlike Allow above. Checked only after the RPM check passes, so an
+	// RPM-exhausted request is always rejected for that reason first,
+	// matching this codebase's own existing check-ordering discipline
+	// (model-allowed before rate-limit before budget).
+	return p.limiter.AllowTPM(vk.ID), false
 }
 
 // fallbackInfo captures whether a request fell back to a second
@@ -884,6 +894,13 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		if vk != nil && billable {
 			p.budget.Record(vk.ID, cost, vk.BudgetResetInterval)
 			p.checkBudgetWarnThreshold(vk)
+			// Same billable gate as budget.Record, for the same reason
+			// (docs/rfcs/2026-09-05-gateway-cost-double-counting.md): a
+			// cache hit or coalesced follower incurred no real,
+			// incremental token usage, so debiting the TPM bucket again
+			// for resp.Usage's already-counted tokens would double-count
+			// exactly like the budget bug this project already fixed.
+			p.limiter.RecordTokens(vk.ID, resp.Usage.TotalTokens)
 		}
 	}
 

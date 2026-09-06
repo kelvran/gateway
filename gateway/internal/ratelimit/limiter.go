@@ -14,6 +14,15 @@ type KeyConfig struct {
 	ID              string
 	Capacity        float64
 	RefillPerSecond float64
+	// TPMCapacity/TPMRefillPerSecond configure the optional, separate
+	// tokens-per-minute dimension per
+	// docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md. TPMCapacity <= 0
+	// (the default) means no TPM limit for this key — matching this
+	// codebase's existing "0/negative = unlimited" convention. In-memory
+	// mode only in v1; a no-op under NewRedisKeyLimiter, per that RFC's
+	// explicit scope limit.
+	TPMCapacity        float64
+	TPMRefillPerSecond float64
 }
 
 // RedisBackend is implemented by internal/ratelimit/redislimiter.Limiter.
@@ -38,21 +47,31 @@ type RedisBackend interface {
 // Register (per docs/rfcs/2026-09-05-gateway-admin-api.md's live virtual-
 // key mutation) is what first makes them live-mutable.
 type KeyLimiter struct {
-	mu      sync.RWMutex
-	configs map[string]KeyConfig
-	buckets map[string]*TokenBucket // non-nil in in-memory mode only
-	backend RedisBackend            // non-nil in Redis mode only
+	mu         sync.RWMutex
+	configs    map[string]KeyConfig
+	buckets    map[string]*TokenBucket // RPM, non-nil in in-memory mode only
+	tpmBuckets map[string]*TokenBucket // TPM, in-memory mode only; absent entirely in Redis mode
+	backend    RedisBackend            // non-nil in Redis mode only
 }
 
 // NewInMemoryKeyLimiter builds a KeyLimiter backed by one TokenBucket per
 // key, eagerly constructed here — the exact behavior
-// dataplane.NewPipeline built inline before this RFC.
+// dataplane.NewPipeline built inline before this RFC. A key with
+// TPMCapacity > 0 also gets a second TokenBucket for the TPM dimension
+// (per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md); one with
+// TPMCapacity <= 0 gets none at all, so AllowTPM/RecordTokens can treat
+// "no entry" as "unlimited" rather than misreading a zero-capacity
+// bucket (always empty) as "always blocked."
 func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 	buckets := make(map[string]*TokenBucket, len(keys))
+	tpmBuckets := make(map[string]*TokenBucket, len(keys))
 	for _, k := range keys {
 		buckets[k.ID] = NewTokenBucket(k.Capacity, k.RefillPerSecond)
+		if k.TPMCapacity > 0 {
+			tpmBuckets[k.ID] = NewTokenBucket(k.TPMCapacity, k.TPMRefillPerSecond)
+		}
 	}
-	return &KeyLimiter{buckets: buckets}
+	return &KeyLimiter{buckets: buckets, tpmBuckets: tpmBuckets}
 }
 
 // NewRedisKeyLimiter builds a KeyLimiter that delegates every Allow call
@@ -96,6 +115,37 @@ func (l *KeyLimiter) Allow(ctx context.Context, keyID string) (bool, error) {
 	return bucket.Allow(), nil
 }
 
+// AllowTPM reports whether keyID's token-bucket balance is currently
+// positive — the TPM dimension's decision, made from PAST usage only,
+// since the request being decided hasn't run yet and its own real cost
+// is unknown (see RecordTokens). Returns true unconditionally when TPM
+// isn't configured for keyID (no entry in tpmBuckets — either
+// TPMCapacity <= 0, or a Redis-mode KeyLimiter, where TPM is a deliberate
+// no-op in v1 per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md's scope
+// limit).
+func (l *KeyLimiter) AllowTPM(keyID string) bool {
+	l.mu.RLock()
+	bucket := l.tpmBuckets[keyID]
+	l.mu.RUnlock()
+	if bucket == nil {
+		return true
+	}
+	return bucket.HasBalance()
+}
+
+// RecordTokens debits keyID's TPM bucket by tokens, once real usage is
+// known — never part of AllowTPM's pre-request decision. A no-op when
+// TPM isn't configured for keyID (see AllowTPM).
+func (l *KeyLimiter) RecordTokens(keyID string, tokens int) {
+	l.mu.RLock()
+	bucket := l.tpmBuckets[keyID]
+	l.mu.RUnlock()
+	if bucket == nil {
+		return
+	}
+	bucket.Debit(float64(tokens))
+}
+
 // Register upserts cfg's rate-limit parameters for one key, live: a new
 // in-memory TokenBucket (in-memory mode, replacing any existing bucket for
 // this ID outright — an explicit admin update resetting the key to full
@@ -114,6 +164,15 @@ func (l *KeyLimiter) Register(cfg KeyConfig) {
 		return
 	}
 	l.buckets[cfg.ID] = NewTokenBucket(cfg.Capacity, cfg.RefillPerSecond)
+	if cfg.TPMCapacity > 0 {
+		l.tpmBuckets[cfg.ID] = NewTokenBucket(cfg.TPMCapacity, cfg.TPMRefillPerSecond)
+	} else {
+		// An update disabling TPM (or one that never had it) must not
+		// leave a stale bucket behind — a previously-registered TPM
+		// bucket the caller no longer configures must actually stop
+		// being enforced, not silently keep applying an old limit.
+		delete(l.tpmBuckets, cfg.ID)
+	}
 }
 
 // Close releases the backend's resources, if any. A no-op in in-memory

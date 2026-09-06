@@ -185,3 +185,72 @@ func TestRegisterRedisModeUpdatesTheConfigBackendSees(t *testing.T) {
 			backend.recordedCapacity, backend.recordedRefillPerSecond)
 	}
 }
+
+// TestAllowTPMUnlimitedWhenNotConfigured proves the "0/absent =
+// unlimited" convention: a key with no TPMCapacity configured must
+// never be blocked by the TPM dimension at all.
+func TestAllowTPMUnlimitedWhenNotConfigured(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}})
+	for i := 0; i < 5; i++ {
+		if !l.AllowTPM("team-alpha") {
+			t.Fatalf("AllowTPM() call #%d = false, want true (TPM not configured)", i+1)
+		}
+	}
+}
+
+// TestRecordTokensExhaustsTPMBucketThenAllowTPMRejects is the
+// load-bearing proof for docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md:
+// once RecordTokens has debited more than TPMCapacity's worth of
+// tokens, AllowTPM must reject the next request — purely from past
+// usage, since no request's own future cost is ever known in advance.
+func TestRecordTokensExhaustsTPMBucketThenAllowTPMRejects(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100, TPMCapacity: 1000, TPMRefillPerSecond: 0}})
+
+	if !l.AllowTPM("team-alpha") {
+		t.Fatal("AllowTPM() = false before any usage, want true")
+	}
+	l.RecordTokens("team-alpha", 1500) // more than TPMCapacity — a real overdraft
+	if l.AllowTPM("team-alpha") {
+		t.Fatal("AllowTPM() = true after debiting more tokens than TPMCapacity, want false")
+	}
+}
+
+// TestRecordTokensNoOpWhenTPMNotConfigured proves RecordTokens never
+// panics or has any effect for a key with no TPM bucket.
+func TestRecordTokensNoOpWhenTPMNotConfigured(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}})
+	l.RecordTokens("team-alpha", 999999)
+	if !l.AllowTPM("team-alpha") {
+		t.Fatal("AllowTPM() = false after RecordTokens on an unconfigured key, want true (no-op)")
+	}
+}
+
+// TestAllowTPMAlwaysUnlimitedInRedisMode proves the RFC's explicit v1
+// scope limit: TPM is in-memory-only, and a Redis-mode KeyLimiter never
+// enforces it, even if TPMCapacity is configured.
+func TestAllowTPMAlwaysUnlimitedInRedisMode(t *testing.T) {
+	backend := &fakeBackend{}
+	l := NewRedisKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 1, RefillPerSecond: 1, TPMCapacity: 1, TPMRefillPerSecond: 0}}, backend)
+
+	l.RecordTokens("team-alpha", 999999)
+	if !l.AllowTPM("team-alpha") {
+		t.Fatal("AllowTPM() = false in Redis mode, want true — TPM is a deliberate no-op in Redis mode in v1")
+	}
+}
+
+// TestRegisterDisablingTPMRemovesTheStaleBucket proves an update that
+// stops configuring TPM (TPMCapacity <= 0) actually removes the old
+// limit, rather than leaving a stale bucket that keeps enforcing it.
+func TestRegisterDisablingTPMRemovesTheStaleBucket(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}})
+	l.RecordTokens("team-alpha", 20) // exhaust the TPM bucket
+	if l.AllowTPM("team-alpha") {
+		t.Fatal("AllowTPM() = true before Register(), want false (bucket should be exhausted)")
+	}
+
+	l.Register(KeyConfig{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}) // TPMCapacity omitted = disabled
+
+	if !l.AllowTPM("team-alpha") {
+		t.Fatal("AllowTPM() = false after Register() disabled TPM, want true — the stale bucket must be removed, not left enforcing an old limit")
+	}
+}

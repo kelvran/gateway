@@ -51,6 +51,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	if alpha.RateLimitBurst != 20 || alpha.RateLimitRefill != 10 {
 		t.Errorf("team-alpha rate limit = burst=%v refill=%v, want 20/10", alpha.RateLimitBurst, alpha.RateLimitRefill)
 	}
+	if alpha.TPMCapacity != 100000 || alpha.TPMRefillPerSecond != 1000 {
+		t.Errorf("team-alpha TPM rate limit = capacity=%v refill=%v, want 100000/1000", alpha.TPMCapacity, alpha.TPMRefillPerSecond)
+	}
 	wantModels := []string{"claude-opus-4", "gpt-4o"}
 	if len(alpha.AllowedModels) != len(wantModels) {
 		t.Fatalf("team-alpha.AllowedModels = %v, want %v", alpha.AllowedModels, wantModels)

@@ -69,6 +69,32 @@ func (b *TokenBucket) Allow() bool {
 	return true
 }
 
+// HasBalance refills for elapsed time and reports whether the resulting
+// balance is positive — a non-consuming check (unlike Allow, it never
+// subtracts a token itself), for the TPM rate-limit dimension per
+// docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md: a request's real token
+// cost isn't known until after it completes, so the pre-request decision
+// can only ask "has past usage already exhausted this bucket," never
+// "does this specific request fit."
+func (b *TokenBucket) HasBalance() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refillLocked()
+	return b.tokens > 0
+}
+
+// Debit refills for elapsed time, then subtracts n — deliberately
+// allowed to leave tokens negative (an overdraft), since n (real token
+// usage) is only known retrospectively, after HasBalance's own decision
+// already let the request through. The bucket recovers via ordinary
+// refill on subsequent calls, exactly like a positive balance would.
+func (b *TokenBucket) Debit(n float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refillLocked()
+	b.tokens -= n
+}
+
 // refillLocked adds tokens for elapsed time since the last refill, capped
 // at capacity. Callers must hold b.mu.
 func (b *TokenBucket) refillLocked() {

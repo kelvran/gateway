@@ -266,10 +266,16 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			RateLimitBurst:      burst,
 			RateLimitRefill:     refill,
 		})
+		if vk.TPMCapacity > 0 && cfg.RateLimit.RedisAddr != "" {
+			logger.Warn("virtual key configures a TPM rate limit, but Redis rate-limit mode is active; TPM is in-memory-only in v1 and will not be enforced",
+				"key", vk.Name)
+		}
 		keyConfigs = append(keyConfigs, ratelimit.KeyConfig{
-			ID:              vk.Name,
-			Capacity:        burst,
-			RefillPerSecond: refill,
+			ID:                 vk.Name,
+			Capacity:           burst,
+			RefillPerSecond:    refill,
+			TPMCapacity:        vk.TPMCapacity,
+			TPMRefillPerSecond: vk.TPMRefillPerSecond,
 		})
 	}
 	verifier, err := identity.NewVerifier(virtualKeys)

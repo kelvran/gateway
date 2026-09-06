@@ -127,6 +127,15 @@ type VirtualKeyConfig struct {
 	// the config file says, it doesn't own operational defaults).
 	RateLimitBurst  float64
 	RateLimitRefill float64
+	// TPMCapacity and TPMRefillPerSecond configure this key's optional,
+	// separate tokens-per-minute rate-limit dimension, per
+	// docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md. Zero (the default)
+	// disables it. In-memory rate-limit mode only in v1 — a no-op when
+	// rate_limit.redis_addr is configured, named explicitly as future
+	// work rather than silently ignored (cmd/gateway logs a startup
+	// warning if both are configured together).
+	TPMCapacity        float64
+	TPMRefillPerSecond float64
 }
 
 // TelemetryConfig configures OTel span export, per
@@ -303,6 +312,8 @@ func Load(path string) (*Config, error) {
 		if rl, ok := getMap(vkMap, "rate_limit"); ok {
 			vk.RateLimitBurst, _ = getFloat(rl, "burst")
 			vk.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
+			vk.TPMCapacity, _ = getFloat(rl, "tpm_capacity")
+			vk.TPMRefillPerSecond, _ = getFloat(rl, "tpm_refill_per_second")
 		}
 		if am, ok := getMap(vkMap, "allowed_models"); ok {
 			for model, v := range am {

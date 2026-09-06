@@ -82,3 +82,43 @@ func TestRefillNeverExceedsCapacity(t *testing.T) {
 		t.Fatal("Allow() succeeded a third time; refill must be capped at capacity")
 	}
 }
+
+// TestDebitCanOverdraftBelowZero proves the deliberate design choice in
+// docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md: real token usage is
+// only known after a request completes, so Debit must be able to push
+// the balance negative — there's no way to have "checked before
+// spending" for a cost that wasn't known at check time.
+func TestDebitCanOverdraftBelowZero(t *testing.T) {
+	b := NewTokenBucket(10, 1)
+	b.Debit(15)
+	if b.HasBalance() {
+		t.Fatal("HasBalance() = true after debiting more than the full balance, want false")
+	}
+}
+
+// TestHasBalanceNeverConsumes proves HasBalance is read-only, unlike
+// Allow — calling it repeatedly must never itself drain the bucket.
+func TestHasBalanceNeverConsumes(t *testing.T) {
+	b := NewTokenBucket(5, 0) // no refill, so any drain would be visible
+	for i := 0; i < 10; i++ {
+		if !b.HasBalance() {
+			t.Fatalf("HasBalance() call #%d = false, want true (never consumes)", i+1)
+		}
+	}
+}
+
+// TestDebitRecoversViaOrdinaryRefill proves an overdrawn bucket recovers
+// exactly like a normal one — refill is unconditional, not gated on the
+// balance having stayed non-negative.
+func TestDebitRecoversViaOrdinaryRefill(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	b := NewTokenBucketWithClock(10, 5, clock.now) // refill 5/sec
+	b.Debit(12)                                    // balance now -2
+	if b.HasBalance() {
+		t.Fatal("HasBalance() = true immediately after overdrafting, want false")
+	}
+	clock.Advance(time.Second) // +5 tokens -> balance now 3
+	if !b.HasBalance() {
+		t.Fatal("HasBalance() = false after enough refill to recover from the overdraft, want true")
+	}
+}

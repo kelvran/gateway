@@ -45,8 +45,10 @@ type virtualKeyRequest struct {
 }
 
 type rateLimitRequest struct {
-	Burst           float64 `json:"burst"`
-	RefillPerSecond float64 `json:"refill_per_second"`
+	Burst              float64 `json:"burst"`
+	RefillPerSecond    float64 `json:"refill_per_second"`
+	TPMCapacity        float64 `json:"tpm_capacity"`
+	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
 }
 
 // Handler builds the admin HTTP surface. cfg is the already-loaded,
@@ -130,8 +132,10 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 			}
 		}
 		burst, refill := 0.0, 0.0
+		var tpmCapacity, tpmRefill float64
 		if req.RateLimit != nil {
 			burst, refill = req.RateLimit.Burst, req.RateLimit.RefillPerSecond
+			tpmCapacity, tpmRefill = req.RateLimit.TPMCapacity, req.RateLimit.TPMRefillPerSecond
 		}
 
 		vk := identity.VirtualKey{
@@ -144,7 +148,13 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 			RateLimitBurst:      burst,
 			RateLimitRefill:     refill,
 		}
-		rateLimitCfg := ratelimit.KeyConfig{ID: name, Capacity: burst, RefillPerSecond: refill}
+		rateLimitCfg := ratelimit.KeyConfig{
+			ID:                 name,
+			Capacity:           burst,
+			RefillPerSecond:    refill,
+			TPMCapacity:        tpmCapacity,
+			TPMRefillPerSecond: tpmRefill,
+		}
 
 		if err := pipeline.UpsertVirtualKey(vk, rateLimitCfg); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
