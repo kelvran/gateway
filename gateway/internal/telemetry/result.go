@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"time"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -25,6 +27,21 @@ const (
 	AttrGenAIResponseFinishReasons = "gen_ai.response.finish_reasons"
 	AttrGenAIUsageInputTokens      = "gen_ai.usage.input_tokens"
 	AttrGenAIUsageOutputTokens     = "gen_ai.usage.output_tokens"
+	// AttrGenAIRequestModel is defined above but was previously never set
+	// on the span — RecordChatCompletionMetrics now sets it on the two
+	// new GenAI Metrics histograms (see telemetry.go), per
+	// docs/upgrade-research/gateway-2026-09-06.md Finding 3.
+	AttrGenAITokenType = "gen_ai.token.type"
+
+	// AttrErrorType is OTel's general (non-GenAI-specific) semantic-
+	// convention attribute for a low-cardinality description of what
+	// went wrong — conditionally required on
+	// gen_ai.client.operation.duration whenever the operation itself
+	// failed. Not namespaced under gen_ai.* or kelvran.*: it's a
+	// cross-signal generic attribute defined by OTel's own error
+	// attribute group, reused verbatim rather than given a Kelvran-local
+	// name.
+	AttrErrorType = "error.type"
 
 	// Kelvran-custom attributes, under a kelvran.* namespace per
 	// docs/operations/TELEMETRY.md's existing framing.
@@ -130,6 +147,42 @@ type ChatCompletionResult struct {
 	CostUSD    string
 	AgentRunID string
 	Err        error
+
+	// RequestModel is req.Model at dataplane.finalize's call site — the
+	// client-requested canonical model name, distinct from ResponseModel
+	// (which is "" whenever no response was ever produced, e.g. an auth
+	// failure). Used only by RecordChatCompletionMetrics as the GenAI
+	// gen_ai.request.model attribute; RecordChatCompletionResult does not
+	// set it on the span, since the span name ("chat "+req.Model) already
+	// carries this information for tracing.
+	RequestModel string
+	// Duration is the elapsed time from HandleChatCompletion/
+	// HandleChatCompletionStream's own entry to finalize actually
+	// running — the gateway's full request boundary, not just the
+	// upstream call — per
+	// docs/rfcs/2026-09-07-gateway-genai-metrics.md. Always meaningful
+	// (there is no "no duration" case), recorded on every call to
+	// RecordChatCompletionMetrics regardless of Err.
+	Duration time.Duration
+	// Billable mirrors dataplane.finalize's own billable parameter
+	// (docs/rfcs/2026-09-05-gateway-cost-double-counting.md): true only
+	// for a genuine, unshared upstream call this specific request itself
+	// paid for. RecordChatCompletionMetrics gates
+	// gen_ai.client.token.usage on this — never CacheHit — so a cache hit
+	// or coalesced singleflight follower never replays another call's
+	// already-recorded token count into the histogram a second time. Has
+	// no effect on RecordChatCompletionResult's span attributes, which
+	// report InputTokens/OutputTokens regardless (informational, per
+	// CostUSD's own doc comment above).
+	Billable bool
+	// ErrorType is "" whenever Err == nil, and a low-cardinality
+	// description of what went wrong otherwise — the GenAI semantic-
+	// conventions spec's error.type attribute, conditionally required on
+	// gen_ai.client.operation.duration on failure. Computed by the
+	// caller (dataplane.finalize, via errorTypeFor(outcomeFor(err))), not
+	// here — this package stays a dependency-free leaf with no knowledge
+	// of dataplane's sentinel errors or GatewayDecisionEvent_Outcome enum.
+	ErrorType string
 }
 
 // RecordChatCompletionResult sets every attribute only knowable once a
