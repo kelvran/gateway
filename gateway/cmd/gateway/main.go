@@ -122,6 +122,14 @@ func run(configPath string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("initializing telemetry: %w", err)
 	}
+	// Operator-visible at startup, per
+	// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md: this
+	// process's own InstanceID is exactly what the cache_cross_instance_check
+	// log lines (gateway/internal/gateway/dataplane) and every
+	// kelvran.cache.l3.gate_outcome metric data point now carry, so an
+	// operator can confirm it once here rather than only inferring it
+	// from later request-level output.
+	logger.Info("gateway_starting", "instance_id", telemetry.InstanceID)
 	// Real as of 2026-09-05 (previously best-effort only, a gap this
 	// RFC's own Drawbacks section named): flushes on both a clean
 	// ListenAndServe error return AND a real SIGTERM/SIGINT, since

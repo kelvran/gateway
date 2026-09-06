@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -45,6 +46,31 @@ import (
 // convention, because the SDK's no-op default requires zero setup for
 // every test that doesn't care about tracing.
 var Tracer = otel.Tracer("github.com/kelvran/gateway/gateway/internal/gateway/dataplane")
+
+// InstanceID identifies this specific gateway process for the lifetime of
+// the process, computed once at package-init time — the "instance ID"
+// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md needs to
+// correlate cache-check events across gateway replicas, per
+// docs/upgrade-research/cache-2026-09-06.md Finding 5. Confirmed by grep
+// before adding this (no UUID, no hostname, no OTel service.instance.id
+// resource attribute existed anywhere in this codebase) that nothing
+// already served this purpose. Deliberately hostname+pid, not a random
+// UUID: zero new runtime dependency (os.Hostname/os.Getpid are stdlib;
+// github.com/google/uuid is only an indirect, test-tooling dependency
+// pulled in transitively today, never used by any production code path —
+// see the RFC's Alternatives considered), and Kelvran's real deployment
+// model gives every replica its own hostname (one container/pod each) —
+// pid guards only the narrower, non-containerized case of two gateway
+// processes sharing one host.
+var InstanceID = computeInstanceID()
+
+func computeInstanceID() string {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown-host"
+	}
+	return fmt.Sprintf("%s:%d", host, os.Getpid())
+}
 
 // meter mirrors Tracer's own package-init-time-obtained, re-delegating
 // pattern for the separate OTel Metrics signal, per
@@ -116,6 +142,20 @@ const (
 // "reject" or "pass". The caller (dataplane.checkLexicalCache) calls this
 // at each of its own three existing gate-decision points — no new gate
 // logic, only a counter alongside logic that already exists.
+//
+// Also attributed with InstanceID, per
+// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md: L3-lite has no
+// exact-key concept to correlate the way L1/L2 do (its own match is a
+// fuzzy near-duplicate search, never a single deterministic key — see
+// that RFC's Alternatives considered for why L3 doesn't get its own
+// exact-key correlation event), so this is L3's own, narrower share of
+// "touch the checkLexicalCache call site": once this already-shipped
+// ablation counter (Finding 1) sees traffic from more than one InstanceID
+// value, that alone is a real, low-effort signal that multi-instance
+// deployment has begun. InstanceID is a small, fixed-cardinality value
+// (one per running process) — safe as a metric attribute, unlike a raw
+// cache key (see logCacheCrossInstanceCheck's own doc comment on that
+// distinction).
 func RecordCacheL3GateOutcome(ctx context.Context, gate string, rejected bool) {
 	outcome := "pass"
 	if rejected {
@@ -124,6 +164,7 @@ func RecordCacheL3GateOutcome(ctx context.Context, gate string, rejected bool) {
 	cacheL3GateOutcomeCounter.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(AttrKelvranCacheL3Gate, gate),
 		attribute.String(AttrKelvranCacheL3Outcome, outcome),
+		attribute.String(AttrKelvranInstanceID, InstanceID),
 	))
 }
 
@@ -165,6 +206,11 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 
 	res, err := resource.New(ctx, resource.WithAttributes(
 		attribute.String("service.name", "kelvran-gateway"),
+		// service.instance.id is the standard OTel semantic-conventions
+		// resource attribute for exactly this purpose — set here so every
+		// exported span/metric automatically carries it, per
+		// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md.
+		attribute.String("service.instance.id", InstanceID),
 	))
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: building resource: %w", err)
