@@ -92,18 +92,29 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              default 300s) lives in `dataplane.Pipeline.ProbeDeployments`/
                              `RunHealthProbeLoop`, since only `dataplane` has access to each deployment's
                              BaseURL/adapter/credentials — this package still has zero I/O and zero
-                             `internal/adapter` dependency. Still not built, deliberately, and now
-                             genuinely narrowed rather than a blanket deferral: usage/latency/cost-based
-                             selection signals, model-*group* fallback chains, and — the one class that
+                             `internal/adapter` dependency. **Updated 2026-09-07**: `dataplane.go`'s router
+                             step also now supports error-classified, multi-hop fallback chains
+                             (`Deployment.FallbackChains`, per
+                             docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md) — an
+                             explicit, per-deployment, per-error-class (content-policy /
+                             context-window-exceeded / generic) ordered target list, which MAY name a
+                             deployment serving a different canonical model (e.g. a larger-context
+                             fallback for a context-window error). This is a bounded, opt-in extension of
+                             the prior "a single fallback chain" scope line — a deployment with no
+                             `fallback_chains` configured keeps the exact prior same-model,
+                             single-fallback-via-router behavior unchanged, and now composes with
+                             health-probing for free: a probe-excluded deployment is never even chosen as
+                             the primary pick, so the fallback path (either the new chain or the old
+                             single-hop rule) fires less often, not differently. Still not built,
+                             deliberately, and now genuinely narrowed rather than a blanket deferral:
+                             usage/latency/cost-based selection signals, automatic model-*group*
+                             load-balancing (LiteLLM's sense of that term — distinct from this pass's
+                             explicit, opt-in per-deployment fallback chains), and — the one class that
                              correctly stays fully deferred, not just narrowed — the TRAFFIC-DERIVED
                              statistical circuit breaker (Envoy-style outlier detection, LiteLLM-style
                              `allowed_fails` cooldown), which genuinely needs a request-volume floor
                              Kelvran has no production traffic yet to calibrate against. None of these are
-                             named in PRD.md's v1 allowlist. The existing single-model, single-fallback
-                             retry (dataplane.go/streaming.go) is unchanged and already satisfies "a single
-                             fallback chain," and now composes with health-probing for free: a
-                             probe-excluded deployment is never even chosen as the primary pick, so the
-                             fallback path fires less often, not differently
+                             named in PRD.md's v1 allowlist
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
@@ -217,8 +228,10 @@ Every capability is a stage in one linear pipeline against a single canonical sc
   → router (weighted round-robin selects a deployment, skipping any deployment
     active/synthetic-probe health-probing has marked unhealthy — per
     docs/rfcs/2026-09-04-weighted-routing.md and
-    docs/rfcs/2026-09-07-gateway-active-health-probing.md — plus a single fallback attempt on
-    error; still no TRAFFIC-DERIVED statistical circuit breaker, deliberately)
+    docs/rfcs/2026-09-07-gateway-active-health-probing.md — plus, on error, an error-classified,
+    multi-hop fallback chain if the deployment configures one, else the pre-existing same-model
+    single-fallback attempt, per docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md;
+    still no TRAFFIC-DERIVED statistical circuit breaker, deliberately)
   → provider adapter: canonical → provider-native request translation
   → upstream call (streaming: non-buffering pass-through, chunk-by-chunk, explicit Flush() per chunk)
   → provider adapter: provider-native response/chunk → canonical translation (stateful per-stream parser)

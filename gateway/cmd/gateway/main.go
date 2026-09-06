@@ -329,12 +329,13 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			return nil, fmt.Errorf("deployment %q: no adapter registered for provider %q", d.Name, d.Provider)
 		}
 		dep := dataplane.Deployment{
-			Name:          d.Name,
-			Model:         d.Model,
-			Provider:      d.Provider,
-			UpstreamModel: d.UpstreamModel,
-			BaseURL:       d.BaseURL,
-			Region:        d.Region,
+			Name:           d.Name,
+			Model:          d.Model,
+			Provider:       d.Provider,
+			UpstreamModel:  d.UpstreamModel,
+			BaseURL:        d.BaseURL,
+			Region:         d.Region,
+			FallbackChains: d.FallbackChains,
 		}
 		if d.Provider == "bedrock" {
 			dep.AccessKeyID = os.Getenv(d.AccessKeyIDEnv)
@@ -364,6 +365,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			Weight: d.Weight,
 		})
 	}
+	if err := validateFallbackChainTargets(deployments); err != nil {
+		return nil, err
+	}
+
 	depRouter := router.New(routerDeployments, router.HealthConfig{
 		UnhealthyThreshold: cfg.HealthProbe.UnhealthyThreshold,
 		HealthyThreshold:   cfg.HealthProbe.HealthyThreshold,
@@ -412,6 +417,31 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		CacheL2TTL:     time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
 		CacheL3TTL:     time.Duration(cfg.Cache.L3.TTLSeconds) * time.Second,
 	})
+}
+
+// validateFallbackChainTargets fails startup, not first-request, if any
+// deployment's fallback_chains names a target deployment that doesn't
+// exist — controlplane.Load can't check this itself (it parses one
+// deployment's mapping at a time, with no visibility into the full,
+// still-being-built deployment set), so this runs here instead, in the
+// same spirit as this function's existing "no adapter registered for
+// provider" fail-fast check above, per
+// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
+func validateFallbackChainTargets(deployments []dataplane.Deployment) error {
+	names := make(map[string]struct{}, len(deployments))
+	for _, d := range deployments {
+		names[d.Name] = struct{}{}
+	}
+	for _, d := range deployments {
+		for class, targets := range d.FallbackChains {
+			for _, target := range targets {
+				if _, ok := names[target]; !ok {
+					return fmt.Errorf("deployment %q fallback_chains.%s names %q, which is not a configured deployment", d.Name, class, target)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // newBudgetTracker constructs a pure in-memory budget.Tracker when

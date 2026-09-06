@@ -224,26 +224,45 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 }
 
 // streamDeploymentWithFallback attempts dep first; if it fails before any
-// chunk has reached the client, it falls back to the next deployment for
-// the same model exactly like the buffered path's single-fallback rule.
-// Once a chunk has been written to the client, no fallback is attempted —
-// per the RFC's explicit scope boundary, there is no clean way to retry a
-// partially-delivered stream without risking duplicated content. The
-// returned fallbackInfo stays its zero value (happened: false) in that
-// already-streamed case, even though err is still non-nil — a streaming
-// response that errored after its first chunk did NOT fall back, and the
-// two must never be conflated in GatewayDecisionEvent.
+// chunk has reached the client, it walks the same error-classified,
+// multi-hop fallback chain runMissPath uses (dataplane.go's fallback.go),
+// or — when dep has no fallback_chains configured at all — falls back to
+// the next deployment for the same model exactly like the buffered
+// path's pre-existing single-fallback rule. Once a chunk has been
+// written to the client, no further hop is attempted at all — checked
+// before EVERY hop, not only the first — per the RFC's explicit scope
+// boundary, there is no clean way to retry a partially-delivered stream
+// without risking duplicated content. The returned fallbackInfo stays
+// its zero value (happened: false) in that already-streamed case, even
+// though err is still non-nil — a streaming response that errored after
+// its first chunk did NOT fall back, and the two must never be conflated
+// in GatewayDecisionEvent.
 func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
 	var firstChunkSent bool
 	var fallback fallbackInfo
 
 	resp, err := p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
-	if err != nil && !firstChunkSent {
-		if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
-			fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
-			dep = fallbackDep
-			resp, err = p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
+	if err == nil || firstChunkSent {
+		return resp, dep, fallback, err
+	}
+
+	originalDep, originalErr := dep, err
+	if targets, configured := fallbackTargets(dep, err); configured {
+		tried := map[string]bool{dep.Name: true}
+		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(targets, tried,
+			func(d Deployment) (adapter.ChatResponse, error) {
+				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent)
+			},
+			func() bool { return firstChunkSent },
+		)
+		if attempted {
+			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
+			dep, resp, err = hopDep, hopResp, hopErr
 		}
+	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
+		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
+		dep = fallbackDep
+		resp, err = p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
 	}
 	return resp, dep, fallback, err
 }

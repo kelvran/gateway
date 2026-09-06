@@ -332,6 +332,113 @@ func TestHandleChatCompletionStreamFallbackBeforeFirstByte(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionStreamMultiHopFallbackChainRoutesByClassAndHop
+// is the streaming-path parity proof for
+// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md: the
+// streaming path must walk the same error-classified, multi-hop chain
+// the buffered path does, not stay on the old single-fallback rule
+// forever. "hop-1" is configured but itself also fails before any byte
+// reaches the client, so "hop-2" (the SECOND configured hop, not the
+// old round-robin's own "next" pick) must be the one that ultimately
+// serves the response.
+func TestHandleChatCompletionStreamMultiHopFallbackChainRoutesByClassAndHop(t *testing.T) {
+	primary := Deployment{
+		Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused",
+		FallbackChains: map[string][]string{
+			FallbackClassContentPolicy: {"hop-1", "hop-2"},
+		},
+	}
+	deployments := []Deployment{
+		primary,
+		{Name: "hop-1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		{Name: "hop-2", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+
+	var calls []string
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		calls = append(calls, dep.Name)
+		switch dep.Name {
+		case "primary":
+			return nil, &UpstreamHTTPError{StatusCode: 400, Body: "content_policy_violation"}
+		case "hop-1":
+			return nil, &UpstreamHTTPError{StatusCode: 500, Body: "hop-1 unavailable"}
+		default:
+			return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+		}
+	}, deployments, adapter.Registry{"openai": openai.New()})
+
+	rec := httptest.NewRecorder()
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true,
+	}, rec)
+	if err != nil {
+		t.Fatalf("expected the chain to eventually succeed at hop-2, got error: %v", err)
+	}
+	want := []string{"primary", "hop-1", "hop-2"}
+	if len(calls) != len(want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+	for i, name := range want {
+		if calls[i] != name {
+			t.Fatalf("calls = %v, want %v (in exact order)", calls, want)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), `"content":"Hel"`) {
+		t.Errorf("body missing content from hop-2's stream: %s", rec.Body.String())
+	}
+}
+
+// TestHandleChatCompletionStreamMultiHopChainStopsOnceChunkSent proves the
+// "no further hop once a chunk reached the client" rule applies to EVERY
+// hop of a multi-hop chain, not only the very first attempt: hop-1 (a
+// configured, non-first target) sends one real chunk before dying
+// mid-stream, so hop-2 — configured, and would otherwise be tried next —
+// must never be called.
+func TestHandleChatCompletionStreamMultiHopChainStopsOnceChunkSent(t *testing.T) {
+	firstChunkEnd := strings.Index(realOpenAISSEStream, "\n\n") + len("\n\n")
+
+	primary := Deployment{
+		Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused",
+		FallbackChains: map[string][]string{
+			FallbackClassGeneric: {"hop-1", "hop-2"},
+		},
+	}
+	deployments := []Deployment{
+		primary,
+		{Name: "hop-1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		{Name: "hop-2", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+
+	var calls []string
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		calls = append(calls, dep.Name)
+		switch dep.Name {
+		case "primary":
+			return nil, errors.New("simulated connection failure before any byte was read")
+		case "hop-1":
+			return nopCloserReader{&failAfterNBytesReader{r: strings.NewReader(realOpenAISSEStream), n: firstChunkEnd + 5}}, nil
+		default:
+			t.Fatalf("hop-2 must never be called once hop-1 already sent a chunk to the client, but was called")
+			return nil, nil
+		}
+	}, deployments, adapter.Registry{"openai": openai.New()})
+
+	rec := httptest.NewRecorder()
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true,
+	}, rec)
+	if err == nil {
+		t.Fatal("expected an error from hop-1's mid-stream connection loss, got nil")
+	}
+	want := []string{"primary", "hop-1"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("calls = %v, want %v — hop-2 must never run", calls, want)
+	}
+	if !strings.Contains(rec.Body.String(), `"role":"assistant"`) {
+		t.Errorf("body should still contain the chunk hop-1 wrote before failing: %s", rec.Body.String())
+	}
+}
+
 // failAfterNBytesReader wraps a Reader and returns a real I/O error after
 // serving its first n bytes — simulating an upstream connection dying
 // mid-stream, after some real content has already reached the client.

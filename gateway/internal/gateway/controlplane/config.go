@@ -78,6 +78,40 @@ type DeploymentConfig struct {
 	// existing looseness (getInt's silent-swallow-on-malformed-string
 	// behavior). A negative value is a config error.
 	Weight int
+	// FallbackChains maps an error class (one of
+	// fallbackClassContentPolicy/fallbackClassContextWindowExceeded/
+	// fallbackClassGeneric below) to an ordered list of OTHER
+	// deployments' Names to attempt, in order, when a call to THIS
+	// deployment fails with that class of error — per
+	// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
+	// Empty/nil (the default — the common case, and every config written
+	// before this feature existed) means this deployment has not opted
+	// into explicit fallback-chain configuration at all; dataplane falls
+	// back to its pre-existing, router-based single-fallback behavior
+	// for it instead. Parsed from a comma-separated string per class, not
+	// a YAML list — see parseYAMLMini's own doc comment for why this
+	// file's parser has no list support at all.
+	FallbackChains map[string][]string
+}
+
+// fallbackClassContentPolicy, fallbackClassContextWindowExceeded, and
+// fallbackClassGeneric are the only valid fallback_chains keys a
+// deployment may configure — mirroring, but never importing,
+// dataplane.FallbackClassContentPolicy/FallbackClassContextWindowExceeded/
+// FallbackClassGeneric of the same values: controlplane and dataplane
+// are sibling, leaf packages per gateway/ARCHITECTURE.md's dependency
+// rules, neither may import the other, so this is a deliberately
+// duplicated plain-string convention, not a shared type.
+const (
+	fallbackClassContentPolicy         = "content_policy"
+	fallbackClassContextWindowExceeded = "context_window_exceeded"
+	fallbackClassGeneric               = "generic"
+)
+
+var validFallbackClasses = map[string]bool{
+	fallbackClassContentPolicy:         true,
+	fallbackClassContextWindowExceeded: true,
+	fallbackClassGeneric:               true,
 }
 
 // ModelPriceConfig is the static per-token price for one model.
@@ -388,6 +422,13 @@ func Load(path string) (*Config, error) {
 		if dep.Weight < 0 {
 			return nil, fmt.Errorf("controlplane: deployment %q has a negative weight %d", name, dep.Weight)
 		}
+		if fbRaw, ok := getMap(depMap, "fallback_chains"); ok {
+			chains, err := parseFallbackChains(name, fbRaw)
+			if err != nil {
+				return nil, err
+			}
+			dep.FallbackChains = chains
+		}
 		cfg.Deployments = append(cfg.Deployments, dep)
 	}
 	// Sort for deterministic ordering (map iteration order is random).
@@ -635,4 +676,38 @@ func getMap(m map[string]any, key string) (map[string]any, bool) {
 	}
 	child, ok := v.(map[string]any)
 	return child, ok
+}
+
+// parseFallbackChains parses one deployment's fallback_chains mapping —
+// class name -> a comma-separated string of deployment names, in attempt
+// order — per
+// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md's
+// "Config shape: comma-separated strings, not YAML lists" section: this
+// file's parser has no list support at all, so a scalar string is the
+// only way to express an ORDER-preserving sequence within its existing
+// constraints (unlike allowed_models' mapping-of-bools, whose order
+// never matters). deploymentName is only used for the error message.
+func parseFallbackChains(deploymentName string, raw map[string]any) (map[string][]string, error) {
+	chains := map[string][]string{}
+	for class, v := range raw {
+		if !validFallbackClasses[class] {
+			return nil, fmt.Errorf("controlplane: deployment %q fallback_chains has unknown error class %q (want one of %q, %q, %q)",
+				deploymentName, class, fallbackClassContentPolicy, fallbackClassContextWindowExceeded, fallbackClassGeneric)
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("controlplane: deployment %q fallback_chains.%s must be a comma-separated string of deployment names", deploymentName, class)
+		}
+		var chain []string
+		for _, target := range strings.Split(s, ",") {
+			target = strings.TrimSpace(target)
+			if target != "" {
+				chain = append(chain, target)
+			}
+		}
+		if len(chain) > 0 {
+			chains[class] = chain
+		}
+	}
+	return chains, nil
 }
