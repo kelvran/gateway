@@ -140,6 +140,51 @@ def test_judge_with_axis_scopes_the_prompt_to_that_axis():
     assert "completeness" in seen_prompts[0]
 
 
+def test_judge_accepts_a_length_one_list_identically_to_a_bare_call_model():
+    # Backward-compatibility proof for docs/rfcs/2026-09-07-evals-judge-
+    # panel-interface.md's widened call_model type: a length-1 list must
+    # score exactly like the pre-existing bare-callable shape every real
+    # caller (evals.cli's _judge_with_cache) still uses unchanged.
+    fake_response = "REASONING: matches.\nVERDICT: PASS\n"
+
+    bare_result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=_make_fake_call_model(fake_response),
+        )
+    )
+    list_result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=[_make_fake_call_model(fake_response)],
+        )
+    )
+
+    assert bare_result == list_result
+
+
+def test_judge_rejects_a_panel_of_more_than_one_call_model():
+    # The multi-judge panel itself is an explicit v2 non-goal (per that
+    # same RFC) -- judge() must fail loudly, not silently score with only
+    # the first judge or fabricate a majority-vote result it doesn't
+    # implement.
+    fake_response = "REASONING: matches.\nVERDICT: PASS\n"
+    panel = [
+        _make_fake_call_model(fake_response),
+        _make_fake_call_model(fake_response),
+    ]
+
+    with pytest.raises(NotImplementedError):
+        asyncio.run(judge(output="Paris", reference="Paris", call_model=panel))
+
+
+def test_judge_rejects_an_empty_call_model_list():
+    with pytest.raises(ValueError):
+        asyncio.run(judge(output="Paris", reference="Paris", call_model=[]))
+
+
 def test_judge_with_different_axes_can_disagree():
     # The same output/reference pair can genuinely pass on one axis and
     # fail on another -- proving the two calls are independently scoped,
