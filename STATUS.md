@@ -88,7 +88,7 @@ Previously: Golden/Regression Dataset promotion. Committed `eefa7f2`, confirmed 
 
 ## Next Action
 
-Item 14 is implemented, verified, and documented in this session; not yet committed/pushed/CI-watched — that's the immediate next step. Once shipped, the fresh backlog audit's ENTIRE original ranked list is fully closed. One new, real adjacent finding is not yet on any tracked backlog list (`chatCompletionsHandler`'s unbounded request-body read, named in `THREAT_MODEL.md`'s DoS row) — worth adding explicitly next time a backlog is compiled. No further approved work is queued; the next session should ask for fresh direction (a fresh backlog audit, the body-size-limit finding, or something else) rather than assuming continuation. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Item 14 is closed: committed (`1b3a721`), pushed, confirmed green on CI run `34031411496` (all 3 jobs — including real Docker confirming the `redislimiter`/distributed-rate-limit tests this sandbox can't run). The fresh backlog audit's ENTIRE original ranked list is now fully closed. One new, real adjacent finding is not yet on any tracked backlog list (`chatCompletionsHandler`'s unbounded request-body read, named in `THREAT_MODEL.md`'s DoS row) — worth adding explicitly next time a backlog is compiled. No further approved work is queued; the next session should ask for fresh direction (a fresh backlog audit, the body-size-limit finding, or something else) rather than assuming continuation. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
