@@ -53,12 +53,30 @@ type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-// Message is the native message shape.
+// Message is the native message shape. Content is json.RawMessage, not
+// string — see internal/adapter/openai.Message's own doc comment for
+// why, per docs/rfcs/2026-09-06-gateway-multimodal-content.md; this
+// package mirrors that exact design, matching its own stated "near-
+// verbatim copy" convention.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+// nativeContentPart is one element of the native multi-modal content
+// array.
+type nativeContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *nativeImageURL `json:"image_url,omitempty"`
+}
+
+// nativeImageURL is the native image_url object — url is either a real
+// URL or a base64 "data:" URI.
+type nativeImageURL struct {
+	URL string `json:"url"`
 }
 
 // ToolCall is the native tool-call shape. Arguments is a JSON-encoded
@@ -145,9 +163,13 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("openaicompat: converting message tool calls: %w", err)
 		}
+		content, err := contentToNative(m.Content, m.Parts)
+		if err != nil {
+			return nil, fmt.Errorf("openaicompat: converting message content: %w", err)
+		}
 		messages = append(messages, Message{
 			Role:       m.Role,
-			Content:    m.Content,
+			Content:    content,
 			ToolCalls:  toolCalls,
 			ToolCallID: m.ToolCallID,
 		})
@@ -205,11 +227,15 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		if err != nil {
 			return adapter.ChatResponse{}, fmt.Errorf("openaicompat: converting choice tool calls: %w", err)
 		}
+		content, err := contentFromNative(c.Message.Content)
+		if err != nil {
+			return adapter.ChatResponse{}, fmt.Errorf("openaicompat: converting choice content: %w", err)
+		}
 		choices = append(choices, adapter.Choice{
 			Index: c.Index,
 			Message: adapter.Message{
 				Role:       c.Message.Role,
-				Content:    c.Message.Content,
+				Content:    content,
 				ToolCalls:  toolCalls,
 				ToolCallID: c.Message.ToolCallID,
 			},
@@ -227,6 +253,62 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			TotalTokens:      native.Usage.TotalTokens,
 		},
 	}, nil
+}
+
+// contentToNative builds Message.Content's wire value from the
+// canonical Content/Parts pair — see
+// internal/adapter/openai.contentToNative's own doc comment for the
+// full rationale; this package mirrors it exactly. Self-hosted
+// OpenAI-compatible runtimes are assumed to follow the same "content is
+// either a string or an array" convention as real OpenAI, matching
+// this package's own stated near-verbatim-compatibility design; no
+// document content-part type is assumed to exist.
+func contentToNative(content string, parts []adapter.ContentPart) (json.RawMessage, error) {
+	if len(parts) == 0 {
+		if content == "" {
+			return nil, nil
+		}
+		return json.Marshal(content)
+	}
+
+	native := make([]nativeContentPart, 0, len(parts)+1)
+	if content != "" {
+		native = append(native, nativeContentPart{Type: "text", Text: content})
+	}
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			native = append(native, nativeContentPart{Type: "text", Text: p.Text})
+		case "image":
+			url := p.URL
+			if p.Data != "" {
+				url = fmt.Sprintf("data:%s;base64,%s", p.MediaType, p.Data)
+			}
+			if url == "" {
+				return nil, fmt.Errorf("openaicompat: image part has neither Data nor URL set")
+			}
+			native = append(native, nativeContentPart{Type: "image_url", ImageURL: &nativeImageURL{URL: url}})
+		case "document":
+			return nil, fmt.Errorf("openaicompat: document content parts are not supported")
+		default:
+			return nil, fmt.Errorf("openaicompat: unsupported content part type %q", p.Type)
+		}
+	}
+	return json.Marshal(native)
+}
+
+// contentFromNative decodes Message.Content's wire value back into a
+// plain string — see internal/adapter/openai.contentFromNative's own
+// doc comment; this package mirrors it exactly.
+func contentFromNative(native json.RawMessage) (string, error) {
+	if len(native) == 0 {
+		return "", nil
+	}
+	var text string
+	if err := json.Unmarshal(native, &text); err != nil {
+		return "", fmt.Errorf("openaicompat: response content is not a plain string (multi-modal response content is not supported): %w", err)
+	}
+	return text, nil
 }
 
 // toolCallsToProvider converts canonical tool calls to the native shape.

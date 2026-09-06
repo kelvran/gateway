@@ -54,7 +54,7 @@ func TestIntegrationGracefulShutdownDrainsInFlightRequestBeforeExiting(t *testin
 			ID:    "chatcmpl-graceful-shutdown-test",
 			Model: req.Model,
 			Choices: []openai.Choice{
-				{Index: 0, Message: openai.Message{Role: "assistant", Content: "drained successfully"}, FinishReason: "stop"},
+				{Index: 0, Message: openai.Message{Role: "assistant", Content: json.RawMessage(`"drained successfully"`)}, FinishReason: "stop"},
 			},
 			Usage: openai.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
 		}

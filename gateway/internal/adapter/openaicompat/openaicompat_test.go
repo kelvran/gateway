@@ -1,6 +1,8 @@
 package openaicompat
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -116,6 +118,94 @@ func TestRoundTrip(t *testing.T) {
 func TestName(t *testing.T) {
 	if got := New().Name(); got != "openaicompat" {
 		t.Errorf("Name() = %q, want %q", got, "openaicompat")
+	}
+}
+
+// TestToProviderTextOnlyContentIsByteIdenticalToPlainString mirrors
+// internal/adapter/openai's own test of the same name — see that
+// package's doc comment for the full rationale.
+func TestToProviderTextOnlyContentIsByteIdenticalToPlainString(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "llama-3-70b",
+		Messages: []adapter.Message{{Role: "user", Content: "plain text, no parts"}},
+	}
+
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if !strings.Contains(string(b), `"content":"plain text, no parts"`) {
+		t.Errorf("marshaled request = %s, want a bare string content field", b)
+	}
+}
+
+// TestToProviderMultiModalContentPartsMapToImageURL mirrors
+// internal/adapter/openai's own test of the same name.
+func TestToProviderMultiModalContentPartsMapToImageURL(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "llama-3-70b",
+		Messages: []adapter.Message{
+			{
+				Role:    "user",
+				Content: "what's in this image?",
+				Parts: []adapter.ContentPart{
+					{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="},
+				},
+			},
+		},
+	}
+
+	a := New()
+	nativeAny, err := a.ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	var parts []nativeContentPart
+	if err := json.Unmarshal(native.Messages[0].Content, &parts); err != nil {
+		t.Fatalf("Content is not a JSON array: %v (%s)", err, native.Messages[0].Content)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("parts len = %d, want 2 (text, image)", len(parts))
+	}
+	if parts[1].Type != "image_url" || parts[1].ImageURL == nil || parts[1].ImageURL.URL != "data:image/png;base64,aW1hZ2ViYXNlNjQ=" {
+		t.Errorf("parts[1] = %+v, want an image_url part with a data: URI", parts[1])
+	}
+}
+
+// TestToProviderDocumentContentPartFailsLoudly mirrors
+// internal/adapter/openai's own test of the same name.
+func TestToProviderDocumentContentPartFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "llama-3-70b",
+		Messages: []adapter.Message{
+			{Role: "user", Parts: []adapter.ContentPart{{Type: "document", MediaType: "application/pdf", Data: "x"}}},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with a document content part returned nil error, want an error")
+	}
+}
+
+// TestFromProviderMultiModalResponseContentFailsLoudly mirrors
+// internal/adapter/openai's own test of the same name.
+func TestFromProviderMultiModalResponseContentFailsLoudly(t *testing.T) {
+	resp := &Response{
+		ID:    "cmpl-test",
+		Model: "llama-3-70b",
+		Choices: []Choice{
+			{Index: 0, Message: Message{Role: "assistant", Content: json.RawMessage(`[{"type":"text","text":"hi"}]`)}, FinishReason: "stop"},
+		},
+	}
+
+	if _, err := New().FromProvider(resp); err == nil {
+		t.Fatal("FromProvider with array-shaped response content returned nil error, want an error")
 	}
 }
 

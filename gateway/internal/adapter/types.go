@@ -20,14 +20,40 @@ type Message struct {
 	// Role is one of "system", "user", "assistant", or "tool".
 	Role string `json:"role"`
 	// Content is the message's text content. For assistant messages that
-	// only carry tool calls, Content may be empty.
+	// only carry tool calls, Content may be empty. Unchanged by Parts
+	// below — a multi-modal message may still carry lead-in text here.
 	Content string `json:"content,omitempty"`
+	// Parts, when non-empty, is this message's multi-modal content —
+	// image/document parts alongside (or instead of) Content — per
+	// docs/rfcs/2026-09-06-gateway-multimodal-content.md. Deliberately
+	// additive: Content's own type is unchanged, so every existing
+	// call site across every adapter/dataplane/test keeps working
+	// exactly as before for the common, Parts-empty, text-only case.
+	Parts []ContentPart `json:"parts,omitempty"`
 	// ToolCalls holds any tool/function calls the assistant requested in
 	// this message. Empty for non-assistant messages.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	// ToolCallID identifies which prior ToolCall this message is a result
 	// for. Only set on role:"tool" messages.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// ContentPart is one piece of a multi-modal message's content, per
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md.
+type ContentPart struct {
+	// Type is "text", "image", or "document".
+	Type string `json:"type"`
+	// Text is set when Type == "text".
+	Text string `json:"text,omitempty"`
+	// MediaType is the MIME type (e.g. "image/png", "application/pdf"),
+	// set when Type != "text".
+	MediaType string `json:"media_type,omitempty"`
+	// Data is base64-encoded inline content. Mutually exclusive with
+	// URL — exactly one of the two is set when Type != "text".
+	Data string `json:"data,omitempty"`
+	// URL is a remote reference passed through to the provider
+	// verbatim — Kelvran itself never fetches it.
+	URL string `json:"url,omitempty"`
 }
 
 // ToolCall is a single tool/function invocation requested by the model.

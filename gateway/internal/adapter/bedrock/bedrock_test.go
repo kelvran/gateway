@@ -237,3 +237,89 @@ func TestName(t *testing.T) {
 		t.Errorf("Name() = %q, want %q", got, "bedrock")
 	}
 }
+
+// TestToProviderMultiModalContentPartsMapToImageAndDocumentBlocks is
+// the load-bearing proof for docs/rfcs/2026-09-06-gateway-multimodal-
+// content.md: an inline-base64 image part must map to Converse's real
+// {"image":{"format","source":{"bytes"}}} shape, and likewise for a
+// document part.
+func TestToProviderMultiModalContentPartsMapToImageAndDocumentBlocks(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{
+				Role:    "user",
+				Content: "what's in this image and document?",
+				Parts: []adapter.ContentPart{
+					{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="},
+					{Type: "document", MediaType: "application/pdf", Data: "ZG9jYmFzZTY0"},
+				},
+			},
+		},
+	}
+
+	a := New()
+	nativeAny, err := a.ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.Messages) != 1 {
+		t.Fatalf("native.Messages len = %d, want 1", len(native.Messages))
+	}
+	blocks := native.Messages[0].Content
+	if len(blocks) != 3 {
+		t.Fatalf("blocks len = %d, want 3 (text, image, document)", len(blocks))
+	}
+
+	if blocks[0].Text != "what's in this image and document?" {
+		t.Errorf("blocks[0].Text = %q, want the message content", blocks[0].Text)
+	}
+
+	imgBlock := blocks[1]
+	if imgBlock.Image == nil || imgBlock.Image.Format != "png" || imgBlock.Image.Source.Bytes != "aW1hZ2ViYXNlNjQ=" {
+		t.Errorf("blocks[1].Image = %+v, want format=png and the image's Data as Source.Bytes", imgBlock.Image)
+	}
+
+	docBlock := blocks[2]
+	if docBlock.Document == nil || docBlock.Document.Format != "pdf" || docBlock.Document.Source.Bytes != "ZG9jYmFzZTY0" {
+		t.Errorf("blocks[2].Document = %+v, want format=pdf and the document's Data as Source.Bytes", docBlock.Document)
+	}
+	if docBlock.Document.Name == "" {
+		t.Error("blocks[2].Document.Name is empty, want a non-empty placeholder (Converse requires a name)")
+	}
+}
+
+// TestToProviderURLBasedContentPartFailsLoudly proves the real,
+// deliberate scope limit: Converse has no generic-URL image/document
+// source (only inline bytes or an s3Location), so a URL-based part must
+// return a real, typed error rather than a silently wrong mapping.
+func TestToProviderURLBasedContentPartFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "user", Parts: []adapter.ContentPart{{Type: "image", MediaType: "image/png", URL: "https://example.com/image.png"}}},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with a URL-based image part returned nil error, want an error")
+	}
+}
+
+// TestToProviderUnsupportedContentPartTypeFailsLoudly proves an unknown
+// part type returns a real, typed error rather than being silently
+// dropped.
+func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "user", Parts: []adapter.ContentPart{{Type: "video", MediaType: "video/mp4", Data: "x"}}},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with an unsupported content part type returned nil error, want an error")
+	}
+}

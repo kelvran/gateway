@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"testing"
@@ -125,7 +126,7 @@ func fakeOpenAIResponse(model string) *openai.Response {
 		ID:    "chatcmpl-fake",
 		Model: model,
 		Choices: []openai.Choice{
-			{Index: 0, Message: openai.Message{Role: "assistant", Content: "hello"}, FinishReason: "stop"},
+			{Index: 0, Message: openai.Message{Role: "assistant", Content: json.RawMessage(`"hello"`)}, FinishReason: "stop"},
 		},
 		Usage: openai.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
 	}

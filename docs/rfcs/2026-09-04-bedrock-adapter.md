@@ -109,7 +109,7 @@ One new entry, identical shape to every other provider's:
 ## Unresolved Questions
 
 - `ConverseStream`/binary event-stream decoding — deferred to a follow-on RFC.
-- Multi-modal content blocks (image/document/video) — no canonical `Message` field exists for non-text content yet, same gap named in the Gemini RFC.
+- Multi-modal content blocks (image/document/video) — no canonical `Message` field exists for non-text content yet, same gap named in the Gemini RFC. **Resolved (image/document) 2026-09-06**, per `docs/rfcs/2026-09-06-gateway-multimodal-content.md`: this adapter's `contentPartToBlock` now maps canonical `image`/`document` parts to real Converse `image`/`document` blocks — inline `bytes` source only; a URL-based part returns a real error, since Converse's own image/document source has no generic-URL option (only inline bytes or an s3Location, which the canonical schema has no equivalent field for). Video remains out of scope — no provider RFC or audit finding has named it.
 - Native Bedrock Guardrails integration — Kelvran has its own guardrail engine; whether Bedrock's is ever worth layering on top is a separate, future question.
 - Cross-region inference profiles and provisioned-throughput ARNs (vs. a plain on-demand model ID in `UpstreamModel`) — out of scope this pass.
 - Prompt caching (`cachePoint`, cache-token usage fields) and `reasoningContent`/citation blocks — real Converse features, deliberately not mapped this pass.

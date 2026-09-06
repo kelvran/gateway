@@ -55,6 +55,40 @@ type ContentBlock struct {
 	Text       string      `json:"text,omitempty"`
 	ToolUse    *ToolUse    `json:"toolUse,omitempty"`
 	ToolResult *ToolResult `json:"toolResult,omitempty"`
+	// Image/Document, per docs/rfcs/2026-09-06-gateway-multimodal-
+	// content.md.
+	Image    *ImageBlock    `json:"image,omitempty"`
+	Document *DocumentBlock `json:"document,omitempty"`
+}
+
+// ByteSource is Converse's native inline-bytes source shape. Converse
+// also accepts an s3Location source (a specific s3:// URI plus an
+// optional bucketOwner) — not supported by this adapter, since the
+// canonical schema's generic URL field has no equivalent bucketOwner
+// concept; see ImageBlock/DocumentBlock's own doc comments.
+type ByteSource struct {
+	Bytes string `json:"bytes"`
+}
+
+// ImageBlock is Converse's native image content shape. Format is the
+// image's file format ("png", "jpeg", etc.) — Converse requires this
+// explicitly, derived here from the canonical MediaType by
+// mediaTypeToFormat. Only inline Data (Source.Bytes) is supported —
+// see mediaTypeToFormat/contentPartToBlock for why a URL-based part
+// returns a real error instead.
+type ImageBlock struct {
+	Format string     `json:"format"`
+	Source ByteSource `json:"source"`
+}
+
+// DocumentBlock is Converse's native document content shape. Name is
+// required by Converse (a display name) but has no canonical-schema
+// equivalent — set to a fixed placeholder, named explicitly rather than
+// silently guessed from something unreliable.
+type DocumentBlock struct {
+	Format string     `json:"format"`
+	Name   string     `json:"name"`
+	Source ByteSource `json:"source"`
 }
 
 // ToolUse is Converse's native tool-call shape. Input is an
@@ -192,6 +226,13 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		if m.Content != "" {
 			blocks = append(blocks, ContentBlock{Text: m.Content})
 		}
+		for _, part := range m.Parts {
+			block, err := contentPartToBlock(part)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		}
 		for _, tc := range m.ToolCalls {
 			input := map[string]any{}
 			if tc.ArgumentsJSON != "" {
@@ -246,6 +287,55 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		InferenceConfig: inferenceConfig,
 		ToolConfig:      toolConfig,
 	}, nil
+}
+
+// contentPartToBlock converts one canonical adapter.ContentPart into
+// Converse's native ContentBlock shape, per
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md. Converse's real
+// image/document source only accepts inline "bytes" or an s3Location (a
+// specific s3:// URI plus an optional bucketOwner the canonical schema
+// has no equivalent field for) — never a generic URL like every other
+// provider this codebase supports. A URL-based part therefore returns a
+// real, typed error rather than a silently wrong mapping; only inline
+// Data is supported in this pass, a named scope limit.
+func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
+	switch p.Type {
+	case "text":
+		return ContentBlock{Text: p.Text}, nil
+	case "image":
+		if p.Data == "" {
+			return ContentBlock{}, fmt.Errorf("bedrock: image part has no Data set (URL-based image parts are not supported — Converse has no generic-URL source, only inline bytes or an s3Location)")
+		}
+		return ContentBlock{Image: &ImageBlock{
+			Format: mediaTypeToFormat(p.MediaType),
+			Source: ByteSource{Bytes: p.Data},
+		}}, nil
+	case "document":
+		if p.Data == "" {
+			return ContentBlock{}, fmt.Errorf("bedrock: document part has no Data set (URL-based document parts are not supported — Converse has no generic-URL source, only inline bytes or an s3Location)")
+		}
+		return ContentBlock{Document: &DocumentBlock{
+			Format: mediaTypeToFormat(p.MediaType),
+			Name:   "document",
+			Source: ByteSource{Bytes: p.Data},
+		}}, nil
+	default:
+		return ContentBlock{}, fmt.Errorf("bedrock: unsupported content part type %q", p.Type)
+	}
+}
+
+// mediaTypeToFormat derives Converse's required file-format string
+// (e.g. "png", "pdf") from a canonical MIME type — the substring after
+// the last "/", which matches every real format Converse documents
+// (image/png, image/jpeg, application/pdf, text/csv) except a small
+// number of atypical MIME types (e.g. "text/plain" would derive "plain"
+// rather than Converse's own "txt") — a named limitation, not silently
+// wrong for the common cases.
+func mediaTypeToFormat(mediaType string) string {
+	if i := strings.LastIndex(mediaType, "/"); i >= 0 {
+		return mediaType[i+1:]
+	}
+	return mediaType
 }
 
 // FromProvider implements adapter.Adapter, converting a Bedrock native

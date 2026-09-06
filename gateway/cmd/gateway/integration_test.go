@@ -79,7 +79,7 @@ func newMockUpstream(t *testing.T) (*httptest.Server, *atomic.Int64) {
 			Choices: []openai.Choice{
 				{
 					Index:        0,
-					Message:      openai.Message{Role: "assistant", Content: "hello from the mock upstream"},
+					Message:      openai.Message{Role: "assistant", Content: json.RawMessage(`"hello from the mock upstream"`)},
 					FinishReason: "stop",
 				},
 			},
@@ -996,7 +996,7 @@ func newMockOpenAICompatUpstream(t *testing.T) (*httptest.Server, *atomic.Int64)
 			Choices: []openaicompat.Choice{
 				{
 					Index:        0,
-					Message:      openaicompat.Message{Role: "assistant", Content: "hello from the self-hosted mock upstream"},
+					Message:      openaicompat.Message{Role: "assistant", Content: json.RawMessage(`"hello from the self-hosted mock upstream"`)},
 					FinishReason: "stop",
 				},
 			},

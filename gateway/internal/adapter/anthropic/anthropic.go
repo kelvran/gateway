@@ -66,6 +66,20 @@ type ContentBlock struct {
 	// "tool_result" block
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   string `json:"content,omitempty"`
+
+	// "image"/"document" block, per
+	// docs/rfcs/2026-09-06-gateway-multimodal-content.md.
+	Source *ContentSource `json:"source,omitempty"`
+}
+
+// ContentSource is Anthropic's native image/document source shape —
+// either inline base64 data or a remote URL, per
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md.
+type ContentSource struct {
+	Type      string `json:"type"` // "base64" or "url"
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 // Tool is Anthropic's native tool-definition shape. InputSchema is a
@@ -135,6 +149,13 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		if m.Content != "" {
 			blocks = append(blocks, ContentBlock{Type: "text", Text: m.Content})
 		}
+		for _, part := range m.Parts {
+			block, err := contentPartToBlock(part)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		}
 		for _, tc := range m.ToolCalls {
 			input := map[string]any{}
 			if tc.ArgumentsJSON != "" {
@@ -184,6 +205,33 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		Tools:       tools,
 		Stream:      req.Stream,
 	}, nil
+}
+
+// contentPartToBlock converts one canonical adapter.ContentPart into
+// Anthropic's native ContentBlock shape, per
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md. Exactly one of
+// p.Data/p.URL is expected for an "image"/"document" part — real, typed
+// errors otherwise, never a silently-dropped field.
+func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
+	switch p.Type {
+	case "text":
+		return ContentBlock{Type: "text", Text: p.Text}, nil
+	case "image", "document":
+		source := &ContentSource{MediaType: p.MediaType}
+		switch {
+		case p.Data != "":
+			source.Type = "base64"
+			source.Data = p.Data
+		case p.URL != "":
+			source.Type = "url"
+			source.URL = p.URL
+		default:
+			return ContentBlock{}, fmt.Errorf("anthropic: %s part has neither Data nor URL set", p.Type)
+		}
+		return ContentBlock{Type: p.Type, Source: source}, nil
+	default:
+		return ContentBlock{}, fmt.Errorf("anthropic: unsupported content part type %q", p.Type)
+	}
 }
 
 // FromProvider implements adapter.Adapter, converting an Anthropic native

@@ -71,7 +71,7 @@ func newTestPipeline(t *testing.T) *dataplane.Pipeline {
 		Upstream: func(ctx context.Context, dep dataplane.Deployment, req any) (any, error) {
 			return &openai.Response{
 				ID: "chatcmpl-fake", Model: dep.UpstreamModel,
-				Choices: []openai.Choice{{Message: openai.Message{Role: "assistant", Content: "hi"}, FinishReason: "stop"}},
+				Choices: []openai.Choice{{Message: openai.Message{Role: "assistant", Content: json.RawMessage(`"hi"`)}, FinishReason: "stop"}},
 				Usage:   openai.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 			}, nil
 		},

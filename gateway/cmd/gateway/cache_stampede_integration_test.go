@@ -48,7 +48,7 @@ func TestIntegrationConcurrentIdenticalRequestsCoalesceIntoOneUpstreamCall(t *te
 			ID:    "chatcmpl-stampede-test",
 			Model: req.Model,
 			Choices: []openai.Choice{
-				{Index: 0, Message: openai.Message{Role: "assistant", Content: "hello"}, FinishReason: "stop"},
+				{Index: 0, Message: openai.Message{Role: "assistant", Content: json.RawMessage(`"hello"`)}, FinishReason: "stop"},
 			},
 			Usage: openai.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
 		}

@@ -265,3 +265,92 @@ func TestName(t *testing.T) {
 		t.Errorf("Name() = %q, want %q", got, "gemini")
 	}
 }
+
+// TestToProviderMultiModalContentPartsMapToInlineDataAndFileData is the
+// load-bearing proof for docs/rfcs/2026-09-06-gateway-multimodal-
+// content.md: an inline-base64 image part must map to Gemini's real
+// inlineData shape, and a URL-referenced document part to fileData —
+// Gemini has no distinct "document" wire type, so a document part
+// reuses the identical shape with a document MediaType.
+func TestToProviderMultiModalContentPartsMapToInlineDataAndFileData(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gemini-2.5-flash",
+		Messages: []adapter.Message{
+			{
+				Role:    "user",
+				Content: "what's in this image and document?",
+				Parts: []adapter.ContentPart{
+					{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="},
+					{Type: "document", MediaType: "application/pdf", URL: "https://example.com/doc.pdf"},
+				},
+			},
+		},
+	}
+
+	a := New()
+	nativeAny, err := a.ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.Contents) != 1 {
+		t.Fatalf("native.Contents len = %d, want 1", len(native.Contents))
+	}
+	parts := native.Contents[0].Parts
+	if len(parts) != 3 {
+		t.Fatalf("parts len = %d, want 3 (text, image, document)", len(parts))
+	}
+
+	if parts[0].Text != "what's in this image and document?" {
+		t.Errorf("parts[0].Text = %q, want the message content", parts[0].Text)
+	}
+
+	imgPart := parts[1]
+	if imgPart.InlineData == nil || imgPart.InlineData.MimeType != "image/png" || imgPart.InlineData.Data != "aW1hZ2ViYXNlNjQ=" {
+		t.Errorf("parts[1].InlineData = %+v, want a populated InlineData with the image's MediaType/Data", imgPart.InlineData)
+	}
+	if imgPart.FileData != nil {
+		t.Errorf("parts[1].FileData = %+v, want nil (this part used inline Data, not URL)", imgPart.FileData)
+	}
+
+	docPart := parts[2]
+	if docPart.FileData == nil || docPart.FileData.MimeType != "application/pdf" || docPart.FileData.FileURI != "https://example.com/doc.pdf" {
+		t.Errorf("parts[2].FileData = %+v, want a populated FileData with the document's MediaType/URL", docPart.FileData)
+	}
+	if docPart.InlineData != nil {
+		t.Errorf("parts[2].InlineData = %+v, want nil (this part used URL, not inline Data)", docPart.InlineData)
+	}
+}
+
+// TestToProviderContentPartWithNeitherDataNorURLFailsLoudly proves a
+// malformed image/document part returns a real, typed error rather than
+// silently producing an empty part.
+func TestToProviderContentPartWithNeitherDataNorURLFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gemini-2.5-flash",
+		Messages: []adapter.Message{
+			{Role: "user", Parts: []adapter.ContentPart{{Type: "image", MediaType: "image/png"}}},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with a Data-less, URL-less image part returned nil error, want an error")
+	}
+}
+
+// TestToProviderUnsupportedContentPartTypeFailsLoudly proves an unknown
+// part type returns a real, typed error rather than being silently
+// dropped.
+func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gemini-2.5-flash",
+		Messages: []adapter.Message{
+			{Role: "user", Parts: []adapter.ContentPart{{Type: "video", MediaType: "video/mp4", Data: "x"}}},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with an unsupported content part type returned nil error, want an error")
+	}
+}

@@ -54,6 +54,24 @@ type Part struct {
 	Text             string            `json:"text,omitempty"`
 	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
+	// InlineData/FileData carry image/document content, per
+	// docs/rfcs/2026-09-06-gateway-multimodal-content.md. Gemini has no
+	// distinct "document" wire type — a document part uses this exact
+	// same shape, just with a document MediaType.
+	InlineData *InlineData `json:"inlineData,omitempty"`
+	FileData   *FileData   `json:"fileData,omitempty"`
+}
+
+// InlineData is Gemini's native inline-base64 media shape.
+type InlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+// FileData is Gemini's native remote-file-reference media shape.
+type FileData struct {
+	MimeType string `json:"mimeType"`
+	FileURI  string `json:"fileUri"`
 }
 
 // FunctionCall is Gemini's native function-call shape. Args is an
@@ -197,6 +215,13 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		if m.Content != "" {
 			parts = append(parts, Part{Text: m.Content})
 		}
+		for _, part := range m.Parts {
+			p, err := contentPartToPart(part)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, p)
+		}
 		for _, tc := range m.ToolCalls {
 			args := map[string]any{}
 			if tc.ArgumentsJSON != "" {
@@ -249,6 +274,30 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		GenerationConfig:  genConfig,
 		Tools:             tools,
 	}, nil
+}
+
+// contentPartToPart converts one canonical adapter.ContentPart into
+// Gemini's native Part shape, per
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md. Gemini has no
+// distinct "document" wire type — a document part uses the identical
+// inlineData/fileData shape as an image, just with a document
+// MediaType.
+func contentPartToPart(p adapter.ContentPart) (Part, error) {
+	switch p.Type {
+	case "text":
+		return Part{Text: p.Text}, nil
+	case "image", "document":
+		switch {
+		case p.Data != "":
+			return Part{InlineData: &InlineData{MimeType: p.MediaType, Data: p.Data}}, nil
+		case p.URL != "":
+			return Part{FileData: &FileData{MimeType: p.MediaType, FileURI: p.URL}}, nil
+		default:
+			return Part{}, fmt.Errorf("gemini: %s part has neither Data nor URL set", p.Type)
+		}
+	default:
+		return Part{}, fmt.Errorf("gemini: unsupported content part type %q", p.Type)
+	}
 }
 
 // FromProvider implements adapter.Adapter, converting a Gemini native

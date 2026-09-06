@@ -10,6 +10,7 @@ package dataplane
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http/httptest"
@@ -31,11 +32,13 @@ import (
 const fakeCreditCardNumber = "4111111111111111"
 
 func fakeOpenAIResponseWithContent(model, content string) *openai.Response {
+	// A plain Go string can never fail to json.Marshal.
+	encoded, _ := json.Marshal(content)
 	return &openai.Response{
 		ID:    "chatcmpl-fake",
 		Model: model,
 		Choices: []openai.Choice{
-			{Index: 0, Message: openai.Message{Role: "assistant", Content: content}, FinishReason: "stop"},
+			{Index: 0, Message: openai.Message{Role: "assistant", Content: json.RawMessage(encoded)}, FinishReason: "stop"},
 		},
 		Usage: openai.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
 	}

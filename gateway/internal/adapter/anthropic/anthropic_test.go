@@ -148,3 +148,93 @@ func TestName(t *testing.T) {
 		t.Errorf("Name() = %q, want %q", got, "anthropic")
 	}
 }
+
+// TestToProviderMultiModalContentPartsMapToNativeBlocks is the
+// load-bearing proof for docs/rfcs/2026-09-06-gateway-multimodal-
+// content.md: a canonical message with an inline-base64 image part and
+// a URL-referenced document part must map to Anthropic's real
+// {"type":"image"/"document","source":{...}} block shape, alongside the
+// existing text block.
+func TestToProviderMultiModalContentPartsMapToNativeBlocks(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{
+				Role:    "user",
+				Content: "what's in this image and document?",
+				Parts: []adapter.ContentPart{
+					{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="},
+					{Type: "document", MediaType: "application/pdf", URL: "https://example.com/doc.pdf"},
+				},
+			},
+		},
+	}
+
+	a := New()
+	nativeAny, err := a.ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.Messages) != 1 {
+		t.Fatalf("native.Messages len = %d, want 1", len(native.Messages))
+	}
+	blocks := native.Messages[0].Content
+	if len(blocks) != 3 {
+		t.Fatalf("blocks len = %d, want 3 (text, image, document)", len(blocks))
+	}
+
+	if blocks[0].Type != "text" || blocks[0].Text != "what's in this image and document?" {
+		t.Errorf("blocks[0] = %+v, want the text block", blocks[0])
+	}
+
+	imgBlock := blocks[1]
+	if imgBlock.Type != "image" {
+		t.Fatalf("blocks[1].Type = %q, want %q", imgBlock.Type, "image")
+	}
+	if imgBlock.Source == nil || imgBlock.Source.Type != "base64" || imgBlock.Source.MediaType != "image/png" || imgBlock.Source.Data != "aW1hZ2ViYXNlNjQ=" {
+		t.Errorf("blocks[1].Source = %+v, want a base64 source with the image's MediaType/Data", imgBlock.Source)
+	}
+
+	docBlock := blocks[2]
+	if docBlock.Type != "document" {
+		t.Fatalf("blocks[2].Type = %q, want %q", docBlock.Type, "document")
+	}
+	if docBlock.Source == nil || docBlock.Source.Type != "url" || docBlock.Source.URL != "https://example.com/doc.pdf" {
+		t.Errorf("blocks[2].Source = %+v, want a url source with the document's URL", docBlock.Source)
+	}
+}
+
+// TestToProviderContentPartWithNeitherDataNorURLFailsLoudly proves a
+// malformed image/document part (missing both Data and URL) returns a
+// real, typed error rather than silently producing an empty/invalid
+// source block.
+func TestToProviderContentPartWithNeitherDataNorURLFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "user", Parts: []adapter.ContentPart{{Type: "image", MediaType: "image/png"}}},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with a Data-less, URL-less image part returned nil error, want an error")
+	}
+}
+
+// TestToProviderUnsupportedContentPartTypeFailsLoudly proves an unknown
+// part type returns a real, typed error rather than being silently
+// dropped.
+func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "user", Parts: []adapter.ContentPart{{Type: "video", MediaType: "video/mp4", Data: "x"}}},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with an unsupported content part type returned nil error, want an error")
+	}
+}

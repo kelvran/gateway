@@ -34,12 +34,33 @@ type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-// Message is OpenAI's native message shape.
+// Message is OpenAI's native message shape. Content is json.RawMessage,
+// not string, so ToProvider can emit either a plain JSON string (the
+// common, text-only case — byte-identical to this adapter's behavior
+// before docs/rfcs/2026-09-06-gateway-multimodal-content.md) or a JSON
+// array of multi-modal parts — the real "content is either a string or
+// an array" duality every OpenAI SDK uses. FromProvider only ever
+// decodes this back into a plain string; multi-modal RESPONSE content
+// is out of scope this pass (see that RFC's Alternatives Considered).
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+// nativeContentPart is one element of OpenAI's native multi-modal
+// content array.
+type nativeContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *nativeImageURL `json:"image_url,omitempty"`
+}
+
+// nativeImageURL is OpenAI's native image_url object — url is either a
+// real URL or a base64 "data:" URI.
+type nativeImageURL struct {
+	URL string `json:"url"`
 }
 
 // ToolCall is OpenAI's native tool-call shape. Arguments is a JSON-encoded
@@ -116,9 +137,13 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("openai: converting message tool calls: %w", err)
 		}
+		content, err := contentToNative(m.Content, m.Parts)
+		if err != nil {
+			return nil, fmt.Errorf("openai: converting message content: %w", err)
+		}
 		messages = append(messages, Message{
 			Role:       m.Role,
-			Content:    m.Content,
+			Content:    content,
 			ToolCalls:  toolCalls,
 			ToolCallID: m.ToolCallID,
 		})
@@ -177,11 +202,15 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		if err != nil {
 			return adapter.ChatResponse{}, fmt.Errorf("openai: converting choice tool calls: %w", err)
 		}
+		content, err := contentFromNative(c.Message.Content)
+		if err != nil {
+			return adapter.ChatResponse{}, fmt.Errorf("openai: converting choice content: %w", err)
+		}
 		choices = append(choices, adapter.Choice{
 			Index: c.Index,
 			Message: adapter.Message{
 				Role:       c.Message.Role,
-				Content:    c.Message.Content,
+				Content:    content,
 				ToolCalls:  toolCalls,
 				ToolCallID: c.Message.ToolCallID,
 			},
@@ -199,6 +228,66 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			TotalTokens:      native.Usage.TotalTokens,
 		},
 	}, nil
+}
+
+// contentToNative builds Message.Content's wire value from the
+// canonical Content/Parts pair, per
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md. Returns nil (both
+// content and parts empty — omitted from the marshaled JSON, exactly
+// like the plain-string field's own prior omitempty behavior) or a
+// plain JSON string (parts empty — byte-identical to this adapter's
+// behavior before that RFC) or a JSON array of parts (parts non-empty).
+// The Chat Completions API has no native document content-part type —
+// a "document" part returns a real, typed error rather than a silently
+// wrong mapping.
+func contentToNative(content string, parts []adapter.ContentPart) (json.RawMessage, error) {
+	if len(parts) == 0 {
+		if content == "" {
+			return nil, nil
+		}
+		return json.Marshal(content)
+	}
+
+	native := make([]nativeContentPart, 0, len(parts)+1)
+	if content != "" {
+		native = append(native, nativeContentPart{Type: "text", Text: content})
+	}
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			native = append(native, nativeContentPart{Type: "text", Text: p.Text})
+		case "image":
+			url := p.URL
+			if p.Data != "" {
+				url = fmt.Sprintf("data:%s;base64,%s", p.MediaType, p.Data)
+			}
+			if url == "" {
+				return nil, fmt.Errorf("openai: image part has neither Data nor URL set")
+			}
+			native = append(native, nativeContentPart{Type: "image_url", ImageURL: &nativeImageURL{URL: url}})
+		case "document":
+			return nil, fmt.Errorf("openai: document content parts are not supported by the Chat Completions API")
+		default:
+			return nil, fmt.Errorf("openai: unsupported content part type %q", p.Type)
+		}
+	}
+	return json.Marshal(native)
+}
+
+// contentFromNative decodes Message.Content's wire value back into a
+// plain string. Multi-modal RESPONSE content (a JSON array) is out of
+// scope this pass — see docs/rfcs/2026-09-06-gateway-multimodal-
+// content.md's Alternatives Considered — returns a real, typed error
+// rather than silently discarding non-text parts.
+func contentFromNative(native json.RawMessage) (string, error) {
+	if len(native) == 0 {
+		return "", nil
+	}
+	var text string
+	if err := json.Unmarshal(native, &text); err != nil {
+		return "", fmt.Errorf("openai: response content is not a plain string (multi-modal response content is not supported): %w", err)
+	}
+	return text, nil
 }
 
 // toolCallsToProvider converts canonical tool calls to OpenAI's native
