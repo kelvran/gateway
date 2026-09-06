@@ -79,6 +79,14 @@ func mustInt64Counter(m metric.Meter, name string, opts ...metric.Int64CounterOp
 	return counter
 }
 
+func mustFloat64Histogram(m metric.Meter, name string, opts ...metric.Float64HistogramOption) metric.Float64Histogram {
+	histogram, err := m.Float64Histogram(name, opts...)
+	if err != nil {
+		panic(fmt.Errorf("telemetry: constructing %q histogram: %w", name, err))
+	}
+	return histogram
+}
+
 // RecordRateLimitFailOpen increments the fail-open counter for keyID. The
 // caller (dataplane.checkRateLimit) calls this at the exact same point it
 // already logs a rate_limit_backend_unavailable warning — this is an
@@ -86,6 +94,107 @@ func mustInt64Counter(m metric.Meter, name string, opts ...metric.Int64CounterOp
 // line.
 func RecordRateLimitFailOpen(ctx context.Context, keyID string) {
 	rateLimitFailOpenCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
+}
+
+// tokenUsageHistogram and operationDurationHistogram are the OTel GenAI
+// semantic-conventions instruments named in
+// docs/upgrade-research/gateway-2026-09-06.md Finding 3:
+// gen_ai.client.token.usage (Histogram, unit "{token}") and
+// gen_ai.client.operation.duration (Histogram, unit "s") — additive to
+// docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md, which stood
+// up this codebase's only prior instrument and explicitly named this as
+// the *first* metric, not the only one. Both instrument names are the
+// spec's own canonical strings, not a kelvran.*-namespaced equivalent —
+// deliberately, so a GenAI-aware dashboard (e.g. Envoy AI Gateway's
+// published Grafana dashboard, the concrete precedent this Finding
+// cites) can query them without any Kelvran-specific translation. See
+// gen_ai.client.token.usage's own "Development," not "Stable," spec
+// stability badge, called out as a documented risk in
+// docs/rfcs/2026-09-07-gateway-genai-metrics.md, not a reason to wait —
+// this codebase already has precedent (gen_ai.* trace attributes, per
+// docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md) for building
+// against development-stability OTel GenAI conventions.
+var tokenUsageHistogram = mustFloat64Histogram(
+	meter,
+	"gen_ai.client.token.usage",
+	metric.WithDescription("Number of input and output tokens used by this GenAI client operation."),
+	metric.WithUnit("{token}"),
+)
+
+var operationDurationHistogram = mustFloat64Histogram(
+	meter,
+	"gen_ai.client.operation.duration",
+	metric.WithDescription("Duration of a GenAI client operation, from the gateway's own request boundary."),
+	metric.WithUnit("s"),
+)
+
+// GenAI token-type attribute values, per the semantic-conventions spec's
+// gen_ai.token.type enum — the two used by RecordChatCompletionMetrics.
+const (
+	GenAITokenTypeInput  = "input"
+	GenAITokenTypeOutput = "output"
+)
+
+// RecordChatCompletionMetrics records both GenAI histograms from r — the
+// exact same ChatCompletionResult RecordChatCompletionResult already
+// populates at dataplane.finalize's existing call site, per this
+// Finding's own "reuse the existing per-request data capture point,
+// don't add a new one" framing. Not merged into RecordChatCompletionResult
+// itself: that function takes a trace.Span and has no context.Context,
+// which metric.Float64Histogram.Record requires.
+//
+// gen_ai.client.operation.duration is recorded unconditionally — every
+// call to finalize represents one finished (or failed) operation,
+// success or rejection, matching this codebase's own "ALWAYS runs, even
+// on error/cancel" framing for finalize itself. error.type is attached
+// only when r.ErrorType is non-empty (r.Err != nil at the call site),
+// per the spec's own "conditionally required on failure" framing for
+// that attribute — never a fabricated empty string on success.
+//
+// gen_ai.client.token.usage is recorded only when r.Billable — a cache
+// hit (any layer) or a coalesced singleflight follower replays token
+// counts from a real upstream call this specific request itself never
+// made, per docs/rfcs/2026-09-05-gateway-cost-double-counting.md's
+// billable gate (already used identically by budget.Record and
+// limiter.RecordTokens). Unlike AttrKelvranCostUSD/InputTokens on the
+// span — a single per-request attribute, safe to report as "what this
+// would have cost" even on a cache hit — a histogram accumulates across
+// many requests; replaying the same cached token count on every
+// subsequent hit would inflate an aggregate token-throughput query by
+// however many times that entry was served, not just report it once.
+func RecordChatCompletionMetrics(ctx context.Context, r ChatCompletionResult) {
+	var attrs []attribute.KeyValue
+	attrs = append(attrs, attribute.String(AttrGenAIOperationName, "chat"))
+	if r.Provider != "" {
+		attrs = append(attrs, attribute.String(AttrGenAIProviderName, genAIProviderName(r.Provider)))
+	}
+	if r.RequestModel != "" {
+		attrs = append(attrs, attribute.String(AttrGenAIRequestModel, r.RequestModel))
+	}
+	if r.ResponseModel != "" {
+		attrs = append(attrs, attribute.String(AttrGenAIResponseModel, r.ResponseModel))
+	}
+	if r.ErrorType != "" {
+		attrs = append(attrs, attribute.String(AttrErrorType, r.ErrorType))
+	}
+
+	operationDurationHistogram.Record(ctx, r.Duration.Seconds(), metric.WithAttributes(attrs...))
+
+	if !r.Billable {
+		return
+	}
+	// Each token-type data point gets its own copy of attrs, rather than
+	// two successive append(attrs, ...) calls sharing attrs's backing
+	// array — a real, if benign here (each Record call fully consumes its
+	// slice before the next append runs), footgun not worth relying on.
+	if r.InputTokens > 0 {
+		inputAttrs := append(append([]attribute.KeyValue{}, attrs...), attribute.String(AttrGenAITokenType, GenAITokenTypeInput))
+		tokenUsageHistogram.Record(ctx, float64(r.InputTokens), metric.WithAttributes(inputAttrs...))
+	}
+	if r.OutputTokens > 0 {
+		outputAttrs := append(append([]attribute.KeyValue{}, attrs...), attribute.String(AttrGenAITokenType, GenAITokenTypeOutput))
+		tokenUsageHistogram.Record(ctx, float64(r.OutputTokens), metric.WithAttributes(outputAttrs...))
+	}
 }
 
 // cacheL3GateOutcomeCounter records the pass/reject outcome of each of

@@ -69,9 +69,10 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		budgetSpentAtDecision decimal.Decimal
 		billable              bool
 	)
+	start := time.Now()
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)

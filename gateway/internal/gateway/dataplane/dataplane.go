@@ -650,9 +650,10 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		billable              bool
 	)
 
+	start := time.Now()
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err)
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -891,8 +892,15 @@ func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
 // informational "what this would have cost" data, e.g. for a
 // cache-savings dashboard), but budget.Record is only ever called when
 // billable is true, so a virtual key's tracked spend reflects genuine
-// upstream cost, never a notional replay of it.
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, err error) {
+// upstream cost, never a notional replay of it. billable also gates
+// telemetry.RecordChatCompletionMetrics's token-usage histogram, per
+// docs/rfcs/2026-09-07-gateway-genai-metrics.md, for the identical
+// double-counting reason. duration is time.Since of a clock read at
+// HandleChatCompletion/HandleChatCompletionStream's own entry, captured
+// by the caller (trace.Span has no clean, provider-agnostic way to read
+// back its own start time) — the gateway's full request boundary, fed to
+// the same RecordChatCompletionMetrics call.
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, err error, duration time.Duration) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too.
@@ -920,10 +928,20 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if vk != nil {
 		virtualKeyID = vk.ID
 	}
-	telemetry.RecordChatCompletionResult(span, telemetry.ChatCompletionResult{
+	// outcome is computed once and shared by GatewayDecisionEvent.Outcome
+	// below and, via errorTypeFor, the GenAI error.type attribute — both
+	// are the same classification of err, not two separately-maintained
+	// taxonomies.
+	outcome := outcomeFor(err)
+	var errorType string
+	if err != nil {
+		errorType = errorTypeFor(outcome)
+	}
+	result := telemetry.ChatCompletionResult{
 		VirtualKeyID:    virtualKeyID,
 		Provider:        dep.Provider,
 		DeploymentName:  dep.Name,
+		RequestModel:    req.Model,
 		ResponseModel:   resp.Model,
 		ResponseID:      resp.ID,
 		FinishReasons:   finishReasons(resp),
@@ -939,8 +957,17 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// per docs/rfcs/2026-09-02-decimal-cost-accounting.md.
 		CostUSD:    cost.String(),
 		AgentRunID: telemetry.AgentRunIDFromContext(ctx),
+		Billable:   billable,
+		Duration:   duration,
+		ErrorType:  errorType,
 		Err:        err,
-	})
+	}
+	telemetry.RecordChatCompletionResult(span, result)
+	// Same result struct, per
+	// docs/rfcs/2026-09-07-gateway-genai-metrics.md's "reuse the existing
+	// per-request data capture point" design — not a second, independent
+	// capture of the same fields.
+	telemetry.RecordChatCompletionMetrics(ctx, result)
 
 	event := &gatewayeventsv1.GatewayDecisionEvent{
 		TraceId:                span.SpanContext().TraceID().String(),
@@ -948,7 +975,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		OccurredAt:             timestamppb.Now(),
 		VirtualKeyId:           virtualKeyID,
 		RequestedModel:         req.Model,
-		Outcome:                outcomeFor(err),
+		Outcome:                outcome,
 		RateLimitFailOpen:      rateLimitFailedOpen,
 		FallbackHappened:       fallback.happened,
 		FallbackFromDeployment: fallback.from,
@@ -1009,6 +1036,16 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 	default:
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR
 	}
+}
+
+// errorTypeFor derives the GenAI semantic-conventions error.type
+// attribute value (per telemetry.RecordChatCompletionMetrics) from
+// outcome — a low-cardinality string like "rate_limited" or
+// "budget_exceeded", reusing outcomeFor's own existing classification of
+// err rather than maintaining a second, parallel error taxonomy. Only
+// ever called by finalize when err != nil; never called with OUTCOME_OK.
+func errorTypeFor(outcome gatewayeventsv1.GatewayDecisionEvent_Outcome) string {
+	return strings.ToLower(strings.TrimPrefix(outcome.String(), "OUTCOME_"))
 }
 
 // finishReasons collects every non-empty FinishReason across resp's

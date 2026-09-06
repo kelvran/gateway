@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -283,6 +284,18 @@ func TestRecordChatCompletionResultRemapsProviderOnSpan(t *testing.T) {
 // (confirmed empirically); testing this package's own Record* function in
 // isolation, as every other test in this file already does, avoids that
 // collision entirely rather than trying to out-order it.
+//
+// This same constraint is why RecordChatCompletionMetrics's two new GenAI
+// histograms (docs/rfcs/2026-09-07-gateway-genai-metrics.md) are verified
+// INSIDE this same function's swap window below, rather than in a second,
+// separate test function: this package's meter only ever delegates to a
+// real MeterProvider once per test binary (confirmed empirically the same
+// way — a second otel.SetMeterProvider call in a later test function in
+// this package silently observes nothing, since delegation already
+// resolved to this function's reader). One shared swap, multiple
+// instruments verified from the one real reader, is the only correct way
+// to add a second global-instrument proof to this package now that this
+// function has already spent this binary's one delegation.
 func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	prevProvider := otel.GetMeterProvider()
@@ -295,6 +308,42 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	RecordCacheL3GateOutcome(ctx, CacheL3GateVolatileBypass, false)
 	RecordCacheL3GateOutcome(ctx, CacheL3GateEntityMismatch, true)
 	RecordCacheL3GateOutcome(ctx, CacheL3GateFreshnessRiskModel, false)
+
+	// Three RecordChatCompletionMetrics scenarios, each given a unique
+	// RequestModel so their attribute sets never collide into the same
+	// histogram data point: a genuine billable success (both histograms
+	// populated, no error.type), a non-billable cache hit/coalesced
+	// follower replaying the same token counts (operation.duration still
+	// recorded — every operation has a duration regardless of billing —
+	// but token.usage must NOT be, per RecordChatCompletionMetrics's own
+	// double-counting-avoidance doc comment), and a failure (billable is
+	// always false on error in real code, tokens are always 0, but
+	// operation.duration must still carry the conditional error.type
+	// attribute).
+	RecordChatCompletionMetrics(ctx, ChatCompletionResult{
+		Provider:      "openai",
+		RequestModel:  "genai-metrics-success",
+		ResponseModel: "gpt-4o",
+		InputTokens:   10,
+		OutputTokens:  4,
+		Billable:      true,
+		Duration:      250 * time.Millisecond,
+	})
+	RecordChatCompletionMetrics(ctx, ChatCompletionResult{
+		Provider:      "openai",
+		RequestModel:  "genai-metrics-cache-hit",
+		ResponseModel: "gpt-4o",
+		InputTokens:   10,
+		OutputTokens:  4,
+		Billable:      false,
+		Duration:      5 * time.Millisecond,
+	})
+	RecordChatCompletionMetrics(ctx, ChatCompletionResult{
+		RequestModel: "genai-metrics-failure",
+		Billable:     false,
+		Duration:     2 * time.Millisecond,
+		ErrorType:    "rate_limited",
+	})
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
@@ -337,5 +386,89 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	}
 	if got := counts[[2]string{CacheL3GateFreshnessRiskModel, "reject"}]; got != 0 {
 		t.Errorf("freshness_risk_model reject count = %d, want 0 (only pass was ever recorded)", got)
+	}
+
+	// gen_ai.client.operation.duration: one data point per RequestModel,
+	// keyed by it (each scenario above used a unique one).
+	durationByModel := map[string]metricdata.HistogramDataPoint[float64]{}
+	// gen_ai.client.token.usage: keyed by (RequestModel, token type) —
+	// absent entirely for a (model, type) pair that must never have been
+	// recorded.
+	tokensByModelAndType := map[[2]string]metricdata.HistogramDataPoint[float64]{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch m.Name {
+			case "gen_ai.client.operation.duration":
+				hist, ok := m.Data.(metricdata.Histogram[float64])
+				if !ok {
+					t.Fatalf("gen_ai.client.operation.duration data type = %T, want metricdata.Histogram[float64]", m.Data)
+				}
+				for _, dp := range hist.DataPoints {
+					model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
+					durationByModel[model.AsString()] = dp
+				}
+			case "gen_ai.client.token.usage":
+				hist, ok := m.Data.(metricdata.Histogram[float64])
+				if !ok {
+					t.Fatalf("gen_ai.client.token.usage data type = %T, want metricdata.Histogram[float64]", m.Data)
+				}
+				for _, dp := range hist.DataPoints {
+					model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
+					tokenType, _ := dp.Attributes.Value(attribute.Key(AttrGenAITokenType))
+					tokensByModelAndType[[2]string{model.AsString(), tokenType.AsString()}] = dp
+				}
+			}
+		}
+	}
+
+	successDuration, ok := durationByModel["genai-metrics-success"]
+	if !ok {
+		t.Fatal("gen_ai.client.operation.duration has no data point for the success scenario")
+	}
+	if successDuration.Sum != (250 * time.Millisecond).Seconds() {
+		t.Errorf("success scenario duration Sum = %v, want %v", successDuration.Sum, (250 * time.Millisecond).Seconds())
+	}
+	if _, hasErrorType := successDuration.Attributes.Value(attribute.Key(AttrErrorType)); hasErrorType {
+		t.Error("success scenario's operation.duration data point has error.type set — must be absent on success")
+	}
+
+	cacheHitDuration, ok := durationByModel["genai-metrics-cache-hit"]
+	if !ok {
+		t.Fatal("gen_ai.client.operation.duration has no data point for the non-billable cache-hit scenario — duration must be recorded regardless of billable")
+	}
+	if cacheHitDuration.Sum != (5 * time.Millisecond).Seconds() {
+		t.Errorf("cache-hit scenario duration Sum = %v, want %v", cacheHitDuration.Sum, (5 * time.Millisecond).Seconds())
+	}
+
+	failureDuration, ok := durationByModel["genai-metrics-failure"]
+	if !ok {
+		t.Fatal("gen_ai.client.operation.duration has no data point for the failure scenario")
+	}
+	errorType, hasErrorType := failureDuration.Attributes.Value(attribute.Key(AttrErrorType))
+	if !hasErrorType || errorType.AsString() != "rate_limited" {
+		t.Errorf("failure scenario's error.type = %v, hasErrorType=%v, want %q", errorType, hasErrorType, "rate_limited")
+	}
+
+	inputTokens, ok := tokensByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeInput}]
+	if !ok || inputTokens.Sum != 10 {
+		t.Errorf("success scenario input token usage = %v, ok=%v, want Sum=10", inputTokens, ok)
+	}
+	outputTokens, ok := tokensByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeOutput}]
+	if !ok || outputTokens.Sum != 4 {
+		t.Errorf("success scenario output token usage = %v, ok=%v, want Sum=4", outputTokens, ok)
+	}
+
+	// The load-bearing double-counting-avoidance proof: the cache-hit
+	// scenario replayed the exact same InputTokens/OutputTokens as the
+	// success scenario, but Billable=false — neither must ever appear in
+	// gen_ai.client.token.usage.
+	if _, ok := tokensByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeInput}]; ok {
+		t.Error("non-billable cache-hit scenario recorded an input token.usage data point — must be suppressed")
+	}
+	if _, ok := tokensByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeOutput}]; ok {
+		t.Error("non-billable cache-hit scenario recorded an output token.usage data point — must be suppressed")
+	}
+	if _, ok := tokensByModelAndType[[2]string{"genai-metrics-failure", GenAITokenTypeInput}]; ok {
+		t.Error("failure scenario recorded an input token.usage data point — must be suppressed")
 	}
 }
