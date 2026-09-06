@@ -49,6 +49,10 @@ const (
 	// ablation instrumentation — see telemetry.RecordCacheL3GateOutcome.
 	AttrKelvranCacheL3Gate    = "kelvran.cache.l3.gate"
 	AttrKelvranCacheL3Outcome = "kelvran.cache.l3.outcome"
+	// AttrKelvranInstanceID is per
+	// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md — see
+	// InstanceID's own doc comment (telemetry.go).
+	AttrKelvranInstanceID = "kelvran.instance.id"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider

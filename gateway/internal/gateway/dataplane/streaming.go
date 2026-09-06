@@ -105,7 +105,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
-	if cached, layer, writtenAt, ok := p.checkCache(ctx, l1Key, l2Key); ok {
+	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -117,7 +117,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// failure — same fallthrough behavior as the buffered path.
 	}
 
-	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l3Signature); ok {
+	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l1Key, l3Signature); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp

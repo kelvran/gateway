@@ -481,15 +481,61 @@ func (c cacheProvenance) Hit() bool { return c.Layer != "" }
 // L1 hit. writtenAt is the served entry's OWN write time (L2's, on an L2
 // hit — never the promotion write's fresh timestamp), per
 // docs/upgrade-research/cache-2026-09-06.md Finding 6.
-func (p *Pipeline) checkCache(ctx context.Context, l1Key, l2Key string) (cached []byte, layer string, writtenAt time.Time, hit bool) {
-	if cached, writtenAt, ok, getErr := p.cache.Get(ctx, l1Key); getErr == nil && ok {
-		return cached, "L1", writtenAt, true
+//
+// tenantID feeds logCacheCrossInstanceCheck (per
+// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md) for each of L1
+// and L2's own check — but only when the backend actually answered
+// (getErr == nil): a backend I/O error tells this telemetry nothing
+// about whether the key was really present, so it must never be
+// misreported as a definite miss.
+func (p *Pipeline) checkCache(ctx context.Context, tenantID, l1Key, l2Key string) (cached []byte, layer string, writtenAt time.Time, hit bool) {
+	l1Cached, l1WrittenAt, l1OK, l1Err := p.cache.Get(ctx, l1Key)
+	if l1Err == nil {
+		p.logCacheCrossInstanceCheck(tenantID, l1Key, "L1", l1OK, p.cacheTTL)
 	}
-	if cached, writtenAt, ok, getErr := p.cacheL2.Get(ctx, l2Key); getErr == nil && ok {
-		_ = p.cache.Put(ctx, l1Key, cached, p.cacheTTL)
-		return cached, "L2", writtenAt, true
+	if l1Err == nil && l1OK {
+		return l1Cached, "L1", l1WrittenAt, true
 	}
+
+	l2Cached, l2WrittenAt, l2OK, l2Err := p.cacheL2.Get(ctx, l2Key)
+	if l2Err == nil {
+		p.logCacheCrossInstanceCheck(tenantID, l2Key, "L2", l2OK, p.cacheL2TTL)
+	}
+	if l2Err == nil && l2OK {
+		_ = p.cache.Put(ctx, l1Key, l2Cached, p.cacheTTL)
+		return l2Cached, "L2", l2WrittenAt, true
+	}
+
 	return nil, "", time.Time{}, false
+}
+
+// logCacheCrossInstanceCheck emits one line of the cross-instance
+// cache-check telemetry stream, per
+// docs/upgrade-research/cache-2026-09-06.md Finding 5 and
+// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md: exactly the
+// (tenant, exact key, instance ID, hit-or-miss, timestamp, ttl) tuple
+// telemetry/cachecorrelation.Analyze needs to retroactively estimate,
+// once a real multi-instance deployment exists, how often a miss on one
+// instance was actually a repeat of a request already servable from a
+// sibling instance's own cache within its TTL window. slog's own record
+// timestamp covers this tuple's "timestamp" field — never duplicated
+// here.
+//
+// A structured LOG line, deliberately NOT an OTel metric: key is a
+// per-request SHA256 hash (unbounded cardinality), and attaching an
+// unbounded-cardinality value as a metric attribute is a well-documented
+// cardinality-explosion anti-pattern — unlike the small, fixed
+// vocabularies (gate name, pass/reject, instance ID) telemetry's other
+// counters in this codebase use as attributes.
+func (p *Pipeline) logCacheCrossInstanceCheck(tenantID, key, layer string, hit bool, ttl time.Duration) {
+	p.logger.Info("cache_cross_instance_check",
+		"tenant_id", tenantID,
+		"cache_key", key,
+		"cache_layer", layer,
+		"instance_id", telemetry.InstanceID,
+		"hit", hit,
+		"ttl_ms", ttl.Milliseconds(),
+	)
 }
 
 // writeCache writes encoded to all three cache layers, eagerly and
@@ -569,7 +615,22 @@ func freshnessRiskModel(writtenAt time.Time, storedModelID, currentModelID strin
 // highest-consequence cache check, per AGENTS.md's explicit "Never" rule
 // against weakening it, so every branch here is a hard, visible
 // rejection, not a soft score.
-func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, signature []uint64) (cached []byte, similarity float64, ageMs float64, hit bool) {
+//
+// l1Key (the caller's own already-computed exact-match key for this
+// request) is threaded through solely for
+// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md's cross-instance
+// check event, emitted only on the two paths that genuinely completed a
+// real search (a full pass-through hit, or exhausting every candidate
+// without one) — never on the volatile-bypass or search-error paths,
+// which never learned anything about whether a valid entry existed. See
+// that RFC's Design section for why L3 reuses l1Key rather than having
+// its own exact-key concept: L3's own match is a fuzzy near-duplicate
+// search with no single deterministic lookup key of its own, so l1Key
+// here represents "was THIS exact request servable from any cache
+// resource on this instance," not "l1Key is a real L3 storage key" — the
+// same question checkCache's own L1/L2 events already answer for their
+// own layers, extended here to L3's different mechanism.
+func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key string, signature []uint64) (cached []byte, similarity float64, ageMs float64, hit bool) {
 	// Per-gate outcome counters, per docs/upgrade-research/cache-2026-09-06.md
 	// Finding 1 — GroundedCache's own per-gate ablation methodology
 	// applied to L3-lite's three existing gates. No new gate logic: every
@@ -606,8 +667,10 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		if c.GuardrailPolicyVersion != p.guardrails.Version() {
 			continue
 		}
+		p.logCacheCrossInstanceCheck(vk.ID, l1Key, "L3", true, p.cacheL3TTL)
 		return c.Resp, c.Similarity, float64(time.Since(c.WrittenAt).Milliseconds()), true
 	}
+	p.logCacheCrossInstanceCheck(vk.ID, l1Key, "L3", false, p.cacheL3TTL)
 	return nil, 0, 0, false
 }
 
@@ -683,7 +746,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
-	if cached, layer, writtenAt, ok := p.checkCache(ctx, l1Key, l2Key); ok {
+	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -694,7 +757,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
-	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l3Signature); ok {
+	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l1Key, l3Signature); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp

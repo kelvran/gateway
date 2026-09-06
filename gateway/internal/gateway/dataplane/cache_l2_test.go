@@ -131,9 +131,9 @@ func TestL2HitPromotesIntoL1(t *testing.T) {
 		t.Fatalf("l2.Put: %v", err)
 	}
 
-	p := &Pipeline{cache: l1, cacheL2: l2, cacheTTL: time.Hour}
+	p := &Pipeline{cache: l1, cacheL2: l2, cacheTTL: time.Hour, logger: discardLogger()}
 
-	cached, layer, writtenAt, hit := p.checkCache(ctx, l1Key, l2Key)
+	cached, layer, writtenAt, hit := p.checkCache(ctx, "tenant-1", l1Key, l2Key)
 	if !hit {
 		t.Fatal("checkCache did not report a hit for a value present in L2")
 	}
