@@ -86,7 +86,7 @@ Previously: `gen_ai.provider.name` validation and enum remapping. Committed `25e
 
 ## Next Action
 
-TPM is implemented, verified, and documented in this session; not yet committed/pushed/CI-watched — that's the immediate next step. Remaining: Golden/Regression Dataset promotion (evals, independent of all gateway work this session), then item 14 (multi-modal `Message` content, needs a short RFC first) — the last 2 items from the fresh backlog audit's original ranked list. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+TPM is closed: committed (`2d8b329`), pushed, confirmed green on CI run `34023830880` (all 3 jobs — including real Docker confirming the `redislimiter`/distributed-rate-limit tests this sandbox can't run). Remaining: Golden/Regression Dataset promotion (evals, independent of all gateway work this session), then item 14 (multi-modal `Message` content, needs a short RFC first) — the last 2 items from the fresh backlog audit's original ranked list. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
