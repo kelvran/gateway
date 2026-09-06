@@ -48,6 +48,22 @@ def _load_cases(suite_path: Path) -> list[EvalCase]:
     return [EvalCase(**raw_case) for raw_case in raw_cases]
 
 
+def _append_case_to_suite(case: EvalCase, path: Path) -> None:
+    """Append case to the JSON-array suite file at path, creating it if it
+    doesn't exist yet — the append counterpart to `_load_cases`, for
+    `evals promote` (see docs/rfcs/2026-09-05-evals-golden-regression-
+    promotion.md). Unlike results_store.py's JSONL append helpers, a suite
+    file is a plain JSON array matching `_load_cases`'s own format, so
+    this reads-modifies-rewrites the whole file rather than appending a
+    line — the same tradeoff `_load_cases` itself already made (a suite
+    file is meant to stay small and human-reviewable, not an
+    append-only results log).
+    """
+    existing = json.loads(path.read_text()) if path.exists() else []
+    existing.append(json.loads(case.model_dump_json()))
+    path.write_text(json.dumps(existing, indent=2) + "\n")
+
+
 def _score_output_deterministic(
     output: str,
     reference: str | None,
@@ -480,6 +496,114 @@ def run_cmd(
 
     append_scores(scores, scores_path)
     click.echo(format_report(successes, total, confidence=confidence))
+
+
+@main.command("promote")
+@click.option(
+    "--suite",
+    "suite_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to the JSON EvalCase suite file the promoted Run's own case came from.",
+)
+@click.option(
+    "--results",
+    "results_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="JSONL file of persisted Runs (see --results on `rollout`).",
+)
+@click.option(
+    "--scores",
+    "scores_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "JSONL file of persisted Scores (see --scores on `run`/`rollout`). "
+        "Optional; when given together with --tier regression, at least "
+        "one matching Score for --run-id must have value=false (a real "
+        "failure) — promoting a passing run to the regression tier has "
+        "nothing to regression-test. Not checked for --tier drift_sample, "
+        "or when --scores is omitted entirely."
+    ),
+)
+@click.option("--run-id", "run_id", required=True, help="The Run.id to promote.")
+@click.option(
+    "--tier",
+    required=True,
+    type=click.Choice(["regression", "drift_sample"]),
+    help=(
+        'The new EvalCase\'s tier. "golden" is deliberately not a valid '
+        "choice here — per THREAT_MODEL.md's Evals Spoofing row, tier is "
+        "set at dataset-registration time by a human, never derived from "
+        "a rollout's own outcome."
+    ),
+)
+@click.option(
+    "--output",
+    "output_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=(
+        "JSON suite file the new EvalCase is appended to (created if it doesn't exist)."
+    ),
+)
+def promote_cmd(
+    suite_path: Path,
+    results_path: Path,
+    scores_path: Path | None,
+    run_id: str,
+    tier: str,
+    output_path: Path,
+) -> None:
+    """Promote a Run's underlying EvalCase into a new, frozen EvalCase at --tier.
+
+    See docs/rfcs/2026-09-05-evals-golden-regression-promotion.md. The new
+    case is a distinct identity (a new id, revision 1) — never a new
+    revision of the original, since it's a derived, separate case, not an
+    edit to the one that ran. task_spec/reference are copied verbatim from
+    the original case at the exact revision the Run actually used, frozen
+    at that point regardless of later edits to --suite.
+    """
+    cases_by_key = {(c.id, c.revision): c for c in _load_cases(suite_path)}
+    run = next((r for r in load_runs(results_path) if r.id == run_id), None)
+    if run is None:
+        raise click.ClickException(f"no Run with id {run_id!r} found in {results_path}")
+
+    original_case = cases_by_key.get((run.eval_case_id, run.eval_case_revision))
+    if original_case is None:
+        raise click.ClickException(
+            f"Run {run_id!r} references EvalCase "
+            f"{run.eval_case_id!r}@{run.eval_case_revision}, not found in {suite_path}"
+        )
+
+    if scores_path is not None and tier == "regression":
+        matching = [s for s in load_scores(scores_path) if s.run_id == run_id]
+        if not matching or all(s.value for s in matching):
+            raise click.ClickException(
+                f"--tier regression requires at least one failing Score "
+                f"(value=false) for Run {run_id!r} in {scores_path}; found "
+                f"{len(matching)} matching Score(s), none failing — "
+                "nothing to regression-test."
+            )
+
+    new_case = EvalCase(
+        id=f"{original_case.id}-promoted-{run.id}",
+        revision=1,
+        task_spec=original_case.task_spec,
+        reference=original_case.reference,
+        tier=tier,
+        tags=[
+            *original_case.tags,
+            f"promoted-from:{original_case.id}@{original_case.revision}",
+            f"promoted-from-run:{run.id}",
+        ],
+    )
+    _append_case_to_suite(new_case, output_path)
+    click.echo(
+        f"promoted {original_case.id}@{original_case.revision} (run {run.id}) "
+        f"-> {new_case.id} (tier={tier}) in {output_path}"
+    )
 
 
 @main.command("rollout")
