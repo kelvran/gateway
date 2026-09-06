@@ -87,7 +87,7 @@ Previously: TPM (tokens-per-minute) rate-limit dimension. Committed `2d8b329`, c
 
 ## Next Action
 
-Golden/Regression Dataset promotion is implemented, verified, and documented in this session; not yet committed/pushed/CI-watched — that's the immediate next step. Once shipped, the fresh backlog audit's original ranked list is fully closed except item 14 (multi-modal `Message` content on the canonical schema) — Large, explicitly needs a short RFC first, not started. No further approved work will be queued after that; the next session should ask for fresh direction. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
+Golden/Regression Dataset promotion is closed: committed (`eefa7f2`), pushed, confirmed green on CI run `34025727434` (all 3 jobs). The fresh backlog audit's original ranked list is now fully closed except item 14 (multi-modal `Message` content on the canonical schema) — Large, explicitly needs a short RFC first, not started. No further approved work is queued; the next session should ask for fresh direction (item 14, a new backlog audit, or something else) rather than assuming continuation. The PyPI trademark blocker remains open pending the founder's own TESS search or attorney review — untouched by this pass.
 
 ## Release Runbook
 
