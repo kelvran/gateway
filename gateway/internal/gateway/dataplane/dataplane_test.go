@@ -69,16 +69,20 @@ func keyConfigsFromVirtualKeys(keys []identity.VirtualKey) []ratelimit.KeyConfig
 // testRouter builds a router.Router from deployments, weight 0 for every
 // one (normalized to 1 by router.New) — preserving today's exact
 // round-robin sequence, per
-// docs/rfcs/2026-09-04-weighted-routing.md's degrade proof. Every test
-// helper in this package that builds a Pipeline uses this rather than a
-// weighted router, since none of these tests are testing weighting
-// itself (that's internal/router's own router_test.go).
+// docs/rfcs/2026-09-04-weighted-routing.md's degrade proof. A zero-value
+// router.HealthConfig — no test in this package other than
+// health_probe_test.go exercises health-probing behavior, and the zero
+// value is a no-op until some caller actually reports a probe result
+// (see router.New's own doc comment). Every test helper in this package
+// that builds a Pipeline uses this rather than a weighted router, since
+// none of these tests are testing weighting itself (that's
+// internal/router's own router_test.go).
 func testRouter(deployments []Deployment) *router.Router {
 	rd := make([]router.Deployment, 0, len(deployments))
 	for _, d := range deployments {
 		rd = append(rd, router.Deployment{Name: d.Name, Model: d.Model})
 	}
-	return router.New(rd)
+	return router.New(rd, router.HealthConfig{})
 }
 
 func newTestPipelineWithKeysAndBudget(t *testing.T, upstream UpstreamCaller, deployments []Deployment, keys []identity.VirtualKey, tracker *budget.Tracker) *Pipeline {

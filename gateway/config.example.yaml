@@ -192,6 +192,28 @@ telemetry:
 #   listen_addr: "127.0.0.1:8081"
 #   token_env: "KELVRAN_ADMIN_TOKEN"
 
+# Active/synthetic health-probing: a background loop that issues a
+# lightweight, real chat-completion request to every configured
+# deployment on a timer, independent of real client traffic — see
+# docs/rfcs/2026-09-07-gateway-active-health-probing.md. A deployment is
+# excluded from router.Router.Select's pool only after
+# unhealthy_threshold CONSECUTIVE failed probes (never a single one —
+# deliberately more conservative than LiteLLM's own aggressive
+# single-failure default, since Kelvran has no production traffic yet to
+# calibrate a more aggressive threshold against), and re-included only
+# after healthy_threshold CONSECUTIVE successful probes. This is the
+# traffic-INDEPENDENT active-probe half of health-based routing only —
+# the traffic-derived statistical circuit breaker (Envoy-style outlier
+# detection, LiteLLM-style allowed_fails cooldown) still correctly stays
+# deferred, per gateway/ARCHITECTURE.md. Optional: omit this whole
+# section (the default) for no probing at all — every configured
+# deployment stays unconditionally eligible, exactly as before this
+# feature existed.
+# health_probe:
+#   interval_seconds: 300
+#   unhealthy_threshold: 3
+#   healthy_threshold: 2
+
 # Static per-model price table (USD per token), used by
 # internal/costaccounting for Decimal-precision cost calculation — see
 # docs/rfcs/2026-09-02-decimal-cost-accounting.md. Each value below is

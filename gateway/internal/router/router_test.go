@@ -12,7 +12,7 @@ func TestSelectDegradesToRoundRobinForEqualWeights(t *testing.T) {
 		{Name: "a", Model: "gpt-4o"},
 		{Name: "b", Model: "gpt-4o"},
 		{Name: "c", Model: "gpt-4o"},
-	})
+	}, HealthConfig{})
 
 	want := []string{"a", "b", "c", "a", "b", "c", "a", "b", "c"}
 	for i, w := range want {
@@ -33,7 +33,7 @@ func TestSelectDegradesToRoundRobinForExplicitEqualWeights(t *testing.T) {
 	r := New([]Deployment{
 		{Name: "a", Model: "gpt-4o", Weight: 5},
 		{Name: "b", Model: "gpt-4o", Weight: 5},
-	})
+	}, HealthConfig{})
 
 	want := []string{"a", "b", "a", "b", "a", "b"}
 	for i, w := range want {
@@ -54,7 +54,7 @@ func TestSelectProportionalForWeightedDeployments(t *testing.T) {
 		{Name: "a", Model: "gpt-4o", Weight: 2},
 		{Name: "b", Model: "gpt-4o", Weight: 1},
 		{Name: "c", Model: "gpt-4o", Weight: 1},
-	})
+	}, HealthConfig{})
 
 	counts := map[string]int{}
 	const totalCalls = 400 // a multiple of the total weight (4), so counts land exactly on the weight ratio
@@ -77,7 +77,7 @@ func TestSelectProportionalForWeightedDeployments(t *testing.T) {
 // TestSelectUnconfiguredModelReturnsFalse mirrors
 // dataplane.Pipeline.nextDeployment's existing "not found" contract.
 func TestSelectUnconfiguredModelReturnsFalse(t *testing.T) {
-	r := New([]Deployment{{Name: "a", Model: "gpt-4o"}})
+	r := New([]Deployment{{Name: "a", Model: "gpt-4o"}}, HealthConfig{})
 	if _, ok := r.Select("claude-opus-4"); ok {
 		t.Fatal("Select for an unconfigured model returned ok=true, want false")
 	}
@@ -87,7 +87,7 @@ func TestSelectUnconfiguredModelReturnsFalse(t *testing.T) {
 // one-deployment-per-model case: nothing to route around, every call
 // returns the same, only candidate.
 func TestSelectSingleDeploymentAlwaysReturnsIt(t *testing.T) {
-	r := New([]Deployment{{Name: "solo", Model: "gpt-4o"}})
+	r := New([]Deployment{{Name: "solo", Model: "gpt-4o"}}, HealthConfig{})
 	for i := 0; i < 5; i++ {
 		got, ok := r.Select("gpt-4o")
 		if !ok || got != "solo" {
