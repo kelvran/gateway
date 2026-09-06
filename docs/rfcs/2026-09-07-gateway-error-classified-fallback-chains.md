@@ -1,0 +1,82 @@
+# RFC: Error-classified, multi-hop fallback chains
+
+## Status
+
+Accepted, implemented 2026-09-07.
+
+## Context
+
+`docs/upgrade-research/gateway-2026-09-06.md` Finding 5 (the LiteLLM half, not the Kong cost-based-rate-limiting half, which is Medium-Large and deferred to Phase 3b since it touches `internal/ratelimit`'s key shape) names a real, verified gap: LiteLLM ships separate, coexisting fallback lists for content-policy violations, context-window-exceeded errors, and generic errors (rate limits, etc.), plus in-order multi-hop chains (more than one fallback attempt). Kelvran's router has exactly one undifferentiated fallback attempt today, confirmed by reading `dataplane.go`'s `runMissPath` directly: on `callDeployment` error, it tries exactly one more `p.nextDeployment(req.Model)` call — the router's smooth-weighted-round-robin cursor for the *same canonical model* — unconditionally, regardless of what kind of error the first attempt returned. `streaming.go`'s `streamDeploymentWithFallback` mirrors this exact same shape for the streaming path.
+
+**Reconciling with the prior, settled scope decision.** `docs/rfcs/2026-09-04-weighted-routing.md` explicitly named "Model-*group* fallback chains (falling back to a different canonical model)" as out of scope, reasoning that `PRD.md`'s v1 line — *"static + weighted routing; a single fallback chain"* (singular) — was already satisfied by the existing 1-hop, same-model fallback, and left it "unchanged by this RFC" (DECISIONS.md, 2026-09-04). This is not being silently reopened: that RFC deferred the question to a future, dedicated RFC rather than permanently forbidding it, and this is that RFC, exercised now because the approved Phase 2 roadmap (this document's own parent research report) explicitly asks for it, with the exact example that motivates it — a context-window-exceeded error and a rate-limit error warrant genuinely different fallback targets (e.g., a larger-context model vs. any available capacity), a distinction Kelvran's router had no way to express. The mechanism this RFC ships is also meaningfully different in kind from what "model-group fallback chains" meant in that prior context: LiteLLM's "model group" is *automatic* substitution across deployments an operator has declared interchangeable, with no per-error-class distinction; this RFC ships an *explicit, opt-in, statically-configured* ordered target list per deployment per error class — nothing routes cross-model unless an operator names that target deployment by name in `fallback_chains:`. `PRD.md`'s "a single fallback chain" (singular) still holds literally: for any one (deployment, error class) decision point, exactly one chain is resolved and walked in order — "single" describes there being one chain per decision, not a hop-count-of-one cap; the multi-hop extension is exactly what the approved plan asks for.
+
+**What error information exists today.** `callDeployment` wraps every upstream failure as an opaque `error` — `NewHTTPUpstreamCaller`'s `if httpResp.StatusCode >= 300` branch (and its streaming sibling, `NewHTTPUpstreamStreamCaller`) returned a bare `fmt.Errorf("upstream %q returned status %d: %s", ...)` with no structured field an `errors.As` classifier could use. No typed upstream-error type existed anywhere in `gateway/internal/adapter` or `gateway/internal/gateway/dataplane` before this pass — a real, currently-missing prerequisite, not an oversight to route around, per the plan's own framing.
+
+**No provider exposes a clean, structured error-code enum for exactly these two conditions, verified directly against live docs rather than assumed from training-data memory** (this codebase's own established discipline, per `AGENTS.md`'s doc-staleness gotcha and several prior RFCs' "verified via a primary source, not memory" pattern): Anthropic's current API-errors documentation (fetched live) confirms every 4xx validation failure of any kind — including a too-long prompt or a moderation rejection — collapses to the single generic `invalid_request_error` type, distinguished only by free-text `message` content, never a distinct `code`/`type` value. OpenAI's current error-codes guide no longer reproduces the `context_length_exceeded`/`content_policy_violation` code strings some earlier API versions documented. This means classification is fundamentally a heuristic over the raw HTTP status and response-body **text**, not a clean structured field available uniformly across providers — named here explicitly as a real v1 limitation, not hidden, exactly like the TPM RFC named its own "retrospective, not predictive" limitation.
+
+## Design
+
+### A minimal typed upstream error, carrying status + body
+
+New `gateway/internal/gateway/dataplane/fallback.go` adds:
+
+```go
+type UpstreamHTTPError struct {
+	StatusCode int
+	Body       string
+}
+```
+
+`NewHTTPUpstreamCaller`'s and `NewHTTPUpstreamStreamCaller`'s status->=300 branches now return `&UpstreamHTTPError{...}` instead of a bare `fmt.Errorf`, preserving equivalent message text via `Error()`. `callDeployment` still wraps it with `%w` (`"upstream call to deployment %q: %w"`), so `errors.As` finds it through the wrap unchanged — no other call site needed to change.
+
+### Three error classes, matched by keyword against status+body text
+
+```go
+const (
+	FallbackClassContentPolicy         = "content_policy"
+	FallbackClassContextWindowExceeded = "context_window_exceeded"
+	FallbackClassGeneric               = "generic"
+)
+```
+
+`classifyFallbackError(err error) string` does `errors.As` for `*UpstreamHTTPError`; anything else (a `ToProvider`/`FromProvider` local error, a network-level error, a context-cancellation error) classifies as `FallbackClassGeneric` — matching LiteLLM's own "generic errors (rate limits, etc.)" bucket, which this RFC also folds every other non-content-policy, non-context-window condition into, including rate limits, deliberately — Kong's multi-dimensional rate-limit *matching* is Phase 3b's separate, deferred concern; this RFC only decides which fallback *list* a rate-limit-flavored upstream error routes through, and "generic" is correct for that. A matched `*UpstreamHTTPError`'s `Body`, lowercased, is checked against two small, specific keyword lists (context-window keywords first, since a "too long" message is unambiguous where a content-policy one might use overlapping generic words like "violat*"): `context_length_exceeded`, `context window`, `maximum context length`, `context length exceeded`, `too many tokens`, `prompt is too long`, `input is too long`, `reduce the length of the messages` for context-window; `content_policy_violation`, `content policy violation`, `content management policy`, `content filter`, `flagged by our content`, `violates our usage policies` for content-policy. No status-code-only shortcut exists — both conditions surface as a generic 400 across providers (confirmed above), so status code alone cannot discriminate them.
+
+### Fallback chains: additive, per-deployment, per-error-class, backward-compatible by construction
+
+`dataplane.Deployment` and `controlplane.DeploymentConfig` each independently gain a `FallbackChains map[string][]string` field (plain `map[string][]string` in both — deliberately not a shared type, mirroring `Provider`'s own plain-string convention with no bespoke enum anywhere in this codebase, and required by `go-arch-lint`'s dependency rules: `dataplane` and `controlplane` are siblings, neither may import the other — only `cmd/gateway`'s `buildPipeline`, a top-level consumer of both, connects them, exactly like `router.Deployment`/`dataplane.Deployment` are already independently decoupled). Precedence, resolved once per failed attempt by `fallbackTargets(dep Deployment, err error) (targets []string, configured bool)`:
+
+1. **`len(dep.FallbackChains) == 0`** (the default — nothing configured) → `configured=false`. Every caller falls through to the *exact*, byte-for-byte pre-existing single-fallback-via-router behavior (`p.nextDeployment(req.Model)`, same-model round-robin). This is the load-bearing backward-compatibility guarantee: every config file written before this RFC keeps behaving identically.
+2. Otherwise (`configured=true`), the classified error's own list is used if non-empty; else the deployment's `generic` list is used as a catch-all fallthrough if non-empty; else no fallback happens for this attempt at all — an operator who opts into explicit chains for a deployment gets exactly the classes they configured, never a silent revert to the old round-robin behavior for an unconfigured class.
+
+`runMissPath` (buffered) and `streamDeploymentWithFallback` (streaming) both call a new shared `(*Pipeline).attemptFallbackChain(targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool)` that walks `targets` in order via `p.deploymentsByName`, skipping any name already tried (defends against a config accidentally repeating a name, or naming the already-failed deployment itself — the same defensive intent the pre-existing single-fallback code already applied via its `fallbackDep.Name != dep.Name` check), stopping at the first success. Streaming's `stop` closure reads the shared `firstChunkSent` flag before every hop, not just the first — once any byte has reached the client, no further hop is attempted, preserving `docs/rfcs/2026-09-02-streaming-support.md`'s existing "never risk duplicated/corrupted content" rule across every hop, not only hop one. `fallbackInfo` (the 3-field `happened`/`from`/`reason` record `finalize`/`GatewayDecisionEvent` already consume) is **unchanged** — `from`/`reason` still capture the *original* abandoned deployment and its error text, exactly as before a multi-hop chain existed; `api/gatewayevents/v1`'s wire schema is untouched, deliberately: which specific mid-chain hop ultimately served the request is already visible via the existing `DeploymentName`/`Provider` OTel attributes at the point of success, so no new wire field earns its complexity for this pass.
+
+### Config shape: comma-separated strings, not YAML lists
+
+`controlplane.Load`'s hand-rolled YAML-subset parser supports scalars and nested mappings only — "no lists... deployments that would naturally be a YAML list are instead modeled as a mapping" is the file's own stated, deliberate constraint. An ordered *chain* cannot be represented as a mapping (Go map iteration order is random, and nothing here re-imposes an order the way `AllowedModels`' alphabetical sort papers over for a set). Rather than extending the parser to support flow-style lists for one feature, `fallback_chains:` is a nested mapping keyed by error class, each value a single comma-separated string of deployment names in attempt order:
+
+```yaml
+deployments:
+  gpt4o-primary:
+    ...
+    fallback_chains:
+      context_window_exceeded: "claude-opus-large-context"
+      content_policy: "claude-opus-large-context,gemini-primary"
+```
+
+Unknown class keys are rejected at `Load` time (a config typo fails fast, matching this file's existing `weight < 0`/missing-required-field discipline) against the same three exported class-name constants `controlplane` independently defines (mirroring, never importing, `dataplane`'s own — the sibling-package constraint above). Referenced deployment names are **not** validated for existence inside `controlplane.Load` itself (it has no visibility into the full deployment set mid-parse, and stays a "pure config-shape parser" per its own package doc); `cmd/gateway.buildPipeline` — which already fails startup on an unregistered adapter provider in this exact loop — does a second pass after every deployment is known, rejecting a config that names a fallback target that doesn't exist as any configured deployment.
+
+## Alternatives considered
+
+**A per-provider structured error parser** (decode each provider's real JSON error body into its own typed shape, mapping known codes/fields to a class) — rejected for this pass: verified live that at least one major provider (Anthropic) has no structured field to parse in the first place for these two conditions, so a per-provider parser would still fall back to the same body-text heuristic for that provider, for real, non-hypothetical extra implementation cost across 5 adapters. Named as a legitimate future refinement if a provider's real structured error shape is confirmed to help, not ruled out permanently.
+
+**Classifying from a successful response's `FinishReason` too** (this codebase already canonicalizes `"content_filter"` and, for Bedrock, an approximated `"length"` for `model_context_window_exceeded`, on *successful* — `err == nil` — responses) — rejected: the plan's own framing is scoped to `callDeployment` **errors**, matching today's exact "fallback triggers only on `err != nil`" control flow; turning a completed, successful generation into a fallback-triggering condition would be a materially larger, riskier behavior change (a client that already accepted a filtered/truncated answer would instead silently get re-routed) that this RFC does not make.
+
+**Numbered-key mappings instead of comma-separated strings** (`fallback_chains.content_policy.1: "dep-a"`, `.2: "dep-b"`) to preserve order using only the parser's existing map support — rejected: needlessly verbose for what a single scalar string already expresses cleanly, and comma-splitting a plain string is a smaller, more obviously correct diff to the parser's surrounding code.
+
+**Extending the YAML-subset parser to support real flow-style lists** — rejected for this pass, matching the parser's own explicit stated scope: a genuine, larger undertaking (touches every existing config-shape assumption `Load` makes) for a need this one feature doesn't require, given the comma-separated-string alternative above works cleanly within the parser's existing constraints.
+
+## Verification
+
+`go build ./... && go vet ./...` clean. `golangci-lint run ./...` → `0 issues`. `go run github.com/fe3dback/go-arch-lint@v1.18.0 check` → clean (no new cross-package import: `dataplane`'s and `controlplane`'s `FallbackChains` fields stay independently typed, connected only in `cmd/gateway`). `go test ./... -race` → every package `ok` except the two pre-existing, environmental rootless-Docker failures (`TestIntegrationTwoGatewayInstancesShareOneRedisRateLimit`, `internal/ratelimit/redislimiter`'s own `TestMain`), unrelated to this change and unchanged by it.
+
+New tests: `gateway/internal/gateway/dataplane/fallback_test.go` (table-driven `classifyFallbackError`/`fallbackTargets` unit tests covering all three classes, the generic-fallthrough case, and the "no chains configured at all" backward-compat case). `gateway/internal/gateway/dataplane/fallback_chain_integration_test.go` (full-`Pipeline` table-driven test: one subtest per error class proving it routes to *that class's own* configured target — deliberately using 3+ same-model deployments so plain round-robin would have picked a *different* one, making the assertion load-bearing rather than coincidental — plus a multi-hop test proving a 3-deployment chain is exhausted in order, and an exhaustion test proving a fully-failing chain returns an error only after every configured hop actually ran, with no extra fallback beyond the configured chain). `streaming_test.go` gains a parity test proving the streaming path's multi-hop chain respects `firstChunkSent` on every hop, not only the first. `controlplane/config_test.go` gains parse tests (ordered comma-separated chain; unknown class name rejected). `cmd/gateway/fallback_chain_validation_test.go` (new) proves `buildPipeline` rejects a config naming a nonexistent fallback target at startup. Every pre-existing fallback test (`TestHandleChatCompletionFallsBackOnUpstreamError`, `TestGatewayEventFallbackDetailPopulatedOnFallback`, `TestHandleChatCompletionStreamFallbackBeforeFirstByte`, `TestTenantIsolationFallbackServedResponseNeverCrossesTenants`, etc.) passed unmodified — none of them configure `FallbackChains`, so each is itself a live regression proof of the backward-compatibility guarantee, not just an assertion in this RFC's prose. Sanity-checked the load-bearing class-routing test by temporarily making `classifyFallbackError` always return `FallbackClassGeneric`: the content-policy and context-window subtests failed with the wrong deployment served (routed to the `generic` target instead of their own), then reverted.

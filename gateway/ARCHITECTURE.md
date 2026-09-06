@@ -80,10 +80,19 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              unset/default case) provably degrade to the exact same sequence the old
                              round-robin produced — proven by hand-trace in the RFC, not merely assumed.
                              Still not built, deliberately: usage/latency/cost-based selection signals,
-                             consecutive-failure/cooldown circuit-breaker tracking, and model-*group*
-                             fallback chains — none of these are named in PRD.md's v1 allowlist. The
-                             existing single-model, single-fallback retry (dataplane.go/streaming.go) is
-                             unchanged and already satisfies "a single fallback chain"
+                             and consecutive-failure/cooldown circuit-breaker tracking — neither is named
+                             in PRD.md's v1 allowlist. **Updated 2026-09-07**: `dataplane.go`'s router step
+                             now supports error-classified, multi-hop fallback chains
+                             (`Deployment.FallbackChains`, per
+                             docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md) — an
+                             explicit, per-deployment, per-error-class (content-policy /
+                             context-window-exceeded / generic) ordered target list, which MAY name a
+                             deployment serving a different canonical model (e.g. a larger-context
+                             fallback for a context-window error). This is a bounded, opt-in extension of
+                             the prior "a single fallback chain" scope line, not automatic model-*group*
+                             load-balancing (LiteLLM's sense of that term, still not built) — a deployment
+                             with no `fallback_chains` configured keeps the exact prior same-model,
+                             single-fallback-via-router behavior unchanged
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
@@ -194,8 +203,11 @@ Every capability is a stage in one linear pipeline against a single canonical sc
     with a hard volatility bypass — never real embedding-based semantic matching, see Cache Subsystem
     below) → hit → log, return
   → guardrail pre-call (PII/content check)
-  → router (weighted round-robin selects a deployment; a single fallback attempt on error —
-    no circuit breaker, no health/cooldown tracking, per docs/rfcs/2026-09-04-weighted-routing.md)
+  → router (weighted round-robin selects a deployment, per docs/rfcs/2026-09-04-weighted-routing.md;
+    on error, an error-classified, multi-hop fallback chain if the deployment configures one, else the
+    pre-existing same-model single-fallback attempt, per
+    docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md — no circuit breaker, no
+    health/cooldown tracking either way)
   → provider adapter: canonical → provider-native request translation
   → upstream call (streaming: non-buffering pass-through, chunk-by-chunk, explicit Flush() per chunk)
   → provider adapter: provider-native response/chunk → canonical translation (stateful per-stream parser)

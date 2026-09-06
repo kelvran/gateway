@@ -4,8 +4,12 @@
 // guardrails/MCP (not built yet — Phase 1+ per PRD.md):
 //
 //	auth -> rate-limit -> cache lookup (L1 exact) -> hit? return
-//	     -> miss -> router (weighted round-robin + single fallback, via
-//	        internal/router, per docs/rfcs/2026-09-04-weighted-routing.md)
+//	     -> miss -> router (weighted round-robin, via internal/router, per
+//	        docs/rfcs/2026-09-04-weighted-routing.md) + error-classified,
+//	        multi-hop fallback (per-deployment fallback_chains config, or
+//	        the pre-existing single-fallback-via-router behavior when a
+//	        deployment has none configured — see
+//	        docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md)
 //	     -> adapter -> upstream HTTP call -> adapter (response)
 //	     -> cache write-back -> structured JSON log (incl. cost) -> response
 //
@@ -105,6 +109,17 @@ type Deployment struct {
 	// secret — populated directly from config, never resolved from an
 	// env var the way the credential fields above are.
 	Region string
+	// FallbackChains maps an error class (FallbackClassContentPolicy,
+	// FallbackClassContextWindowExceeded, FallbackClassGeneric) to an
+	// ordered list of OTHER deployments' Names to attempt, in order, when
+	// a call to THIS deployment fails with that class of error — per
+	// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
+	// Empty/nil (the default) means this deployment has not opted into
+	// explicit fallback-chain configuration at all: runMissPath/
+	// streamDeploymentWithFallback fall through to the pre-existing,
+	// router-based single-fallback behavior for it instead, preserving
+	// every config written before this feature existed exactly as-is.
+	FallbackChains map[string][]string
 }
 
 // UpstreamCaller performs the actual upstream HTTP call for one
@@ -441,13 +456,19 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) 
 	return p.limiter.AllowTPM(vk.ID), false
 }
 
-// fallbackInfo captures whether a request fell back to a second
+// fallbackInfo captures whether a request fell back away from its first
 // deployment, and if so which one and why — captured at the one point in
 // the fallback block where the original dep/err are still available,
 // before they're overwritten, per
-// docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md. Kelvran's
-// fallback logic attempts at most one fallback per request, never a
-// chain, so this is a fixed 3-field record, not a repeated/list shape.
+// docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md. A single
+// request may now walk a multi-hop fallback chain (per
+// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md), but
+// this stays a fixed 3-field record on purpose: from/reason always
+// capture the FIRST (originally abandoned) deployment/error, never an
+// intermediate hop — api/gatewayevents/v1's wire schema is unchanged by
+// that RFC, deliberately; which hop ultimately served the request is
+// already visible via the existing per-request OTel DeploymentName/
+// Provider attributes at the point of success.
 type fallbackInfo struct {
 	happened bool
 	from     string // Deployment.Name first tried and abandoned.
@@ -781,9 +802,23 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		resp, err := p.callDeployment(ctx, dep, req)
 		var fallback fallbackInfo
 		if err != nil {
-			// Single fallback to the next deployment for the same model, per
-			// gateway/ARCHITECTURE.md's router step.
-			if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
+			// Error-classified, multi-hop fallback, per
+			// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md
+			// — or, when dep has no fallback_chains configured at all,
+			// the pre-existing single-fallback-via-router behavior,
+			// unchanged.
+			originalDep, originalErr := dep, err
+			if targets, configured := fallbackTargets(dep, err); configured {
+				tried := map[string]bool{dep.Name: true}
+				hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(targets, tried,
+					func(d Deployment) (adapter.ChatResponse, error) { return p.callDeployment(ctx, d, req) },
+					func() bool { return false },
+				)
+				if attempted {
+					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
+					dep, resp, err = hopDep, hopResp, hopErr
+				}
+			} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
 				fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 				dep = fallbackDep
 				resp, err = p.callDeployment(ctx, dep, req)
@@ -1220,7 +1255,12 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 			return nil, fmt.Errorf("reading upstream response: %w", err)
 		}
 		if httpResp.StatusCode >= 300 {
-			return nil, fmt.Errorf("upstream %q returned status %d: %s", dep.BaseURL, httpResp.StatusCode, string(respBody))
+			// A typed error, not a bare fmt.Errorf, so
+			// classifyFallbackError (see fallback.go) can inspect the
+			// real status/body via errors.As through callDeployment's
+			// own "%w" wrap — per
+			// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
+			return nil, &UpstreamHTTPError{StatusCode: httpResp.StatusCode, Body: string(respBody)}
 		}
 
 		unmarshal, ok := responseUnmarshalers[dep.Provider]
@@ -1322,7 +1362,9 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 			// expecting SSE frames.
 			defer func() { _ = httpResp.Body.Close() }()
 			errBody, _ := io.ReadAll(httpResp.Body)
-			return nil, fmt.Errorf("upstream %q returned status %d: %s", streamURL, httpResp.StatusCode, string(errBody))
+			// Same typed error as NewHTTPUpstreamCaller's buffered path,
+			// for the same reason — see the comment there.
+			return nil, &UpstreamHTTPError{StatusCode: httpResp.StatusCode, Body: string(errBody)}
 		}
 
 		return httpResp.Body, nil

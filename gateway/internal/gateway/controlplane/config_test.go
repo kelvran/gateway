@@ -97,6 +97,12 @@ func TestLoadExampleConfig(t *testing.T) {
 	if openaiDep.APIKeyEnv != "OPENAI_API_KEY" {
 		t.Errorf("gpt4o-primary.APIKeyEnv = %q, want %q", openaiDep.APIKeyEnv, "OPENAI_API_KEY")
 	}
+	if got := openaiDep.FallbackChains["context_window_exceeded"]; len(got) != 1 || got[0] != "claude-opus-primary" {
+		t.Errorf("gpt4o-primary.FallbackChains[context_window_exceeded] = %v, want [claude-opus-primary]", got)
+	}
+	if got := openaiDep.FallbackChains["content_policy"]; len(got) != 2 || got[0] != "claude-opus-primary" || got[1] != "gemini-flash-primary" {
+		t.Errorf("gpt4o-primary.FallbackChains[content_policy] = %v, want [claude-opus-primary gemini-flash-primary]", got)
+	}
 
 	anthropicDep, ok := byName["claude-opus-primary"]
 	if !ok {
@@ -528,6 +534,85 @@ func TestLoadRejectsNegativeDeploymentWeight(t *testing.T) {
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load with a negative deployment weight returned nil error")
+	}
+}
+
+// TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists proves
+// each error-class key parses into an ORDERED slice (not just a set) —
+// this file's YAML-subset parser has no list support, so fallback_chains
+// values are comma-separated strings split at parse time, per
+// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
+func TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	extra := "    fallback_chains:\n" +
+		"      content_policy: \"safety-alt\"\n" +
+		"      context_window_exceeded: \"large-context-alt\"\n" +
+		"      generic: \"hop-1, hop-2 , hop-3\"\n"
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	chains := cfg.Deployments[0].FallbackChains
+	if got := chains["content_policy"]; len(got) != 1 || got[0] != "safety-alt" {
+		t.Errorf("content_policy = %v, want [safety-alt]", got)
+	}
+	if got := chains["context_window_exceeded"]; len(got) != 1 || got[0] != "large-context-alt" {
+		t.Errorf("context_window_exceeded = %v, want [large-context-alt]", got)
+	}
+	want := []string{"hop-1", "hop-2", "hop-3"}
+	got := chains["generic"]
+	if len(got) != len(want) {
+		t.Fatalf("generic = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("generic = %v, want %v (in exact order, whitespace trimmed)", got, want)
+		}
+	}
+}
+
+// TestLoadDeploymentWithoutFallbackChainsLeavesFieldNil is the direct
+// backward-compatibility proof at the parser level: a deployment with no
+// fallback_chains section at all must parse to a nil map, never an
+// empty-but-non-nil one — dataplane.fallbackTargets treats
+// len(dep.FallbackChains) == 0 as "not configured," which nil and an
+// empty map both satisfy, but this pins the parser's own literal output.
+func TestLoadDeploymentWithoutFallbackChainsLeavesFieldNil(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Deployments[0].FallbackChains != nil {
+		t.Errorf("FallbackChains = %v, want nil", cfg.Deployments[0].FallbackChains)
+	}
+}
+
+// TestLoadRejectsUnknownFallbackChainClass proves a config typo (an
+// error-class name that isn't one of the three known constants) fails
+// fast at Load time, matching this file's existing negative-weight/
+// missing-required-field discipline.
+func TestLoadRejectsUnknownFallbackChainClass(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	extra := "    fallback_chains:\n" +
+		"      contentpolicy_typo: \"safety-alt\"\n"
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with an unknown fallback_chains class returned nil error")
 	}
 }
 
