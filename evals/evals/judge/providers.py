@@ -2,9 +2,14 @@
 `judge()`.
 
 This is the ONLY file in `evals/` that imports `anthropic` or `openai` —
-per docs/rfcs/2026-09-04-evals-llm-judge-provider-wiring.md, `judge()`/
-`llm_judge.py` are never modified, preserving that module's own
-"zero network calls, testable without a live provider API key" property.
+per docs/rfcs/2026-09-04-evals-llm-judge-provider-wiring.md, that
+property has never changed. `judge()`/`llm_judge.py`'s scoring logic
+itself was originally never modified either, but that narrower claim no
+longer holds as of docs/rfcs/2026-09-07-evals-judge-panel-interface.md,
+which widened `judge()`'s `call_model` type to also accept a `list` —
+still zero SDK imports and zero network calls added to that module, so
+this file remains the sole SDK-importing file and `judge()` remains
+fully testable without a live provider API key, unchanged.
 The OpenAI provider (added 2026-09-05, per that same RFC's own named
 follow-on: "a same-shaped follow-on function") reuses the exact same
 design the Anthropic provider established — same `call_model` contract,

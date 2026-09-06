@@ -242,6 +242,15 @@ def test_score_invalid_scorer_type_rejected():
         _make_score(scorer_type="skeptic_panel")
 
 
+def test_score_accepts_llm_judge_panel_scorer_type():
+    # docs/rfcs/2026-09-07-evals-judge-panel-interface.md widened
+    # ScorerType to include this value, interface-only -- no real scorer
+    # constructs one yet (the v2 panel itself is unbuilt), but the type
+    # must genuinely accept it now, not just claim to in prose.
+    score = _make_score(scorer_type="llm_judge_panel")
+    assert score.scorer_type == "llm_judge_panel"
+
+
 def test_score_instances_are_frozen():
     score = _make_score()
     with pytest.raises(ValidationError):

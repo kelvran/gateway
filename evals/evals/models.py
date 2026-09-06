@@ -104,7 +104,7 @@ class Run(BaseModel):
     cache_source_run_id: str | None = None
 
 
-ScorerType = Literal["deterministic", "llm_judge"]
+ScorerType = Literal["deterministic", "llm_judge", "llm_judge_panel"]
 
 
 class Score(BaseModel):
@@ -120,8 +120,21 @@ class Score(BaseModel):
       fabricated stand-in" convention. `eval_case_id`/`eval_case_revision`
       are the universal join key both `evals run` and `evals rollout` can
       always honestly supply, regardless of whether a `Run` exists.
-    - `scorer_type` is narrowed to the two values this codebase actually
-      produces — no `skeptic_panel`/`human`, both `v2`-scoped per `PRD.md`.
+    - `scorer_type` is narrowed to `deterministic`/`llm_judge` (the two
+      values this codebase's real scorers produce today) plus
+      `llm_judge_panel` — added 2026-09-07, interface-only, per
+      docs/rfcs/2026-09-07-evals-judge-panel-interface.md: no scorer in
+      this codebase constructs a `Score` with this value yet, since the
+      v2 multi-judge panel itself (`evals.judge.llm_judge.judge()` called
+      with more than one `call_model`) is still unbuilt and explicitly
+      out of scope for that RFC. Widened now anyway because retrofitting
+      this `Literal` once more callers pattern-match on its two current
+      values is strictly more expensive than typing it correctly once,
+      per that RFC's own reasoning. Deliberately named to match Inspect
+      AI's `multi_scorer()` naming, not ARCHITECTURE.md's original sketch
+      spelling (`skeptic_panel`) — see that RFC's Design section for why.
+      `human` (also in the original sketch) stays dropped, still
+      `v2`-scoped per `PRD.md`.
     - `rubric_axis` is `None` for a holistic verdict (the default), or the
       configured axis name (e.g. `"correctness"`, `"safety"`) when
       `evals.cli`'s `--judge-axes` requested one real `judge()` call per

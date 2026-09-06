@@ -19,9 +19,18 @@ pass a scripted fake. This module makes zero network calls itself.
 docs/rfcs/2026-09-05-evals-multi-axis-judging.md) scopes one call's
 verdict to a single named rubric dimension instead of one holistic
 judgment — `evals.cli` calls `judge()` once per configured axis (never
-one call trying to cover several axes at once), so this is the first
-change to this module's own scoring logic since it shipped, not a
-provider/caching concern leaking in from outside.
+one call trying to cover several axes at once).
+
+`judge()`'s `call_model` parameter (widened 2026-09-07, per
+docs/rfcs/2026-09-07-evals-judge-panel-interface.md) accepts either a
+single `CallModel` or a `list[CallModel]`, so the eventual v2 multi-judge
+panel is additive to this signature rather than a retrofit of it. Only a
+single judge is actually scored today — a `list` of more than one
+`call_model` raises `NotImplementedError`, honestly, rather than silently
+scoring with just the first entry or pretending to run a panel this
+module doesn't implement. Every existing single-judge caller (a bare
+`call_model`, or a length-1 list) is scored identically to before this
+widening; see that RFC's Verification section.
 """
 
 from __future__ import annotations
@@ -30,6 +39,8 @@ import re
 from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel
+
+CallModel = Callable[[str], Awaitable[str]]
 
 _BIAS_MITIGATIONS_APPLIED = ["cot_forcing", "reference_guided_grading"]
 
@@ -133,16 +144,27 @@ def _parse_judge_response(raw_response: str) -> tuple[bool, str]:
 async def judge(
     output: str,
     reference: str,
-    call_model: Callable[[str], Awaitable[str]],
+    call_model: CallModel | list[CallModel],
     axis: str | None = None,
 ) -> JudgeResult:
     """Score `output` against `reference` using an LLM judge.
 
-    `call_model` is an async dependency-injected callable that takes the
+    `call_model` is either a single async dependency-injected callable, or
+    a `list` of them (per docs/rfcs/2026-09-07-evals-judge-panel-interface
+    .md — see this module's own docstring). Each callable takes the
     fully-built judge prompt and returns the judge model's raw text
-    response. Production code wires this to a real provider SDK call;
-    tests wire it to a scripted fake, so this function is fully unit
-    testable with zero network calls and zero API keys.
+    response. Production code wires a real provider SDK call; tests wire a
+    scripted fake, so this function is fully unit testable with zero
+    network calls and zero API keys.
+
+    Exactly one judge is ever scored today, regardless of which of the two
+    accepted shapes `call_model` is: a bare callable, or a list containing
+    exactly one. Passing a list with more than one `call_model` raises
+    `NotImplementedError` — the multi-judge panel this shape exists to
+    make additive later (majority-reducer aggregation, per-judge vote
+    metadata) is not implemented by this function; see this module's
+    docstring and the RFC above. Passing an empty list raises `ValueError`
+    — there is no judge to call.
 
     `axis`, when given, scopes this one call's verdict to a single named
     rubric dimension — see `build_judge_prompt`. `None` (the default)
@@ -151,8 +173,21 @@ async def judge(
     knows which axis it asked for and is responsible for recording it
     (e.g. as `Score.rubric_axis`) — not duplicated here.
     """
+    panel = call_model if isinstance(call_model, list) else [call_model]
+    if len(panel) == 0:
+        raise ValueError("judge() requires at least one call_model, got an empty list")
+    if len(panel) > 1:
+        raise NotImplementedError(
+            f"judge() was given {len(panel)} call_model callables, but the "
+            "multi-judge panel that would score them (majority-reducer "
+            "aggregation across a panel) is not implemented -- see "
+            "docs/rfcs/2026-09-07-evals-judge-panel-interface.md. Pass a "
+            "single call_model (or a list containing exactly one)."
+        )
+    single_call_model = panel[0]
+
     prompt = build_judge_prompt(output=output, reference=reference, axis=axis)
-    raw_response = await call_model(prompt)
+    raw_response = await single_call_model(prompt)
     passed, rationale = _parse_judge_response(raw_response)
 
     return JudgeResult(
