@@ -455,17 +455,16 @@ type fallbackInfo struct {
 }
 
 // cacheProvenance records which cache layer (if any) served this request,
-// and — for Cache L3-lite specifically, where the data is already
-// captured at write time (LexicalCandidate.Similarity/WrittenAt) — the
-// similarity score and age of the served entry, per
-// docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md. Layer == "" means
+// and the similarity score and age of the served entry, per
+// docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md and
+// docs/upgrade-research/cache-2026-09-06.md Finding 6. Layer == "" means
 // no cache hit (a real upstream call happened, possibly coalesced via
-// runMissPath). Similarity/AgeMs are only ever populated for
-// Layer == "L3": L1 is an exact byte match (no similarity concept
-// applies) and L2's own normalized-match layer, like L1, doesn't
-// currently capture a write-time age at all — widening cache.Cache's
-// interface to do so is a real, separate future change, not bundled into
-// this one.
+// runMissPath). Similarity is only ever populated for Layer == "L3" — L1
+// and L2 are exact/normalized byte matches, no similarity concept
+// applies. AgeMs is populated for every hit layer (L1/L2 via
+// cache.Cache.Get's writtenAt, L3 via LexicalCandidate.WrittenAt) —
+// uniform across all three layers, closing the asymmetry this struct's
+// doc comment used to name as a real, separate future change.
 type cacheProvenance struct {
 	Layer      string
 	Similarity float64
@@ -479,16 +478,18 @@ func (c cacheProvenance) Hit() bool { return c.Layer != "" }
 // docs/rfcs/2026-09-03-cache-l2-normalized-match.md. An L2 hit is
 // promoted into L1 (best-effort — a promotion failure never affects the
 // response already found) so the next byte-identical repeat becomes an
-// L1 hit.
-func (p *Pipeline) checkCache(ctx context.Context, l1Key, l2Key string) (cached []byte, layer string, hit bool) {
-	if cached, ok, getErr := p.cache.Get(ctx, l1Key); getErr == nil && ok {
-		return cached, "L1", true
+// L1 hit. writtenAt is the served entry's OWN write time (L2's, on an L2
+// hit — never the promotion write's fresh timestamp), per
+// docs/upgrade-research/cache-2026-09-06.md Finding 6.
+func (p *Pipeline) checkCache(ctx context.Context, l1Key, l2Key string) (cached []byte, layer string, writtenAt time.Time, hit bool) {
+	if cached, writtenAt, ok, getErr := p.cache.Get(ctx, l1Key); getErr == nil && ok {
+		return cached, "L1", writtenAt, true
 	}
-	if cached, ok, getErr := p.cacheL2.Get(ctx, l2Key); getErr == nil && ok {
+	if cached, writtenAt, ok, getErr := p.cacheL2.Get(ctx, l2Key); getErr == nil && ok {
 		_ = p.cache.Put(ctx, l1Key, cached, p.cacheTTL)
-		return cached, "L2", true
+		return cached, "L2", writtenAt, true
 	}
-	return nil, "", false
+	return nil, "", time.Time{}, false
 }
 
 // writeCache writes encoded to all three cache layers, eagerly and
@@ -569,7 +570,13 @@ func freshnessRiskModel(writtenAt time.Time, storedModelID, currentModelID strin
 // against weakening it, so every branch here is a hard, visible
 // rejection, not a soft score.
 func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, signature []uint64) (cached []byte, similarity float64, ageMs float64, hit bool) {
-	if isVolatileQuery(req.Messages) {
+	// Per-gate outcome counters, per docs/upgrade-research/cache-2026-09-06.md
+	// Finding 1 — GroundedCache's own per-gate ablation methodology
+	// applied to L3-lite's three existing gates. No new gate logic: every
+	// branch below already existed, this only counts which way it went.
+	volatile := isVolatileQuery(req.Messages)
+	telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateVolatileBypass, volatile)
+	if volatile {
 		return nil, 0, 0, false
 	}
 	candidates, err := p.cacheL3.Search(ctx, vk.ID, signature, l3SearchK)
@@ -579,10 +586,14 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 	}
 	queryFingerprint := Fingerprint(req.Messages)
 	for _, c := range candidates {
-		if !fingerprintsEqual(queryFingerprint, c.Fingerprint) {
+		entityMismatch := !fingerprintsEqual(queryFingerprint, c.Fingerprint)
+		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateEntityMismatch, entityMismatch)
+		if entityMismatch {
 			continue
 		}
-		if !freshnessRiskModel(c.WrittenAt, c.ModelID, req.Model, c.Similarity) {
+		freshnessRejected := !freshnessRiskModel(c.WrittenAt, c.ModelID, req.Model, c.Similarity)
+		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateFreshnessRiskModel, freshnessRejected)
+		if freshnessRejected {
 			continue
 		}
 		// A new, separate gate from freshnessRiskModel — per
@@ -590,7 +601,8 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		// folded into that function, which stays scoped to Cache
 		// L3-lite's own checklist. A candidate written under a since-
 		// changed guardrail policy/detector set is a forced miss, never
-		// a silent, unchecked serve.
+		// a silent, unchecked serve. Not one of Finding 1's three named
+		// gates, so deliberately not counted alongside them.
 		if c.GuardrailPolicyVersion != p.guardrails.Version() {
 			continue
 		}
@@ -671,11 +683,11 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
-	if cached, layer, ok := p.checkCache(ctx, l1Key, l2Key); ok {
+	if cached, layer, writtenAt, ok := p.checkCache(ctx, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
-			cacheInfo = cacheProvenance{Layer: layer}
+			cacheInfo = cacheProvenance{Layer: layer, AgeMs: float64(time.Since(writtenAt).Milliseconds())}
 			return
 		}
 		// A corrupt cache entry is treated as a miss, not a request
@@ -1019,9 +1031,9 @@ func finishReasons(resp adapter.ChatResponse) []string {
 func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
 	fields := []any{"model", req.Model, "cache_hit", cacheInfo.Hit()}
 	if cacheInfo.Hit() {
-		fields = append(fields, "cache_layer", cacheInfo.Layer)
+		fields = append(fields, "cache_layer", cacheInfo.Layer, "cache_age_ms", cacheInfo.AgeMs)
 		if cacheInfo.Layer == "L3" {
-			fields = append(fields, "cache_similarity", cacheInfo.Similarity, "cache_age_ms", cacheInfo.AgeMs)
+			fields = append(fields, "cache_similarity", cacheInfo.Similarity)
 		}
 	}
 	if vk != nil {

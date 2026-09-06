@@ -36,8 +36,8 @@ func New() *Client {
 }
 
 // Get implements cache.Cache. Not implemented.
-func (c *Client) Get(_ context.Context, _ string) ([]byte, bool, error) {
-	return nil, false, errNotImplemented
+func (c *Client) Get(_ context.Context, _ string) ([]byte, time.Time, bool, error) {
+	return nil, time.Time{}, false, errNotImplemented
 }
 
 // Put implements cache.Cache. Not implemented.

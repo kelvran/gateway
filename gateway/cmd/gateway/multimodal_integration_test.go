@@ -47,7 +47,7 @@ func TestIntegrationMultiModalRequestReachesRealUpstreamAsImageURLPart(t *testin
 		"messages": [{
 			"role": "user",
 			"content": "what's in this image?",
-			"parts": [{"type": "image", "media_type": "image/png", "data": "aW1hZ2ViYXNlNjQ="}]
+			"parts": [{"type": "image", "media_type": "image/png", "data": "iVBORw0KGgoAAAAAAAAAAA=="}]
 		}]
 	}`
 	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
@@ -98,7 +98,7 @@ func TestIntegrationMultiModalRequestReachesRealUpstreamAsImageURLPart(t *testin
 	if parts[0].Type != "text" || parts[0].Text != "what's in this image?" {
 		t.Errorf("parts[0] = %+v, want the text lead-in", parts[0])
 	}
-	if parts[1].Type != "image_url" || parts[1].ImageURL == nil || parts[1].ImageURL.URL != "data:image/png;base64,aW1hZ2ViYXNlNjQ=" {
+	if parts[1].Type != "image_url" || parts[1].ImageURL == nil || parts[1].ImageURL.URL != "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAA==" {
 		t.Errorf("parts[1] = %+v, want an image_url part with a data: URI built from the request's media_type/data", parts[1])
 	}
 }

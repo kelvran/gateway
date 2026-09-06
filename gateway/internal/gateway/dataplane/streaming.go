@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/shopspring/decimal"
@@ -104,11 +105,11 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
-	if cached, layer, ok := p.checkCache(ctx, l1Key, l2Key); ok {
+	if cached, layer, writtenAt, ok := p.checkCache(ctx, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
-			cacheInfo = cacheProvenance{Layer: layer}
+			cacheInfo = cacheProvenance{Layer: layer, AgeMs: float64(time.Since(writtenAt).Milliseconds())}
 			err = writeFakeStream(sw, cachedResp)
 			return
 		}

@@ -76,6 +76,14 @@ const (
 // nobody has asked for yet would be premature.
 const gracefulShutdownTimeout = 30 * time.Second
 
+// maxRequestBodyBytes bounds a single /v1/chat/completions request body —
+// large enough for a real multi-modal (inline base64 image/document)
+// request, small enough to bound worst-case per-request memory. Per
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md's own named,
+// previously-open gap (THREAT_MODEL.md's Gateway DoS row): before this,
+// io.ReadAll(r.Body) had no size limit anywhere in this codebase.
+const maxRequestBodyBytes = 32 << 20 // 32MiB
+
 // defaultAdminListenAddr is used when cfg.Admin.TokenEnv is set but
 // cfg.Admin.ListenAddr is left empty — loopback-only, never a wildcard
 // address, per docs/rfcs/2026-09-05-gateway-admin-api.md's "never
@@ -487,8 +495,14 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "reading request body", http.StatusBadRequest)
 			return
 		}
@@ -496,6 +510,11 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		var req adapter.ChatRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if err := adapter.ValidateContentParts(req.Messages); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 

@@ -166,10 +166,20 @@ func TestHandleChatCompletionEmitsSpanWithCacheHitTrue(t *testing.T) {
 	if v, ok := spanAttr(t, spans[1].Attributes(), telemetry.AttrKelvranCacheLayer); !ok || v.AsString() != "L1" {
 		t.Errorf("second call's %s = %v, ok=%v, want %q", telemetry.AttrKelvranCacheLayer, v, ok, "L1")
 	}
-	// L1 hits never carry similarity/age — those are L3-only, per
-	// ChatCompletionResult.CacheSimilarity's own doc comment.
+	// L1 hits never carry similarity — that's L3-only, per
+	// ChatCompletionResult.CacheSimilarity's own doc comment. Age, per
+	// docs/upgrade-research/cache-2026-09-06.md Finding 6, IS now
+	// reported for L1/L2 hits too, closing the telemetry asymmetry with
+	// L3.
 	if _, ok := spanAttr(t, spans[1].Attributes(), telemetry.AttrKelvranCacheSimilarity); ok {
 		t.Error("an L1 hit has a kelvran.cache.similarity attribute set — similarity is L3-only")
+	}
+	ageV, ok := spanAttr(t, spans[1].Attributes(), telemetry.AttrKelvranCacheAgeMs)
+	if !ok {
+		t.Fatal("an L1 hit has no kelvran.cache.age_ms attribute at all — age must be uniform across cache layers")
+	}
+	if age := ageV.AsFloat64(); age < 0 {
+		t.Errorf("kelvran.cache.age_ms = %v, want >= 0", age)
 	}
 }
 

@@ -26,8 +26,13 @@ type Cache interface {
 	// Get looks up a previously cached response by key. ok is false and
 	// err is nil for a cache miss (never-set key or expired entry) —
 	// only a genuine failure (e.g. a backend error in a future network
-	// adapter) returns a non-nil err.
-	Get(ctx context.Context, key string) (resp []byte, ok bool, err error)
+	// adapter) returns a non-nil err. writtenAt is the time of the most
+	// recent Put for key (zero value when ok is false) — added per
+	// docs/upgrade-research/cache-2026-09-06.md Finding 6, closing the
+	// telemetry asymmetry with LexicalCandidate.WrittenAt (L3's own
+	// equivalent), so cache-hit-provenance age reporting is uniform
+	// across all three layers instead of L3-only.
+	Get(ctx context.Context, key string) (resp []byte, writtenAt time.Time, ok bool, err error)
 	// Put stores resp under key with the given time-to-live.
 	Put(ctx context.Context, key string, resp []byte, ttl time.Duration) error
 }

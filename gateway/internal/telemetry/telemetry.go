@@ -88,6 +88,45 @@ func RecordRateLimitFailOpen(ctx context.Context, keyID string) {
 	rateLimitFailOpenCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
 }
 
+// cacheL3GateOutcomeCounter records the pass/reject outcome of each of
+// Cache L3-lite's existing gate checks, per
+// docs/upgrade-research/cache-2026-09-06.md Finding 1: GroundedCache's own
+// per-gate ablation methodology found that of its four gates, one did most
+// of the safety work while the others were near-zero-cost backup — nobody
+// at Kelvran currently knows whether that's also true of L3-lite's own
+// three gates. One dimensioned instrument (gate × outcome), not three
+// separate counters, so a single query can compare reject rates across
+// gates directly — exactly the comparison an ablation needs.
+var cacheL3GateOutcomeCounter = mustInt64Counter(
+	meter,
+	"kelvran.cache.l3.gate_outcome",
+	metric.WithDescription("Cache L3-lite gate check outcomes (pass/reject), per gate."),
+	metric.WithUnit("{check}"),
+)
+
+// Cache L3-lite gate names, per checkLexicalCache's own three existing
+// checks (dataplane.go) — the exact three Finding 1 named for ablation.
+const (
+	CacheL3GateVolatileBypass     = "volatile_bypass"
+	CacheL3GateEntityMismatch     = "entity_mismatch"
+	CacheL3GateFreshnessRiskModel = "freshness_risk_model"
+)
+
+// RecordCacheL3GateOutcome increments the counter for gate with outcome
+// "reject" or "pass". The caller (dataplane.checkLexicalCache) calls this
+// at each of its own three existing gate-decision points — no new gate
+// logic, only a counter alongside logic that already exists.
+func RecordCacheL3GateOutcome(ctx context.Context, gate string, rejected bool) {
+	outcome := "pass"
+	if rejected {
+		outcome = "reject"
+	}
+	cacheL3GateOutcomeCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(AttrKelvranCacheL3Gate, gate),
+		attribute.String(AttrKelvranCacheL3Outcome, outcome),
+	))
+}
+
 // Config selects how spans are exported.
 type Config struct {
 	// Exporter is "stdout", "otlp", or "none". "" defaults to "stdout" —

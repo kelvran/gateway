@@ -21,11 +21,14 @@ import (
 // docs/rfcs/2026-09-03-cache-l2-normalized-match.md's own motivation.
 const defaultMaxEntries = 10_000
 
-// cacheEntry is a single stored response plus its absolute expiry time.
+// cacheEntry is a single stored response plus its absolute expiry time and
+// the time of its most recent Put (writtenAt) — surfaced via Get per
+// docs/upgrade-research/cache-2026-09-06.md Finding 6.
 type cacheEntry struct {
 	key       string
 	data      []byte
 	expiresAt time.Time
+	writtenAt time.Time
 }
 
 // Cache is a mutex-protected, in-process, exact-match cache implementing
@@ -69,18 +72,18 @@ func NewWithClock(maxEntries int, now func() time.Time) *Cache {
 // return a non-nil error here. A hit moves the entry to the front of the
 // recency list, so eviction (see Put) always removes the least-recently
 // *fetched* entry, not merely the least-recently *written* one.
-func (c *Cache) Get(_ context.Context, key string) ([]byte, bool, error) {
+func (c *Cache) Get(_ context.Context, key string) ([]byte, time.Time, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	elem, found := c.entries[key]
 	if !found {
-		return nil, false, nil
+		return nil, time.Time{}, false, nil
 	}
 	entry := elem.Value.(*cacheEntry)
 	if c.now().After(entry.expiresAt) {
 		c.removeLocked(elem)
-		return nil, false, nil
+		return nil, time.Time{}, false, nil
 	}
 	c.recency.MoveToFront(elem)
 
@@ -89,7 +92,7 @@ func (c *Cache) Get(_ context.Context, key string) ([]byte, bool, error) {
 	// internal map's backing array), per docs/decisions/0002-cache-embedded-in-gateway.md.
 	out := make([]byte, len(entry.data))
 	copy(out, entry.data)
-	return out, true, nil
+	return out, entry.writtenAt, true, nil
 }
 
 // Put implements cache.Cache. Inserting past maxEntries evicts the
@@ -103,16 +106,18 @@ func (c *Cache) Put(_ context.Context, key string, resp []byte, ttl time.Duratio
 
 	data := make([]byte, len(resp))
 	copy(data, resp)
-	expiresAt := c.now().Add(ttl)
+	now := c.now()
+	expiresAt := now.Add(ttl)
 
 	if elem, found := c.entries[key]; found {
 		elem.Value.(*cacheEntry).data = data
 		elem.Value.(*cacheEntry).expiresAt = expiresAt
+		elem.Value.(*cacheEntry).writtenAt = now
 		c.recency.MoveToFront(elem)
 		return nil
 	}
 
-	elem := c.recency.PushFront(&cacheEntry{key: key, data: data, expiresAt: expiresAt})
+	elem := c.recency.PushFront(&cacheEntry{key: key, data: data, expiresAt: expiresAt, writtenAt: now})
 	c.entries[key] = elem
 
 	if c.recency.Len() > c.maxEntries {

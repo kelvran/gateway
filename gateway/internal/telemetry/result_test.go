@@ -1,11 +1,15 @@
 package telemetry
 
 import (
+	"context"
 	"errors"
 	"testing"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -135,6 +139,47 @@ func TestRecordChatCompletionResultSkipsEmptyOptionalFields(t *testing.T) {
 	}
 }
 
+// TestRecordChatCompletionResultEmitsAgeForL1AndL2HitsNotJustL3 proves
+// docs/upgrade-research/cache-2026-09-06.md Finding 6: cache-hit age is no
+// longer L3-exclusive — every hit layer reports it, only similarity stays
+// L3-only.
+func TestRecordChatCompletionResultEmitsAgeForL1AndL2HitsNotJustL3(t *testing.T) {
+	for _, layer := range []string{"L1", "L2", "L3"} {
+		t.Run(layer, func(t *testing.T) {
+			sr := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+			t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
+			tracer := tp.Tracer("result_test")
+
+			_, span := tracer.Start(t.Context(), "test-span")
+			RecordChatCompletionResult(span, ChatCompletionResult{
+				CacheHit:        true,
+				CacheLayer:      layer,
+				CacheSimilarity: 0.95,
+				CacheAgeMs:      1234,
+				CostUSD:         "0",
+			})
+			span.End()
+
+			attrs := sr.Ended()[0].Attributes()
+
+			ageV, ok := attrValue(t, attrs, attribute.Key(AttrKelvranCacheAgeMs))
+			if !ok || ageV.AsFloat64() != 1234 {
+				t.Errorf("layer %q: %s = %v, ok=%v, want 1234 (age must be reported for every hit layer)", layer, AttrKelvranCacheAgeMs, ageV, ok)
+			}
+
+			simV, simOK := attrValue(t, attrs, attribute.Key(AttrKelvranCacheSimilarity))
+			if layer == "L3" {
+				if !simOK || simV.AsFloat64() != 0.95 {
+					t.Errorf("layer %q: %s = %v, ok=%v, want 0.95", layer, AttrKelvranCacheSimilarity, simV, simOK)
+				}
+			} else if simOK {
+				t.Errorf("layer %q: %s is set — similarity must stay L3-only", layer, AttrKelvranCacheSimilarity)
+			}
+		})
+	}
+}
+
 func TestRecordChatCompletionResultErrorRecordsErrorAndSetsStatus(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
@@ -216,5 +261,81 @@ func TestRecordChatCompletionResultRemapsProviderOnSpan(t *testing.T) {
 	}
 	if v.AsString() != "aws.bedrock" {
 		t.Errorf("gen_ai.provider.name = %q, want %q", v.AsString(), "aws.bedrock")
+	}
+}
+
+// TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome proves
+// docs/upgrade-research/cache-2026-09-06.md Finding 1's per-gate ablation
+// counter dimensions correctly by (gate, outcome) — a query for one gate's
+// reject count must never pick up another gate's, or the opposite outcome.
+//
+// This test lives here (unit-testing RecordCacheL3GateOutcome directly, in
+// the package that owns cacheL3GateOutcomeCounter), not as a full
+// HandleChatCompletion pipeline test in internal/gateway/dataplane — that
+// package already has its own otel.SetMeterProvider-swapping test
+// (TestRateLimitFailOpenIncrementsMetricCounter) sharing the SAME
+// package-level global meter, and OTel Go's global meter/instrument
+// delegation resolves to whichever concrete MeterProvider is active the
+// FIRST time an instrument obtained from that meter is actually used —
+// for the lifetime of that test binary, not per SetMeterProvider call.
+// Two tests in ONE package's test binary both swapping providers for
+// DIFFERENT instruments off the SAME shared meter therefore collide
+// (confirmed empirically); testing this package's own Record* function in
+// isolation, as every other test in this file already does, avoids that
+// collision entirely rather than trying to out-order it.
+func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prevProvider := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	defer otel.SetMeterProvider(prevProvider)
+
+	ctx := context.Background()
+	RecordCacheL3GateOutcome(ctx, CacheL3GateVolatileBypass, true)
+	RecordCacheL3GateOutcome(ctx, CacheL3GateVolatileBypass, false)
+	RecordCacheL3GateOutcome(ctx, CacheL3GateVolatileBypass, false)
+	RecordCacheL3GateOutcome(ctx, CacheL3GateEntityMismatch, true)
+	RecordCacheL3GateOutcome(ctx, CacheL3GateFreshnessRiskModel, false)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("reader.Collect: %v", err)
+	}
+
+	counts := map[[2]string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "kelvran.cache.l3.gate_outcome" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("kelvran.cache.l3.gate_outcome data type = %T, want metricdata.Sum[int64]", m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				gate, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Gate))
+				outcome, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Outcome))
+				counts[[2]string{gate.AsString(), outcome.AsString()}] += dp.Value
+			}
+		}
+	}
+
+	want := map[[2]string]int64{
+		{CacheL3GateVolatileBypass, "reject"}:   1,
+		{CacheL3GateVolatileBypass, "pass"}:     2,
+		{CacheL3GateEntityMismatch, "reject"}:   1,
+		{CacheL3GateFreshnessRiskModel, "pass"}: 1,
+	}
+	for key, wantCount := range want {
+		if got := counts[key]; got != wantCount {
+			t.Errorf("counts[%v] = %d, want %d", key, got, wantCount)
+		}
+	}
+	// Nothing else must have been recorded — e.g. entity_mismatch's
+	// "reject" call must never bleed into a "pass" data point too.
+	if got := counts[[2]string{CacheL3GateEntityMismatch, "pass"}]; got != 0 {
+		t.Errorf("entity_mismatch pass count = %d, want 0 (only reject was ever recorded)", got)
+	}
+	if got := counts[[2]string{CacheL3GateFreshnessRiskModel, "reject"}]; got != 0 {
+		t.Errorf("freshness_risk_model reject count = %d, want 0 (only pass was ever recorded)", got)
 	}
 }

@@ -34,15 +34,21 @@ const (
 	AttrKelvranCostUSD        = "kelvran.cost.usd"
 	AttrKelvranDeploymentName = "kelvran.deployment.name"
 	// AttrKelvranCacheLayer/CacheSimilarity/CacheAgeMs are per
-	// docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md: which cache
-	// layer (if any) served this request, and — for Cache L3-lite only,
-	// where the data is already captured at write time — the estimated
-	// similarity and age of the served entry. See
-	// ChatCompletionResult.CacheLayer's own doc comment for why
-	// similarity/age are L3-only.
+	// docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md and
+	// docs/upgrade-research/cache-2026-09-06.md Finding 6: which cache
+	// layer (if any) served this request, its age (every hit layer), and
+	// — for Cache L3-lite only, where a similarity concept applies at
+	// all — the estimated similarity of the served entry. See
+	// ChatCompletionResult.CacheSimilarity's own doc comment for why
+	// similarity specifically stays L3-only.
 	AttrKelvranCacheLayer      = "kelvran.cache.layer"
 	AttrKelvranCacheSimilarity = "kelvran.cache.similarity"
 	AttrKelvranCacheAgeMs      = "kelvran.cache.age_ms"
+	// AttrKelvranCacheL3Gate/CacheL3Outcome are per
+	// docs/upgrade-research/cache-2026-09-06.md Finding 1's per-gate
+	// ablation instrumentation — see telemetry.RecordCacheL3GateOutcome.
+	AttrKelvranCacheL3Gate    = "kelvran.cache.l3.gate"
+	AttrKelvranCacheL3Outcome = "kelvran.cache.l3.outcome"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider
@@ -99,13 +105,16 @@ type ChatCompletionResult struct {
 	// stays a dependency-free leaf with zero cache-layer knowledge of its
 	// own, per this file's own existing "primitive values only" rule.
 	CacheLayer string
-	// CacheSimilarity/CacheAgeMs are only ever meaningful when
-	// CacheLayer == "L3" — L1 is an exact byte match (no similarity
-	// concept applies) and L2's normalized-match layer doesn't currently
-	// capture a write-time age at all. Left at their zero value (0.0) for
-	// any other CacheLayer, and RecordChatCompletionResult only emits
-	// their attributes when CacheLayer == "L3", never a fabricated 0.0
-	// for L1/L2.
+	// CacheSimilarity is only ever meaningful when CacheLayer == "L3" —
+	// L1/L2 are exact/normalized byte matches, no similarity concept
+	// applies. Left at its zero value (0.0) for any other CacheLayer, and
+	// RecordChatCompletionResult only emits this attribute when
+	// CacheLayer == "L3", never a fabricated 0.0 for L1/L2.
+	//
+	// CacheAgeMs, per docs/upgrade-research/cache-2026-09-06.md
+	// Finding 6, is now meaningful for every hit layer (L1/L2 via
+	// cache.Cache.Get's writtenAt, L3 via LexicalCandidate.WrittenAt) —
+	// RecordChatCompletionResult emits it whenever CacheLayer != "".
 	CacheSimilarity float64
 	CacheAgeMs      float64
 	// CostUSD is a pre-formatted decimal string (e.g. "0.0000575"), not a
@@ -166,16 +175,17 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	)
 	if r.CacheLayer != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranCacheLayer, r.CacheLayer))
+		// Age is real, write-time-captured data for every hit layer as of
+		// docs/upgrade-research/cache-2026-09-06.md Finding 6 — never
+		// emitted for a no-hit, which would otherwise report a fabricated
+		// 0.0 rather than a genuinely absent value.
+		attrs = append(attrs, attribute.Float64(AttrKelvranCacheAgeMs, r.CacheAgeMs))
 	}
-	// Similarity/age are only ever real, write-time-captured data for an
-	// L3 hit — see CacheSimilarity/CacheAgeMs's own doc comment. Never
-	// emitted for L1/L2/no-hit, which would otherwise report a
-	// fabricated 0.0 rather than a genuinely absent value.
+	// Similarity is only ever real, write-time-captured data for an L3
+	// hit — see CacheSimilarity's own doc comment. Never emitted for
+	// L1/L2/no-hit.
 	if r.CacheLayer == "L3" {
-		attrs = append(attrs,
-			attribute.Float64(AttrKelvranCacheSimilarity, r.CacheSimilarity),
-			attribute.Float64(AttrKelvranCacheAgeMs, r.CacheAgeMs),
-		)
+		attrs = append(attrs, attribute.Float64(AttrKelvranCacheSimilarity, r.CacheSimilarity))
 	}
 
 	span.SetAttributes(attrs...)

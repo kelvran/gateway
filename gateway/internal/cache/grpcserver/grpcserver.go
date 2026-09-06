@@ -42,8 +42,8 @@ func New() *Server {
 }
 
 // Get is the server-side handler for a Cache.Get RPC. Not implemented.
-func (s *Server) Get(_ context.Context, _ string) ([]byte, bool, error) {
-	return nil, false, errNotImplemented
+func (s *Server) Get(_ context.Context, _ string) ([]byte, time.Time, bool, error) {
+	return nil, time.Time{}, false, errNotImplemented
 }
 
 // Put is the server-side handler for a Cache.Put RPC. Not implemented.

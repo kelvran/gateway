@@ -133,7 +133,7 @@ func TestL2HitPromotesIntoL1(t *testing.T) {
 
 	p := &Pipeline{cache: l1, cacheL2: l2, cacheTTL: time.Hour}
 
-	cached, layer, hit := p.checkCache(ctx, l1Key, l2Key)
+	cached, layer, writtenAt, hit := p.checkCache(ctx, l1Key, l2Key)
 	if !hit {
 		t.Fatal("checkCache did not report a hit for a value present in L2")
 	}
@@ -143,9 +143,12 @@ func TestL2HitPromotesIntoL1(t *testing.T) {
 	if string(cached) != string(value) {
 		t.Errorf("checkCache returned %q, want %q", cached, value)
 	}
+	if writtenAt.IsZero() {
+		t.Error("checkCache returned a zero writtenAt for a real L2 hit")
+	}
 
 	// L1 must now be populated under l1Key — the promotion.
-	promoted, ok, err := l1.Get(ctx, l1Key)
+	promoted, _, ok, err := l1.Get(ctx, l1Key)
 	if err != nil || !ok {
 		t.Fatalf("L1 was not populated after an L2 hit: ok=%v err=%v", ok, err)
 	}
@@ -168,10 +171,10 @@ func TestWriteCacheWritesBothLayers(t *testing.T) {
 	value := []byte(`{"id":"resp-1"}`)
 	p.writeCache(ctx, "team-alpha", "l1key", "l2key", []uint64{1, 2, 3}, nil, "gpt-4o", value)
 
-	if _, ok, _ := l1.Get(ctx, "l1key"); !ok {
+	if _, _, ok, _ := l1.Get(ctx, "l1key"); !ok {
 		t.Error("writeCache did not populate L1")
 	}
-	if _, ok, _ := l2.Get(ctx, "l2key"); !ok {
+	if _, _, ok, _ := l2.Get(ctx, "l2key"); !ok {
 		t.Error("writeCache did not populate L2")
 	}
 	if candidates, _ := l3.Search(ctx, "team-alpha", []uint64{1, 2, 3}, 5); len(candidates) == 0 {

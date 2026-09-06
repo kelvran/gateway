@@ -24,7 +24,7 @@ var _ cache.Cache = (*Cache)(nil)
 
 func TestGetMiss(t *testing.T) {
 	c := New(0)
-	_, ok, err := c.Get(context.Background(), "never-set")
+	_, _, ok, err := c.Get(context.Background(), "never-set")
 	if err != nil {
 		t.Fatalf("Get returned error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestPutThenGet(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	got, ok, err := c.Get(ctx, "key1")
+	got, _, ok, err := c.Get(ctx, "key1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -51,6 +51,40 @@ func TestPutThenGet(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Errorf("Get returned %q, want %q", got, want)
+	}
+}
+
+// TestGetReturnsWriteTimeAsWrittenAt proves Get surfaces the most recent
+// Put's write time, per docs/upgrade-research/cache-2026-09-06.md
+// Finding 6 — closing the telemetry asymmetry with L3's own
+// LexicalCandidate.WrittenAt.
+func TestGetReturnsWriteTimeAsWrittenAt(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewWithClock(0, clock.now)
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "key1", []byte("value"), time.Hour); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	_, writtenAt, ok, err := c.Get(ctx, "key1")
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if !writtenAt.Equal(clock.t) {
+		t.Errorf("writtenAt = %v, want %v (the clock's time at Put)", writtenAt, clock.t)
+	}
+
+	clock.Advance(time.Hour)
+	if err := c.Put(ctx, "key1", []byte("value2"), time.Hour); err != nil {
+		t.Fatalf("second Put: %v", err)
+	}
+	_, writtenAt, ok, err = c.Get(ctx, "key1")
+	if err != nil || !ok {
+		t.Fatalf("Get after second Put: ok=%v err=%v", ok, err)
+	}
+	if !writtenAt.Equal(clock.t) {
+		t.Errorf("writtenAt after overwrite = %v, want %v (the second Put's time, not the first)", writtenAt, clock.t)
 	}
 }
 
@@ -64,13 +98,13 @@ func TestGetAfterTTLExpiry(t *testing.T) {
 	}
 
 	// Not yet expired.
-	if _, ok, _ := c.Get(ctx, "key1"); !ok {
+	if _, _, ok, _ := c.Get(ctx, "key1"); !ok {
 		t.Fatal("Get before TTL expiry returned ok=false")
 	}
 
 	clock.Advance(11 * time.Second)
 
-	_, ok, err := c.Get(ctx, "key1")
+	_, _, ok, err := c.Get(ctx, "key1")
 	if err != nil {
 		t.Fatalf("Get after expiry returned error: %v", err)
 	}
@@ -89,7 +123,7 @@ func TestPutCopiesData(t *testing.T) {
 	}
 	data[0] = 'X' // mutate caller's slice after Put
 
-	got, ok, err := c.Get(ctx, "key1")
+	got, _, ok, err := c.Get(ctx, "key1")
 	if err != nil || !ok {
 		t.Fatalf("Get: ok=%v err=%v", ok, err)
 	}
@@ -115,7 +149,7 @@ func TestEvictionRemovesLeastRecentlyUsed(t *testing.T) {
 	}
 
 	// Touch "a" so it becomes more recently used than "b".
-	if _, ok, _ := c.Get(ctx, "a"); !ok {
+	if _, _, ok, _ := c.Get(ctx, "a"); !ok {
 		t.Fatal("Get(a) before overflow returned ok=false")
 	}
 
@@ -125,13 +159,13 @@ func TestEvictionRemovesLeastRecentlyUsed(t *testing.T) {
 		t.Fatalf("Put(c): %v", err)
 	}
 
-	if _, ok, _ := c.Get(ctx, "a"); !ok {
+	if _, _, ok, _ := c.Get(ctx, "a"); !ok {
 		t.Error("Get(a) after overflow = false, want true (recently touched, should survive eviction)")
 	}
-	if _, ok, _ := c.Get(ctx, "b"); ok {
+	if _, _, ok, _ := c.Get(ctx, "b"); ok {
 		t.Error("Get(b) after overflow = true, want false (least-recently-used, should have been evicted)")
 	}
-	if _, ok, _ := c.Get(ctx, "c"); !ok {
+	if _, _, ok, _ := c.Get(ctx, "c"); !ok {
 		t.Error("Get(c) after overflow = false, want true (just inserted)")
 	}
 }
