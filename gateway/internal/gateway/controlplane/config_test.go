@@ -729,3 +729,51 @@ func TestLoadAdminSectionParsesListenAddrAndTokenEnv(t *testing.T) {
 		t.Errorf("Admin.TokenEnv = %q, want %q", cfg.Admin.TokenEnv, "KELVRAN_ADMIN_TOKEN")
 	}
 }
+
+// TestLoadWithoutHealthProbeSectionDefaultsToZeroValue mirrors
+// TestLoadWithoutAdminSectionDefaultsToZeroValue for health_probe:
+// omitting the section entirely must mean probing stays disabled
+// (IntervalSeconds == 0), per
+// docs/rfcs/2026-09-07-gateway-active-health-probing.md.
+func TestLoadWithoutHealthProbeSectionDefaultsToZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load without a health_probe section: %v", err)
+	}
+	if cfg.HealthProbe != (HealthProbeConfig{}) {
+		t.Errorf("HealthProbe = %+v, want the zero value", cfg.HealthProbe)
+	}
+}
+
+// TestLoadHealthProbeSectionParsesFields proves the health_probe:
+// section, when present, is parsed correctly — the mirror-image proof to
+// TestLoadWithoutHealthProbeSectionDefaultsToZeroValue above.
+func TestLoadHealthProbeSectionParsesFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nhealth_probe:\n  interval_seconds: 60\n  unhealthy_threshold: 5\n  healthy_threshold: 4\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a health_probe section: %v", err)
+	}
+	if cfg.HealthProbe.IntervalSeconds != 60 {
+		t.Errorf("HealthProbe.IntervalSeconds = %d, want 60", cfg.HealthProbe.IntervalSeconds)
+	}
+	if cfg.HealthProbe.UnhealthyThreshold != 5 {
+		t.Errorf("HealthProbe.UnhealthyThreshold = %d, want 5", cfg.HealthProbe.UnhealthyThreshold)
+	}
+	if cfg.HealthProbe.HealthyThreshold != 4 {
+		t.Errorf("HealthProbe.HealthyThreshold = %d, want 4", cfg.HealthProbe.HealthyThreshold)
+	}
+}

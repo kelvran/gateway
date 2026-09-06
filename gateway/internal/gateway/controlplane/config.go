@@ -249,6 +249,31 @@ type AdminConfig struct {
 	TokenEnv string
 }
 
+// HealthProbeConfig configures the active/synthetic health-probing
+// background loop, per
+// docs/rfcs/2026-09-07-gateway-active-health-probing.md. Optional — a
+// zero-valued HealthProbeConfig (IntervalSeconds == 0) means health
+// probing is disabled entirely, matching every other optional
+// subsystem's convention (Redis, boltstore, OTel, admin) — every
+// deployment stays unconditionally eligible for router.Router.Select,
+// exactly as before this feature existed.
+type HealthProbeConfig struct {
+	// IntervalSeconds is how often ProbeDeployments runs. <= 0 disables
+	// probing entirely — cmd/gateway never starts the background loop.
+	IntervalSeconds int
+	// UnhealthyThreshold is the number of CONSECUTIVE failed probes
+	// required before a deployment is excluded from routing. <= 0
+	// resolves to router.HealthConfig's own default (3) — an
+	// operational default resolved in internal/router, not a
+	// config-shape concern this package owns, mirroring
+	// AdminConfig.ListenAddr's own deferred-default convention.
+	UnhealthyThreshold int
+	// HealthyThreshold is the number of CONSECUTIVE successful probes
+	// required before an excluded deployment is re-included. <= 0
+	// resolves to router.HealthConfig's own default (2).
+	HealthyThreshold int
+}
+
 // Config is the gateway's fully-parsed static configuration.
 type Config struct {
 	// ListenAddr is the address http.ListenAndServe binds to (e.g. ":8080").
@@ -271,6 +296,9 @@ type Config struct {
 	Guardrails GuardrailsConfig
 	// Admin configures the optional admin HTTP surface. Optional.
 	Admin AdminConfig
+	// HealthProbe configures the optional active/synthetic health-probing
+	// background loop. Optional.
+	HealthProbe HealthProbeConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -406,6 +434,12 @@ func Load(path string) (*Config, error) {
 	if adminRaw, ok := getMap(root, "admin"); ok {
 		cfg.Admin.ListenAddr, _ = getString(adminRaw, "listen_addr")
 		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
+	}
+
+	if healthProbeRaw, ok := getMap(root, "health_probe"); ok {
+		cfg.HealthProbe.IntervalSeconds, _ = getInt(healthProbeRaw, "interval_seconds")
+		cfg.HealthProbe.UnhealthyThreshold, _ = getInt(healthProbeRaw, "unhealthy_threshold")
+		cfg.HealthProbe.HealthyThreshold, _ = getInt(healthProbeRaw, "healthy_threshold")
 	}
 
 	if priceRaw, ok := getMap(root, "price_table"); ok {

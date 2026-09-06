@@ -26,6 +26,14 @@ type modelState struct {
 	cw   int                  // current weight counter
 	gcd  int                  // gcd of every deployment's weight in this group
 	maxW int                  // max weight in this group
+	// sumW is the sum of every deployment's normalized weight in this
+	// group — the smooth-WRR schedule's full cycle length: each
+	// deployment appears exactly `weight` times per sumW consecutive
+	// calls to next(), for any weight distribution, however skewed. Used
+	// by health.go's selectHealthy as the number of consecutive next()
+	// calls guaranteed to visit every distinct deployment in the group
+	// at least once while searching for a healthy candidate.
+	sumW int
 }
 
 // newModelState builds a modelState from deps (in the caller's exact
@@ -42,14 +50,16 @@ func newModelState(deps []weightedDeployment) *modelState {
 
 	g := normalized[0].weight
 	maxW := normalized[0].weight
+	sumW := normalized[0].weight
 	for _, d := range normalized[1:] {
 		g = gcd(g, d.weight)
 		if d.weight > maxW {
 			maxW = d.weight
 		}
+		sumW += d.weight
 	}
 
-	return &modelState{deps: normalized, i: -1, gcd: g, maxW: maxW}
+	return &modelState{deps: normalized, i: -1, gcd: g, maxW: maxW, sumW: sumW}
 }
 
 // next returns the next selected deployment name. Returns ("", false)

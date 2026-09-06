@@ -180,6 +180,14 @@ func run(configPath string, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Active/synthetic health-probing, per
+	// docs/rfcs/2026-09-07-gateway-active-health-probing.md — a no-op
+	// (RunHealthProbeLoop returns immediately) unless health_probe.
+	// interval_seconds is configured. Scoped to ctx, exactly like the
+	// main/admin servers below: canceled by the same SIGTERM/SIGINT that
+	// triggers graceful shutdown, no separate stop mechanism needed.
+	go pipeline.RunHealthProbeLoop(ctx, time.Duration(cfg.HealthProbe.IntervalSeconds)*time.Second)
+
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("gateway listening", "addr", cfg.ListenAddr)
@@ -348,7 +356,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			Weight: d.Weight,
 		})
 	}
-	depRouter := router.New(routerDeployments)
+	depRouter := router.New(routerDeployments, router.HealthConfig{
+		UnhealthyThreshold: cfg.HealthProbe.UnhealthyThreshold,
+		HealthyThreshold:   cfg.HealthProbe.HealthyThreshold,
+	})
 
 	priceTable := costaccounting.PriceTable{}
 	for model, price := range cfg.PriceTable {

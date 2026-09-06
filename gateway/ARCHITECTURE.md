@@ -79,11 +79,31 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              `deploymentsByModel` map it replaced are gone. Equal weights (including the
                              unset/default case) provably degrade to the exact same sequence the old
                              round-robin produced — proven by hand-trace in the RFC, not merely assumed.
-                             Still not built, deliberately: usage/latency/cost-based selection signals,
-                             consecutive-failure/cooldown circuit-breaker tracking, and model-*group*
-                             fallback chains — none of these are named in PRD.md's v1 allowlist. The
-                             existing single-model, single-fallback retry (dataplane.go/streaming.go) is
-                             unchanged and already satisfies "a single fallback chain"
+                             Active/synthetic health-probing is now real too, per
+                             docs/rfcs/2026-09-07-gateway-active-health-probing.md: `router.Router` tracks
+                             each deployment's own consecutive-probe-outcome health state
+                             (`ReportProbeResult`/`IsHealthy`) and `Select` skips any deployment currently
+                             marked unhealthy (failing open — returning a known-bad deployment rather than
+                             "no deployment configured" — only if every deployment for a model is
+                             unhealthy at once). The N-of-M consecutive thresholds (3 failures to exclude,
+                             2 successes to re-include, both configurable) are this package's own
+                             adapter-agnostic bookkeeping only; the probe LOOP itself (issuing the actual
+                             lightweight synthetic request on a timer, per `health_probe.interval_seconds`,
+                             default 300s) lives in `dataplane.Pipeline.ProbeDeployments`/
+                             `RunHealthProbeLoop`, since only `dataplane` has access to each deployment's
+                             BaseURL/adapter/credentials — this package still has zero I/O and zero
+                             `internal/adapter` dependency. Still not built, deliberately, and now
+                             genuinely narrowed rather than a blanket deferral: usage/latency/cost-based
+                             selection signals, model-*group* fallback chains, and — the one class that
+                             correctly stays fully deferred, not just narrowed — the TRAFFIC-DERIVED
+                             statistical circuit breaker (Envoy-style outlier detection, LiteLLM-style
+                             `allowed_fails` cooldown), which genuinely needs a request-volume floor
+                             Kelvran has no production traffic yet to calibrate against. None of these are
+                             named in PRD.md's v1 allowlist. The existing single-model, single-fallback
+                             retry (dataplane.go/streaming.go) is unchanged and already satisfies "a single
+                             fallback chain," and now composes with health-probing for free: a
+                             probe-excluded deployment is never even chosen as the primary pick, so the
+                             fallback path fires less often, not differently
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
@@ -194,8 +214,11 @@ Every capability is a stage in one linear pipeline against a single canonical sc
     with a hard volatility bypass — never real embedding-based semantic matching, see Cache Subsystem
     below) → hit → log, return
   → guardrail pre-call (PII/content check)
-  → router (weighted round-robin selects a deployment; a single fallback attempt on error —
-    no circuit breaker, no health/cooldown tracking, per docs/rfcs/2026-09-04-weighted-routing.md)
+  → router (weighted round-robin selects a deployment, skipping any deployment
+    active/synthetic-probe health-probing has marked unhealthy — per
+    docs/rfcs/2026-09-04-weighted-routing.md and
+    docs/rfcs/2026-09-07-gateway-active-health-probing.md — plus a single fallback attempt on
+    error; still no TRAFFIC-DERIVED statistical circuit breaker, deliberately)
   → provider adapter: canonical → provider-native request translation
   → upstream call (streaming: non-buffering pass-through, chunk-by-chunk, explicit Flush() per chunk)
   → provider adapter: provider-native response/chunk → canonical translation (stateful per-stream parser)

@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -862,6 +863,100 @@ func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
 	}
 	dep, ok := p.deploymentsByName[name]
 	return dep, ok
+}
+
+// healthProbeCallTimeout bounds a single deployment's synthetic probe
+// call, per docs/rfcs/2026-09-07-gateway-active-health-probing.md — a
+// hung upstream must not stall the whole probe pass (ProbeDeployments
+// runs every deployment concurrently, but a runaway one should still
+// fail its own probe promptly rather than block RunHealthProbeLoop's
+// next tick indefinitely). Not itself a config field — the plan's own
+// configurable surface is interval/N/M, not this internal per-call
+// timeout, matching the same "not every constant needs a YAML knob"
+// judgment gracefulShutdownTimeout (cmd/gateway/main.go) already makes.
+const healthProbeCallTimeout = 5 * time.Second
+
+// healthProbeMaxTokens caps every synthetic probe request's completion
+// length — a probe exists to prove the deployment is reachable and
+// answering, not to generate a real completion a client would pay for.
+const healthProbeMaxTokens = 1
+
+// ProbeDeployments issues one lightweight, synthetic chat-completion
+// request per configured deployment — concurrently, each bounded by
+// healthProbeCallTimeout — and reports the outcome to p.router via
+// ReportProbeResult, per
+// docs/rfcs/2026-09-07-gateway-active-health-probing.md. This is the
+// traffic-INDEPENDENT active-probe half of health-probing: it calls
+// p.callDeployment directly, bypassing auth/cache/guardrail/budget/
+// rate-limit entirely — a probe is not real client traffic, is never
+// cached, never billed, and belongs to no virtual key.
+//
+// Exported (rather than only reachable via RunHealthProbeLoop) so tests
+// can drive deterministic probe passes without depending on real
+// elapsed time — see health_probe_test.go. Production wiring
+// (cmd/gateway) only ever calls this indirectly, via RunHealthProbeLoop.
+func (p *Pipeline) ProbeDeployments(ctx context.Context) {
+	var wg sync.WaitGroup
+	for _, dep := range p.deploymentsByName {
+		wg.Add(1)
+		go func(dep Deployment) {
+			defer wg.Done()
+			p.probeOneDeployment(ctx, dep)
+		}(dep)
+	}
+	wg.Wait()
+}
+
+// probeOneDeployment issues and reports the outcome of a single
+// deployment's synthetic probe request. Split out from ProbeDeployments
+// purely so each deployment's own probeCtx/cancel pair stays scoped to
+// its own goroutine.
+func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
+	probeCtx, cancel := context.WithTimeout(ctx, healthProbeCallTimeout)
+	defer cancel()
+
+	maxTokens := healthProbeMaxTokens
+	req := adapter.ChatRequest{
+		Messages:  []adapter.Message{{Role: "user", Content: "ping"}},
+		MaxTokens: &maxTokens,
+	}
+	_, err := p.callDeployment(probeCtx, dep, req)
+
+	healthy, changed := p.router.ReportProbeResult(dep.Name, err == nil)
+	if !changed {
+		return
+	}
+	if healthy {
+		p.logger.Info("health_probe_deployment_recovered", "deployment", dep.Name)
+		return
+	}
+	p.logger.Warn("health_probe_deployment_unhealthy", "deployment", dep.Name, "error", err)
+}
+
+// RunHealthProbeLoop runs ProbeDeployments once per interval until ctx is
+// canceled — the production wiring for
+// docs/rfcs/2026-09-07-gateway-active-health-probing.md's background
+// active/synthetic health-probing loop. A no-op if interval <= 0
+// (health probing not configured) — matching every other optional
+// subsystem's "zero means disabled" convention (Redis, boltstore, OTel,
+// admin). Deliberately does not run a probe pass immediately at start —
+// the first pass happens after the first interval elapses, so a gateway
+// restart storm never adds a synchronized burst of extra upstream calls
+// on top of real traffic resuming.
+func (p *Pipeline) RunHealthProbeLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.ProbeDeployments(ctx)
+		}
+	}
 }
 
 // finalize is the single "a request just finished (or failed)" step,

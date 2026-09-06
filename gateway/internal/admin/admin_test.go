@@ -65,7 +65,7 @@ func newTestPipeline(t *testing.T) *dataplane.Pipeline {
 		CacheL3:        inprocess.NewLexicalCache(0),
 		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
 		Adapters:       adapter.Registry{"openai": openai.New()},
-		Router:         router.New([]router.Deployment{{Name: "d1", Model: "gpt-4o"}}),
+		Router:         router.New([]router.Deployment{{Name: "d1", Model: "gpt-4o"}}, router.HealthConfig{}),
 		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
 		Upstream: func(ctx context.Context, dep dataplane.Deployment, req any) (any, error) {
