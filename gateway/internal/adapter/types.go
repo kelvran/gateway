@@ -212,6 +212,27 @@ type ChatRequest struct {
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
 	Tools       []ToolDef `json:"tools,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
+	// DisableCacheControlAutoPopulate, when true, suppresses the
+	// Anthropic and Bedrock adapters' auto-population of a default
+	// CacheControl marker on an otherwise-unmarked system message, per
+	// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md.
+	// dataplane sets this from the resolved Deployment's own
+	// DisableCacheControlAutoPopulate config field immediately before
+	// calling ToProvider -- the same per-call override pattern
+	// Deployment.UpstreamModel already uses for Model, since a
+	// deployment-scoped policy has nowhere else to live given
+	// ToProvider's single-parameter, pure-function signature (see that
+	// RFC's own "why ChatRequest, not the Adapter interface" section).
+	// json:"-" is deliberate: ChatRequest doubles as Kelvran's own
+	// client-facing wire format (chatCompletionsHandler unmarshals a
+	// request body directly into this type), and this field expresses an
+	// OPERATOR's deployment-level policy, never a per-call client
+	// choice -- json:"-" makes it structurally unreachable from a
+	// request body, not merely undocumented. False (the zero value, and
+	// every ChatRequest built before this field existed) means
+	// auto-populate stays ON, matching this schema's own "zero value
+	// preserves prior behavior" convention.
+	DisableCacheControlAutoPopulate bool `json:"-"`
 }
 
 // Usage is token accounting for a single completion.

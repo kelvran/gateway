@@ -1,7 +1,7 @@
 {
   "model": "claude-opus-4-20250514",
   "system": [
-    {"type": "text", "text": "You are a helpful assistant that can check the weather."}
+    {"type": "text", "text": "You are a helpful assistant that can check the weather.", "cache_control": {"type": "ephemeral"}}
   ],
   "messages": [
     {

@@ -337,13 +337,14 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			return nil, fmt.Errorf("deployment %q: no adapter registered for provider %q", d.Name, d.Provider)
 		}
 		dep := dataplane.Deployment{
-			Name:           d.Name,
-			Model:          d.Model,
-			Provider:       d.Provider,
-			UpstreamModel:  d.UpstreamModel,
-			BaseURL:        d.BaseURL,
-			Region:         d.Region,
-			FallbackChains: d.FallbackChains,
+			Name:                            d.Name,
+			Model:                           d.Model,
+			Provider:                        d.Provider,
+			UpstreamModel:                   d.UpstreamModel,
+			BaseURL:                         d.BaseURL,
+			Region:                          d.Region,
+			FallbackChains:                  d.FallbackChains,
+			DisableCacheControlAutoPopulate: d.DisableCacheControlAutoPopulate,
 		}
 		if d.Provider == "bedrock" {
 			dep.AccessKeyID = os.Getenv(d.AccessKeyIDEnv)

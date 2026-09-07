@@ -246,7 +246,12 @@ func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
 // one with CacheControl set, must become two independent SystemBlocks
 // where exactly one carries cache_control -- proving System is no
 // longer flattened into a single joined string that would have made
-// per-message marking impossible.
+// per-message marking impossible. DisableCacheControlAutoPopulate is
+// deliberately set here, per docs/rfcs/2026-09-07-gateway-cache-
+// control-auto-populate.md: this test's own claim is about explicit,
+// caller-supplied per-block marking, not the later auto-populate
+// default, so the first (unmarked) block's "no cache_control" assertion
+// stays isolated from that feature.
 func TestToProviderSystemMessageCacheControlSetsPerBlockCacheControl(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "claude-opus-4",
@@ -255,6 +260,7 @@ func TestToProviderSystemMessageCacheControlSetsPerBlockCacheControl(t *testing.
 			{Role: "system", Content: "Second system block.", CacheControl: &adapter.CacheControl{TTL: "1h"}},
 			{Role: "user", Content: "hi"},
 		},
+		DisableCacheControlAutoPopulate: true,
 	}
 
 	native := New()
@@ -417,6 +423,13 @@ func TestToProviderToolResultCacheControlAttachesToBlock(t *testing.T) {
 // marshaled request -- matching this schema's existing optional-field
 // convention (ContentPart/Parts's own additive, no-op-when-empty
 // precedent) rather than emitting a zero-value cache_control block.
+// DisableCacheControlAutoPopulate is deliberately set here, per
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md: without
+// it, the request's own unmarked system message would now get the new
+// default auto-populated marker, which is exactly the later feature this
+// test predates and isn't about -- see
+// TestToProviderSystemPromptAutoPopulatesCacheControlByDefault below for
+// that proof.
 func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "claude-opus-4",
@@ -429,6 +442,7 @@ func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
 		Tools: []adapter.ToolDef{
 			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
 		},
+		DisableCacheControlAutoPopulate: true,
 	}
 
 	nativeAny, err := New().ToProvider(req)
@@ -487,6 +501,148 @@ func TestToProviderToolDefCacheControlSetsInlineCacheControl(t *testing.T) {
 	}
 	if native.Tools[1].CacheControl == nil || native.Tools[1].CacheControl.Type != "ephemeral" || native.Tools[1].CacheControl.TTL != "1h" {
 		t.Errorf("Tools[1] (get_time, marked) CacheControl = %+v, want {ephemeral 1h}", native.Tools[1].CacheControl)
+	}
+}
+
+// TestToProviderSystemPromptAutoPopulatesCacheControlByDefault is the
+// load-bearing proof for docs/rfcs/2026-09-07-gateway-cache-control-
+// auto-populate.md's core policy: a system message with CacheControl
+// left completely unset, on a deployment that has not opted out (the
+// zero-value default), must still get a real cache_control marker --
+// Kelvran's own default (Anthropic's own 5-minute TTL), not the
+// caller-explicit-only behavior every deployment had before this RFC.
+func TestToProviderSystemPromptAutoPopulatesCacheControlByDefault(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.System) != 1 {
+		t.Fatalf("native.System len = %d, want 1", len(native.System))
+	}
+	cc := native.System[0].CacheControl
+	if cc == nil || cc.Type != "ephemeral" || cc.TTL != "" {
+		t.Errorf("System[0].CacheControl = %+v, want the auto-populated {ephemeral \"\"} default", cc)
+	}
+}
+
+// TestToProviderExplicitSystemCacheControlNotOverriddenByAutoPopulate
+// proves precedence rule (c): a caller-supplied, explicit CacheControl on
+// a system message always wins outright over auto-populate's own default
+// -- the caller's exact TTL survives untouched, never replaced.
+func TestToProviderExplicitSystemCacheControlNotOverriddenByAutoPopulate(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant.", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	cc := native.System[0].CacheControl
+	if cc == nil || cc.TTL != "1h" {
+		t.Errorf("System[0].CacheControl = %+v, want the caller's own explicit {ephemeral 1h}, not the auto-populate default", cc)
+	}
+}
+
+// TestToProviderSystemPromptAutoPopulateSuppressedByDeploymentOptOut is
+// the load-bearing proof for the per-deployment opt-out (b): with
+// DisableCacheControlAutoPopulate set (as dataplane sets it from a
+// deployment's own config field, per that RFC), an unmarked system
+// message gets NO cache_control at all -- byte-identical to this whole
+// feature not existing.
+func TestToProviderSystemPromptAutoPopulateSuppressedByDeploymentOptOut(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "hi"},
+		},
+		DisableCacheControlAutoPopulate: true,
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.System[0].CacheControl != nil {
+		t.Errorf("System[0].CacheControl = %+v, want nil -- the deployment opted out of auto-populate", native.System[0].CacheControl)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "cache_control") {
+		t.Errorf("marshaled request contains cache_control despite the deployment opting out of auto-populate: %s", b)
+	}
+}
+
+// TestToProviderAutoPopulateNeverAppliesToNonSystemContent is the
+// load-bearing proof for heuristic (a): auto-populate is scoped to
+// system messages ONLY. A request with no CacheControl set anywhere, on
+// a deployment that has NOT opted out, must still leave every
+// user/assistant message, content part, and tool definition completely
+// unmarked -- proving auto-populate doesn't quietly widen its own scope
+// to "any large or first content," only the one structurally-guaranteed
+// case the RFC names.
+func TestToProviderAutoPopulateNeverAppliesToNonSystemContent(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{
+				Role:    "user",
+				Content: "see attached",
+				Parts: []adapter.ContentPart{
+					{Type: "document", MediaType: "application/pdf", Data: "ZG9j"},
+				},
+			},
+			{Role: "assistant", Content: "sure, one moment"},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	// The system message DOES get auto-populated (proven by the test
+	// above) -- strip it out of the marshaled check below by asserting
+	// on the non-system parts of the output directly instead.
+	if len(native.Messages) != 2 {
+		t.Fatalf("native.Messages len = %d, want 2 (user, assistant)", len(native.Messages))
+	}
+	for _, m := range native.Messages {
+		for _, block := range m.Content {
+			if block.CacheControl != nil {
+				t.Errorf("role %q block %+v carries an auto-populated CacheControl, want nil -- auto-populate must never apply outside system messages", m.Role, block)
+			}
+		}
+	}
+	if len(native.Tools) != 1 || native.Tools[0].CacheControl != nil {
+		t.Errorf("native.Tools = %+v, want the one tool def with no CacheControl", native.Tools)
 	}
 }
 

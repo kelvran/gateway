@@ -113,3 +113,37 @@ func TestToolDefUnmarshalJSONWithoutCacheControlLeavesItNil(t *testing.T) {
 		t.Errorf("CacheControl = %+v, want nil", td.CacheControl)
 	}
 }
+
+// TestChatRequestDisableCacheControlAutoPopulateIsWireUnreachable is the
+// load-bearing proof for docs/rfcs/2026-09-07-gateway-cache-control-
+// auto-populate.md's json:"-" choice on ChatRequest.
+// DisableCacheControlAutoPopulate: a client-supplied request body can
+// never set this field via unmarshal (it expresses an operator's
+// deployment-level policy, never a per-call client choice), and marshaling
+// a ChatRequest that has it set (as dataplane does, per-call, before
+// ToProvider) never leaks it back onto any wire representation either.
+func TestChatRequestDisableCacheControlAutoPopulateIsWireUnreachable(t *testing.T) {
+	// Direction 1: unmarshal. A malicious or merely curious client trying
+	// to set the field directly via the JSON body must have zero effect.
+	wire := `{"model":"gpt-4o","messages":[],"disable_cache_control_auto_populate":true,"DisableCacheControlAutoPopulate":true}`
+	var req ChatRequest
+	if err := json.Unmarshal([]byte(wire), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if req.DisableCacheControlAutoPopulate {
+		t.Error("DisableCacheControlAutoPopulate = true after unmarshaling a wire body that tried to set it -- it must be wire-unreachable")
+	}
+
+	// Direction 2: marshal. dataplane sets this field internally
+	// (per-call, before ToProvider) -- it must never leak back onto any
+	// JSON representation of the request (e.g. a future logging/tracing
+	// path that marshals ChatRequest).
+	req2 := ChatRequest{Model: "gpt-4o", DisableCacheControlAutoPopulate: true}
+	b, err := json.Marshal(req2)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b), "isable") || strings.Contains(string(b), "auto_populate") {
+		t.Errorf("marshaled ChatRequest leaks DisableCacheControlAutoPopulate onto the wire: %s", b)
+	}
+}

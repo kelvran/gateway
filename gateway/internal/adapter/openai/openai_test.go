@@ -326,7 +326,13 @@ func TestToProviderCacheControlKeyOnContentPartIsFound(t *testing.T) {
 // (nil, the default) case -- and a CacheControl set with an empty Key,
 // which is also a no-value case -- never emits prompt_cache_key at all,
 // matching this schema's existing optional-field convention rather than
-// inventing a fabricated value, per findCacheKey's own doc comment.
+// inventing a fabricated value, per findCacheKey's own doc comment. Also
+// extended to prove OpenAI is unaffected by the deployment-level
+// DisableCacheControlAutoPopulate opt-out added by
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md -- that
+// field only ever changes Anthropic's/Bedrock's own system-message
+// handling; openai.go's ToProvider never reads it at all, so setting it
+// must produce byte-identical output.
 func TestToProviderUnsetCacheControlOmitsPromptCacheKey(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "gpt-4o",
@@ -352,6 +358,20 @@ func TestToProviderUnsetCacheControlOmitsPromptCacheKey(t *testing.T) {
 	}
 	if strings.Contains(string(b), "prompt_cache_key") {
 		t.Errorf("marshaled request contains prompt_cache_key despite no Key ever being supplied: %s", b)
+	}
+
+	withOptOut := req
+	withOptOut.DisableCacheControlAutoPopulate = true
+	nativeOptOutAny, err := New().ToProvider(withOptOut)
+	if err != nil {
+		t.Fatalf("ToProvider(withOptOut): %v", err)
+	}
+	bOptOut, err := json.Marshal(nativeOptOutAny)
+	if err != nil {
+		t.Fatalf("marshaling opt-out native request: %v", err)
+	}
+	if string(b) != string(bOptOut) {
+		t.Errorf("DisableCacheControlAutoPopulate changed OpenAI's native request output:\nwithout: %s\nwith:    %s", b, bOptOut)
 	}
 }
 

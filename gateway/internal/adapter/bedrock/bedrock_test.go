@@ -10,6 +10,13 @@ import (
 
 // TestRoundTrip proves the two hazards shared with anthropic/gemini:
 // system-prompt placement and tool-call argument re-encoding.
+// DisableCacheControlAutoPopulate is deliberately set here, per
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md: this
+// test's own assertions (len(native.System) != 1) are about hazard 1/2,
+// not caching, so auto-populate's own trailing cachePoint element (which
+// would otherwise make len(native.System) == 2) is turned off to keep
+// this test's original, still-valid claim isolated from that later
+// feature.
 func TestRoundTrip(t *testing.T) {
 	original := adapter.ChatRequest{
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -24,6 +31,7 @@ func TestRoundTrip(t *testing.T) {
 				ParametersJSON: `{"type":"object","properties":{"city":{"type":"string"}}}`,
 			},
 		},
+		DisableCacheControlAutoPopulate: true,
 	}
 
 	a := New()
@@ -332,6 +340,12 @@ func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
 // standalone cachePoint block follows only the marked message's own
 // text block -- not a property of that block itself (unlike
 // Anthropic), and not present after the unmarked block.
+// DisableCacheControlAutoPopulate is deliberately set here, per
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md: this
+// test's own claim is about explicit, caller-supplied per-message
+// checkpoints, not the later auto-populate default, so the first
+// (unmarked) block's "no cachePoint" assertion stays isolated from that
+// feature.
 func TestToProviderSystemMessageCacheControlAppendsCachePointBlock(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -340,6 +354,7 @@ func TestToProviderSystemMessageCacheControlAppendsCachePointBlock(t *testing.T)
 			{Role: "system", Content: "Second system block.", CacheControl: &adapter.CacheControl{}},
 			{Role: "user", Content: "hi"},
 		},
+		DisableCacheControlAutoPopulate: true,
 	}
 
 	nativeAny, err := New().ToProvider(req)
@@ -502,7 +517,12 @@ func TestToProviderToolResultCacheControlAppendsCachePoint(t *testing.T) {
 // TestToProviderUnsetCacheControlIsNoOp proves the unset (nil, the
 // default) case never emits any cachePoint field anywhere in the
 // marshaled request, matching this schema's existing optional-field
-// convention.
+// convention. DisableCacheControlAutoPopulate is deliberately set here,
+// per docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md:
+// without it, the request's own unmarked system message would now get
+// the new default auto-populated marker -- see
+// TestToProviderSystemPromptAutoPopulatesCachePointByDefault below for
+// that proof.
 func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -515,6 +535,7 @@ func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
 		Tools: []adapter.ToolDef{
 			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
 		},
+		DisableCacheControlAutoPopulate: true,
 	}
 
 	nativeAny, err := New().ToProvider(req)
@@ -579,6 +600,146 @@ func TestToProviderToolDefCacheControlAppendsCachePointElement(t *testing.T) {
 	}
 	if tools[2].ToolSpec != nil || tools[2].CachePoint == nil || tools[2].CachePoint.Type != "default" {
 		t.Errorf("tools[2] = %+v, want a standalone {cachePoint:{default}} element with no toolSpec", tools[2])
+	}
+}
+
+// TestToProviderSystemPromptAutoPopulatesCachePointByDefault is the
+// load-bearing proof for docs/rfcs/2026-09-07-gateway-cache-control-
+// auto-populate.md's core policy: a system message with CacheControl
+// left completely unset, on a deployment that has not opted out (the
+// zero-value default), must still get a real, standalone cachePoint
+// checkpoint block -- not the caller-explicit-only behavior every
+// deployment had before this RFC.
+func TestToProviderSystemPromptAutoPopulatesCachePointByDefault(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.System) != 2 {
+		t.Fatalf("native.System len = %d, want 2 (text, cachePoint)", len(native.System))
+	}
+	if native.System[0].Text != "You are a helpful assistant." || native.System[0].CachePoint != nil {
+		t.Errorf("System[0] = %+v, want the text block with no cachePoint of its own", native.System[0])
+	}
+	if native.System[1].CachePoint == nil || native.System[1].CachePoint.Type != "default" {
+		t.Errorf("System[1] = %+v, want the auto-populated standalone cachePoint block", native.System[1])
+	}
+}
+
+// TestToProviderExplicitSystemCacheControlNotOverriddenByAutoPopulate
+// proves precedence rule (c): a caller-supplied, explicit CacheControl on
+// a system message still produces the checkpoint (auto-populate never
+// suppresses or double-appends over an explicit marker's own effect).
+func TestToProviderExplicitSystemCacheControlNotOverriddenByAutoPopulate(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant.", CacheControl: &adapter.CacheControl{}},
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.System) != 2 || native.System[1].CachePoint == nil {
+		t.Fatalf("native.System = %+v, want exactly one cachePoint following the explicitly-marked text block", native.System)
+	}
+}
+
+// TestToProviderSystemPromptAutoPopulateSuppressedByDeploymentOptOut is
+// the load-bearing proof for the per-deployment opt-out (b): with
+// DisableCacheControlAutoPopulate set (as dataplane sets it from a
+// deployment's own config field, per that RFC), an unmarked system
+// message gets NO cachePoint at all -- byte-identical to this whole
+// feature not existing.
+func TestToProviderSystemPromptAutoPopulateSuppressedByDeploymentOptOut(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "hi"},
+		},
+		DisableCacheControlAutoPopulate: true,
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.System) != 1 {
+		t.Fatalf("native.System len = %d, want 1 (text only, no cachePoint) -- the deployment opted out of auto-populate", len(native.System))
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "cachePoint") {
+		t.Errorf("marshaled request contains cachePoint despite the deployment opting out of auto-populate: %s", b)
+	}
+}
+
+// TestToProviderAutoPopulateNeverAppliesToNonSystemContent is the
+// load-bearing proof for heuristic (a): auto-populate is scoped to
+// system messages ONLY. A request with no CacheControl set anywhere, on
+// a deployment that has NOT opted out, must still leave every
+// user/assistant message, content part, and tool definition completely
+// unmarked.
+func TestToProviderAutoPopulateNeverAppliesToNonSystemContent(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{
+				Role:    "user",
+				Content: "see attached",
+				Parts: []adapter.ContentPart{
+					{Type: "document", MediaType: "application/pdf", Data: "ZG9j"},
+				},
+			},
+			{Role: "assistant", Content: "sure, one moment"},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	// The system message DOES get an auto-populated cachePoint (proven
+	// above) -- check only the non-system parts of the output here.
+	if len(native.Messages) != 2 {
+		t.Fatalf("native.Messages len = %d, want 2 (user, assistant)", len(native.Messages))
+	}
+	for _, m := range native.Messages {
+		for _, block := range m.Content {
+			if block.CachePoint != nil {
+				t.Errorf("role %q carries an auto-populated cachePoint block, want none -- auto-populate must never apply outside system messages", m.Role)
+			}
+		}
+	}
+	if native.ToolConfig == nil || len(native.ToolConfig.Tools) != 1 || native.ToolConfig.Tools[0].CachePoint != nil {
+		t.Errorf("native.ToolConfig.Tools = %+v, want the one tool def with no cachePoint", native.ToolConfig)
 	}
 }
 

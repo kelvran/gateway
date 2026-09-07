@@ -543,6 +543,48 @@ func TestLoadRejectsNegativeDeploymentWeight(t *testing.T) {
 	}
 }
 
+// TestLoadDeploymentDisableCacheControlAutoPopulateUnsetDefaultsToFalse
+// proves a deployment with no disable_cache_control_auto_populate key
+// parses to false -- auto-populate stays ON, matching every deployment
+// configured before this field existed, per
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md.
+func TestLoadDeploymentDisableCacheControlAutoPopulateUnsetDefaultsToFalse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].DisableCacheControlAutoPopulate; got {
+		t.Errorf("DisableCacheControlAutoPopulate = %v, want false (unset -- auto-populate stays ON)", got)
+	}
+}
+
+// TestLoadDeploymentDisableCacheControlAutoPopulateParsesTrue proves an
+// explicit disable_cache_control_auto_populate: true key parses through
+// -- the per-deployment opt-out, per
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md.
+func TestLoadDeploymentDisableCacheControlAutoPopulateParsesTrue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := minimalDeploymentConfig("    disable_cache_control_auto_populate: true\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].DisableCacheControlAutoPopulate; !got {
+		t.Errorf("DisableCacheControlAutoPopulate = %v, want true", got)
+	}
+}
+
 // TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists proves
 // each error-class key parses into an ORDERED slice (not just a set) —
 // this file's YAML-subset parser has no list support, so fallback_chains
