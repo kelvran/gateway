@@ -117,5 +117,141 @@
     "tier": "regression",
     "tags": ["category:routing", "provenance:dogfood"],
     "flaky": false
+  },
+  {
+    "id": "dogfood-cache-l1-l2-key-layer-collision",
+    "revision": 1,
+    "task_spec": {
+      "output": "cache_key_l1_vs_l2_same_remaining_inputs=distinct_hashes_via_layer_tag",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-03] Cache L2 (normalized-match) -- spec -> plan -> implementation, a real code-content collision risk found and closed (Bugs found)",
+      "description": "gateway/internal/cache/key.go's Key (L1, exact-match) and NormalizedKey (L2, normalized-match) functions, as first written for Cache L2, built their hash input from the same remaining fields (tenant, model, serialized messages) with no per-layer discriminator -- given identical remaining inputs, Key and NormalizedKey produced the byte-identical hash, relying entirely on separate cache.Cache instances (one per layer) for isolation, with no structural insurance against a future refactor ever sharing one map between L1 and L2.",
+      "pre_fix_behavior": "cache_key_l1_vs_l2_same_remaining_inputs=identical_hash (Key and NormalizedKey collide byte-for-byte; isolation relies entirely on using two separate cache.Cache instances, with zero structural insurance against ever sharing one map)",
+      "regression_guard": "gateway/internal/cache/key_test.go: TestKeyAndNormalizedKeyNeverCollide is the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 3 corpus-growth pass (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go cache-key-hashing code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "cache_key_l1_vs_l2_same_remaining_inputs=distinct_hashes_via_layer_tag",
+    "tier": "regression",
+    "tags": ["category:cache", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-cost-cache-hit-coalesced-follower-double-charge",
+    "revision": 1,
+    "task_spec": {
+      "output": "cache_hit_and_coalesced_follower_budget_charge=charged_once_only (only the genuine, unshared upstream call is billable; a 10-way coalesced miss now bills the real $0.011)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Fresh backlog audit item 17: cache hits and coalesced followers never re-charge budget (Bugs found)",
+      "description": "dataplane.finalize (gateway) called p.budget.Record unconditionally whenever err == nil, regardless of whether the response was a genuine, unshared upstream call -- so every repeat cache hit (L1/L2/L3) and every request coalesced by the singleflight-based cache-stampede protection re-charged the exact same already-paid cost against the virtual key's budget, double- (or N-times-) counting spend for work that happened once. A 10-way singleflight-coalesced cache miss billed 10x the real cost ($0.11 instead of $0.011).",
+      "pre_fix_behavior": "cache_hit_and_coalesced_follower_budget_charge=recharged_every_time (a 10-way singleflight-coalesced miss bills 10x: $0.11 instead of the real $0.011; every repeat cache hit re-charges the same cost again)",
+      "regression_guard": "gateway/internal/gateway/dataplane/cost_double_counting_test.go: TestHandleChatCompletionCacheHitDoesNotRechargeBudget and TestHandleChatCompletionCoalescedFollowerDoesNotRechargeBudget are the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 3 corpus-growth pass (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go budget/cache-billing code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "cache_hit_and_coalesced_follower_budget_charge=charged_once_only (only the genuine, unshared upstream call is billable; a 10-way coalesced miss now bills the real $0.011)",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-telemetry-metrics-periodicreader-shutdown-flush-fatal",
+    "revision": 1,
+    "task_spec": {
+      "output": "metrics_periodicreader_shutdown_flush_failure=logged_non_fatal_warning",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Fresh backlog audit item 5: a live metric at the rate-limiter fail-open path (Bugs found)",
+      "description": "Adding the gateway's first OTel Metrics pipeline (a live counter at the rate-limiter fail-open path) broke the pre-existing TestInitOTLPExporterConstructsWithoutDialing: sdkmetric.PeriodicReader.Shutdown unconditionally attempts a final collect+export even with zero data points recorded, unlike the trace pipeline's batch span processor (which has nothing queued to flush with zero spans) -- a real, external asymmetry between the two OTel Go SDK signal types. Unfixed, a metrics-flush failure on shutdown (e.g. an unreachable OTLP collector) would propagate as a fatal shutdown error rather than a tolerated, logged warning.",
+      "pre_fix_behavior": "metrics_periodicreader_shutdown_flush_failure=fatal_shutdown_error (PeriodicReader.Shutdown's unconditional zero-data-point final export attempt propagates as a hard error, breaking TestInitOTLPExporterConstructsWithoutDialing)",
+      "regression_guard": "gateway/internal/telemetry/telemetry_test.go: TestInitOTLPExporterConstructsWithoutDialing is the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 3 corpus-growth pass (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go OTel Metrics shutdown code for this case shape -- it only checks a frozen string. Tagged `category:telemetry`, a new category this pass introduces (not in the RFC's starter taxonomy): the bug is about the metrics/tracing pipeline's own shutdown-reliability behavior, an axis orthogonal to routing/cache/cost/guardrail/streaming/judge -- justified explicitly here per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md section 1's own 'additive, no schema change' allowance. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "metrics_periodicreader_shutdown_flush_failure=logged_non_fatal_warning",
+    "tier": "regression",
+    "tags": ["category:telemetry", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-harness-rollout-cache-fabricates-hit-from-errored-run",
+    "revision": 1,
+    "task_spec": {
+      "output": "run_suite_cache_lookup(error_status_prior_run)=rejected_defensively_not_a_hit",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-04] Backlog Phase 2a -- evals rollout cost/DoS mitigation, a naive design corrected before any code shipped (Bugs found)",
+      "description": "evals.rollout.scheduler.run_suite's --use-cache lookup had no defensive check of its own that a matching prior Run (looked up by cache_key in the caller-supplied cached_runs dict) was actually status == \"completed\" -- it relied solely on rollout_cmd's own cached_runs construction (which filters on status==\"completed\") to keep an error/timed_out Run out of the cache. Any other caller of run_suite (or a future CLI change) that passed in an error-status Run under its real cache_key would have had run_suite fabricate a fake, silently-reused \"completed\" hit from what was really a transient infra failure (e.g. the Docker daemon being briefly unreachable), never re-attempting the real sandboxed command.",
+      "pre_fix_behavior": "run_suite_cache_lookup(error_status_prior_run)=fabricated_completed_hit (no defensive status re-check inside run_suite itself; a transient infra failure recorded as status=\"error\" is silently reused as though it had genuinely re-executed and completed)",
+      "regression_guard": "evals/tests/test_scheduler.py::test_cache_never_hits_an_errored_prior_run is the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 3 corpus-growth pass (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. Unlike Phase 1's entirely Go-side (gateway) cases, this bug is genuinely evals-side Python (evals.rollout.scheduler.run_suite) -- but verified directly, by reading both run_cmd and rollout_cmd in evals/evals/cli.py before concluding this, that neither `evals run`'s deterministic scorer (task_spec.output/match against a frozen reference) nor `evals rollout`'s real Docker-sandbox execution (task_spec.image/command/timeout_s) can invoke an internal function like run_suite's own cache-defensiveness check as a per-case unit. This case therefore stays in the same static, frozen task_spec.output-vs-reference shape every other case in this file uses, and `evals run` does not re-execute `evals/evals/rollout/scheduler.py` for this case shape at eval time -- it only checks a frozen string. The `pre_fix_behavior`/`output` values were independently re-confirmed by directly re-running `evals/tests/test_scheduler.py::test_cache_never_hits_an_errored_prior_run` against the real, currently-fixed code before writing this entry (passes), not just quoted from LOGS.md's prose. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above. Tagged `category:harness`, a new category this pass introduces (not in the RFC's starter taxonomy): none of routing/cache/cost/guardrail/streaming/judge cover the evals rollout/sandbox execution harness's own correctness (as opposed to what it evaluates) -- justified explicitly here per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md section 1's own 'additive, no schema change' allowance, matching the exact example that RFC section's own spirit anticipates."
+    },
+    "reference": "run_suite_cache_lookup(error_status_prior_run)=rejected_defensively_not_a_hit",
+    "tier": "regression",
+    "tags": ["category:harness", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-harness-earlystop-scorefn-nested-event-loop",
+    "revision": 1,
+    "task_spec": {
+      "output": "rollout_early_stop_with_llm_judge=scored_correctly_no_nested_event_loop_error (score_fn is async-native; rollout_cmd's whole execution unified under one asyncio.run() call)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-04] Backlog Phase 2a -- evals rollout cost/DoS mitigation, a naive design corrected before any code shipped (Bugs found)",
+      "description": "EarlyStopConfig.score_fn (evals.rollout.scheduler), first written as a plain synchronous callable, broke the moment a CLI-integration test exercised --early-stop together with --llm-judge and asserted a real judge-call count: run_suite is already running inside its own asyncio event loop by the time it invokes score_fn under early-stopping, and the pre-existing --llm-judge scoring helper drove its own internal asyncio.run(), which raises RuntimeError(\"... cannot be called from a running event loop\") when nested inside one that's already running. That RuntimeError was being silently swallowed into a wrong JUDGE_ERROR outcome for every trial rather than surfacing as the real wiring bug it was.",
+      "pre_fix_behavior": "rollout_early_stop_with_llm_judge=JUDGE_ERROR_via_swallowed_RuntimeError (score_fn's nested asyncio.run() call inside run_suite's own already-running event loop raises \"cannot be called from a running event loop\", silently reported as JUDGE_ERROR instead of surfacing)",
+      "regression_guard": "evals/tests/test_cli_integration.py::test_rollout_early_stop_with_llm_judge_never_double_calls_judge is the real, executing regression guard for this bug -- it exercises the exact early-stop + --llm-judge score_fn wiring path the nested-event-loop bug lived in.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 3 corpus-growth pass (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. Unlike Phase 1's entirely Go-side (gateway) cases, this bug is genuinely evals-side Python (evals.rollout.scheduler.EarlyStopConfig / evals.cli.rollout_cmd) -- but verified directly, by reading both run_cmd and rollout_cmd in evals/evals/cli.py before concluding this, that neither of the CLI's two real executors can invoke this specific async-wiring bug as a standalone per-case task_spec; it only manifests as a property of a whole --early-stop + --llm-judge invocation across several cases, not one case in isolation. This case therefore stays in the same static, frozen task_spec.output-vs-reference shape every other case in this file uses, and `evals run` does not re-execute the real early-stop/rollout wiring for this case shape at eval time -- it only checks a frozen string. Independently re-confirmed by directly re-running `evals/tests/test_cli_integration.py::test_rollout_early_stop_with_llm_judge_never_double_calls_judge` against the real, currently-fixed code before writing this entry (passes, judge called exactly twice, no RuntimeError), not just quoted from LOGS.md's prose. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above. Tagged `category:harness` -- see the sibling `dogfood-harness-rollout-cache-fabricates-hit-from-errored-run` case's corpus_note for this pass's explicit justification of the new category."
+    },
+    "reference": "rollout_early_stop_with_llm_judge=scored_correctly_no_nested_event_loop_error (score_fn is async-native; rollout_cmd's whole execution unified under one asyncio.run() call)",
+    "tier": "regression",
+    "tags": ["category:harness", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-harness-sandbox-timeout-does-not-kill-container",
+    "revision": 1,
+    "task_spec": {
+      "output": "sandbox_timeout_container_state=genuinely_stopped_via_real_docker_kill (captured via --cidfile, confirmed by direct docker inspect, not just that the Python call returned)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-04] `evals` `Span.container_id` + a real DoS-relevant `sandbox.py` timeout bug fix (Bugs found)",
+      "description": "evals.rollout.sandbox.run_in_sandbox's own docstring claimed that on timeout, \"the container process is killed\" -- but empirically, killing only the local docker run CLI client process (process.kill()) does not stop the container itself: confirmed against a real Docker daemon that the container stayed Up for its own full, unbounded natural duration after the CLI process was killed and the Python call had already returned timed_out=True. A hung or malicious sandboxed command could run indefinitely past timeout_s, directly undermining it as a real resource bound -- the exact DoS-relevant gap THREAT_MODEL.md's Evals row names.",
+      "pre_fix_behavior": "sandbox_timeout_container_state=still_running (only the local docker run CLI client process is killed via process.kill(); the real container keeps running for its own full, unbounded duration -- confirmed via docker ps/docker inspect showing Up/true after the Python call already returned timed_out=True)",
+      "regression_guard": "evals/tests/test_sandbox_integration.py::test_run_in_sandbox_timeout_actually_stops_the_container (RUN_DOCKER_TESTS=1-gated, requires a real Docker daemon) is the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 3 corpus-growth pass (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. Unlike every other case mined so far -- all gateway-side Go, plus this pass's other evals-side cases, none of which are shaped for either CLI executor -- this bug's task_spec shape ({image, command, timeout_s}) is exactly what `evals rollout` really executes against a live Docker daemon (verified directly by reading `rollout_cmd`/`run_in_sandbox` in evals/evals/cli.py and evals/evals/rollout/sandbox.py before concluding this). It is deliberately NOT encoded that way here: this specific file is scored via `evals run --suite ... --scores ...` per this task's own verification convention, and `run_cmd`'s deterministic scorer requires `task_spec.output` -- a rollout-shaped case with no `output` key would raise `ValueError` and abort the whole suite run (confirmed by reading `_score_case_deterministic` in evals/evals/cli.py), not fail gracefully as one isolated case. So this case is kept in the same static, frozen task_spec.output-vs-reference shape as every other case in this file, honestly for that concrete, checked reason -- not by default assumption. Genuinely unlike every other case in this batch, the `output`/`pre_fix_behavior` values below were independently reproduced by actually invoking the real, currently-fixed `evals.rollout.sandbox.run_in_sandbox()` against a real local Docker daemon while authoring this entry (image=alpine:3.20, command=[\"sleep\",\"30\"], timeout_s=2) and confirming via `docker inspect -f '{{.State.Running}}' <container_id>` that the real container is genuinely stopped (`false`), not just that the Python call returned `timed_out=True` -- not merely quoted from LOGS.md's prose. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above. Tagged `category:harness` -- see the sibling `dogfood-harness-rollout-cache-fabricates-hit-from-errored-run` case's corpus_note for this pass's explicit justification of the new category; this is the exact evals-sandbox-harness example that RFC section anticipates."
+    },
+    "reference": "sandbox_timeout_container_state=genuinely_stopped_via_real_docker_kill (captured via --cidfile, confirmed by direct docker inspect, not just that the Python call returned)",
+    "tier": "regression",
+    "tags": ["category:harness", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-judge-score-cache-key-axis-backward-incompat",
+    "revision": 1,
+    "task_spec": {
+      "output": "score_cache_key(axis=None)=identical_to_pre_axis_hash (axis included in the canonical JSON only when not None)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Tier 2, item 4: multi-axis LLM-judge scoring (Bugs found)",
+      "description": "evals.judge.cache.compute_score_cache_key gained an optional axis parameter for multi-axis judging (docs/rfcs/2026-09-05-evals-multi-axis-judging.md). An early draft always included axis in the canonical JSON dict used to build the SHA-256 hash -- as a literal null when the caller passed axis=None -- which would have silently changed score_cache_key's value for every pre-existing, already-persisted --use-score-cache entry the moment this shipped, breaking every prior cache hit with no warning.",
+      "pre_fix_behavior": "score_cache_key(axis=None)=changed_from_pre_axis_hash (a literal null axis field added to the canonical JSON dict changes the SHA-256 hash for every call that omits axis, invalidating every pre-existing --use-score-cache entry with no warning)",
+      "regression_guard": "evals/tests/test_judge_cache.py::test_omitting_axis_matches_the_original_pre_axis_key_exactly is the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 3 corpus-growth pass (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. Unlike Phase 1's entirely Go-side (gateway) cases, this bug is genuinely evals-side Python (evals.judge.cache.compute_score_cache_key) -- but verified directly, by reading both run_cmd and rollout_cmd in evals/evals/cli.py before concluding this, that neither CLI executor can invoke a cache-key-hashing helper as a per-case task_spec. This case therefore stays in the same static, frozen task_spec.output-vs-reference shape every other case in this file uses, and `evals run` does not re-execute `evals/evals/judge/cache.py` for this case shape at eval time -- it only checks a frozen string. Independently re-confirmed by directly re-running `evals/tests/test_judge_cache.py::test_omitting_axis_matches_the_original_pre_axis_key_exactly` against the real, currently-fixed code before writing this entry (passes), not just quoted from LOGS.md's prose. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "score_cache_key(axis=None)=identical_to_pre_axis_hash (axis included in the canonical JSON only when not None)",
+    "tier": "regression",
+    "tags": ["category:judge", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-harness-mixture-sprt-math-exp-overflow",
+    "revision": 1,
+    "task_spec": {
+      "output": "mixture_sprt_decision(trials_run=18, successes=18, baseline_pass_rate=0.01171875)=stop_true_no_overflow (computed in log-space throughout)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Tier 2, final item: real mixture-SPRT (anytime-valid) early-stopping (Bugs found)",
+      "description": "evals.stats.mixture_sprt_early_stop's first draft compared its mSPRT likelihood ratio directly (via math.exp of a log-likelihood term) against 1/alpha, rather than working in log-space throughout. Hypothesis property-based fuzzing (test_never_stops_at_zero_trials_and_never_raises_for_valid_input, run over a broad float/int space) found a real OverflowError on an extreme, previously-unconsidered input -- trials_run=18, successes_frac=1.0, baseline_pass_rate=0.01171875 -- that no hand-picked example test would ever have chosen; the real (non-log) likelihood ratio for this input is astronomically large (its own log-likelihood-ratio is ~717.6, already past what math.exp can represent as a float).",
+      "pre_fix_behavior": "mixture_sprt_decision(trials_run=18, successes=18, baseline_pass_rate=0.01171875)=OverflowError_raised (the raw, non-log likelihood ratio -- math.exp of a log-likelihood-ratio of ~717.6 -- exceeds what a Python float can represent)",
+      "regression_guard": "evals/tests/test_stats_properties.py::test_never_stops_at_zero_trials_and_never_raises_for_valid_input (a Hypothesis property-based fuzz test) is the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 3 corpus-growth pass (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is evals-side Python (evals.stats.mixture_sprt_early_stop), but it is a pure statistical function with no task_spec shape either `run_cmd` or `rollout_cmd` can invoke per-case (verified directly by reading both in evals/evals/cli.py before concluding this) -- so this case stays in the same static, frozen task_spec.output-vs-reference shape every other case in this file uses, and `evals run` does not re-execute `evals/evals/stats.py` for this case shape at eval time -- it only checks a frozen string. The `pre_fix_behavior` value was independently re-derived, not quoted from LOGS.md's prose: computed the exact log-likelihood-ratio (~717.6) the real, currently-fixed function produces for these inputs, then confirmed directly that `math.exp()` of that value raises a real `OverflowError` -- reproducing the pre-fix bug class honestly without editing any production code -- while the `output` value was confirmed by actually calling the real, currently-shipped `mixture_sprt_early_stop(18, 18, 0.01171875)` directly, which returns `True` with no exception. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above. Tagged `category:harness` -- see the sibling `dogfood-harness-rollout-cache-fabricates-hit-from-errored-run` case's corpus_note for this pass's explicit justification of the new category."
+    },
+    "reference": "mixture_sprt_decision(trials_run=18, successes=18, baseline_pass_rate=0.01171875)=stop_true_no_overflow (computed in log-space throughout)",
+    "tier": "regression",
+    "tags": ["category:harness", "provenance:dogfood"],
+    "flaky": false
   }
 ]
