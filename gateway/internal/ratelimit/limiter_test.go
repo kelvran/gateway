@@ -254,3 +254,121 @@ func TestRegisterDisablingTPMRemovesTheStaleBucket(t *testing.T) {
 		t.Fatal("AllowTPM() = false after Register() disabled TPM, want true — the stale bucket must be removed, not left enforcing an old limit")
 	}
 }
+
+// TestAllowForModelUsesItsOwnBucketSeparateFromTheDefault proves a
+// configured PerModel override is a genuinely separate bucket from the
+// key's own default — exhausting one must never affect the other.
+func TestAllowForModelUsesItsOwnBucketSeparateFromTheDefault(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 1, RefillPerSecond: 0}},
+	}})
+	ctx := context.Background()
+
+	if allowed, _ := l.AllowForModel(ctx, "team-alpha", "gpt-4o"); !allowed {
+		t.Fatal("first AllowForModel(gpt-4o) = false, want true (capacity 1, unused)")
+	}
+	if allowed, _ := l.AllowForModel(ctx, "team-alpha", "gpt-4o"); allowed {
+		t.Fatal("second AllowForModel(gpt-4o) = true, want false — gpt-4o's own bucket (capacity 1) is exhausted")
+	}
+	// The default bucket (capacity 100) must be completely untouched by
+	// gpt-4o's own exhausted bucket above.
+	if allowed, _ := l.Allow(ctx, "team-alpha"); !allowed {
+		t.Fatal("Allow() (default bucket) = false after gpt-4o's override was exhausted — the two buckets must be independent")
+	}
+	if allowed, _ := l.AllowForModel(ctx, "team-alpha", "claude-opus-4"); !allowed {
+		t.Fatal("AllowForModel(claude-opus-4) = false, want true — an unconfigured model must fall back to the shared default bucket, unaffected by gpt-4o's own override")
+	}
+}
+
+// TestAllowForModelByteIdenticalToAllowWhenNoPerModelConfigured proves
+// the backward-compatibility guarantee: a key with zero PerModel entries
+// behaves exactly the same whichever of the two entry points a caller
+// uses, per docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md.
+func TestAllowForModelByteIdenticalToAllowWhenNoPerModelConfigured(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 1, RefillPerSecond: 0}})
+	ctx := context.Background()
+
+	if allowed, _ := l.AllowForModel(ctx, "team-alpha", "gpt-4o"); !allowed {
+		t.Fatal("AllowForModel() #1 = false, want true (capacity 1, unused)")
+	}
+	// The single shared bucket is now exhausted — Allow() (no model) must
+	// see the exact same exhausted state AllowForModel() just produced.
+	if allowed, _ := l.Allow(ctx, "team-alpha"); allowed {
+		t.Fatal("Allow() = true after AllowForModel() exhausted the shared bucket, want false — no PerModel means both entry points hit the identical bucket")
+	}
+}
+
+// TestPerModelEntryWithNonPositiveCapacityTreatedAsAbsent proves a
+// PerModel entry with Capacity <= 0 falls through to the default bucket
+// — never an always-zero-balance bucket that would block every request
+// for that model, per KeyConfig.PerModel's own doc comment.
+func TestPerModelEntryWithNonPositiveCapacityTreatedAsAbsent(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 5, RefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 0, RefillPerSecond: 10}},
+	}})
+	ctx := context.Background()
+
+	if allowed, _ := l.AllowForModel(ctx, "team-alpha", "gpt-4o"); !allowed {
+		t.Fatal("AllowForModel(gpt-4o) = false, want true — a Capacity<=0 override must be treated as absent, falling through to the default bucket, not an always-blocked zero-capacity bucket")
+	}
+}
+
+// TestAllowForModelInRedisModePassesADistinctKeyAndConfigForTheOverride
+// proves Redis mode consults PerModel too (unlike TPM, which is
+// in-memory-only) and keys the backend call distinctly from the
+// default-bucket key.
+func TestAllowForModelInRedisModePassesADistinctKeyAndConfigForTheOverride(t *testing.T) {
+	backend := &fakeBackend{}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 20, RefillPerSecond: 10,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 5, RefillPerSecond: 1}},
+	}}, backend)
+	ctx := context.Background()
+
+	if _, err := l.AllowForModel(ctx, "team-alpha", "gpt-4o"); err != nil {
+		t.Fatalf("AllowForModel() error = %v", err)
+	}
+	if backend.recordedKeyID == "team-alpha" {
+		t.Error("recordedKeyID = the plain key ID, want a distinct override-specific key — otherwise this would collide with team-alpha's own default-bucket key in the backend")
+	}
+	if backend.recordedCapacity != 5 || backend.recordedRefillPerSecond != 1 {
+		t.Errorf("recorded config = capacity=%v refill=%v, want the override's 5/1, not the default bucket's 20/10", backend.recordedCapacity, backend.recordedRefillPerSecond)
+	}
+
+	// A different model with no override must use the plain key ID and
+	// the default capacity/refill, exactly like Allow() would.
+	if _, err := l.AllowForModel(ctx, "team-alpha", "claude-opus-4"); err != nil {
+		t.Fatalf("AllowForModel() error = %v", err)
+	}
+	if backend.recordedKeyID != "team-alpha" {
+		t.Errorf("recordedKeyID = %q for an unconfigured model, want the plain key ID %q", backend.recordedKeyID, "team-alpha")
+	}
+	if backend.recordedCapacity != 20 || backend.recordedRefillPerSecond != 10 {
+		t.Errorf("recorded config = capacity=%v refill=%v for an unconfigured model, want the default bucket's 20/10", backend.recordedCapacity, backend.recordedRefillPerSecond)
+	}
+}
+
+// TestRegisterDisablingPerModelRemovesTheStaleBucket mirrors
+// TestRegisterDisablingTPMRemovesTheStaleBucket for PerModel: an update
+// that stops configuring an override must actually stop enforcing it.
+func TestRegisterDisablingPerModelRemovesTheStaleBucket(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 1, RefillPerSecond: 0}},
+	}})
+	ctx := context.Background()
+	if allowed, _ := l.AllowForModel(ctx, "team-alpha", "gpt-4o"); !allowed {
+		t.Fatal("first AllowForModel(gpt-4o) = false, want true")
+	}
+	if allowed, _ := l.AllowForModel(ctx, "team-alpha", "gpt-4o"); allowed {
+		t.Fatal("gpt-4o's override bucket should now be exhausted (capacity 1)")
+	}
+
+	l.Register(KeyConfig{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}) // PerModel omitted = disabled
+
+	if allowed, _ := l.AllowForModel(ctx, "team-alpha", "gpt-4o"); !allowed {
+		t.Fatal("AllowForModel(gpt-4o) = false after Register() disabled the override, want true — gpt-4o should now fall through to the fresh default bucket, not a stale exhausted override")
+	}
+}

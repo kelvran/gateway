@@ -54,6 +54,12 @@ func TestLoadExampleConfig(t *testing.T) {
 	if alpha.TPMCapacity != 100000 || alpha.TPMRefillPerSecond != 1000 {
 		t.Errorf("team-alpha TPM rate limit = capacity=%v refill=%v, want 100000/1000", alpha.TPMCapacity, alpha.TPMRefillPerSecond)
 	}
+	if len(alpha.PerModelRateLimits) != 1 {
+		t.Fatalf("len(team-alpha.PerModelRateLimits) = %d, want 1", len(alpha.PerModelRateLimits))
+	}
+	if gpt4o := alpha.PerModelRateLimits["gpt-4o"]; gpt4o.Burst != 5 || gpt4o.RefillPerSecond != 1 {
+		t.Errorf("team-alpha.PerModelRateLimits[gpt-4o] = %+v, want {Burst:5 RefillPerSecond:1}", gpt4o)
+	}
 	wantModels := []string{"claude-opus-4", "gpt-4o"}
 	if len(alpha.AllowedModels) != len(wantModels) {
 		t.Fatalf("team-alpha.AllowedModels = %v, want %v", alpha.AllowedModels, wantModels)
@@ -613,6 +619,77 @@ func TestLoadRejectsUnknownFallbackChainClass(t *testing.T) {
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load with an unknown fallback_chains class returned nil error")
+	}
+}
+
+// TestLoadRejectsNonPositivePerModelRateLimit proves a per_model entry
+// missing (or non-positive on) burst/refill_per_second fails fast at Load
+// time, matching this file's existing negative-weight/missing-required-
+// field discipline (TestLoadRejectsUnknownFallbackChainClass et al.) —
+// per ModelRateLimitConfig's own doc comment: unlike the key's own
+// top-level burst/refill_per_second (where 0 resolves to the gateway's
+// operational default), a per-model entry has no such fallback.
+func TestLoadRejectsNonPositivePerModelRateLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    rate_limit:\n" +
+		"      burst: 20\n" +
+		"      refill_per_second: 10\n" +
+		"      per_model:\n" +
+		"        gpt-4o:\n" +
+		"          burst: 0\n" +
+		"          refill_per_second: 1\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a non-positive per_model burst returned nil error")
+	}
+}
+
+// TestLoadWithoutPerModelRateLimitsLeavesFieldNil is the direct
+// backward-compatibility proof at the parser level, mirroring
+// TestLoadDeploymentWithoutFallbackChainsLeavesFieldNil: a virtual key
+// with no rate_limit.per_model section at all must parse to a nil map.
+func TestLoadWithoutPerModelRateLimitsLeavesFieldNil(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    rate_limit:\n" +
+		"      burst: 20\n" +
+		"      refill_per_second: 10\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.VirtualKeys[0].PerModelRateLimits != nil {
+		t.Errorf("PerModelRateLimits = %v, want nil", cfg.VirtualKeys[0].PerModelRateLimits)
 	}
 }
 

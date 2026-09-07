@@ -85,7 +85,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 	var rateLimitOK bool
-	rateLimitOK, rateLimitFailedOpen = p.checkRateLimit(ctx, vk)
+	rateLimitOK, rateLimitFailedOpen = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {
 		err = ErrRateLimited
 		return

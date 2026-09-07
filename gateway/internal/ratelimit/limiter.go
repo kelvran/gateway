@@ -23,6 +23,31 @@ type KeyConfig struct {
 	// explicit scope limit.
 	TPMCapacity        float64
 	TPMRefillPerSecond float64
+	// PerModel maps a model name to that model's own, separate RPM
+	// (Capacity, RefillPerSecond) override — the "consumer x model"
+	// dimension of Kong-style multi-dimensional rate-limit matching (per
+	// docs/upgrade-research/gateway-2026-09-06.md's Finding 5 and
+	// docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md),
+	// consulted by AllowForModel BEFORE falling back to this key's own
+	// default Capacity/RefillPerSecond bucket above. Nil/empty (the
+	// default, and every KeyConfig built before this field existed) means
+	// no override for any model: AllowForModel and Allow then behave
+	// byte-identically. An entry with Capacity <= 0 is treated as absent
+	// — falls through to the default bucket — never as "unlimited" for
+	// that model; see NewInMemoryKeyLimiter's construction loop. Enforced
+	// in BOTH in-memory and Redis-backed mode (unlike TPMCapacity above,
+	// which is in-memory-only): RedisBackend.Allow already accepts an
+	// arbitrary per-call capacity/refill and key string, so no change to
+	// that interface, or to internal/ratelimit/redislimiter, was needed
+	// to support this second mode.
+	PerModel map[string]ModelRateLimit
+}
+
+// ModelRateLimit is one virtual key's per-model RPM override — see
+// KeyConfig.PerModel's doc comment for the full design.
+type ModelRateLimit struct {
+	Capacity        float64
+	RefillPerSecond float64
 }
 
 // RedisBackend is implemented by internal/ratelimit/redislimiter.Limiter.
@@ -51,7 +76,15 @@ type KeyLimiter struct {
 	configs    map[string]KeyConfig
 	buckets    map[string]*TokenBucket // RPM, non-nil in in-memory mode only
 	tpmBuckets map[string]*TokenBucket // TPM, in-memory mode only; absent entirely in Redis mode
-	backend    RedisBackend            // non-nil in Redis mode only
+	// perModelBuckets is keyID -> model -> that model's own TokenBucket,
+	// in-memory mode only (non-nil whenever backend == nil, mirroring
+	// buckets/tpmBuckets above). Redis mode instead reads cfg.PerModel
+	// straight out of configs on every AllowForModel call — no separate
+	// bucket-tracking structure needed there, since RedisBackend.Allow
+	// takes capacity/refill per call rather than owning bucket state
+	// itself.
+	perModelBuckets map[string]map[string]*TokenBucket
+	backend         RedisBackend // non-nil in Redis mode only
 }
 
 // NewInMemoryKeyLimiter builds a KeyLimiter backed by one TokenBucket per
@@ -65,13 +98,34 @@ type KeyLimiter struct {
 func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 	buckets := make(map[string]*TokenBucket, len(keys))
 	tpmBuckets := make(map[string]*TokenBucket, len(keys))
+	perModelBuckets := make(map[string]map[string]*TokenBucket, len(keys))
 	for _, k := range keys {
 		buckets[k.ID] = NewTokenBucket(k.Capacity, k.RefillPerSecond)
 		if k.TPMCapacity > 0 {
 			tpmBuckets[k.ID] = NewTokenBucket(k.TPMCapacity, k.TPMRefillPerSecond)
 		}
+		if models := buildPerModelBuckets(k.PerModel); len(models) > 0 {
+			perModelBuckets[k.ID] = models
+		}
 	}
-	return &KeyLimiter{buckets: buckets, tpmBuckets: tpmBuckets}
+	return &KeyLimiter{buckets: buckets, tpmBuckets: tpmBuckets, perModelBuckets: perModelBuckets}
+}
+
+// buildPerModelBuckets constructs one TokenBucket per PerModel entry with
+// a positive Capacity, skipping any entry with Capacity <= 0 — shared by
+// NewInMemoryKeyLimiter and Register so the "absent or non-positive means
+// no override" rule can't drift between the two construction sites.
+func buildPerModelBuckets(perModel map[string]ModelRateLimit) map[string]*TokenBucket {
+	if len(perModel) == 0 {
+		return nil
+	}
+	models := make(map[string]*TokenBucket, len(perModel))
+	for model, mrl := range perModel {
+		if mrl.Capacity > 0 {
+			models[model] = NewTokenBucket(mrl.Capacity, mrl.RefillPerSecond)
+		}
+	}
+	return models
 }
 
 // NewRedisKeyLimiter builds a KeyLimiter that delegates every Allow call
@@ -94,14 +148,45 @@ func NewRedisKeyLimiter(keys []KeyConfig, backend RedisBackend) *KeyLimiter {
 // method stays a faithful pass-through rather than baking in one
 // caller's specific policy.
 func (l *KeyLimiter) Allow(ctx context.Context, keyID string) (bool, error) {
+	return l.allow(ctx, keyID, "")
+}
+
+// AllowForModel is exactly like Allow, except it first checks keyID's
+// PerModel[model] override (see KeyConfig.PerModel's doc comment) and, if
+// one is configured, decides against THAT bucket instead of — never in
+// addition to — keyID's own default bucket: a virtual key with a
+// per-model override for one model gets a rate limit for that model's
+// traffic that is entirely separate from (and never drains, nor is
+// drained by) its default bucket, which every OTHER model still shares.
+// Falls back to exactly Allow's own behavior when model has no
+// configured override (or model is ""), which is what makes a key with
+// zero PerModel entries behave byte-identically whichever of the two
+// entry points a caller uses — per
+// docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md.
+func (l *KeyLimiter) AllowForModel(ctx context.Context, keyID, model string) (bool, error) {
+	return l.allow(ctx, keyID, model)
+}
+
+func (l *KeyLimiter) allow(ctx context.Context, keyID, model string) (bool, error) {
 	if l.backend != nil {
 		l.mu.RLock()
 		cfg := l.configs[keyID]
 		l.mu.RUnlock()
+		if model != "" {
+			if override, ok := cfg.PerModel[model]; ok && override.Capacity > 0 {
+				return l.backend.Allow(ctx, perModelBackendKey(keyID, model), override.Capacity, override.RefillPerSecond)
+			}
+		}
 		return l.backend.Allow(ctx, keyID, cfg.Capacity, cfg.RefillPerSecond)
 	}
 	l.mu.RLock()
-	bucket := l.buckets[keyID]
+	var bucket *TokenBucket
+	if model != "" {
+		bucket = l.perModelBuckets[keyID][model]
+	}
+	if bucket == nil {
+		bucket = l.buckets[keyID]
+	}
 	l.mu.RUnlock()
 	// bucket is nil for a keyID nothing ever registered — an unreachable
 	// case for a normally-built config (identity.Verifier and KeyLimiter
@@ -113,6 +198,24 @@ func (l *KeyLimiter) Allow(ctx context.Context, keyID string) (bool, error) {
 		return false, nil
 	}
 	return bucket.Allow(), nil
+}
+
+// perModelBackendKey builds a Redis-mode key for keyID's PerModel[model]
+// override that is materially distinct from both keyID's own default key
+// ("ratelimit:" + keyID, built inside redislimiter.Limiter.Allow) and any
+// OTHER model's override — using an explicit, NUL-byte-tagged field
+// separator, mirroring internal/cache/key.go's Key/NormalizedKey own
+// precedent for exactly this problem (that file's own doc comment: a
+// leading tag plus NUL-separated, explicitly-named fields so two distinct
+// logical keys can never collide, even given adversarially-chosen
+// component strings). Naive ":"-joining a virtual key ID and a model name
+// — both caller-controlled, variable-length strings — would risk exactly
+// that: e.g. keyID "a:model=b" colliding with keyID "a", model "b". The
+// NUL byte can't appear in either component via this project's YAML/JSON
+// config surfaces, so this stays collision-free in practice, not just in
+// theory.
+func perModelBackendKey(keyID, model string) string {
+	return keyID + "\x00model=" + model
 }
 
 // AllowTPM reports whether keyID's token-bucket balance is currently
@@ -172,6 +275,17 @@ func (l *KeyLimiter) Register(cfg KeyConfig) {
 		// bucket the caller no longer configures must actually stop
 		// being enforced, not silently keep applying an old limit.
 		delete(l.tpmBuckets, cfg.ID)
+	}
+	// Same "an update must not leave a stale entry behind" rule as TPM
+	// above, applied per-model: cfg.PerModel is always treated as the
+	// COMPLETE, authoritative set for cfg.ID going forward, so a model
+	// present in the old registration but absent (or now Capacity <= 0)
+	// in this one must stop being enforced, not keep applying its old
+	// limit indefinitely.
+	if models := buildPerModelBuckets(cfg.PerModel); len(models) > 0 {
+		l.perModelBuckets[cfg.ID] = models
+	} else {
+		delete(l.perModelBuckets, cfg.ID)
 	}
 }
 

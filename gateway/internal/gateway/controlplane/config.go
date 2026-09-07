@@ -170,6 +170,32 @@ type VirtualKeyConfig struct {
 	// warning if both are configured together).
 	TPMCapacity        float64
 	TPMRefillPerSecond float64
+	// PerModelRateLimits maps a model name to that model's own, separate
+	// RPM (burst/refill_per_second) override — the "consumer x model"
+	// dimension of Kong-style multi-dimensional rate-limit matching, per
+	// docs/upgrade-research/gateway-2026-09-06.md's Finding 5 and
+	// docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md.
+	// Nil/empty (the default, and every config written before this field
+	// existed) means no override for any model — every model this key is
+	// allowed to call shares its single RateLimitBurst/RateLimitRefill
+	// bucket above, exactly as before this feature existed. Bridged into
+	// ratelimit.KeyConfig.PerModel by cmd/gateway, never referenced
+	// directly by internal/ratelimit, matching this file's existing
+	// RateLimitBurst/RateLimitRefill decoupling convention.
+	PerModelRateLimits map[string]ModelRateLimitConfig
+}
+
+// ModelRateLimitConfig is one virtual key's per-model RPM override — see
+// VirtualKeyConfig.PerModelRateLimits' doc comment for the full design.
+// Both fields are required and must be positive for an entry to parse at
+// all (see parsePerModelRateLimits) — unlike RateLimitBurst/RateLimitRefill,
+// which resolve 0 to the gateway's own operational default, a per-model
+// entry has no equivalent "unset means use some other default" fallback
+// to resolve to, so a malformed entry is a config error, not a silent
+// no-op.
+type ModelRateLimitConfig struct {
+	Burst           float64
+	RefillPerSecond float64
 }
 
 // TelemetryConfig configures OTel span export, per
@@ -376,6 +402,13 @@ func Load(path string) (*Config, error) {
 			vk.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
 			vk.TPMCapacity, _ = getFloat(rl, "tpm_capacity")
 			vk.TPMRefillPerSecond, _ = getFloat(rl, "tpm_refill_per_second")
+			if pm, ok := getMap(rl, "per_model"); ok {
+				perModel, err := parsePerModelRateLimits(name, pm)
+				if err != nil {
+					return nil, err
+				}
+				vk.PerModelRateLimits = perModel
+			}
 		}
 		if am, ok := getMap(vkMap, "allowed_models"); ok {
 			for model, v := range am {
@@ -710,4 +743,32 @@ func parseFallbackChains(deploymentName string, raw map[string]any) (map[string]
 		}
 	}
 	return chains, nil
+}
+
+// parsePerModelRateLimits parses one virtual key's rate_limit.per_model
+// mapping — model name -> its own burst/refill_per_second pair, per
+// docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md. Both
+// burst and refill_per_second must be positive for a model entry to be
+// valid: unlike the key's own top-level burst/refill_per_second (where 0
+// resolves to the gateway's operational default, per RateLimitBurst's doc
+// comment), a per-model entry has no such fallback to resolve to, so a
+// missing or non-positive value here is a config error, caught at load
+// time rather than silently producing a zero-capacity bucket that would
+// block every request for that model. keyName is only used for the error
+// message.
+func parsePerModelRateLimits(keyName string, raw map[string]any) (map[string]ModelRateLimitConfig, error) {
+	out := make(map[string]ModelRateLimitConfig, len(raw))
+	for model, v := range raw {
+		modelMap, ok := v.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("controlplane: virtual key %q rate_limit.per_model.%s must be a mapping", keyName, model)
+		}
+		burst, _ := getFloat(modelMap, "burst")
+		refill, _ := getFloat(modelMap, "refill_per_second")
+		if burst <= 0 || refill <= 0 {
+			return nil, fmt.Errorf("controlplane: virtual key %q rate_limit.per_model.%s must set positive burst and refill_per_second", keyName, model)
+		}
+		out[model] = ModelRateLimitConfig{Burst: burst, RefillPerSecond: refill}
+	}
+	return out, nil
 }
