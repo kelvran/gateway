@@ -1,0 +1,95 @@
+# RFC: Evals Production-Trace Ingestion via Object Storage (S3)
+
+## Status
+
+Accepted (destination already decided by the project owner; this RFC fixes the concrete layout/sampling/retention and ships the pipeline), 2026-09-07.
+
+## Context
+
+`docs/upgrade-research/evals-trace-transport-2026-09-07.md` compared three transports for sampling `gateway`'s production traffic into `evals` and recommended log-based ingestion via the already-real `gatewayevents_v1` structured-log field (per `docs/rfcs/2026-09-03-api-gatewayevents-contract.md`), shipped by a boring, off-the-hot-path log shipper — explicitly declining an OTel Collector deployment and a dedicated gateway-exposed sampling API, for reasons that RFC lays out in full and this one does not re-litigate. That research report's own "Open questions" section left two things unresolved: which concrete object-storage destination, and what sampling rate/rule. The project owner has since decided the destination class (object storage, not a queue) — **that decision is a given here, not re-opened.** This RFC's job is the concrete design: bucket/object layout, sampling rate, retention policy, the actual shipper config, the `evals` ingestion entry point, and closing the loop on the 2026-09-03 RFC's own "stopgap transport" caveat for the object-storage leg specifically.
+
+### What already exists (verified directly, not assumed)
+
+- `gateway/internal/gateway/dataplane/dataplane.go`'s `logRequest` already `protojson.Marshal`s a `gatewayeventsv1.GatewayDecisionEvent` and adds it as a `gatewayevents_v1` string field on the structured (`slog`-based) JSON log line emitted for every request, success or rejection (`dataplane.go:1286-1290`).
+- `evals/evals/ingestion/decode.py`'s `decode_gateway_decision_event(raw: str)` already decodes exactly that string into a real `GatewayDecisionEvent` via `google.protobuf.json_format.Parse` — proven end-to-end against a real, gateway-encoded fixture (`evals/tests/test_ingestion_golden_roundtrip.py`, `evals/tests/fixtures/gateway_decision_event.json`).
+- `GatewayDecisionEvent` itself (`api/gatewayevents/v1/gatewayevents.proto`) already carries `trace_id`, `span_id`, `occurred_at`, `virtual_key_id` (`""` if auth itself failed), `requested_model`, and `outcome` (an enum: `OUTCOME_OK`, `OUTCOME_AUTH_FAILED`, `OUTCOME_MODEL_NOT_ALLOWED`, `OUTCOME_RATE_LIMITED`, `OUTCOME_BUDGET_EXCEEDED`, `OUTCOME_NO_DEPLOYMENT`, `OUTCOME_GUARDRAIL_BLOCKED`, `OUTCOME_UPSTREAM_ERROR`). No prompt/completion content anywhere in this schema — `docs/operations/TELEMETRY.md`'s "Privacy & Redaction" section already establishes that content capture is opt-in, and this event type never carries any.
+- `docs/operations/DEPLOY.md` names `gateway` as a Kubernetes Deployment in production, but no log-aggregation backend, no OTel Collector, and no `deploy/k8s/` manifests exist yet anywhere in this repo — the shipper config below is written against that "intended shape," with the one concrete assumption (a `app: gateway` pod label) called out explicitly where it's used, per this project's own doc-honesty convention of never asserting a capability that isn't actually built.
+- `evals` has no existing dependency on any cloud provider SDK. `gateway`'s Bedrock adapter (`docs/operations/PROVIDERS.md`) already requires real AWS IAM credentials/role assumption in this project's deployment story — this RFC's choice of S3 over GCS reuses that same credential model rather than introducing a second cloud identity system for a project that otherwise has zero GCP footprint anywhere.
+
+## Detailed Design
+
+### 1. Object-storage backend: S3
+
+Concrete choice: **AWS S3**, not GCS. Justification: (a) AWS IAM/role-based credentials are already a first-class citizen of this project's deployment story (Bedrock, per `docs/operations/PROVIDERS.md`) — S3 reuses that exact credential model; GCS would need an entirely new GCP identity/credential path for zero other benefit. (b) Vector (the shipper — see §5) ships a symmetric `gcp_cloud_storage` sink with the same batching/partitioning semantics as its `aws_s3` sink, so nothing about the *design* below is S3-specific in a way that would need re-deriving for GCS if that decision is ever revisited — only the sink block and the `evals` client library (`boto3` → `google-cloud-storage`) would change. This RFC builds and tests the S3 path because it's the one with a real, already-paid-for credential story; GCS is a mechanical follow-on, not a design gap, if a future need arises.
+
+### 2. Bucket/object layout
+
+```
+s3://<bucket>/gatewayevents/v1/dt=<YYYY-MM-DD>/hr=<HH>/vk=<virtual_key_id>/<shipper-generated-name>.log.gz
+```
+
+- **`gatewayevents/v1/`** — mirrors the proto package/directory versioning convention `docs/rfcs/2026-09-03-api-gatewayevents-contract.md` already established for `api/gatewayevents/v1/`. A future `v2` schema gets a sibling `gatewayevents/v2/` prefix, never an in-place layout change — the same "`v1` frozen by construction" discipline that RFC already committed to for the wire format itself.
+- **`dt=<date>/hr=<hour>` (hive-style)** — partitioned by the event's own `occurred_at` time (not shipper ingestion time — see §5's VRL, which explicitly re-derives the partition timestamp from the decoded event rather than trusting Vector's default "when did I see this" clock, since a tailing shipper can lag). Two concrete reasons for date+hour, not date alone: it bounds the size of any single retention-policy sweep (§4) to an hour's worth of objects, and it gives `evals ingest` (§6) a natural `--since`-style scoping unit without needing to open every object in the bucket to find recent ones.
+- **`vk=<virtual_key_id>` (tenant)** — Kelvran's own multi-tenancy primitive is the virtual key (`gateway/internal/identity`), and `AGENTS.md`'s own mission statement names "agent-run-level cost and governance as a foundational primitive" — partitioning by tenant at the object-storage layer directly extends that principle to the eval-sampling surface: a future per-tenant sampling policy, cost-attribution pass, or scoped `evals ingest --source s3://bucket/gatewayevents/v1/dt=.../hr=.../vk=<id>/` run can address exactly one tenant's data without scanning anyone else's. `GatewayDecisionEvent.virtual_key_id` is `""` when auth itself failed (per the proto's own comment) — the shipper config normalizes that to the literal sentinel `vk=_unauthenticated` rather than emitting an ambiguous empty path segment (see §5).
+- **Object body**: one decoded `GatewayDecisionEvent` (protojson/camelCase — the exact shape `evals/tests/fixtures/gateway_decision_event.json` already pins) per line, newline-delimited, gzip-compressed. A single object holds a *batch* of many events, not one object per event — deliberately, to keep S3 PUT-request costs bounded once real traffic exists (Vector's own `aws_s3` sink is built around exactly this batch-then-flush model; see §5).
+
+### 3. Sampling rate
+
+Concrete rule, resolving `docs/upgrade-research/evals-trace-transport-2026-09-07.md`'s own open question in the direction its "Open questions" section already sketched (mirroring promptfoo's critical-vs-aggregate gating pattern named there):
+
+- **Every non-`OUTCOME_OK` outcome is kept at 100%** (`OUTCOME_AUTH_FAILED`, `OUTCOME_MODEL_NOT_ALLOWED`, `OUTCOME_RATE_LIMITED`, `OUTCOME_BUDGET_EXCEEDED`, `OUTCOME_NO_DEPLOYMENT`, `OUTCOME_GUARDRAIL_BLOCKED`, `OUTCOME_UPSTREAM_ERROR`). These are exactly the outcomes `evals` most needs for regression/drift detection, and by construction they're rare relative to successful traffic — keeping all of them costs little and loses nothing diagnostically valuable.
+- **`OUTCOME_OK` is sampled at 1-in-10 (10%)**, consistently per-`trace_id` (the same trace is never split across a sampled/dropped decision if it appears more than once in the stream — see §5's `key_field`).
+
+**Honest calibration caveat, stated plainly rather than hidden:** no real production traffic exists yet for this project (`docs/operations/DEPLOY.md`'s Kubernetes section is still "intended shape, not built"; `docs/operations/TELEMETRY.md` says the same about every SLI/SLO target). 10% is a reasoned starting default — small enough to bound eval-ingestion volume/cost once real traffic exists, large enough that a drift-detection signal over `OUTCOME_OK` traffic isn't starved — not a number backed by measured volume. This mirrors `docs/operations/TELEMETRY.md`'s own explicit stance ("None of these have concrete target numbers yet — those get set once there's real production traffic to baseline against, not guessed at now"): revisit this rate once real traffic exists to calibrate against, and record the revision in `DECISIONS.md` rather than silently editing this RFC.
+
+### 4. Retention policy
+
+A single S3 Lifecycle rule on the `gatewayevents/v1/` prefix: **expire (delete) objects 90 days after creation.** No intermediate storage-class transition (e.g. to Glacier) — deliberately kept to one rule, not a multi-tier lifecycle, per this project's global KISS/YAGNI convention: `gatewayevents_v1` objects are small (metadata-only, gzip-compressed, no prompt/completion content — see §Context above), so the cost saving from a cold-tier transition is marginal, while it adds real retrieval-latency friction against `evals ingest`'s own access pattern (an operator-driven CLI pull with unpredictable recency, not a predictable archival-then-never-read shape). 90 days is chosen as a reasoned, explicitly provisional number — long enough to span `evals`' own "drift over time" use case (`docs/operations/TELEMETRY.md`'s "judge-score drift over time" SLI) across a meaningful window, short enough to bound both storage cost and the metadata's own exposure window — not a number derived from a compliance requirement, since none is documented anywhere in `THREAT_MODEL.md`/`SECURITY.md` for this data class. Revisit if either changes.
+
+### 5. Log shipper: Vector
+
+**Vector, not Fluent Bit.** Justification, concrete and checked directly against Vector's own current docs (not assumed from memory):
+
+- Vector's `sample` transform takes a real VRL `exclude` condition plus a `key_field` for consistent (not per-line-random) sampling — exactly the "always keep every non-OK outcome, sample OK traffic consistently per trace" rule in §3, expressible in one transform with no custom code.
+- Vector's `remap` transform (VRL) can parse the outer container-log JSON, pull out and re-parse the nested `gatewayevents_v1` string, normalize the empty-`virtual_key_id` case, and re-derive the partition timestamp from the event's own `occurred_at` — all in one declarative step, versioned as plain YAML in this repo.
+- Vector's `aws_s3` sink supports exactly the templated, hive-style `key_prefix` (strftime specifiers **and** `{{ field }}` templating together) that §2's layout needs, plus `gzip` compression and batch-then-flush semantics, all real, current, and directly confirmed against Vector's own reference docs.
+- Vector's `kubernetes_logs` source is the standard way to tail container stdout across every pod in a cluster (a DaemonSet agent) without touching `gateway`'s own request-serving code path at all — matching `docs/upgrade-research/evals-trace-transport-2026-09-07.md`'s own load-bearing requirement that this stay off the hot path.
+
+Fluent Bit could do an equivalent job (it also ships S3/GCS output plugins), but Vector's VRL gives a single, more expressive, more directly-checkable transform pipeline for this specific "parse a nested JSON field → conditionally sample → template a partitioned key" chain than Fluent Bit's Lua-filter-based equivalent would, and this project has zero prior investment in either tool to weigh against that.
+
+The real config: `docs/operations/vector-gatewayevents-s3.yaml` (see that file directly — it is the actual, reviewable shipper config, not prose describing one). Summary of what it does: `kubernetes_logs` source (tails every `app: gateway`-labeled pod) → `remap` transform (parses the container's JSON log line, extracts+re-decodes `gatewayevents_v1`, normalizes `virtual_key_id`, re-derives the event timestamp) → `sample` transform (§3's rule) → `aws_s3` sink (§2's layout, gzip, batched).
+
+### 6. `evals` ingestion entry point
+
+New `evals ingest --source s3://<bucket>/<prefix> --out <path>` Click command (`evals/evals/cli.py`), backed by a new `evals/evals/ingestion/object_store.py` module:
+
+- `parse_object_storage_uri(source: str) -> tuple[str, str]` — splits `s3://bucket/prefix` into `(bucket, prefix)`. Only `s3://` is accepted today; any other scheme raises a clear `ValueError` rather than silently misbehaving (a real, if mechanical, GCS follow-on per §1 would add a `gs://` case here and a `google-cloud-storage`-backed sibling to the two functions below — not built now).
+- `list_object_keys(bucket, prefix) -> list[str]` — a real, paginated `boto3` `list_objects_v2` call (never assumes a single 1000-key page covers a real prefix).
+- `iter_object_lines(bucket, key) -> Iterator[str]` — reads one object's body, transparently gunzips a `.gz`-suffixed key (matching what the shipper writes), and yields each non-empty line.
+
+`evals ingest` lists every object under `--source`, reads every line of every object, and decodes each one by calling `evals.ingestion.decode.decode_gateway_decision_event` directly — **the existing decode logic is called, never re-implemented**, per this project's own `api/gatewayevents` contract discipline. A line that fails to decode is counted as an error and skipped (never aborts the whole ingest run — mirroring `evals rollout`'s own "one case's failure never aborts the suite" precedent), and every successfully-decoded event is re-serialized (`google.protobuf.json_format.MessageToJson`) as one line of `--out`, the same wire shape the object-storage body already used. The command prints a summary line (objects listed, events decoded, events failed) — this command's job is listing/reading/reporting, not inventing a new persistence layer or a new pydantic model; `results_store.py`'s existing JSONL mechanism is generic over *pydantic* models (`Run`/`Score`/`Span`) and `GatewayDecisionEvent` is a protobuf message, not a pydantic one, so it gets its own minimal, honest serialization rather than a forced fit.
+
+What happens to ingested events *after* this command — whether they feed `evals promote` unchanged or need their own review path — is exactly the follow-on question `docs/upgrade-research/evals-2026-09-06.md` and `docs/upgrade-research/evals-trace-transport-2026-09-07.md` both already named as open and deliberately out of scope for the *transport* question either report or this RFC answers. Not decided here; not needed to make this ingestion path real and testable.
+
+## Drawbacks
+
+- A new runtime dependency: `boto3` — the first place `evals` talks to a cloud-provider API directly (as opposed to an LLM provider's own SDK). Accepted: there is no way to list/read S3 objects without it, and it's the same AWS ecosystem this project already trusts for Bedrock credentials.
+- Vector is a new, real piece of operational infrastructure (a DaemonSet agent) that doesn't exist anywhere in this project's deployment topology today (`docs/operations/DEPLOY.md` names none). This is the accepted cost the research report already weighed against the two rejected alternatives (an OTel Collector tier, a dedicated gateway sampling API) and found smaller for both of those — not a new drawback this RFC introduces, but worth restating plainly here since it's a real new moving part regardless of which alternative "won."
+- The 10% `OUTCOME_OK` sampling rate and the 90-day retention window are both reasoned-but-uncalibrated numbers, honestly flagged as such in §3/§4 — not backed by real production volume, since none exists yet.
+- `evals ingest`'s per-line decode-and-reserialize approach re-encodes every event through `MessageToJson` rather than passing the original bytes straight through untouched — a small, deliberate simplification (one obviously-correct code path for every object, gzip or not) at the cost of a redundant encode/decode round-trip; acceptable given `gatewayevents_v1` lines are small and this command is not on any hot path.
+
+## Alternatives Considered
+
+1. **GCS instead of S3** — rejected for the reasons in §1: no existing GCP credential story anywhere in this project, versus AWS IAM already being real (Bedrock). Not a closed door — Vector's `gcp_cloud_storage` sink is a structurally symmetric swap if a real GCS need ever arises.
+2. **Flat `dt=`-only partitioning (no hour, no tenant)** — rejected: loses the bounded-sweep-size benefit for retention (§4) and the per-tenant-scoped-read benefit for `evals ingest`/future sampling-policy work (§2), for a marginal reduction in prefix depth that buys nothing else.
+3. **A flat sampling rate applied uniformly to every outcome, including failures** — rejected: the whole point of `docs/upgrade-research/evals-2026-09-06.md`'s own critical-vs-aggregate framing (independently corroborated by promptfoo's real precedent, per that report) is that failure signal is both rarer and more valuable than success signal; sampling it away at the same rate as routine `OUTCOME_OK` traffic would throw away exactly the events most useful for regression detection.
+4. **Multi-tier S3 Lifecycle (Standard → Infrequent Access/Glacier → expire)** — rejected for now per §4's KISS/YAGNI reasoning: the marginal storage saving doesn't clear the added retrieval-latency friction for this access pattern, given how small these objects already are.
+5. **Fluent Bit instead of Vector** — considered equally viable in principle; Vector's VRL gives a more directly-checkable single-pipeline expression of the parse→sample→partition chain this RFC needs (§5), and this project has no prior investment in either tool.
+6. **Do the S3→`evals` read via a generic HTTP/`requests`-based presigned-URL flow instead of `boto3`** — rejected: `boto3`'s paginated `list_objects_v2` is the real, idiomatic way to enumerate an unbounded set of objects under a prefix; reimplementing pagination/auth over raw HTTP would be reinventing what `boto3` already does correctly, for no benefit.
+
+## Unresolved Questions
+
+- Whether/when to build the GCS sibling path (§1, §6) — real, mechanical, not yet needed.
+- The real calibration of the 10% `OUTCOME_OK` sampling rate and the 90-day retention window (§3, §4) — both explicitly provisional, pending real production traffic.
+- What happens downstream of `evals ingest`'s output file — feeding `evals promote` unchanged, or a distinct review path for live-sampled data — deliberately left open, per §6, exactly as the prior research report already left it.
+- Whether the `app: gateway` pod-label assumption in `docs/operations/vector-gatewayevents-s3.yaml` matches whatever `deploy/k8s/` manifests are eventually written (they don't exist yet, per `docs/operations/DEPLOY.md`) — flagged directly in that file's own header comment for whoever writes them.

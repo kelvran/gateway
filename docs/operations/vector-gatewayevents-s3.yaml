@@ -1,0 +1,133 @@
+# Vector shipper config: gateway's gatewayevents_v1 structured-log field -> S3.
+#
+# See docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md for the
+# full design (bucket/object layout, sampling rate, retention policy, why
+# Vector and why S3). This file is the real, reviewable config that RFC
+# describes -- not prose about one.
+#
+# Consumed on the read side by `evals ingest --source s3://...`, per
+# evals/evals/ingestion/object_store.py.
+#
+# Deployment shape: a Vector Kubernetes DaemonSet agent (the standard
+# Vector Kubernetes pattern) tailing every gateway pod's container stdout
+# via the container runtime's own log files. Never touches gateway's
+# request-serving code path -- this is entirely off the hot path, per
+# docs/upgrade-research/evals-trace-transport-2026-09-07.md's own
+# load-bearing requirement.
+#
+# NOTE: assumes gateway pods carry the label `app: gateway`. This repo's
+# `deploy/k8s/` manifests do not exist yet (docs/operations/DEPLOY.md's
+# Kubernetes section is explicitly "intended shape, not built") -- update
+# `extra_label_selector` below to match whatever label the real manifests
+# apply, once they exist. Flagged here rather than silently assumed, per
+# this project's own doc-honesty convention.
+
+data_dir: /var/lib/vector
+
+sources:
+  gateway_pod_logs:
+    type: kubernetes_logs
+    extra_label_selector: "app=gateway"
+
+transforms:
+  # Parse the container's stdout JSON log line (gateway's own slog JSON
+  # handler), pull the gatewayevents_v1 field (a protojson-encoded string
+  # -- see gateway/internal/gateway/dataplane/dataplane.go's logRequest),
+  # and replace the whole event body with the *decoded* decision object
+  # itself. This is the one and only unwrapping step: every downstream
+  # transform/sink below, and evals' own `ingest` command, work with the
+  # exact GatewayDecisionEvent JSON shape
+  # evals/tests/fixtures/gateway_decision_event.json already pins --
+  # nothing re-derives or re-implements that decoding, per
+  # api/gatewayevents' own "reuse, don't duplicate" contract discipline.
+  gatewayevents_extract:
+    type: remap
+    inputs: ["gateway_pod_logs"]
+    source: |-
+      parsed, err = parse_json(.message)
+      if err != null {
+        abort
+      }
+
+      raw_event = parsed.gatewayevents_v1
+      if raw_event == null {
+        # Not every log line carries one (e.g. startup/non-request logs).
+        abort
+      }
+
+      decision, decode_err = parse_json(raw_event)
+      if decode_err != null {
+        abort
+      }
+
+      if decision.virtualKeyId == "" {
+        # Auth itself failed -- see GatewayDecisionEvent.virtual_key_id's
+        # own proto comment ("" if auth itself failed). An empty path
+        # segment in the S3 key below would be ambiguous, so this gets a
+        # real, greppable sentinel instead.
+        decision.virtualKeyId = "_unauthenticated"
+      }
+
+      # Partition by the request's own time (occurred_at), not shipper
+      # ingestion time -- a tailing agent can lag, and %Y-%m-%d/%H in the
+      # aws_s3 sink's key_prefix below reads Vector's event timestamp.
+      occurred_at, ts_err = parse_timestamp(decision.occurredAt, "%+")
+      if ts_err != null {
+        occurred_at = now()
+      }
+
+      . = decision
+      .timestamp = occurred_at
+
+  # Sampling rule, per docs/rfcs/2026-09-07-evals-trace-ingestion-object-
+  # storage.md Section 3: every non-OK outcome (rate-limited, budget-
+  # exceeded, upstream error, auth failed, ...) is always kept -- these
+  # are rare and diagnostically valuable. OUTCOME_OK is the overwhelming
+  # majority of real traffic, so it alone is sampled, at a starting
+  # 1-in-10 (rate: 10). key_field makes the decision consistent per
+  # trace_id rather than per-line-random, so a duplicated/retried log
+  # line for the same trace samples the same way every time.
+  gatewayevents_sample:
+    type: sample
+    inputs: ["gatewayevents_extract"]
+    rate: 10
+    exclude: '.outcome != "OUTCOME_OK"'
+    key_field: "traceId"
+
+sinks:
+  # Bucket/object layout per that same RFC's Section 2: hive-style
+  # date+hour+tenant partitioning under a package-versioned
+  # `gatewayevents/v1/` root (mirroring api/gatewayevents/v1's own
+  # directory-based versioning convention). One gzip-compressed object
+  # per batch (never one object per event -- see batch settings below),
+  # newline-delimited JSON, one decoded GatewayDecisionEvent per line.
+  #
+  # Retention (90-day expiry, per that RFC's Section 4) is a separate S3
+  # Lifecycle rule on this same bucket/prefix -- Vector has no lifecycle-
+  # management capability of its own, so it is not, and cannot be,
+  # configured in this file.
+  gatewayevents_s3:
+    type: aws_s3
+    inputs: ["gatewayevents_sample"]
+    bucket: "${KELVRAN_GATEWAYEVENTS_BUCKET}"
+    region: "${AWS_REGION}"
+    key_prefix: "gatewayevents/v1/dt=%Y-%m-%d/hr=%H/vk={{ virtualKeyId }}/"
+    compression: gzip
+    framing:
+      method: newline_delimited
+    encoding:
+      codec: json
+    batch:
+      # 10MB uncompressed per object -- gatewayevents_v1 lines are small
+      # (no prompt/completion content, see docs/operations/TELEMETRY.md's
+      # Privacy & Redaction section), so this comfortably batches many
+      # minutes of even a busy gateway's events into one object rather
+      # than one-object-per-event, which would blow up S3 PUT-request
+      # costs at real volume.
+      max_bytes: 10000000
+      # Flush at least every 5 minutes even if max_bytes isn't hit yet
+      # (Vector's own real default for this exact sink category), so a
+      # quiet period never leaves data sitting unflushed for hours.
+      timeout_secs: 300
+    healthcheck:
+      enabled: true

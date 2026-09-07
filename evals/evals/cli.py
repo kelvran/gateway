@@ -13,6 +13,12 @@ a persisted `Score`s JSONL file (`--scores`, one line per distinct
 commands that emit a pass rate always print the Wilson confidence interval
 alongside it — per `PRD.md`'s explicit success metric, a bare percentage
 is never emitted on its own.
+
+`evals ingest --source s3://<bucket>/<prefix> --out <path>` lists and
+decodes real `gatewayevents_v1` objects from object storage (per
+docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md) — the
+production-trace-sampling leg `evals/ingestion/`'s own `ARCHITECTURE.md`
+entry names, distinct from the golden-fixture round-trip decode test.
 """
 
 from __future__ import annotations
@@ -25,7 +31,14 @@ from decimal import Decimal
 from pathlib import Path
 
 import click
+from google.protobuf.json_format import MessageToJson
 
+from evals.ingestion.decode import decode_gateway_decision_event
+from evals.ingestion.object_store import (
+    iter_object_lines,
+    list_object_keys,
+    parse_object_storage_uri,
+)
 from evals.judge.cache import compute_score_cache_key
 from evals.judge.deterministic import exact_match, regex_match
 from evals.judge.llm_judge import judge
@@ -603,6 +616,75 @@ def promote_cmd(
     click.echo(
         f"promoted {original_case.id}@{original_case.revision} (run {run.id}) "
         f"-> {new_case.id} (tier={tier}) in {output_path}"
+    )
+
+
+@main.command("ingest")
+@click.option(
+    "--source",
+    "source",
+    required=True,
+    help=(
+        "Object-storage source to list, e.g. s3://bucket/gatewayevents/v1/. "
+        "Only s3:// is supported today — see "
+        "docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md."
+    ),
+)
+@click.option(
+    "--out",
+    "out_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=(
+        "JSONL file each successfully-decoded GatewayDecisionEvent is "
+        "appended to (created if it doesn't exist), one protojson object "
+        "per line — the same wire shape "
+        "evals/tests/fixtures/gateway_decision_event.json already uses."
+    ),
+)
+def ingest_cmd(source: str, out_path: Path) -> None:
+    """List and decode gatewayevents_v1 objects from object storage.
+
+    Lists every object under `--source`, reads every line of every
+    object, and decodes each one via the existing, real
+    `evals.ingestion.decode.decode_gateway_decision_event` — this
+    command's own job is exactly listing/reading/reporting, never
+    re-implementing wire-format decoding (per
+    docs/rfcs/2026-09-03-api-gatewayevents-contract.md's contract
+    discipline). A line that fails to decode is counted as an error and
+    skipped — one bad line never aborts the whole ingest run, mirroring
+    `evals rollout`'s own "one case's failure never aborts the suite"
+    precedent.
+    """
+    try:
+        bucket, prefix = parse_object_storage_uri(source)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    keys = list_object_keys(bucket, prefix)
+    if not keys:
+        raise click.ClickException(f"no objects found under {source}")
+
+    decoded_count = 0
+    error_count = 0
+    with out_path.open("a", encoding="utf-8") as out_file:
+        for key in keys:
+            for line in iter_object_lines(bucket, key):
+                try:
+                    event = decode_gateway_decision_event(line)
+                except Exception:
+                    error_count += 1
+                    continue
+                decoded_count += 1
+                # indent=None -- a single compact line, matching the
+                # newline-delimited-JSON shape the object-storage body
+                # itself already uses (never a pretty-printed, multi-line
+                # blob that would break the "one line per event" contract
+                # of --out).
+                out_file.write(MessageToJson(event, indent=None) + "\n")
+
+    click.echo(
+        f"ingested {len(keys)} object(s) from {source}: "
+        f"{decoded_count} decoded, {error_count} failed to decode"
     )
 
 
