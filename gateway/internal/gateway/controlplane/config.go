@@ -193,6 +193,19 @@ type VirtualKeyConfig struct {
 	// directly by internal/ratelimit, matching this file's existing
 	// RateLimitBurst/RateLimitRefill decoupling convention.
 	PerModelRateLimits map[string]ModelRateLimitConfig
+	// MaxConcurrentRequests bounds how many of this key's requests may be
+	// simultaneously in flight, per
+	// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md. <= 0 (the
+	// default, and every config written before this field existed) means
+	// unlimited — bridged into ratelimit.ConcurrencyConfig by cmd/gateway,
+	// never referenced directly by internal/ratelimit, matching this
+	// file's existing RateLimitBurst/RateLimitRefill decoupling
+	// convention. Nested under rate_limit: in YAML, alongside burst/
+	// refill_per_second/tpm_capacity — a per-key throughput/capacity
+	// control, the same family as those three, even though the mechanism
+	// underneath (in-flight count, not a token bucket) is genuinely
+	// different.
+	MaxConcurrentRequests int
 }
 
 // ModelRateLimitConfig is one virtual key's per-model RPM override — see
@@ -412,6 +425,7 @@ func Load(path string) (*Config, error) {
 			vk.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
 			vk.TPMCapacity, _ = getFloat(rl, "tpm_capacity")
 			vk.TPMRefillPerSecond, _ = getFloat(rl, "tpm_refill_per_second")
+			vk.MaxConcurrentRequests, _ = getInt(rl, "max_concurrent_requests")
 			if pm, ok := getMap(rl, "per_model"); ok {
 				perModel, err := parsePerModelRateLimits(name, pm)
 				if err != nil {

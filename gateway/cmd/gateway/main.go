@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -269,6 +270,11 @@ func wrapHTTPServerSpan(handler http.Handler) http.Handler {
 func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pipeline, error) {
 	virtualKeys := make([]identity.VirtualKey, 0, len(cfg.VirtualKeys))
 	keyConfigs := make([]ratelimit.KeyConfig, 0, len(cfg.VirtualKeys))
+	// concurrencyConfigs feeds ratelimit.NewConcurrencyLimiter, per
+	// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
+	// (b) — built alongside keyConfigs above, from the same per-key loop,
+	// rather than a second pass over cfg.VirtualKeys.
+	concurrencyConfigs := make([]ratelimit.ConcurrencyConfig, 0, len(cfg.VirtualKeys))
 	for _, vk := range cfg.VirtualKeys {
 		burst, refill := vk.RateLimitBurst, vk.RateLimitRefill
 		if burst <= 0 && refill <= 0 {
@@ -282,14 +288,15 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			}
 		}
 		virtualKeys = append(virtualKeys, identity.VirtualKey{
-			ID:                  vk.Name,
-			KeyHash:             vk.KeyHash,
-			BudgetUSD:           vk.BudgetUSD,
-			BudgetResetInterval: time.Duration(vk.BudgetResetIntervalSeconds) * time.Second,
-			BudgetWarnPercent:   vk.BudgetWarnPercent,
-			AllowedModels:       allowedModels,
-			RateLimitBurst:      burst,
-			RateLimitRefill:     refill,
+			ID:                    vk.Name,
+			KeyHash:               vk.KeyHash,
+			BudgetUSD:             vk.BudgetUSD,
+			BudgetResetInterval:   time.Duration(vk.BudgetResetIntervalSeconds) * time.Second,
+			BudgetWarnPercent:     vk.BudgetWarnPercent,
+			AllowedModels:         allowedModels,
+			RateLimitBurst:        burst,
+			RateLimitRefill:       refill,
+			MaxConcurrentRequests: vk.MaxConcurrentRequests,
 		})
 		if vk.TPMCapacity > 0 && cfg.RateLimit.RedisAddr != "" {
 			logger.Warn("virtual key configures a TPM rate limit, but Redis rate-limit mode is active; TPM is in-memory-only in v1 and will not be enforced",
@@ -309,6 +316,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			TPMCapacity:        vk.TPMCapacity,
 			TPMRefillPerSecond: vk.TPMRefillPerSecond,
 			PerModel:           perModel,
+		})
+		concurrencyConfigs = append(concurrencyConfigs, ratelimit.ConcurrencyConfig{
+			ID:          vk.Name,
+			MaxInFlight: vk.MaxConcurrentRequests,
 		})
 	}
 	verifier, err := identity.NewVerifier(virtualKeys)
@@ -405,8 +416,17 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	guardrailEngine := newGuardrailEngine(cfg.Guardrails, logger)
 
 	return dataplane.NewPipeline(dataplane.Config{
-		Verifier:       verifier,
-		Limiter:        keyLimiter,
+		Verifier: verifier,
+		Limiter:  keyLimiter,
+		// Always constructed, never nil — a virtual key with
+		// MaxConcurrentRequests <= 0 (every config written before this
+		// feature existed) is simply absent from concurrencyConfigs'
+		// resulting limits map, per
+		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
+		// (b), so this is safe to always wire in rather than needing its
+		// own "is anything configured" gate the way e.g. Redis rate-
+		// limiting does.
+		Concurrency:    ratelimit.NewConcurrencyLimiter(concurrencyConfigs),
 		Budget:         budgetTracker,
 		Cache:          inprocess.New(cfg.Cache.MaxEntries),
 		CacheL2:        inprocess.New(cfg.Cache.L2.MaxEntries),
@@ -649,14 +669,17 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey):
 		status = http.StatusUnauthorized
-	case errors.Is(err, dataplane.ErrRateLimited), errors.Is(err, dataplane.ErrBudgetExceeded):
-		// Both map to 429: OpenAI's own API returns 429 for both literal
-		// rate-limit failures and budget/quota ("insufficient_quota")
-		// failures, and Kelvran's canonical schema explicitly targets
-		// OpenAI-SDK client compatibility — see
+	case errors.Is(err, dataplane.ErrRateLimited), errors.Is(err, dataplane.ErrBudgetExceeded), errors.Is(err, dataplane.ErrConcurrencyLimitExceeded):
+		// All three map to 429: OpenAI's own API returns 429 for both
+		// literal rate-limit failures and budget/quota
+		// ("insufficient_quota") failures, and Kelvran's canonical schema
+		// explicitly targets OpenAI-SDK client compatibility — see
 		// docs/rfcs/2026-09-02-virtual-keys-budgets.md's Alternatives
-		// Considered section. The two are distinguished by the error
-		// message body, not the status code.
+		// Considered section. ErrConcurrencyLimitExceeded joins the same
+		// bucket per docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md
+		// — from a client's perspective it's the same kind of "you're
+		// being throttled" decision. All three are distinguished by the
+		// error message body, not the status code.
 		status = http.StatusTooManyRequests
 	case errors.Is(err, dataplane.ErrModelNotAllowed):
 		status = http.StatusForbidden
@@ -671,5 +694,28 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		// moderation/content-policy rejections.
 		status = http.StatusBadRequest
 	}
+
+	// Retry-After, per docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's
+	// design (a) — set BEFORE http.Error below, since net/http requires
+	// response headers to be set before WriteHeader (which http.Error
+	// calls internally). A plain delay-seconds integer, per RFC 9110
+	// §10.2.3's two allowed forms — the form every real client library,
+	// including the OpenAI SDK's own retry logic, expects.
+	var retryErr *dataplane.RetryAfterError
+	if errors.As(err, &retryErr) {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryErr.RetryAfter)))
+	}
 	http.Error(w, err.Error(), status)
+}
+
+// retryAfterSeconds rounds d up to the nearest whole second, with a floor
+// of 1 — Retry-After's integer form has no sub-second resolution, and a
+// value of 0 would tell a client it may retry immediately, defeating the
+// entire point of this header.
+func retryAfterSeconds(d time.Duration) int {
+	seconds := int((d + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	return seconds
 }

@@ -78,6 +78,16 @@ type VirtualKey struct {
 	// token-bucket rate limiter (see internal/ratelimit.TokenBucket).
 	RateLimitBurst  float64
 	RateLimitRefill float64
+	// MaxConcurrentRequests bounds how many of this key's requests may be
+	// simultaneously in flight, per
+	// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
+	// (b). <= 0 means unlimited. Mirrors RateLimitBurst/RateLimitRefill
+	// above: kept here for the same documentation/consistency reason
+	// those two fields are (checkConcurrency itself only ever reads
+	// vk.ID, resolving the actual cap from the separately-constructed
+	// ratelimit.ConcurrencyLimiter, exactly like checkRateLimit already
+	// does for RateLimitBurst/RateLimitRefill via ratelimit.KeyLimiter).
+	MaxConcurrentRequests int
 }
 
 // Verifier resolves a presented bearer token against the set of configured

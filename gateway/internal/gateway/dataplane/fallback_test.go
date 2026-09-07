@@ -1,11 +1,14 @@
 package dataplane
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/router"
 )
 
 func TestClassifyFallbackError(t *testing.T) {
@@ -158,7 +161,7 @@ func TestAttemptFallbackChainStopsAtFirstSuccess(t *testing.T) {
 		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
 	}
 
-	dep, resp, err, attempted := p.attemptFallbackChain([]string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false })
+	dep, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false })
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -186,7 +189,7 @@ func TestAttemptFallbackChainExhaustsInOrderBeforeGivingUp(t *testing.T) {
 		return adapter.ChatResponse{}, errors.New(d.Name + " failed too")
 	}
 
-	_, _, err, attempted := p.attemptFallbackChain([]string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false })
+	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false })
 	if err == nil {
 		t.Fatal("err = nil, want the last hop's error")
 	}
@@ -216,7 +219,7 @@ func TestAttemptFallbackChainSkipsAlreadyTriedAndUnknownNames(t *testing.T) {
 	// "a" is already tried (the original, failed deployment); "unknown"
 	// is not a real deployment at all (defends against a config typo
 	// that startup validation should have already caught).
-	_, resp, err, attempted := p.attemptFallbackChain([]string{"a", "unknown", "c"}, map[string]bool{"a": true}, call, func() bool { return false })
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"a", "unknown", "c"}, map[string]bool{"a": true}, call, func() bool { return false })
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -243,8 +246,134 @@ func TestAttemptFallbackChainRespectsStop(t *testing.T) {
 		return adapter.ChatResponse{}, nil
 	}
 
-	_, _, _, attempted := p.attemptFallbackChain([]string{"b", "c"}, map[string]bool{}, call, func() bool { return stopped })
+	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{}, call, func() bool { return stopped })
 	if attempted {
 		t.Fatal("attempted = true, want false — stop() was already true before the first hop")
+	}
+}
+
+// TestAttemptFallbackChainSkipsRouterUnhealthyTargetsWithoutAttemptingThem
+// proves design (c)'s composition with active health-probing: a chain
+// target router.IsHealthy already reports unhealthy (from real,
+// cross-request probe failures) is skipped entirely, never reaching
+// call — closing the real gap this RFC's own grounding research found
+// (attemptFallbackChain used to resolve targets via p.deploymentsByName
+// directly, never consulting IsHealthy at all).
+func TestAttemptFallbackChainSkipsRouterUnhealthyTargetsWithoutAttemptingThem(t *testing.T) {
+	depRouter := router.New([]router.Deployment{{Name: "b", Model: "m"}, {Name: "c", Model: "m"}}, router.HealthConfig{})
+	// Default UnhealthyThreshold is 3 consecutive failures.
+	depRouter.ReportProbeResult("b", false)
+	depRouter.ReportProbeResult("b", false)
+	depRouter.ReportProbeResult("b", false)
+	if depRouter.IsHealthy("b") {
+		t.Fatal("setup: expected 'b' to be unhealthy after 3 consecutive probe failures")
+	}
+
+	p := &Pipeline{
+		router: depRouter,
+		deploymentsByName: map[string]Deployment{
+			"b": {Name: "b"},
+			"c": {Name: "c"},
+		},
+	}
+
+	var calls []string
+	call := func(d Deployment) (adapter.ChatResponse, error) {
+		calls = append(calls, d.Name)
+		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
+	}
+
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false })
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !attempted {
+		t.Fatal("attempted = false, want true")
+	}
+	if resp.Model != "served-by-c" {
+		t.Errorf("resp.Model = %q, want served-by-c", resp.Model)
+	}
+	if len(calls) != 1 || calls[0] != "c" {
+		t.Fatalf("calls = %v, want exactly [c] — 'b' skipped as router-unhealthy, never attempted", calls)
+	}
+}
+
+// TestAttemptFallbackChainStopsAfterMaxConsecutiveFailuresWithinOneRequest
+// is the per-request circuit breaker's own load-bearing proof: a chain
+// configured with MORE than maxConsecutiveChainFailures targets, all
+// failing, stops calling call once that many real attempts have failed
+// in a row, even though further targets remain configured.
+func TestAttemptFallbackChainStopsAfterMaxConsecutiveFailuresWithinOneRequest(t *testing.T) {
+	p := &Pipeline{deploymentsByName: map[string]Deployment{
+		"b": {Name: "b"},
+		"c": {Name: "c"},
+		"d": {Name: "d"},
+		"e": {Name: "e"},
+		"f": {Name: "f"},
+	}}
+
+	var calls []string
+	call := func(d Deployment) (adapter.ChatResponse, error) {
+		calls = append(calls, d.Name)
+		return adapter.ChatResponse{}, errors.New(d.Name + " failed")
+	}
+
+	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d", "e", "f"}, map[string]bool{"a": true}, call, func() bool { return false })
+	if err == nil {
+		t.Fatal("err = nil, want the last attempted hop's error")
+	}
+	if !attempted {
+		t.Fatal("attempted = false, want true")
+	}
+	if len(calls) != maxConsecutiveChainFailures {
+		t.Fatalf("calls = %v (len %d), want exactly %d — the breaker must stop the walk after that many consecutive real failures, even though 'e' and 'f' remain configured and untried", calls, len(calls), maxConsecutiveChainFailures)
+	}
+	if calls[0] != "b" || calls[1] != "c" || calls[2] != "d" {
+		t.Fatalf("calls = %v, want [b c d] in that exact order before the breaker trips", calls)
+	}
+}
+
+// TestAttemptFallbackChainInsertsRealMeasurableDelayBetweenHops proves the
+// inter-hop backoff is a genuine time.Sleep/timer-based pause the
+// function actually executes, measured against real elapsed wall-clock
+// time — not merely that a delay value is computed and discarded. A
+// 3-hop, all-failing chain inserts a delay before hop 2 and hop 3 (never
+// before hop 1), so the real elapsed time must be at least the sum of
+// both hops' theoretical equal-jitter floors.
+func TestAttemptFallbackChainInsertsRealMeasurableDelayBetweenHops(t *testing.T) {
+	p := &Pipeline{deploymentsByName: map[string]Deployment{
+		"b": {Name: "b"},
+		"c": {Name: "c"},
+		"d": {Name: "d"},
+	}}
+
+	call := func(d Deployment) (adapter.ChatResponse, error) {
+		return adapter.ChatResponse{}, errors.New(d.Name + " failed")
+	}
+
+	// Theoretical equal-jitter floor for attempt N: half of
+	// base*2^(N-1), capped. Backoff is inserted before hop 2 (attempt 1,
+	// relative to the PRECEDING hop) and hop 3 (attempt 2).
+	floorHop2 := fallbackChainInterHopBackoffBase / 2
+	floorHop3 := fallbackChainInterHopBackoffBase // base*2^1 / 2 == base
+	wantFloor := floorHop2 + floorHop3
+
+	start := time.Now()
+	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false })
+	elapsed := time.Since(start)
+
+	if !attempted {
+		t.Fatal("attempted = false, want true")
+	}
+	if elapsed < wantFloor {
+		t.Errorf("elapsed = %v, want >= %v (the two inter-hop backoff floors) — the delay must be a real, measured pause, not a computed-and-discarded value", elapsed, wantFloor)
+	}
+	// Upper bound generous enough to never flake on a loaded CI runner,
+	// tight enough to catch a regression that multiplies the delay by a
+	// large, wrong factor (e.g. summing all consecutiveFailures instead
+	// of the per-hop attempt index).
+	wantCeiling := 5 * fallbackChainInterHopBackoffCap
+	if elapsed > wantCeiling {
+		t.Errorf("elapsed = %v, want <= %v", elapsed, wantCeiling)
 	}
 }
