@@ -18,6 +18,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -49,6 +50,27 @@ type rateLimitRequest struct {
 	RefillPerSecond    float64 `json:"refill_per_second"`
 	TPMCapacity        float64 `json:"tpm_capacity"`
 	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
+	// PerModel mirrors config.yaml's rate_limit.per_model section — see
+	// controlplane.VirtualKeyConfig.PerModelRateLimits' doc comment and
+	// docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md. An
+	// upsert is a full replace of this key's rate-limit configuration,
+	// never a partial merge — like every other field on this request
+	// struct — so omitting per_model on an update to an already-overridden
+	// key clears its overrides, exactly as omitting rate_limit entirely
+	// already resets burst/refill to zero (which UpsertVirtualKey's
+	// caller then resolves to the gateway's own default).
+	PerModel map[string]perModelRateLimitRequest `json:"per_model"`
+}
+
+// perModelRateLimitRequest is one model's per-model RPM override within a
+// rateLimitRequest. Both fields are required and must be positive — see
+// upsertVirtualKeyHandler's validation, mirroring
+// controlplane.parsePerModelRateLimits' identical rule for the static
+// config file, so an operator gets the same validation regardless of
+// which of the two surfaces they use.
+type perModelRateLimitRequest struct {
+	Burst           float64 `json:"burst"`
+	RefillPerSecond float64 `json:"refill_per_second"`
 }
 
 // Handler builds the admin HTTP surface. cfg is the already-loaded,
@@ -133,9 +155,20 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 		}
 		burst, refill := 0.0, 0.0
 		var tpmCapacity, tpmRefill float64
+		var perModel map[string]ratelimit.ModelRateLimit
 		if req.RateLimit != nil {
 			burst, refill = req.RateLimit.Burst, req.RateLimit.RefillPerSecond
 			tpmCapacity, tpmRefill = req.RateLimit.TPMCapacity, req.RateLimit.TPMRefillPerSecond
+			if len(req.RateLimit.PerModel) > 0 {
+				perModel = make(map[string]ratelimit.ModelRateLimit, len(req.RateLimit.PerModel))
+				for model, mrl := range req.RateLimit.PerModel {
+					if mrl.Burst <= 0 || mrl.RefillPerSecond <= 0 {
+						http.Error(w, fmt.Sprintf("rate_limit.per_model.%s must set positive burst and refill_per_second", model), http.StatusBadRequest)
+						return
+					}
+					perModel[model] = ratelimit.ModelRateLimit{Capacity: mrl.Burst, RefillPerSecond: mrl.RefillPerSecond}
+				}
+			}
 		}
 
 		vk := identity.VirtualKey{
@@ -154,6 +187,7 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 			RefillPerSecond:    refill,
 			TPMCapacity:        tpmCapacity,
 			TPMRefillPerSecond: tpmRefill,
+			PerModel:           perModel,
 		}
 
 		if err := pipeline.UpsertVirtualKey(vk, rateLimitCfg); err != nil {

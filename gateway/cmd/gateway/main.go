@@ -294,12 +294,20 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			logger.Warn("virtual key configures a TPM rate limit, but Redis rate-limit mode is active; TPM is in-memory-only in v1 and will not be enforced",
 				"key", vk.Name)
 		}
+		var perModel map[string]ratelimit.ModelRateLimit
+		if len(vk.PerModelRateLimits) > 0 {
+			perModel = make(map[string]ratelimit.ModelRateLimit, len(vk.PerModelRateLimits))
+			for model, mrl := range vk.PerModelRateLimits {
+				perModel[model] = ratelimit.ModelRateLimit{Capacity: mrl.Burst, RefillPerSecond: mrl.RefillPerSecond}
+			}
+		}
 		keyConfigs = append(keyConfigs, ratelimit.KeyConfig{
 			ID:                 vk.Name,
 			Capacity:           burst,
 			RefillPerSecond:    refill,
 			TPMCapacity:        vk.TPMCapacity,
 			TPMRefillPerSecond: vk.TPMRefillPerSecond,
+			PerModel:           perModel,
 		})
 	}
 	verifier, err := identity.NewVerifier(virtualKeys)

@@ -415,10 +415,10 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 	return nil
 }
 
-// checkRateLimit reports whether vk may proceed, and whether that answer
-// was a fail-open (rate limiter backend errored, request let through
-// anyway) rather than a genuine rate-limit decision — failedOpen is
-// surfaced to the caller specifically so it can reach
+// checkRateLimit reports whether vk may proceed against model, and
+// whether that answer was a fail-open (rate limiter backend errored,
+// request let through anyway) rather than a genuine rate-limit decision —
+// failedOpen is surfaced to the caller specifically so it can reach
 // GatewayDecisionEvent.RateLimitFailOpen, per
 // docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md. A Redis
 // backend error (network failure, timeout) is logged and the request is
@@ -428,11 +428,18 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 // Kelvran: internal/budget.Tracker's per-key USD cap is a second,
 // independent control that never touches Redis, so a rate-limiter
 // outage alone does not remove every spending control at once. In
-// in-memory mode, p.limiter.Allow never returns an error at all, so this
-// fail-open path is only ever exercised when a Redis backend is
+// in-memory mode, p.limiter.AllowForModel never returns an error at all,
+// so this fail-open path is only ever exercised when a Redis backend is
 // configured.
-func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) (ok bool, failedOpen bool) {
-	allowed, err := p.limiter.Allow(ctx, vk.ID)
+//
+// model is threaded through to AllowForModel so a virtual key's own
+// PerModel override (per
+// docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md), if one
+// is configured for this specific model, is consulted before vk's default
+// bucket — a key with no PerModel entries behaves exactly as if this
+// parameter didn't exist.
+func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) (ok bool, failedOpen bool) {
+	allowed, err := p.limiter.AllowForModel(ctx, vk.ID, model)
 	if err != nil {
 		p.logger.Warn("ratelimit_backend_unavailable", "key_id", vk.ID, "error", err.Error())
 		// A real, aggregate-friendly metric alongside the log line above,
@@ -753,7 +760,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	}
 
 	var rateLimitOK bool
-	rateLimitOK, rateLimitFailedOpen = p.checkRateLimit(ctx, vk)
+	rateLimitOK, rateLimitFailedOpen = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {
 		err = ErrRateLimited
 		return

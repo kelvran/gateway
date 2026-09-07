@@ -59,6 +59,20 @@ virtual_keys:
       # no-op if rate_limit.redis_addr (below) is also configured.
       tpm_capacity: 100000
       tpm_refill_per_second: 1000
+      # Optional; omit for no per-model override. The "consumer x model"
+      # dimension of multi-dimensional rate-limit matching, per
+      # docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md: a
+      # model listed here gets its own separate burst/refill_per_second
+      # bucket, entirely independent of (never shared with, never drains)
+      # this key's default bucket above — every OTHER model this key can
+      # call still uses that default bucket unchanged. Both burst and
+      # refill_per_second are required and must be positive per entry —
+      # unlike the key's own top-level burst/refill_per_second, there is
+      # no "0 means use the gateway's default" fallback here.
+      per_model:
+        gpt-4o:
+          burst: 5
+          refill_per_second: 1
     allowed_models:
       gpt-4o: true
       claude-opus-4: true

@@ -121,8 +121,16 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              a Lua script over go-redis, atomic across any number of gateway instances)
                              when `rate_limit.redis_addr` is configured — a Redis backend error fails
                              open (logged, request allowed), since internal/budget's per-key USD cap is
-                             an independent backstop. Hierarchical scope resolution (org/team/user/session)
-                             remains target-only, same boundary as identity's own scope deferral below
+                             an independent backstop. A consumer x model dimension is now real too, per
+                             docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md:
+                             KeyConfig.PerModel lets one virtual key give a specific model its own,
+                             entirely separate RPM bucket (checked before, never alongside, the key's own
+                             default bucket) — enforced in BOTH in-memory and Redis mode, unlike TPM
+                             (still in-memory-only). Provider/header/path matching (the rest of Kong's own
+                             multi-dimensional shape) remains scoped-out future work, deliberately, not yet
+                             cheaply addable at checkRateLimit's current (virtual key, model)-only view of
+                             a request. Hierarchical scope resolution (org/team/user/session) remains
+                             target-only, same boundary as identity's own scope deferral below
 /internal/cache            — Cache's public interface — see "Cache Subsystem" below; this is the ONLY
                              package Gateway's request pipeline is allowed to import from Cache
     /port.go                — type Cache interface { Get, Put } — the sole import surface
