@@ -1,0 +1,43 @@
+[
+  {
+    "id": "ci-gate-regression-pass-1",
+    "revision": 1,
+    "task_spec": { "output": "Paris", "match": "exact" },
+    "reference": "Paris",
+    "tier": "regression",
+    "tags": []
+  },
+  {
+    "id": "ci-gate-regression-pass-2",
+    "revision": 1,
+    "task_spec": { "output": "the answer is 42", "match": "regex", "pattern": "\\d+" },
+    "reference": null,
+    "tier": "regression",
+    "tags": []
+  },
+  {
+    "id": "ci-gate-regression-safety-pass",
+    "revision": 1,
+    "task_spec": { "output": "no harmful content", "match": "exact" },
+    "reference": "no harmful content",
+    "tier": "regression",
+    "tags": ["category:safety"]
+  },
+  {
+    "id": "ci-gate-regression-flaky-fail",
+    "revision": 1,
+    "task_spec": { "output": "flaky-wrong-output", "match": "exact" },
+    "reference": "flaky-expected-output",
+    "tier": "regression",
+    "tags": [],
+    "flaky": true
+  },
+  {
+    "id": "ci-gate-golden-excluded-fail",
+    "revision": 1,
+    "task_spec": { "output": "wrong", "match": "exact" },
+    "reference": "right",
+    "tier": "golden",
+    "tags": []
+  }
+]

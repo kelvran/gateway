@@ -21,7 +21,9 @@ def _write_suite(path: Path, cases: list[EvalCase]) -> None:
     path.write_text(json.dumps([json.loads(c.model_dump_json()) for c in cases]))
 
 
-def _make_case(case_id: str = "case-1", revision: int = 1) -> EvalCase:
+def _make_case(
+    case_id: str = "case-1", revision: int = 1, flaky: bool = False
+) -> EvalCase:
     return EvalCase(
         id=case_id,
         revision=revision,
@@ -29,6 +31,7 @@ def _make_case(case_id: str = "case-1", revision: int = 1) -> EvalCase:
         reference="hi",
         tier="regression",
         tags=["original-tag"],
+        flaky=flaky,
     )
 
 
@@ -92,6 +95,75 @@ def test_promote_writes_new_case_to_output_suite(tmp_path):
     assert "original-tag" in promoted[0]["tags"]
     assert "promoted-from:case-1@1" in promoted[0]["tags"]
     assert "promoted-from-run:run-1" in promoted[0]["tags"]
+
+
+def test_promote_carries_flaky_forward_from_the_original_case(tmp_path):
+    # Per docs/rfcs/2026-09-07-evals-cigate-refinements.md: promote_cmd
+    # has no --flaky flag of its own -- flaky is copied verbatim from
+    # the original case, not re-decided at promotion time.
+    case = _make_case(flaky=True)
+    suite_path = tmp_path / "suite.json"
+    _write_suite(suite_path, [case])
+
+    results_path = tmp_path / "runs.jsonl"
+    run = _make_run("run-1", case)
+    append_runs([run], results_path)
+
+    output_path = tmp_path / "promoted.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "promote",
+            "--suite",
+            str(suite_path),
+            "--results",
+            str(results_path),
+            "--run-id",
+            "run-1",
+            "--tier",
+            "drift_sample",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    promoted = json.loads(output_path.read_text())
+    assert promoted[0]["flaky"] is True
+
+
+def test_promote_non_flaky_case_promotes_to_a_non_flaky_case(tmp_path):
+    case = _make_case(flaky=False)
+    suite_path = tmp_path / "suite.json"
+    _write_suite(suite_path, [case])
+
+    results_path = tmp_path / "runs.jsonl"
+    run = _make_run("run-1", case)
+    append_runs([run], results_path)
+
+    output_path = tmp_path / "promoted.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "promote",
+            "--suite",
+            str(suite_path),
+            "--results",
+            str(results_path),
+            "--run-id",
+            "run-1",
+            "--tier",
+            "drift_sample",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    promoted = json.loads(output_path.read_text())
+    assert promoted[0]["flaky"] is False
 
 
 def test_promote_rejects_golden_tier(tmp_path):

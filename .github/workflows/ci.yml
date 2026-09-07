@@ -90,20 +90,36 @@ jobs:
         run: |
           uv sync
           uv run pytest tests/
-      - name: CI gate smoke test (evals run + report --fail-under)
+      - name: CI gate smoke test (evals run + report --fail-under/--tier/--category-fail-under)
         # Deliberately narrow scope: proves the `evals run` -> `evals
         # report --fail-under` exit-code plumbing (DECISIONS.md's
         # 2026-09-05 entry: "mechanism exists and is tested, not yet
         # wired into this repo's own CI") actually works end-to-end in a
-        # real CI job. This dogfoods against the tiny, already-committed
-        # tests/fixtures/golden_example.json (2 PASS, 1 deliberately-
-        # wrong FAIL -> deterministic pass_rate=0.6667, Wilson lower
-        # bound ~0.2077) with a threshold set well below that real lower
-        # bound, so today's known fixture data clears it comfortably.
-        # This is NOT a real quality bar and NOT a curated regression
-        # dataset — building one is separate, unscoped future work; this
-        # step's only job is proving the CI wiring itself doesn't rot.
+        # real CI job. This is NOT a real quality bar and NOT a curated
+        # regression dataset — building one is separate, unscoped future
+        # work; this step's only job is proving the CI wiring itself
+        # doesn't rot.
+        #
+        # Extended 2026-09-07 (docs/rfcs/2026-09-07-evals-cigate-
+        # refinements.md) to dogfood the tier default, category gate, and
+        # flaky exclusion together, not just the bare --fail-under flag.
+        # tests/fixtures/ci_gate_example.json has 4 tier="regression"
+        # cases (2 plain PASS, 1 tagged category:safety and PASS, 1
+        # flaky=true and deliberately WRONG) plus 1 tier="golden" case,
+        # also deliberately WRONG, that --tier regression must exclude
+        # entirely. Computed directly via evals.stats.wilson_interval,
+        # not guessed:
+        #   - If EITHER --tier or flaky exclusion were silently broken,
+        #     the eligible set collapses to 3 successes / 4 trials ->
+        #     Wilson lower bound 0.3006.
+        #   - With both correctly applied: 3 successes / 3 eligible
+        #     trials -> Wilson lower bound 0.4385.
+        #   --fail-under 0.35 sits strictly between those two numbers —
+        #   a regression in either mechanism flips this step red.
+        #   - The category:safety-tagged case is 1/1 -> Wilson lower
+        #     bound 0.2065; --category-fail-under sits below it with
+        #     real margin.
         working-directory: evals
         run: |
-          uv run evals run --suite tests/fixtures/golden_example.json --scores .ci-smoke-scores.jsonl
-          uv run evals report --scores .ci-smoke-scores.jsonl --fail-under 0.1
+          uv run evals run --suite tests/fixtures/ci_gate_example.json --scores .ci-smoke-scores.jsonl
+          uv run evals report --scores .ci-smoke-scores.jsonl --tier regression --fail-under 0.35 --category-fail-under "category:safety:0.15"

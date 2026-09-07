@@ -27,6 +27,23 @@ class EvalCase(BaseModel):
 
     `tier` is set at dataset-registration time (see THREAT_MODEL.md's Evals
     "Spoofing" row: a rollout must never be able to claim its own tier).
+
+    `flaky` (added 2026-09-07, per docs/rfcs/2026-09-07-evals-cigate-
+    refinements.md) is a durable, case-level declaration — set once by a
+    human curator, exactly like `tier`/`tags` — that this case is known to
+    be non-deterministic/environmentally noisy. It lives here, not on
+    `Run`, because *why* a case is flaky doesn't change trial-to-trial; a
+    `Run`-level flag would mean re-declaring it on every single execution
+    for no real benefit. Mirrors DeepEval's own `LLMTestCase(flaky=True)`
+    precedent: a dedicated, type-checked field, deliberately not encoded
+    as a magic string inside `tags` (which stays an open-ended,
+    operator-chosen label — overloading it with one reserved value that
+    silently changes gate behavior would be a real footgun). Denormalized
+    onto every `Score` this case produces (see `Score.flaky`'s own
+    docstring) so `evals.cli.report_cmd` can exclude it from a
+    `--fail-under`/`--category-fail-under` gate computation while still
+    printing its real result — it still runs, it's still visible, it just
+    never trips a gate on a known-noisy signal.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -37,6 +54,7 @@ class EvalCase(BaseModel):
     reference: str | None = None
     tier: EvalTier
     tags: list[str] = Field(default_factory=list)
+    flaky: bool = False
 
     def with_revision(self, revision: int) -> EvalCase:
         """Return a new `EvalCase` at `revision`, leaving `self` untouched.
@@ -172,6 +190,26 @@ class Score(BaseModel):
       `deterministic` score's `cost_usd` above, not a new convention.
       Unlike `Run`, there is no `cache_source_score_id` — `Score` has no
       `id` field of its own for a hit to point back at.
+    - `tier`/`tags`/`flaky` (added 2026-09-07, per docs/rfcs/2026-09-07-
+      evals-cigate-refinements.md) are denormalized, verbatim copies of
+      the originating `EvalCase`'s own fields of the same name, captured
+      at the exact moment `run_cmd`/`rollout_cmd` construct this `Score`
+      — the same "compute once, at write time, regardless of whether a
+      later feature needs it yet" convention `Run.cache_key`/`Score.
+      score_cache_key` already established, chosen over having
+      `evals.cli.report_cmd` join back to a `--suite` file at report
+      time (which would let a `--scores` file outlive or diverge from
+      the suite it was scored against, a real staleness risk this
+      convention avoids). `tier` is `EvalTier | None`, not a bare
+      `EvalTier` — `None` for a `Score` built before this field existed
+      (an old JSONL line still validates, resolving to `None` via this
+      declared default) or, in principle, any future scoring path with
+      no real `EvalCase` behind it; never a guessed tier. `tags` defaults
+      to `[]`, `flaky` to `False` — both `EvalCase`'s own defaults,
+      reproduced exactly. `evals.cli.report_cmd`'s `--tier` and
+      `--category-fail-under` read `tier`/`tags` here; its flaky-
+      exclusion logic reads `flaky` here — never the originating
+      `EvalCase` directly, which `report_cmd` never loads.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -188,6 +226,9 @@ class Score(BaseModel):
     cost_usd: Decimal | None = None
     score_cache_key: str | None = None
     from_cache: bool = False
+    tier: EvalTier | None = None
+    tags: list[str] = Field(default_factory=list)
+    flaky: bool = False
 
 
 SpanStatus = Literal["UNSET", "OK", "ERROR"]
