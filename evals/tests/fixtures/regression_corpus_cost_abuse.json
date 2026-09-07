@@ -1,0 +1,218 @@
+[
+  {
+    "id": "costabuse-budget-allow-record-toctou-race",
+    "revision": 1,
+    "task_spec": {
+      "output": "20 of 20 concurrent requests were allowed; final recorded spend $20.00 against a $1.00 cap (headroom for exactly one more request)",
+      "match": "exact",
+      "attack_class": "toctou_check_then_act_race_budget_double_spend",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 2 / Concrete scenario 7 -- resolving that document's own Open Questions item 1",
+      "description": "gateway/internal/budget/budget.go's Tracker.Allow (the check) and Tracker.Record (the debit) are called from two entirely separate points in gateway/internal/gateway/dataplane/dataplane.go: Allow at line ~870, inside HandleChatCompletion, BEFORE the cache lookup and the real upstream provider call; Record only inside finalize (line ~1219), AFTER the upstream response has returned and cost is computed. Each of Allow/Record/SpentUSD independently acquires and releases Tracker.mu (budget.go lines 139-153 Allow, 198-215 Record) -- no lock, reservation, or other synchronization spans the two calls. This is exactly the PortSwigger 'limit overrun' TOCTOU shape (check -> apply -> update) the research's Finding 2 documents as a real, named, industry-standard exploit class, with the AVideo CVE-2026-34368 wallet-transfer bug as a concrete real-world template of the identical read-check-write-no-lock root cause.",
+      "verified_against": "gateway/internal/budget/budget.go (Tracker.Allow lines 139-153, Tracker.Record lines 198-215, both independently mu.Lock/Unlock); gateway/internal/gateway/dataplane/dataplane.go (Allow call site line 870 inside HandleChatCompletion, Record call site line 1219 inside finalize)",
+      "verdict": "verified_real_bug",
+      "corpus_note": "Empirically confirmed, not just reasoned about: a temporary Go test (deleted before commit, per this corpus's established Phase-2 verify-then-delete convention) spawned 20 goroutines against one budget.Tracker/keyID, each calling Allow(cap=$1) then, after every goroutine had already made its own Allow decision (a sync.WaitGroup barrier modeling the real upstream-call gap between the two calls), calling Record($1) if allowed. Result, reproducible across 5 consecutive runs: allowedCount=20/20, finalSpent=$20.00 against cap=$1.00, every single time -- not a rare or timing-sensitive outcome. Notably WORSE than the PortSwigger 'single-packet attack' scenario the research cites (20-30 requests synchronized within ~1ms): Kelvran's real window is the ENTIRE upstream LLM completion latency (commonly hundreds of milliseconds to several seconds of real network+generation time), so ordinary concurrent agentic traffic exploits this race by construction, with zero adversarial synchronization technique required. This is a real, currently-unfixed bug, deliberately NOT fixed in this corpus-authoring pass per this task's own scope boundary -- reported honestly in bugs_found instead. The regression-tier `--fail-under` gate is never applied to this fixture file (not wired into CI, per this task's own instructions), so this documented-but-unfixed FAIL does not block anything today."
+    },
+    "reference": "at most 1 of 20 concurrent requests should be allowed when only one request's worth of budget headroom remains; recorded spend should never exceed the configured cap",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-ratelimit-tpm-hasbalance-debit-toctou-race",
+    "revision": 1,
+    "task_spec": {
+      "output": "20 of 20 concurrent requests passed the TPM pre-check (HasBalance); all 20 proceeded to Debit",
+      "match": "exact",
+      "attack_class": "toctou_check_then_act_race_rate_limit_bypass",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 2 / Concrete scenario 8",
+      "description": "gateway/internal/ratelimit's TPM dimension has the IDENTICAL check-then-act shape as budget.Tracker.Allow/Record: KeyLimiter.AllowTPM (limiter.go lines 229-237) calls TokenBucket.HasBalance (ratelimit.go lines 79-84), a deliberately NON-consuming check ('the request being decided hasn't run yet and its own real cost is unknown', per AllowTPM's own doc comment) -- and KeyLimiter.RecordTokens (limiter.go lines 242-250) calls TokenBucket.Debit (ratelimit.go lines 91-96) only later, in dataplane.go's finalize (line ~1227), once the real upstream response's token usage is known. No lock spans the two calls -- each of KeyLimiter's own l.mu.RLock()/RUnlock() wraps only the map lookup, released before HasBalance/Debit are ever invoked. This is PortSwigger's own named 'bypassing an anti-brute-force rate limit' variant of the same TOCTOU class as the budget race above, applied to the TPM (tokens-per-minute) dimension specifically.",
+      "verified_against": "gateway/internal/ratelimit/limiter.go (AllowTPM lines 229-237, RecordTokens lines 242-250); gateway/internal/ratelimit/ratelimit.go (TokenBucket.HasBalance lines 79-84, TokenBucket.Debit lines 91-96)",
+      "verdict": "verified_real_bug",
+      "corpus_note": "Empirically confirmed with the same barrier-based temporary Go test technique (deleted before commit) used for the budget race above: 20 goroutines against one capacity-1 TokenBucket, each calling HasBalance() then, after every goroutine had already checked, calling Debit(1) if it had passed. Result, reproducible across 5 consecutive runs: passedCheckCount=20/20 every time. A companion probe in the same file proved TokenBucket.Allow (the RPM dimension's real entry point -- see the sibling case costabuse-ratelimit-rpm-allow-atomic-no-race) does NOT share this weakness under the identical barrier technique, confirming the race is specific to the HasBalance/Debit split, not a property of TokenBucket as a whole. A real, currently-unfixed gap, deliberately NOT fixed here per this task's scope boundary."
+    },
+    "reference": "at most as many concurrent requests as the configured TPM bucket capacity supports should pass the pre-check before any Debit call lands",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-ratelimit-rpm-allow-atomic-no-race",
+    "revision": 1,
+    "task_spec": {
+      "output": "1 of 20 concurrent requests allowed against a capacity-1 bucket, every run",
+      "match": "exact",
+      "attack_class": "toctou_control_case_atomic_check_and_decrement",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 2 / Open Questions item 1 -- the control-case half of resolving that open question",
+      "description": "Unlike budget.Tracker.Allow/Record and ratelimit's TPM HasBalance/Debit split, the RPM dimension's real entry point is genuinely atomic: TokenBucket.Allow (ratelimit.go lines 59-70) holds b.mu across refill, the tokens<1 check, AND the decrement in one uninterrupted critical section -- there is no separate 'check' and 'act' call for a caller to ever observe or race between. The distributed (Redis) path mirrors this exactly: redislimiter.go's luaSrc (lines 36-61) performs the identical refill-then-check-then-consume sequence inside a single atomic Lua script run via EVALSHA, so the same guarantee holds across multiple gateway instances, not just within one process.",
+      "verified_against": "gateway/internal/ratelimit/ratelimit.go (TokenBucket.Allow lines 59-70, single mu.Lock/defer Unlock spanning refillLocked+check+decrement); gateway/internal/ratelimit/redislimiter/redislimiter.go (luaSrc lines 36-61, single atomic script)",
+      "verdict": "verified_safe_by_design",
+      "corpus_note": "Empirically confirmed via the same barrier-based temporary Go test technique (deleted before commit) as the two race cases above, run in the same package/file: 20 goroutines against one capacity-1 TokenBucket, all released simultaneously past a startGate, each calling Allow() directly. Result, reproducible across 5 consecutive runs: allowedCount=1/20 every time -- zero races observed, in direct contrast to the TPM HasBalance/Debit split's 20/20 under the identical technique. Confirms the research's Open Questions item 1 (whether Kelvran's check-then-act shapes hold a lock across both halves) resolves DIFFERENTLY per dimension: RPM is safe by construction, budget and TPM are not."
+    },
+    "reference": "1 of 20 concurrent requests allowed against a capacity-1 bucket, every run",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-ssrf-no-client-controlled-upstream-endpoint",
+    "revision": 1,
+    "task_spec": {
+      "output": "adapter.ChatRequest has no api_base/base_url/upstream-endpoint field of any kind; every Deployment.BaseURL comes exclusively from operator-controlled static config or the operator-gated Admin API, never from a client request body",
+      "match": "exact",
+      "attack_class": "ssrf_credential_exfiltration_via_client_controlled_endpoint",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 1 / Concrete scenario 1 (LiteLLM CVE-2024-6587 / GHSA-g26j-5385-hhw3)",
+      "description": "LiteLLM's CVE-2024-6587 let a client override the real outbound request destination via a client-supplied `api_base` field, exfiltrating the real upstream provider API key to an attacker-controlled domain -- a billing-fraud mechanism (stolen credential reused for unauthorized, billed calls), not a cost-math bug. Verified directly, not assumed: cmd/gateway/main.go (line 606-607) unmarshals the raw client request body directly into adapter.ChatRequest, whose full field set (types.go lines 208-236: Model, Messages, Temperature, MaxTokens, Tools, Stream, DisableCacheControlAutoPopulate) contains no field that could redirect where a provider credential is sent. dep.BaseURL (dataplane.go line 112, used at the real HTTP call site line 1542) is populated exclusively from controlplane.go's `base_url` YAML key (config.go line 462) or the Admin API's own operator-gated virtualKeyRequest shape (admin.go) -- neither is reachable from a client's own chat-completion request body.",
+      "verified_against": "gateway/cmd/gateway/main.go:606-607 (client body unmarshals into adapter.ChatRequest only); gateway/internal/adapter/types.go:208-236 (full ChatRequest field list); gateway/internal/gateway/controlplane/config.go:462 (BaseURL sourced from base_url YAML key only); gateway/internal/gateway/dataplane/dataplane.go:1542 (dep.BaseURL used as the real HTTP call target)",
+      "verdict": "verified_safe_by_design",
+      "corpus_note": "This is a real, verified-safe regression guard against a future regression, not evidence Kelvran currently has this bug -- per this task's own framing: if a field resembling api_base/base_url is ever added to adapter.ChatRequest, it must be server-side-allowlisted against the operator's own configured deployments, never forwarded to an arbitrary client-supplied value verbatim. A leaked/stolen provider key's blast radius is separately bounded by the compromised virtual key's own budget_usd cap (see the sibling budget-race case above for the real caveat on that bound today: the cap itself has a currently-unfixed TOCTOU race, so 'bounded' is aspirational, not yet fully enforced under concurrency)."
+    },
+    "reference": "adapter.ChatRequest has no api_base/base_url/upstream-endpoint field of any kind; every Deployment.BaseURL comes exclusively from operator-controlled static config or the operator-gated Admin API, never from a client request body",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-admin-api-flat-token-no-partial-scope-mass-assignment",
+    "revision": 1,
+    "task_spec": {
+      "output": "Kelvran's Admin API v1 has exactly one credential tier (a single static bearer token) with no per-caller ownership/scope concept at all; every field of virtualKeyRequest is fully mutable by any holder of that token for any virtual key",
+      "match": "exact",
+      "attack_class": "privilege_escalation_mass_assignment_adjacent",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 5 / Concrete scenarios 3-4 (LiteLLM CVE-2026-47102 / GHSA-wpfp-gwwc-vwq6, CVE-2024-5710 / GHSA-qqcv-vg9f-5rr3) -- explicitly flagged by the research itself as privilege-escalation-in-kind rather than cost-abuse-in-kind, included here per this task's own category:routing carve-out for admin-API mutation surfaces",
+      "description": "CVE-2026-47102's root cause was a self-service endpoint whose ownership check was correct ('only your own account') but whose FIELD-level allowlist was missing, letting a caller mass-assign a privileged user_role field on their own record. CVE-2024-5710 let an authenticated caller manage teams other than their own because the access-control check was missing per-team scoping. Verified directly against admin.go: Handler (lines 83-89) wraps every route in requireBearerToken (lines 96-111), a single constant-time comparison against ONE static admin secret -- there is no identity.Verifier lookup anywhere in this package, no notion of 'this caller's own key' versus 'a different key', and upsertVirtualKeyHandler (lines 131-199) applies every POSTed field (KeyHash, BudgetUSD, AllowedModels, RateLimit incl. PerModel) to whatever virtual key `name` the caller specifies, by design -- a full, intentional replace, per the package's own doc comment describing this as 'a deliberately separate credential space' distinct from client-facing virtual keys.",
+      "verified_against": "gateway/internal/admin/admin.go:83-111 (Handler + requireBearerToken, single static-token check, no per-key ownership concept), :131-199 (upsertVirtualKeyHandler applies every field with no allowlist, by design), package doc comment lines 1-14",
+      "verdict": "verified_not_applicable",
+      "corpus_note": "Both LiteLLM CVEs require a narrowly-scoped/self-service caller whose access is supposed to be limited to 'their own' record or team -- that concept does not exist anywhere in Kelvran's Admin API v1: it is binary (the one static token grants full mutation rights over every virtual key, or no access at all). The specific 'ownership check correct, field allowlist missing' and 'no per-team scoping' bug SHAPES are therefore not currently reproducible against this surface, verified by direct code reading rather than assumed. This is a real, honestly-verified fact about today's code, not evidence of a hidden vulnerability -- but it is also a real regression guard for the future: if Kelvran ever adds a narrower-scoped or self-service key-mutation path (e.g. letting a caller rotate only their own key's metadata), that new path must enforce BOTH an ownership check AND a strict per-field allowlist from day one, per exactly the CVE-2026-47102 pattern -- a bare 'own record only' check would not be sufficient on its own, as that CVE itself demonstrates."
+    },
+    "reference": "Kelvran's Admin API v1 has exactly one credential tier (a single static bearer token) with no per-caller ownership/scope concept at all; every field of virtualKeyRequest is fully mutable by any holder of that token for any virtual key",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-budget-allow-rechecked-every-completion-call",
+    "revision": 1,
+    "task_spec": {
+      "output": "budget.Tracker.Allow is called at the top of both HandleChatCompletion and HandleChatCompletionStream, with no run-level or session-level caching of the decision anywhere in the pipeline",
+      "match": "exact",
+      "attack_class": "skillbloat_legitimate_mechanism_token_amplification_edos",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 4 / Concrete scenario 5 (SkillBloat, arxiv.org/html/2608.21929v1) -- resolving that document's own Open Questions item 2",
+      "description": "SkillBloat demonstrates a malicious agent skill inflating a real multi-step coding-agent task's token consumption 26.39x (cost $0.21 -> $5.41) with every individual call unremarkable in isolation -- a stress test for whether a gateway's budget cap is checked before EVERY completion call in a long agentic run, or only once at session start. Verified directly: HandleChatCompletion (dataplane.go line 813) calls p.budget.Allow at line 870, and HandleChatCompletionStream (streaming.go line 61) calls the same p.budget.Allow at streaming.go line 109 -- both are the sole entry points for a completion call, both check unconditionally on every invocation, and neither reads from nor writes to any run-scoped cache of a prior Allow decision (no such cache exists anywhere in dataplane.Pipeline). A multi-step agentic run realized as N separate HTTP requests therefore re-checks Allow N times, never once for the whole run.",
+      "verified_against": "gateway/internal/gateway/dataplane/dataplane.go:813 (HandleChatCompletion), :870 (Allow call site); gateway/internal/gateway/dataplane/streaming.go:61 (HandleChatCompletionStream), :109 (Allow call site)",
+      "verdict": "verified_safe_by_design",
+      "corpus_note": "This directly resolves the research's own stated open question favorably: Kelvran's per-request architecture (one HTTP request per completion call, no run/session object spanning several calls) means there is structurally no 'check once at run start' shortcut to exploit in the first place -- every individual completion call within a SkillBloat-style amplified run independently hits the real budget check. This does NOT mean a SkillBloat-style attack is fully mitigated: see the sibling case costabuse-no-cost-velocity-anomaly-signal for the real, honestly-named gap this same finding also surfaces (no anomaly signal below the flat cap), and see costabuse-budget-allow-record-toctou-race for how the per-call check itself is currently racy under concurrent load."
+    },
+    "reference": "budget.Tracker.Allow is called at the top of both HandleChatCompletion and HandleChatCompletionStream, with no run-level or session-level caching of the decision anywhere in the pipeline",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-no-cost-velocity-anomaly-signal",
+    "revision": 1,
+    "task_spec": {
+      "output": "Kelvran enforces only a flat, binary total-spend cap (budget.Tracker.Allow) plus a log-only percent-of-cap warning (checkBudgetWarnThreshold); no cost-velocity, cost-per-minute, or cost-multiple-of-baseline anomaly signal exists anywhere in the codebase",
+      "match": "exact",
+      "attack_class": "skillbloat_legitimate_mechanism_token_amplification_edos",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 4 / Concrete scenario 6",
+      "description": "SkillBloat's whole point is that a 26x-75x cost blowup can happen with every individual call looking unremarkable -- invisible to any per-request check, and (per the sibling verified-safe case above) not hidden from the flat per-call budget cap either, but only visible in AGGREGATE, and only once the flat cap is actually hit or exceeded. Verified directly: grep across every .go file in internal/ for velocity/anomaly/baseline returns zero matches; the only spend-adjacent signal besides the hard cap itself is checkBudgetWarnThreshold (dataplane.go line ~1294), whose own doc comment states plainly it is 'log-only... never rejects or alters the request' and re-logs on every billable completion while spend remains over a single static percent-of-cap threshold -- not a rate/velocity/baseline-relative measure of any kind.",
+      "verified_against": "repo-wide grep for velocity/anomaly/baseline across gateway/internal/ (zero matches); gateway/internal/gateway/dataplane/dataplane.go:1294 (checkBudgetWarnThreshold doc comment, log-only flat-percent-of-cap warning)",
+      "verdict": "verified_honest_gap",
+      "corpus_note": "A real, currently-not-built gap, honestly named rather than fixed here (out of this task's scope) -- output and reference deliberately differ, the same documented-gap convention this corpus already established for the guardrail Phase 2 cases (e.g. regcorpus-guardrail-13). Under today's real per-key budget_usd caps (commonly generously sized for legitimate agentic workloads), a SkillBloat-style amplification could run for a long time inside the flat cap's headroom, with zero signal distinguishing it from ordinary heavy-but-legitimate usage until the cap itself is finally hit -- a real, named backlog candidate (per_agent_run_id cost-per-minute, or cost-vs-that-task-shape's-own-historical-baseline), not evidence of a coding bug in existing logic."
+    },
+    "reference": "a legitimate-mechanism token-amplification run (e.g. SkillBloat-style, 26x-75x cost blowup with no single request out of the ordinary) should surface a cost-velocity or cost-multiple-of-baseline anomaly signal distinct from the flat cap, so it isn't invisible until the flat cap is hit or exceeded",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-no-custom-pricing-cache-token-doublecount-path",
+    "revision": 1,
+    "task_spec": {
+      "output": "costaccounting.Calculator has exactly one pricing path against one static PriceTable; costaccounting.Usage/adapter.Usage carry no cache-token field of any kind (PromptTokens/CompletionTokens/TotalTokens only)",
+      "match": "exact",
+      "attack_class": "token_counting_pricing_discrepancy_cache_token_doublecount",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 3 / Concrete scenario 11 (LiteLLM issue #40006)",
+      "description": "LiteLLM issue #40006's bug requires TWO distinguishable ingredients Kelvran's real code does not have: (1) a separate 'custom per-model pricing override' code path distinct from default-pricing, which is where the double-add actually happened; (2) a cache-token field/bucket that could be added twice. Verified directly: costaccounting.go's Calculator.Calculate (lines 44-52) is the SOLE pricing path -- there is no second, custom-pricing-specific calculation function anywhere in the package or its callers. costaccounting.Usage (lines 15-20) and the canonical adapter.Usage (types.go lines 238-243) both declare only PromptTokens/CompletionTokens/TotalTokens; ModelPrice (lines 23-27) declares only PromptPerToken/CompletionPerToken -- no CachedTokens field, no separate cache-discount price tier, on either type.",
+      "verified_against": "gateway/internal/costaccounting/costaccounting.go:15-20 (Usage struct), :23-27 (ModelPrice struct), :44-52 (Calculator.Calculate, the only pricing path); gateway/internal/adapter/types.go:238-243 (canonical Usage struct)",
+      "verdict": "verified_not_applicable",
+      "corpus_note": "The specific LiteLLM #40006 bug shape genuinely cannot occur in Kelvran's current code, verified by direct reading rather than assumed -- there is no second pricing path to double-add into, and no cache-token bucket of any kind. This also surfaces a related but DISTINCT, honestly-named limitation, not the same bug: Kelvran's cost accounting today charges the SAME per-token price for a cache-read (provider-side-discounted) token as an ordinary token, because no provider ever reports (and no Kelvran type ever carries) a separate cached-token count -- a real gap in cache-discount pass-through, named here as future work, not conflated with the double-count bug this case actually probes for."
+    },
+    "reference": "costaccounting.Calculator has exactly one pricing path against one static PriceTable; costaccounting.Usage/adapter.Usage carry no cache-token field of any kind (PromptTokens/CompletionTokens/TotalTokens only)",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-streaming-usage-capture-independent-of-choices",
+    "revision": 1,
+    "task_spec": {
+      "output": "Every stream decoder (openai, anthropic, openaicompat) captures the provider's real usage data whenever it is sent, unconditionally on whatever else is present in that same chunk/event",
+      "match": "exact",
+      "attack_class": "token_counting_pricing_discrepancy_streaming_usage_discard",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 3 / Concrete scenario 12 (LiteLLM issue #36168)",
+      "description": "LiteLLM #36168's trigger condition was specific: the final SSE chunk carried BOTH real usage AND a non-empty choices array (an edge-case wire shape LiteLLM's aggregator didn't expect), causing it to discard the real usage object entirely. Verified directly against Kelvran's own decoders: openai/stream.go's Decode (lines 104-145) sets finalUsage whenever `native.Usage != nil` (line 136), with no condition on the same chunk's `choices`/delta content at all -- the presence of other fields in the chunk plays no role. anthropic/stream.go's decodeMessageDelta (lines 271-290) unconditionally builds usage from the message_delta event's own Usage field every time one arrives (Anthropic's SSE shape has no analogous 'choices' field to conflict with in the first place).",
+      "verified_against": "gateway/internal/adapter/openai/stream.go:104-145 (Decode, finalUsage set whenever native.Usage != nil, unconditional on chunk.Usage's sibling fields); gateway/internal/adapter/anthropic/stream.go:271-290 (decodeMessageDelta, unconditional usage build)",
+      "verdict": "verified_safe_by_design",
+      "corpus_note": "Kelvran's decoders never branch on a chunk's OTHER fields before deciding whether to trust its usage field -- the specific LiteLLM #36168 trigger condition (usage discarded because choices was also non-empty) has no code path to occur through in Kelvran today, verified by direct reading of every relevant decoder rather than assumed from the streaming architecture alone."
+    },
+    "reference": "Every stream decoder (openai, anthropic, openaicompat) captures the provider's real usage data whenever it is sent, unconditionally on whatever else is present in that same chunk/event",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-streaming-missing-usage-logged-not-estimated",
+    "revision": 1,
+    "task_spec": {
+      "output": "when no provider chunk ever carries usage, Kelvran records an explicit zero-value Usage and emits a stream_missing_usage warning log; it never substitutes a locally-computed token-count estimate",
+      "match": "exact",
+      "attack_class": "token_counting_pricing_discrepancy_streaming_usage_discard",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 3 / Concrete scenario 12 (LiteLLM issue #36168), the fallback-mechanism half distinct from the sibling capture-path case above",
+      "description": "The second half of LiteLLM #36168's real-world impact (a measured 4x single-request / 3.2x daily-total overcharge) came specifically from silently falling back to a local token-count estimate with no cache-hit information, once usage was discarded. Verified directly: dataplane/streaming.go's finishStreamedResponse (lines 440-454) checks `if finalUsage != nil` and, on the else branch (no usage ever arrived), does NOT call any local token-estimation function -- it leaves `usage` at its zero value and logs a `stream_missing_usage` warning (logger.Warn, lines 449-453) naming the deployment/provider/model, per that function's own doc comment: 'a provider stream that never sends usage does not fail the request, but must not be silently unmetered either... a zero-usage entry is recorded and flagged loudly here so it's visible in logs, not just absent.'",
+      "verified_against": "gateway/internal/gateway/dataplane/streaming.go:440-454 (finishStreamedResponse, else-branch honest zero + stream_missing_usage warning log, no local estimate)",
+      "verdict": "verified_safe_by_design",
+      "corpus_note": "This is a genuinely different failure mode than the sibling capture-path case: this one tests what happens when usage is ENTIRELY absent (no final chunk ever carries it), rather than present-but-discarded. Both were checked separately because the LiteLLM #36168 report describes them as two connected but distinguishable behaviors (a discard condition, and a fallback-on-discard mechanism) -- Kelvran is verified safe on both counts, but for two different, specifically-checked reasons."
+    },
+    "reference": "when no provider chunk ever carries usage, Kelvran records an explicit zero-value Usage and emits a stream_missing_usage warning log; it never substitutes a locally-computed token-count estimate",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-cache-hit-cost-uses-real-usage-never-billed",
+    "revision": 1,
+    "task_spec": {
+      "output": "on a cache hit, finalize computes cost from the cached response's own real, originally-recorded Usage numbers for telemetry only; budget.Record and KeyLimiter.RecordTokens are both skipped via the billable=false gate",
+      "match": "exact",
+      "attack_class": "token_counting_pricing_discrepancy_cache_hit_billing",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 3 / Concrete scenario 14 -- the token-counting angle on this project's own already-fixed dogfood-cost-cache-hit-coalesced-follower-double-charge case",
+      "description": "Scenario 14 asks whether a cache hit's cost is ever computed from a stale or estimated token count rather than being cleanly excluded from provider-usage-based billing. Verified directly against dataplane.go's finalize (lines 1207-1228): on ANY successful response (err == nil), including a cache hit, `cost` is computed via `p.costCalc.Calculate(req.Model, ...resp.Usage...)` (lines 1212-1217) -- and on a cache hit, `resp` is the unmarshaled CACHED response (checkCache's own JSON blob, set at dataplane.go line ~882), so `resp.Usage` is the real, originally-recorded usage from the original, genuinely-billed request that first populated the cache -- never a fresh estimate, and never zero-valued or stale in the sense of being wrong. `p.budget.Record`/`p.limiter.RecordTokens` (lines 1218-1227) are both gated on `billable`, which the cost-double-counting fix (already covered by dogfood-cost-cache-hit-coalesced-follower-double-charge) sets to false for every cache hit and coalesced singleflight follower -- so this real, correct-but-unbilled cost figure is used for informational/telemetry purposes only, never charged.",
+      "verified_against": "gateway/internal/gateway/dataplane/dataplane.go:1207-1228 (finalize's cost computation from resp.Usage + billable-gated Record/RecordTokens calls); cache-hit resp construction at dataplane.go:~882 (resp = cachedResp, unmarshaled from the cached JSON blob)",
+      "verdict": "verified_safe_by_design",
+      "corpus_note": "Distinct from, and complementary to, the existing dogfood-cost-cache-hit-coalesced-follower-double-charge case: that case proves a cache hit is never RE-CHARGED (the billable gate); this case proves that even the INFORMATIONAL cost figure a cache hit computes (for logging/telemetry, per the existing fix's own doc comment about a 'cache-savings dashboard') is built from real, historically-accurate usage data, never a token-count estimate that could itself be wrong the way LiteLLM's #36168 fallback path was."
+    },
+    "reference": "on a cache hit, finalize computes cost from the cached response's own real, originally-recorded Usage numbers for telemetry only; budget.Record and KeyLimiter.RecordTokens are both skipped via the billable=false gate",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-no-refund-credit-path-exists-yet",
+    "revision": 1,
+    "task_spec": {
+      "output": "budget.Tracker.Record ignores any negative costUSD by design (spend only ever accumulates upward); Kelvran has no refund/credit-back mechanism of any kind today",
+      "match": "exact",
+      "attack_class": "toctou_double_credit_race_future_regression_guard",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 2 / Concrete scenario 10 (HackerOne duplicate-bounty-payout report 220445)",
+      "description": "Scenario 10 describes a double-*credit* analogue of the already-fixed double-*charge* bug: if a refund/credit-back path is ever added, a race between two concurrent credit events for the same spend must not double-credit the same refund, mirroring HackerOne's own real production incident. Verified directly: budget.go's Record (lines 198-215) explicitly checks `if costUSD.Sign() < 0 { return }` (line 199) and its own doc comment states plainly 'A negative costUSD is ignored: spend only ever accumulates upward, since a corrective credit mechanism isn't part of this pass's scope.' A repo-wide check confirms no other credit/refund/reimburse-shaped function exists anywhere in internal/budget or internal/gateway/dataplane.",
+      "verified_against": "gateway/internal/budget/budget.go:198-201 (Record's negative-costUSD early-return + its own doc comment naming this as explicitly out of scope)",
+      "verdict": "verified_not_applicable",
+      "corpus_note": "Scenario 10's specific double-credit race cannot occur today because there is no credit-back code path of any kind to race against -- verified by direct reading, not assumed from the absence of a feature request. This case exists specifically as a forward-looking regression guard: if a refund/reconciliation path for an over-estimated pre-call reservation is ever added, it must not repeat the exact unsynchronized check-then-act shape this same research batch proved genuinely exploitable in costabuse-budget-allow-record-toctou-race -- that sibling case is the concrete, already-proven cautionary template for whoever builds this feature next."
+    },
+    "reference": "budget.Tracker.Record ignores any negative costUSD by design (spend only ever accumulates upward); Kelvran has no refund/credit-back mechanism of any kind today",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  }
+]
