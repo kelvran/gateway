@@ -29,15 +29,53 @@ import (
 // must supply a default rather than send an invalid request upstream.
 const defaultMaxTokens = 4096
 
-// Request is Anthropic's native Messages API request shape.
+// Request is Anthropic's native Messages API request shape. System is an
+// array of blocks (restructured from a plain string, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md) so each
+// canonical role:"system" message can carry its own independent
+// cache_control breakpoint rather than being flattened into one joined
+// string.
 type Request struct {
-	Model       string    `json:"model"`
-	System      string    `json:"system,omitempty"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
+	Model       string        `json:"model"`
+	System      []SystemBlock `json:"system,omitempty"`
+	Messages    []Message     `json:"messages"`
+	MaxTokens   int           `json:"max_tokens"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	Tools       []Tool        `json:"tools,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
+}
+
+// SystemBlock is one block of Anthropic's real system-array shape, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. Type is
+// always "text" — Anthropic's system array supports no other block
+// type today.
+type SystemBlock struct {
+	Type         string            `json:"type"`
+	Text         string            `json:"text"`
+	CacheControl *CacheControlWire `json:"cache_control,omitempty"`
+}
+
+// CacheControlWire is Anthropic's real cache_control block shape —
+// {"type":"ephemeral","ttl":"5m"|"1h"} — confirmed against
+// docs/upgrade-research/gateway-provider-prompt-caching-2026-09-07.md's
+// fetched vendor documentation, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. "ephemeral"
+// is the only Type value Anthropic documents; an empty TTL means
+// Anthropic's own 5-minute default.
+type CacheControlWire struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+// cacheControlWire converts a canonical adapter.CacheControl marker into
+// Anthropic's native cache_control block shape. nil in, nil out — an
+// unset marker is a silent no-op, never an error, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md.
+func cacheControlWire(cc *adapter.CacheControl) *CacheControlWire {
+	if cc == nil {
+		return nil
+	}
+	return &CacheControlWire{Type: "ephemeral", TTL: cc.TTL}
 }
 
 // Message is Anthropic's native message shape: role is only "user" or
@@ -70,6 +108,12 @@ type ContentBlock struct {
 	// "image"/"document" block, per
 	// docs/rfcs/2026-09-06-gateway-multimodal-content.md.
 	Source *ContentSource `json:"source,omitempty"`
+
+	// CacheControl, when set, marks this specific block as a caching
+	// breakpoint, per docs/rfcs/2026-09-07-gateway-provider-prompt-
+	// caching.md. Valid on any block type, mirroring Anthropic's own
+	// real per-content-block cache_control placement.
+	CacheControl *CacheControlWire `json:"cache_control,omitempty"`
 }
 
 // ContentSource is Anthropic's native image/document source shape —
@@ -122,25 +166,32 @@ func (a *Adapter) Name() string {
 
 // ToProvider implements adapter.Adapter. It pulls any role:"system"
 // messages out of the canonical Messages slice into the native System
-// field, and converts every other message into Anthropic's block-based
-// content shape.
+// field (one SystemBlock per canonical system message, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md), and converts
+// every other message into Anthropic's block-based content shape.
 func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
-	var systemParts []string
+	var systemBlocks []SystemBlock
 	messages := make([]Message, 0, len(req.Messages))
 
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "system":
-			systemParts = append(systemParts, m.Content)
+			systemBlocks = append(systemBlocks, SystemBlock{
+				Type:         "text",
+				Text:         m.Content,
+				CacheControl: cacheControlWire(m.CacheControl),
+			})
 			continue
 		case "tool":
 			// Anthropic has no "tool" role: a tool result is sent as a
 			// "user" message carrying a tool_result content block.
+			block := ContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content}
+			if m.CacheControl != nil {
+				block.CacheControl = cacheControlWire(m.CacheControl)
+			}
 			messages = append(messages, Message{
-				Role: "user",
-				Content: []ContentBlock{
-					{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content},
-				},
+				Role:    "user",
+				Content: []ContentBlock{block},
 			})
 			continue
 		}
@@ -170,6 +221,14 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 				Input: input,
 			})
 		}
+		// A message-level CacheControl marks "cache everything through
+		// this message" by attaching to its own last block -- Anthropic's
+		// own idiomatic pattern -- unless that exact block already
+		// carries a more specific part-level marker, to avoid overwriting
+		// it, per docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md.
+		if m.CacheControl != nil && len(blocks) > 0 && blocks[len(blocks)-1].CacheControl == nil {
+			blocks[len(blocks)-1].CacheControl = cacheControlWire(m.CacheControl)
+		}
 		messages = append(messages, Message{Role: m.Role, Content: blocks})
 	}
 
@@ -198,7 +257,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 
 	return &Request{
 		Model:       req.Model,
-		System:      strings.Join(systemParts, "\n\n"),
+		System:      systemBlocks,
 		Messages:    messages,
 		MaxTokens:   maxTokens,
 		Temperature: req.Temperature,
@@ -211,11 +270,14 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 // Anthropic's native ContentBlock shape, per
 // docs/rfcs/2026-09-06-gateway-multimodal-content.md. Exactly one of
 // p.Data/p.URL is expected for an "image"/"document" part — real, typed
-// errors otherwise, never a silently-dropped field.
+// errors otherwise, never a silently-dropped field. p.CacheControl, when
+// set, attaches directly to the returned block, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's part-level
+// granularity.
 func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
 	switch p.Type {
 	case "text":
-		return ContentBlock{Type: "text", Text: p.Text}, nil
+		return ContentBlock{Type: "text", Text: p.Text, CacheControl: cacheControlWire(p.CacheControl)}, nil
 	case "image", "document":
 		source := &ContentSource{MediaType: p.MediaType}
 		switch {
@@ -228,7 +290,7 @@ func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
 		default:
 			return ContentBlock{}, fmt.Errorf("anthropic: %s part has neither Data nor URL set", p.Type)
 		}
-		return ContentBlock{Type: p.Type, Source: source}, nil
+		return ContentBlock{Type: p.Type, Source: source, CacheControl: cacheControlWire(p.CacheControl)}, nil
 	default:
 		return ContentBlock{}, fmt.Errorf("anthropic: unsupported content part type %q", p.Type)
 	}

@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -43,8 +44,8 @@ func TestRoundTrip(t *testing.T) {
 
 	// Hazard 1: system-prompt placement. The system message must be
 	// pulled out of Messages into the top-level System field.
-	if native.System != "You are a helpful weather assistant." {
-		t.Errorf("native.System = %q, want the system message content", native.System)
+	if len(native.System) != 1 || native.System[0].Text != "You are a helpful weather assistant." {
+		t.Errorf("native.System = %+v, want one block with the system message content", native.System)
 	}
 	for _, m := range native.Messages {
 		if m.Role == "system" {
@@ -236,5 +237,207 @@ func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
 
 	if _, err := New().ToProvider(req); err == nil {
 		t.Fatal("ToProvider with an unsupported content part type returned nil error, want an error")
+	}
+}
+
+// TestToProviderSystemMessageCacheControlSetsPerBlockCacheControl is the
+// load-bearing proof for docs/rfcs/2026-09-07-gateway-provider-prompt-
+// caching.md's restructuring claim: two canonical system messages, only
+// one with CacheControl set, must become two independent SystemBlocks
+// where exactly one carries cache_control -- proving System is no
+// longer flattened into a single joined string that would have made
+// per-message marking impossible.
+func TestToProviderSystemMessageCacheControlSetsPerBlockCacheControl(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "First system block."},
+			{Role: "system", Content: "Second system block.", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	native := New()
+	nativeAny, err := native.ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	reqNative := nativeAny.(*Request)
+
+	if len(reqNative.System) != 2 {
+		t.Fatalf("native.System len = %d, want 2 independent blocks", len(reqNative.System))
+	}
+	if reqNative.System[0].Text != "First system block." || reqNative.System[0].CacheControl != nil {
+		t.Errorf("System[0] = %+v, want the first block with no cache_control", reqNative.System[0])
+	}
+	if reqNative.System[1].Text != "Second system block." {
+		t.Errorf("System[1].Text = %q, want %q", reqNative.System[1].Text, "Second system block.")
+	}
+	if reqNative.System[1].CacheControl == nil || reqNative.System[1].CacheControl.Type != "ephemeral" || reqNative.System[1].CacheControl.TTL != "1h" {
+		t.Errorf("System[1].CacheControl = %+v, want {ephemeral 1h}", reqNative.System[1].CacheControl)
+	}
+}
+
+// TestToProviderMessageCacheControlAttachesToLastBlock proves a
+// message-level CacheControl marks "cache everything through this
+// message" by attaching to that message's own last generated block.
+func TestToProviderMessageCacheControlAttachesToLastBlock(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "cache this whole message", CacheControl: &adapter.CacheControl{}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.Messages) != 1 || len(native.Messages[0].Content) != 1 {
+		t.Fatalf("native.Messages = %+v, want one message with one block", native.Messages)
+	}
+	block := native.Messages[0].Content[0]
+	if block.CacheControl == nil || block.CacheControl.Type != "ephemeral" || block.CacheControl.TTL != "" {
+		t.Errorf("block.CacheControl = %+v, want {ephemeral \"\"} (Anthropic's own 5-minute default)", block.CacheControl)
+	}
+}
+
+// TestToProviderContentPartCacheControlAttachesToThatPartOnly proves the
+// part-level marker's independence from the message-level marker: among
+// a text-lead-in block and two content-part blocks, only the part that
+// actually carries its own CacheControl gets one -- neither the
+// unmarked lead-in text block nor the unmarked second part does, even
+// though the second part is this message's own last block (so a
+// message-level marker, which is deliberately NOT set here, would have
+// landed there instead).
+func TestToProviderContentPartCacheControlAttachesToThatPartOnly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{
+				Role:    "user",
+				Content: "see attached",
+				Parts: []adapter.ContentPart{
+					{Type: "document", MediaType: "application/pdf", Data: "ZG9j", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+					{Type: "image", MediaType: "image/png", Data: "aW1n"},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	blocks := native.Messages[0].Content
+	if len(blocks) != 3 {
+		t.Fatalf("blocks len = %d, want 3 (text, document, image)", len(blocks))
+	}
+	if blocks[0].CacheControl != nil {
+		t.Errorf("blocks[0] (text lead-in) CacheControl = %+v, want nil", blocks[0].CacheControl)
+	}
+	if blocks[1].CacheControl == nil || blocks[1].CacheControl.TTL != "1h" {
+		t.Errorf("blocks[1] (document part) CacheControl = %+v, want {ephemeral 1h}", blocks[1].CacheControl)
+	}
+	if blocks[2].CacheControl != nil {
+		t.Errorf("blocks[2] (image part, unmarked, and this message's own last block) CacheControl = %+v, want nil -- no message-level marker was set", blocks[2].CacheControl)
+	}
+}
+
+// TestToProviderMessageCacheControlDoesNotOverwritePartLevelMarker
+// proves that when a message's own last block already carries a more
+// specific part-level CacheControl, a message-level CacheControl set at
+// the same time never overwrites it -- the part's own TTL must survive
+// untouched.
+func TestToProviderMessageCacheControlDoesNotOverwritePartLevelMarker(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{
+				Role:         "user",
+				CacheControl: &adapter.CacheControl{TTL: "message-level-should-not-win"},
+				Parts: []adapter.ContentPart{
+					{Type: "text", Text: "attached", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	blocks := native.Messages[0].Content
+	if len(blocks) != 1 {
+		t.Fatalf("blocks len = %d, want 1", len(blocks))
+	}
+	if blocks[0].CacheControl == nil || blocks[0].CacheControl.TTL != "1h" {
+		t.Errorf("blocks[0].CacheControl = %+v, want the part's own {ephemeral 1h}, not the message-level marker", blocks[0].CacheControl)
+	}
+}
+
+// TestToProviderToolResultCacheControlAttachesToBlock proves a
+// message-level CacheControl on a role:"tool" message attaches to the
+// single tool_result block that message produces.
+func TestToProviderToolResultCacheControlAttachesToBlock(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "call the tool"},
+			{Role: "assistant", ToolCalls: []adapter.ToolCall{
+				{ID: "toolu_1", Name: "get_weather", ArgumentsJSON: `{"city":"Boston"}`},
+			}},
+			{Role: "tool", Content: `{"temp_f":72}`, ToolCallID: "toolu_1", CacheControl: &adapter.CacheControl{}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	toolResultMsg := native.Messages[2]
+	if len(toolResultMsg.Content) != 1 || toolResultMsg.Content[0].Type != "tool_result" {
+		t.Fatalf("tool-result message Content = %+v", toolResultMsg.Content)
+	}
+	if toolResultMsg.Content[0].CacheControl == nil || toolResultMsg.Content[0].CacheControl.Type != "ephemeral" {
+		t.Errorf("tool_result block CacheControl = %+v, want {ephemeral \"\"}", toolResultMsg.Content[0].CacheControl)
+	}
+}
+
+// TestToProviderUnsetCacheControlIsNoOp proves the unset (nil, the
+// default) case never emits any cache_control field anywhere in the
+// marshaled request -- matching this schema's existing optional-field
+// convention (ContentPart/Parts's own additive, no-op-when-empty
+// precedent) rather than emitting a zero-value cache_control block.
+func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "hi", Parts: []adapter.ContentPart{
+				{Type: "image", MediaType: "image/png", Data: "aW1n"},
+			}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+
+	b, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "cache_control") {
+		t.Errorf("marshaled request contains a cache_control field despite no CacheControl being set anywhere: %s", b)
 	}
 }

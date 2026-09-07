@@ -354,3 +354,71 @@ func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
 		t.Fatal("ToProvider with an unsupported content part type returned nil error, want an error")
 	}
 }
+
+// TestToProviderCacheControlIsUnaffected is the load-bearing proof for
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's "why Gemini
+// is excluded" claim: setting adapter.CacheControl on a message, on a
+// system message, and on a content part must produce a native Gemini
+// request byte-identical to the same request with no CacheControl set
+// at all -- not just "gemini.go has no CacheControl-reading code" (true
+// by inspection) but a real, executed proof that the marker has zero
+// observable effect on this adapter's actual output.
+func TestToProviderCacheControlIsUnaffected(t *testing.T) {
+	withoutMarker := adapter.ChatRequest{
+		Model: "gemini-2.5-flash",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{
+				Role:    "user",
+				Content: "what's in this document?",
+				Parts: []adapter.ContentPart{
+					{Type: "document", MediaType: "application/pdf", Data: "ZG9jYmFzZTY0"},
+				},
+			},
+		},
+	}
+
+	withMarker := adapter.ChatRequest{
+		Model: "gemini-2.5-flash",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant.", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+			{
+				Role:         "user",
+				Content:      "what's in this document?",
+				CacheControl: &adapter.CacheControl{Key: "session-123"},
+				Parts: []adapter.ContentPart{
+					{
+						Type:         "document",
+						MediaType:    "application/pdf",
+						Data:         "ZG9jYmFzZTY0",
+						CacheControl: &adapter.CacheControl{TTL: "1h", Key: "session-123"},
+					},
+				},
+			},
+		},
+	}
+
+	a := New()
+
+	gotWithout, err := a.ToProvider(withoutMarker)
+	if err != nil {
+		t.Fatalf("ToProvider(withoutMarker): %v", err)
+	}
+	gotWith, err := a.ToProvider(withMarker)
+	if err != nil {
+		t.Fatalf("ToProvider(withMarker): %v", err)
+	}
+
+	jsonWithout, err := json.Marshal(gotWithout)
+	if err != nil {
+		t.Fatalf("marshaling withoutMarker result: %v", err)
+	}
+	jsonWith, err := json.Marshal(gotWith)
+	if err != nil {
+		t.Fatalf("marshaling withMarker result: %v", err)
+	}
+
+	if string(jsonWithout) != string(jsonWith) {
+		t.Errorf("CacheControl changed Gemini's native request output:\nwithout marker: %s\nwith marker:    %s", jsonWithout, jsonWith)
+	}
+}
