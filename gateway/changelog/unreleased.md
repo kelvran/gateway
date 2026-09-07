@@ -22,6 +22,8 @@ Versioning: [SemVer](https://semver.org/) — load-bearing for the Go module pat
 
 ## Fixed
 
+- Widened `internal/guardrail`'s `PromptInjectionDetector` vocabulary — found and honestly documented as two real, hand-curated adversarial regression cases (`evals/tests/fixtures/regression_corpus_guardrail.json` cases 05/06), not invented here: `injectionVerbs` was missing real override-instruction synonyms (`disobey`, `circumvent`, `subvert`), and `injectionTargets`' `"system prompt"` entry had no `"your"`-prefixed form the way `"instructions"`/`"rules"`/`"guidelines"` already did, so a real "disobey **your** system prompt" phrasing still wouldn't have matched with the verb alone added. Both closed together. A third, distinct gap found by the same regression pass (case 13 — a plainly-worded, override-phrasing-free cross-tenant data request) is deliberately left unfixed: override-instruction synonyms are a bounded, enumerable set (a real vocabulary gap), but "ask about another tenant's data" has unbounded natural-language phrasings with no shared lexical anchor — the same class of gap `docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md`'s Alternatives Considered #1 already declines to solve with a non-semantic, substring-based v1 classifier. Documented as a stated, permanent limitation, not chased further.
+
 ## Security
 
 - Closed a real, live documentation-vs-code gap: `THREAT_MODEL.md` and `SECURITY.md` already asserted a "PII/content guardrail pre- and post-call" mitigation for Information Disclosure and Elevation of Privilege (and OWASP LLM01/LLM02 coverage) while zero guardrail code existed anywhere in the repo. Guardrails v1 (see Added, above) makes that claim true.
