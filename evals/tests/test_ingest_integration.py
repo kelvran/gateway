@@ -40,12 +40,12 @@ def test_ingest_decodes_a_synthetic_object_storage_fixture_end_to_end(
     assert len(lines) == 3  # 2 decodable events + 1 malformed line
 
     monkeypatch.setattr(
-        cli_module, "list_object_keys", lambda bucket, prefix: ["sample.jsonl"]
+        cli_module, "list_object_keys", lambda scheme, bucket, prefix: ["sample.jsonl"]
     )
     monkeypatch.setattr(
         cli_module,
         "iter_object_lines",
-        lambda bucket, key: iter(lines),
+        lambda scheme, bucket, key: iter(lines),
     )
 
     out_path = tmp_path / "ingested.jsonl"
@@ -76,6 +76,55 @@ def test_ingest_decodes_a_synthetic_object_storage_fixture_end_to_end(
     assert decoded[1]["outcome"] == "OUTCOME_AUTH_FAILED"
 
 
+def test_ingest_decodes_a_synthetic_object_storage_fixture_end_to_end_gcs(
+    tmp_path, monkeypatch
+):
+    """Same fixture/assertions as the s3:// test above, driven through a
+    gs:// source instead -- proves `ingest_cmd` genuinely threads the
+    scheme parsed out of `--source` through to `list_object_keys`/
+    `iter_object_lines`, not just the s3:// path.
+    """
+    lines = _fixture_lines()
+    assert len(lines) == 3  # 2 decodable events + 1 malformed line
+
+    seen_schemes: list[str] = []
+
+    def _fake_list_object_keys(scheme: str, bucket: str, prefix: str) -> list[str]:
+        seen_schemes.append(scheme)
+        return ["sample.jsonl"]
+
+    monkeypatch.setattr(cli_module, "list_object_keys", _fake_list_object_keys)
+    monkeypatch.setattr(
+        cli_module,
+        "iter_object_lines",
+        lambda scheme, bucket, key: iter(lines),
+    )
+
+    out_path = tmp_path / "ingested.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "ingest",
+            "--source",
+            "gs://my-bucket/gatewayevents/v1/",
+            "--out",
+            str(out_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen_schemes == ["gs"]
+    assert "ingested 1 object(s)" in result.output
+    assert "2 decoded" in result.output
+    assert "1 failed to decode" in result.output
+
+    decoded = [json.loads(line) for line in out_path.read_text().splitlines() if line]
+    assert len(decoded) == 2
+    assert decoded[0]["traceId"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert decoded[1]["traceId"] == "5cf92f3577b34da6a3ce929d0e0e4737"
+
+
 def test_ingest_lists_multiple_objects_and_aggregates_counts_across_all_of_them(
     tmp_path, monkeypatch
 ):
@@ -83,12 +132,12 @@ def test_ingest_lists_multiple_objects_and_aggregates_counts_across_all_of_them(
     monkeypatch.setattr(
         cli_module,
         "list_object_keys",
-        lambda bucket, prefix: ["obj-1.jsonl", "obj-2.jsonl"],
+        lambda scheme, bucket, prefix: ["obj-1.jsonl", "obj-2.jsonl"],
     )
     monkeypatch.setattr(
         cli_module,
         "iter_object_lines",
-        lambda bucket, key: iter(lines),
+        lambda scheme, bucket, key: iter(lines),
     )
 
     out_path = tmp_path / "ingested.jsonl"
@@ -117,7 +166,9 @@ def test_ingest_lists_multiple_objects_and_aggregates_counts_across_all_of_them(
 
 
 def test_ingest_with_no_objects_found_fails_with_nonzero_exit(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli_module, "list_object_keys", lambda bucket, prefix: [])
+    monkeypatch.setattr(
+        cli_module, "list_object_keys", lambda scheme, bucket, prefix: []
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -135,14 +186,14 @@ def test_ingest_with_no_objects_found_fails_with_nonzero_exit(tmp_path, monkeypa
     assert "no objects found" in result.output
 
 
-def test_ingest_rejects_a_non_s3_source_scheme(tmp_path):
+def test_ingest_rejects_an_unsupported_source_scheme(tmp_path):
     runner = CliRunner()
     result = runner.invoke(
         main,
         [
             "ingest",
             "--source",
-            "gs://my-bucket/gatewayevents/v1/",
+            "ftp://my-bucket/gatewayevents/v1/",
             "--out",
             str(tmp_path / "ingested.jsonl"),
         ],
@@ -167,12 +218,12 @@ def test_ingest_never_reimplements_decode_it_calls_the_real_decode_function(
 
     monkeypatch.setattr(cli_module, "decode_gateway_decision_event", _always_fails)
     monkeypatch.setattr(
-        cli_module, "list_object_keys", lambda bucket, prefix: ["sample.jsonl"]
+        cli_module, "list_object_keys", lambda scheme, bucket, prefix: ["sample.jsonl"]
     )
     monkeypatch.setattr(
         cli_module,
         "iter_object_lines",
-        lambda bucket, key: iter(_fixture_lines()),
+        lambda scheme, bucket, key: iter(_fixture_lines()),
     )
 
     out_path = tmp_path / "ingested.jsonl"
