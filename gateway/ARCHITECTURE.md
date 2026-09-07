@@ -129,7 +129,12 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              (still in-memory-only). Provider/header/path matching (the rest of Kong's own
                              multi-dimensional shape) remains scoped-out future work, deliberately, not yet
                              cheaply addable at checkRateLimit's current (virtual key, model)-only view of
-                             a request. Hierarchical scope resolution (org/team/user/session) remains
+                             a request — the concrete design (what new data checkRateLimit would need, how
+                             it would thread through dataplane.Pipeline, per-dimension matching semantics,
+                             and an honest effort estimate/recommendation) is now written up in
+                             docs/rfcs/2026-09-07-gateway-ratelimit-provider-header-path-dimensions.md;
+                             this is a design record only — nothing below this line has changed. Hierarchical
+                             scope resolution (org/team/user/session) remains
                              target-only, same boundary as identity's own scope deferral below
 /internal/cache            — Cache's public interface — see "Cache Subsystem" below; this is the ONLY
                              package Gateway's request pipeline is allowed to import from Cache
