@@ -73,6 +73,14 @@ virtual_keys:
         gpt-4o:
           burst: 5
           refill_per_second: 1
+      # Optional; omit (or <= 0) for unlimited. Bounds how many of this
+      # key's requests may be SIMULTANEOUSLY outstanding, per
+      # docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md — a
+      # genuinely different dimension from burst/refill_per_second above,
+      # which bound request RATE over time, never how many may be
+      # in-flight at once. A rejection here (429, alongside a Retry-After
+      # header) never touches this key's RPM/TPM buckets.
+      max_concurrent_requests: 10
     allowed_models:
       gpt-4o: true
       claude-opus-4: true

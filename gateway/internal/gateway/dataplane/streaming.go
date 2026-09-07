@@ -72,6 +72,11 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	start := time.Now()
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
+		// See HandleChatCompletion's identical comment: attachRetryAfter
+		// must run before finalize, per
+		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
+		// (a).
+		err = p.attachRetryAfter(vk, err)
 		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err, time.Since(start))
 	}()
 
@@ -90,6 +95,16 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		err = ErrRateLimited
 		return
 	}
+	// Per-identity concurrency cap — see HandleChatCompletion's identical
+	// block for the full rationale. Both the buffered and streaming paths
+	// need this, or the cap would be trivially bypassed by setting
+	// "stream": true.
+	if !p.checkConcurrency(vk) {
+		err = ErrConcurrencyLimitExceeded
+		return
+	}
+	defer p.releaseConcurrency(vk)
+
 	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
 	if !p.budget.Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) {
 		err = ErrBudgetExceeded
@@ -249,7 +264,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	originalDep, originalErr := dep, err
 	if targets, configured := fallbackTargets(dep, err); configured {
 		tried := map[string]bool{dep.Name: true}
-		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(targets, tried,
+		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 			func(d Deployment) (adapter.ChatResponse, error) {
 				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent)
 			},

@@ -71,6 +71,18 @@ var ErrRateLimited = errors.New("dataplane: rate limit exceeded")
 // least its configured BudgetUSD cap. See internal/budget.
 var ErrBudgetExceeded = errors.New("dataplane: budget exceeded")
 
+// ErrConcurrencyLimitExceeded is returned when the caller's virtual key
+// already has its configured MaxInFlight requests outstanding, per
+// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md. Classified
+// alongside ErrRateLimited (OUTCOME_RATE_LIMITED, HTTP 429) rather than
+// given its own GatewayDecisionEvent_Outcome value — both are, from a
+// client's perspective, the same kind of decision ("you are being
+// throttled, back off and retry"), and avoiding a new outcome value
+// avoids a protobuf schema change to api/gatewayevents/v1 for this pass,
+// mirroring fallback.go's own FallbackClassGeneric precedent of folding
+// rate limits into an existing bucket rather than minting a new one.
+var ErrConcurrencyLimitExceeded = errors.New("dataplane: concurrency limit exceeded")
+
 // ErrModelNotAllowed is returned when the caller's virtual key is
 // configured with a non-empty AllowedModels list that does not include the
 // requested model.
@@ -147,6 +159,18 @@ type Config struct {
 	// itself never needs to know which virtual keys exist to construct
 	// this, only to use it.
 	Limiter *ratelimit.KeyLimiter
+	// Concurrency bounds each virtual key's own in-flight-request count,
+	// per docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md.
+	// Deliberately OPTIONAL (nil-safe throughout, exactly like
+	// UpstreamStream below) rather than required like every other
+	// dependency in this Config — a nil Concurrency correctly behaves as
+	// "concurrency limiting not configured," matching this codebase's
+	// existing "zero/nil means disabled" convention for optional
+	// subsystems (Redis rate-limiting, budget persistence, health-
+	// probing), and keeps this feature's diff from forcing every existing
+	// Pipeline test construction to change for a control most of those
+	// tests aren't exercising.
+	Concurrency *ratelimit.ConcurrencyLimiter
 	// Budget tracks each virtual key's cumulative spend against its
 	// configured BudgetUSD cap. See internal/budget.
 	Budget *budget.Tracker
@@ -215,8 +239,21 @@ type Config struct {
 // running against a consistent, unchanged key set; every new request
 // sees the new one. No lock, no partial-update window within one request.
 type Pipeline struct {
-	verifier          atomic.Pointer[identity.Verifier]
-	limiter           *ratelimit.KeyLimiter
+	verifier atomic.Pointer[identity.Verifier]
+	limiter  *ratelimit.KeyLimiter
+	// concurrency is nil whenever Config.Concurrency was left unset — see
+	// that field's own doc comment; checkConcurrency/releaseConcurrency
+	// treat a nil concurrency as "no cap configured," never panicking.
+	concurrency *ratelimit.ConcurrencyLimiter
+	// retryBackoff tracks each virtual key's own consecutive-rejection
+	// streak for the client-facing Retry-After signal, per
+	// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
+	// (a). Always non-nil (constructed unconditionally by NewPipeline,
+	// unlike concurrency above) — it is pure in-memory bookkeeping with
+	// no external resource to make optional, and every request needs
+	// SOME answer to "reset or record this key's streak," never a
+	// nil-check branch.
+	retryBackoff      *ratelimit.RetryBackoff
 	budget            *budget.Tracker
 	cache             cache.Cache
 	cacheL2           cache.Cache
@@ -292,6 +329,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 
 	p := &Pipeline{
 		limiter:           cfg.Limiter,
+		concurrency:       cfg.Concurrency,
+		retryBackoff:      ratelimit.NewRetryBackoff(),
 		budget:            cfg.Budget,
 		cache:             cfg.Cache,
 		cacheL2:           cfg.CacheL2,
@@ -462,6 +501,36 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 	// matching this codebase's own existing check-ordering discipline
 	// (model-allowed before rate-limit before budget).
 	return p.limiter.AllowTPM(vk.ID), false
+}
+
+// checkConcurrency reserves one in-flight slot for vk.ID, per
+// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design (b).
+// Always true when Config.Concurrency was left unset (nil) — concurrency
+// limiting not configured at all, matching this codebase's "unconfigured
+// means unlimited" convention. Checked immediately after checkRateLimit
+// succeeds, before the budget check — the same call site the task's own
+// design targets, and a natural extension of this codebase's existing
+// "model-allowed before rate-limit before budget" check-ordering
+// discipline (checkRateLimit's own doc comment) with one new throttling
+// dimension inserted between rate-limit and budget.
+//
+// Every true return MUST be paired with exactly one releaseConcurrency
+// call — HandleChatCompletion/HandleChatCompletionStream both do this via
+// defer immediately after a successful acquire.
+func (p *Pipeline) checkConcurrency(vk *identity.VirtualKey) bool {
+	if p.concurrency == nil {
+		return true
+	}
+	return p.concurrency.Acquire(vk.ID)
+}
+
+// releaseConcurrency frees the in-flight slot checkConcurrency reserved.
+// A no-op when Config.Concurrency was left unset, mirroring checkConcurrency.
+func (p *Pipeline) releaseConcurrency(vk *identity.VirtualKey) {
+	if p.concurrency == nil {
+		return
+	}
+	p.concurrency.Release(vk.ID)
 }
 
 // fallbackInfo captures whether a request fell back away from its first
@@ -745,6 +814,13 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	start := time.Now()
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
 	defer func() {
+		// attachRetryAfter runs BEFORE finalize, reassigning the named
+		// return err, so finalize's own outcomeFor-based classification
+		// and structured log line see the exact same wrapped error the
+		// client ultimately receives — per
+		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
+		// (a).
+		err = p.attachRetryAfter(vk, err)
 		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err, time.Since(start))
 	}()
 
@@ -765,6 +841,20 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		err = ErrRateLimited
 		return
 	}
+
+	// Per-identity concurrency cap, per
+	// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
+	// (b) — checked immediately after the rate-limit check, before
+	// budget, per that RFC's check-ordering rationale. The reserved slot
+	// is released via defer the moment it's acquired, so it's freed on
+	// EVERY subsequent return path (cache hit, guardrail block, upstream
+	// success or failure) without needing a second release call at each
+	// one.
+	if !p.checkConcurrency(vk) {
+		err = ErrConcurrencyLimitExceeded
+		return
+	}
+	defer p.releaseConcurrency(vk)
 
 	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
 	if !p.budget.Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) {
@@ -882,7 +972,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			originalDep, originalErr := dep, err
 			if targets, configured := fallbackTargets(dep, err); configured {
 				tried := map[string]bool{dep.Name: true}
-				hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(targets, tried,
+				hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 					func(d Deployment) (adapter.ChatResponse, error) { return p.callDeployment(ctx, d, req) },
 					func() bool { return false },
 				)
@@ -1225,7 +1315,10 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_AUTH_FAILED
 	case errors.Is(err, ErrModelNotAllowed):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_MODEL_NOT_ALLOWED
-	case errors.Is(err, ErrRateLimited):
+	case errors.Is(err, ErrRateLimited), errors.Is(err, ErrConcurrencyLimitExceeded):
+		// Both classify as OUTCOME_RATE_LIMITED — see
+		// ErrConcurrencyLimitExceeded's own doc comment for why this
+		// deliberately avoids a new GatewayDecisionEvent_Outcome value.
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_RATE_LIMITED
 	case errors.Is(err, ErrBudgetExceeded):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_BUDGET_EXCEEDED

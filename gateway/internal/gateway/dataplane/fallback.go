@@ -7,11 +7,15 @@ package dataplane
 // needs to know how classification or chain-walking works internally.
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
+	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
 
 // FallbackClassContentPolicy, FallbackClassContextWindowExceeded, and
@@ -147,6 +151,32 @@ func fallbackTargets(dep Deployment, err error) (targets []string, configured bo
 	return nil, true
 }
 
+// fallbackChainInterHopBackoffBase/Cap bound the pause
+// attemptFallbackChain inserts before each hop after the first, per
+// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design (c) —
+// deliberately small (tens to a few hundred milliseconds, not seconds):
+// this delay happens WITHIN one client request's own response-time
+// budget, so it must stay small enough that a chain walk still completes
+// in a reasonable time, while still being real, measurable spacing
+// rather than an instant retry hammering the next struggling deployment
+// immediately.
+const (
+	fallbackChainInterHopBackoffBase = 25 * time.Millisecond
+	fallbackChainInterHopBackoffCap  = 400 * time.Millisecond
+	// maxConsecutiveChainFailures is the per-request circuit breaker's
+	// threshold, per the RFC's design (c): this many consecutive REAL
+	// (non-skipped) fallback attempts failing in a row within ONE
+	// chain-walk stops the walk immediately, even if configured targets
+	// remain, rather than exhausting every remaining hop regardless of
+	// how many have already failed. Deliberately reuses
+	// router/health.go's own defaultUnhealthyThreshold value for
+	// consistency of "how conservative is enough evidence" across this
+	// codebase — but is a SEPARATE, hardcoded, per-request-scoped
+	// counter: it shares no state and no config surface with
+	// router.HealthConfig, and resets to zero on every new request.
+	maxConsecutiveChainFailures = 3
+)
+
 // attemptFallbackChain walks targets in order, calling call for each
 // name not already present in tried (which the caller seeds with at
 // least the already-failed deployment's own name, defending against a
@@ -158,8 +188,36 @@ func fallbackTargets(dep Deployment, err error) (targets []string, configured bo
 // that always returns false). Returns the last-attempted deployment,
 // response, and error, plus whether any attempt actually ran at all
 // (false if every name in targets was already in tried, missing from
-// p.deploymentsByName, or stop was already true before the first hop).
-func (p *Pipeline) attemptFallbackChain(targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
+// p.deploymentsByName, skipped as router-unhealthy, or stop was already
+// true before the first hop).
+//
+// Two additions on top of that pre-existing walk, per
+// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design (c):
+//
+//   - A target router.IsHealthy already reports unhealthy (real,
+//     cross-request active-probe failures — see
+//     docs/rfcs/2026-09-07-gateway-active-health-probing.md) is skipped
+//     without ever being attempted and without charging any backoff
+//     delay — composing with that already-shipped mechanism rather than
+//     bypassing it, closing a real gap this RFC's own grounding research
+//     found: before this, a named fallback_chains target was reached
+//     directly via p.deploymentsByName, never consulting IsHealthy at
+//     all. p.router is nil-checked so every pre-existing unit test in
+//     this file, which constructs a bare Pipeline{deploymentsByName:...}
+//     with no router configured, keeps behaving exactly as before —
+//     "no router at all" resolves to the same "always healthy" default
+//     router.IsHealthy itself already applies to a deployment it has
+//     never been told about.
+//   - A per-request circuit breaker (maxConsecutiveChainFailures) and an
+//     equal-jitter backoff delay (fallbackChainInterHopBackoffBase/Cap,
+//     via ratelimit.EqualJitterBackoff) inserted before the SECOND and
+//     later real attempts only — never before the first, so the common
+//     single-fallback case keeps its exact pre-existing latency. ctx is
+//     used solely to make that sleep cancellation-aware: a canceled
+//     request never blocks on this delay.
+func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
+	consecutiveFailures := 0
+	realAttempts := 0
 	for _, name := range targets {
 		if stop() {
 			break
@@ -169,6 +227,10 @@ func (p *Pipeline) attemptFallbackChain(targets []string, tried map[string]bool,
 		}
 		tried[name] = true
 
+		if p.router != nil && !p.router.IsHealthy(name) {
+			continue
+		}
+
 		nextDep, ok := p.deploymentsByName[name]
 		if !ok {
 			// Referential integrity is already validated at startup
@@ -177,12 +239,43 @@ func (p *Pipeline) attemptFallbackChain(targets []string, tried map[string]bool,
 			continue
 		}
 
+		if consecutiveFailures >= maxConsecutiveChainFailures {
+			break
+		}
+
+		realAttempts++
+		if realAttempts > 1 {
+			delay := ratelimit.EqualJitterBackoff(realAttempts-1, fallbackChainInterHopBackoffBase, fallbackChainInterHopBackoffCap, rand.Float64())
+			if !sleepOrCanceled(ctx, delay) {
+				break
+			}
+		}
+
 		attempted = true
 		dep = nextDep
 		resp, err = call(dep)
 		if err == nil {
 			return dep, resp, nil, true
 		}
+		consecutiveFailures++
 	}
 	return dep, resp, err, attempted
+}
+
+// sleepOrCanceled blocks for d (a no-op if d <= 0), returning true if it
+// elapsed normally or false if ctx was canceled first — callers treat a
+// false return exactly like an already-true stop() signal, never
+// attempting the hop the delay was inserted before.
+func sleepOrCanceled(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
