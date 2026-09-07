@@ -1,0 +1,242 @@
+[
+  {
+    "id": "chaos-wrr-skip-preserves-healthy-ratio",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "A model group has 3 weighted deployments; one starts failing active health probes while the rest stay healthy. Assert Router.Select's smooth-WRR selection converges to skipping the failing deployment entirely while the remaining healthy deployments' relative selection ratio stays exactly proportional to their own configured weights -- Netflix Chaos Gorilla's 'rebalance to healthy zones with no user-visible impact' precedent.",
+      "failure_class": "partial_backend_failure",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 1, concrete scenario 1",
+      "output": "wrr_select_with_one_unhealthy(A:5,B:3(unhealthy),C:2, n=10000)=ratio(A:C)=2.5000, B selected 0 times; wrr_select_with_one_unhealthy(A:3,B:2(unhealthy),C:1, n=6000)=ratio(A:C)=3.0000, B selected 0 times -- both byte-identical to a baseline Router built with only the healthy deployments configured at the same weights",
+      "match": "exact",
+      "rationale": "PASS, verified empirically, not guessed. Built a real gateway/internal/router.Router via New([]Deployment{...}, HealthConfig{}), called ReportProbeResult(\"B\", false) 3x (the real default UnhealthyThreshold) to eject B, then called Select 6000-10000 times across two independently-chosen weight distributions (5:3:2 and 3:2:1, one with a shared-gcd and one with coprime weights) and tallied selections. Compared against a second Router built from scratch with ONLY the two healthy deployments configured at their same weights. Both weight distributions reproduced the exact baseline ratio (2.5000 and 3.0000 respectively) with B selected zero times. This holds because selectHealthy (router/health.go) calls modelState.next() (wrr.go's LVS/IPVS smooth-WRR cursor) up to sumW times per Select call, skipping any candidate IsHealthy reports false without consuming a second cursor advance for that skip beyond the one already spent -- the remaining healthy deployments' own relative cadence in the underlying smooth-WRR schedule is untouched by removing B's turns from consideration. Verified via a temporary gateway/internal/router/zzz_scratch_test.go (two subtests), run via `go test ./internal/router/ -run TestScratch... -v`, deleted after confirming the result -- not committed, matching this corpus's established practice of deleting a verification-only probe before commit."
+    },
+    "reference": "wrr_select_with_one_unhealthy(A:5,B:3(unhealthy),C:2, n=10000)=ratio(A:C)=2.5000, B selected 0 times; wrr_select_with_one_unhealthy(A:3,B:2(unhealthy),C:1, n=6000)=ratio(A:C)=3.0000, B selected 0 times -- both byte-identical to a baseline Router built with only the healthy deployments configured at the same weights",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-fallback-degraded-and-harddown-same-treatment",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "A downstream deployment's real success rate degrades to a fraction of baseline (occasional generic 5xx HTTP errors) rather than failing outright, while another deployment suffers a hard network-level connection failure with no HTTP response at all -- the Twilio/Segment Centrifuge incident's 'degraded, not hard-down' shape (Finding 5) contrasted against a classic hard-down failure. Assert Kelvran's per-request fallback classifier and circuit breaker react identically to both, rather than only to a hard connection failure.",
+      "failure_class": "partial_backend_failure",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 5, concrete scenario 2",
+      "output": "classifyFallbackError(unrelated_5xx_UpstreamHTTPError)=generic; classifyFallbackError(bare_network_connection_refused_error)=generic -- both non-content-policy, non-context-window failures land in the identical FallbackClassGeneric bucket and trigger the same attemptFallbackChain walk + per-request circuit breaker, regardless of whether the failure came back as an HTTP response or a bare network/timeout error with no response at all",
+      "match": "exact",
+      "rationale": "PASS. classifyFallbackError (gateway/internal/gateway/dataplane/fallback.go) only special-cases *UpstreamHTTPError bodies matching contextWindowExceededKeywords/contentPolicyKeywords via errors.As; anything else -- including a non-UpstreamHTTPError error such as a bare network failure -- falls through to FallbackClassGeneric. Both an 'unrelated 500' UpstreamHTTPError and a plain errors.New('dialing upstream: connection refused') network error are already covered by the real, currently-passing gateway/internal/gateway/dataplane/fallback_test.go::TestClassifyFallbackError subtests 'unrelated 500 is generic' and 'non-UpstreamHTTPError (local adapter/network error) is generic' -- re-ran directly via `go test ./internal/gateway/dataplane/ -run TestClassifyFallbackError -v`, both pass. Since attemptFallbackChain's circuit breaker (fallback.go's consecutiveFailures counter) increments on ANY non-nil err from call(dep) regardless of its classification, a degraded (occasional-5xx) deployment and a hard-down (connection-refused) deployment are handled by the exact same code path with no special-casing for 'severity' of failure -- confirming the mitigation is not narrowly scoped to only hard connection failures."
+    },
+    "reference": "classifyFallbackError(unrelated_5xx_UpstreamHTTPError)=generic; classifyFallbackError(bare_network_connection_refused_error)=generic -- both non-content-policy, non-context-window failures land in the identical FallbackClassGeneric bucket and trigger the same attemptFallbackChain walk + per-request circuit breaker, regardless of whether the failure came back as an HTTP response or a bare network/timeout error with no response at all",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-nonstreaming-timeout-triggers-fallback-on-delay",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "A deployment's real upstream is injected with a fixed delay large enough to simulate a full outage without severing the TCP connection outright -- Netflix Latency Monkey's precedent that a large injected delay is a valid, distinct outage-simulation technique from a hard kill (Finding 1) -- for a non-streaming chat completion request. Assert the router's timeout/fallback path activates once the delay is long enough.",
+      "failure_class": "partial_backend_failure",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 1, concrete scenario 4 (non-streaming half)",
+      "output": "non_streaming_upstream_call_timeout=bounded_by_fixed_60s_http.Client{Timeout} (gateway/cmd/gateway/main.go wires dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: 60*time.Second})); a delay exceeding 60s makes client.Do return a plain (non-*UpstreamHTTPError) error, which classifyFallbackError classifies as generic, triggering the identical fallback walk any other generic failure gets -- but this is one hardcoded constant shared by every deployment, not a per-deployment-configurable value, and not itself surfaced in any YAML config key",
+      "match": "exact",
+      "rationale": "PASS, with an honestly-noted scope caveat. Verified directly by reading gateway/cmd/gateway/main.go:439 (Upstream: dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: 60 * time.Second})) and dataplane.go's NewHTTPUpstreamCaller: http.NewRequestWithContext(ctx, ...) then client.Do(httpReq) -- a delay past the client's own 60s Timeout makes client.Do return a plain wrapped error ('calling upstream %q: %w'), which is NOT an *UpstreamHTTPError, so classifyFallbackError's errors.As check fails and it classifies as FallbackClassGeneric -- the same bucket as any other generic failure, which attemptFallbackChain (or the pre-existing single-fallback-via-router path for a deployment with no fallback_chains configured) already handles. Confirmed grep-wide that no other timeout/deadline construct exists for this call path besides this one client-level constant -- it is real and does bound the delay, but it is a single hardcoded value, not a per-deployment knob, which is the honest caveat this case records rather than overclaiming full configurability."
+    },
+    "reference": "non_streaming_upstream_call_timeout=bounded_by_fixed_60s_http.Client{Timeout} (gateway/cmd/gateway/main.go wires dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: 60*time.Second})); a delay exceeding 60s makes client.Do return a plain (non-*UpstreamHTTPError) error, which classifyFallbackError classifies as generic, triggering the identical fallback walk any other generic failure gets -- but this is one hardcoded constant shared by every deployment, not a per-deployment-configurable value, and not itself surfaced in any YAML config key",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-streaming-no-upstream-timeout-gap",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "The identical Latency-Monkey-style fixed-delay-as-outage injection, but for a STREAMING chat completion request. Assert the same timeout/fallback path activates once the delay is long enough to simulate an outage.",
+      "failure_class": "partial_backend_failure",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 1, concrete scenario 4 (streaming half)",
+      "output": "streaming_upstream_call_timeout=NONE -- gateway/cmd/gateway/main.go wires dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}) with a zero-value (unset) Timeout field, and grep of gateway/internal/gateway/dataplane/streaming.go finds zero context.WithTimeout/WithDeadline/SetReadDeadline calls anywhere in the streaming call path -- a stalled/delayed streaming upstream that never returns response headers hangs indefinitely, bounded ONLY by the original inbound client disconnecting and canceling its own request context; classifyFallbackError/attemptFallbackChain never run at all in this case because no error is ever produced for them to classify",
+      "match": "exact",
+      "rationale": "REAL GAP, honestly named, not fixed in this pass. Verified directly: gateway/cmd/gateway/main.go:444 constructs dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}) -- the http.Client literal has no Timeout field set at all (Go's zero value, meaning no client-level timeout), unlike the non-streaming caller's explicit 60s. Grepped gateway/internal/gateway/dataplane/streaming.go directly for Timeout|Deadline|deadline|SetReadDeadline: zero matches. The only context available to the outgoing http.NewRequestWithContext call is the inbound request's own ctx (canceled only if the ORIGINAL client disconnects) -- there is no gateway-side bound on how long it waits for a streaming upstream to start responding or to keep sending SSE frames. This means the exact chaos scenario this case targets (a large fixed delay simulating an outage without killing the connection) produces NO error at all for the streaming path within any bounded time, so router.IsHealthy-driven fallback/timeout logic never gets invoked -- a genuinely different, and strictly weaker, guarantee than the non-streaming path's real 60s bound (see the sibling chaos-nonstreaming-timeout-triggers-fallback-on-delay case). Not fixed here, per this task's scope -- named as a real, verified backlog candidate."
+    },
+    "reference": "streaming_upstream_call_timeout=bounded (a real per-call timeout or deadline on the streaming upstream caller triggers the same generic-fallback classification path the non-streaming caller already has, rather than hanging indefinitely on an injected delay)",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-flapping-below-threshold-stays-healthy",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "A single deployment's active health probe alternates pass/fail across consecutive probe cycles (fail-pass-fail-pass...) at a rate below the N-of-M *consecutive*-failure threshold -- Segment's own 'dozens of endpoints failing at any given moment' steady-state framing (Finding 5) applied at the single-deployment boundary-condition level. Assert the deployment is never incorrectly marked permanently unhealthy.",
+      "failure_class": "flapping_health",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 5, concrete scenario 5",
+      "output": "ReportProbeResult under a 50-cycle fail/pass/fail/pass/... alternation (UnhealthyThreshold=2)=healthy stays true after every single call in the sequence, since consecutiveFailures resets to 0 on every intervening success and never reaches 2 in a row; a control run of 2 GENUINELY consecutive failures under the identical threshold DOES flip healthy=false, confirming the alternation result is not vacuous (i.e. this deployment could be marked unhealthy under this threshold -- it simply never qualifies under an alternating pattern)",
+      "match": "exact",
+      "rationale": "PASS, verified with both a positive and a sanity-check-by-breaking negative control. router/health.go's ReportProbeResult resets consecutiveFailures to 0 on every success (and vice versa for consecutiveSuccesses on every failure) BEFORE checking the threshold -- so 'N consecutive' is enforced structurally, never as a rolling/non-contiguous count. Verified via two temporary scratch tests in gateway/internal/router: (1) 50 iterations of fail-then-pass against UnhealthyThreshold=2, asserting healthy stays true after every single ReportProbeResult call; (2) a control of exactly 2 genuinely-consecutive failures under the same threshold, asserting healthy flips false -- proving the threshold really can trip, so test (1)'s result isn't trivially true because the mechanism never fires at all. Both ran via `go test ./internal/router/ -run TestScratchFlapping -v`, both passed; deleted after confirming, per this corpus's established verify-then-delete practice for temporary probes."
+    },
+    "reference": "ReportProbeResult under a 50-cycle fail/pass/fail/pass/... alternation (UnhealthyThreshold=2)=healthy stays true after every single call in the sequence, since consecutiveFailures resets to 0 on every intervening success and never reaches 2 in a row; a control run of 2 GENUINELY consecutive failures under the identical threshold DOES flip healthy=false, confirming the alternation result is not vacuous (i.e. this deployment could be marked unhealthy under this threshold -- it simply never qualifies under an alternating pattern)",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-fallback-skips-known-unhealthy-target",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "A deployment fails enough consecutive active health probes to be ejected from routing; a different, still-healthy deployment's primary call fails and its configured fallback_chains names the already-ejected deployment as a target. Assert attemptFallbackChain skips the known-unhealthy target without ever attempting it, and without charging any backoff delay for the skip.",
+      "failure_class": "flapping_health",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, concrete scenario 6 (failure/skip direction)",
+      "output": "attemptFallbackChain(targets=[unhealthy_b, healthy_c], IsHealthy(b)=false after 3 consecutive real probe failures)=serves_from_c, calls=[c] only -- b never attempted, no inter-hop backoff delay charged for skipping it (the delay only applies before a SECOND OR LATER real attempt, and skipping b costs no real attempt at all)",
+      "match": "exact",
+      "rationale": "PASS, cited from an already-real, already-shipped, currently-passing test rather than newly written: gateway/internal/gateway/dataplane/fallback_test.go::TestAttemptFallbackChainSkipsRouterUnhealthyTargetsWithoutAttemptingThem constructs a real router.Router, ejects deployment 'b' via 3 consecutive ReportProbeResult(false) calls (the real default UnhealthyThreshold), and asserts attemptFallbackChain's calls slice is exactly ['c'] -- 'b' is filtered by the `if p.router != nil && !p.router.IsHealthy(name) { continue }` check in fallback.go before ever reaching call(dep). Re-ran directly via `go test ./internal/gateway/dataplane/ -run TestAttemptFallbackChainSkipsRouterUnhealthyTargetsWithoutAttemptingThem -v`: passes."
+    },
+    "reference": "attemptFallbackChain(targets=[unhealthy_b, healthy_c], IsHealthy(b)=false after 3 consecutive real probe failures)=serves_from_c, calls=[c] only -- b never attempted, no inter-hop backoff delay charged for skipping it (the delay only applies before a SECOND OR LATER real attempt, and skipping b costs no real attempt at all)",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-fallback-readmits-recovered-target",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "The recovery-direction mirror of the prior case: a deployment that WAS ejected (3 consecutive failed probes) subsequently recovers (2 consecutive successful probes, the real default HealthyThreshold). Assert a later attemptFallbackChain call attempts it again rather than treating an earlier unhealthy verdict as permanent.",
+      "failure_class": "flapping_health",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, concrete scenario 6 (recovery direction, explicitly distinct from the failure/skip direction the project's own already-shipped test covers)",
+      "output": "attemptFallbackChain(targets=[recovered_b, c], b marked healthy again via 2 consecutive ReportProbeResult(true) calls after 3 prior consecutive failures)=serves_from_b, calls=[b] only -- c never reached; IsHealthy is read fresh on every attemptFallbackChain call (a plain map lookup under router's own mutex, never a cached/memoized verdict), so a recovered deployment is never permanently excluded",
+      "match": "exact",
+      "rationale": "PASS, verified with a new temporary scratch test (not an existing one -- the project's real fallback_test.go only covers the failure/skip direction). Built a real router.Router, ejected 'b' via 3 consecutive ReportProbeResult(false) calls, confirmed IsHealthy('b')==false, then recovered it via 2 consecutive ReportProbeResult(true) calls (the real default HealthyThreshold) and confirmed IsHealthy('b')==true again. Constructed a bare Pipeline{router: ..., deploymentsByName: {...}} and called attemptFallbackChain(targets=['b','c'], ...) with a call func that only 'c' would fail if reached -- asserted calls==['b'] and the response came from 'b', proving 'c' was never reached and 'b' was genuinely re-admitted. Ran via `go test ./internal/gateway/dataplane/ -run TestScratchAttemptFallbackChainReAdmitsRecoveredTarget -v`: passes. Deleted the scratch file after confirming, per this corpus's established verify-then-delete practice; the underlying property (IsHealthy has no caching layer, router/health.go's IsHealthy is a direct locked map read) is what makes this durably true, not an artifact of the one test run."
+    },
+    "reference": "attemptFallbackChain(targets=[recovered_b, c], b marked healthy again via 2 consecutive ReportProbeResult(true) calls after 3 prior consecutive failures)=serves_from_b, calls=[b] only -- c never reached; IsHealthy is read fresh on every attemptFallbackChain call (a plain map lookup under router's own mutex, never a cached/memoized verdict), so a recovered deployment is never permanently excluded",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-per-request-circuit-breaker-bounds-single-request",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "A single request's fallback_chains names 5 targets, all of which fail. Assert the per-request circuit breaker stops the chain walk after exactly maxConsecutiveChainFailures (3) consecutive real failures within this ONE request, rather than exhausting all 5 configured hops -- the AWS DynamoDB postmortem's 'stop feeding a failing dependency more load' mitigation shape (Finding 3), scoped to a single request's own walk.",
+      "failure_class": "cascading_failure",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 3, concrete scenario 7 (single-request half)",
+      "output": "attemptFallbackChain(5 all-failing configured targets)=stops after exactly 3 consecutive real failures, calls=[first 3 targets only] in order, the remaining 2 configured-but-untried targets are never attempted",
+      "match": "exact",
+      "rationale": "PASS, cited from an already-real, already-shipped, currently-passing test: gateway/internal/gateway/dataplane/fallback_test.go::TestAttemptFallbackChainStopsAfterMaxConsecutiveFailuresWithinOneRequest constructs a 5-deployment, all-failing chain and asserts len(calls)==maxConsecutiveChainFailures (3) with calls[0:3]==['b','c','d'] -- 'e' and 'f' remain configured and untried. Re-ran directly via `go test ./internal/gateway/dataplane/ -run TestAttemptFallbackChainStopsAfterMaxConsecutiveFailuresWithinOneRequest -v`: passes. This bounds any SINGLE request's own contribution to hammering a cluster of failing deployments -- see the sibling chaos-concurrent-requests-no-shared-failure-signal-gap case for the distinct, unresolved question of whether MANY concurrent requests' own independent 3-attempt budgets compound across each other."
+    },
+    "reference": "attemptFallbackChain(5 all-failing configured targets)=stops after exactly 3 consecutive real failures, calls=[first 3 targets only] in order, the remaining 2 configured-but-untried targets are never attempted",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-concurrent-requests-no-shared-failure-signal-gap",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "Many requests concurrently route through the same deployment while it is genuinely degrading in real time, during the interval between scheduled synthetic health probes -- the AWS DynamoDB/Slack pattern of many independent actors converging on one degrading resource (Findings 3+4), tested against the per-request circuit breaker's own stated scope rather than assumed to cover the cross-request case too. Assert real-traffic failures feed back into router-level health state so concurrent requests stop independently re-attempting a deployment that is failing in real time, without waiting for the next scheduled probe cycle.",
+      "failure_class": "cascading_failure",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Findings 3+4, concrete scenario 9",
+      "output": "router.ReportProbeResult has exactly one call site in the entire gateway codebase: dataplane.probeOneDeployment, invoked only from the periodic synthetic health-probe loop (RunHealthProbeLoop / ProbeDeployments). No call to attemptFallbackChain, callDeployment, or any real-request failure path anywhere calls ReportProbeResult. Each concurrent request's own attemptFallbackChain circuit breaker (consecutiveFailures) is a fresh, request-local counter declared inside the function body -- zero shared state across concurrent requests. Consequently N concurrently-arriving requests, each independently walking the same fallback chain against a deployment that is failing in real time RIGHT NOW, will each independently retry it up to maxConsecutiveChainFailures (3) times before their own local breaker gives up -- and router.IsHealthy will not reflect that real-time degradation at all until the next scheduled probe cycle accumulates its own UnhealthyThreshold consecutive SYNTHETIC probe failures, a signal entirely decoupled from real traffic outcomes",
+      "match": "exact",
+      "rationale": "REAL GAP, honestly named -- a deliberate, already-partially-self-documented scope limit (gateway/internal/router/router.go's own package doc comment: '...the traffic-derived statistical circuit breaker (Envoy-style outlier detection, LiteLLM-style allowed_fails cooldown) -- that class genuinely needs a traffic-volume floor Kelvran doesn't have production data for yet, and correctly stays deferred'), re-verified here directly against the concrete AWS/Slack chaos scenarios rather than assumed still accurate. Confirmed via grep -rn 'ReportProbeResult' across the whole gateway/ tree that dataplane.probeOneDeployment is the ONLY call site outside router's own package. Not fixed in this pass, per this task's scope -- an honest FAIL against the ideal this scenario tests for, distinct from being a newly-discovered surprise bug: the code's own comments already name the general class of gap; this case pins it to the specific, concrete concurrent-convergence shape the research's Findings 3/4 describe."
+    },
+    "reference": "concurrent requests' real upstream failures feed a shared, real-time health/circuit-breaker signal so that once enough concurrent failures against one deployment are observed, further concurrently-arriving requests stop independently re-attempting it without waiting for the next scheduled synthetic probe cycle to catch up",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-no-per-deployment-load-cap-thundering-herd-gap",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "Slack's 'recovery-triggered herd' pattern generalized to fallback convergence: a widely-shared first-hop deployment fails, and MANY DIFFERENT virtual keys' concurrent requests all fail over onto the same second-hop deployment simultaneously (Finding 4). Assert some mechanism bounds the AGGREGATE concurrent/rate load any single deployment receives across many different virtual keys, not merely each key's own individual share of it.",
+      "failure_class": "cascading_failure",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 4, concrete scenarios 8 and 12",
+      "output": "grep-confirmed across gateway/internal/ratelimit and gateway/internal/router: zero per-deployment rate-limit or concurrency-cap construct exists anywhere. ratelimit.KeyConfig/ModelRateLimit and ratelimit.ConcurrencyConfig, and every Allow/AllowForModel/Acquire call site, are keyed exclusively by virtual-key ID (optionally crossed with model via PerModel) -- never by deployment name. A fallback-triggered convergence of M different virtual keys onto one still-healthy second-hop deployment is bounded only by each key's own, mutually-independent per-key RPM/TPM/concurrency limits -- nothing observes, aggregates, or caps that deployment's own total simultaneous/rate load across keys",
+      "match": "exact",
+      "rationale": "REAL GAP, genuinely new finding for this pass (unlike the sibling chaos-concurrent-requests-no-shared-failure-signal-gap case, this specific aggregate-across-keys angle is not named anywhere in router.go's or ratelimit's own doc comments -- confirmed by re-reading both packages' full doc comments directly before concluding this). Verified via `grep -rn 'PerDeployment|DeploymentConcurrency|MaxInFlight' gateway/internal --include=*.go` (excluding tests): every real hit is inside ratelimit.ConcurrencyConfig/KeyLimiter's own per-key definitions, none scoped to a deployment. Also confirmed gateway/internal/gateway/controlplane/config.go's RateLimit-adjacent fields (RateLimitBurst/RateLimitRefill/PerModelRateLimits/ConcurrencyConfig) are all VirtualKeyConfig fields, never DeploymentConfig fields. Not fixed in this pass -- named as a real, verified backlog candidate distinct from the already-partially-documented per-request-circuit-breaker scope limit."
+    },
+    "reference": "a per-deployment concurrency/rate ceiling (or an equivalent aggregate signal derived across all virtual keys) bounds how much simultaneous fallback-driven load from many different virtual keys a single deployment can receive",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-tokenbucket-race-exact-admission",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "PortSwigger's 'limit-overrun' single-packet-attack race-condition technique (Finding 7) -- fire many concurrent requests against a per-key token bucket that has capacity for exactly 1 more request, all arriving within the same tight window. Assert exactly 1 request is admitted, not N, closing the exact race window the limit-overrun attack category exploits.",
+      "failure_class": "ratelimit_bypass_toctou",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 7, concrete scenario 13",
+      "output": "TokenBucket.Allow() fired by 100 concurrent goroutines (released simultaneously via a closed channel) against a 1-token, zero-refill bucket admits exactly 1, confirmed under `go test -race -count=5` (5/5 independent runs, exactly 1 success each, zero data races). A deliberately-broken non-atomic 'check-then-increment' control (mirroring Cloudflare's own async-increment TOCTOU shape from Finding 8) DOES let more than the configured cap through under the identical concurrent-burst harness (observed 15 admitted against a cap of 10 in one trial) -- proving the harness itself is capable of detecting a real overrun, so the real TokenBucket's exact-1 result is not a vacuous pass",
+      "match": "exact",
+      "rationale": "PASS, verified empirically with a positive result plus a sanity-check-by-breaking control. TokenBucket.Allow (gateway/internal/ratelimit/ratelimit.go) holds a single sync.Mutex across refillLocked (refill-for-elapsed-time) AND the tokens<1 check AND the tokens-- decrement -- there is no window between the check and the decrement becoming visible, unlike a design that reads a counter, releases a lock, then separately increments it. Verified via a temporary gateway/internal/ratelimit/zzz_scratch_test.go: (1) TestScratchTokenBucketAtomicUnderRace fires 100 concurrent Allow() calls at a 1-token bucket via a synchronized start channel, asserts exactly 1 success, ran 5x under -race, 5/5 pass; (2) TestScratchBrokenNonAtomicCapDoesOverrun implements a deliberately non-atomic cap (lock, read count, UNLOCK, then re-lock to increment -- the exact TOCTOU shape) run under the identical burst harness across up to 20 trials, and DOES observe an overrun (15 admitted, cap 10) -- proving the test methodology itself would have caught the real TokenBucket if it had the same flaw. Both ran via `go test ./internal/ratelimit/ -run 'TestScratch...' -race -v`; deleted after confirming, per this corpus's established verify-then-delete practice."
+    },
+    "reference": "TokenBucket.Allow() fired by 100 concurrent goroutines (released simultaneously via a closed channel) against a 1-token, zero-refill bucket admits exactly 1, confirmed under `go test -race -count=5` (5/5 independent runs, exactly 1 success each, zero data races). A deliberately-broken non-atomic 'check-then-increment' control (mirroring Cloudflare's own async-increment TOCTOU shape from Finding 8) DOES let more than the configured cap through under the identical concurrent-burst harness (observed 15 admitted against a cap of 10 in one trial) -- proving the harness itself is capable of detecting a real overrun, so the real TokenBucket's exact-1 result is not a vacuous pass",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-concurrency-cap-race-exact-admission",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "The identical single-packet-attack race shape (Finding 7+8), applied to the per-key CONCURRENCY cap (gateway/internal/ratelimit's retry-storm mitigation, shipped 2026-09-07) instead of the RPM token bucket -- fire cap-plus-several concurrent Acquire calls against MaxInFlight=K all at once. Assert the cap is enforced atomically, exactly K admitted, rather than allowing a burst of K+delta through during a check-then-increment gap.",
+      "failure_class": "ratelimit_bypass_toctou",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Findings 7+8, concrete scenario 14",
+      "output": "ConcurrencyLimiter.Acquire fired by 60 concurrent goroutines (released simultaneously via a closed channel) against MaxInFlight=10 admits exactly 10, confirmed under `go test -race -count=5` (5/5 independent runs, exactly 10 successes each, InFlight()==10 after, zero data races)",
+      "match": "exact",
+      "rationale": "PASS, verified empirically the same way as the sibling token-bucket case, sharing the same broken-non-atomic-cap sanity-check control (which DID overrun a cap of 10 by 5 in one observed trial, proving the harness's sensitivity). ConcurrencyLimiter.Acquire (gateway/internal/ratelimit/concurrency.go) holds a single sync.Mutex across the l.inFlight[keyID] >= max check AND the l.inFlight[keyID]++ increment -- structurally the same single-critical-section shape as TokenBucket.Allow, just over an int counter instead of a float token balance. Verified via a temporary gateway/internal/ratelimit/zzz_scratch_test.go's TestScratchConcurrencyCapAtomicUnderRace, run via `go test ./internal/ratelimit/ -run TestScratchConcurrencyCapAtomicUnderRace -race -count=5 -v`: 5/5 pass, exactly 10 successes every time. Deleted after confirming, per this corpus's established verify-then-delete practice."
+    },
+    "reference": "ConcurrencyLimiter.Acquire fired by 60 concurrent goroutines (released simultaneously via a closed channel) against MaxInFlight=10 admits exactly 10, confirmed under `go test -race -count=5` (5/5 independent runs, exactly 10 successes each, InFlight()==10 after, zero data races)",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-inmemory-and-redis-avoid-toctou",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "Cloudflare's own quantified production rate limiter lets traffic run up to roughly 15% over its configured threshold before a separately-cached mitigation flag catches up, because counter increments are processed asynchronously relative to the request path -- a structural TOCTOU gap from decoupling the check from the durable increment (Finding 8). Assert Kelvran's rate limiter, in BOTH in-memory and Redis-backed (distributed) mode, has no equivalent gap.",
+      "failure_class": "ratelimit_bypass_toctou",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Finding 8, concrete scenario 15",
+      "output": "in-memory mode: TokenBucket.Allow refills, checks, and decrements while holding one sync.Mutex for the entire sequence (gateway/internal/ratelimit/ratelimit.go) -- confirmed 0% overrun (exactly 1-of-100 admitted) under real concurrent load in the sibling chaos-tokenbucket-race-exact-admission case. Redis mode: gateway/internal/ratelimit/redislimiter's Allow runs exactly ONE atomic Lua script (EVAL/EVALSHA) per call, doing the identical refill-then-decrement math server-side in a single round trip and a single HSET -- Redis's own EVAL execution model runs a script to completion with no other command interleaved on that Redis instance, so there is no window between the check and the increment becoming durable and visible to a concurrent caller, unlike Cloudflare's own explicitly-described 'increment jobs run asynchronously without slowing down the requests' design. Neither Kelvran mode tolerates any measured overrun in the in-memory case (0%, verified); the Redis case's atomicity is a well-documented property of Redis's own single-threaded EVAL execution model, not independently load-tested against a live Redis instance in this pass (this sandbox has no Docker daemon available, confirmed by rootless Docker not found panic from gateway/internal/ratelimit/redislimiter's own real integration TestMain when re-run here)",
+      "match": "exact",
+      "rationale": "PASS for the in-memory mode (direct empirical proof, shared with the token-bucket race case above) and PASS-by-source-inspection for the Redis mode, honestly distinguishing the two evidentiary strengths rather than conflating them. Read gateway/internal/ratelimit/redislimiter/redislimiter.go's luaSrc directly: it is a single Lua script string passed to redis.NewScript, executed via l.script.Run(ctx, l.client, []string{key}, capacity, refillPerSecond, now) -- one EVAL/EVALSHA round trip does the HMGET read, the refill math, the >=1 check, the token decrement, the HSET write, and the EXPIRE, all inside the script body. Attempted to also run this package's own real Docker-backed integration test suite directly (`go test ./internal/ratelimit/redislimiter/...`) to see whether a live concurrency proof was feasible in this sandbox -- it panics on TestMain with 'rootless Docker not found', the exact same pre-existing, already-documented environmental limitation named repeatedly elsewhere in this repo's own docs/agents/LOGS.md, not something this pass could work around. The PASS verdict for Redis mode therefore rests on Redis's own well-documented single-threaded EVAL atomicity guarantee plus direct reading of the real script, not an executed concurrency test against a live server -- stated honestly, not implied otherwise."
+    },
+    "reference": "in-memory mode: TokenBucket.Allow refills, checks, and decrements while holding one sync.Mutex for the entire sequence (gateway/internal/ratelimit/ratelimit.go) -- confirmed 0% overrun (exactly 1-of-100 admitted) under real concurrent load in the sibling chaos-tokenbucket-race-exact-admission case. Redis mode: gateway/internal/ratelimit/redislimiter's Allow runs exactly ONE atomic Lua script (EVAL/EVALSHA) per call, doing the identical refill-then-decrement math server-side in a single round trip and a single HSET -- Redis's own EVAL execution model runs a script to completion with no other command interleaved on that Redis instance, so there is no window between the check and the increment becoming durable and visible to a concurrent caller, unlike Cloudflare's own explicitly-described 'increment jobs run asynchronously without slowing down the requests' design. Neither Kelvran mode tolerates any measured overrun in the in-memory case (0%, verified); the Redis case's atomicity is a well-documented property of Redis's own single-threaded EVAL execution model, not independently load-tested against a live Redis instance in this pass (this sandbox has no Docker daemon available, confirmed by rootless Docker not found panic from gateway/internal/ratelimit/redislimiter's own real integration TestMain when re-run here)",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-fallback-no-per-hop-ratelimit-recheck",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "A rate-limit race lands at the exact moment the caller's primary deployment also fails health checks and its request falls into a fallback_chains walk (Finding 7 combined with Finding 3's cascading-failure shape). Assert the two mechanisms (rate-limiter admission, fallback-chain routing) don't interact to produce a compounded bypass -- e.g. a rejected-then-retried request silently re-entering the bucket via a different fallback hop's own, separately-tracked limit.",
+      "failure_class": "ratelimit_bypass_toctou",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Findings 7+3, concrete scenario 16",
+      "output": "checkRateLimit and checkConcurrency (gateway/internal/gateway/dataplane/dataplane.go and streaming.go) are each called exactly once per request, before any deployment is ever selected or any fallback chain is ever walked. attemptFallbackChain (fallback.go) contains zero calls into ratelimit.KeyLimiter.Allow/AllowForModel or ratelimit.ConcurrencyLimiter.Acquire for any of its hops -- its only import from that package is ratelimit.EqualJitterBackoff, used purely for the inter-hop delay's timing math. There is no per-hop, per-deployment rate/concurrency check anywhere in the fallback walk for a request to separately tap into, so no mechanism exists by which walking multiple fallback hops within one request could re-consume the caller's own rate limit or bypass it via a different hop's own, separately-tracked limit -- because no separate hop-level limit exists at all",
+      "match": "exact",
+      "rationale": "PASS, verified by direct code reading of the exact call graph. grep -n 'checkRateLimit|checkConcurrency' across dataplane.go/streaming.go shows each is invoked exactly once per HandleChatCompletion/HandleChatCompletionStream call, both strictly before nextDeployment/attemptFallbackChain ever run. grep of fallback.go for ratelimit\\. shows the only match is the EqualJitterBackoff call inside the inter-hop-delay branch -- no Allow/AllowForModel/Acquire call anywhere in the file. Since a single logical request (regardless of how many internal fallback hops it tries) consumes exactly one rate-limit token and one concurrency slot from its OWN virtual key -- checked once, upfront -- there is no separate per-deployment or per-hop budget for an attacker to exploit by forcing multiple hops; the scenario's feared 'compounded bypass via a different hop's own separately-tracked limit' has no such separate limit to bypass into in this codebase's current design."
+    },
+    "reference": "checkRateLimit and checkConcurrency (gateway/internal/gateway/dataplane/dataplane.go and streaming.go) are each called exactly once per request, before any deployment is ever selected or any fallback chain is ever walked. attemptFallbackChain (fallback.go) contains zero calls into ratelimit.KeyLimiter.Allow/AllowForModel or ratelimit.ConcurrencyLimiter.Acquire for any of its hops -- its only import from that package is ratelimit.EqualJitterBackoff, used purely for the inter-hop delay's timing math. There is no per-hop, per-deployment rate/concurrency check anywhere in the fallback walk for a request to separately tap into, so no mechanism exists by which walking multiple fallback hops within one request could re-consume the caller's own rate limit or bypass it via a different hop's own, separately-tracked limit -- because no separate hop-level limit exists at all",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "chaos-concurrency-cap-not-distributed-gap",
+    "revision": 1,
+    "task_spec": {
+      "scenario": "The shared-resource-under-concurrent-load pattern generalized to Kelvran running as MULTIPLE gateway instances behind a load balancer, rather than one process -- assert the per-key concurrency cap holds its configured ceiling GLOBALLY across instances, the way the Redis-backed RPM/TPM rate limiter already does for the rate dimension.",
+      "failure_class": "ratelimit_bypass_toctou",
+      "citation": "docs/upgrade-research/evals-corpus-routing-chaos-patterns-2026-09-08.md, Findings 7+8 generalized to a multi-instance deployment topology",
+      "output": "ratelimit.ConcurrencyLimiter is in-memory-only with no Redis-backed (or any other cross-instance) counterpart anywhere in this codebase -- gateway/internal/ratelimit/redislimiter implements only ratelimit.RedisBackend (the RPM/TPM rate-limit interface); no distributed concurrency-cap equivalent exists. Each gateway instance enforces MaxInFlight independently against its own local, in-process inFlight map: M instances, each independently honoring a MaxInFlight=K cap, collectively allow up to M*K aggregate in-flight requests for one key across the fleet, not K",
+      "match": "exact",
+      "rationale": "REAL GAP, but already explicitly self-documented in the source rather than newly discovered -- gateway/internal/ratelimit/concurrency.go's own ConcurrencyLimiter doc comment states this directly: 'In-memory, single-instance only in v1 -- the same single-instance stepping stone scope limit this project's rate-limiting/budget/cache-stampede-protection features have each started with... a multi-instance deployment enforces this cap independently per instance, not globally, named explicitly as future work rather than silently assumed solved.' Re-confirmed directly against the real source (not assumed still accurate from memory) before encoding this case: grep -rn 'RedisBackend' gateway/internal/ratelimit/redislimiter/redislimiter.go confirms the package implements only the rate-limit interface, and there is no second interface or type anywhere for a distributed concurrency cap. Encoded here as an honest FAIL against this scenario's ideal (matching the Redis-backed RPM/TPM guarantee) specifically because a multi-instance deployment is exactly the topology several of this research pass's chaos scenarios (Findings 3/4, the Slack/AWS convergence patterns) presuppose -- not fixed in this pass, and explicitly not claimed as a newly-discovered bug, since the code's own comment already names it."
+    },
+    "reference": "the per-key concurrency cap holds a global (not merely per-instance) ceiling when the gateway runs as multiple instances, matching the Redis-backed RPM/TPM rate limiter's own already-real cross-instance guarantee",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:hand-written"],
+    "flaky": false
+  }
+]
