@@ -132,6 +132,7 @@ func newIntegrationServer(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvV
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux.HandleFunc("/healthz", healthzHandler)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -199,6 +200,59 @@ func TestIntegrationMissingAuthRejected(t *testing.T) {
 	if got := calls.Load(); got != 0 {
 		t.Errorf("mock upstream calls = %d, want 0 (auth must fail before ever reaching upstream)", got)
 	}
+}
+
+// TestIntegrationHealthzRequiresNoAuthAndIsUnaffectedByTraffic proves
+// /healthz is reachable with no Authorization header at all — unlike
+// /v1/chat/completions, which TestIntegrationMissingAuthRejected proves
+// rejects an unauthenticated request outright — both before and after a
+// real request has been served, ruling out any accidental per-request
+// gating.
+func TestIntegrationHealthzRequiresNoAuthAndIsUnaffectedByTraffic(t *testing.T) {
+	upstream, _ := newMockUpstream(t)
+	gw := newIntegrationServer(t, upstream.URL, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_HEALTHZ")
+
+	checkHealthz := func() {
+		resp, err := http.Get(gw.URL + "/healthz")
+		if err != nil {
+			t.Fatalf("GET /healthz: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("reading body: %v", err)
+		}
+		var decoded struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatalf("decoding body %q: %v", body, err)
+		}
+		if decoded.Status != "ok" {
+			t.Errorf("status field = %q, want %q", decoded.Status, "ok")
+		}
+	}
+
+	checkHealthz() // before any real request has been served
+
+	reqBody := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer test-gateway-key")
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	checkHealthz() // after a real request has been served
 }
 
 // TestIntegrationWellFormedRequestSucceeds drives (b): a well-formed,

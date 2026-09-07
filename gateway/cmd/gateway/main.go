@@ -151,6 +151,7 @@ func run(configPath string, logger *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux.HandleFunc("/healthz", healthzHandler)
 
 	server := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -545,6 +546,23 @@ func newGuardrailEngine(cfg controlplane.GuardrailsConfig, logger *slog.Logger) 
 // chatCompletionsHandler adapts dataplane.Pipeline.HandleChatCompletion to
 // net/http: decode the canonical JSON request body, run the pipeline,
 // encode the canonical JSON response (or an appropriate error status).
+// healthzHandler is a shallow liveness/readiness probe — it reports only
+// that this process is up and serving, never upstream provider
+// reachability, per docs/operations/DEPLOY.md's own reasoning: a health
+// check that depends on a third-party API being reachable defeats its own
+// purpose (a real, healthy gateway would be marked unhealthy by an
+// unrelated provider outage). No auth required, matching every standard
+// load-balancer/orchestrator health-check convention.
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
 func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
