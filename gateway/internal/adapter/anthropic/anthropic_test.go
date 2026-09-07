@@ -426,6 +426,9 @@ func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
 				{Type: "image", MediaType: "image/png", Data: "aW1n"},
 			}},
 		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
+		},
 	}
 
 	nativeAny, err := New().ToProvider(req)
@@ -439,5 +442,87 @@ func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
 	}
 	if strings.Contains(string(b), "cache_control") {
 		t.Errorf("marshaled request contains a cache_control field despite no CacheControl being set anywhere: %s", b)
+	}
+}
+
+// TestToProviderToolDefCacheControlSetsInlineCacheControl is the
+// load-bearing proof for docs/rfcs/2026-09-07-gateway-provider-prompt-
+// caching.md's tool-definition-level addendum: among two canonical
+// ToolDefs, only the second carrying CacheControl, the produced native
+// Tool for that second definition must carry an inline cache_control
+// sibling key -- mirroring ContentBlock's own inline placement, not a
+// separate wrapper -- while the first, unmarked tool's native Tool
+// carries none.
+func TestToProviderToolDefCacheControlSetsInlineCacheControl(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "what's the weather and time?"},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
+			{
+				Name:           "get_time",
+				Description:    "Get the time",
+				ParametersJSON: `{"type":"object"}`,
+				CacheControl:   &adapter.CacheControl{TTL: "1h"},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native, ok := nativeAny.(*Request)
+	if !ok {
+		t.Fatalf("ToProvider returned %T, want *Request", nativeAny)
+	}
+
+	if len(native.Tools) != 2 {
+		t.Fatalf("native.Tools len = %d, want 2", len(native.Tools))
+	}
+	if native.Tools[0].CacheControl != nil {
+		t.Errorf("Tools[0] (get_weather, unmarked) CacheControl = %+v, want nil", native.Tools[0].CacheControl)
+	}
+	if native.Tools[1].CacheControl == nil || native.Tools[1].CacheControl.Type != "ephemeral" || native.Tools[1].CacheControl.TTL != "1h" {
+		t.Errorf("Tools[1] (get_time, marked) CacheControl = %+v, want {ephemeral 1h}", native.Tools[1].CacheControl)
+	}
+}
+
+// TestToProviderToolDefAndMessageCacheControlBothApply proves the
+// task-named interference case: a request carrying both a cached
+// ToolDef AND a cached Message must produce correct, independent
+// markers for both in the same ToProvider output, not just one or the
+// other.
+func TestToProviderToolDefAndMessageCacheControlBothApply(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant.", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+			{Role: "user", Content: "what's the weather?", CacheControl: &adapter.CacheControl{}},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`, CacheControl: &adapter.CacheControl{}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native, ok := nativeAny.(*Request)
+	if !ok {
+		t.Fatalf("ToProvider returned %T, want *Request", nativeAny)
+	}
+
+	if len(native.Tools) != 1 || native.Tools[0].CacheControl == nil {
+		t.Fatalf("native.Tools = %+v, want 1 tool with CacheControl set", native.Tools)
+	}
+	if len(native.System) != 1 || native.System[0].CacheControl == nil || native.System[0].CacheControl.TTL != "1h" {
+		t.Fatalf("native.System = %+v, want 1 system block with CacheControl {ephemeral 1h}", native.System)
+	}
+	if len(native.Messages) != 1 || len(native.Messages[0].Content) != 1 || native.Messages[0].Content[0].CacheControl == nil {
+		t.Fatalf("native.Messages = %+v, want 1 message with a cache_control-marked last block", native.Messages)
 	}
 }

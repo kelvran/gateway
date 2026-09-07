@@ -358,11 +358,14 @@ func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
 // TestToProviderCacheControlIsUnaffected is the load-bearing proof for
 // docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's "why Gemini
 // is excluded" claim: setting adapter.CacheControl on a message, on a
-// system message, and on a content part must produce a native Gemini
-// request byte-identical to the same request with no CacheControl set
-// at all -- not just "gemini.go has no CacheControl-reading code" (true
-// by inspection) but a real, executed proof that the marker has zero
-// observable effect on this adapter's actual output.
+// system message, on a content part, and (per that RFC's
+// tool-definition-level addendum) on a ToolDef, must produce a native
+// Gemini request byte-identical to the same request with no
+// CacheControl set at all -- not just "gemini.go has no
+// CacheControl-reading code" (true by inspection) but a real, executed
+// proof that the marker has zero observable effect on this adapter's
+// actual output, across the whole feature's scope, not just its
+// original message/part-level part.
 func TestToProviderCacheControlIsUnaffected(t *testing.T) {
 	withoutMarker := adapter.ChatRequest{
 		Model: "gemini-2.5-flash",
@@ -375,6 +378,9 @@ func TestToProviderCacheControlIsUnaffected(t *testing.T) {
 					{Type: "document", MediaType: "application/pdf", Data: "ZG9jYmFzZTY0"},
 				},
 			},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
 		},
 	}
 
@@ -394,6 +400,14 @@ func TestToProviderCacheControlIsUnaffected(t *testing.T) {
 						CacheControl: &adapter.CacheControl{TTL: "1h", Key: "session-123"},
 					},
 				},
+			},
+		},
+		Tools: []adapter.ToolDef{
+			{
+				Name:           "get_weather",
+				Description:    "Get the weather",
+				ParametersJSON: `{"type":"object"}`,
+				CacheControl:   &adapter.CacheControl{TTL: "1h", Key: "session-123"},
 			},
 		},
 	}

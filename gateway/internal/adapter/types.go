@@ -153,6 +153,13 @@ type ToolDef struct {
 	// ParametersJSON is the tool's JSON Schema parameter definition,
 	// encoded as a string for the same reason ToolCall.ArgumentsJSON is.
 	ParametersJSON string
+	// CacheControl, when set, opts this specific tool definition into
+	// provider-side prompt caching, per
+	// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's
+	// tool-definition-level addendum. Nil (the default) is a silent
+	// no-op for every adapter, matching Message/ContentPart's own
+	// CacheControl convention.
+	CacheControl *CacheControl
 }
 
 type toolDefWire struct {
@@ -162,6 +169,11 @@ type toolDefWire struct {
 		Description string          `json:"description,omitempty"`
 		Parameters  json.RawMessage `json:"parameters,omitempty"`
 	} `json:"function"`
+	// CacheControl sits as a sibling of Type/Function, not nested inside
+	// Function -- the same "additive marker alongside the provider-native
+	// shape" convention Message.CacheControl already established (a
+	// sibling of Role/Content).
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // MarshalJSON implements json.Marshaler.
@@ -173,6 +185,7 @@ func (t ToolDef) MarshalJSON() ([]byte, error) {
 	if t.ParametersJSON != "" {
 		w.Function.Parameters = json.RawMessage(t.ParametersJSON)
 	}
+	w.CacheControl = t.CacheControl
 	return json.Marshal(w)
 }
 
@@ -187,6 +200,7 @@ func (t *ToolDef) UnmarshalJSON(data []byte) error {
 	if len(w.Function.Parameters) > 0 {
 		t.ParametersJSON = string(w.Function.Parameters)
 	}
+	t.CacheControl = w.CacheControl
 	return nil
 }
 
