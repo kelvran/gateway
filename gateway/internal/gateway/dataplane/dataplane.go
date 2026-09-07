@@ -1629,7 +1629,40 @@ func streamUpstreamURL(dep Deployment) (string, error) {
 // incrementally as SSE frames — unlike NewHTTPUpstreamCaller, it does not
 // drain or unmarshal the body itself, since that would defeat streaming's
 // entire purpose.
-func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
+//
+// idleTimeout closes a real gap found by the routing-chaos regression
+// corpus (evals/tests/fixtures/regression_corpus_routing_chaos.json's
+// "chaos-streaming-no-upstream-timeout-gap" case, and the matching
+// docs/agents/LOGS.md entry): this caller used to be built from a bare
+// &http.Client{} with no Timeout at all, and this file had zero
+// context.WithTimeout/WithDeadline/SetReadDeadline calls anywhere, so a
+// stalled/delayed streaming upstream hung indefinitely — bounded only by
+// the ORIGINAL inbound client disconnecting and canceling its own request
+// context, never by the gateway itself.
+//
+// This is deliberately NOT a single client.Timeout-style deadline over
+// the WHOLE call, the way NewHTTPUpstreamCaller's 60s bound is for the
+// non-streaming path: SSE is a legitimately long-lived connection that
+// can correctly run far longer than any single request/response
+// round-trip (that's the entire point of streaming), so a fixed
+// whole-call bound would kill a slow-but-healthy long stream exactly as
+// readily as a genuinely stalled one — the wrong fix for this shape of
+// gap. Instead, idleTimeout is an IDLE window that resets on every unit
+// of real forward progress — the upstream responding with status/headers
+// at all, or a later Read of the open body returning (data or EOF) — via
+// a single cancelable context plus a timer idleTimeoutReader
+// stops/resets on every real Read. A stream that keeps producing chunks,
+// however slowly overall, never trips this; one that goes fully silent
+// for idleTimeout — whether before ever responding or mid-stream — does.
+//
+// Canceling that context makes the blocked client.Do (pre-headers stall)
+// or the blocked body Read (mid-stream stall) return a plain
+// (non-*UpstreamHTTPError) error, deliberately: this is what lets a
+// timed-out streaming call classify via classifyFallbackError exactly
+// like the non-streaming path's own 60s timeout error already does (see
+// fallback.go's FallbackClassGeneric), rather than inventing a second,
+// streaming-only classification path.
+func NewHTTPUpstreamStreamCaller(client *http.Client, idleTimeout time.Duration) UpstreamStreamCaller {
 	return func(ctx context.Context, dep Deployment, providerReq any) (io.ReadCloser, error) {
 		body, err := json.Marshal(providerReq)
 		if err != nil {
@@ -1641,8 +1674,16 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 			return nil, fmt.Errorf("deriving stream URL for deployment %q: %w", dep.Name, err)
 		}
 
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, streamURL, bytes.NewReader(body))
+		// streamCtx/cancel govern the WHOLE call (headers + body), but
+		// idleTimer is what actually decides when cancel fires — reset on
+		// every real Read below, never a fixed deadline set once here.
+		streamCtx, cancel := context.WithCancel(ctx)
+		idleTimer := time.AfterFunc(idleTimeout, cancel)
+
+		httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost, streamURL, bytes.NewReader(body))
 		if err != nil {
+			idleTimer.Stop()
+			cancel()
 			return nil, fmt.Errorf("building upstream stream request: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -1655,29 +1696,79 @@ func NewHTTPUpstreamStreamCaller(client *http.Client) UpstreamStreamCaller {
 		} else {
 			httpReq.Header.Set("Accept", "text/event-stream")
 		}
-		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, body); err != nil {
+		if err := setUpstreamAuthHeaders(streamCtx, httpReq, dep, body); err != nil {
+			idleTimer.Stop()
+			cancel()
 			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
 		}
 
 		httpResp, err := client.Do(httpReq)
 		if err != nil {
+			idleTimer.Stop()
+			cancel()
 			return nil, fmt.Errorf("calling upstream %q: %w", streamURL, err)
 		}
+		// Headers arrived within idleTimeout — push the window out fresh
+		// for the first body Read, exactly like every subsequent one.
+		idleTimer.Reset(idleTimeout)
 
 		if httpResp.StatusCode >= 300 {
 			// An error response is not itself a stream — safe (and
 			// necessary, to avoid leaking the connection) to drain and
 			// close it here rather than handing an error body to a caller
-			// expecting SSE frames.
+			// expecting SSE frames. Read before stopping the timer/
+			// canceling, so a slow-but-real error body isn't itself cut
+			// short by the same idle window meant for the success path.
 			defer func() { _ = httpResp.Body.Close() }()
 			errBody, _ := io.ReadAll(httpResp.Body)
+			idleTimer.Stop()
+			cancel()
 			// Same typed error as NewHTTPUpstreamCaller's buffered path,
 			// for the same reason — see the comment there.
 			return nil, &UpstreamHTTPError{StatusCode: httpResp.StatusCode, Body: string(errBody)}
 		}
 
-		return httpResp.Body, nil
+		return newIdleTimeoutReader(httpResp.Body, idleTimer, idleTimeout, cancel), nil
 	}
+}
+
+// idleTimeoutReader wraps an already-open streaming response body,
+// resetting its idle timer on every completed Read (successful or not —
+// an error means no further Reads are coming anyway, so resetting then is
+// harmless) so NewHTTPUpstreamStreamCaller's idle window restarts on
+// every real byte of forward progress, never on mere elapsed wall-clock
+// time. Close stops the timer for good and cancels the request context,
+// releasing both promptly rather than waiting out whatever time remained
+// on the window.
+//
+// timer.Reset here races, in principle, with the AfterFunc goroutine that
+// may be calling cancel at the exact instant the window expires —
+// accepted deliberately, not overlooked: context.CancelFunc is
+// idempotent, so the only possible outcome of that race is one harmless
+// extra cancel call, never a correctness problem. This is the same
+// standard idle-timeout pattern used elsewhere in the ecosystem (e.g.
+// net/http/httputil, gRPC keepalive) for exactly this reason.
+type idleTimeoutReader struct {
+	body    io.ReadCloser
+	timer   *time.Timer
+	timeout time.Duration
+	cancel  context.CancelFunc
+}
+
+func newIdleTimeoutReader(body io.ReadCloser, timer *time.Timer, timeout time.Duration, cancel context.CancelFunc) *idleTimeoutReader {
+	return &idleTimeoutReader{body: body, timer: timer, timeout: timeout, cancel: cancel}
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	n, err := r.body.Read(p)
+	r.timer.Reset(r.timeout)
+	return n, err
+}
+
+func (r *idleTimeoutReader) Close() error {
+	r.timer.Stop()
+	r.cancel()
+	return r.body.Close()
 }
 
 // bedrockSigningName is the real AWS SigV4 service-signing name for

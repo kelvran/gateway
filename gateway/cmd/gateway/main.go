@@ -92,6 +92,28 @@ const maxRequestBodyBytes = 32 << 20 // 32MiB
 // outside the host requires a deliberate, explicit listen_addr choice.
 const defaultAdminListenAddr = "127.0.0.1:8081"
 
+// streamIdleTimeout bounds dataplane.NewHTTPUpstreamStreamCaller's idle
+// window — see that function's own doc comment for why this is an IDLE
+// bound (reset on every real byte of progress), not a single deadline
+// over the whole streamed call the way the non-streaming caller's
+// upstreamHTTPTimeout is. Reuses the exact same 60s magnitude as
+// upstreamHTTPTimeout deliberately, for consistency with the one other
+// upstream-call bound this codebase has — not because the two mean the
+// same thing (they don't: one is whole-call, one is per-idle-gap) but
+// because there is no evidence either direction (shorter or longer) is
+// actually warranted yet. A fixed default, not a config field, matching
+// upstreamHTTPTimeout's own precedent of staying an internal constant
+// rather than a new YAML knob for this pass.
+const streamIdleTimeout = 60 * time.Second
+
+// upstreamHTTPTimeout bounds NewHTTPUpstreamCaller's whole non-streaming
+// call (connect + headers + full buffered body) via http.Client.Timeout —
+// correct for that path since a non-streaming response is never
+// legitimately long-lived. Named here so streamIdleTimeout's own doc
+// comment above has a real symbol to point at for the contrast, rather
+// than a bare "60 * time.Second" repeated with no link between the two.
+const upstreamHTTPTimeout = 60 * time.Second
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the gateway's YAML config file")
 	flag.Parse()
@@ -436,12 +458,20 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Router:         depRouter,
 		Deployments:    deployments,
 		CostCalculator: costaccounting.NewCalculator(priceTable),
-		Upstream:       dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: 60 * time.Second}),
-		// Streaming upstream calls have no fixed response deadline — the
-		// client.Timeout above would kill a long-running stream mid-way,
-		// so streaming uses its own client with no overall timeout,
-		// relying instead on the request's own context for cancellation.
-		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}),
+		Upstream:       dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout}),
+		// Streaming upstream calls deliberately do NOT use client.Timeout
+		// (the field above) — that would kill a long-running-but-healthy
+		// stream mid-way, exactly as readily as a genuinely stalled one.
+		// The &http.Client{} passed here stays a zero-value-Timeout
+		// client on purpose: NewHTTPUpstreamStreamCaller enforces its own
+		// bound via streamIdleTimeout instead — an idle window, reset on
+		// every real byte of progress, that closes the real gap found by
+		// evals/tests/fixtures/regression_corpus_routing_chaos.json's
+		// "chaos-streaming-no-upstream-timeout-gap" case (a stalled
+		// streaming upstream used to hang indefinitely, bounded only by
+		// the original inbound client disconnecting). See that function's
+		// own doc comment for the full design rationale.
+		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}, streamIdleTimeout),
 		Logger:         logger,
 		CacheTTL:       time.Duration(cfg.Cache.TTLSeconds) * time.Second,
 		CacheL2TTL:     time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
