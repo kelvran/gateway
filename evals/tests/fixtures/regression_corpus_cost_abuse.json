@@ -214,5 +214,41 @@
     "tier": "regression",
     "tags": ["category:cost", "provenance:hand-written"],
     "flaky": false
+  },
+  {
+    "id": "costabuse-provider-credential-scope-independent-of-vk",
+    "revision": 1,
+    "task_spec": {
+      "output": "budget.Tracker.Allow/Record enforcement is keyed exclusively on vk.ID; Deployment.APIKey/AccessKeyID/SecretAccessKey/SessionToken resolution is fully decoupled from vk -- Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) takes no Deployment/credential parameter of any kind, and Deployment is resolved via p.router.Select(model)+p.deploymentsByName, never via vk",
+      "match": "exact",
+      "attack_class": "leaked_provider_credential_blast_radius_bounded_by_compromised_vk_budget",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 1 / Concrete scenario 2 -- the consequence half of LiteLLM CVE-2024-6587 / GHSA-g26j-5385-hhw3, distinct from the already-converted scenario 1 (costabuse-ssrf-no-client-controlled-upstream-endpoint)",
+      "description": "Scenario 2 asks whether a leaked/stolen provider API key's blast radius is bounded by the compromised virtual key's own budget_usd cap rather than by the shared provider credential's full available spend. Verified directly by reading gateway/internal/gateway/dataplane/dataplane.go's Deployment struct (lines 107-113: Name/Model/Provider/UpstreamModel/BaseURL/APIKey, plus AccessKeyID/SecretAccessKey/SessionToken for bedrock) and gateway/internal/budget/budget.go's Tracker.Allow signature (line 139: keyID string, capUSD decimal.Decimal, resetInterval time.Duration -- no Deployment/credential parameter at all). A Deployment is resolved via p.nextDeployment(req.Model) -> p.router.Select(model) -> p.deploymentsByName[name] (dataplane.go lines 1068-1075), a lookup keyed entirely on the canonical model name, never on vk.ID or any credential value. Budget enforcement (dataplane.go:870, streaming.go:109) is therefore structurally scoped to the caller's own virtual key regardless of which Deployment/APIKey/AWS-credential-set ends up serving the request -- the same provider credential can back many deployments used by many different virtual keys, but each virtual key's own Allow/Record accounting is independent and unaffected by which credential is riding along underneath a given call.",
+      "verified_against": "gateway/internal/gateway/dataplane/dataplane.go (Deployment struct lines 107-113; nextDeployment lines 1068-1075; Allow call site line 870); gateway/internal/gateway/dataplane/streaming.go (Allow call site line 109); gateway/internal/budget/budget.go (Tracker.Allow signature line 139)",
+      "verdict": "verified_safe_by_design",
+      "corpus_note": "This case verifies the credential-scoping half of scenario 2 only. The sibling case costabuse-streaming-budget-allow-not-rechecked-midstream verifies (and honestly fails) the scenario's separate 'even mid-stream' claim -- the two halves are independently true/false and are therefore kept as two distinct cases rather than one conflated verdict, mirroring this corpus's established practice of splitting a single research scenario into multiple cases when it bundles more than one independently-verifiable claim (e.g. the referent-shift named/unnamed-entity pair in regression_corpus_cache_adversarial.json)."
+    },
+    "reference": "budget.Tracker.Allow/Record enforcement is keyed exclusively on vk.ID; Deployment.APIKey/AccessKeyID/SecretAccessKey/SessionToken resolution is fully decoupled from vk -- Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) takes no Deployment/credential parameter of any kind, and Deployment is resolved via p.router.Select(model)+p.deploymentsByName, never via vk",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "costabuse-streaming-budget-allow-not-rechecked-midstream",
+    "revision": 1,
+    "task_spec": {
+      "output": "budget.Allow is called exactly once per HandleChatCompletionStream call (streaming.go line 109), strictly before streamDeploymentWithFallback starts writing SSE frames to the client; grep of streaming.go for 'budget.' shows only that one Allow call plus the preceding SpentUSD read -- no second budget check exists anywhere else in the file for the remainder of that same already-approved, in-flight stream",
+      "match": "exact",
+      "attack_class": "leaked_provider_credential_blast_radius_bounded_by_compromised_vk_budget",
+      "research_ref": "docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md, Finding 1 / Concrete scenario 2 -- the 'even mid-stream' half of that scenario, distinct from the sibling costabuse-provider-credential-scope-independent-of-vk case's credential-scoping half",
+      "description": "Scenario 2 also asks whether a virtual key hitting its cap is rejected 'even mid-stream'. Verified directly against gateway/internal/gateway/dataplane/streaming.go's HandleChatCompletionStream: budgetSpentAtDecision and the p.budget.Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) check both happen once, at lines 108-109, before sw (the streaming.NewWriter) is even constructed and before any L1/L2/L3 cache check or upstream call. Once that single check passes, streamDeploymentWithFallback runs to completion (or failure) with no further budget check anywhere in this file -- grepped directly for 'budget.'/'Allow(' across streaming.go: the only two matches are the lines already cited. A concurrent request on the SAME vk.ID that records cost via budget.Record (dataplane.go finalize, line ~1219) while this stream is still being written has no effect on the in-flight stream -- it will run to completion and bill its own real cost regardless of whether the key's cap is now exceeded by the other request's spend.",
+      "verified_against": "gateway/internal/gateway/dataplane/streaming.go (Allow/SpentUSD call site lines 108-109, no second budget check anywhere else in the file); gateway/internal/gateway/dataplane/dataplane.go (Record call site line ~1219 inside finalize, shared by both the buffered and streaming paths via the same deferred call)",
+      "verdict": "verified_honest_gap",
+      "corpus_note": "REAL, VERIFIED GAP -- not fixed in this pass (corpus authoring only), and narrower than the already-converted costabuse-budget-allow-record-toctou-race case: that case is about TWO SEPARATE requests racing each other's Allow/Record calls; this case is about ONE already-approved request's own single stream having no re-check mechanism at all once it starts, regardless of any race. In practice a long streamed completion (many output tokens, real generation time) is exactly the shape of request most likely to still be in flight when a sibling request's Record call pushes the key over its cap -- the already-running stream is never interrupted by that. Not claimed to be exploitable with high severity on its own (the stream was legitimately approved at the moment it started), but a real, honest gap relative to the research scenario's own framing of 'rejected even mid-stream.'"
+    },
+    "reference": "an already-approved streaming response should be interrupted mid-stream once the caller's own budget cap is crossed (e.g. by another concurrent request on the same vk.ID recording spend while this stream is still being written), not allowed to run to completion unconditionally once the single upfront check passes",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:hand-written"],
+    "flaky": false
   }
 ]
