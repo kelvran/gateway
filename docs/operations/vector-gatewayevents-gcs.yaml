@@ -1,0 +1,148 @@
+# Vector shipper config: gateway's gatewayevents_v1 structured-log field -> GCS.
+#
+# See docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md for the
+# full design (bucket/object layout, sampling rate, retention policy) and
+# that RFC's 2026-09-07 addendum for why a GCS sibling now exists at all.
+# This is the GCS sibling of docs/operations/vector-gatewayevents-s3.yaml --
+# same sources/transforms (kubernetes_logs -> remap -> sample), only the
+# sink block differs (`gcp_cloud_storage` instead of `aws_s3`). Deploy at
+# most one of these two shipper configs per environment -- they are
+# alternatives, not additive; running both would double-ship every event.
+#
+# Consumed on the read side by `evals ingest --source gs://...`, per
+# evals/evals/ingestion/object_store.py.
+#
+# Deployment shape: a Vector Kubernetes DaemonSet agent (the standard
+# Vector Kubernetes pattern) tailing every gateway pod's container stdout
+# via the container runtime's own log files. Never touches gateway's
+# request-serving code path -- this is entirely off the hot path, per
+# docs/upgrade-research/evals-trace-transport-2026-09-07.md's own
+# load-bearing requirement.
+#
+# NOTE: assumes gateway pods carry the label `app: gateway`. This repo's
+# `deploy/k8s/` manifests do not exist yet (docs/operations/DEPLOY.md's
+# Kubernetes section is explicitly "intended shape, not built") -- update
+# `extra_label_selector` below to match whatever label the real manifests
+# apply, once they exist. Flagged here rather than silently assumed, per
+# this project's own doc-honesty convention -- same caveat
+# vector-gatewayevents-s3.yaml already carries.
+#
+# Credentials: the `gcp_cloud_storage` sink resolves GCP credentials in
+# this order (per Vector's own "GCP Authentication" docs, verified
+# directly, not assumed): an explicit `credentials_path` (not set here --
+# see below), an `api_key` (not applicable to this sink's write-only
+# object-upload use case), the `GOOGLE_APPLICATION_CREDENTIALS` environment
+# variable, then falling back to the GKE node/Workload-Identity-bound
+# service account if none of the above are set. This config deliberately
+# sets neither `credentials_path` nor `api_key` -- the same "reuse the
+# platform's own ambient identity, don't hand-roll a second credential
+# path" posture `vector-gatewayevents-s3.yaml` takes for its own IAM
+# role-based S3 access, applied here to GCP Workload Identity /
+# `GOOGLE_APPLICATION_CREDENTIALS` instead.
+
+data_dir: /var/lib/vector
+
+sources:
+  gateway_pod_logs:
+    type: kubernetes_logs
+    extra_label_selector: "app=gateway"
+
+transforms:
+  # Identical to gatewayevents_extract in vector-gatewayevents-s3.yaml --
+  # this step is cloud-agnostic (it only parses/normalizes the decoded
+  # GatewayDecisionEvent), so it is duplicated verbatim rather than
+  # factored into a shared file Vector's own config format has no clean
+  # way to import across two standalone top-level configs.
+  gatewayevents_extract:
+    type: remap
+    inputs: ["gateway_pod_logs"]
+    source: |-
+      parsed, err = parse_json(.message)
+      if err != null {
+        abort
+      }
+
+      raw_event = parsed.gatewayevents_v1
+      if raw_event == null {
+        # Not every log line carries one (e.g. startup/non-request logs).
+        abort
+      }
+
+      decision, decode_err = parse_json(raw_event)
+      if decode_err != null {
+        abort
+      }
+
+      if decision.virtualKeyId == "" {
+        # Auth itself failed -- see GatewayDecisionEvent.virtual_key_id's
+        # own proto comment ("" if auth itself failed). An empty path
+        # segment in the GCS key below would be ambiguous, so this gets a
+        # real, greppable sentinel instead.
+        decision.virtualKeyId = "_unauthenticated"
+      }
+
+      # Partition by the request's own time (occurred_at), not shipper
+      # ingestion time -- a tailing agent can lag, and %Y-%m-%d/%H in the
+      # gcp_cloud_storage sink's key_prefix below reads Vector's event
+      # timestamp.
+      occurred_at, ts_err = parse_timestamp(decision.occurredAt, "%+")
+      if ts_err != null {
+        occurred_at = now()
+      }
+
+      . = decision
+      .timestamp = occurred_at
+
+  # Identical sampling rule to vector-gatewayevents-s3.yaml, per
+  # docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md Section
+  # 3: every non-OK outcome is always kept; OUTCOME_OK alone is sampled,
+  # at a starting 1-in-10 (rate: 10), consistently per trace_id via
+  # key_field so a duplicated/retried log line for the same trace samples
+  # the same way every time.
+  gatewayevents_sample:
+    type: sample
+    inputs: ["gatewayevents_extract"]
+    rate: 10
+    exclude: '.outcome != "OUTCOME_OK"'
+    key_field: "traceId"
+
+sinks:
+  # Bucket/object layout per that same RFC's Section 2: hive-style
+  # date+hour+tenant partitioning under a package-versioned
+  # `gatewayevents/v1/` root -- identical to the S3 sink's key_prefix.
+  # Vector's `gcp_cloud_storage` sink supports the same strftime +
+  # `{{ field }}` key_prefix templating as `aws_s3` (verified directly
+  # against Vector's own current sink-reference docs, not assumed). One
+  # gzip-compressed object per batch (never one object per event -- see
+  # batch settings below), newline-delimited JSON, one decoded
+  # GatewayDecisionEvent per line.
+  #
+  # Retention (90-day expiry, per that RFC's Section 4) is a separate GCS
+  # Object Lifecycle Management rule on this same bucket/prefix -- Vector
+  # has no lifecycle-management capability of its own, so it is not, and
+  # cannot be, configured in this file.
+  gatewayevents_gcs:
+    type: gcp_cloud_storage
+    inputs: ["gatewayevents_sample"]
+    bucket: "${KELVRAN_GATEWAYEVENTS_GCS_BUCKET}"
+    key_prefix: "gatewayevents/v1/dt=%Y-%m-%d/hr=%H/vk={{ virtualKeyId }}/"
+    compression: gzip
+    framing:
+      method: newline_delimited
+    encoding:
+      codec: json
+    batch:
+      # 10MB uncompressed per object -- gatewayevents_v1 lines are small
+      # (no prompt/completion content, see docs/operations/TELEMETRY.md's
+      # Privacy & Redaction section), so this comfortably batches many
+      # minutes of even a busy gateway's events into one object rather
+      # than one-object-per-event, which would blow up GCS insert-request
+      # costs at real volume. Identical value to the S3 sink's own
+      # max_bytes for the same reasoning.
+      max_bytes: 10000000
+      # Flush at least every 5 minutes even if max_bytes isn't hit yet
+      # (Vector's own real default for this exact sink category), so a
+      # quiet period never leaves data sitting unflushed for hours.
+      timeout_secs: 300
+    healthcheck:
+      enabled: true

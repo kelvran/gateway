@@ -7,10 +7,11 @@ generated bindings agree on the wire format.
 
 `object_store.py` is the real transport leg that RFC's own "Drawbacks"
 section named as a stopgap, now resolved for the object-storage case per
-docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md: it lists/
-reads gatewayevents_v1 objects from S3 (shipped there by
-docs/operations/vector-gatewayevents-s3.yaml), and calls `decode.py`
-directly for the actual wire-format decoding — never duplicating that
-logic. Wired into the CLI as `evals ingest --source s3://...` (see
-evals/evals/cli.py).
+docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md (and that
+RFC's own 2026-09-07 addendum): it lists/reads gatewayevents_v1 objects
+from either S3 (shipped there by docs/operations/vector-gatewayevents-
+s3.yaml) or GCS (docs/operations/vector-gatewayevents-gcs.yaml), and
+calls `decode.py` directly for the actual wire-format decoding — never
+duplicating that logic. Wired into the CLI as `evals ingest --source
+<s3://...|gs://...>` (see evals/evals/cli.py).
 """

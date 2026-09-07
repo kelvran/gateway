@@ -14,8 +14,9 @@ commands that emit a pass rate always print the Wilson confidence interval
 alongside it — per `PRD.md`'s explicit success metric, a bare percentage
 is never emitted on its own.
 
-`evals ingest --source s3://<bucket>/<prefix> --out <path>` lists and
-decodes real `gatewayevents_v1` objects from object storage (per
+`evals ingest --source s3://<bucket>/<prefix> --out <path>` (or a
+`gs://<bucket>/<prefix>` source) lists and decodes real `gatewayevents_v1`
+objects from object storage (per
 docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md) — the
 production-trace-sampling leg `evals/ingestion/`'s own `ARCHITECTURE.md`
 entry names, distinct from the golden-fixture round-trip decode test.
@@ -625,9 +626,10 @@ def promote_cmd(
     "source",
     required=True,
     help=(
-        "Object-storage source to list, e.g. s3://bucket/gatewayevents/v1/. "
-        "Only s3:// is supported today — see "
-        "docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md."
+        "Object-storage source to list, e.g. s3://bucket/gatewayevents/v1/ "
+        "or gs://bucket/gatewayevents/v1/. s3:// and gs:// are supported "
+        "today — see docs/rfcs/2026-09-07-evals-trace-ingestion-object-"
+        "storage.md."
     ),
 )
 @click.option(
@@ -657,10 +659,10 @@ def ingest_cmd(source: str, out_path: Path) -> None:
     precedent.
     """
     try:
-        bucket, prefix = parse_object_storage_uri(source)
+        scheme, bucket, prefix = parse_object_storage_uri(source)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
-    keys = list_object_keys(bucket, prefix)
+    keys = list_object_keys(scheme, bucket, prefix)
     if not keys:
         raise click.ClickException(f"no objects found under {source}")
 
@@ -668,7 +670,7 @@ def ingest_cmd(source: str, out_path: Path) -> None:
     error_count = 0
     with out_path.open("a", encoding="utf-8") as out_file:
         for key in keys:
-            for line in iter_object_lines(bucket, key):
+            for line in iter_object_lines(scheme, bucket, key):
                 try:
                     event = decode_gateway_decision_event(line)
                 except Exception:
