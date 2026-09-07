@@ -11,12 +11,32 @@ import (
 // (litellm/proxy/hooks/prompt_injection_detection.py), a real,
 // zero-dependency, code-level heuristic used in a real production
 // gateway, not invented for this project.
-var injectionVerbs = []string{"ignore", "disregard", "skip", "forget", "override", "bypass"}
+//
+// "disobey", "circumvent", and "subvert" were added by the same-day
+// vocabulary-widening fix for evals/tests/fixtures/regression_corpus_
+// guardrail.json's regcorpus-guardrail-05/06 cases, which documented
+// these as real, common override-instruction synonyms missing from the
+// original 6-verb list — the exact same "tell the model to disregard an
+// instruction" meaning the original verbs already cover, so this widens
+// the same list with the same class of real, well-known synonym an
+// attacker would plausibly substitute, not an arbitrary or speculative
+// addition. See DECISIONS.md for the corresponding entry.
+var injectionVerbs = []string{"ignore", "disregard", "skip", "forget", "override", "bypass", "disobey", "circumvent", "subvert"}
 
+// "your system prompt" was added alongside the verb widening above: the
+// bare "system prompt" target already existed, but "system prompt" is
+// the one noun in this list that — unlike "instructions"/"rules"/
+// "guidelines", each of which already has (or, for "instructions", is
+// one of several variants that includes) a "your <noun>" form — had no
+// "your"-prefixed counterpart, so a real "disobey/circumvent your
+// system prompt" phrasing (regcorpus-guardrail-05's exact input)
+// couldn't match even with "disobey" in injectionVerbs. Same
+// combinatoric list, same reasoning, not a new mechanism.
 var injectionTargets = []string{
 	"prior instructions", "previous instructions", "preceding instructions",
 	"earlier instructions", "all instructions", "the instructions",
-	"your instructions", "system prompt", "your rules", "your guidelines",
+	"your instructions", "system prompt", "your system prompt",
+	"your rules", "your guidelines",
 }
 
 // injectionPhrases is the full combinatoric phrase list, built once at
