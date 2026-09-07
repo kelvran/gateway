@@ -430,5 +430,30 @@
       "provenance:hand-written"
     ],
     "flaky": false
+  },
+  {
+    "id": "adversarial-cache-static-key-decorator-not-applicable",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "static_key_decorator_helper_regression_not_applicable",
+      "cached_query": {
+        "user": "user-A",
+        "path": "any code path calling cache.Key/cache.NormalizedKey"
+      },
+      "new_query": {
+        "user": "user-B",
+        "path": "the same call site, a different distinguishing input (different tenant/model/messages)"
+      },
+      "output": "not_applicable:no_decorator_key_builder_or_memoization_wrapper_exists_anywhere_in_this_codebase",
+      "match": "exact",
+      "rationale": "Open WebUI's get_all_models caching decorator used aiocache's key= parameter (a STATIC key, evaluated once) instead of key_builder= (invoked per-call) (GHSA-3wp3-xxj9-5jqq/CVE-2026-59213): the intended per-user namespacing via user.id never actually took effect, silently collapsing per-user cache isolation into one shared entry for the whole TTL window. Verified directly that this specific failure shape has no code path to exercise in Kelvran today: grepped every func-returning-string in gateway/internal/cache/key.go (Key, NormalizedKey) -- both are plain functions taking tenantID as an explicit, required first parameter at every call site (dataplane.go lines 862-863, streaming.go lines 111-112), never wrapped by a decorator, higher-order caching helper, or any construct that could evaluate the key expression ONCE and reuse it across distinguishing calls the way a static key= argument does. Separately grepped the entire gateway/ tree for sync.Once/memoize/Memoize (case-insensitive): zero matches anywhere in internal/cache or its call sites. There is no decorator-style caching abstraction anywhere in this codebase for this class of bug to hide inside -- every cache key is computed fresh, inline, from the caller's own current arguments, on every single call. Scoped honestly as 'not applicable to the current architecture' rather than either 'vulnerable' or 'defended,' mirroring this corpus's own established convention for a scenario whose precondition Kelvran's real design doesn't have (see adversarial-cache-cross-instance-poisoning-not-applicable) -- this framing should be revisited only if a decorator/memoization-based caching helper is ever introduced."
+    },
+    "reference": "not_applicable:no_decorator_key_builder_or_memoization_wrapper_exists_anywhere_in_this_codebase",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
   }
 ]
