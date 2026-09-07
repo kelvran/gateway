@@ -68,6 +68,14 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		fallback              fallbackInfo
 		budgetSpentAtDecision decimal.Decimal
 		billable              bool
+		// See HandleChatCompletion's identical fields: checkRateLimit's/
+		// budget.Reserve's own return values, threaded through to
+		// finalize's ReconcileTPM/Reconcile calls on every return path,
+		// per docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
+		tpmReserved       bool
+		tpmReservedTokens float64
+		budgetReserved    bool
+		budgetReservedUSD decimal.Decimal
 	)
 	start := time.Now()
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
@@ -77,7 +85,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
 		// (a).
 		err = p.attachRetryAfter(vk, err)
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, tpmReserved, tpmReservedTokens, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -90,7 +98,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 	var rateLimitOK bool
-	rateLimitOK, rateLimitFailedOpen = p.checkRateLimit(ctx, vk, req.Model)
+	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {
 		err = ErrRateLimited
 		return
@@ -106,7 +114,9 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	defer p.releaseConcurrency(vk)
 
 	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
-	if !p.budget.Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) {
+	var budgetOK bool
+	budgetOK, budgetReserved, budgetReservedUSD = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	if !budgetOK {
 		err = ErrBudgetExceeded
 		return
 	}

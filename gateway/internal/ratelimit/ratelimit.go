@@ -34,6 +34,17 @@ type TokenBucket struct {
 	tokens     float64
 	lastRefill time.Time
 	now        func() time.Time
+
+	// billedTokens/billedCount are ReserveTPM/ReconcileTPM-only
+	// bookkeeping (never read or written by Allow/HasBalance/Debit) for
+	// the TPM dimension's historical-average reservation estimate, per
+	// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md — the
+	// TPM-specific analog of budget.Tracker's own billedCount/spent
+	// average. billedTokens is the running sum of real (non-reservation)
+	// token counts ReconcileTPM has applied; billedCount is how many
+	// times.
+	billedTokens float64
+	billedCount  int64
 }
 
 // NewTokenBucket constructs a TokenBucket at full capacity using the real
@@ -93,6 +104,84 @@ func (b *TokenBucket) Debit(n float64) {
 	defer b.mu.Unlock()
 	b.refillLocked()
 	b.tokens -= n
+}
+
+// ReserveTPM is HasBalance's concurrency-safe replacement for real
+// request-handling code, per
+// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md: it
+// performs the exact same "is the balance positive" check HasBalance
+// does, but — under the SAME lock acquisition, never released and
+// re-acquired in between — immediately follows an "allowed" result with
+// a provisional debit of a conservative reservation estimate, closing
+// the TOCTOU window between HasBalance and Debit that let concurrent
+// requests all pass the check before any of them committed a debit.
+// allowed is false exactly when HasBalance would have returned false, in
+// which case reservedTokens is 0 and nothing was mutated.
+//
+// Every true `allowed` return MUST be paired with exactly one
+// ReconcileTPM call, even on an error/timeout path — see ReconcileTPM's
+// own doc comment for why a leaked, never-reconciled reservation
+// permanently shrinks the bucket's effective remaining balance.
+func (b *TokenBucket) ReserveTPM() (allowed bool, reservedTokens float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refillLocked()
+	if b.tokens <= 0 {
+		return false, 0
+	}
+	reservedTokens = b.reservationAmountLocked()
+	b.tokens -= reservedTokens
+	return true, reservedTokens
+}
+
+// reservationAmountLocked mirrors
+// budget.Tracker.reservationAmountLocked: this bucket's own historical
+// average real-token-usage per ReconcileTPM call with a non-nil
+// realTokens (billedTokens / billedCount), once at least one such call
+// has happened — or, before any usage history exists at all
+// (billedCount == 0: a brand-new bucket, or one just reset via
+// Register), the bucket's own full current balance, clamped to zero
+// rather than negative (ReserveTPM's own check above already guarantees
+// b.tokens > 0 by the time this runs, so the clamp is defensive, not
+// reachable in practice). Callers must hold b.mu.
+func (b *TokenBucket) reservationAmountLocked() float64 {
+	if b.billedCount > 0 {
+		return b.billedTokens / float64(b.billedCount)
+	}
+	if b.tokens < 0 {
+		return 0
+	}
+	return b.tokens
+}
+
+// ReconcileTPM undoes a previous ReserveTPM call's provisional debit (its
+// reservedTokens return value, passed back here unchanged) and, if
+// realTokens is non-nil, debits the real usage in its place —
+// atomically, under one lock acquisition, mirroring
+// budget.Tracker.Reconcile exactly. Because this adds back EXACTLY the
+// reservedTokens value ReserveTPM subtracted, the net effect on balance
+// for a request that reserves then reconciles with no concurrent
+// interleaving is byte-identical to the old HasBalance-then-Debit pair,
+// regardless of what the reservation estimate happened to be.
+//
+// realTokens == nil releases the reservation with no replacement — the
+// correct call for a request that errored, timed out, or turned out
+// non-billable (a cache hit or coalesced singleflight follower, per
+// docs/rfcs/2026-09-05-gateway-cost-double-counting.md) before real
+// usage was ever known. This release path is what prevents a permanent
+// capacity leak: every ReserveTPM that returns allowed == true MUST
+// eventually reach a matching ReconcileTPM call, on every return path
+// (including error).
+func (b *TokenBucket) ReconcileTPM(reservedTokens float64, realTokens *float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refillLocked()
+	b.tokens += reservedTokens
+	if realTokens != nil {
+		b.tokens -= *realTokens
+		b.billedTokens += *realTokens
+		b.billedCount++
+	}
 }
 
 // refillLocked adds tokens for elapsed time since the last refill, capped

@@ -18,6 +18,20 @@
 // addition of small per-request cost fragments (exactly what Record does
 // on every request) measurably drifts from the exact sum, which sits
 // directly underneath the number Allow compares against a hard cap.
+//
+// Allow/Record are two independent, separately-locked operations — real
+// request-handling code (gateway/internal/gateway/dataplane) must NOT
+// call them directly, because the gap between an Allow check and its
+// corresponding Record call (the real upstream provider call) is a
+// genuine, 100%-reproducible TOCTOU race: concurrent requests can all
+// pass Allow before any of them commits a Record. Reserve/Reconcile
+// (below) is the concurrency-safe replacement, per
+// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md — Allow/
+// Record themselves stay exactly as they were, both because they remain
+// correct, self-contained primitives Reserve/Reconcile are built on top
+// of, and because every existing test against them (TestAllow*/
+// TestRecord*/TestConcurrentRecordNeverLosesAnUpdate) keeps proving
+// exactly what it always proved.
 package budget
 
 import (
@@ -45,14 +59,23 @@ type Tracker struct {
 	mu          sync.Mutex
 	spent       map[string]decimal.Decimal
 	periodStart map[string]time.Time // rolling-window reset bookkeeping; see maybeResetLocked
-	store       Store                // nil = pure in-memory, unchanged from before this RFC
+	// billedCount is keyID's count of real (non-reservation) costs applied
+	// via Reconcile — the denominator of Reserve's own historical-average
+	// reservation estimate, per
+	// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md. Zero for
+	// every key until its first Reconcile call with a non-nil realCost;
+	// reset to zero alongside spend whenever resetIfNeeded rolls a
+	// rolling-window boundary, since a fresh window has no billing history
+	// of its own yet either.
+	billedCount map[string]int64
+	store       Store // nil = pure in-memory, unchanged from before this RFC
 	logger      *slog.Logger
 	now         func() time.Time // real clock in production; overridden directly by white-box tests
 }
 
 // NewTracker constructs an empty, pure in-memory Tracker.
 func NewTracker() *Tracker {
-	return &Tracker{spent: make(map[string]decimal.Decimal), periodStart: make(map[string]time.Time), now: time.Now}
+	return &Tracker{spent: make(map[string]decimal.Decimal), periodStart: make(map[string]time.Time), billedCount: make(map[string]int64), now: time.Now}
 }
 
 // NewTrackerWithStore constructs a Tracker backed by store: existing
@@ -82,7 +105,7 @@ func NewTrackerWithStore(ctx context.Context, store Store, logger *slog.Logger) 
 	if spent == nil {
 		spent = make(map[string]decimal.Decimal)
 	}
-	return &Tracker{spent: spent, periodStart: make(map[string]time.Time), store: store, logger: logger, now: time.Now}, nil
+	return &Tracker{spent: spent, periodStart: make(map[string]time.Time), billedCount: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
 }
 
 // resetIfNeeded resets keyID's spend to zero and starts a fresh window,
@@ -107,6 +130,12 @@ func (t *Tracker) resetIfNeeded(keyID string, resetInterval time.Duration) bool 
 	}
 	if now.Sub(start) >= resetInterval {
 		t.spent[keyID] = decimal.Zero
+		// billedCount resets alongside spend: a fresh window has no
+		// billing history of its own yet either, so Reserve's
+		// historical-average estimate must not carry an average computed
+		// against the OLD window's now-zeroed total, per
+		// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
+		t.billedCount[keyID] = 0
 		t.periodStart[keyID] = now
 		return true
 	}
@@ -207,6 +236,129 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 	t.mu.Unlock()
 
 	if t.store == nil {
+		return
+	}
+	if err := t.store.Save(context.Background(), keyID, newTotal); err != nil {
+		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
+	}
+}
+
+// Reserve is Allow's concurrency-safe replacement for real request-
+// handling code, per
+// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md: it performs
+// the exact same cap check Allow does, but — under the SAME lock
+// acquisition, never released and re-acquired in between — immediately
+// follows an "allowed" result with a provisional debit of a conservative
+// reservation estimate, closing the TOCTOU window between Allow and
+// Record that let concurrent requests all pass the check before any of
+// them committed a debit. capUSD <= 0 (unlimited) behaves exactly like
+// Allow: always allowed, reserved is false, reservedUSD is
+// decimal.Zero — nothing is ever reserved against an uncapped key.
+// allowed is false exactly when Allow would have returned false, in
+// which case reserved is also false and reservedUSD is decimal.Zero:
+// nothing was mutated, so there is nothing for a caller to release.
+//
+// Every true `reserved` return MUST be paired with exactly one Reconcile
+// call for the same keyID/reservedUSD, even on an error/timeout path —
+// see Reconcile's own doc comment for why a leaked, never-reconciled
+// reservation permanently shrinks a key's remaining headroom.
+func (t *Tracker) Reserve(keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal) {
+	if t.resetIfNeeded(keyID, resetInterval) {
+		t.persistZeroIfStoreConfigured(keyID)
+	}
+	if capUSD.Sign() <= 0 {
+		return true, false, decimal.Zero
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.spent[keyID].LessThan(capUSD) {
+		return false, false, decimal.Zero
+	}
+	reservedUSD = t.reservationAmountLocked(keyID, capUSD)
+	t.spent[keyID] = t.spent[keyID].Add(reservedUSD)
+	return true, true, reservedUSD
+}
+
+// reservationAmountLocked computes keyID's Reserve reservation amount:
+// its own historical average real cost per Reconcile call with a
+// non-nil realCost (spent so far divided by billedCount), once at least
+// one such call has happened for this key — or, before any billing
+// history exists at all (billedCount == 0: a brand-new key, or one whose
+// rolling window/process just reset), the full remaining headroom under
+// capUSD. The latter is deliberately maximally conservative given zero
+// information — see this RFC's own "cold-start conservatism" section for
+// why that's an accepted, self-resolving trade-off rather than a bug: it
+// can never let a cold-start key's concurrent burst overshoot capUSD,
+// and stops applying the moment ANY real cost is reconciled for the key.
+// Callers must already hold t.mu and must already have confirmed
+// spent[keyID] < capUSD (Reserve's own check), so capUSD.Sub(spent) here
+// is guaranteed positive.
+func (t *Tracker) reservationAmountLocked(keyID string, capUSD decimal.Decimal) decimal.Decimal {
+	if count := t.billedCount[keyID]; count > 0 {
+		return t.spent[keyID].Div(decimal.NewFromInt(count))
+	}
+	return capUSD.Sub(t.spent[keyID])
+}
+
+// Reconcile undoes a previous Reserve call's provisional debit (its
+// reservedUSD return value, passed back here unchanged) and, if realCost
+// is non-nil, applies the real cost in its place — atomically, under one
+// lock acquisition, so no concurrent Reserve/Reconcile call for the same
+// keyID can observe the intermediate "reservation removed but real cost
+// not yet applied" state. Because Reconcile subtracts EXACTLY the
+// reservedUSD value Reserve returned, the net effect on spend for a
+// request that reserves then reconciles with no concurrent interleaving
+// is byte-identical to the old Allow-then-Record pair, regardless of
+// what the reservation estimate happened to be: spent_before + reserved
+// − reserved + realCost == spent_before + realCost, exactly (decimal
+// subtraction is an exact inverse of the identical decimal addition it
+// undoes).
+//
+// realCost == nil (or negative, mirroring Record's own "negative cost
+// ignored" rule) releases the reservation with no replacement — the
+// correct call for a request that errored, timed out, or turned out
+// non-billable (a cache hit or coalesced singleflight follower, per
+// docs/rfcs/2026-09-05-gateway-cost-double-counting.md) before ever
+// reaching a real cost. This release path is what prevents a permanent
+// capacity leak: every Reserve that returns reserved == true MUST
+// eventually reach a matching Reconcile call, on every return path
+// (including error), or that reservation's amount is gone from the
+// key's remaining headroom forever.
+//
+// Only a Reconcile call that actually applies a real cost persists to
+// Store (matching Record's own persistence behavior exactly) — a
+// release-only call changes nothing about the durable total (the
+// reservation it undoes was never itself persisted), so it would be a
+// wasted write to skip.
+//
+// If a rolling-window reset happened between the original Reserve call
+// and this Reconcile call (resetIfNeeded reports true here), the stale
+// reservation from the OLD window no longer exists anywhere to undo —
+// spend was already zeroed along with it — so this skips the
+// subtraction entirely rather than incorrectly pushing the fresh
+// window's spend negative, and applies realCost (if any) fresh into the
+// new window instead.
+func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, realCost *decimal.Decimal, resetInterval time.Duration) {
+	reset := t.resetIfNeeded(keyID, resetInterval)
+	if reset {
+		t.persistZeroIfStoreConfigured(keyID)
+	}
+
+	t.mu.Lock()
+	newTotal := t.spent[keyID]
+	if !reset {
+		newTotal = newTotal.Sub(reservedUSD)
+	}
+	billed := realCost != nil && realCost.Sign() >= 0
+	if billed {
+		newTotal = newTotal.Add(*realCost)
+		t.billedCount[keyID]++
+	}
+	t.spent[keyID] = newTotal
+	t.mu.Unlock()
+
+	if !billed || t.store == nil {
 		return
 	}
 	if err := t.store.Save(context.Background(), keyID, newTotal); err != nil {
