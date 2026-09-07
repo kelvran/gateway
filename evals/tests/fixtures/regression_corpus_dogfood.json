@@ -253,5 +253,260 @@
     "tier": "regression",
     "tags": ["category:harness", "provenance:dogfood"],
     "flaky": false
+  },
+  {
+    "id": "dogfood-streaming-reader-oversized-sse-line-exceeds-bound",
+    "revision": 1,
+    "task_spec": {
+      "output": "sse_reader_oversized_line(exceeds_maxSSELineBytes_1MiB)=wrapped_bufio_ErrTooLong_error (Reader.Next never panics, never silently truncates or hangs)",
+      "match": "exact",
+      "log_ref": "gateway/internal/streaming/reader.go's maxSSELineBytes bound (docs/rfcs/2026-09-02-streaming-support.md) plus docs/agents/LOGS.md, [2026-09-02] streaming test coverage closed to full parity -- same session, before moving to any next feature (Files touched -- reader_fuzz_test.go); no docs/agents/LOGS.md 'Bugs found' entry names this specific 1 MiB boundary.",
+      "description": "gateway/internal/streaming.Reader bounds a single SSE 'data:' line's length at maxSSELineBytes (1 MiB, reader.go) via bufio.Scanner.Buffer's max-size argument, per the constant's own doc comment: 'a malicious or misbehaving upstream can't exhaust memory by never sending a newline.' Neither reader_test.go's unit tests nor FuzzReaderNeverPanics's seed corpus (whose longest seed line is 2048 repeated 'x' characters, well under the 1 MiB bound) exercises a line that actually crosses this specific threshold -- confirmed by grep, zero matches for 'ErrTooLong'/'maxSSELineBytes' anywhere in gateway/internal/streaming/*_test.go. Independently verified for this pass (not guessed): feeding Reader.Next() a single 'data:' line of (1<<20)+100 bytes with no newline, via a real, then-deleted Go test run, produced a real, non-panicking error -- 'streaming: reading SSE stream: bufio.Scanner: token too long' -- for which errors.Is(err, bufio.ErrTooLong) is true, exactly the 'degrade to some sequence of events, or an error, never crash' contract FuzzReaderNeverPanics's own doc comment names.",
+      "pre_fix_behavior": "N/A -- not a bug fix mined from an existing LOGS.md entry; a real, currently-correct DoS-prevention bound in already-shipped code with a genuine unit-test coverage gap, confirmed by an independently-run, then-deleted Go test during this pass rather than guessed.",
+      "regression_guard": "No existing dedicated unit test pins this exact boundary today (confirmed by grep across gateway/internal/streaming/*_test.go for 'ErrTooLong'/'maxSSELineBytes' -- zero matches); FuzzReaderNeverPanics's generic 'must terminate with an error, never panic' property already covers this input class at the fuzz level, but no unit test pins the specific wrapped-ErrTooLong error class this case's output value asserts.",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- this specific 1 MiB edge case was never the subject of an existing LOGS.md bug-fix entry, stated explicitly rather than implied otherwise. A real, temporary Go test (written and run during this pass, then deleted, leaving zero trace in the shipped test suite) confirmed the exact error text and errors.Is(err, bufio.ErrTooLong) behavior before this entry was written. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Go SSE reader code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for a dedicated unit test, which does not yet exist for this exact boundary."
+    },
+    "reference": "sse_reader_oversized_line(exceeds_maxSSELineBytes_1MiB)=wrapped_bufio_ErrTooLong_error (Reader.Next never panics, never silently truncates or hangs)",
+    "tier": "regression",
+    "tags": ["category:streaming", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-streaming-gemini-functioncall-args-whole-object-not-fragmented",
+    "revision": 1,
+    "task_spec": {
+      "output": "gemini_stream_functionCall_args=complete_json_object_in_one_chunk (never split across multiple ArgumentsJSON fragments the way OpenAI/Anthropic/Bedrock's tool-call arguments are)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-04] Real `gateway/internal/adapter/gemini` adapter -- a fresh post-plan backlog item (Files touched / Decisions made)",
+      "description": "gateway/internal/adapter/gemini/stream.go's own package doc names a real, deliberate divergence from every other streaming provider adapter's tool-call contract: Gemini's functionCall.args arrives as a complete JSON object in a single raw SSE chunk, never split across multiple deltas the way OpenAI's/openaicompat's/Bedrock's Function.Arguments/toolUse.input fragments are (all three accumulate a JSON-STRING FRAGMENT across several Decode calls, per each of their own stream.go doc comments, confirmed by direct reading of all five adapters' stream.go files). gemini/stream.go's Decode therefore emits exactly one ToolCallDelta per functionCall part with ArgumentsJSON already fully populated -- callers must NOT assume they need to accumulate it across further chunks the way every other provider's contract requires. Verified directly against TestDecodeFunctionCallChunk (gemini/stream_test.go), which asserts len(result.chunks) == 1 for a tool-call fixture and that the single chunk's ArgumentsJSON is already valid, complete JSON (json.Valid), not a fragment -- re-ran this exact test during this pass and confirmed it passes against the real, current code.",
+      "pre_fix_behavior": "N/A -- not a bug; a real, permanent cross-provider wire-format divergence that must not be mistaken for a bug by a caller expecting every provider's ToolCallDelta.ArgumentsJSON to always need further accumulation.",
+      "regression_guard": "gateway/internal/adapter/gemini/stream_test.go: TestDecodeFunctionCallChunk is the real, executing regression guard for this invariant (re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- not a bug-fix mining -- a real cross-adapter invariant confirmed directly against gemini/stream.go's own doc comment and TestDecodeFunctionCallChunk. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Go Gemini stream decoder code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "gemini_stream_functionCall_args=complete_json_object_in_one_chunk (never split across multiple ArgumentsJSON fragments the way OpenAI/Anthropic/Bedrock's tool-call arguments are)",
+    "tier": "regression",
+    "tags": ["category:streaming", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-streaming-bedrock-usage-arrives-after-messagestop-not-lost",
+    "revision": 1,
+    "task_spec": {
+      "output": "bedrock_stream_metadata_usage_after_messageStop=captured_not_lost (Decode has no done signal at all; dataplane's binary loop reads until io.EOF, so the strictly-later metadata event's usage is never dropped)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-04] Real Bedrock `ConverseStream` streaming support -- closing the deferred follow-on (Decisions made)",
+      "description": "Bedrock's real ConverseStream event sequence is messageStart -> [contentBlockStart -> contentBlockDelta* -> contentBlockStop]* -> messageStop -> metadata -- metadata (carrying the real, final adapter.Usage) is confirmed to arrive strictly AFTER messageStop, per bedrock/stream.go's own StreamDecoder doc comment. Unlike Anthropic's decoder (done=true at message_stop) and OpenAI's (done=true at [DONE]), bedrock.StreamDecoder.Decode has no done return value in its signature at all -- gateway/internal/gateway/dataplane/streaming.go's streamDeploymentBedrock relies purely on eventstream.Decoder.Decode returning io.EOF to end its read loop (confirmed directly: the for loop only ever breaks on errors.Is(readErr, io.EOF), never on any decoded event type), so the metadata event's usage is captured (finalUsage = usage) rather than lost. A caller who mistakenly stopped reading once messageStop's FinishReason chunk arrived (a reasonable-sounding but wrong assumption carried over from Anthropic's own done=true-at-message_stop contract) would silently lose the request's real token usage.",
+      "pre_fix_behavior": "N/A -- not a bug; a real, deliberately-designed invariant (the RFC's own 'signaling done there would drop the final usage event' framing) verified directly against the real, current code (streamDeploymentBedrock's read loop, bedrock.StreamDecoder.Decode's 3-value signature with no done bool) rather than assumed.",
+      "regression_guard": "gateway/internal/adapter/bedrock/stream_test.go: TestDecodeMetadataProducesUsage (re-run during this pass: PASS) plus gateway/internal/gateway/dataplane/bedrock_stream_test.go's full-binary-sequence test are the real, executing regression guards for this invariant.",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- not a bug-fix mining -- a real, verified cross-provider structural invariant (Bedrock's Decode signature has no done bool at all, unlike Anthropic's/OpenAI's). This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Go Bedrock binary-stream decode loop code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guards named above."
+    },
+    "reference": "bedrock_stream_metadata_usage_after_messageStop=captured_not_lost (Decode has no done signal at all; dataplane's binary loop reads until io.EOF, so the strictly-later metadata event's usage is never dropped)",
+    "tier": "regression",
+    "tags": ["category:streaming", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-streaming-openai-decode-after-done-rejected",
+    "revision": 1,
+    "task_spec": {
+      "output": "openai_stream_decode_called_again_after_DONE=real_error_returned (never silently mis-parses a post-[DONE] event)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-02] streaming (SSE) support -- spec -> plan -> implementation, no branch/PR yet (Files touched -- gateway/internal/adapter/openai/stream.go)",
+      "description": "openai.streamDecoder carries real cross-call state (a done bool) specifically to enforce the streaming.StreamDecoder interface's own documented contract ('callers must stop calling Decode after done is true') with a clear, typed error rather than silently mis-parsing a call that violates it: once Decode has observed the literal '[DONE]' sentinel and set d.done=true, any FURTHER call to Decode on that same decoder instance returns a real, non-nil error ('openai: Decode called again after [DONE] was already observed') instead of attempting to json.Unmarshal whatever was passed. Verified directly against openai/stream_test.go's TestDecodeAfterDoneReturnsError (re-run during this pass: PASS), which calls Decode a first time with the sentinel (succeeds, done=true), then calls it again with a well-formed JSON chunk and asserts a non-nil error. Cross-checked against Anthropic's and Gemini's stream.go (both read in full for this task): neither has an equivalent self-defensive re-entry guard of its own -- Anthropic's message_stop just returns done=true with no done-state field to check on a later call, and Gemini never reports done=true at all -- so OpenAI's decoder is the only one of Kelvran's three real SSE-framed decoders that actively rejects a post-done call rather than relying purely on caller discipline.",
+      "pre_fix_behavior": "N/A -- not a bug; a real, deliberately-designed defensive contract-enforcement invariant, verified directly against the real, current code and its own dedicated test, not assumed.",
+      "regression_guard": "gateway/internal/adapter/openai/stream_test.go: TestDecodeAfterDoneReturnsError is the real, executing regression guard for this invariant.",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- not a bug-fix mining -- a real invariant confirmed directly against openai/stream.go and its own test, cross-checked against Anthropic's and Gemini's stream.go source to confirm the cross-adapter asymmetry claim is accurate. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Go OpenAI stream decoder code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "openai_stream_decode_called_again_after_DONE=real_error_returned (never silently mis-parses a post-[DONE] event)",
+    "tier": "regression",
+    "tags": ["category:streaming", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-judge-panel-size-greater-than-one-not-implemented",
+    "revision": 1,
+    "task_spec": {
+      "output": "judge(call_model=[m1,m2])=NotImplementedError_raised (never silently scores with only panel[0] and discards the rest)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-07] Phase 2 item 2e: Evals judge-panel interface RFC -- widen judge()/Score.scorer_type (Decisions made)",
+      "description": "evals.judge.llm_judge.judge()'s call_model parameter was widened (per docs/rfcs/2026-09-07-evals-judge-panel-interface.md) to accept either a single CallModel or a list[CallModel], specifically so a future v2 multi-judge panel is additive to this signature rather than a retrofit -- but the panel-scoring logic itself (majority-reducer aggregation across more than one judge) is NOT implemented. Verified directly against the real, current judge(): a list containing more than one call_model raises NotImplementedError naming the RFC, never silently scoring with just panel[0] and discarding the rest -- matching this codebase's own documented 'None/error means not applicable, never a fabricated stand-in' convention applied to control flow. A bare call_model or a length-1 list scores identically to the pre-widening behavior.",
+      "pre_fix_behavior": "N/A -- judge() has never silently scored a real multi-judge panel with just the first entry; a deliberate, loud-failure design choice verified directly against the real, current code and its own dedicated test.",
+      "regression_guard": "evals/tests/test_llm_judge.py::test_judge_rejects_a_panel_of_more_than_one_call_model is the real, executing regression guard for this invariant (re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- not a bug-fix mining -- a real, deliberate loud-failure design invariant confirmed directly against evals/evals/judge/llm_judge.py. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real judge() function code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "judge(call_model=[m1,m2])=NotImplementedError_raised (never silently scores with only panel[0] and discards the rest)",
+    "tier": "regression",
+    "tags": ["category:judge", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-judge-empty-call-model-list-value-error",
+    "revision": 1,
+    "task_spec": {
+      "output": "judge(call_model=[])=ValueError_raised (there is no judge to call; never silently treated as an automatic pass or fail)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-07] Phase 2 item 2e: Evals judge-panel interface RFC -- widen judge()/Score.scorer_type (Decisions made)",
+      "description": "evals.judge.llm_judge.judge() normalizes its call_model parameter (a bare CallModel or a list[CallModel]) into a panel list, then explicitly checks len(panel) == 0 before doing anything else: passing an empty list raises ValueError('judge() requires at least one call_model, got an empty list') rather than proceeding to panel[0] (an IndexError) or fabricating an automatic pass/fail with zero real evidence. Verified directly against the real, current judge() and its own dedicated test.",
+      "pre_fix_behavior": "N/A -- a real, deliberate input-validation invariant verified directly against the real, current code and its own dedicated test, not assumed.",
+      "regression_guard": "evals/tests/test_llm_judge.py::test_judge_rejects_an_empty_call_model_list is the real, executing regression guard for this invariant (re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- not a bug-fix mining -- a real input-validation invariant confirmed directly against evals/evals/judge/llm_judge.py. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real judge() function code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "judge(call_model=[])=ValueError_raised (there is no judge to call; never silently treated as an automatic pass or fail)",
+    "tier": "regression",
+    "tags": ["category:judge", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-judge-malformed-response-missing-verdict-raises",
+    "revision": 1,
+    "task_spec": {
+      "output": "judge_response_missing_VERDICT_line=ValueError_raised (never silently defaults to passed=False or passed=True)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-02] initial code scaffolding -- spec -> plan -> implementation, no branch/PR yet (Files touched -- evals/evals/judge/llm_judge.py)",
+      "description": "evals.judge.llm_judge._parse_judge_response requires the judge model's raw response to contain a line matching 'VERDICT:\\s*(PASS|FAIL)' (case-insensitive) -- if the judge model's own output is malformed (e.g. it forgets the required VERDICT line, or a scripted/real call_model returns garbage), _parse_judge_response raises ValueError('judge response missing a VERDICT: PASS|FAIL line: <raw_response>') rather than defaulting passed to False (silently misreporting a judge-infrastructure failure as a real, adverse verdict) or to True (a security-relevant fail-open on the exact bias-mitigation surface THREAT_MODEL.md's Evals Tampering row names). Verified directly against the real, current _parse_judge_response and its own dedicated test.",
+      "pre_fix_behavior": "N/A -- a real, deliberate defensive-parsing invariant, security-relevant per THREAT_MODEL.md's Evals Tampering row (judge manipulation via adversarial prompts), verified directly against the real, current code and its own dedicated test.",
+      "regression_guard": "evals/tests/test_llm_judge.py::test_judge_raises_on_malformed_response_missing_verdict is the real, executing regression guard for this invariant (re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- not a bug-fix mining -- a real, security-relevant defensive-parsing invariant confirmed directly against evals/evals/judge/llm_judge.py. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real judge() response parser code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "judge_response_missing_VERDICT_line=ValueError_raised (never silently defaults to passed=False or passed=True)",
+    "tier": "regression",
+    "tags": ["category:judge", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-judge-multiaxis-and-semantics-one-failing-axis-fails-case",
+    "revision": 1,
+    "task_spec": {
+      "output": "case_passed(axes=[correctness:PASS, safety:FAIL])=False (case-level pass/fail is AND across every configured axis, never OR/majority)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Tier 2, item 4: multi-axis LLM-judge scoring (Decisions made / Bugs found)",
+      "description": "evals.cli's run_cmd and rollout_cmd (via _score_and_record) both compute case-level pass/fail from a multi-axis judge run identically: passed = all(o.passed for o in outcomes) -- verified directly at both real call sites in evals/evals/cli.py -- a response failing even one configured --judge-axes dimension is NOT a passing response, regardless of how many other axes it passed. This AND-across-axes semantic mirrors the pre-existing single-axis all-or-nothing behavior rather than a new majority-vote or OR-across-axes rule. docs/agents/LOGS.md's own account of shipping this feature notes a real test-authoring mistake (not a shipped-code bug) self-caught while writing the corresponding sanity check: an early fixture ordered a failing case's axes fail-then-anything, which couldn't distinguish real AND-semantics from a broken 'just use the first axis' implementation -- reordered to pass-then-fail before the test was trusted.",
+      "pre_fix_behavior": "N/A -- not a bug in shipped code (per LOGS.md's own account: one self-caught test-authoring mistake, not a shipped-code bug); a real, deliberate design invariant verified directly against the current evals/evals/cli.py source at both of its two real call sites.",
+      "regression_guard": "evals/tests/test_cli_integration.py::test_run_with_judge_axes_scores_each_axis_independently_and_ands_the_verdict and test_rollout_with_judge_axes_scores_each_axis_independently_and_ands_the_verdict are the real, executing regression guards for this invariant.",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- mined from a real LOGS.md session's Decisions made, then re-verified directly against the current evals/evals/cli.py source (both call sites) rather than trusted from the RFC's prose alone. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real evals CLI multi-axis judging logic code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guards named above."
+    },
+    "reference": "case_passed(axes=[correctness:PASS, safety:FAIL])=False (case-level pass/fail is AND across every configured axis, never OR/majority)",
+    "tier": "regression",
+    "tags": ["category:judge", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-telemetry-token-usage-histogram-suppressed-on-non-billable",
+    "revision": 1,
+    "task_spec": {
+      "output": "gen_ai.client.token.usage(cache_hit_or_coalesced_follower, Billable=false)=not_recorded (gen_ai.client.operation.duration still recorded; the per-request span attribute still reports the token counts informationally -- only the aggregate histogram is suppressed, to avoid inflating aggregate token-throughput queries)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-07] Tier 2 (report Finding 3): gen_ai.client.token.usage + gen_ai.client.operation.duration OTel Metrics (Decisions made)",
+      "description": "telemetry.RecordChatCompletionMetrics gates gen_ai.client.token.usage on r.Billable, deliberately NOT on r.CacheHit, per its own doc comment: a histogram accumulates across many requests, so replaying an already-counted token count from a cache hit or a coalesced singleflight follower into it would inflate an aggregate token-throughput query every time that entry was served -- distinct from the span attribute's own AttrGenAIUsageInputTokens/OutputTokens (a single per-request value, safe to report as 'what this would have cost' even on a cache hit, per docs/rfcs/2026-09-05-gateway-cost-double-counting.md's already-established billable gate). gen_ai.client.operation.duration is recorded UNCONDITIONALLY regardless of Billable -- every finalize call represents one finished-or-failed operation. Verified directly against the real, current RecordChatCompletionMetrics and its own extended test (re-run during this pass: PASS) -- the 'genai-metrics-cache-hit' scenario (Billable=false, InputTokens/OutputTokens=10/4) produces no token.usage data point for that RequestModel while operation.duration does.",
+      "pre_fix_behavior": "N/A -- a real, deliberate double-counting-avoidance design decision (explicitly named and reasoned about in its own doc comment and the corresponding RFC), verified directly against the real, current code and its own dedicated test assertions.",
+      "regression_guard": "gateway/internal/telemetry/result_test.go: TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome's genai-metrics scenarios are the real, executing regression guard for this invariant (re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- mined from a real LOGS.md session's Decisions made, then re-verified directly against the current gateway/internal/telemetry/telemetry.go source and its own test. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Go OTel GenAI metrics recording code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "gen_ai.client.token.usage(cache_hit_or_coalesced_follower, Billable=false)=not_recorded (gen_ai.client.operation.duration still recorded; the per-request span attribute still reports the token counts informationally -- only the aggregate histogram is suppressed, to avoid inflating aggregate token-throughput queries)",
+    "tier": "regression",
+    "tags": ["category:telemetry", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-telemetry-genai-provider-name-remap",
+    "revision": 1,
+    "task_spec": {
+      "output": "gen_ai.provider.name(bedrock)=aws.bedrock, gen_ai.provider.name(gemini)=gcp.gemini, gen_ai.provider.name(openaicompat)=openaicompat (passthrough -- no well-known registry value exists)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Fresh backlog audit: `gen_ai.provider.name` validation and enum remapping (Decisions made)",
+      "description": "telemetry.genAIProviderName remaps Kelvran's own internal Deployment.Provider identifier to gen_ai.provider.name's real well-known OTel semantic-conventions registry value via genAIProviderNameOverrides, confirmed directly against the open-telemetry/semantic-conventions registry before implementing (per LOGS.md's own account): only 'bedrock' and 'gemini' need remapping (to 'aws.bedrock'/'gcp.gemini'); 'openai'/'anthropic' already match the spec's well-known values verbatim; 'openaicompat' has no well-known value in the registry at all (a self-hosted, wire-protocol-compatible runtime isn't a distinct GenAI provider in OTel's own vocabulary), so it passes through completely unmapped rather than being forced into a wrong or fabricated value. Kelvran's own internal provider identifiers (Deployment.Provider, adapter.Registry's keys) stay completely unchanged -- only the OTel-facing attribute value differs. Verified directly against the real, current genAIProviderNameOverrides map and genAIProviderName function, and against its own dedicated test.",
+      "pre_fix_behavior": "N/A -- a real, verified config-time correctness mapping, resolving a previously-unresolved question named explicitly in docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md's own Unresolved Questions, verified directly against the real, current code and its own dedicated test.",
+      "regression_guard": "gateway/internal/telemetry/result_test.go: TestGenAIProviderNameRemapsToWellKnownRegistryValues and TestRecordChatCompletionResultRemapsProviderOnSpan are the real, executing regression guards for this invariant (both re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- mined from a real LOGS.md session's Decisions made, then re-verified directly against the current gateway/internal/telemetry/result.go source and its own tests. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Go GenAI provider-name remapping code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guards named above."
+    },
+    "reference": "gen_ai.provider.name(bedrock)=aws.bedrock, gen_ai.provider.name(gemini)=gcp.gemini, gen_ai.provider.name(openaicompat)=openaicompat (passthrough -- no well-known registry value exists)",
+    "tier": "regression",
+    "tags": ["category:telemetry", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-telemetry-cache-similarity-l3-only",
+    "revision": 1,
+    "task_spec": {
+      "output": "kelvran.cache.similarity(cache_layer=L1_or_L2)=not_emitted, kelvran.cache.similarity(cache_layer=L3)=real_value (never a fabricated 0.0 for L1/L2, where no similarity concept applies)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Fresh backlog audit item 3: cache-hit provenance in telemetry (Decisions made)",
+      "description": "telemetry.RecordChatCompletionResult scopes the kelvran.cache.similarity span attribute to CacheLayer == 'L3' only (Cache L3-lite's own fuzzy near-duplicate match), per ChatCompletionResult.CacheSimilarity's own doc comment: no similarity concept applies to an L1 (exact-match) or L2 (normalized-match) hit, and this attribute is NEVER emitted for either, rather than emitting a fabricated 0.0 that a dashboard consumer could mistake for a real, low-similarity L1/L2 match. This is deliberately narrower than kelvran.cache.age_ms, which -- per docs/upgrade-research/cache-2026-09-06.md Finding 6 -- IS now emitted for every hit layer (L1/L2/L3), not just L3; the two attributes' scoping rules genuinely differ, not one rule copy-pasted onto both. Verified directly against the real, current RecordChatCompletionResult source and its own dedicated test, which explicitly asserts similarity is absent for L1/L2 while age is present for all three layers.",
+      "pre_fix_behavior": "N/A -- a real, deliberate per-attribute scoping decision, verified directly against the real, current code and its own dedicated test.",
+      "regression_guard": "gateway/internal/telemetry/result_test.go: TestRecordChatCompletionResultEmitsAgeForL1AndL2HitsNotJustL3 is the real, executing regression guard for this invariant (re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- mined from a real LOGS.md session's Decisions made, then re-verified directly against the current gateway/internal/telemetry/result.go source and its own test. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Go cache-hit provenance telemetry code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "kelvran.cache.similarity(cache_layer=L1_or_L2)=not_emitted, kelvran.cache.similarity(cache_layer=L3)=real_value (never a fabricated 0.0 for L1/L2, where no similarity concept applies)",
+    "tier": "regression",
+    "tags": ["category:telemetry", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-telemetry-init-none-exporter-still-propagates-agent-run-id",
+    "revision": 1,
+    "task_spec": {
+      "output": "telemetry.Init(exporter=none) -> global_TextMapPropagator=still_installed (agent_run_id baggage extraction keeps working even with tracing/metrics export fully disabled)",
+      "match": "exact",
+      "log_ref": "gateway/internal/telemetry/telemetry.go's Init function (docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md); no docs/agents/LOGS.md 'Bugs found' entry names this specific edge case.",
+      "description": "telemetry.Init calls otel.SetTextMapPropagator(...) UNCONDITIONALLY, before checking cfg.Exporter/branching on the 'none' no-op early return -- per Init's own doc comment: 'extraction should work regardless of exporter choice, since agent_run_id needs to be readable even when tracing itself is off.' Confirmed directly that no existing unit test exercises exactly this claim: TestInitNoneExporterIsANoOp only asserts Init/shutdown don't error for exporter=none, and TestExtractContextRoundTripsAgentRunID builds its OWN self-constructed composite propagator rather than calling Init at all, so neither test actually proves the process-GLOBAL propagator gets installed when exporter=none specifically. Independently verified for this pass via a real, then-deleted Go test: calling Init(Config{Exporter:\"none\"}) and then injecting/extracting agent_run_id baggage via the process-global otel.GetTextMapPropagator()/ExtractContext (not a locally-constructed propagator) round-trips correctly. A sanity-check-by-breaking (temporarily moving the SetTextMapPropagator call to after the exporter=='none' early return, then reverting) made that same test fail with the exact expected 'global propagator did not inject a baggage header' error, confirming the claim is load-bearing and genuinely exercised by this new invariant, not vacuously true.",
+      "pre_fix_behavior": "N/A -- not a bug in shipped code; a real, currently-correct invariant with a genuine unit-test coverage gap (no existing test exercises the GLOBAL propagator specifically under exporter=none), confirmed via a real, temporary, then-reverted sanity-check-by-breaking during this pass.",
+      "regression_guard": "No existing dedicated unit test pins this exact claim today (TestInitNoneExporterIsANoOp and TestExtractContextRoundTripsAgentRunID each cover an adjacent but distinct half -- confirmed by direct reading of gateway/internal/telemetry/telemetry_test.go before concluding this).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- this specific edge case was never the subject of an existing LOGS.md bug-fix entry, stated explicitly rather than implied otherwise. A real, temporary Go test (written and run during this pass, including a sanity-check-by-breaking that made it fail for the exact right reason, then reverted and deleted, leaving zero trace in the shipped test suite) confirmed this exact claim before this entry was written. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Go OTel propagator initialization code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for a dedicated unit test, which does not yet exist for this exact claim."
+    },
+    "reference": "telemetry.Init(exporter=none) -> global_TextMapPropagator=still_installed (agent_run_id baggage extraction keeps working even with tracing/metrics export fully disabled)",
+    "tier": "regression",
+    "tags": ["category:telemetry", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-harness-drift-sample-tier-never-cached",
+    "revision": 1,
+    "task_spec": {
+      "output": "run_suite_cache_lookup(case.tier=drift_sample, matching_cache_key_exists)=bypassed_real_execution_always (drift_sample exists for distribution sampling, never failure-tracking, so a cache hit would defeat its purpose)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Fresh backlog audit: Golden/Regression Dataset promotion (`evals promote`) (Decisions made -- drift_sample tier semantics)",
+      "description": "evals.rollout.scheduler.run_suite's cached-run lookup is explicitly gated on case.tier != 'drift_sample': cached = (cached_runs.get(cache_key) if cached_runs is not None and case.tier != 'drift_sample' else None) -- verified directly against the real, current source. A drift_sample-tier case is used for general distribution sampling (per docs/rfcs/2026-09-05-evals-golden-regression-promotion.md's own tier-semantics framing), not failure-tracking, so silently reusing a cached prior result would defeat the entire point of re-sampling: even a byte-identical cache_key match is bypassed, and the case always executes for real. This is distinct from (and additional to) the sibling dogfood case dogfood-harness-rollout-cache-fabricates-hit-from-errored-run -- this one bypasses the cache lookup ENTIRELY for drift_sample, even for a genuinely completed, otherwise-cacheable-shaped prior Run. Independently re-run during this pass, live, against the real scheduler.run_suite: a drift_sample case with a matching cache_key in cached_runs still executed for real (from_cache=False, fresh stdout observed), confirming the claim.",
+      "pre_fix_behavior": "N/A -- not a bug fix mined from a 'Bugs found' entry; a real, deliberate tier-aware design decision, verified directly against the real, current evals/evals/rollout/scheduler.py source, its own dedicated test, and a live re-run during this pass.",
+      "regression_guard": "evals/tests/test_scheduler.py::test_cache_never_hits_for_drift_sample_tier is the real, executing regression guard for this invariant (re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- not a bug-fix mining -- a real, tier-aware design invariant confirmed directly against evals/evals/rollout/scheduler.py, its own test, and a live re-run. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real rollout scheduler cache lookup code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "run_suite_cache_lookup(case.tier=drift_sample, matching_cache_key_exists)=bypassed_real_execution_always (drift_sample exists for distribution sampling, never failure-tracking, so a cache hit would defeat its purpose)",
+    "tier": "regression",
+    "tags": ["category:harness", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-harness-earlystop-skip-no-tally-no-span",
+    "revision": 1,
+    "task_spec": {
+      "output": "early_stop_skipped_trial=never_tallied_never_spanned (score_fn is not called again for a skip, and no Span is appended, since neither represents a new real execution)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Tier 2, final item: real mixture-SPRT (anytime-valid) early-stopping (Decisions made)",
+      "description": "Once run_suite's early-stopping tally decides to stop a (case.id, case.revision) group, every subsequent trial for that group is appended as a Run with status='skipped' and the function 'continue's IMMEDIATELY (evals/evals/rollout/scheduler.py) -- BEFORE reaching the shared 'await tally_and_maybe_stop(case, run)' call every other path (real execution or cache hit) falls through to. This means a skipped trial is never re-scored by early_stop.score_fn (the group's tally stays frozen at whatever count triggered the stop) and never gets a Span appended to span_sink, even when span_sink is configured. Independently re-run during this pass, live, against the real run_suite with a counting score_fn and a real span_sink list: across 6 repeated trials that stopped after 2, score_fn was called exactly 2 times and span_sink held exactly 2 entries, even though 4 additional 'skipped' Runs were produced -- confirming both halves of the claim.",
+      "pre_fix_behavior": "N/A -- not a bug fix; a real, deliberate design invariant verified directly against the real, current code, its own dedicated tests, and a live re-run during this pass, not assumed from the RFC's prose alone.",
+      "regression_guard": "evals/tests/test_scheduler.py::test_early_stop_score_fn_called_exactly_once_per_real_trial and test_span_sink_records_nothing_for_an_early_stop_skip are the real, executing regression guards for this invariant (both re-run during this pass: PASS).",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- mined from a real LOGS.md session, then re-verified directly against the current evals/evals/rollout/scheduler.py source, its own tests, and a live re-run. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real rollout scheduler early-stop skip path code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for the real regression guards named above."
+    },
+    "reference": "early_stop_skipped_trial=never_tallied_never_spanned (score_fn is not called again for a skip, and no Span is appended, since neither represents a new real execution)",
+    "tier": "regression",
+    "tags": ["category:harness", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-harness-sandbox-timeout-discards-partial-output",
+    "revision": 1,
+    "task_spec": {
+      "output": "run_in_sandbox_timeout_result=stdout_and_stderr_both_empty_strings (any partial output the process had already produced before being killed is discarded, never returned as a fabricated partial capture)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-04] `evals` `Span.container_id` + a real DoS-relevant `sandbox.py` timeout bug fix (Files touched / Decisions made)",
+      "description": "evals.rollout.sandbox.run_in_sandbox's TimeoutError branch returns SandboxResult(exit_code=-1, stdout=\"\", stderr=\"\", timed_out=True, container_id=...) -- verified directly against the real, current source: on timeout, process.communicate()'s own pending awaitable is abandoned (never awaited to completion), so whatever partial stdout/stderr bytes the process had already written before being killed are never captured or returned, deliberately, rather than attempting to read a partial buffer and risk returning truncated-mid-multibyte-character or otherwise misleading partial output. The existing test_run_in_sandbox_enforces_timeout only asserts timed_out is True and exit_code == -1 -- it does not assert on stdout/stderr at all, confirmed by direct reading, so this specific empty-string claim was a genuinely unpinned invariant. Independently verified for this pass against a REAL local Docker daemon: ran a command that echoes 'partial-output' to stdout and then sleeps well past timeout_s -- the real, current run_in_sandbox returned stdout='' (confirmed empty via repr, not merely unchecked), timed_out=True, and a real, non-None container_id, proving the partial 'partial-output' text the container had already produced is genuinely discarded, not truncated-but-present.",
+      "pre_fix_behavior": "N/A -- a real, deliberate design choice in the same timeout-handling code path the 2026-09-04 container-kill bug fix (already a separate dogfood case, dogfood-harness-sandbox-timeout-does-not-kill-container) lives in, verified directly against the real, current source and a live re-run against a real Docker daemon during this pass, not assumed.",
+      "regression_guard": "evals/tests/test_sandbox_integration.py::test_run_in_sandbox_enforces_timeout exercises this exact code path (confirmed by direct reading and a live re-run: PASS) but does not currently assert on stdout/stderr specifically -- this corpus case's own output value was independently confirmed by directly invoking the real, currently-shipped run_in_sandbox() against a real local Docker daemon during this pass (a command that writes to stdout before sleeping past timeout_s), not guessed and not merely quoted from source comments.",
+      "corpus_note": "Hand-authored directly into the regression tier via this task's own direct code-grounding methodology (docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's category:/provenance: taxonomy; docs/upgrade-research/evals-regression-dataset-bootstrapping-2026-09-07.md's Finding 3 -- generate INPUTS, verify against the real current code, never fabricate an expected value) -- not a bug-fix mining for this specific stdout/stderr-discard claim -- a real design choice confirmed directly against evals/evals/rollout/sandbox.py's TimeoutError except-block and independently reproduced against a real local Docker daemon during this pass. This is a static, frozen task_spec.output compared against reference via exact string match; evals run does not execute Kelvran's real Docker-sandboxed rollout timeout handling code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of a real, independently-verified invariant; it is not a replacement for a dedicated unit-test assertion on stdout/stderr, which does not yet exist for this exact claim."
+    },
+    "reference": "run_in_sandbox_timeout_result=stdout_and_stderr_both_empty_strings (any partial output the process had already produced before being killed is discarded, never returned as a fabricated partial capture)",
+    "tier": "regression",
+    "tags": ["category:harness", "provenance:dogfood"],
+    "flaky": false
   }
 ]
