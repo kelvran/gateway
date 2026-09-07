@@ -265,7 +265,7 @@ One canonical internal schema, OpenAI Chat-Completions-shaped — the dialect vL
 3. **Streaming event shape** — OpenAI's homogeneous `delta.content` fragments vs. Anthropic's typed SSE event sequence (needs a stateful per-stream parser tracking open content blocks / accumulating tool-call indices) vs. Bedrock's binary EventStream encoding (real per docs/rfcs/2026-09-04-bedrock-converse-stream.md — decoded by `bedrock.StreamDecoder`, a genuinely stateless decoder since every Bedrock event is self-describing, unlike Anthropic's). Real for OpenAI, Anthropic, Gemini, openaicompat, and Bedrock (see `/internal/streaming` above and each adapter's `stream.go`).
 4. **Unknown-field preservation** — e.g. Gemini's `thoughtSignature` must round-trip verbatim across turns or multi-turn tool use silently breaks. Adapters must never strip fields they don't recognize.
 
-Each adapter offers an `additionalModelRequestFields`-style escape hatch (mirroring Bedrock's own Converse API pattern) so a new provider's quirk never requires touching the core pipeline.
+There is no generic `additionalModelRequestFields`-style escape hatch on the canonical schema (confirmed: no such field exists in `internal/adapter` today) — a new provider's quirk is instead handled the same way the four points above already are, inside that provider's own adapter package via its provider-specific request/response structs (`ToProvider`/`FromProvider`), never by touching the core pipeline or the canonical schema itself.
 
 ## Cache Subsystem
 
