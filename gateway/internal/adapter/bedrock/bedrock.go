@@ -59,6 +59,54 @@ type ContentBlock struct {
 	// content.md.
 	Image    *ImageBlock    `json:"image,omitempty"`
 	Document *DocumentBlock `json:"document,omitempty"`
+	// CachePoint, when set, is a standalone checkpoint block marking
+	// "cache everything up to here" — per
+	// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. Unlike
+	// Anthropic's cache_control, this is never combined with another
+	// field on the same block; it always appears as its own block,
+	// immediately after the content it caches.
+	CachePoint *CachePoint `json:"cachePoint,omitempty"`
+}
+
+// CachePoint is Converse's real cache-checkpoint marker shape —
+// {"cachePoint":{"type":"default"}} — a standalone block placed after
+// the content to be cached (a checkpoint boundary), not a property of
+// that content's own block, unlike Anthropic's cache_control. Per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md and
+// docs/upgrade-research/gateway-provider-prompt-caching-2026-09-07.md's
+// fetched vendor documentation. "default" is the only Type value AWS
+// documents.
+type CachePoint struct {
+	Type string `json:"type"`
+}
+
+// appendCachePointIfNeeded appends a CachePoint checkpoint block after
+// blocks' own current last block, when cc is set — unless the last
+// block is already a CachePoint (a more specific, already-placed
+// marker), which would otherwise produce a meaningless, empty-content
+// back-to-back checkpoint pair. nil cc or an empty blocks slice is a
+// no-op, per docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md.
+func appendCachePointIfNeeded(blocks []ContentBlock, cc *adapter.CacheControl) []ContentBlock {
+	if cc == nil || len(blocks) == 0 {
+		return blocks
+	}
+	if blocks[len(blocks)-1].CachePoint != nil {
+		return blocks
+	}
+	return append(blocks, ContentBlock{CachePoint: &CachePoint{Type: "default"}})
+}
+
+// appendSystemCachePointIfNeeded is appendCachePointIfNeeded's
+// SystemContentBlock counterpart, for Converse's top-level system[]
+// array.
+func appendSystemCachePointIfNeeded(blocks []SystemContentBlock, cc *adapter.CacheControl) []SystemContentBlock {
+	if cc == nil || len(blocks) == 0 {
+		return blocks
+	}
+	if blocks[len(blocks)-1].CachePoint != nil {
+		return blocks
+	}
+	return append(blocks, SystemContentBlock{CachePoint: &CachePoint{Type: "default"}})
 }
 
 // ByteSource is Converse's native inline-bytes source shape. Converse
@@ -114,9 +162,14 @@ type ToolResultContent struct {
 	Text string `json:"text,omitempty"`
 }
 
-// SystemContentBlock is one block of Converse's top-level system[] field.
+// SystemContentBlock is one block of Converse's top-level system[]
+// field. CachePoint, when set, is a standalone checkpoint block (see
+// ContentBlock.CachePoint's own doc comment) rather than a property of
+// the Text block itself, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md.
 type SystemContentBlock struct {
-	Text string `json:"text,omitempty"`
+	Text       string      `json:"text,omitempty"`
+	CachePoint *CachePoint `json:"cachePoint,omitempty"`
 }
 
 // Tool is Converse's native tool-definition shape.
@@ -194,31 +247,33 @@ func (a *Adapter) Name() string {
 }
 
 // ToProvider implements adapter.Adapter. It hoists role:"system" messages
-// into System, and converts role:"tool" messages into a toolResult
-// content block — correlated purely by ToolCallID, per hazard #3 (unlike
-// Gemini, no Name-resolution-from-history is needed).
+// into System (one SystemContentBlock per canonical system message, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md), and converts
+// role:"tool" messages into a toolResult content block — correlated
+// purely by ToolCallID, per hazard #3 (unlike Gemini, no
+// Name-resolution-from-history is needed).
 func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
-	var systemParts []string
+	var systemBlocks []SystemContentBlock
 	messages := make([]Message, 0, len(req.Messages))
 
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "system":
-			systemParts = append(systemParts, m.Content)
+			systemBlocks = append(systemBlocks, SystemContentBlock{Text: m.Content})
+			systemBlocks = appendSystemCachePointIfNeeded(systemBlocks, m.CacheControl)
 			continue
 		case "tool":
-			messages = append(messages, Message{
-				Role: "user",
-				Content: []ContentBlock{
-					{
-						ToolResult: &ToolResult{
-							ToolUseID: m.ToolCallID,
-							Content:   []ToolResultContent{{Text: m.Content}},
-							Status:    "success",
-						},
+			blocks := []ContentBlock{
+				{
+					ToolResult: &ToolResult{
+						ToolUseID: m.ToolCallID,
+						Content:   []ToolResultContent{{Text: m.Content}},
+						Status:    "success",
 					},
 				},
-			})
+			}
+			blocks = appendCachePointIfNeeded(blocks, m.CacheControl)
+			messages = append(messages, Message{Role: "user", Content: blocks})
 			continue
 		}
 
@@ -232,6 +287,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 				return nil, err
 			}
 			blocks = append(blocks, block)
+			blocks = appendCachePointIfNeeded(blocks, part.CacheControl)
 		}
 		for _, tc := range m.ToolCalls {
 			input := map[string]any{}
@@ -244,6 +300,13 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 				ToolUse: &ToolUse{ToolUseID: tc.ID, Name: tc.Name, Input: input},
 			})
 		}
+		// A message-level CacheControl marks "cache everything through
+		// this message" via a trailing checkpoint, per
+		// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md —
+		// appendCachePointIfNeeded's own no-duplicate-checkpoint guard
+		// keeps this a no-op if a part-level marker already placed one
+		// on this exact last block.
+		blocks = appendCachePointIfNeeded(blocks, m.CacheControl)
 		messages = append(messages, Message{Role: m.Role, Content: blocks})
 	}
 
@@ -276,14 +339,9 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 	}
 
-	var system []SystemContentBlock
-	if len(systemParts) > 0 {
-		system = []SystemContentBlock{{Text: strings.Join(systemParts, "\n\n")}}
-	}
-
 	return &Request{
 		Messages:        messages,
-		System:          system,
+		System:          systemBlocks,
 		InferenceConfig: inferenceConfig,
 		ToolConfig:      toolConfig,
 	}, nil

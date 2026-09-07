@@ -36,6 +36,12 @@ type Message struct {
 	// ToolCallID identifies which prior ToolCall this message is a result
 	// for. Only set on role:"tool" messages.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	// CacheControl, when set, opts this whole message into provider-side
+	// prompt caching, per
+	// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. Nil (the
+	// default) is a silent no-op for every adapter -- it never changes
+	// what's forwarded, only whether a caching marker rides alongside it.
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // ContentPart is one piece of a multi-modal message's content, per
@@ -54,6 +60,38 @@ type ContentPart struct {
 	// URL is a remote reference passed through to the provider
 	// verbatim — Kelvran itself never fetches it.
 	URL string `json:"url,omitempty"`
+	// CacheControl, when set, opts this specific part into provider-side
+	// prompt caching independently of its parent Message's own
+	// CacheControl, per
+	// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. Nil (the
+	// default) is a silent no-op for every adapter.
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
+// CacheControl is an opt-in marker requesting provider-side prompt
+// caching for the message or content-part it's attached to, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. A nil
+// CacheControl (the default on every Message/ContentPart) is a silent
+// no-op for every adapter — it changes nothing about how the request is
+// forwarded, matching this schema's existing optional-field convention
+// (ContentPart/Parts's own additive, no-op-when-empty precedent from
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md).
+type CacheControl struct {
+	// TTL requests a non-default cache lifetime. Only Anthropic (direct,
+	// and Bedrock's Anthropic-family cachePoint) reads this — "" means
+	// that provider's own default (5 minutes); "1h" opts into the
+	// longer, more expensive lifetime both document. Every other
+	// provider/model family ignores TTL as a no-op, never an error,
+	// since neither Bedrock's non-Anthropic families nor OpenAI expose
+	// an equivalent per-breakpoint TTL knob.
+	TTL string `json:"ttl,omitempty"`
+	// Key is a stable, caller-supplied identity (e.g. a session or
+	// conversation ID) that only OpenAI's adapter reads, to set its
+	// top-level prompt_cache_key routing hint — see
+	// internal/adapter/openai's ToProvider doc comment for why Kelvran
+	// never invents this value itself. Ignored (a no-op) by every other
+	// adapter.
+	Key string `json:"key,omitempty"`
 }
 
 // ToolCall is a single tool/function invocation requested by the model.

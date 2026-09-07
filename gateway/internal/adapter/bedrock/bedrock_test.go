@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -321,5 +322,208 @@ func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
 
 	if _, err := New().ToProvider(req); err == nil {
 		t.Fatal("ToProvider with an unsupported content part type returned nil error, want an error")
+	}
+}
+
+// TestToProviderSystemMessageCacheControlAppendsCachePointBlock is the
+// load-bearing proof for docs/rfcs/2026-09-07-gateway-provider-prompt-
+// caching.md's Bedrock wiring: two canonical system messages, only one
+// with CacheControl set, must produce a system[] array where a
+// standalone cachePoint block follows only the marked message's own
+// text block -- not a property of that block itself (unlike
+// Anthropic), and not present after the unmarked block.
+func TestToProviderSystemMessageCacheControlAppendsCachePointBlock(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "First system block."},
+			{Role: "system", Content: "Second system block.", CacheControl: &adapter.CacheControl{}},
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.System) != 3 {
+		t.Fatalf("native.System len = %d, want 3 (text, text, cachePoint)", len(native.System))
+	}
+	if native.System[0].Text != "First system block." || native.System[0].CachePoint != nil {
+		t.Errorf("System[0] = %+v, want the first block with no cachePoint", native.System[0])
+	}
+	if native.System[1].Text != "Second system block." {
+		t.Errorf("System[1].Text = %q, want %q", native.System[1].Text, "Second system block.")
+	}
+	if native.System[2].Text != "" || native.System[2].CachePoint == nil || native.System[2].CachePoint.Type != "default" {
+		t.Errorf("System[2] = %+v, want a standalone cachePoint block", native.System[2])
+	}
+}
+
+// TestToProviderMessageCacheControlAppendsTrailingCachePoint proves a
+// message-level CacheControl appends a trailing cachePoint block after
+// that message's own last content block.
+func TestToProviderMessageCacheControlAppendsTrailingCachePoint(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "cache this whole message", CacheControl: &adapter.CacheControl{}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	blocks := native.Messages[0].Content
+	if len(blocks) != 2 {
+		t.Fatalf("blocks len = %d, want 2 (text, cachePoint)", len(blocks))
+	}
+	if blocks[0].Text != "cache this whole message" {
+		t.Errorf("blocks[0].Text = %q, want the message content", blocks[0].Text)
+	}
+	if blocks[1].CachePoint == nil || blocks[1].CachePoint.Type != "default" {
+		t.Errorf("blocks[1].CachePoint = %+v, want {default}", blocks[1].CachePoint)
+	}
+}
+
+// TestToProviderContentPartCacheControlAppendsCachePointAfterThatPartOnly
+// proves the part-level marker's independence from the message-level
+// marker: among a text lead-in and two parts, only the part that
+// carries its own CacheControl gets a trailing cachePoint immediately
+// after it -- the second, unmarked part (this message's own last
+// block) gets none, since no message-level marker is set here.
+func TestToProviderContentPartCacheControlAppendsCachePointAfterThatPartOnly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{
+				Role:    "user",
+				Content: "see attached",
+				Parts: []adapter.ContentPart{
+					{Type: "document", MediaType: "application/pdf", Data: "ZG9j", CacheControl: &adapter.CacheControl{}},
+					{Type: "image", MediaType: "image/png", Data: "aW1n"},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	blocks := native.Messages[0].Content
+	// text, document, cachePoint, image -- exactly one cachePoint,
+	// immediately after the marked document part.
+	if len(blocks) != 4 {
+		t.Fatalf("blocks len = %d, want 4 (text, document, cachePoint, image): %+v", len(blocks), blocks)
+	}
+	if blocks[1].Document == nil {
+		t.Fatalf("blocks[1] = %+v, want the document part", blocks[1])
+	}
+	if blocks[2].CachePoint == nil || blocks[2].CachePoint.Type != "default" {
+		t.Errorf("blocks[2] = %+v, want the standalone cachePoint block", blocks[2])
+	}
+	if blocks[3].Image == nil {
+		t.Fatalf("blocks[3] = %+v, want the (unmarked) image part", blocks[3])
+	}
+}
+
+// TestToProviderMessageCacheControlDoesNotDuplicateCachePoint proves
+// that when a message's own last part already appended its own
+// cachePoint block, a message-level CacheControl set at the same time
+// never appends a second, redundant, empty-content checkpoint right
+// after it.
+func TestToProviderMessageCacheControlDoesNotDuplicateCachePoint(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{
+				Role:         "user",
+				CacheControl: &adapter.CacheControl{},
+				Parts: []adapter.ContentPart{
+					{Type: "text", Text: "attached", CacheControl: &adapter.CacheControl{}},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	blocks := native.Messages[0].Content
+	if len(blocks) != 2 {
+		t.Fatalf("blocks len = %d, want exactly 2 (text, one cachePoint) -- not a duplicate second cachePoint: %+v", len(blocks), blocks)
+	}
+	if blocks[1].CachePoint == nil {
+		t.Errorf("blocks[1] = %+v, want the single cachePoint block", blocks[1])
+	}
+}
+
+// TestToProviderToolResultCacheControlAppendsCachePoint proves a
+// message-level CacheControl on a role:"tool" message appends a
+// trailing cachePoint block after the single toolResult block that
+// message produces.
+func TestToProviderToolResultCacheControlAppendsCachePoint(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "tool", Content: `{"temp_f":72}`, ToolCallID: "tooluse_1", CacheControl: &adapter.CacheControl{}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	blocks := native.Messages[0].Content
+	if len(blocks) != 2 {
+		t.Fatalf("blocks len = %d, want 2 (toolResult, cachePoint): %+v", len(blocks), blocks)
+	}
+	if blocks[0].ToolResult == nil {
+		t.Fatalf("blocks[0] = %+v, want the toolResult block", blocks[0])
+	}
+	if blocks[1].CachePoint == nil || blocks[1].CachePoint.Type != "default" {
+		t.Errorf("blocks[1] = %+v, want the standalone cachePoint block", blocks[1])
+	}
+}
+
+// TestToProviderUnsetCacheControlIsNoOp proves the unset (nil, the
+// default) case never emits any cachePoint field anywhere in the
+// marshaled request, matching this schema's existing optional-field
+// convention.
+func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "hi", Parts: []adapter.ContentPart{
+				{Type: "image", MediaType: "image/png", Data: "aW1n"},
+			}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+
+	b, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "cachePoint") {
+		t.Errorf("marshaled request contains a cachePoint field despite no CacheControl being set anywhere: %s", b)
 	}
 }

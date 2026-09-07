@@ -270,3 +270,87 @@ func TestToProviderInvalidToolArguments(t *testing.T) {
 		t.Fatal("expected error for invalid ArgumentsJSON, got nil")
 	}
 }
+
+// TestToProviderCacheControlKeySetsPromptCacheKey is the load-bearing
+// proof for docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's
+// OpenAI wiring: a CacheControl.Key set on a message must become the
+// native request's top-level prompt_cache_key field verbatim.
+func TestToProviderCacheControlKeySetsPromptCacheKey(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant.", CacheControl: &adapter.CacheControl{Key: "session-abc-123"}},
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.PromptCacheKey != "session-abc-123" {
+		t.Errorf("native.PromptCacheKey = %q, want %q", native.PromptCacheKey, "session-abc-123")
+	}
+}
+
+// TestToProviderCacheControlKeyOnContentPartIsFound proves findCacheKey
+// also scans multi-modal content parts, not just message-level markers.
+func TestToProviderCacheControlKeyOnContentPartIsFound(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []adapter.Message{
+			{
+				Role:    "user",
+				Content: "see attached",
+				Parts: []adapter.ContentPart{
+					{Type: "image", MediaType: "image/png", Data: "aW1n", CacheControl: &adapter.CacheControl{Key: "part-level-key"}},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.PromptCacheKey != "part-level-key" {
+		t.Errorf("native.PromptCacheKey = %q, want %q", native.PromptCacheKey, "part-level-key")
+	}
+}
+
+// TestToProviderUnsetCacheControlOmitsPromptCacheKey proves the unset
+// (nil, the default) case -- and a CacheControl set with an empty Key,
+// which is also a no-value case -- never emits prompt_cache_key at all,
+// matching this schema's existing optional-field convention rather than
+// inventing a fabricated value, per findCacheKey's own doc comment.
+func TestToProviderUnsetCacheControlOmitsPromptCacheKey(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant.", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.PromptCacheKey != "" {
+		t.Errorf("native.PromptCacheKey = %q, want empty (no Key was ever supplied)", native.PromptCacheKey)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "prompt_cache_key") {
+		t.Errorf("marshaled request contains prompt_cache_key despite no Key ever being supplied: %s", b)
+	}
+}

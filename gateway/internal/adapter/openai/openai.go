@@ -27,6 +27,16 @@ type Request struct {
 	// chunk when this is explicitly requested, per
 	// internal/adapter/openai/stream.go's documented ASSUMPTION.
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+	// PromptCacheKey is OpenAI's real top-level cache-routing hint —
+	// unlike Anthropic's/Bedrock's opt-in "what to cache" markers,
+	// OpenAI's own prompt caching is fully automatic; this field only
+	// ever influences which warm machine a request is routed to. Set
+	// from the first adapter.CacheControl.Key found anywhere in the
+	// canonical request, per findCacheKey and
+	// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. Omitted
+	// entirely (never a fabricated value) when no caller-supplied Key is
+	// found.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 // StreamOptions is OpenAI's native streaming-configuration object.
@@ -177,14 +187,42 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	return &Request{
-		Model:         req.Model,
-		Messages:      messages,
-		Temperature:   req.Temperature,
-		MaxTokens:     req.MaxTokens,
-		Tools:         tools,
-		Stream:        req.Stream,
-		StreamOptions: streamOpts,
+		Model:          req.Model,
+		Messages:       messages,
+		Temperature:    req.Temperature,
+		MaxTokens:      req.MaxTokens,
+		Tools:          tools,
+		Stream:         req.Stream,
+		StreamOptions:  streamOpts,
+		PromptCacheKey: findCacheKey(req.Messages),
 	}, nil
+}
+
+// findCacheKey scans every message (and, for multi-modal messages, every
+// content part) in order for the first non-empty
+// adapter.CacheControl.Key, and returns it as OpenAI's real top-level
+// prompt_cache_key routing hint, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. OpenAI's own
+// caching is fully automatic -- this field only ever influences which
+// warm machine a request is routed to, never whether caching happens at
+// all -- so, unlike Anthropic's/Bedrock's opt-in markers, an empty
+// return here (no CacheControl set anywhere, or one set with an empty
+// Key) is not a missed opt-in; it is Kelvran deliberately declining to
+// invent a routing-affinity value the caller never supplied one for,
+// per this codebase's "never fabricate a value" convention (see e.g.
+// bedrock.go's own honest-absence ChatResponse.ID doc comment).
+func findCacheKey(messages []adapter.Message) string {
+	for _, m := range messages {
+		if m.CacheControl != nil && m.CacheControl.Key != "" {
+			return m.CacheControl.Key
+		}
+		for _, part := range m.Parts {
+			if part.CacheControl != nil && part.CacheControl.Key != "" {
+				return part.CacheControl.Key
+			}
+		}
+	}
+	return ""
 }
 
 // FromProvider implements adapter.Adapter, converting an OpenAI native
