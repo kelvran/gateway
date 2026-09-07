@@ -20,6 +20,11 @@ objects from object storage (per
 docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md) — the
 production-trace-sampling leg `evals/ingestion/`'s own `ARCHITECTURE.md`
 entry names, distinct from the golden-fixture round-trip decode test.
+Given `--suite`/`--results` too, each decoded event is also mapped (via
+`evals.ingestion.mapping`) into the same `EvalCase`+`Run` shapes
+`promote` reads from every other source, closing that RFC's own
+"Unresolved Questions" entry: live-sampled data feeds `evals promote`
+the same as any other run source, no separate review path.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ import click
 from google.protobuf.json_format import MessageToJson
 
 from evals.ingestion.decode import decode_gateway_decision_event
+from evals.ingestion.mapping import gateway_decision_event_to_eval_case_and_run
 from evals.ingestion.object_store import (
     iter_object_lines,
     list_object_keys,
@@ -62,20 +68,36 @@ def _load_cases(suite_path: Path) -> list[EvalCase]:
     return [EvalCase(**raw_case) for raw_case in raw_cases]
 
 
-def _append_case_to_suite(case: EvalCase, path: Path) -> None:
-    """Append case to the JSON-array suite file at path, creating it if it
-    doesn't exist yet — the append counterpart to `_load_cases`, for
-    `evals promote` (see docs/rfcs/2026-09-05-evals-golden-regression-
-    promotion.md). Unlike results_store.py's JSONL append helpers, a suite
-    file is a plain JSON array matching `_load_cases`'s own format, so
-    this reads-modifies-rewrites the whole file rather than appending a
-    line — the same tradeoff `_load_cases` itself already made (a suite
+def _append_cases_to_suite(cases: list[EvalCase], path: Path) -> None:
+    """Append every case in `cases` to the JSON-array suite file at path in
+    one read-modify-write pass, creating it if it doesn't exist yet — the
+    batched counterpart to `_load_cases`, for `evals promote` (see
+    docs/rfcs/2026-09-05-evals-golden-regression-promotion.md) and `evals
+    ingest --suite` (see docs/rfcs/2026-09-07-evals-trace-ingestion-
+    object-storage.md). Unlike results_store.py's JSONL append helpers, a
+    suite file is a plain JSON array matching `_load_cases`'s own format,
+    so this reads-modifies-rewrites the whole file rather than appending
+    a line — the same tradeoff `_load_cases` itself already made (a suite
     file is meant to stay small and human-reviewable, not an
-    append-only results log).
+    append-only results log). Batched (one read-modify-write for every
+    case in `cases`) rather than looped call-by-call, so a caller
+    appending many cases from one invocation (`ingest_cmd`, potentially
+    one per ingested event) never pays an O(n^2) read-rewrite cost. A
+    no-op if `cases` is empty — never touches `path` (doesn't even
+    create it) when there's nothing to append.
     """
+    if not cases:
+        return
     existing = json.loads(path.read_text()) if path.exists() else []
-    existing.append(json.loads(case.model_dump_json()))
+    existing.extend(json.loads(c.model_dump_json()) for c in cases)
     path.write_text(json.dumps(existing, indent=2) + "\n")
+
+
+def _append_case_to_suite(case: EvalCase, path: Path) -> None:
+    """Single-case convenience wrapper around `_append_cases_to_suite`,
+    for `evals promote`'s one-case-per-invocation call site.
+    """
+    _append_cases_to_suite([case], path)
 
 
 def _score_output_deterministic(
@@ -641,10 +663,46 @@ def promote_cmd(
         "JSONL file each successfully-decoded GatewayDecisionEvent is "
         "appended to (created if it doesn't exist), one protojson object "
         "per line — the same wire shape "
-        "evals/tests/fixtures/gateway_decision_event.json already uses."
+        "evals/tests/fixtures/gateway_decision_event.json already uses. "
+        "Written unconditionally, regardless of whether --suite/--results "
+        "are also given."
     ),
 )
-def ingest_cmd(source: str, out_path: Path) -> None:
+@click.option(
+    "--suite",
+    "suite_path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=(
+        "EvalCase suite JSON file (same format as `run`/`rollout`/"
+        "`promote`'s own --suite) each successfully-decoded event's "
+        "synthetic, tier=drift_sample EvalCase is appended to (created if "
+        "it doesn't exist) — in addition to, never instead of, --out. "
+        "Must be given together with --results; the pair makes ingested "
+        "production traces immediately promotable via `evals promote "
+        "--tier drift_sample`, per docs/rfcs/2026-09-07-evals-trace-"
+        "ingestion-object-storage.md's own resolved open question."
+    ),
+)
+@click.option(
+    "--results",
+    "results_path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=(
+        "JSONL Run results file (same format as `rollout`'s own "
+        "--results, and what `promote`'s own --results reads) each "
+        "successfully-decoded event's synthetic Run is appended to "
+        "(created if it doesn't exist). Must be given together with "
+        "--suite."
+    ),
+)
+def ingest_cmd(
+    source: str,
+    out_path: Path,
+    suite_path: Path | None,
+    results_path: Path | None,
+) -> None:
     """List and decode gatewayevents_v1 objects from object storage.
 
     Lists every object under `--source`, reads every line of every
@@ -657,7 +715,19 @@ def ingest_cmd(source: str, out_path: Path) -> None:
     skipped — one bad line never aborts the whole ingest run, mirroring
     `evals rollout`'s own "one case's failure never aborts the suite"
     precedent.
+
+    When `--suite`/`--results` are also given, every successfully-decoded
+    event is additionally mapped (via
+    `evals.ingestion.mapping.gateway_decision_event_to_eval_case_and_run`)
+    into the same `EvalCase`+`Run` shapes `evals promote` reads from every
+    other source, and appended there — see that module's own docstring
+    for exactly what is/isn't honestly derivable from a
+    `GatewayDecisionEvent`. Omitting both reproduces the original
+    decode-only behavior exactly.
     """
+    if (suite_path is None) != (results_path is None):
+        raise click.UsageError("--suite and --results must be given together.")
+
     try:
         scheme, bucket, prefix = parse_object_storage_uri(source)
     except ValueError as e:
@@ -668,6 +738,8 @@ def ingest_cmd(source: str, out_path: Path) -> None:
 
     decoded_count = 0
     error_count = 0
+    new_cases: list[EvalCase] = []
+    new_runs: list[Run] = []
     with out_path.open("a", encoding="utf-8") as out_file:
         for key in keys:
             for line in iter_object_lines(scheme, bucket, key):
@@ -683,11 +755,24 @@ def ingest_cmd(source: str, out_path: Path) -> None:
                 # blob that would break the "one line per event" contract
                 # of --out).
                 out_file.write(MessageToJson(event, indent=None) + "\n")
+                if suite_path is not None:
+                    case, run = gateway_decision_event_to_eval_case_and_run(event)
+                    new_cases.append(case)
+                    new_runs.append(run)
+
+    if suite_path is not None:
+        _append_cases_to_suite(new_cases, suite_path)
+        append_runs(new_runs, results_path)
 
     click.echo(
         f"ingested {len(keys)} object(s) from {source}: "
         f"{decoded_count} decoded, {error_count} failed to decode"
     )
+    if suite_path is not None:
+        click.echo(
+            f"promotable: {len(new_cases)} EvalCase(s) appended to "
+            f"{suite_path}, {len(new_runs)} Run(s) appended to {results_path}"
+        )
 
 
 @main.command("rollout")
