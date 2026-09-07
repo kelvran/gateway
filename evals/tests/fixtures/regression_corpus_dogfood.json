@@ -1,0 +1,121 @@
+[
+  {
+    "id": "dogfood-streaming-anthropic-decoder-discards-stop-reason",
+    "revision": 1,
+    "task_spec": {
+      "output": "finish_reason=end_turn",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-02] streaming (SSE) support -- spec -> plan -> implementation, no branch/PR yet (Bugs found)",
+      "description": "An Anthropic streamed response ends with a message_delta SSE event carrying stop_reason=\"end_turn\" (plus usage). anthropic.StreamDecoder.decodeMessageDelta parsed usage but silently discarded delta.stop_reason, so every reconstructed Anthropic streamed response's FinishReason came back empty regardless of how the model actually stopped.",
+      "pre_fix_behavior": "finish_reason= (empty string, for every streamed Anthropic response, regardless of the real stop_reason value)",
+      "regression_guard": "gateway/internal/adapter/anthropic/stream_test.go: TestStreamDecoder_MessageDeltaCarriesFinishReason plus the byte-exact golden stream fixtures are the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 1 (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute any real Kelvran gateway Go code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "finish_reason=end_turn",
+    "tier": "regression",
+    "tags": ["category:streaming", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-cost-budget-usd-bare-digit-boolean-misparse",
+    "revision": 1,
+    "task_spec": {
+      "output": "budget_usd_parsed=1.00 (Decimal, enforced)",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-03] phase-audit workflow + Decimal-precision cost accounting -- spec -> plan -> implementation, no branch/PR yet (Bugs found)",
+      "description": "A gateway config YAML sets `budget_usd: 1` (a bare, unquoted digit) on a virtual key. controlplane.parseYAMLScalar's boolean detection used strconv.ParseBool, which also accepts \"0\"/\"1\" as valid booleans -- so `budget_usd: 1` silently parsed as the Go bool `true`, failed the numeric field's type switch, and fell back to the zero value, which budget.Tracker's own convention reads as UNLIMITED budget. A one-digit, typo-free config value could silently disable spend enforcement entirely -- security-relevant (a silent fail-open on a spend cap), not just a display/correctness bug.",
+      "pre_fix_behavior": "budget_usd_parsed=0 (bare digit 1 misread as bool true, numeric type-switch falls through to the zero value) -- budget.Tracker.Allow treats the key as having NO cap at all",
+      "regression_guard": "gateway/internal/gateway/controlplane/config_test.go: TestLoadBudgetUSDBareDigitIsNotMisreadAsBool is the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 1 (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go YAML parser for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "budget_usd_parsed=1.00 (Decimal, enforced)",
+    "tier": "regression",
+    "tags": ["category:cost", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-cache-l3-fingerprint-pronoun-i-false-entity",
+    "revision": 1,
+    "task_spec": {
+      "output": "fingerprint={}",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-03] Cache L3-lite (lexical near-duplicate matching) -- spec -> plan -> implementation, scope narrowed from full semantic L3 mid-research (Bugs found)",
+      "description": "The query \"How do I reverse a list\" is fed to dataplane.Fingerprint's entity extraction (used by the L3-lite lexical near-duplicate cache's entity/freshness hard-gate). The fingerprinting heuristic skips the sentence-initial word on the assumption it's capitalized only because it's first, but the pronoun \"I\" is always capitalized regardless of position -- so it produced a non-empty fingerprint ({I}) for an entity-less, generic paraphrase, which would have made this query ineligible for an otherwise-safe L3 cache hit against a near-duplicate phrasing of the same generic question.",
+      "pre_fix_behavior": "fingerprint={I} (the pronoun \"I\" mistaken for a real capitalized entity)",
+      "regression_guard": "gateway/internal/gateway/dataplane/entities_test.go: TestFingerprintEmptyOnEntitylessParaphrase is the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 1 (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go entity-fingerprinting code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "fingerprint={}",
+    "tier": "regression",
+    "tags": ["category:cache", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-guardrail-blocked-request-misclassified-and-wrong-status",
+    "revision": 1,
+    "task_spec": {
+      "output": "http_status=400, outcome=OUTCOME_GUARDRAIL_BLOCKED",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-03] Guardrails v1 -- spec -> plan -> implementation, a real doc-vs-code security gap closed (Bugs found)",
+      "description": "A request trips a Block-tier guardrail detection (e.g. a pre-call PII/secret match), returning the dataplane's ErrGuardrailBlocked sentinel. Two related gaps existed in the same pass: (1) ErrGuardrailBlocked had no dedicated OUTCOME_GUARDRAIL_BLOCKED proto enum value, so outcomeFor's default case misclassified the content-policy rejection as OUTCOME_UPSTREAM_ERROR; (2) writeErrorResponse had no case for ErrGuardrailBlocked, so it fell through to the default HTTP 502 Bad Gateway instead of the correct 400 Bad Request for a client-side content-policy violation.",
+      "pre_fix_behavior": "http_status=502, outcome=OUTCOME_UPSTREAM_ERROR (a content-policy rejection misclassified as an upstream provider failure)",
+      "regression_guard": "gateway/internal/gateway/dataplane's guardrail integration tests (outcomeFor classification) and cmd/gateway/integration_test.go's guardrail-blocked-status assertion are the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 1 (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go outcome-classification or HTTP status-mapping code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "http_status=400, outcome=OUTCOME_GUARDRAIL_BLOCKED",
+    "tier": "regression",
+    "tags": ["category:guardrail", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-routing-admin-upsert-nil-tokenbucket-panic",
+    "revision": 1,
+    "task_spec": {
+      "output": "rate_limit_check(unregistered_key)=denied_no_panic",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-05] Tier 2, item 5: Admin API v1 slice (`internal/admin`) (Bugs found)",
+      "description": "The live Admin API's UpsertVirtualKey call adds a new virtual key to identity.Verifier before ratelimit.KeyLimiter has a bucket registered for that key ID -- a real divergence the Admin API's own live mutation made newly possible, since identity and ratelimit were previously always built from the same static config in lockstep. checkRateLimit's real call path (KeyLimiter.Allow(ctx, vk.ID)) dereferenced a nil *TokenBucket's mutex for an ID with no pre-built bucket: a panic in in-memory mode, or a silent always-allow/zero-rate-limit in Redis mode.",
+      "pre_fix_behavior": "rate_limit_check(unregistered_key)=panic_in_memory_or_silent_bypass_redis",
+      "regression_guard": "gateway/internal/ratelimit/limiter_test.go and gateway/internal/admin/admin_test.go (covering KeyLimiter.Register called BEFORE the Verifier swap in UpsertVirtualKey) are the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 1 (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go rate-limiter or Admin API code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "rate_limit_check(unregistered_key)=denied_no_panic",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-routing-admin-permodel-not-wired",
+    "revision": 1,
+    "task_spec": {
+      "output": "admin_upsert_per_model_override=enforced",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-07] Phase 3, item 3b: multi-dimensional rate-limit matching (per-model overrides) (Bugs found)",
+      "description": "A POST to the Admin API's virtual-key upsert endpoint includes a rate_limit.per_model override (e.g. a per-model capacity/refill for \"gpt-4\"). admin.go's upsertVirtualKeyHandler already had the PerModel field, its type, and an extensive doc comment describing the validation that supposedly happened -- but the handler's actual body never read, validated, or wired req.RateLimit.PerModel into rateLimitCfg.PerModel at all. The live HTTP surface for this feature was completely non-functional despite reading as fully implemented and documented.",
+      "pre_fix_behavior": "admin_upsert_per_model_override=silently_discarded (never read from the request body; the key's default rate limit applies to every model regardless of what was POSTed)",
+      "regression_guard": "gateway/internal/admin/admin_test.go's two dedicated tests (a POSTed override is enforced end-to-end; a non-positive value is rejected with 400) are the real, executing regression guard for this bug.",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 1 (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go Admin API HTTP handler for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "admin_upsert_per_model_override=enforced",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:dogfood"],
+    "flaky": false
+  },
+  {
+    "id": "dogfood-routing-fallback-chain-bypasses-health-probe",
+    "revision": 1,
+    "task_spec": {
+      "output": "fallback_chain_target_selection=health_aware_with_circuit_breaker",
+      "match": "exact",
+      "log_ref": "docs/agents/LOGS.md, [2026-09-07] Next-items backlog round 3, Phase 3: gateway retry-storm DoS mitigation (What was found by reading the code first / Bugs found)",
+      "description": "A deployment's explicitly-configured fallback_chains names a target deployment that active health-probing has already marked unhealthy. attemptFallbackChain resolved chain targets directly via p.deploymentsByName and walked them with zero inter-hop delay and zero consultation of router.IsHealthy -- meaning the already-shipped active health-probing protected the primary pick and the old single-fallback path, but NOT an explicitly-configured fallback_chains target: a real composition gap between two independently-shipped features, not caught until this later pass re-read attemptFallbackChain directly.",
+      "pre_fix_behavior": "fallback_chain_target_selection=ignores_router.IsHealthy (attempts a target already known unhealthy, zero delay, no failure-count circuit breaker)",
+      "regression_guard": "gateway/internal/gateway/dataplane/fallback_test.go is the real, executing regression guard for the health-aware circuit breaker (skips a known-unhealthy target, stops after 3 consecutive real failures, adds an equal-jitter inter-hop delay before the 2nd+ attempt).",
+      "corpus_note": "Hand-authored directly into the regression tier per docs/rfcs/2026-09-07-evals-regression-corpus-conventions.md's Phase 1 (mined from docs/agents/LOGS.md), not promoted from a real Run+Score via `evals promote` -- stated explicitly, not implied otherwise. This is a static, frozen task_spec.output compared against `reference` via exact string match; `evals run` does not execute Kelvran's real Go fallback-chain or health-probing code for this case shape -- it only checks a frozen string. This case exists for corpus-building and cross-harness visibility of an already-fixed, already-tested bug; it is not a replacement for the real regression guard named above."
+    },
+    "reference": "fallback_chain_target_selection=health_aware_with_circuit_breaker",
+    "tier": "regression",
+    "tags": ["category:routing", "provenance:dogfood"],
+    "flaky": false
+  }
+]
