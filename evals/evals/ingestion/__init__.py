@@ -14,4 +14,18 @@ s3.yaml) or GCS (docs/operations/vector-gatewayevents-gcs.yaml), and
 calls `decode.py` directly for the actual wire-format decoding — never
 duplicating that logic. Wired into the CLI as `evals ingest --source
 <s3://...|gs://...>` (see evals/evals/cli.py).
+
+`mapping.py` closes that same RFC's own "Unresolved Questions" entry
+("What happens downstream of `evals ingest`'s output file — feeding
+`evals promote` unchanged, or a distinct review path for live-sampled
+data"), per the project owner's decision recorded in DECISIONS.md: no
+separate review path. `gateway_decision_event_to_eval_case_and_run` maps
+one decoded event into the same `EvalCase`+`Run` shapes `results_store.py`
+and `evals promote` already read from every other source — real fields
+where the event genuinely carries them, honest empty/`None`/
+`"drift_sample"`-tier defaults where it doesn't (a `GatewayDecisionEvent`
+carries no prompt/completion content, so there is nothing to fabricate).
+Wired into `evals ingest` via its own optional `--suite`/`--results`
+flags, additive to `--out`'s existing raw decoded-event file, never a
+replacement for it.
 """
