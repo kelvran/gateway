@@ -92,6 +92,16 @@ type DeploymentConfig struct {
 	// a YAML list — see parseYAMLMini's own doc comment for why this
 	// file's parser has no list support at all.
 	FallbackChains map[string][]string
+	// DisableCacheControlAutoPopulate opts this deployment OUT of
+	// Kelvran's default auto-population of a CacheControl marker on an
+	// otherwise-unmarked system message, per
+	// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md. False
+	// (the default, and every deployment configured before this field
+	// existed) means auto-populate stays ON. Only the anthropic/bedrock
+	// adapters ever read the resulting value (via dataplane.Deployment
+	// of the same name) — a no-op, harmless either way, on every other
+	// provider.
+	DisableCacheControlAutoPopulate bool
 }
 
 // fallbackClassContentPolicy, fallbackClassContextWindowExceeded, and
@@ -462,6 +472,7 @@ func Load(path string) (*Config, error) {
 			}
 			dep.FallbackChains = chains
 		}
+		dep.DisableCacheControlAutoPopulate, _ = getBool(depMap, "disable_cache_control_auto_populate")
 		cfg.Deployments = append(cfg.Deployments, dep)
 	}
 	// Sort for deterministic ordering (map iteration order is random).
@@ -700,6 +711,19 @@ func getDecimal(m map[string]any, key string) (decimal.Decimal, bool) {
 	}
 	d, err := decimal.NewFromString(s)
 	return d, err == nil
+}
+
+// getBool reads key as a bool, per parseYAMLScalar's own explicit
+// true/false literal matching (never strconv.ParseBool — see that
+// function's doc comment for why). Mirrors getString/getFloat/getInt's
+// existing (value, ok) shape.
+func getBool(m map[string]any, key string) (bool, bool) {
+	v, ok := m[key]
+	if !ok {
+		return false, false
+	}
+	b, ok := v.(bool)
+	return b, ok
 }
 
 func getMap(m map[string]any, key string) (map[string]any, bool) {

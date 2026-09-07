@@ -121,6 +121,16 @@ type Deployment struct {
 	// router-based single-fallback behavior for it instead, preserving
 	// every config written before this feature existed exactly as-is.
 	FallbackChains map[string][]string
+	// DisableCacheControlAutoPopulate opts this deployment OUT of
+	// Kelvran's default auto-population of a CacheControl marker on an
+	// otherwise-unmarked system message, per
+	// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md. False
+	// (the default) means auto-populate stays ON. Threaded onto the
+	// canonical adapter.ChatRequest's own field of the same name at
+	// every ToProvider call site (callDeployment here;
+	// streamDeployment/streamDeploymentBedrock in streaming.go),
+	// mirroring how UpstreamModel is already threaded onto Model.
+	DisableCacheControlAutoPopulate bool
 }
 
 // UpstreamCaller performs the actual upstream HTTP call for one
@@ -935,6 +945,10 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	// versioned Anthropic model ID).
 	upstreamReq := req
 	upstreamReq.Model = dep.UpstreamModel
+	// Per-deployment CacheControl-auto-populate opt-out, per
+	// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md — a
+	// no-op field read only by the anthropic/bedrock adapters.
+	upstreamReq.DisableCacheControlAutoPopulate = dep.DisableCacheControlAutoPopulate
 
 	providerReq, err := a.ToProvider(upstreamReq)
 	if err != nil {

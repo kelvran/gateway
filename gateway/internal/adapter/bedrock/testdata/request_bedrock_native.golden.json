@@ -51,6 +51,11 @@
   "system": [
     {
       "text": "You are a helpful assistant that can check the weather."
+    },
+    {
+      "cachePoint": {
+        "type": "default"
+      }
     }
   ],
   "inferenceConfig": {

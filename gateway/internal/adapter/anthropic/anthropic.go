@@ -78,6 +78,37 @@ func cacheControlWire(cc *adapter.CacheControl) *CacheControlWire {
 	return &CacheControlWire{Type: "ephemeral", TTL: cc.TTL}
 }
 
+// defaultSystemCacheControl is the marker Kelvran auto-populates on an
+// otherwise-unmarked system message, per
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md. The zero
+// value — empty TTL — requests Anthropic's own default (5-minute) cache
+// lifetime, the cheapest tier: auto-populate is applied without the
+// caller ever having asked, so it must never silently commit them to the
+// more expensive 1-hour tier.
+var defaultSystemCacheControl = &adapter.CacheControl{}
+
+// effectiveSystemCacheControl resolves the CacheControl marker to apply
+// to a system message, per docs/rfcs/2026-09-07-gateway-cache-control-
+// auto-populate.md's precedence rule: an explicit, caller-supplied
+// marker (non-nil, even if every field on it is itself zero-valued)
+// always wins outright; only when the caller left it completely unset
+// does auto-populate ever apply, and only when the deployment hasn't
+// opted out (autoDisabled == false) — otherwise nil, the pre-existing,
+// caller-explicit-only behavior. Called from exactly one place in
+// ToProvider (the "system" case) — never from the general
+// user/assistant/tool path, matching that RFC's heuristic (a): auto-
+// populate never applies to arbitrary user/assistant content, content
+// parts, or tool definitions.
+func effectiveSystemCacheControl(explicit *adapter.CacheControl, autoDisabled bool) *adapter.CacheControl {
+	if explicit != nil {
+		return explicit
+	}
+	if autoDisabled {
+		return nil
+	}
+	return defaultSystemCacheControl
+}
+
 // Message is Anthropic's native message shape: role is only "user" or
 // "assistant" (never "system" — see the package doc), and content is a
 // list of typed blocks rather than a single string.
@@ -187,7 +218,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			systemBlocks = append(systemBlocks, SystemBlock{
 				Type:         "text",
 				Text:         m.Content,
-				CacheControl: cacheControlWire(m.CacheControl),
+				CacheControl: cacheControlWire(effectiveSystemCacheControl(m.CacheControl, req.DisableCacheControlAutoPopulate)),
 			})
 			continue
 		case "tool":

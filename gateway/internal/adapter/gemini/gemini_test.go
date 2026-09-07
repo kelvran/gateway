@@ -365,7 +365,13 @@ func TestToProviderUnsupportedContentPartTypeFailsLoudly(t *testing.T) {
 // CacheControl-reading code" (true by inspection) but a real, executed
 // proof that the marker has zero observable effect on this adapter's
 // actual output, across the whole feature's scope, not just its
-// original message/part-level part.
+// original message/part-level part. Also extended, per
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md, to set
+// DisableCacheControlAutoPopulate on withMarker too -- that field only
+// ever changes Anthropic's/Bedrock's own system-message handling;
+// gemini.go's ToProvider never reads it, so it must be an equally
+// zero-effect no-op here, proven in the same single test rather than a
+// new standalone one.
 func TestToProviderCacheControlIsUnaffected(t *testing.T) {
 	withoutMarker := adapter.ChatRequest{
 		Model: "gemini-2.5-flash",
@@ -410,6 +416,7 @@ func TestToProviderCacheControlIsUnaffected(t *testing.T) {
 				CacheControl:   &adapter.CacheControl{TTL: "1h", Key: "session-123"},
 			},
 		},
+		DisableCacheControlAutoPopulate: true,
 	}
 
 	a := New()

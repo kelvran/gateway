@@ -109,6 +109,32 @@ func appendSystemCachePointIfNeeded(blocks []SystemContentBlock, cc *adapter.Cac
 	return append(blocks, SystemContentBlock{CachePoint: &CachePoint{Type: "default"}})
 }
 
+// defaultSystemCacheControl is the marker Kelvran auto-populates on an
+// otherwise-unmarked system message, per
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md. Bedrock's
+// CachePoint has no TTL concept at all ({"type":"default"} is the only
+// shape AWS documents), so the zero-value adapter.CacheControl carries
+// nothing this adapter reads beyond its own non-nil-ness — the value
+// only ever flows into appendSystemCachePointIfNeeded's nil check.
+var defaultSystemCacheControl = &adapter.CacheControl{}
+
+// effectiveSystemCacheControl mirrors anthropic.go's identical-named
+// helper — a deliberately duplicated, package-private helper, not
+// shared code (adapters don't import each other, per
+// gateway/ARCHITECTURE.md's dependency rules). See that copy's doc
+// comment for the full precedence rule; called from exactly the same
+// single call site here — the "system" case in ToProvider's per-message
+// switch, never the general user/assistant/tool path.
+func effectiveSystemCacheControl(explicit *adapter.CacheControl, autoDisabled bool) *adapter.CacheControl {
+	if explicit != nil {
+		return explicit
+	}
+	if autoDisabled {
+		return nil
+	}
+	return defaultSystemCacheControl
+}
+
 // ByteSource is Converse's native inline-bytes source shape. Converse
 // also accepts an s3Location source (a specific s3:// URI plus an
 // optional bucketOwner) — not supported by this adapter, since the
@@ -292,7 +318,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		switch m.Role {
 		case "system":
 			systemBlocks = append(systemBlocks, SystemContentBlock{Text: m.Content})
-			systemBlocks = appendSystemCachePointIfNeeded(systemBlocks, m.CacheControl)
+			systemBlocks = appendSystemCachePointIfNeeded(systemBlocks, effectiveSystemCacheControl(m.CacheControl, req.DisableCacheControlAutoPopulate))
 			continue
 		case "tool":
 			blocks := []ContentBlock{
