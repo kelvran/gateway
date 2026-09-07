@@ -403,6 +403,66 @@ def _format_span_report(spans: list[Span], confidence: float) -> str:
     )
 
 
+def _filter_scores_by_tier(scores: list[Score], tier: str | None) -> list[Score]:
+    """Filter `scores` down to only those whose denormalized `Score.tier`
+    equals `tier` exactly. A no-op (returns `scores` unchanged, by
+    identity) when `tier` is `None` — `report_cmd`'s pre-existing,
+    tier-agnostic behavior, reproduced exactly when `--tier` is omitted.
+    See docs/rfcs/2026-09-07-evals-cigate-refinements.md.
+    """
+    if tier is None:
+        return scores
+    return [s for s in scores if s.tier == tier]
+
+
+def _gate_eligible(scores: list[Score]) -> list[Score]:
+    """Drop every `flaky=True` Score.
+
+    Per docs/rfcs/2026-09-07-evals-cigate-refinements.md: a flaky-tagged
+    case still runs and is still printed in the report, but never counts
+    toward a `--fail-under` or `--category-fail-under` gate computation
+    — uniformly, whether the gate is the aggregate one or a category one.
+    """
+    return [s for s in scores if not s.flaky]
+
+
+def _parse_category_fail_under(raw: tuple[str, ...]) -> list[tuple[str, float]]:
+    """Parse repeatable `--category-fail-under TAG:THRESHOLD` strings into
+    `(tag, threshold)` pairs, in the order given.
+
+    `str.rpartition(":")` is used deliberately — the threshold is always
+    the rightmost `:`-delimited segment, so a tag itself may contain
+    colons. Raises `click.UsageError` (never silently drops or guesses)
+    on a missing colon, an empty tag, a non-float threshold, or the same
+    tag given more than once — mirroring `_parse_judge_axes`'s own
+    "explicit, never silent" precedent for malformed CLI input.
+    """
+    parsed: list[tuple[str, float]] = []
+    seen_tags: set[str] = set()
+    for entry in raw:
+        tag, sep, raw_threshold = entry.rpartition(":")
+        if not sep or not tag:
+            raise click.UsageError(
+                f"--category-fail-under {entry!r} must be in TAG:THRESHOLD form."
+            )
+        try:
+            threshold = float(raw_threshold)
+        except ValueError as e:
+            raise click.UsageError(
+                f"--category-fail-under {entry!r}: {raw_threshold!r} is not a "
+                "valid float."
+            ) from e
+        if tag in seen_tags:
+            raise click.UsageError(
+                f"--category-fail-under given more than once for tag {tag!r} "
+                "-- which threshold would win is never obvious, so this is "
+                "refused rather than silently taking the last one."
+            )
+        seen_tags.add(tag)
+        parsed.append((tag, threshold))
+    return parsed
+
+
 @click.group()
 def main() -> None:
     """Kelvran evals CLI."""
@@ -505,6 +565,9 @@ def run_cmd(
                         score_cache_key=outcome.score_cache_key,
                         from_cache=outcome.from_cache,
                         rubric_axis=outcome.axis,
+                        tier=case.tier,
+                        tags=list(case.tags),
+                        flaky=case.flaky,
                     )
                 )
                 if outcome.axis is not None:
@@ -524,6 +587,9 @@ def run_cmd(
                     # makes an external call. See Score.cost_usd's own
                     # docstring for why this is Decimal("0"), not None.
                     cost_usd=Decimal("0"),
+                    tier=case.tier,
+                    tags=list(case.tags),
+                    flaky=case.flaky,
                 )
             )
         if passed:
@@ -634,6 +700,12 @@ def promote_cmd(
             f"promoted-from:{original_case.id}@{original_case.revision}",
             f"promoted-from-run:{run.id}",
         ],
+        # Carried forward verbatim, not re-decided here -- see
+        # docs/rfcs/2026-09-07-evals-cigate-refinements.md: no new
+        # --flaky flag on this command; a curator who wants to override
+        # it can hand-edit the resulting (small, human-reviewable)
+        # suite file directly.
+        flaky=original_case.flaky,
     )
     _append_case_to_suite(new_case, output_path)
     click.echo(
@@ -986,6 +1058,9 @@ def rollout_cmd(
                         score_cache_key=outcome.score_cache_key,
                         from_cache=outcome.from_cache,
                         rubric_axis=outcome.axis,
+                        tier=case.tier,
+                        tags=list(case.tags),
+                        flaky=case.flaky,
                     )
                 )
                 if outcome.axis is not None:
@@ -1002,6 +1077,9 @@ def rollout_cmd(
                     scorer_type="deterministic",
                     value=passed,
                     cost_usd=Decimal("0"),
+                    tier=case.tier,
+                    tags=list(case.tags),
+                    flaky=case.flaky,
                 )
             )
         if passed:
@@ -1091,9 +1169,44 @@ def rollout_cmd(
         "names as the aspiration (see docs/rfcs/2026-09-05-evals-report-"
         "fail-under.md). In --scores mode, every scorer_type group is "
         "checked independently — one group failing fails the whole "
-        "command, never averaged/blended across groups. Off by default: "
-        "omitting this flag reproduces today's exact always-exit-0 "
-        "behavior."
+        "command, never averaged/blended across groups. Excludes any "
+        "flaky=True Score from the computation (never from the printed "
+        "line) — see --category-fail-under and docs/rfcs/2026-09-07-"
+        "evals-cigate-refinements.md. Off by default: omitting this flag "
+        "reproduces today's exact always-exit-0 behavior."
+    ),
+)
+@click.option(
+    "--tier",
+    default=None,
+    type=click.Choice(["golden", "regression", "drift_sample"]),
+    help=(
+        "Only meaningful together with --scores: filter to Scores whose "
+        "denormalized EvalCase.tier matches exactly, before any grouping "
+        "or gating. Applied once, up front — every printed line and "
+        "every gate check (--fail-under and --category-fail-under) then "
+        "operates on this narrowed set, never the full file. Omit for "
+        "today's exact untiered behavior. See docs/rfcs/2026-09-07-"
+        "evals-cigate-refinements.md."
+    ),
+)
+@click.option(
+    "--category-fail-under",
+    "category_fail_under_raw",
+    multiple=True,
+    metavar="TAG:THRESHOLD",
+    help=(
+        "Repeatable. An independent, separately-enforced --fail-under-"
+        "style gate scoped to only the Scores whose denormalized "
+        "EvalCase.tags contains TAG (a plain literal string match — "
+        "'category:safety' is a recommended naming convention, not an "
+        "enforced one). Checked in ADDITION to --fail-under, never "
+        "instead of it, and never required to co-occur with it. Applies "
+        "within whatever --tier filter is also active. Computed "
+        "independently per scorer_type, exactly like the aggregate gate "
+        "— never blended. A TAG with zero matches is a hard error, not a "
+        "silent no-op. Only meaningful together with --scores. See "
+        "docs/rfcs/2026-09-07-evals-cigate-refinements.md."
     ),
 )
 def report_cmd(
@@ -1103,6 +1216,8 @@ def report_cmd(
     traces_path: Path | None,
     confidence: float,
     fail_under: float | None,
+    tier: str | None,
+    category_fail_under_raw: tuple[str, ...],
 ) -> None:
     """Print a pass rate together with its Wilson CI.
 
@@ -1112,6 +1227,10 @@ def report_cmd(
     number, since they are different measurement instruments), or a
     persisted --traces JSONL file (an aggregate OK-rate line, never
     grouped — no scorer_type-like partition exists on Span).
+
+    --tier and --category-fail-under are --scores-only refinements (per
+    docs/rfcs/2026-09-07-evals-cigate-refinements.md): neither --traces
+    nor raw counts carry the case-classification data either needs.
     """
     counts_partial = (successes is None) != (total is None)
     if counts_partial:
@@ -1128,11 +1247,22 @@ def report_cmd(
             "Provide one of --scores, --traces, or both --successes and --total."
         )
 
-    # (label, successes, total) triples checked against --fail-under
+    category_gates = _parse_category_fail_under(category_fail_under_raw)
+    if tier is not None and scores_path is None:
+        raise click.UsageError("--tier is only meaningful together with --scores.")
+    if category_gates and scores_path is None:
+        raise click.UsageError(
+            "--category-fail-under is only meaningful together with --scores."
+        )
+
+    # (label, successes, total) triples checked against --fail-under;
+    # (label, successes, total, threshold) quadruples checked against
+    # their own --category-fail-under threshold. Both are evaluated only
     # after everything is printed — never short-circuited mid-report, so
     # an operator always sees every real number before a gate failure,
     # per docs/rfcs/2026-09-05-evals-report-fail-under.md.
     gate_checks: list[tuple[str, int, int]] = []
+    category_gate_checks: list[tuple[str, int, int, float]] = []
 
     if traces_path is not None:
         spans = load_spans(traces_path)
@@ -1145,29 +1275,97 @@ def report_cmd(
         scores = load_scores(scores_path)
         if not scores:
             raise click.ClickException(f"{scores_path}: no Scores found")
+        scores = _filter_scores_by_tier(scores, tier)
+        if tier is not None and not scores:
+            raise click.ClickException(
+                f"{scores_path}: no Scores found for tier={tier!r}"
+            )
+
+        matched_category_tags: set[str] = set()
         for scorer_type in sorted({s.scorer_type for s in scores}):
             group = [s for s in scores if s.scorer_type == scorer_type]
             group_successes = sum(1 for s in group if s.value)
+            eligible = _gate_eligible(group)
+            excluded = len(group) - len(eligible)
+            note = f" ({excluded} flaky excluded from gate)" if excluded else ""
             click.echo(
                 f"{scorer_type}: "
                 + format_report(group_successes, len(group), confidence=confidence)
                 + f" {_format_group_cost(group)}"
+                + note
             )
-            gate_checks.append((scorer_type, group_successes, len(group)))
+            if eligible:
+                eligible_successes = sum(1 for s in eligible if s.value)
+                gate_checks.append((scorer_type, eligible_successes, len(eligible)))
+
+            for cat_tag, cat_threshold in category_gates:
+                tagged = [s for s in group if cat_tag in s.tags]
+                if not tagged:
+                    continue
+                matched_category_tags.add(cat_tag)
+                # No extra "category:" prefix here -- cat_tag already IS
+                # the literal EvalCase.tags entry being matched (e.g.
+                # "category:safety" per this RFC's recommended, but not
+                # enforced, naming convention); prefixing again would
+                # print a confusing "[category:category:safety]".
+                tagged_label = f"{scorer_type} [{cat_tag}]"
+                tagged_successes = sum(1 for s in tagged if s.value)
+                tagged_eligible = _gate_eligible(tagged)
+                tagged_excluded = len(tagged) - len(tagged_eligible)
+                tagged_note = (
+                    f" ({tagged_excluded} flaky excluded from gate)"
+                    if tagged_excluded
+                    else ""
+                )
+                click.echo(
+                    f"{tagged_label}: "
+                    + format_report(
+                        tagged_successes, len(tagged), confidence=confidence
+                    )
+                    + tagged_note
+                )
+                if tagged_eligible:
+                    tagged_eligible_successes = sum(
+                        1 for s in tagged_eligible if s.value
+                    )
+                    category_gate_checks.append(
+                        (
+                            tagged_label,
+                            tagged_eligible_successes,
+                            len(tagged_eligible),
+                            cat_threshold,
+                        )
+                    )
+
+        unmatched = [t for t, _ in category_gates if t not in matched_category_tags]
+        if unmatched:
+            tier_note = f" (within --tier {tier!r})" if tier is not None else ""
+            raise click.ClickException(
+                "--category-fail-under given for tag(s) with no matching "
+                f"Score: {', '.join(sorted(unmatched))}{tier_note}"
+            )
     else:
         click.echo(format_report(successes, total, confidence=confidence))
         gate_checks.append(("pass_rate", successes, total))
 
-    if fail_under is not None:
+    if fail_under is not None or category_gate_checks:
         failures = []
-        for label, group_successes, group_total in gate_checks:
-            lower, _ = wilson_interval(
-                group_successes, group_total, confidence=confidence
-            )
-            if lower < fail_under:
+        if fail_under is not None:
+            for label, group_successes, group_total in gate_checks:
+                lower, _ = wilson_interval(
+                    group_successes, group_total, confidence=confidence
+                )
+                if lower < fail_under:
+                    failures.append(
+                        f"{label}: Wilson lower bound {lower:.4f} "
+                        f"< --fail-under {fail_under:.4f}"
+                    )
+        for label, cat_successes, cat_total, cat_threshold in category_gate_checks:
+            lower, _ = wilson_interval(cat_successes, cat_total, confidence=confidence)
+            if lower < cat_threshold:
                 failures.append(
                     f"{label}: Wilson lower bound {lower:.4f} "
-                    f"< --fail-under {fail_under:.4f}"
+                    f"< --category-fail-under {cat_threshold:.4f}"
                 )
         if failures:
             raise click.ClickException("CI/CD gate failed:\n" + "\n".join(failures))

@@ -44,6 +44,31 @@ def test_invalid_tier_rejected():
         EvalCase(id="c", revision=1, task_spec={}, tier="not-a-real-tier")
 
 
+def test_flaky_defaults_to_false():
+    case = EvalCase(id="c", revision=1, task_spec={}, tier="regression")
+    assert case.flaky is False
+
+
+def test_flaky_can_be_set_true():
+    case = _make_case(flaky=True)
+    assert case.flaky is True
+
+
+def test_old_shape_eval_case_json_line_still_validates_with_flaky_defaulted():
+    # The load-bearing backward-compat proof for docs/rfcs/2026-09-07-
+    # evals-cigate-refinements.md: an EvalCase JSON blob written before
+    # `flaky` existed must still validate cleanly, resolving to False —
+    # never a validation error, never a silently-wrong value. Mirrors
+    # test_old_shape_run_json_line_still_validates_with_new_fields_
+    # defaulted's own precedent for Run.
+    old_shape_json = (
+        '{"id": "c", "revision": 1, "task_spec": {}, "reference": null, '
+        '"tier": "golden", "tags": []}'
+    )
+    case = EvalCase.model_validate_json(old_shape_json)
+    assert case.flaky is False
+
+
 def test_instances_are_frozen():
     case = _make_case()
     with pytest.raises(ValidationError):
@@ -255,6 +280,43 @@ def test_score_instances_are_frozen():
     score = _make_score()
     with pytest.raises(ValidationError):
         score.value = False  # type: ignore[misc]
+
+
+def test_score_tier_tags_flaky_default_to_none_empty_false():
+    score = _make_score()
+    assert score.tier is None
+    assert score.tags == []
+    assert score.flaky is False
+
+
+def test_score_can_carry_denormalized_tier_tags_flaky():
+    score = _make_score(tier="regression", tags=["category:safety"], flaky=True)
+    assert score.tier == "regression"
+    assert score.tags == ["category:safety"]
+    assert score.flaky is True
+
+
+def test_score_invalid_tier_rejected():
+    with pytest.raises(ValidationError):
+        _make_score(tier="not-a-real-tier")
+
+
+def test_old_shape_score_json_line_still_validates_with_new_fields_defaulted():
+    # The load-bearing backward-compat proof for docs/rfcs/2026-09-07-
+    # evals-cigate-refinements.md: a Score JSONL line written before
+    # tier/tags/flaky existed must still validate cleanly, with every new
+    # field resolving to its declared default.
+    old_shape_json = (
+        '{"eval_case_id": "case-1", "eval_case_revision": 1, "run_id": null, '
+        '"scorer_id": "exact_match", "scorer_type": "deterministic", '
+        '"value": true, "rationale": null, "rubric_axis": null, '
+        '"bias_mitigations_applied": [], "cost_usd": null, '
+        '"score_cache_key": null, "from_cache": false}'
+    )
+    score = Score.model_validate_json(old_shape_json)
+    assert score.tier is None
+    assert score.tags == []
+    assert score.flaky is False
 
 
 def _make_span(**overrides) -> Span:
