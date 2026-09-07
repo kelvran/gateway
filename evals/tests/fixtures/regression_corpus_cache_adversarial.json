@@ -1,0 +1,434 @@
+[
+  {
+    "id": "adversarial-cache-ckan-delimiter-type-ambiguity-l1-key",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "cache_key_delimiter_injection_and_type_ambiguity",
+      "cached_query": {
+        "model": "gpt-4",
+        "messages": [
+          {
+            "role": "user",
+            "content": "REAL"
+          }
+        ]
+      },
+      "new_query": {
+        "model": "gpt-4\\u0000messages=[{\"role\":\"user\",\"content\":\"REAL\"}]",
+        "messages": [
+          {
+            "role": "user",
+            "content": ""
+          }
+        ],
+        "note": "model contains a literal NUL byte (0x00), reachable in practice because req.Model is attacker-controlled free text and isModelAllowed (dataplane.go) returns true unconditionally whenever a virtual key's AllowedModels set is empty -- the common/default case -- so no validation runs before this value reaches cache.Key."
+      },
+      "output": "no_collision:json_marshal_escapes_null_separator_in_messages_field",
+      "match": "exact",
+      "rationale": "ckan-mcp-server's canonicalizeParams (GHSA-78x9-fhhx-v2g6/CVE-2026-73846, CVSS 6.5) joins key=value pairs with an unescaped '&' delimiter, so a value containing the delimiter can make two logically different parameter sets hash identically. gateway/internal/cache/key.go's Key() has the analogous shape: it joins tenant/model/messages/temperature/max_tokens/guardrail_policy with a raw 0x00 byte via fmt.Fprintf(h, ...%s...), never escaping the fields it interpolates. Verified directly against the REAL Key()+serializeMessages pipeline (a throwaway Go test run during this corpus-authoring pass, not a permanent addition): constructing model='gpt-4' + NUL + 'messages=' + json.Marshal(cachedQuery.messages) attempts the exact ckan-mcp-style boundary-shift recipe, and the resulting L1 key does NOT collide with the honest (model='gpt-4', messages=cachedQuery.messages) key -- because dataplane.serializeMessages always runs req.Messages through encoding/json.Marshal before calling Key(), and Go's json.Marshal escapes every control byte (including 0x00) as a 6-character \\u0000 sequence in its OUTPUT, so the 'messages' argument Key() actually receives can never itself contain a raw NUL byte -- the one byte value the attacker would need on BOTH sides of the field boundary to re-parse it. Sanity-checked by breaking: re-running the identical boundary-shift recipe with a raw (non-json.Marshal'd) messages string DOES collide, confirming the defense is real and load-bearing, not a vacuous non-test. Important nuance, stated honestly rather than overclaiming: Key() itself has no structural protection against this -- the safety demonstrated here is a property of dataplane.go's calling discipline (always pre-serializing messages via json.Marshal before calling Key()), not of Key() in isolation. A future call site that ever passes a raw, non-json.Marshal'd string as Key()'s serializedMessages argument would reopen exactly this collision shape. Scenario 2 (object/string type-ambiguity) is covered by the same underlying reasoning and not given a separate case: req.Messages is a strongly-typed []adapter.Message Go slice, and json.Marshal of a typed struct slice has no string-vs-object encoding ambiguity the way ckan-mcp-server's schema-less key=value params do."
+    },
+    "reference": "no_collision:json_marshal_escapes_null_separator_in_messages_field",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-litellm-truncated-tenant-hash",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "truncated_identifier_cache_key_collision",
+      "cached_query": {
+        "tenant_id": "team-alpha-full-virtual-key-id-0001"
+      },
+      "new_query": {
+        "tenant_id": "team-alpha-full-virtual-key-id-9999-crafted-to-share-a-prefix"
+      },
+      "output": "full_tenant_id_and_full_sha256_digest_no_truncation",
+      "match": "exact",
+      "rationale": "LiteLLM's OIDC userinfo cache keyed on token[:20] (GHSA-jjhc-v7c2-5hh6/CVE-2026-35030, CVSS4 9.4 Critical): two different tokens sharing the same first 20 characters collide onto the same cache entry, letting an attacker inherit a victim's cached identity -- a real authentication bypass mediated entirely through the cache layer. Verified directly by reading gateway/internal/cache/key.go end to end (lines 44-92): Key() and NormalizedKey() interpolate tenantID via a plain '%s' format verb with no substring/slice operation applied anywhere in either function, and the output is hex.EncodeToString(h.Sum(nil)) over a full, un-truncated crypto/sha256 digest (32 bytes / 64 hex characters). There is no code path in this file, or in any caller (gateway/internal/gateway/dataplane/dataplane.go's HandleChatCompletion, lines 875-877), that ever takes a prefix or slice of tenantID, model, messages, or the resulting digest before using it as a cache key or lookup index -- the exact token[:20]-style shortcut that caused LiteLLM's CVE does not exist anywhere in this codebase's key-derivation logic. Existing regression coverage for the tenant-isolation half of this claim: gateway/internal/cache/key_test.go's TestKeyIsolatesTenantsOnOtherwiseIdenticalRequests and TestNormalizedKeyIsolatesTenantsOnOtherwiseIdenticalRequests already assert two different tenant IDs on an otherwise-identical request never produce the same key -- this case adds the truncation-specific framing those tests don't name explicitly."
+    },
+    "reference": "full_tenant_id_and_full_sha256_digest_no_truncation",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-gptcache-prefix-only-shingle-hash",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "prefix_only_content_hash_collision",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA this is the real, distinguishing tail of message one"
+          }
+        ]
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA this is a completely different, distinguishing tail for message two"
+          }
+        ]
+      },
+      "output": "full_message_content_hashed_and_shingled_no_prefix_cap",
+      "match": "exact",
+      "rationale": "GPTCache derived file/image cache keys from BufferedReader.peek(), which returns only the currently-buffered prefix (commonly ~8192 bytes) rather than the full content (GHSA-xfqj-4cr9-9gr5/CVE-2026-10812): two inputs sharing an identical leading ~8KB but differing afterward collide onto the same cache key. Verified directly by reading the two functions in this codebase that turn message content into a hash/signature: dataplane.serializeMessages (gateway/internal/gateway/dataplane/dataplane.go) calls json.Marshal(messages) with no length limit, and the resulting string is passed whole to cache.Key(), which writes it into a crypto/sha256 hash.Hash via fmt.Fprintf's %s verb -- sha256.Write processes every byte given to it, with no peek/prefix-only read semantics anywhere in the call chain. Separately, cache.Shingles (gateway/internal/cache/lexical.go) calls strings.Fields on the ENTIRE input string and builds a shingle for every k-word window across the whole token list, with no cap on input length or shingle count. Two long messages sharing an identical 8192-byte leading prefix but diverging afterward therefore produce different serialized-message strings, different SHA256 L1/L2 keys, and different (non-identical) shingle sets and MinHash signatures -- the GPTCache failure mode (truncated-input hashing) has no analog anywhere in this codebase's key or signature derivation."
+    },
+    "reference": "full_message_content_hashed_and_shingled_no_prefix_cap",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-openwebui-missing-tenant-discriminator",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "missing_tenant_discriminator_on_a_cache_write_path",
+      "cached_query": {
+        "tenant": "tenant-A",
+        "path": "L1 Put via writeCache"
+      },
+      "new_query": {
+        "tenant": "tenant-B",
+        "path": "L1 Get via checkCache -- same request shape, different tenant"
+      },
+      "output": "tenant_id_present_on_every_l1_l2_l3_read_and_write_path",
+      "match": "exact",
+      "rationale": "Open WebUI's Redis cache keys for tool_servers/terminal_servers omitted the REDIS_KEY_PREFIX namespacing used by nearly every other key in the codebase (GHSA-3x8w-4f7p-xxc2/CVE-2026-44552, CVSS 8.7): two specific keys were accidentally left unprefixed while the rest of the system correctly namespaced everything, enabling cross-instance poisoning. Verified directly by reading every cache read/write call site in gateway/internal/gateway/dataplane/dataplane.go: checkCache (L1 Get + L2 Get, lines 599-618) receives tenantID as its first parameter and it is baked into l1Key/l2Key by cache.Key/cache.NormalizedKey before checkCache is ever called; writeCache (line 653-657) takes tenantID explicitly and passes it to cacheL3.Put in addition to the already-tenant-scoped l1Key/l2Key; checkLexicalCache (L3 Search, line 741) takes vk.ID as an explicit tenantID argument, not folded into any shared key; runMissPath's singleflight coalescing (line 954-955) is keyed on l1Key, which already bakes in tenantID, so concurrent requests from different tenants are never coalesced together. No cache read or write call site in this file omits the tenant dimension -- unlike Open WebUI's two specific unprefixed keys sitting alongside an otherwise-consistent scheme. Existing regression coverage: key_test.go's TestKeyIsolatesTenantsOnOtherwiseIdenticalRequests/TestNormalizedKeyIsolatesTenantsOnOtherwiseIdenticalRequests cover L1/L2; L3's own structural per-tenant partitioning (gateway/internal/cache/inprocess/lexical.go's tenantBucket map, never a shared list filtered post-hoc) has no dedicated cross-tenant-leakage test today -- a real, minor coverage gap worth flagging even though the behavior itself is verified correct by direct code reading (Search/Put index into c.tenants[tenantID], a distinct map entry per tenant)."
+    },
+    "reference": "tenant_id_present_on_every_l1_l2_l3_read_and_write_path",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-negation-polarity-flip-drug-administration",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "negation_or_polarity_flip_near_duplicate",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a clinical decision support assistant helping physicians review trial protocols for an ongoing multi-site oncology study. You provide neutral summaries of protocol language and never make the final clinical call yourself."
+          },
+          {
+            "role": "user",
+            "content": "The patient presented this morning with elevated liver enzymes and a mild fever after their second infusion cycle, and the on-call nurse flagged the chart for a pharmacist review before the afternoon rounds began. Given the protocol's adverse event thresholds and the patient's overall stable vitals otherwise, and taking into account the notes from the previous visit two weeks ago as well as the baseline labs drawn at enrollment, should I withhold the study drug for this patient at the next scheduled visit, or is this within the acceptable tolerance window described in section 4 of the protocol amendment that the site coordinator circulated last month?"
+          }
+        ]
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a clinical decision support assistant helping physicians review trial protocols for an ongoing multi-site oncology study. You provide neutral summaries of protocol language and never make the final clinical call yourself."
+          },
+          {
+            "role": "user",
+            "content": "The patient presented this morning with elevated liver enzymes and a mild fever after their second infusion cycle, and the on-call nurse flagged the chart for a pharmacist review before the afternoon rounds began. Given the protocol's adverse event thresholds and the patient's overall stable vitals otherwise, and taking into account the notes from the previous visit two weeks ago as well as the baseline labs drawn at enrollment, should I administer the study drug for this patient at the next scheduled visit, or is this within the acceptable tolerance window described in section 4 of the protocol amendment that the site coordinator circulated last month?"
+          }
+        ]
+      },
+      "output": "l3_hit:jaccard_similarity_0.953125_fingerprint_equal_freshness_and_model_gates_passed",
+      "match": "exact",
+      "rationale": "REAL, VERIFIED GAP -- not fixed in this pass (corpus authoring only; a fix is separate future work). A 2026 audit of cosine-similarity threshold gates (arXiv:2608.10216) found that flipping 'withhold the study drug' to 'administer the study drug' scores 0.9608 cosine similarity against the original -- exceeding every deployed semantic-cache threshold the paper surveyed (0.30-0.95) -- corroborated by Blagec et al. (2019)'s 0.93-0.999 range for negation/antonym pairs across every sentence-embedding model tested. Kelvran's L3-lite does not use embeddings (Jaccard/MinHash over 3-word shingles, per docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md), so the exact cosine number does not transfer directly -- it was independently re-measured against the REAL current code rather than assumed. Verified with a throwaway Go test (not a permanent addition) exercising the actual dataplane.normalizeMessages -> cache.Shingles(k=3) -> cache.MinHashSignature(n=128) -> cache.JaccardEstimate pipeline on the message pair above (identical except 'withhold'->'administer'): JaccardEstimate = 0.953125 (122/128), clearing l3MinSimilarity's 0.9 floor (dataplane.go's freshnessRiskModel). dataplane.Fingerprint (entities.go) extracts only numbers, dates, and capitalized multi-word sequences (excluding the sentence-initial word) -- 'withhold'/'administer' are neither, so both messages produce the IDENTICAL fingerprint ({You, 4, Given}), and fingerprintsEqual (dataplane.go line 789) returns true. freshnessRiskModel also passes for a fresh, same-model entry. All three of checkLexicalCache's gates (similarity floor, entity/date hard gate, freshness/model match) that would need to reject this candidate instead pass it -- checkLexicalCache would return hit=true and serve the WRONG (meaning-reversed) cached answer. This is the single most directly actionable finding from the research pass: the existing entity/number/date hard gate (AGENTS.md's own 'never weaken this' rule targets exactly this gate) structurally cannot catch a negation/polarity flip, because verbs and polarity words are not part of what Fingerprint extracts by design. A shorter version of the same message pair (single-sentence, ~9 words) scores only 0.328 similarity and correctly misses -- the vulnerability specifically manifests as query length grows, since a fixed-size single-word edit becomes a smaller fraction of the total shingle set. No existing test in this codebase exercises a negation/polarity-flip pair; entities_test.go and lexical_cache_test.go's entity-mismatch tests all vary a NUMBER (an entity Fingerprint does capture), never a negation (which it does not)."
+    },
+    "reference": "l3_miss:negation_or_polarity_flip_must_never_reuse_cached_answer",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-referent-shift-named-entity",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "referent_shift_near_duplicate_named_entity",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a clinical decision support assistant helping physicians review trial protocols for an ongoing multi-site oncology study. You provide neutral summaries of protocol language and never make the final clinical call yourself."
+          },
+          {
+            "role": "user",
+            "content": "We spent the last several messages reviewing the pediatric dosing guidance, contraindication list, and interaction profile that the sponsor circulated for Drug X ahead of next week's site initiation visit."
+          },
+          {
+            "role": "user",
+            "content": "Given everything we just discussed, is it safe for adults?"
+          }
+        ]
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a clinical decision support assistant helping physicians review trial protocols for an ongoing multi-site oncology study. You provide neutral summaries of protocol language and never make the final clinical call yourself."
+          },
+          {
+            "role": "user",
+            "content": "We spent the last several messages reviewing the pediatric dosing guidance, contraindication list, and interaction profile that the sponsor circulated for Drug Y ahead of next week's site initiation visit."
+          },
+          {
+            "role": "user",
+            "content": "Given everything we just discussed, is it safe for adults?"
+          }
+        ]
+      },
+      "output": "l3_miss:fingerprint_mismatch_drug_x_vs_drug_y_at_jaccard_similarity_0.9609375",
+      "match": "exact",
+      "rationale": "GroundedCache (arXiv:2605.27494) names 'referent shift' as a distinct cache-correctness failure mode from adversarial collision and document drift: a cached answer's referent (which specific drug/patient/account a pronoun resolves to) silently changing between the cached query and a new near-duplicate query. Verified directly against the real pipeline with a throwaway Go test: the message pair above differs ONLY in 'Drug X' -> 'Drug Y' (the entity the later pronoun 'it' resolves to), yet still scores 0.9609375 Jaccard similarity (123/128) -- well above the 0.9 l3MinSimilarity floor. Unlike the negation-flip case above, this candidate is nonetheless correctly rejected: dataplane.Fingerprint's capitalizedSequences extractor (entities.go) captures 'Drug X' and 'Drug Y' as distinct multi-word capitalized entities (fingerprints {You, Drug X} vs {You, Drug Y}), so fingerprintsEqual returns false and checkLexicalCache continues past this candidate without a hit, even at a similarity high enough that the entity gate is the ONLY thing standing between this query and an incorrect cache hit -- not a low-similarity coincidence. This demonstrates the hard gate genuinely works for referent shifts when the shifted referent is a capitalized/named entity, in direct contrast to case adversarial-cache-referent-shift-unnamed-entity, where the same failure shape succeeds because the referent is a common noun the extractor was never designed to capture. Existing related coverage: entities_test.go's TestFingerprintDiffersOnDifferentCities and lexical_cache_test.go's TestHandleChatCompletionEntityMismatchIsNotAnL3Hit establish the same mechanism for a dollar-amount entity change; this case is the first to exercise it specifically for a referent-shift framing at a similarity above 0.96."
+    },
+    "reference": "l3_miss:fingerprint_mismatch_drug_x_vs_drug_y_at_jaccard_similarity_0.9609375",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-referent-shift-unnamed-entity",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "referent_shift_near_duplicate_unnamed_entity",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a clinical decision support assistant helping physicians review trial protocols for an ongoing multi-site oncology study. You provide neutral summaries of protocol language and never make the final clinical call yourself."
+          },
+          {
+            "role": "user",
+            "content": "We spent the last several messages reviewing the pediatric dosing guidance, contraindication list, and interaction profile that the sponsor circulated for the antibiotic ahead of next week's site initiation visit."
+          },
+          {
+            "role": "user",
+            "content": "Given everything we just discussed, is it safe for adults?"
+          }
+        ]
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a clinical decision support assistant helping physicians review trial protocols for an ongoing multi-site oncology study. You provide neutral summaries of protocol language and never make the final clinical call yourself."
+          },
+          {
+            "role": "user",
+            "content": "We spent the last several messages reviewing the pediatric dosing guidance, contraindication list, and interaction profile that the sponsor circulated for the antiviral ahead of next week's site initiation visit."
+          },
+          {
+            "role": "user",
+            "content": "Given everything we just discussed, is it safe for adults?"
+          }
+        ]
+      },
+      "output": "l3_hit:jaccard_similarity_0.9453125_fingerprint_equal_antibiotic_vs_antiviral_uncaptured",
+      "match": "exact",
+      "rationale": "REAL, VERIFIED GAP -- not fixed in this pass (corpus authoring only). This is a distinct, narrower sub-case of GroundedCache's 'referent shift' failure mode (arXiv:2605.27494) than adversarial-cache-referent-shift-named-entity: the SAME message pair shape, but the shifted referent ('the antibiotic' -> 'the antiviral') is a common noun, not a capitalized proper noun. Verified directly with a throwaway Go test against the real pipeline: JaccardEstimate = 0.9453125 (121/128), clearing the 0.9 floor. dataplane.Fingerprint extracts only numbers, dates, and capitalized multi-word sequences -- 'antibiotic'/'antiviral' are neither (lowercase common nouns), so both messages produce the IDENTICAL fingerprint ({You}), fingerprintsEqual returns true, and freshnessRiskModel passes for a fresh, same-model entry. checkLexicalCache would return hit=true, serving a cached answer about the wrong drug class entirely. This confirms the entity/date hard gate's real coverage boundary precisely: it defends against referent shifts ONLY when the shifted referent happens to be capitalized (a proper noun like 'Drug X') or numeric/date-shaped -- a referent expressed as an ordinary noun phrase gets zero protection from this gate, and the only other gate in the pipeline (the 0.9 Jaccard floor) does not discriminate on MEANING at all, only surface lexical overlap. No existing test in this codebase exercises a referent shift where the referent is not a capitalized/numeric entity."
+    },
+    "reference": "l3_miss:referent_shift_must_never_reuse_cached_answer",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-entity-gate-number-change-regression",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "adversarial_suffix_or_number_change_regression",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a clinical decision support assistant helping physicians review trial protocols for an ongoing multi-site oncology study. You provide neutral summaries of protocol language and never make the final clinical call yourself."
+          },
+          {
+            "role": "user",
+            "content": "The patient presented this morning with elevated liver enzymes and a mild fever after their second infusion cycle, and the on-call nurse flagged the chart for a pharmacist review before the afternoon rounds began. Given the protocol's adverse event thresholds, should I withhold the study drug if the patient's liver enzyme reading is 50 units above baseline?"
+          }
+        ]
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a clinical decision support assistant helping physicians review trial protocols for an ongoing multi-site oncology study. You provide neutral summaries of protocol language and never make the final clinical call yourself."
+          },
+          {
+            "role": "user",
+            "content": "The patient presented this morning with elevated liver enzymes and a mild fever after their second infusion cycle, and the on-call nurse flagged the chart for a pharmacist review before the afternoon rounds began. Given the protocol's adverse event thresholds, should I withhold the study drug if the patient's liver enzyme reading is 75 units above baseline?"
+          }
+        ]
+      },
+      "output": "l3_miss:fingerprint_mismatch_50_vs_75_at_jaccard_similarity_0.921875",
+      "match": "exact",
+      "rationale": "Sanity-check-by-breaking control, and a direct regression test for CacheAttack's own attack shape (arXiv:2601.23088, already covered in docs/upgrade-research/cache-2026-09-06.md Finding 2; scenario 11 in the research pass this corpus draws from names it as 'regression, not new-build'): a crafted near-duplicate whose only substantive difference is a number must still be rejected by the existing hard gate regardless of how high the underlying similarity score is. Verified directly with a throwaway Go test: this message pair (identical except '50'->'75') scores 0.921875 Jaccard similarity (118/128) -- comfortably above the 0.9 floor. dataplane.Fingerprint's numberPattern regexp captures '50' and '75' as distinct fingerprint elements ({You, 50, Given} vs {You, 75, Given}), fingerprintsEqual correctly returns false, and checkLexicalCache continues past this candidate without a hit. This is the positive control demonstrating the SAME high-similarity/single-token-difference shape used in the negation-flip and unnamed-referent-shift FAIL cases above is correctly rejected when the changed token is the kind of entity (a number) Fingerprint was actually designed to catch -- confirming those FAIL cases are genuine coverage gaps in what counts as an 'entity,' not a broader failure of the similarity-threshold mechanism itself. Existing coverage: entities_test.go's TestFingerprintDiffersOnDifferentDollarAmounts and lexical_cache_test.go's TestHandleChatCompletionEntityMismatchIsNotAnL3Hit already assert this general mechanism end-to-end for a $92-vs-$93 pair; this case adds the explicit high-Jaccard-similarity framing (0.92) those tests don't quantify."
+    },
+    "reference": "l3_miss:fingerprint_mismatch_50_vs_75_at_jaccard_similarity_0.921875",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-document-drift-volatility-keyword-gap",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "document_drift_stale_reuse_outside_volatility_vocabulary",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is the interest rate for the Q3 promotional loan program?"
+          }
+        ],
+        "asked_at": "before the underlying rate changed"
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is the interest rate for the Q3 promotional loan program?"
+          }
+        ],
+        "asked_at": "after the underlying rate changed, within the L3 storage TTL / staleness budget window"
+      },
+      "output": "isVolatileQuery_false_no_fact_change_detection_relies_on_age_only",
+      "match": "exact",
+      "rationale": "REAL, VERIFIED GAP -- not fixed in this pass (corpus authoring only). GroundedCache's mtRAG document-drift regime (arXiv:2605.27494, already the quantified anchor in docs/upgrade-research/cache-2026-09-06.md: naive similarity-only caching answers from cache 56.5% of the time with a 51.5% wrong-cached-answer rate once underlying source facts change) motivates Kelvran's own two named freshness mechanisms: dataplane.isVolatileQuery (a hard keyword bypass for 'weather|price|stock|score|today|current|currently|now|latest') and freshnessRiskModel's age-based staleness check. Verified directly by reading dataplane.go's volatileQueryPattern regexp (line 684) and running isVolatileQuery against the query above: it returns false, because 'interest rate' and 'Q3 promotional loan program' match none of the nine fixed keywords, even though this is a plausible real-world query whose correct answer changes when the underlying rate changes. With the volatility bypass not firing, the ONLY remaining freshness check is freshnessRiskModel's time.Since(writtenAt) > l3StalenessBudget comparison (line 705) -- a check against the cache ENTRY's age, with no mechanism anywhere in this codebase that detects whether the underlying fact actually changed. A re-query of the identical question after the rate changes, but before the entry's age exceeds the configured budget (default L3 storage TTL is 5 minutes per dataplane.go's NewPipeline default, though the separately-configurable l3StalenessBudget constant itself is 24 hours and becomes the binding constraint if an operator raises CacheL3TTL past 5 minutes), would still be served the pre-change cached answer. isVolatileQuery's fixed 9-word vocabulary is by construction unable to anticipate every phrasing whose answer is time-sensitive -- this is a real, structural gap distinct from (and not solved by) the L3 entity/date hard gate, which checks WHAT the query is about, never WHETHER the world has changed since the entry was written. Existing coverage: lexical_cache_test.go's TestHandleChatCompletionVolatileQueryNeverHitsL3 only exercises the HAPPY path of the bypass (a query that IS in the keyword vocabulary); no test in this codebase exercises a plausible drift-sensitive query OUTSIDE that vocabulary."
+    },
+    "reference": "volatile_or_drift_sensitive_query_bypassed_to_upstream_or_fact_change_detected",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-flat-staleness-budget-no-tier-differentiation",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "flat_staleness_budget_ignores_content_criticality_tier",
+      "cached_query": {
+        "content_tier": "final_synthesized_answer",
+        "age": "23 hours (within the current flat 24h budget)"
+      },
+      "new_query": {
+        "content_tier": "raw_low_criticality_snippet",
+        "age": "23 hours (within the SAME flat 24h budget)"
+      },
+      "output": "single_global_l3StalenessBudget_24h_constant_applied_uniformly_to_every_l3_candidate",
+      "match": "exact",
+      "rationale": "REAL, VERIFIED GAP, and an already partly self-documented one -- not fixed in this pass (corpus authoring only). FreshCache (arXiv:2607.04281) treats semantic-cache reuse as a risk-constrained problem with a PER-TIER staleness-probability budget tied to the downstream cost of being wrong: epsilon=0.10 for cached final answers, 0.20 for cached URL lists, 0.35 for cached raw page content -- content whose error is more consequential gets a tighter budget. Verified directly by reading dataplane.go's l3StalenessBudget constant (line 672-676): it is a SINGLE, un-parameterized '24 * time.Hour' value, applied identically to every L3-lite candidate regardless of what kind of content it represents, and freshnessRiskModel (line 704) has no content-tier/criticality parameter at all in its signature -- 'time.Since(writtenAt) > l3StalenessBudget' is the entire staleness check, for every candidate. The code's own comment already names this as a deliberate v1 scope choice ('ships one bucket now and defers real tiering to when calibration data exists'), so this is documented here as an honestly-acknowledged, already-known limitation rather than a silently undiscovered bug -- consistent with this corpus's convention (per regression_corpus_guardrail.json's case 13) of recording real, verified gaps whether they are undiscovered bugs or deliberate, named MVP deferrals. A final synthesized answer and a low-criticality raw snippet currently receive IDENTICAL staleness tolerance under Kelvran's real code, contrary to FreshCache's tiered design; no test in this codebase exercises tier-differentiated staleness because no tier concept exists in freshnessRiskModel to test."
+    },
+    "reference": "staleness_budget_differentiated_by_content_criticality_downstream_cost_of_being_wrong",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-cross-instance-poisoning-not-applicable",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "cross_instance_shared_backend_poisoning",
+      "cached_query": {
+        "instance": "A",
+        "action": "admin writes a malicious value under an unprefixed/shared key"
+      },
+      "new_query": {
+        "instance": "B",
+        "action": "a different instance's users read and act on instance A's poisoned entry via a shared backend"
+      },
+      "output": "not_applicable:cache_wired_in_process_only_no_shared_backend_exists",
+      "match": "exact",
+      "rationale": "Open WebUI's unprefixed tool_servers/terminal_servers Redis keys (GHSA-3x8w-4f7p-xxc2/CVE-2026-44552) enabled a full cross-instance poisoning chain under a shared-Redis-backend multi-instance deployment topology -- an explicitly supported real deployment pattern for that product. Verified directly that this deployment topology does not exist for Kelvran today: gateway/cmd/gateway/main.go wires Cache/CacheL2/CacheL3 exclusively via inprocess.New/inprocess.New/inprocess.NewLexicalCache (lines 431-433) -- never gateway/internal/cache/grpcclient, which exists in this codebase (grpcclient.go, grpcserver.go) but per port.go's own doc comment is a 'dormant extraction seam,' not an active adapter. gateway/internal/cache/inprocess's own package doc names inprocess as 'adapter #1 (the ACTIVE adapter)'. With no shared backend wired or reachable, there is no second instance for a poisoned entry to be read FROM -- the entire attack chain's second half (a sibling instance reading a poisoned shared key) has no code path to exercise. This matches docs/decisions/0002-cache-embedded-in-gateway.md's own framing of Cache extraction into a separate, shared-backend service as a future decision gated on specific evidence-based triggers, not yet met. Scoped honestly as 'not applicable to the current architecture' rather than either 'vulnerable' or 'defended' -- there is no live mechanism here to be defended, and this framing should be revisited the moment a shared/distributed cache backend is ever actually wired, per this same research's own scoping caveat on the source finding."
+    },
+    "reference": "not_applicable:cache_wired_in_process_only_no_shared_backend_exists",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-hit-miss-timing-side-channel",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "cache_hit_timing_side_channel",
+      "cached_query": {
+        "tenant": "tenant-A",
+        "action": "primes a cache entry for a specific query"
+      },
+      "new_query": {
+        "tenant": "attacker",
+        "action": "issues a candidate query and measures gateway response latency to infer whether tenant-A already asked something similar"
+      },
+      "output": "no_hit_miss_latency_normalization_or_jitter_mechanism_present_anywhere_in_cache_or_dataplane",
+      "match": "exact",
+      "rationale": "REAL, VERIFIED, EXPLICITLY-RESIDUAL GAP -- not fixed in this pass (corpus authoring only), and not claimed to be exploitable against Kelvran with the same rigor as the CVE-sourced findings above: *Auditing Prompt Caching in Language Model APIs* (Gu, Li, Kuditipudi, Liang, Hashimoto; ICML 2025, arXiv:2502.07776) empirically measured global cross-user cache sharing in seven real commercial LLM API providers (including OpenAI) purely via response-latency statistics -- a cache hit is measurably faster than a real upstream call, letting an attacker who shares a cache infer that someone already submitted a similar prompt, with no key collision or misconfiguration required. This is a distinct leakage channel from every key-collision/namespace finding above: even a cache with perfectly correct per-tenant key partitioning (which Kelvran's own tenant-baked-into-every-key design, verified in the other cases in this corpus, genuinely has) can still leak existence/timing signal unless response latency is ALSO normalized across the hit and miss paths. Verified by direct code reading across gateway/internal/cache/*.go and gateway/internal/gateway/dataplane/dataplane.go: there is no jitter injection, constant-time delay, or any other timing-normalization mechanism anywhere in this codebase's cache-check or cache-write code paths -- checkCache/checkLexicalCache return as soon as a hit or miss is determined, with no artificial delay to mask which path was taken. The paper's measured findings are about upstream PROVIDERS' own caches, not about a gateway sitting in front of them like Kelvran, so this is cited as a mechanism that transfers, not as a claim that Kelvran itself was measured -- named here explicitly as a real, currently-unaddressed residual risk worth tracking, per the source research's own framing, rather than either overstated as a proven exploit or silently omitted from the corpus."
+    },
+    "reference": "hit_miss_response_latency_normalized_or_bounded_so_existence_cannot_be_inferred_from_timing",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-tenant-partition-structural-keypooling",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "keypooling_generalized_property_and_namespace_token_dilution",
+      "cached_query": {
+        "tenant": "tenant-A",
+        "path": "L3 Search/Put"
+      },
+      "new_query": {
+        "tenant": "tenant-B",
+        "path": "L3 Search/Put -- a long, realistic-length query related to tenant-A's own"
+      },
+      "output": "l3_tenant_partitioning_is_structural_separate_map_bucket_per_tenant_never_a_shared_similarity_computation",
+      "match": "exact",
+      "rationale": "Generalizes THREAT_MODEL.md's KeyPooling mitigation contract ('survive every lookup and write') and vllm-project/semantic-router's ScopeQueryToUser namespace-token-dilution bug (issue #2134, fix PR #2135): that project's mitigation prepended a short per-user HMAC token to query text before embedding, which became a vanishingly small fraction of the total embedded text as queries grew longer, silently degrading isolation to 'hope the embedding distance exceeds the threshold' -- the fix replaced it with a hard namespace-equality gate independent of the similarity computation. Verified directly by reading gateway/internal/cache/inprocess/lexical.go end to end: Kelvran's L3-lite was never built the token-dilution way in the first place -- LexicalCache.Search/Put (lines 73/134) take tenantID as an explicit parameter and index into c.tenants[tenantID], a distinct tenantBucket (its own *list.List) per tenant, per the type's own doc comment ('never one shared list filtered by tenantID during Search'). A query's Jaccard similarity is computed ONLY against entries already inside that SAME tenant's own bucket (Search's for loop at line 89 iterates bucket.entries, obtained via c.tenants[tenantID] alone) -- there is no code path in this function that ever compares across buckets, so no query length can dilute a namespace signal that is never folded into the similarity computation to begin with; the partition is structural (a separate Go map entry), not a soft signal riding along inside the same comparison the way the diluted HMAC token did. This also directly satisfies the generalized property THREAT_MODEL.md's KeyPooling mitigation calls for across every one of L1/L2/L3's read and write paths simultaneously (cross-referenced with case adversarial-cache-openwebui-missing-tenant-discriminator's file-by-file verification of the L1/L2 dataplane call sites) -- the real-world pattern common to five of this research pass's findings (ckan-mcp-server, LiteLLM, Open WebUI x2, semantic-router) is exactly ONE discriminator omitted or diluted on exactly ONE code path while the rest of the system enforces it correctly; this case's structural, map-based design closes that entire failure class by construction rather than needing to individually verify every path stays correct under future changes."
+    },
+    "reference": "l3_tenant_partitioning_is_structural_separate_map_bucket_per_tenant_never_a_shared_similarity_computation",
+    "tier": "regression",
+    "tags": [
+      "category:cache",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  }
+]
