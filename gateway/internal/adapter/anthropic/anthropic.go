@@ -127,11 +127,19 @@ type ContentSource struct {
 }
 
 // Tool is Anthropic's native tool-definition shape. InputSchema is a
-// parsed JSON Schema object, not a string.
+// parsed JSON Schema object, not a string. CacheControl, when set, is a
+// sibling key directly on this object -- confirmed against Anthropic's
+// own live documentation (platform.claude.com/docs/en/build-with-claude/
+// prompt-caching) for
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's
+// tool-definition-level addendum -- mechanically identical to
+// ContentBlock's own inline cache_control placement, not a separate
+// wrapper.
 type Tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema,omitempty"`
+	Name         string            `json:"name"`
+	Description  string            `json:"description,omitempty"`
+	InputSchema  map[string]any    `json:"input_schema,omitempty"`
+	CacheControl *CacheControlWire `json:"cache_control,omitempty"`
 }
 
 // Response is Anthropic's native Messages API response shape.
@@ -243,9 +251,10 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 				}
 			}
 			tools = append(tools, Tool{
-				Name:        t.Name,
-				Description: t.Description,
-				InputSchema: schema,
+				Name:         t.Name,
+				Description:  t.Description,
+				InputSchema:  schema,
+				CacheControl: cacheControlWire(t.CacheControl),
 			})
 		}
 	}

@@ -354,3 +354,61 @@ func TestToProviderUnsetCacheControlOmitsPromptCacheKey(t *testing.T) {
 		t.Errorf("marshaled request contains prompt_cache_key despite no Key ever being supplied: %s", b)
 	}
 }
+
+// TestToProviderToolDefCacheControlHasNoEffect is the load-bearing proof
+// for docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's
+// tool-definition-level addendum re-confirming OpenAI's exclusion: a
+// ToolDef.CacheControl.Key must NOT flow into prompt_cache_key (unlike a
+// Message/ContentPart-level Key) since findCacheKey only ever scans
+// messages/parts, never Tools, and OpenAI's native Tool struct has no
+// cache-marker field for either adapter to read at all -- the produced
+// native request must be identical to the same request with no ToolDef
+// CacheControl set, and must carry no prompt_cache_key from the tool
+// definition's Key either.
+func TestToProviderToolDefCacheControlHasNoEffect(t *testing.T) {
+	base := adapter.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "what's the weather?"},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
+		},
+	}
+	withToolCacheControl := adapter.ChatRequest{
+		Model:    base.Model,
+		Messages: base.Messages,
+		Tools: []adapter.ToolDef{
+			{
+				Name:           "get_weather",
+				Description:    "Get the weather",
+				ParametersJSON: `{"type":"object"}`,
+				CacheControl:   &adapter.CacheControl{TTL: "1h", Key: "tool-level-key"},
+			},
+		},
+	}
+
+	gotBase, err := New().ToProvider(base)
+	if err != nil {
+		t.Fatalf("ToProvider(base): %v", err)
+	}
+	gotWithMarker, err := New().ToProvider(withToolCacheControl)
+	if err != nil {
+		t.Fatalf("ToProvider(withToolCacheControl): %v", err)
+	}
+
+	jsonBase, err := json.Marshal(gotBase)
+	if err != nil {
+		t.Fatalf("marshaling base: %v", err)
+	}
+	jsonWithMarker, err := json.Marshal(gotWithMarker)
+	if err != nil {
+		t.Fatalf("marshaling withToolCacheControl: %v", err)
+	}
+	if string(jsonBase) != string(jsonWithMarker) {
+		t.Errorf("ToolDef.CacheControl changed OpenAI's native request output:\nwithout marker: %s\nwith marker:    %s", jsonBase, jsonWithMarker)
+	}
+	if strings.Contains(string(jsonWithMarker), "tool-level-key") {
+		t.Errorf("marshaled request leaked the tool-level CacheControl.Key into the wire format: %s", jsonWithMarker)
+	}
+}

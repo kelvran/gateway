@@ -172,9 +172,41 @@ type SystemContentBlock struct {
 	CachePoint *CachePoint `json:"cachePoint,omitempty"`
 }
 
-// Tool is Converse's native tool-definition shape.
+// Tool is one element of Converse's toolConfig.tools[] array. Real AWS
+// union type -- "only one of the following members can be specified"
+// per element -- confirmed against
+// docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Tool.html
+// for docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's
+// tool-definition-level addendum: cachePoint, systemTool, toolSpec.
+// Kelvran emits only toolSpec and (new) cachePoint elements; systemTool
+// (Bedrock's own built-in tools, e.g. code execution) has no canonical
+// schema equivalent and is out of scope. ToolSpec is a pointer (with
+// omitempty) so a cachePoint-only element never marshals a spurious
+// empty "toolSpec":{}.
 type Tool struct {
-	ToolSpec ToolSpec `json:"toolSpec"`
+	ToolSpec   *ToolSpec   `json:"toolSpec,omitempty"`
+	CachePoint *CachePoint `json:"cachePoint,omitempty"`
+}
+
+// appendToolCachePointIfNeeded appends a standalone {"cachePoint":{...}}
+// element to tools, immediately after tools' own current last element,
+// when cc is set -- mirroring appendCachePointIfNeeded's exact shape
+// (nil cc or empty tools is a no-op; a last element that's already a
+// CachePoint is left alone rather than duplicated), applied to the
+// tools[] union array specifically. Confirmed against AWS's own "tools
+// checkpoints" worked example
+// (docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html):
+// cachePoint is a standalone array element sibling to toolSpec elements,
+// never a property attached to a toolSpec object, per
+// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's addendum.
+func appendToolCachePointIfNeeded(tools []Tool, cc *adapter.CacheControl) []Tool {
+	if cc == nil || len(tools) == 0 {
+		return tools
+	}
+	if tools[len(tools)-1].CachePoint != nil {
+		return tools
+	}
+	return append(tools, Tool{CachePoint: &CachePoint{Type: "default"}})
 }
 
 // ToolSpec describes one callable tool. InputSchema.JSON is a parsed JSON
@@ -321,12 +353,19 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 				}
 			}
 			tools = append(tools, Tool{
-				ToolSpec: ToolSpec{
+				ToolSpec: &ToolSpec{
 					Name:        t.Name,
 					Description: t.Description,
 					InputSchema: InputSchema{JSON: schema},
 				},
 			})
+			// A tool-definition-level CacheControl appends a trailing
+			// cachePoint element immediately after this specific tool,
+			// per docs/rfcs/2026-09-07-gateway-provider-prompt-
+			// caching.md's addendum -- the same "append right after the
+			// marked item" convention already used for content parts,
+			// not restricted to only the request's very last tool.
+			tools = appendToolCachePointIfNeeded(tools, t.CacheControl)
 		}
 		toolConfig = &ToolConfig{Tools: tools}
 	}

@@ -512,6 +512,9 @@ func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
 				{Type: "image", MediaType: "image/png", Data: "aW1n"},
 			}},
 		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
+		},
 	}
 
 	nativeAny, err := New().ToProvider(req)
@@ -525,5 +528,97 @@ func TestToProviderUnsetCacheControlIsNoOp(t *testing.T) {
 	}
 	if strings.Contains(string(b), "cachePoint") {
 		t.Errorf("marshaled request contains a cachePoint field despite no CacheControl being set anywhere: %s", b)
+	}
+}
+
+// TestToProviderToolDefCacheControlAppendsCachePointElement is the
+// load-bearing proof for docs/rfcs/2026-09-07-gateway-provider-prompt-
+// caching.md's tool-definition-level addendum, Bedrock section: among
+// two canonical ToolDefs, only the second carrying CacheControl, the
+// produced native tools[] array must contain a standalone
+// {"cachePoint":{"type":"default"}} element immediately after that
+// second tool's own {"toolSpec":{...}} element -- confirmed against
+// AWS's real Tool union type (cachePoint is a sibling array element,
+// never an inline property of a toolSpec object, unlike Anthropic's
+// tool-level cache_control).
+func TestToProviderToolDefCacheControlAppendsCachePointElement(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "what's the weather and time?"},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`},
+			{
+				Name:           "get_time",
+				Description:    "Get the time",
+				ParametersJSON: `{"type":"object"}`,
+				CacheControl:   &adapter.CacheControl{},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native, ok := nativeAny.(*Request)
+	if !ok {
+		t.Fatalf("ToProvider returned %T, want *Request", nativeAny)
+	}
+
+	tools := native.ToolConfig.Tools
+	if len(tools) != 3 {
+		t.Fatalf("tools len = %d, want 3 (get_weather, get_time, cachePoint)", len(tools))
+	}
+	if tools[0].ToolSpec == nil || tools[0].ToolSpec.Name != "get_weather" || tools[0].CachePoint != nil {
+		t.Errorf("tools[0] = %+v, want get_weather's toolSpec with no cachePoint", tools[0])
+	}
+	if tools[1].ToolSpec == nil || tools[1].ToolSpec.Name != "get_time" || tools[1].CachePoint != nil {
+		t.Errorf("tools[1] = %+v, want get_time's toolSpec with no cachePoint of its own", tools[1])
+	}
+	if tools[2].ToolSpec != nil || tools[2].CachePoint == nil || tools[2].CachePoint.Type != "default" {
+		t.Errorf("tools[2] = %+v, want a standalone {cachePoint:{default}} element with no toolSpec", tools[2])
+	}
+}
+
+// TestToProviderToolDefAndMessageCacheControlBothApply proves the
+// task-named interference case: a request carrying both a cached
+// ToolDef AND a cached Message must produce correct, independent
+// checkpoints for both in the same ToProvider output.
+func TestToProviderToolDefAndMessageCacheControlBothApply(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "system", Content: "You are a helpful assistant.", CacheControl: &adapter.CacheControl{}},
+			{Role: "user", Content: "what's the weather?", CacheControl: &adapter.CacheControl{}},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", Description: "Get the weather", ParametersJSON: `{"type":"object"}`, CacheControl: &adapter.CacheControl{}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native, ok := nativeAny.(*Request)
+	if !ok {
+		t.Fatalf("ToProvider returned %T, want *Request", nativeAny)
+	}
+
+	tools := native.ToolConfig.Tools
+	if len(tools) != 2 || tools[1].CachePoint == nil {
+		t.Fatalf("tools = %+v, want [toolSpec, cachePoint]", tools)
+	}
+	if len(native.System) != 2 || native.System[1].CachePoint == nil {
+		t.Fatalf("native.System = %+v, want [text, cachePoint]", native.System)
+	}
+	if len(native.Messages) != 1 {
+		t.Fatalf("native.Messages len = %d, want 1", len(native.Messages))
+	}
+	blocks := native.Messages[0].Content
+	if len(blocks) != 2 || blocks[1].CachePoint == nil {
+		t.Fatalf("native.Messages[0].Content = %+v, want [text, cachePoint]", blocks)
 	}
 }
