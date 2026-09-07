@@ -1,0 +1,3 @@
+{"traceId": "4bf92f3577b34da6a3ce929d0e0e4736", "spanId": "00f067aa0ba902b7", "occurredAt": "2026-09-07T12:00:00Z", "virtualKeyId": "team-fixture", "requestedModel": "gpt-4o", "outcome": "OUTCOME_OK"}
+{"traceId": "5cf92f3577b34da6a3ce929d0e0e4737", "spanId": "11f067aa0ba902b8", "occurredAt": "2026-09-07T12:05:00Z", "virtualKeyId": "_unauthenticated", "requestedModel": "", "outcome": "OUTCOME_AUTH_FAILED"}
+not valid json
