@@ -249,6 +249,51 @@ func (l *KeyLimiter) RecordTokens(keyID string, tokens int) {
 	bucket.Debit(float64(tokens))
 }
 
+// ReserveTPM is AllowTPM's concurrency-safe replacement for real
+// request-handling code, per
+// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md — see
+// TokenBucket.ReserveTPM for the full mechanism. allowed is true
+// unconditionally (reserved false, reservedTokens 0 — nothing is ever
+// reserved) when TPM isn't configured for keyID, exactly mirroring
+// AllowTPM's own "no entry means unlimited" behavior. reserved is false
+// whenever nothing was actually reserved against a real bucket — either
+// TPM isn't configured, or the bucket's own check rejected the request —
+// so a caller can gate whether a later ReconcileTPM call is even
+// meaningful without needing to inspect reservedTokens itself.
+//
+// Every true `reserved` return MUST be paired with exactly one
+// ReconcileTPM call for the same keyID/reservedTokens, even on an
+// error/timeout path.
+func (l *KeyLimiter) ReserveTPM(keyID string) (allowed bool, reserved bool, reservedTokens float64) {
+	l.mu.RLock()
+	bucket := l.tpmBuckets[keyID]
+	l.mu.RUnlock()
+	if bucket == nil {
+		return true, false, 0
+	}
+	allowed, reservedTokens = bucket.ReserveTPM()
+	return allowed, allowed, reservedTokens
+}
+
+// ReconcileTPM undoes a previous ReserveTPM call's provisional debit and,
+// if realTokens is non-nil, debits the real usage in its place — a
+// no-op, matching RecordTokens' own existing "no TPM bucket for keyID"
+// behavior, when TPM isn't configured for keyID (including a Redis-mode
+// KeyLimiter, where TPM is a deliberate v1 no-op per
+// docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md) — safe to call
+// unconditionally with whatever reservedTokens a prior ReserveTPM call
+// returned, even 0, since ReconcileTPM(0, nil) against a real bucket is
+// itself a genuine no-op (tokens += 0).
+func (l *KeyLimiter) ReconcileTPM(keyID string, reservedTokens float64, realTokens *float64) {
+	l.mu.RLock()
+	bucket := l.tpmBuckets[keyID]
+	l.mu.RUnlock()
+	if bucket == nil {
+		return
+	}
+	bucket.ReconcileTPM(reservedTokens, realTokens)
+}
+
 // Register upserts cfg's rate-limit parameters for one key, live: a new
 // in-memory TokenBucket (in-memory mode, replacing any existing bucket for
 // this ID outright — an explicit admin update resetting the key to full

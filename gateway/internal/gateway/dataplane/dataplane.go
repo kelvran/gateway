@@ -487,7 +487,15 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 // is configured for this specific model, is consulted before vk's default
 // bucket — a key with no PerModel entries behaves exactly as if this
 // parameter didn't exist.
-func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) (ok bool, failedOpen bool) {
+//
+// tpmReserved/tpmReservedTokens are ReserveTPM's own return values,
+// per docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md: the
+// caller MUST thread both through to finalize's ReconcileTPM call on
+// every return path (including error), or a granted TPM reservation
+// leaks permanently. Both are the harmless zero values whenever no real
+// reservation was made — TPM not configured for vk, or the RPM check
+// above already rejected the request before ReserveTPM was ever called.
+func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) (ok bool, failedOpen bool, tpmReserved bool, tpmReservedTokens float64) {
 	allowed, err := p.limiter.AllowForModel(ctx, vk.ID, model)
 	if err != nil {
 		p.logger.Warn("ratelimit_backend_unavailable", "key_id", vk.ID, "error", err.Error())
@@ -498,19 +506,22 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 		// "how many times has this happened recently" without scanning
 		// every log line or trace.
 		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
-		return true, true
+		return true, true, false, 0
 	}
 	if !allowed {
-		return false, false
+		return false, false, false, 0
 	}
-	// TPM dimension, per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md:
-	// a plain, non-erroring bool — AllowTPM never touches a backend in
-	// v1 (in-memory-only), so there's no fail-open case to handle here,
+	// TPM dimension, per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md,
+	// now via ReserveTPM (docs/rfcs/2026-09-08-gateway-budget-ratelimit-
+	// toctou-fix.md) rather than the old non-reserving AllowTPM: a plain,
+	// non-erroring result — ReserveTPM never touches a backend in v1
+	// (in-memory-only), so there's no fail-open case to handle here,
 	// unlike Allow above. Checked only after the RPM check passes, so an
 	// RPM-exhausted request is always rejected for that reason first,
 	// matching this codebase's own existing check-ordering discipline
 	// (model-allowed before rate-limit before budget).
-	return p.limiter.AllowTPM(vk.ID), false
+	ok, tpmReserved, tpmReservedTokens = p.limiter.ReserveTPM(vk.ID)
+	return ok, false, tpmReserved, tpmReservedTokens
 }
 
 // checkConcurrency reserves one in-flight slot for vk.ID, per
@@ -819,6 +830,15 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		fallback              fallbackInfo
 		budgetSpentAtDecision decimal.Decimal
 		billable              bool
+		// tpmReserved/tpmReservedTokens and budgetReserved/
+		// budgetReservedUSD are checkRateLimit's/budget.Reserve's own
+		// return values, threaded through to finalize's ReconcileTPM/
+		// Reconcile calls on every return path — including error — per
+		// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
+		tpmReserved       bool
+		tpmReservedTokens float64
+		budgetReserved    bool
+		budgetReservedUSD decimal.Decimal
 	)
 
 	start := time.Now()
@@ -831,7 +851,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
 		// (a).
 		err = p.attachRetryAfter(vk, err)
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, tpmReserved, tpmReservedTokens, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -846,7 +866,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	}
 
 	var rateLimitOK bool
-	rateLimitOK, rateLimitFailedOpen = p.checkRateLimit(ctx, vk, req.Model)
+	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {
 		err = ErrRateLimited
 		return
@@ -867,7 +887,9 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	defer p.releaseConcurrency(vk)
 
 	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
-	if !p.budget.Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) {
+	var budgetOK bool
+	budgetOK, budgetReserved, budgetReservedUSD = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	if !budgetOK {
 		err = ErrBudgetExceeded
 		return
 	}
@@ -1204,7 +1226,19 @@ func (p *Pipeline) RunHealthProbeLoop(ctx context.Context, interval time.Duratio
 // by the caller (trace.Span has no clean, provider-agnostic way to read
 // back its own start time) — the gateway's full request boundary, fed to
 // the same RecordChatCompletionMetrics call.
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, err error, duration time.Duration) {
+//
+// budgetReserved/budgetReservedUSD and tpmReserved/tpmReservedTokens are
+// budget.Tracker.Reserve's/KeyLimiter.ReserveTPM's own return values,
+// captured by the caller at the point each check ran, per
+// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md — finalize
+// is where every granted reservation MUST be reconciled or released,
+// unconditionally of err/billable, since this is the one hook guaranteed
+// to run on every return path (including error, via defer). Both pairs
+// are the harmless zero/false values whenever no real reservation was
+// ever made (the corresponding Reserve/ReserveTPM call was never
+// reached, or ran and was rejected) — see budget.Tracker.Reconcile's own
+// doc comment for why calling it with a zero reservedUSD is always safe.
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, tpmReserved bool, tpmReservedTokens float64, err error, duration time.Duration) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too.
@@ -1215,16 +1249,39 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			CompletionTokens: resp.Usage.CompletionTokens,
 			TotalTokens:      resp.Usage.TotalTokens,
 		})
-		if vk != nil && billable {
-			p.budget.Record(vk.ID, cost, vk.BudgetResetInterval)
+	}
+
+	// Reservation reconciliation/release, per
+	// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
+	// Deliberately NOT nested inside `if err == nil` the way the old
+	// Record/RecordTokens calls were — a reservation made by an earlier
+	// Reserve/ReserveTPM call must be released even when the request
+	// later errors out, times out, or turns out non-billable (a cache
+	// hit or coalesced singleflight follower), or that capacity leaks
+	// permanently. realCost/realTokens stay nil (release-only) unless
+	// err == nil && billable — the exact same gate the old billable-only
+	// Record/RecordTokens calls used, so the cost-double-counting
+	// invariant (docs/rfcs/2026-09-05-gateway-cost-double-counting.md)
+	// carries over unchanged.
+	if vk != nil {
+		var realCost *decimal.Decimal
+		if err == nil && billable {
+			realCost = &cost
+		}
+		if budgetReserved || realCost != nil {
+			p.budget.Reconcile(vk.ID, budgetReservedUSD, realCost, vk.BudgetResetInterval)
+		}
+		if realCost != nil {
 			p.checkBudgetWarnThreshold(vk)
-			// Same billable gate as budget.Record, for the same reason
-			// (docs/rfcs/2026-09-05-gateway-cost-double-counting.md): a
-			// cache hit or coalesced follower incurred no real,
-			// incremental token usage, so debiting the TPM bucket again
-			// for resp.Usage's already-counted tokens would double-count
-			// exactly like the budget bug this project already fixed.
-			p.limiter.RecordTokens(vk.ID, resp.Usage.TotalTokens)
+		}
+
+		var realTokens *float64
+		if err == nil && billable {
+			rt := float64(resp.Usage.TotalTokens)
+			realTokens = &rt
+		}
+		if tpmReserved || realTokens != nil {
+			p.limiter.ReconcileTPM(vk.ID, tpmReservedTokens, realTokens)
 		}
 	}
 
