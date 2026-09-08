@@ -20,10 +20,19 @@ type SSNDetector struct{}
 
 func (SSNDetector) Name() string       { return "ssn" }
 func (SSNDetector) Category() Category { return CategoryGovernmentID }
+
+// Detect matches against stripHiddenUnicode(text)'s stripped copy, not text
+// directly — ssnPattern's three digit-groups are each a contiguous \d-run
+// with no tolerance for an injected zero-width character mid-group, the same
+// evasion class documented against CreditCardDetector by regcorpus-guardrail-
+// 23. Every reported Finding.Start/End is remapped back to the ORIGINAL
+// text via remapMatch, per that field's own documented offset contract.
 func (SSNDetector) Detect(_ context.Context, text string) ([]Finding, error) {
+	stripped, origOffsets := stripHiddenUnicode(text)
 	var findings []Finding
-	for _, loc := range ssnPattern.FindAllStringIndex(text, -1) {
-		findings = append(findings, Finding{Category: CategoryGovernmentID, Detector: "ssn", Start: loc[0], End: loc[1]})
+	for _, loc := range ssnPattern.FindAllStringIndex(stripped, -1) {
+		start, end := remapMatch(origOffsets, loc[0], loc[1])
+		findings = append(findings, Finding{Category: CategoryGovernmentID, Detector: "ssn", Start: start, End: end})
 	}
 	return findings, nil
 }
