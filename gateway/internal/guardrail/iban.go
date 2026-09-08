@@ -51,12 +51,22 @@ type IBANDetector struct{}
 
 func (IBANDetector) Name() string       { return "iban" }
 func (IBANDetector) Category() Category { return CategoryFinancialID }
+
+// Detect matches against stripHiddenUnicode(text)'s stripped copy, not text
+// directly — ibanPattern's country/check-digit/BBAN run is one contiguous
+// character class with no tolerance for an injected zero-width character
+// mid-run, the same evasion class documented against CreditCardDetector by
+// regcorpus-guardrail-23. Every reported Finding.Start/End is remapped back
+// to the ORIGINAL text via remapMatch, per that field's own documented
+// offset contract.
 func (IBANDetector) Detect(_ context.Context, text string) ([]Finding, error) {
+	stripped, origOffsets := stripHiddenUnicode(text)
 	var findings []Finding
-	for _, loc := range ibanPattern.FindAllStringIndex(text, -1) {
-		candidate := strings.ToUpper(text[loc[0]:loc[1]])
+	for _, loc := range ibanPattern.FindAllStringIndex(stripped, -1) {
+		candidate := strings.ToUpper(stripped[loc[0]:loc[1]])
 		if mod97Valid(candidate) {
-			findings = append(findings, Finding{Category: CategoryFinancialID, Detector: "iban", Start: loc[0], End: loc[1]})
+			start, end := remapMatch(origOffsets, loc[0], loc[1])
+			findings = append(findings, Finding{Category: CategoryFinancialID, Detector: "iban", Start: start, End: end})
 		}
 	}
 	return findings, nil

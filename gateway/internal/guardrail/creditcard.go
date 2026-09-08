@@ -43,17 +43,26 @@ type CreditCardDetector struct{}
 
 func (CreditCardDetector) Name() string       { return "creditcard" }
 func (CreditCardDetector) Category() Category { return CategoryFinancialID }
+
+// Detect matches against stripHiddenUnicode(text)'s stripped copy, not text
+// directly — creditCardPattern's contiguous \d-run has no tolerance for an
+// injected zero-width character (or any other hiddenUnicodeRanges member)
+// mid-run, so a single one breaks the match entirely (regcorpus-guardrail-23).
+// Every reported Finding.Start/End is remapped back to the ORIGINAL text via
+// remapMatch, per that field's own documented original-text-offset contract.
 func (CreditCardDetector) Detect(_ context.Context, text string) ([]Finding, error) {
+	stripped, origOffsets := stripHiddenUnicode(text)
 	var findings []Finding
-	for _, loc := range creditCardPattern.FindAllStringIndex(text, -1) {
+	for _, loc := range creditCardPattern.FindAllStringIndex(stripped, -1) {
 		digits := strings.Map(func(r rune) rune {
 			if r == ' ' || r == '-' {
 				return -1
 			}
 			return r
-		}, text[loc[0]:loc[1]])
+		}, stripped[loc[0]:loc[1]])
 		if luhnValid(digits) {
-			findings = append(findings, Finding{Category: CategoryFinancialID, Detector: "creditcard", Start: loc[0], End: loc[1]})
+			start, end := remapMatch(origOffsets, loc[0], loc[1])
+			findings = append(findings, Finding{Category: CategoryFinancialID, Detector: "creditcard", Start: start, End: end})
 		}
 	}
 	return findings, nil
