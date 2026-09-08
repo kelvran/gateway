@@ -146,6 +146,14 @@ func TestFallbackTargets(t *testing.T) {
 	})
 }
 
+// alwaysAllowRateLimit is the permissive rateLimitOK closure every
+// pre-existing test in this file (written before the rate-limit-bypass
+// fix) passes, so each one keeps testing exactly what it tested before —
+// never a real target's rate-limit status, which is
+// TestAttemptFallbackChainSkipsRateLimitedTargetsWithoutAttemptingThem's
+// own, separately-added job below.
+func alwaysAllowRateLimit(string) bool { return true }
+
 func TestAttemptFallbackChainStopsAtFirstSuccess(t *testing.T) {
 	p := &Pipeline{deploymentsByName: map[string]Deployment{
 		"b": {Name: "b"},
@@ -161,7 +169,7 @@ func TestAttemptFallbackChainStopsAtFirstSuccess(t *testing.T) {
 		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
 	}
 
-	dep, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false })
+	dep, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -189,7 +197,7 @@ func TestAttemptFallbackChainExhaustsInOrderBeforeGivingUp(t *testing.T) {
 		return adapter.ChatResponse{}, errors.New(d.Name + " failed too")
 	}
 
-	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false })
+	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit)
 	if err == nil {
 		t.Fatal("err = nil, want the last hop's error")
 	}
@@ -219,7 +227,7 @@ func TestAttemptFallbackChainSkipsAlreadyTriedAndUnknownNames(t *testing.T) {
 	// "a" is already tried (the original, failed deployment); "unknown"
 	// is not a real deployment at all (defends against a config typo
 	// that startup validation should have already caught).
-	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"a", "unknown", "c"}, map[string]bool{"a": true}, call, func() bool { return false })
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"a", "unknown", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -246,7 +254,7 @@ func TestAttemptFallbackChainRespectsStop(t *testing.T) {
 		return adapter.ChatResponse{}, nil
 	}
 
-	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{}, call, func() bool { return stopped })
+	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{}, call, func() bool { return stopped }, alwaysAllowRateLimit)
 	if attempted {
 		t.Fatal("attempted = true, want false — stop() was already true before the first hop")
 	}
@@ -283,7 +291,7 @@ func TestAttemptFallbackChainSkipsRouterUnhealthyTargetsWithoutAttemptingThem(t 
 		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
 	}
 
-	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false })
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -295,6 +303,61 @@ func TestAttemptFallbackChainSkipsRouterUnhealthyTargetsWithoutAttemptingThem(t 
 	}
 	if len(calls) != 1 || calls[0] != "c" {
 		t.Fatalf("calls = %v, want exactly [c] — 'b' skipped as router-unhealthy, never attempted", calls)
+	}
+}
+
+// TestAttemptFallbackChainSkipsRateLimitedTargetsWithoutAttemptingThem is
+// the load-bearing proof for the fix to
+// evals/tests/fixtures/regression_corpus_cost_abuse.json's
+// costabuse-permodel-ratelimit-bypassed-via-crossmodel-fallback-chain
+// case: a candidate target whose rateLimitOK closure reports false is
+// skipped exactly like a router-unhealthy one — never attempted, and
+// never charged against the consecutiveFailures circuit breaker or
+// realAttempts (proven indirectly here by the chain still succeeding at
+// "c" with zero inter-hop backoff — a real attempt at "b" would have
+// forced at least one delay before "c").
+func TestAttemptFallbackChainSkipsRateLimitedTargetsWithoutAttemptingThem(t *testing.T) {
+	p := &Pipeline{deploymentsByName: map[string]Deployment{
+		"b": {Name: "b", Model: "gpt-4o"},
+		"c": {Name: "c", Model: "gpt-4o-mini"},
+	}}
+
+	var rateLimitChecked []string
+	rateLimitOK := func(model string) bool {
+		rateLimitChecked = append(rateLimitChecked, model)
+		return model != "gpt-4o"
+	}
+
+	var calls []string
+	call := func(d Deployment) (adapter.ChatResponse, error) {
+		calls = append(calls, d.Name)
+		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
+	}
+
+	start := time.Now()
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, rateLimitOK)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !attempted {
+		t.Fatal("attempted = false, want true")
+	}
+	if resp.Model != "served-by-c" {
+		t.Errorf("resp.Model = %q, want served-by-c", resp.Model)
+	}
+	if len(calls) != 1 || calls[0] != "c" {
+		t.Fatalf("calls = %v, want exactly [c] — 'b' skipped as rate-limited, never attempted", calls)
+	}
+	if len(rateLimitChecked) != 2 || rateLimitChecked[0] != "gpt-4o" || rateLimitChecked[1] != "gpt-4o-mini" {
+		t.Fatalf("rateLimitChecked = %v, want [gpt-4o gpt-4o-mini] — every candidate target's OWN Deployment.Model, in order", rateLimitChecked)
+	}
+	// A real attempt at "b" followed by a real attempt at "c" would incur
+	// at least one inter-hop backoff sleep (fallbackChainInterHopBackoffBase's
+	// floor); a rate-limited skip must never charge that delay, so the
+	// walk here — one real attempt total — completes near-instantly.
+	if elapsed >= fallbackChainInterHopBackoffBase {
+		t.Errorf("elapsed = %v, want well under %v — a rate-limited skip must never charge the inter-hop backoff delay", elapsed, fallbackChainInterHopBackoffBase)
 	}
 }
 
@@ -318,7 +381,7 @@ func TestAttemptFallbackChainStopsAfterMaxConsecutiveFailuresWithinOneRequest(t 
 		return adapter.ChatResponse{}, errors.New(d.Name + " failed")
 	}
 
-	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d", "e", "f"}, map[string]bool{"a": true}, call, func() bool { return false })
+	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d", "e", "f"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit)
 	if err == nil {
 		t.Fatal("err = nil, want the last attempted hop's error")
 	}
@@ -359,7 +422,7 @@ func TestAttemptFallbackChainInsertsRealMeasurableDelayBetweenHops(t *testing.T)
 	wantFloor := floorHop2 + floorHop3
 
 	start := time.Now()
-	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false })
+	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit)
 	elapsed := time.Since(start)
 
 	if !attempted {

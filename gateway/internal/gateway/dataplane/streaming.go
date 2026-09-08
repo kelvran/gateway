@@ -286,6 +286,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID)
 			},
 			func() bool { return firstChunkSent },
+			func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, keyID, model) },
 		)
 		if attempted {
 			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}

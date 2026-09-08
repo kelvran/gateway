@@ -191,8 +191,13 @@ const (
 // p.deploymentsByName, skipped as router-unhealthy, or stop was already
 // true before the first hop).
 //
-// Two additions on top of that pre-existing walk, per
-// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design (c):
+// Three additions on top of that pre-existing walk, per
+// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design (c) (the
+// first two) and the cross-model fallback rate-limit-bypass fix (the
+// third, closing the gap
+// evals/tests/fixtures/regression_corpus_cost_abuse.json's
+// costabuse-permodel-ratelimit-bypassed-via-crossmodel-fallback-chain case
+// documents):
 //
 //   - A target router.IsHealthy already reports unhealthy (real,
 //     cross-request active-probe failures — see
@@ -215,7 +220,27 @@ const (
 //     single-fallback case keeps its exact pre-existing latency. ctx is
 //     used solely to make that sleep cancellation-aware: a canceled
 //     request never blocks on this delay.
-func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
+//   - rateLimitOK, called with the candidate target's OWN Deployment.Model
+//     immediately before it is actually called — after the health check
+//     and the consecutiveFailures circuit breaker, so a target skipped
+//     for either of those reasons never wastes a real rate-limit
+//     consumption either. A false return skips this target exactly like
+//     an unhealthy one (continue to the next, no consecutiveFailures/
+//     realAttempts increment, no backoff sleep charged) — the pre-routing
+//     checkRateLimit(ctx, vk, req.Model) call
+//     (dataplane.go/streaming.go, before this chain walk ever starts) is
+//     keyed exclusively on the client's ORIGINALLY-REQUESTED model, so
+//     without this, a virtual key's PerModel RPM cap on an expensive
+//     model was entirely unenforced for traffic that reached it only via
+//     a cheaper model's own fallback_chains hop. Callers pass
+//     p.limiter.AllowForModel(ctx, vk.ID, model) (RPM only — TPM stays
+//     scoped to the single pre-routing ReserveTPM call the caller already
+//     made against req.Model; see
+//     docs/upgrade-research/evals-corpus-cost-abuse-patterns-2026-09-08.md's
+//     TPM follow-on finding for why re-targeting TPM's own Reserve/
+//     Reconcile bookkeeping mid-chain is a materially deeper, explicitly
+//     out-of-scope change, not attempted here).
+func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
 	consecutiveFailures := 0
 	realAttempts := 0
 	for _, name := range targets {
@@ -241,6 +266,10 @@ func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, t
 
 		if consecutiveFailures >= maxConsecutiveChainFailures {
 			break
+		}
+
+		if !rateLimitOK(nextDep.Model) {
+			continue
 		}
 
 		realAttempts++

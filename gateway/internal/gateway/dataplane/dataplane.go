@@ -549,6 +549,40 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 	return ok, false, tpmReserved, tpmReservedTokens
 }
 
+// checkFallbackTargetRateLimit reports whether a fallback_chains hop to
+// model may proceed, consulting ONLY the RPM dimension
+// (p.limiter.AllowForModel) — never TPM, which stays scoped to the single
+// pre-routing checkRateLimit/ReserveTPM call the caller already made
+// against req.Model before this chain walk ever started. Closes
+// evals/tests/fixtures/regression_corpus_cost_abuse.json's
+// costabuse-permodel-ratelimit-bypassed-via-crossmodel-fallback-chain
+// case: checkRateLimit itself only ever runs once, before
+// routing/fallback resolution, keyed on the client's originally-requested
+// model — with no equivalent re-check after a fallback_chains hop
+// switches to a genuinely different model, a virtual key's PerModel RPM
+// cap on an expensive model was entirely unenforced for traffic that
+// reached it only via a cheaper model's own fallback hop.
+// attemptFallbackChain calls this immediately before actually attempting
+// each candidate target, mirroring its own pre-existing
+// router.IsHealthy-skip pattern — a false return skips the target exactly
+// like an unhealthy one, never wasting a real rate-limit consumption on a
+// target that would be skipped for some other reason anyway.
+//
+// A rate-limiter backend error fails OPEN (returns true) rather than
+// silently removing a fallback target from the chain for an infra reason
+// unrelated to its real rate-limit status — the same "fail-open, not
+// fail-closed" policy checkRateLimit's own doc comment documents for the
+// identical reason (internal/budget.Tracker's per-key USD cap is a
+// second, independent control that never touches Redis).
+func (p *Pipeline) checkFallbackTargetRateLimit(ctx context.Context, keyID, model string) bool {
+	allowed, err := p.limiter.AllowForModel(ctx, keyID, model)
+	if err != nil {
+		p.logger.Warn("ratelimit_backend_unavailable_fallback_hop", "key_id", keyID, "model", model, "error", err.Error())
+		return true
+	}
+	return allowed
+}
+
 // checkConcurrency reserves one in-flight slot for vk.ID, per
 // docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design (b).
 // Always true when Config.Concurrency was left unset (nil) — concurrency
@@ -1032,6 +1066,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 				hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 					func(d Deployment) (adapter.ChatResponse, error) { return p.callDeployment(ctx, d, req) },
 					func() bool { return false },
+					func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, vk.ID, model) },
 				)
 				if attempted {
 					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
@@ -1364,6 +1399,30 @@ func (p *Pipeline) RunHealthProbeLoop(ctx context.Context, interval time.Duratio
 	}
 }
 
+// realServingModel returns dep.Model — the canonical model of the
+// Deployment that GENUINELY served a response, after any routing/
+// fallback_chains resolution — whenever dep is populated (dep.Model !=
+// ""), falling back to fallbackModel otherwise. dep.Model != "" if and
+// only if a real deployment actually, successfully produced the response
+// being finalized: HandleChatCompletion/HandleChatCompletionStream leave
+// dep at its zero value on every path that never resolves one at all (a
+// cache hit, or any rejection before routing even runs), and runMissPath
+// itself returns Deployment{} — discarding whatever the last attempted
+// fallback target was — on a total upstream failure (every configured
+// hop, or the pre-existing single-fallback, exhausted). fallbackModel is
+// the correct value in every one of those cases: req.Model for cost (a
+// cache hit's own price is the same model it was originally, genuinely
+// billed under) and resp.Model for the ResponseModel telemetry field
+// (which the caller additionally gates on err == nil, since resp.Model is
+// always "" on an error path — see finalize's own responseModel
+// computation).
+func realServingModel(dep Deployment, fallbackModel string) string {
+	if dep.Model != "" {
+		return dep.Model
+	}
+	return fallbackModel
+}
+
 // finalize is the single "a request just finished (or failed)" step,
 // shared by HandleChatCompletion and HandleChatCompletionStream: compute
 // cost once, record it against the caller's budget, record the OTel span
@@ -1417,7 +1476,20 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// internal/budget's own tests, not assumed here too.
 	var cost decimal.Decimal
 	if err == nil {
-		cost = p.costCalc.Calculate(req.Model, costaccounting.Usage{
+		// Priced against realServingModel(dep, req.Model), NOT req.Model
+		// directly — closes
+		// evals/tests/fixtures/regression_corpus_cost_abuse.json's
+		// costabuse-crossmodel-fallback-billed-at-requested-not-served-model-price
+		// case: dep is the Deployment that GENUINELY served the response,
+		// after any routing/fallback_chains resolution, so its own
+		// dep.Model is the correct price-table entry whenever a real
+		// deployment resolved this response — never req.Model, the
+		// client's originally-requested (possibly cheaper) model, which
+		// callDeployment deliberately echoes back onto resp.Model for the
+		// client-facing response body only (matching the convention of
+		// OpenAI-shaped APIs) and must never double as the price-table
+		// key too.
+		cost = p.costCalc.Calculate(realServingModel(dep, req.Model), costaccounting.Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,
 			TotalTokens:      resp.Usage.TotalTokens,
@@ -1471,12 +1543,31 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if err != nil {
 		errorType = errorTypeFor(outcome)
 	}
+	// responseModel reflects the model that GENUINELY served this
+	// response, not resp.Model's own client-facing echo of req.Model —
+	// closes the observability half of
+	// costabuse-crossmodel-fallback-billed-at-requested-not-served-model-price's
+	// sibling gap: before this, ResponseModel was a silent duplicate of
+	// RequestModel on every request, cross-model fallback or not, since
+	// callDeployment always overwrites resp.Model back to req.Model for
+	// the response body. err == nil is required in addition to
+	// realServingModel's own dep.Model != "" check: on any error path
+	// (including one where dep is a fallback target that was actually
+	// attempted but still failed), resp was never genuinely produced, so
+	// ResponseModel must stay resp.Model's own "" zero value here — never
+	// a deployment name that never served anything, preserving
+	// ChatCompletionResult.ResponseModel's own existing documented
+	// invariant ("" whenever no response was ever produced).
+	responseModel := resp.Model
+	if err == nil {
+		responseModel = realServingModel(dep, resp.Model)
+	}
 	result := telemetry.ChatCompletionResult{
 		VirtualKeyID:    virtualKeyID,
 		Provider:        dep.Provider,
 		DeploymentName:  dep.Name,
 		RequestModel:    req.Model,
-		ResponseModel:   resp.Model,
+		ResponseModel:   responseModel,
 		ResponseID:      resp.ID,
 		FinishReasons:   finishReasons(resp),
 		InputTokens:     resp.Usage.PromptTokens,
