@@ -2,9 +2,8 @@ name: evals judge/panel accuracy (nightly)
 
 # Deliberately separate from ci.yml's per-push evals job, per
 # docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's CI-scheduling
-# decision: real, unbounded dollar cost against live paid providers
-# (Anthropic for --llm-judge, AWS Bedrock for --llm-judge-panel) on every
-# push/PR update would be a genuine, real cost this repo doesn't
+# decision: real, unbounded dollar cost against a live paid provider on
+# every push/PR update would be a genuine, real cost this repo doesn't
 # otherwise carry; no provider call site in evals/evals/judge/providers
 # .py sets a temperature parameter, so a judge/panel verdict on an
 # identical prompt is genuinely non-deterministic run-to-run at each
@@ -14,11 +13,20 @@ name: evals judge/panel accuracy (nightly)
 # Nightly + workflow_dispatch gives a real, recurring, unattended,
 # live-running gate with zero coupling to PR mergeability.
 #
-# --llm-judge-panel's 2 judges (Claude Sonnet 5 + Claude Haiku 4.5) are
-# both served via AWS Bedrock, per that RFC's own panel-composition
-# revision (an explicit, accepted same-vendor-correlation tradeoff for
-# AWS-only operational simplicity) -- credentials resolve via boto3's
-# standard AWS credential chain, never a Kelvran-specific env var name.
+# Both --llm-judge (single judge) and --llm-judge-panel (2-judge panel)
+# are entirely AWS Bedrock now -- Claude Haiku 4.5 for the standalone
+# judge, Claude Sonnet 5 + Claude Haiku 4.5 for the panel, per that RFC's
+# own panel-composition revision (an explicit, accepted same-vendor-
+# correlation tradeoff for AWS-only operational simplicity, extended to
+# the standalone judge for the same reason: one AWS credential covers
+# everything, no separate Anthropic key needed at all). Credentials
+# resolve via boto3's standard AWS credential chain, never a Kelvran-
+# specific env var name. --llm-judge reuses the exact same Bedrock Haiku
+# 4.5 model id as the panel's own Haiku panelist -- a real, deliberate
+# choice: it reactivates the cache-key design's cross-mode reuse property
+# (a vote cached from one mode is reusable in the other for the same
+# model id), which had no real code path while --llm-judge was direct-
+# Anthropic and the panel was Bedrock-only.
 on:
   schedule:
     - cron: "0 7 * * *"
@@ -34,7 +42,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: judge + panel accuracy run against real Anthropic + Bedrock
+      - name: judge + panel accuracy run against real AWS Bedrock
         # Deliberately excludes the existing 113-case deterministic
         # regression corpus (regression_corpus_*.json) -- that's
         # separately-tracked work with its own unresolved calibration
@@ -42,26 +50,41 @@ jobs:
         # documented FAIL cases), not this workflow's concern.
         # tests/fixtures/regression_corpus_judge_accuracy.json (Phase 4,
         # 24 cases, live-verified 2026-09-08 against the real Bedrock
-        # panel) now exists and is real -- the --llm-judge-panel half of
-        # this job is expected to succeed once AWS secrets are added; the
-        # --llm-judge half additionally needs ANTHROPIC_API_KEY as a repo
-        # secret, still not added as of this comment, so this job will
-        # keep failing loudly (a real credential error, not a missing
-        # file) until both secret sets exist -- never silently skipped.
+        # panel) now exists and is real. Both --llm-judge and
+        # --llm-judge-panel need only the 3 AWS secrets below -- no
+        # separate Anthropic key, since --llm-judge moved to Bedrock too.
         working-directory: evals
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
+        # No --fail-under/--category-fail-under here, unlike ci.yml's
+        # smoke test -- a real dry-run against the live corpus (2026-09-
+        # 08) found this corpus's raw pass_rate is NOT a meaningful gate
+        # metric: the corpus is deliberately half designed-to-FAIL (8 of
+        # 24 cases are wrong outputs a correct judge should reject), so a
+        # well-performing judge lands around 40-55% pass_rate, not near
+        # 100% -- real runs measured 0.4583 (llm_judge) and 0.4167
+        # (llm_judge_panel), both correctly classifying every "obvious"
+        # case. The originally-planned --fail-under 0.60 was based on a
+        # flawed pre-corpus assumption ("all obvious cases pass" was
+        # read as "all 16 obvious cases score PASS," when half of them
+        # are designed to score FAIL) and would have failed this job on
+        # every single run regardless of judge quality -- caught before
+        # ever merging a broken gate, not after. A real gate needs an
+        # accuracy-vs-designed-label metric (did the verdict match this
+        # corpus's own intended correct/incorrect classification), which
+        # `evals report` has no concept of today -- separately-scoped
+        # future work, not improvised here. This job stays a real,
+        # recurring data-collection run (the uploaded artifact is what
+        # Phase 6 analyzes), not a pass/fail gate, until that exists.
         run: |
           uv sync
           uv run evals run --suite tests/fixtures/regression_corpus_judge_accuracy.json \
             --scores judge-accuracy-scores.jsonl --llm-judge
           uv run evals run --suite tests/fixtures/regression_corpus_judge_accuracy.json \
             --scores judge-accuracy-scores.jsonl --llm-judge-panel
-          uv run evals report --scores judge-accuracy-scores.jsonl --tier regression \
-            --fail-under 0.60 --category-fail-under "category:judge:0.60"
+          uv run evals report --scores judge-accuracy-scores.jsonl --tier regression
       - name: upload real scores for later disagreement-rate analysis
         if: always()
         uses: actions/upload-artifact@v4

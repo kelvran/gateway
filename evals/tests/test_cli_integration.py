@@ -553,7 +553,7 @@ def test_run_with_llm_judge_scores_via_real_wiring_using_a_fake_provider(
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -613,7 +613,7 @@ def test_run_with_llm_judge_persists_real_cost_from_a_cost_exposing_fake(
 
     fake_call_model = _FakeCostExposingCallModel()
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -934,15 +934,12 @@ def test_run_with_llm_judge_panel_use_score_cache_reuses_per_case_not_per_suite(
     # identical suite twice, zero new calls" (already covered by the
     # sibling *_second_invocation_makes_no_calls test).
     #
-    # NOTE on scope, honestly: the RFC's own design also describes
-    # cross-mode reuse between a standalone --llm-judge run and a
-    # --llm-judge-panel run for the SAME model id. That specific scenario
-    # has no real code path today -- --llm-judge still uses direct-
-    # Anthropic-API's DEFAULT_JUDGE_MODEL ("claude-haiku-4-5-20251001"),
-    # while the panel now uses two Bedrock model ids
-    # ("global.anthropic.claude-sonnet-5",
-    # "global.anthropic.claude-haiku-4-5-20251001-v1:0") -- disjoint id
-    # strings, so no cache overlap between the two modes currently exists.
+    # This test covers within-panel-mode reuse only. Cross-mode reuse
+    # (standalone --llm-judge and --llm-judge-panel sharing a cached
+    # Haiku vote for the same model id) is real again as of --llm-judge
+    # moving to Bedrock Haiku 4.5 -- see
+    # test_run_with_llm_judge_panel_reuses_a_prior_standalone_haiku_score
+    # and test_run_with_llm_judge_reuses_a_prior_panel_haiku_vote below.
     single_case_suite = tmp_path / "single_case_suite.json"
     single_case_suite.write_text(
         json.dumps(
@@ -1018,6 +1015,172 @@ def test_run_with_llm_judge_panel_use_score_cache_reuses_per_case_not_per_suite(
         if s.eval_case_id == "judge-fail-case" and s.scorer_type == "llm_judge_panel"
     )
     assert all(not v.from_cache for v in fail_case_score.panel_votes)
+
+
+def test_run_with_llm_judge_panel_reuses_a_prior_standalone_haiku_score(
+    tmp_path, monkeypatch
+):
+    # Real, live property as of --llm-judge moving to Bedrock Haiku 4.5
+    # (the same model id as the panel's own Haiku panelist): a vote
+    # cached from a standalone --llm-judge run is transparently reusable
+    # inside a LATER --llm-judge-panel run for that case, via
+    # _load_cached_panel_votes reading prior llm_judge Scores directly.
+    _monkeypatch_panel_providers(
+        monkeypatch,
+        sonnet_response="REASONING: matches.\nVERDICT: PASS\n",
+        haiku_response="REASONING: matches.\nVERDICT: PASS\n",
+    )
+    sonnet_calls = {"n": 0}
+    haiku_calls = {"n": 0}
+    real_fake_sonnet = cli_module.make_bedrock_call_model(
+        cli_module.BEDROCK_SONNET_5_MODEL_ID
+    )
+    real_fake_haiku = cli_module.make_bedrock_call_model(
+        cli_module.BEDROCK_HAIKU_4_5_MODEL_ID
+    )
+
+    async def counting_sonnet(prompt: str) -> str:
+        sonnet_calls["n"] += 1
+        return await real_fake_sonnet(prompt)
+
+    async def counting_haiku(prompt: str) -> str:
+        haiku_calls["n"] += 1
+        return await real_fake_haiku(prompt)
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, client=None, region_name=None: (
+            counting_sonnet
+            if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
+            else counting_haiku
+        ),
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    seed = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--use-score-cache",
+        ],
+    )
+    assert seed.exit_code == 0, seed.output
+    assert haiku_calls["n"] == 2  # 2 cases, standalone judge is Haiku only
+    assert sonnet_calls["n"] == 0
+
+    panel = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge-panel",
+            "--use-score-cache",
+        ],
+    )
+    assert panel.exit_code == 0, panel.output
+    # Haiku's votes for both cases are reused from the standalone seed --
+    # only Sonnet (never called standalone) makes fresh calls.
+    assert haiku_calls["n"] == 2
+    assert sonnet_calls["n"] == 2
+
+    persisted = load_scores(scores_path)
+    panel_scores = [s for s in persisted if s.scorer_type == "llm_judge_panel"]
+    assert len(panel_scores) == 2
+    for score in panel_scores:
+        haiku_vote = next(
+            v
+            for v in score.panel_votes
+            if v.scorer_id == cli_module.BEDROCK_HAIKU_4_5_MODEL_ID
+        )
+        sonnet_vote = next(
+            v
+            for v in score.panel_votes
+            if v.scorer_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
+        )
+        assert haiku_vote.from_cache is True
+        assert sonnet_vote.from_cache is False
+
+
+def test_run_with_llm_judge_reuses_a_prior_panel_haiku_vote(tmp_path, monkeypatch):
+    # The other half of the same cross-mode property: a Haiku vote cached
+    # from a --llm-judge-panel run must be reusable inside a LATER
+    # standalone --llm-judge run for that case. This is the "and vice
+    # versa" half of the RFC's own cache-key design -- verify it for
+    # real rather than assume it follows symmetrically from the other
+    # direction just proved above.
+    _monkeypatch_panel_providers(
+        monkeypatch,
+        sonnet_response="REASONING: matches.\nVERDICT: PASS\n",
+        haiku_response="REASONING: matches.\nVERDICT: PASS\n",
+    )
+    haiku_calls = {"n": 0}
+    real_fake_haiku = cli_module.make_bedrock_call_model(
+        cli_module.BEDROCK_HAIKU_4_5_MODEL_ID
+    )
+
+    async def counting_haiku(prompt: str) -> str:
+        haiku_calls["n"] += 1
+        return await real_fake_haiku(prompt)
+
+    # _monkeypatch_panel_providers (above) already installed a fake
+    # dispatcher covering Sonnet; wrap it so Haiku alone gets counted.
+    fake_dispatcher = cli_module.make_bedrock_call_model
+
+    def counting_dispatcher(model_id, client=None, region_name=None):
+        if model_id == cli_module.BEDROCK_HAIKU_4_5_MODEL_ID:
+            return counting_haiku
+        return fake_dispatcher(model_id, client, region_name)
+
+    monkeypatch.setattr(cli_module, "make_bedrock_call_model", counting_dispatcher)
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    seed = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge-panel",
+            "--use-score-cache",
+        ],
+    )
+    assert seed.exit_code == 0, seed.output
+    assert haiku_calls["n"] == 2  # 2 cases x 1 Haiku panelist each
+
+    standalone = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--use-score-cache",
+        ],
+    )
+    assert standalone.exit_code == 0, standalone.output
+    # Both cases' Haiku votes are reused from the panel seed -- zero
+    # fresh standalone calls.
+    assert haiku_calls["n"] == 2
+
+    persisted = load_scores(scores_path)
+    standalone_scores = [s for s in persisted if s.scorer_type == "llm_judge"]
+    assert len(standalone_scores) == 2
+    assert all(s.from_cache for s in standalone_scores)
 
 
 def test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cache_hit(
@@ -1146,7 +1309,7 @@ def test_run_llm_judge_requires_a_reference_and_fails_loudly(tmp_path, monkeypat
         return "REASONING: n/a.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     runner = CliRunner()
@@ -1182,7 +1345,7 @@ def test_run_llm_judge_call_error_marks_judge_error_and_does_not_abort_suite(
         return "REASONING: ok.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: flaky_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: flaky_call_model
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1224,7 +1387,7 @@ def test_run_use_score_cache_second_invocation_makes_no_new_judge_calls(
         return "REASONING: does not match.\nVERDICT: FAIL\n"
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1268,7 +1431,7 @@ def test_run_without_use_score_cache_rejudges_every_time(tmp_path, monkeypatch):
         return "REASONING: ok.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1307,7 +1470,7 @@ def test_run_with_judge_axes_scores_each_axis_independently_and_ands_the_verdict
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1364,7 +1527,7 @@ def test_run_with_judge_axes_any_axis_error_marks_the_whole_case_judge_error(
         return "REASONING: fine.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: flaky_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: flaky_call_model
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1419,7 +1582,7 @@ def test_run_with_judge_axes_use_score_cache_discriminates_by_axis(
         return "REASONING: ok.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     runner = CliRunner()
@@ -1482,7 +1645,7 @@ def test_rollout_use_score_cache_second_invocation_makes_no_new_judge_calls(
         return "REASONING: ok.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     results_path = tmp_path / "results.jsonl"
@@ -1640,7 +1803,7 @@ def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     results_path = tmp_path / "results.jsonl"
@@ -1762,7 +1925,7 @@ def test_rollout_with_judge_axes_scores_each_axis_independently_and_ands_the_ver
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     results_path = tmp_path / "results.jsonl"
@@ -2008,7 +2171,7 @@ def test_rollout_early_stop_with_llm_judge_never_double_calls_judge(
         return "REASONING: matches.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_anthropic_call_model", lambda: fake_call_model
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
     )
 
     suite_path = _repeated_trial_suite_path(tmp_path, n=6)

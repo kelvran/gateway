@@ -53,8 +53,6 @@ from evals.judge.llm_judge import judge, reduce_panel_votes
 from evals.judge.providers import (
     BEDROCK_HAIKU_4_5_MODEL_ID,
     BEDROCK_SONNET_5_MODEL_ID,
-    DEFAULT_JUDGE_MODEL,
-    make_anthropic_call_model,
     make_bedrock_call_model,
 )
 from evals.models import EvalCase, PanelVote, Run, Score, Span
@@ -189,14 +187,48 @@ def _load_cached_scores(scores_path: Path) -> dict[str, Score]:
     filtering already established, applied here for the identical reason.
     Safe to call even if `scores_path` doesn't exist yet (a fresh file is
     a valid starting state, per `load_scores`'s own doc comment).
+
+    Also pulls from a prior `llm_judge_panel` Score's own embedded
+    `panel_votes` for any panelist matching the standalone judge's model
+    id — the "and vice versa" half of docs/rfcs/2026-09-08-evals-judge-
+    panel-reducer.md's cache-key design, mirroring
+    `_load_cached_panel_votes`'s already-correct bidirectional read (a
+    real gap this project's own test suite caught: this direction had no
+    real code path, and so no real test, until `--llm-judge` moved to
+    Bedrock Haiku 4.5 and made it live). A matching vote is wrapped into
+    a synthetic `llm_judge` `Score` (never persisted, only held in this
+    in-memory lookup) so `_judge_with_cache` can consume it exactly like
+    a real standalone `Score` — carrying the PANEL Score's own
+    `bias_mitigations_applied` forward, since that genuinely describes
+    how this vote was produced (independent refutation really did
+    happen), not a fabricated stand-in.
     """
-    return {
-        s.score_cache_key: s
-        for s in load_scores(scores_path)
-        if s.scorer_type == "llm_judge"
-        and not s.from_cache
-        and s.score_cache_key is not None
-    }
+    cached: dict[str, Score] = {}
+    for s in load_scores(scores_path):
+        if s.from_cache:
+            continue
+        if s.scorer_type == "llm_judge" and s.score_cache_key is not None:
+            cached.setdefault(s.score_cache_key, s)
+        elif s.scorer_type == "llm_judge_panel" and s.panel_votes is not None:
+            for vote in s.panel_votes:
+                if vote.from_cache or vote.score_cache_key is None:
+                    continue
+                cached.setdefault(
+                    vote.score_cache_key,
+                    Score(
+                        eval_case_id=s.eval_case_id,
+                        eval_case_revision=s.eval_case_revision,
+                        scorer_id=vote.scorer_id,
+                        scorer_type="llm_judge",
+                        value=vote.passed,
+                        rationale=vote.rationale,
+                        bias_mitigations_applied=s.bias_mitigations_applied,
+                        cost_usd=Decimal("0"),
+                        score_cache_key=vote.score_cache_key,
+                        from_cache=False,
+                    ),
+                )
+    return cached
 
 
 # (real scorer_id, call_model) pairs, in declared/call order -- unlike
@@ -265,7 +297,7 @@ def _last_judge_call_cost_usd(
 
     `call_model` only has to satisfy `Callable[[str], Awaitable[str]]` —
     `last_call_cost` is an extra attribute the real
-    `evals.judge.providers._AnthropicCallModel` exposes, not part of that
+    `evals.judge.providers._BedrockCallModel` exposes, not part of that
     base contract, so a test fake (a plain async function) that doesn't
     have it falls back to `None` here rather than raising.
     """
@@ -535,7 +567,12 @@ async def _judge_all_axes(
                 output, reference, panel, cached_votes, axis=axis
             )
         return await _judge_with_cache(
-            output, reference, DEFAULT_JUDGE_MODEL, call_model, cached_scores, axis=axis
+            output,
+            reference,
+            BEDROCK_HAIKU_4_5_MODEL_ID,
+            call_model,
+            cached_scores,
+            axis=axis,
         )
 
     if axes is None:
@@ -728,9 +765,13 @@ def main() -> None:
     is_flag=True,
     default=False,
     help=(
-        "Score with a real Anthropic LLM-judge call instead of the "
-        "deterministic scorer. Requires ANTHROPIC_API_KEY in the "
-        "environment — see evals.judge.providers.make_anthropic_call_model."
+        "Score with a single real LLM-judge call (Claude Haiku 4.5, via "
+        "AWS Bedrock's Converse API -- the same model id as the panel's "
+        "own Haiku panelist) instead of the deterministic scorer. "
+        "Requires AWS credentials resolvable via boto3's standard "
+        "credential chain (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/"
+        "AWS_REGION or equivalent) -- see "
+        "evals.judge.providers.make_bedrock_call_model."
     ),
 )
 @click.option(
@@ -792,7 +833,9 @@ def run_cmd(
         )
 
     cases = _load_cases(suite_path)
-    call_model = make_anthropic_call_model() if llm_judge else None
+    call_model = (
+        make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID) if llm_judge else None
+    )
     panel: PanelSpec | None = None
     cached_scores = None
     cached_votes = None
@@ -840,7 +883,7 @@ def run_cmd(
             scorer_id = (
                 "panel:" + "+".join(sid for sid, _ in panel)
                 if llm_judge_panel
-                else DEFAULT_JUDGE_MODEL
+                else BEDROCK_HAIKU_4_5_MODEL_ID
             )
             for outcome in outcomes:
                 scores.append(
@@ -1185,9 +1228,11 @@ def ingest_cmd(
     is_flag=True,
     default=False,
     help=(
-        "Score each completed Run's captured stdout with a real Anthropic "
-        "LLM-judge call instead of the deterministic scorer. Requires "
-        "ANTHROPIC_API_KEY in the environment."
+        "Score each completed Run's captured stdout with a single real "
+        "LLM-judge call (Claude Haiku 4.5, via AWS Bedrock's Converse "
+        "API -- the same model id as the panel's own Haiku panelist) "
+        "instead of the deterministic scorer. Requires AWS credentials "
+        "resolvable via boto3's standard credential chain."
     ),
 )
 @click.option(
@@ -1307,7 +1352,9 @@ def rollout_cmd(
         )
 
     cases = _load_cases(suite_path)
-    call_model = make_anthropic_call_model() if llm_judge else None
+    call_model = (
+        make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID) if llm_judge else None
+    )
     panel: PanelSpec | None = None
     cached_scores = None
     cached_votes = None
@@ -1389,7 +1436,7 @@ def rollout_cmd(
             scorer_id = (
                 "panel:" + "+".join(sid for sid, _ in panel)
                 if llm_judge_panel
-                else DEFAULT_JUDGE_MODEL
+                else BEDROCK_HAIKU_4_5_MODEL_ID
             )
             for outcome in outcomes:
                 scores.append(

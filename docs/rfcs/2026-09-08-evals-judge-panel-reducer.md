@@ -151,26 +151,50 @@ both cases — mirroring `_load_cached_scores`'s own "never chain a hit off
 a hit" discipline exactly, proven by
 `test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cache_hit`.
 
-### Consequence: cross-mode cache reuse is now dormant
+### Consequence: cross-mode cache reuse was dormant, now reactivated
 
 The cache-key design's cross-mode reuse property (a vote cached from a
 *standalone* `--llm-judge` run reusable inside a *later*
-`--llm-judge-panel` run for the same model id, and vice versa) is still
-architecturally correct and general, but has **no real code path
-exercising it today**, as a direct consequence of the panel-composition
-revision above: `--llm-judge` still uses direct-Anthropic-API's
-`DEFAULT_JUDGE_MODEL` (`"claude-haiku-4-5-20251001"`), while
-`--llm-judge-panel` now uses two Bedrock model ids
-(`"anthropic.claude-sonnet-5"`, `"anthropic.claude-haiku-4-5-20251001-v1:0"`)
-— disjoint id strings from `--llm-judge`'s own, so no cache overlap
-between the two modes currently exists. The mechanism itself remains
-proven (within-panel-run and across-panel-run reuse are both real,
-tested properties —
-`test_run_with_llm_judge_panel_use_score_cache_reuses_per_case_not_per_suite`
-proves the stronger, per-case-granular version of this) and would
-reactivate the cross-mode case again if a future single-Bedrock-judge
-flag were ever added. Named here explicitly rather than silently left
-for a future reader to discover the hard way.
+`--llm-judge-panel` run for the same model id, and vice versa) was
+architecturally correct and general, but had no real code path
+exercising it as a direct consequence of the panel-composition revision
+above: `--llm-judge` used direct-Anthropic-API's `DEFAULT_JUDGE_MODEL`
+(`"claude-haiku-4-5-20251001"`), while `--llm-judge-panel` used two
+Bedrock model ids — disjoint id strings, so no cache overlap between the
+two modes existed.
+
+**Reactivated 2026-09-08 (later still, same day, once a real AWS
+credential existed to test against): `--llm-judge` moved to Bedrock too**,
+specifically reusing `BEDROCK_HAIKU_4_5_MODEL_ID` — the exact same model
+id as the panel's own Haiku panelist — so `ANTHROPIC_API_KEY` is no
+longer needed anywhere in `evals`'s judge system at all (this was the
+project owner's own explicit direction: the standalone judge should use
+Bedrock too, for the same AWS-only operational simplicity as the panel).
+Reusing the panel's own Haiku id, rather than a third, disjoint model,
+was deliberate: it reactivates this exact cross-mode reuse property for
+real.
+
+**Verifying the "and vice versa" half of that property live for the
+first time found a real, pre-existing bug**: `_load_cached_scores`
+(`evals/evals/cli.py`), the lookup table backing standalone
+`--llm-judge`'s own `--use-score-cache`, only ever read prior
+`scorer_type == "llm_judge"` Scores — it never read a prior
+`llm_judge_panel` Score's own embedded `panel_votes` at all. So while
+`_load_cached_panel_votes` (the panel's own lookup) correctly read BOTH
+directions already, `_load_cached_scores` only ever supported the
+standalone-into-panel direction, never panel-into-standalone — the "and
+vice versa" claim above was only ever half-implemented, undetected
+because the cross-mode scenario itself was dormant until this pass.
+Fixed by widening `_load_cached_scores` to also synthesize a matching
+`llm_judge` `Score` from any `llm_judge_panel` Score's embedded
+`panel_votes` (carrying the panel Score's own `bias_mitigations_applied`
+forward, since that genuinely describes how the vote was produced).
+Two new tests prove both directions for real:
+`test_run_with_llm_judge_panel_reuses_a_prior_standalone_haiku_score` and
+`test_run_with_llm_judge_reuses_a_prior_panel_haiku_vote` — the latter
+failed before the fix (4 calls instead of the expected 2), confirmed via
+sanity-check-by-breaking (the fix was disabled, the test failed for the
+exact expected reason, then restored).
 
 ### Real, verified model ids and pricing (added by the panel-composition revision)
 
@@ -253,6 +277,30 @@ source. Deliberately not fixed in this pass: setting `temperature=0` on
 the shared `providers.py` call sites would be a real behavioral change
 affecting every existing `--llm-judge` caller too, out of scope here —
 named as a separate future hardening candidate.
+
+**Corrected 2026-09-08 (later still, same day): the workflow's own gate
+was wrong, found by a real, live full-pipeline dry run against the
+finished Phase 4 corpus.** The originally-planned `evals report
+--fail-under 0.60 --category-fail-under "category:judge:0.60"` was
+justified as "comfortably below the ~67% 'all obvious cases pass, zero
+boundary cases' floor" — but that floor's own arithmetic was wrong: it
+read "all obvious cases pass" as "all 16 obvious-bucket cases score
+PASS," when half of that bucket (8 of 16) is deliberately
+obviously-*incorrect* output a correctly-performing judge should FAIL,
+not pass. A real dry run confirms this: `llm_judge` scored 0.4583 pass
+rate, `llm_judge_panel` scored 0.4167 — both correctly classifying every
+single "obvious" case, both far below 0.60, both would have failed the
+gate on every single run regardless of judge quality. Fixed by removing
+the gate entirely from this workflow rather than tuning the threshold
+number down (which would only have weakened an already-wrong check,
+not fixed it) — a meaningful gate for this corpus needs a real
+accuracy-vs-designed-label metric (did the verdict match this corpus's
+own intended correct/incorrect classification), which `evals report` has
+no concept of today; named as separately-scoped future work, not
+improvised here under time pressure. The workflow still runs both judge
+legs and uploads the scores artifact — it's a real, recurring
+data-collection job for Phase 6's disagreement-rate analysis, not (yet)
+a pass/fail gate.
 
 ### Report visibility: quorum ties get their own note
 
@@ -341,14 +389,24 @@ honestly rather than fabricated; the corpus content itself doesn't
 depend on which judge scores it, so this is a pure credential gap, not
 a design gap.
 
+**Corrected 2026-09-08 (later still, same day): the standalone
+`--llm-judge` credential gap named above no longer exists.** Per the
+project owner's direction, `--llm-judge` moved to Bedrock too (reusing
+`BEDROCK_HAIKU_4_5_MODEL_ID`) — see "Consequence: cross-mode cache reuse
+was dormant, now reactivated" above. `ANTHROPIC_API_KEY` is no longer
+used anywhere in `evals`'s judge system; the 3 AWS secrets
+(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`) were added as
+GitHub repo secrets the same day. A live, full-pipeline local dry run of
+both judge legs against the finished Phase 4 corpus succeeded end-to-end
+with only those 3 secrets — found and fixed the CI-gate bug documented
+in "CI scheduling" above in the same pass.
+
 **Not yet done, tracked separately (the implementation plan's remaining
-Phase 5/6 items):** GitHub repo secrets (`AWS_ACCESS_KEY_ID`/
-`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`/`ANTHROPIC_API_KEY`) still need
-adding — a human Settings-page action, not yet done — before
-`.github/workflows/evals-judge-nightly.yml` can succeed for real; it
-will keep failing loudly (a real credential error, no longer a missing-
-file error) until they exist. The real judge/panel disagreement-rate
-measurement (closing the research's own open question about panel
-diversity) still depends on the nightly workflow actually running with
-real secrets at least once — Phase 4's own 2-run local sample above is a
-real, honest starting data point, not a substitute for that.
+Phase 6 item):** the real judge/panel disagreement-rate measurement
+(closing the research's own open question about panel diversity) still
+depends on the nightly workflow actually running once for real in CI
+(not just dry-run locally) — trigger `workflow_dispatch` once now that
+secrets exist, then pull that run's artifact. Phase 4's own multi-run
+local sample (3 real runs total across this implementation: 2 panel, 1
+standalone) is a real, honest starting data point, not a substitute for
+that.
