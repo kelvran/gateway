@@ -140,6 +140,63 @@ func classifyFallbackError(err error) string {
 	return FallbackClassGeneric
 }
 
+// isCandidateHealthFailure reports whether err is even ELIGIBLE to count
+// as a real-request backend-health signal, per docs/upgrade-research/
+// gateway-router-health-real-traffic-2026-09-09.md's Finding 2/3 and
+// Recommendation item 1 — the status-class/origin filter every production
+// system studied (Envoy, Linkerd, Istio) applies before any passive
+// signal is allowed to influence health state at all: a genuine backend
+// problem is a real 5xx response, or a local/connection-level failure
+// that never got a response at all (a dial error, a timeout) — never an
+// ordinary 4xx, which is client-caused (a bad request, a content-policy
+// rejection, a context-window overrun) and must never be conflated with
+// the deployment itself being unhealthy.
+//
+// Reuses UpstreamHTTPError rather than inventing a second classifier:
+// classifyFallbackError already proves a content-policy or context-
+// window-exceeded condition is a (necessarily 4xx-shaped) client-caused
+// one, so this function doesn't need to duplicate that keyword logic —
+// it only needs the numeric status class, which is coarser and doesn't
+// require inspecting the response body at all.
+//
+// A *DeploymentCapacityError (fallback.go, same file) is explicitly
+// EXCLUDED, never a candidate: it is Kelvran's own rate-limit/concurrency
+// throttling rejecting a call before ever reaching the deployment at
+// all — a self-inflicted, caller-side condition, not evidence the
+// deployment itself is unhealthy. Treating it as a health signal would
+// let Kelvran's own configured ceiling talk itself into marking a
+// perfectly healthy, merely-busy deployment as failing.
+//
+// Deliberately NOT WIRED to any real call site or to Router.
+// ReportProbeResult anywhere in this codebase — see this function's own
+// package-level callers (or lack thereof) and the research doc's own
+// explicit recommendation: build the filter now, as real, tested,
+// inert code, but leave the decision of whether/when to connect it to
+// live health state gated on a real production traffic-volume floor
+// this project does not have yet (see SampleWindow, gateway/internal/
+// router/samplewindow.go, that same doc's Recommendation item 2).
+func isCandidateHealthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var capacityErr *DeploymentCapacityError
+	if errors.As(err, &capacityErr) {
+		return false
+	}
+
+	var httpErr *UpstreamHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode >= 500 && httpErr.StatusCode <= 599
+	}
+
+	// Anything else — a local adapter/network/dial/timeout error — never
+	// got a real HTTP response from the deployment at all, the
+	// "local-origin" half of Finding 3's split. Real backend-health
+	// signal, same as a real 5xx.
+	return true
+}
+
 func containsAnyKeyword(haystack string, keywords []string) bool {
 	for _, kw := range keywords {
 		if strings.Contains(haystack, kw) {

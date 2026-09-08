@@ -156,6 +156,46 @@ func TestFallbackTargets(t *testing.T) {
 	})
 }
 
+// TestIsCandidateHealthFailure is the direct proof for
+// isCandidateHealthFailure's own status-class/origin filter, per
+// docs/upgrade-research/gateway-router-health-real-traffic-2026-09-09.md's
+// Finding 2/3 — a real backend-health signal is a genuine 5xx or a
+// local/connection-level failure, never an ordinary client-caused 4xx
+// (including the content-policy/context-window classes classifyFallbackError
+// already recognizes) and never Kelvran's own DeploymentCapacityError
+// self-throttling rejection.
+func TestIsCandidateHealthFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error is never a candidate", nil, false},
+		{"500 is a candidate", &UpstreamHTTPError{StatusCode: 500, Body: "internal server error"}, true},
+		{"502 is a candidate", &UpstreamHTTPError{StatusCode: 502, Body: "bad gateway"}, true},
+		{"503 is a candidate", &UpstreamHTTPError{StatusCode: 503, Body: "service unavailable"}, true},
+		{"599 is a candidate", &UpstreamHTTPError{StatusCode: 599, Body: "network connect timeout error"}, true},
+		{"400 is never a candidate", &UpstreamHTTPError{StatusCode: 400, Body: "bad request"}, false},
+		{"404 is never a candidate", &UpstreamHTTPError{StatusCode: 404, Body: "not found"}, false},
+		{"429 is never a candidate", &UpstreamHTTPError{StatusCode: 429, Body: "rate_limit_error"}, false},
+		{"content_policy 4xx is never a candidate", &UpstreamHTTPError{StatusCode: 400, Body: "content_policy_violation"}, false},
+		{"context_window 4xx is never a candidate", &UpstreamHTTPError{StatusCode: 400, Body: "context_length_exceeded"}, false},
+		{"DeploymentCapacityError is never a candidate (self-throttling, not a real backend signal)", &DeploymentCapacityError{Deployment: "d1", Reason: "concurrency"}, false},
+		{"wrapped DeploymentCapacityError is still excluded through errors.As", fmt.Errorf("callDeploymentWithCapacityCheck: %w", &DeploymentCapacityError{Deployment: "d1", Reason: "rate_limit"}), false},
+		{"local/connection-level error (never got a response) is a candidate", errors.New("dialing upstream: connection refused"), true},
+		{"wrapped 5xx is still a candidate through errors.As", fmt.Errorf("upstream call to deployment %q: %w", "primary", &UpstreamHTTPError{StatusCode: 500, Body: "internal server error"}), true},
+		{"wrapped 4xx is still excluded through errors.As", fmt.Errorf("upstream call to deployment %q: %w", "primary", &UpstreamHTTPError{StatusCode: 400, Body: "bad request"}), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCandidateHealthFailure(tt.err); got != tt.want {
+				t.Errorf("isCandidateHealthFailure(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // alwaysAllowRateLimit is the permissive rateLimitOK closure every
 // pre-existing test in this file (written before the rate-limit-bypass
 // fix) passes, so each one keeps testing exactly what it tested before —
