@@ -49,6 +49,7 @@ calling a factory (or the callable it returns) does.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -401,16 +402,35 @@ def make_bedrock_call_model(
     tradeoff) judges; a single implicit default would silently produce
     two identical judges if a caller forgot to pass `model` twice.
 
-    Credentials and region resolve via `boto3`'s own standard AWS
-    credential chain (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
-    `AWS_REGION` env vars, a shared credentials file, or an IAM role) —
-    never a Kelvran-specific env var name, so this factory composes with
-    however AWS credentials are already configured for any other caller
-    in this environment (e.g. the object-storage ingestion path's own
-    `boto3` usage). `region_name`, when given, overrides whatever
-    `AWS_REGION`/`AWS_DEFAULT_REGION` would otherwise resolve to — most
-    callers should leave it `None` and configure the region via the
-    standard env var instead.
+    Credentials resolve via `boto3`'s own standard AWS credential chain
+    (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` env vars, a shared
+    credentials file, or an IAM role) — never a Kelvran-specific env var
+    name, so this factory composes with however AWS credentials are
+    already configured for any other caller in this environment (e.g.
+    the object-storage ingestion path's own `boto3` usage).
+
+    Region resolution is NOT left to boto3's own default session,
+    deliberately: a real, live-verified finding (2026-09-08) is that this
+    project's own pinned botocore version only honors `AWS_DEFAULT_REGION`
+    for a bare `boto3.client(region_name=None)` call, NOT `AWS_REGION`
+    alone, despite AWS's own newer-SDK convention treating `AWS_REGION`
+    as the primary name — a real gap between documented and observed
+    behavior, caught only because a clean CI environment (no
+    `~/.aws/config` fallback) surfaced it after this passed locally
+    (silently masked by a `region` already set in this machine's own
+    `~/.aws/config`, unrelated to `evals`). `region_name`, when given,
+    wins outright; otherwise `AWS_REGION` is checked first (the name
+    `evals/.env.example` documents and the more common cross-SDK
+    convention), falling back to `AWS_DEFAULT_REGION` — resolved here
+    explicitly and passed to `boto3.client(...)` as a real value, never
+    left as `None` for botocore's own env-var scan to (unreliably) find.
     """
-    bedrock_client = client or boto3.client("bedrock-runtime", region_name=region_name)
+    resolved_region = (
+        region_name
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+    )
+    bedrock_client = client or boto3.client(
+        "bedrock-runtime", region_name=resolved_region
+    )
     return _BedrockCallModel(model=model, client=bedrock_client)

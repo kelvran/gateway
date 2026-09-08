@@ -240,6 +240,42 @@ gap unique to this provider. A real, live-verified price-table entry for
 both models is a clean, additive future fix (add two lines to that
 dict), named here as a known follow-up, not silently left unstated.
 
+### Real bug: `AWS_REGION` alone is not honored by this project's botocore
+
+Found 2026-09-08 by triggering the nightly workflow for real in CI for
+the first time — it failed instantly with `botocore.exceptions.
+NoRegionError: You must specify a region`, despite `AWS_REGION` being a
+correctly-set GitHub Actions secret (re-verified by re-pushing it and
+confirming its exact byte length). Reproduced the identical failure
+locally, on purpose, by pointing `AWS_CONFIG_FILE`/
+`AWS_SHARED_CREDENTIALS_FILE` at `/dev/null` for one test process —
+confirming a real, load-bearing fact: every prior local "it works" claim
+in this document and this session was **silently masked** by this
+machine's own `~/.aws/config` (`region = us-east-1` under `[default]`,
+unrelated to `evals`), not by `AWS_REGION` actually being honored. With
+only `AWS_REGION` set and no config-file fallback, `boto3.client(
+"bedrock-runtime", region_name=None)` genuinely raises `NoRegionError` on
+this project's pinned botocore (1.43.89) — `AWS_DEFAULT_REGION` alone,
+tested the same way, works. This directly contradicts AWS's own
+documented newer-SDK convention (`AWS_REGION` as the primary,
+cross-SDK-compatible name) and this RFC's own prior claim
+("`AWS_REGION`/`AWS_DEFAULT_REGION`... via boto3's standard credential
+chain") — neither was ever verified against a config-file-free
+environment before this.
+
+Fixed in `make_bedrock_call_model` (`evals/evals/judge/providers.py`):
+region is now resolved explicitly — `region_name` param, else
+`AWS_REGION`, else `AWS_DEFAULT_REGION` — and passed to `boto3.client(...)`
+as a real string, never left as `None` for botocore's own (unreliable,
+for this exact case) env-var scan. All three inputs proven via new tests
+in `test_providers.py` (mocking `boto3.client` to capture the
+`region_name` it actually received) — one of which failed before the fix
+(confirmed via sanity-check-by-breaking: reverted the fix, watched two of
+the three new tests fail for the exact expected reason, restored). No
+doc/`.env.example`/CLI-help-text change was needed — they already said
+`AWS_REGION`; the bug was the code not actually honoring what those
+already promised.
+
 ### Cost accounting: sum across panelists, `None` if any is unknown
 
 `Score.cost_usd` for a panel score is the `Decimal` SUM of every
@@ -401,12 +437,19 @@ both judge legs against the finished Phase 4 corpus succeeded end-to-end
 with only those 3 secrets — found and fixed the CI-gate bug documented
 in "CI scheduling" above in the same pass.
 
+**Corrected 2026-09-08 (later still): triggering `workflow_dispatch` for
+real found the `AWS_REGION` bug documented above** — the first two real
+CI attempts both failed with `NoRegionError` before that fix landed.
+Once fixed, committed, and pushed, the region-resolution fix itself was
+proven locally (config-file-free, mocked `boto3.client`) but a
+`workflow_dispatch` run against the fix, in real CI, had not yet
+happened as of this specific edit — see `STATUS.md`'s "Next Action" for
+the current, up-to-date state of that specific step.
+
 **Not yet done, tracked separately (the implementation plan's remaining
 Phase 6 item):** the real judge/panel disagreement-rate measurement
 (closing the research's own open question about panel diversity) still
-depends on the nightly workflow actually running once for real in CI
-(not just dry-run locally) — trigger `workflow_dispatch` once now that
-secrets exist, then pull that run's artifact. Phase 4's own multi-run
-local sample (3 real runs total across this implementation: 2 panel, 1
-standalone) is a real, honest starting data point, not a substitute for
-that.
+depends on the nightly workflow actually running once for real in CI end
+-to-end. Phase 4's own multi-run local sample (3 real runs total across
+this implementation: 2 panel, 1 standalone) is a real, honest starting
+data point, not a substitute for that.

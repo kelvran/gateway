@@ -417,3 +417,71 @@ def test_importing_providers_module_never_requires_aws_credentials():
     import boto3
 
     boto3.client("bedrock-runtime", region_name="us-east-1")
+
+
+def test_make_bedrock_call_model_resolves_region_from_aws_region_env_var(
+    monkeypatch,
+):
+    # Real, live-verified 2026-09-08: this project's pinned botocore only
+    # honors AWS_DEFAULT_REGION for a bare boto3.client(region_name=None)
+    # call, NOT AWS_REGION alone -- a real gap between AWS's own newer-
+    # SDK convention and observed behavior, caught only because a clean
+    # CI environment (no ~/.aws/config fallback) surfaced it after it
+    # passed locally (silently masked by this machine's own ~/.aws/config
+    # setting a region, unrelated to evals). make_bedrock_call_model must
+    # resolve AWS_REGION itself and pass a real value to boto3.client,
+    # never leave region_name=None for botocore's own scan to find.
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    captured = {}
+
+    def fake_boto3_client(service_name, region_name=None):
+        captured["region_name"] = region_name
+        return object()
+
+    import evals.judge.providers as providers_module
+
+    monkeypatch.setattr(providers_module.boto3, "client", fake_boto3_client)
+
+    make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID)
+
+    assert captured["region_name"] == "eu-west-1"
+
+
+def test_make_bedrock_call_model_falls_back_to_aws_default_region_env_var(
+    monkeypatch,
+):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-1")
+    captured = {}
+
+    def fake_boto3_client(service_name, region_name=None):
+        captured["region_name"] = region_name
+        return object()
+
+    import evals.judge.providers as providers_module
+
+    monkeypatch.setattr(providers_module.boto3, "client", fake_boto3_client)
+
+    make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID)
+
+    assert captured["region_name"] == "ap-southeast-1"
+
+
+def test_make_bedrock_call_model_explicit_region_name_wins_over_env_vars(
+    monkeypatch,
+):
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    captured = {}
+
+    def fake_boto3_client(service_name, region_name=None):
+        captured["region_name"] = region_name
+        return object()
+
+    import evals.judge.providers as providers_module
+
+    monkeypatch.setattr(providers_module.boto3, "client", fake_boto3_client)
+
+    make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID, region_name="us-west-2")
+
+    assert captured["region_name"] == "us-west-2"
