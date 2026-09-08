@@ -413,8 +413,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	}
 
 	depRouter := router.New(routerDeployments, router.HealthConfig{
-		UnhealthyThreshold: cfg.HealthProbe.UnhealthyThreshold,
-		HealthyThreshold:   cfg.HealthProbe.HealthyThreshold,
+		UnhealthyThreshold:         cfg.HealthProbe.UnhealthyThreshold,
+		HealthyThreshold:           cfg.HealthProbe.HealthyThreshold,
+		RecoveryRampSteps:          cfg.HealthProbe.RecoveryRampSteps,
+		RecoveryRampInitialPercent: cfg.HealthProbe.RecoveryRampInitialPercent,
 	})
 
 	priceTable := costaccounting.PriceTable{}

@@ -260,10 +260,21 @@ telemetry:
 # section (the default) for no probing at all — every configured
 # deployment stays unconditionally eligible, exactly as before this
 # feature existed.
+#
+# A deployment that just recovered (its healthy_threshold-th consecutive
+# success) does not immediately receive its full configured routing
+# weight — it ramps up from recovery_ramp_initial_percent to 100% of its
+# configured weight over recovery_ramp_steps further consecutive
+# successful probes, avoiding a Slack-2021-style thundering-herd
+# reconvergence onto a deployment that may still be fragile immediately
+# after recovering. A probe failure during the ramp window restarts it at
+# recovery_ramp_initial_percent rather than letting it keep advancing.
 # health_probe:
 #   interval_seconds: 300
 #   unhealthy_threshold: 3
 #   healthy_threshold: 2
+#   recovery_ramp_steps: 4
+#   recovery_ramp_initial_percent: 20
 
 # Static per-model price table (USD per token), used by
 # internal/costaccounting for Decimal-precision cost calculation — see

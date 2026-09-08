@@ -355,6 +355,17 @@ type HealthProbeConfig struct {
 	// required before an excluded deployment is re-included. <= 0
 	// resolves to router.HealthConfig's own default (2).
 	HealthyThreshold int
+	// RecoveryRampSteps is the number of ADDITIONAL consecutive
+	// successful probes required, after the one that re-includes a
+	// deployment, before its routing weight finishes ramping back up to
+	// its full configured Weight. <= 0 resolves to
+	// router.HealthConfig's own default (4).
+	RecoveryRampSteps int
+	// RecoveryRampInitialPercent is the effective-weight percentage a
+	// just-recovered deployment starts at before ramping linearly up to
+	// 100 over RecoveryRampSteps further successes. <= 0 resolves to
+	// router.HealthConfig's own default (20).
+	RecoveryRampInitialPercent int
 }
 
 // Config is the gateway's fully-parsed static configuration.
@@ -539,6 +550,8 @@ func Load(path string) (*Config, error) {
 		cfg.HealthProbe.IntervalSeconds, _ = getInt(healthProbeRaw, "interval_seconds")
 		cfg.HealthProbe.UnhealthyThreshold, _ = getInt(healthProbeRaw, "unhealthy_threshold")
 		cfg.HealthProbe.HealthyThreshold, _ = getInt(healthProbeRaw, "healthy_threshold")
+		cfg.HealthProbe.RecoveryRampSteps, _ = getInt(healthProbeRaw, "recovery_ramp_steps")
+		cfg.HealthProbe.RecoveryRampInitialPercent, _ = getInt(healthProbeRaw, "recovery_ramp_initial_percent")
 	}
 
 	if priceRaw, ok := getMap(root, "price_table"); ok {
