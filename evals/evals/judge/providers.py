@@ -263,16 +263,27 @@ def make_openai_call_model(
 # verified 2026-09-08 directly against AWS's own live model-card pages
 # (docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-
 # claude-{sonnet-5,haiku-4-5}.html's own "Programmatic Access" tables) —
-# never guessed from a plausible-looking naming pattern. Deliberately the
-# bare `bedrock-runtime` model IDs, not a cross-region inference-profile
-# ID (the `us.`/`eu.`/`au.`/`global.` prefixed forms Bedrock also
-# publishes) — the bare form is the correct default for a single-region
-# judge workload; callers needing cross-region routing pass a different
-# `model` string to the factories below, no code change required. Note
-# the real, asymmetric naming confirmed directly from AWS's own docs:
-# Sonnet 5's id carries no date suffix; Haiku 4.5's does.
-BEDROCK_SONNET_5_MODEL_ID = "anthropic.claude-sonnet-5"
-BEDROCK_HAIKU_4_5_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
+# never guessed from a plausible-looking naming pattern. Note the real,
+# asymmetric naming confirmed directly from AWS's own docs: Sonnet 5's id
+# carries no date suffix; Haiku 4.5's does.
+#
+# Deliberately the `global.`-prefixed cross-region inference profile ID,
+# not the bare `bedrock-runtime` model ID — a real, live-verified
+# correction (2026-09-08) to this constant's own prior assumption that
+# the bare form was the correct single-region default: a real Converse
+# call against the bare id fails outright with `ValidationException:
+# Invocation of model ID ... with on-demand throughput isn't supported.
+# Retry your request with the ID or ARN of an inference profile that
+# contains this model.` Neither Sonnet 5 nor Haiku 4.5 supports on-demand
+# invocation by bare id at all on this account — confirmed by a real
+# live call, not inferred from documentation prose. `global.` (over a
+# `us.`/`eu.`/`au.`/`jp.` geo-scoped profile) is used so this never needs
+# to track whatever region `AWS_REGION` happens to be set to — AWS's own
+# docs confirm global cross-Region inference is supported for on-demand
+# model inference; both ids were re-verified live against this exact
+# credential before landing.
+BEDROCK_SONNET_5_MODEL_ID = "global.anthropic.claude-sonnet-5"
+BEDROCK_HAIKU_4_5_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 # Bedrock bills these two (both third-party models) through AWS
 # Marketplace, per each model's own live "Pricing" section, which defers

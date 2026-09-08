@@ -715,10 +715,11 @@ def test_run_with_llm_judge_panel_scores_via_real_wiring_using_fake_providers(
     persisted = load_scores(scores_path)
     assert len(persisted) == 2
     assert all(s.scorer_type == "llm_judge_panel" for s in persisted)
-    assert (
-        persisted[0].scorer_id
-        == "panel:anthropic.claude-sonnet-5+anthropic.claude-haiku-4-5-20251001-v1:0"
+    expected_scorer_id = (
+        "panel:global.anthropic.claude-sonnet-5"
+        "+global.anthropic.claude-haiku-4-5-20251001-v1:0"
     )
+    assert persisted[0].scorer_id == expected_scorer_id
     assert persisted[0].quorum_reached is True
     assert persisted[0].panel_votes is not None
     assert len(persisted[0].panel_votes) == 2
@@ -939,9 +940,9 @@ def test_run_with_llm_judge_panel_use_score_cache_reuses_per_case_not_per_suite(
     # has no real code path today -- --llm-judge still uses direct-
     # Anthropic-API's DEFAULT_JUDGE_MODEL ("claude-haiku-4-5-20251001"),
     # while the panel now uses two Bedrock model ids
-    # ("anthropic.claude-sonnet-5", "anthropic.claude-haiku-4-5-20251001-
-    # v1:0") -- disjoint id strings, so no cache overlap between the two
-    # modes currently exists.
+    # ("global.anthropic.claude-sonnet-5",
+    # "global.anthropic.claude-haiku-4-5-20251001-v1:0") -- disjoint id
+    # strings, so no cache overlap between the two modes currently exists.
     single_case_suite = tmp_path / "single_case_suite.json"
     single_case_suite.write_text(
         json.dumps(
@@ -1036,7 +1037,10 @@ def test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cach
             Score(
                 eval_case_id="judge-pass-case",
                 eval_case_revision=1,
-                scorer_id="panel:anthropic.claude-sonnet-5+anthropic.claude-haiku-4-5-20251001-v1:0",
+                scorer_id=(
+                    "panel:global.anthropic.claude-sonnet-5"
+                    "+global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                ),
                 scorer_type="llm_judge_panel",
                 value=True,
                 cost_usd=Decimal("0"),

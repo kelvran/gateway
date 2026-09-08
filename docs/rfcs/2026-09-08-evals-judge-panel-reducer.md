@@ -28,6 +28,20 @@ directly verified (not guessed) about the two Bedrock models actually
 used, and the "Consequence: cross-mode cache reuse is now dormant"
 section for one real, honestly-named side effect of this swap.
 
+**Corrected 2026-09-08 (same day, once a real AWS credential was actually
+available to test against): both model id constants were wrong.** The
+bare `bedrock-runtime` model ids used above were never live-tested —
+verified only against AWS documentation, which never states that these
+two specific models reject on-demand invocation by bare id. A real
+Converse call fails outright (`ValidationException: ... on-demand
+throughput isn't supported ... Retry your request with the ID or ARN of
+an inference profile`). Both constants now carry the `global.`-prefixed
+cross-region inference profile id instead; see the "Real, verified model
+ids and pricing" section's own correction note for the full account. A
+real end-to-end `evals run --llm-judge-panel` invocation against a live
+credential now succeeds — the first time this feature has actually run
+against real Bedrock access, not just fakes.
+
 ## Context
 
 The interface RFC widened `judge()`'s `call_model` parameter to accept
@@ -160,17 +174,34 @@ for a future reader to discover the hard way.
 
 ### Real, verified model ids and pricing (added by the panel-composition revision)
 
-`BEDROCK_SONNET_5_MODEL_ID = "anthropic.claude-sonnet-5"` and
-`BEDROCK_HAIKU_4_5_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"`
+`BEDROCK_SONNET_5_MODEL_ID = "global.anthropic.claude-sonnet-5"` and
+`BEDROCK_HAIKU_4_5_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"`
 (`evals/evals/judge/providers.py`) — both verified 2026-09-08 directly
 against AWS's own live Bedrock model-card pages' "Programmatic Access"
 tables, never guessed from a plausible-looking naming pattern. Note the
 real, asymmetric naming this verification surfaced: Sonnet 5's id has no
 date suffix; Haiku 4.5's does — a detail that would have been wrong if
-inferred from Haiku 4.5's own pattern alone. Both are the bare
-`bedrock-runtime` model ids, not a cross-region inference-profile id
-(the `us.`/`eu.`/`au.`/`global.`-prefixed forms Bedrock also publishes,
-for callers needing cross-region routing).
+inferred from Haiku 4.5's own pattern alone.
+
+**Correction, same day, once a real AWS credential was actually available
+to test against:** the bare `bedrock-runtime` model id (no prefix) was
+originally used here, on the documented-but-unverified assumption that it
+was "the correct default for a single-region judge workload." A real
+Converse call against the bare id fails outright on this account:
+`ValidationException: Invocation of model ID ... with on-demand
+throughput isn't supported. Retry your request with the ID or ARN of an
+inference profile that contains this model.` Neither Sonnet 5 nor
+Haiku 4.5 supports on-demand invocation by bare id at all — confirmed by
+a real live call, not inferred from documentation prose (the model cards
+describe the bare id as a valid "Model ID" without stating this
+restriction anywhere obvious). Both constants now carry the `global.`-
+prefixed cross-region inference profile id instead — chosen over a
+`us.`/`eu.`/`au.`/`jp.` geo-scoped profile specifically so this never
+needs to track whatever region the deployer's own `AWS_REGION` happens to
+be set to; AWS's own docs confirm global cross-Region inference is
+supported for on-demand model inference. Both new ids were re-verified
+live (a real `evals run --llm-judge-panel` invocation against a live
+credential, not just a raw provider call) before landing.
 
 Both models are billed via AWS Marketplace as third-party models; a live
 fetch of Bedrock's own pricing page did not surface a real, current
