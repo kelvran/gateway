@@ -48,9 +48,14 @@ from evals.ingestion.object_store import (
 )
 from evals.judge.cache import compute_score_cache_key
 from evals.judge.deterministic import exact_match, regex_match
-from evals.judge.llm_judge import judge
-from evals.judge.providers import DEFAULT_JUDGE_MODEL, make_anthropic_call_model
-from evals.models import EvalCase, Run, Score, Span
+from evals.judge.llm_judge import judge, reduce_panel_votes
+from evals.judge.providers import (
+    DEFAULT_JUDGE_MODEL,
+    OPENAI_DEFAULT_JUDGE_MODEL,
+    make_anthropic_call_model,
+    make_openai_call_model,
+)
+from evals.models import EvalCase, PanelVote, Run, Score, Span
 from evals.results_store import (
     append_runs,
     append_scores,
@@ -176,6 +181,48 @@ def _load_cached_scores(scores_path: Path) -> dict[str, Score]:
     }
 
 
+# (real scorer_id, call_model) pairs, in declared/call order -- unlike
+# judge()'s own opaque list[CallModel], evals.cli always knows each
+# panelist's real model id (it built the panel from named provider
+# factories), which is exactly the piece judge() itself cannot supply.
+# See docs/rfcs/2026-09-08-evals-judge-panel-reducer.md.
+PanelSpec = list[tuple[str, Callable[[str], Awaitable[str]]]]
+
+
+def _load_cached_panel_votes(scores_path: Path) -> dict[str, PanelVote]:
+    """Panel-mode analogue of `_load_cached_scores`. A panelist's vote is
+    cache-eligible whether it came from a prior STANDALONE `--llm-judge`
+    Score for that exact model id, or from a prior `--llm-judge-panel`
+    run's own embedded `panel_votes` -- both keyed identically (per
+    docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's cache-key design:
+    a panelist's own cache key never depends on panel membership or
+    size), since a judge's verdict on a given (output, reference, axis)
+    triple doesn't depend on whether it happened to be called standalone
+    or as one panel member. Never chains a hit off a hit, mirroring
+    `_load_cached_scores` exactly.
+    """
+    votes: dict[str, PanelVote] = {}
+    for s in load_scores(scores_path):
+        if s.from_cache:
+            continue
+        if s.scorer_type == "llm_judge" and s.score_cache_key is not None:
+            votes.setdefault(
+                s.score_cache_key,
+                PanelVote(
+                    scorer_id=s.scorer_id,
+                    passed=s.value,
+                    rationale=s.rationale or "",
+                    score_cache_key=s.score_cache_key,
+                    from_cache=False,
+                ),
+            )
+        elif s.scorer_type == "llm_judge_panel" and s.panel_votes is not None:
+            for vote in s.panel_votes:
+                if not vote.from_cache and vote.score_cache_key is not None:
+                    votes.setdefault(vote.score_cache_key, vote)
+    return votes
+
+
 def _parse_judge_axes(raw: str | None) -> list[str] | None:
     """Parse `--judge-axes`' comma-separated value into a real list, or
     `None` if the flag was never given — `evals.judge.llm_judge.judge()`'s
@@ -214,6 +261,14 @@ class _JudgeOutcome:
     `judge()` call or a `--use-score-cache` hit — lets both `run_cmd` and
     `rollout_cmd` build their `Score` from one shape regardless of which
     path produced it, per docs/rfcs/2026-09-05-evals-score-cache.md.
+
+    `panel_votes`/`quorum_reached` (added 2026-09-08, per docs/rfcs/2026-
+    09-08-evals-judge-panel-reducer.md) are `None` for a single-judge
+    outcome (`_judge_with_cache`) — populated only by `_judge_panel_with_
+    cache`. `score_cache_key` stays `None` for a panel outcome: a panel's
+    REDUCED verdict is never itself cached (only each panelist's own
+    vote is, via `panel_votes[i].score_cache_key`) — see that RFC's
+    cache-key design.
     """
 
     passed: bool
@@ -223,6 +278,8 @@ class _JudgeOutcome:
     score_cache_key: str | None
     from_cache: bool
     axis: str | None = None
+    panel_votes: list[PanelVote] | None = None
+    quorum_reached: bool | None = None
 
 
 async def _judge_with_cache(
@@ -292,33 +349,183 @@ async def _judge_with_cache(
     )
 
 
+def _sum_panel_cost(costs: list[Decimal | None]) -> Decimal:
+    """Sum every panelist's real per-call cost. `None` (an unpriced model,
+    or a test fake with no cost side-channel) for ANY fresh panelist makes
+    the WHOLE panel's cost `None` — never a silently-understated partial
+    sum — mirroring `Score.cost_usd`'s own "genuinely unmeasured, never a
+    fabricated stand-in" convention, generalized from one judge to any
+    judge in the panel. Callers only call this when at least one real
+    cost is expected (an all-cache-hit panel short-circuits to the exact,
+    certain `Decimal("0")` before ever reaching this function).
+    """
+    total = Decimal("0")
+    for cost in costs:
+        if cost is None:
+            return None  # type: ignore[return-value]
+        total += cost
+    return total
+
+
+async def _judge_panel_with_cache(
+    output: str,
+    reference: str,
+    panel: PanelSpec,
+    cached_votes: dict[str, PanelVote] | None,
+    axis: str | None = None,
+) -> _JudgeOutcome | None:
+    """Panel analogue of `_judge_with_cache` — scores `output` against
+    `reference` with a real 2+ judge panel, majority-reduced via
+    `reduce_panel_votes`, per docs/rfcs/2026-09-08-evals-judge-panel-
+    reducer.md.
+
+    When `cached_votes is None` (the common default, caching off):
+    delegates directly to `judge()`'s own real multi-callable branch —
+    this exercises that branch as genuine production code, not just
+    unit-tested in isolation — then remaps its placeholder-id votes to
+    each panelist's REAL model id and computes each vote's own cache key
+    unconditionally (mirrors `Score.score_cache_key`'s "always computed
+    regardless of whether caching is active this run" convention), so a
+    LATER cache-enabled invocation can reuse them even though this one
+    never consulted a cache itself.
+
+    When `cached_votes is not None`: does per-panelist fine-grained
+    skip/call, reusing `judge()`'s existing SINGLE-callable path (never
+    the panel branch, never a private parsing function) for any panelist
+    that needs a fresh call — never re-chains a cache hit off another
+    cache hit, mirroring `_judge_with_cache`'s own discipline.
+
+    A single panelist's call failure is a whole-case `JUDGE_ERROR`
+    (returns `None`), mirroring `_judge_all_axes`'s pre-existing
+    all-or-nothing precedent for multi-axis judging.
+    """
+    if cached_votes is None:
+        try:
+            result = await judge(
+                output=output,
+                reference=reference,
+                call_model=[cm for _, cm in panel],
+                axis=axis,
+            )
+        except Exception:
+            return None
+        real_ids = [scorer_id for scorer_id, _ in panel]
+        votes = [
+            PanelVote(
+                scorer_id=real_ids[i],
+                passed=v.passed,
+                rationale=v.rationale,
+                score_cache_key=compute_score_cache_key(
+                    output, reference, real_ids[i], axis=axis
+                ),
+                from_cache=False,
+            )
+            for i, v in enumerate(result.panel_votes or [])
+        ]
+        cost_usd = _sum_panel_cost([_last_judge_call_cost_usd(cm) for _, cm in panel])
+        return _JudgeOutcome(
+            passed=result.passed,
+            rationale=None,
+            bias_mitigations_applied=result.bias_mitigations_applied,
+            cost_usd=cost_usd,
+            score_cache_key=None,
+            from_cache=False,
+            axis=axis,
+            panel_votes=votes,
+            quorum_reached=result.quorum_reached,
+        )
+
+    votes: list[PanelVote] = []
+    fresh_costs: list[Decimal | None] = []
+    for scorer_id, call_model in panel:
+        key = compute_score_cache_key(output, reference, scorer_id, axis=axis)
+        cached = cached_votes.get(key)
+        if cached is not None:
+            votes.append(
+                PanelVote(
+                    scorer_id=scorer_id,
+                    passed=cached.passed,
+                    rationale=cached.rationale,
+                    score_cache_key=key,
+                    from_cache=True,
+                )
+            )
+            continue
+        try:
+            result = await judge(
+                output=output, reference=reference, call_model=call_model, axis=axis
+            )
+        except Exception:
+            return None
+        votes.append(
+            PanelVote(
+                scorer_id=scorer_id,
+                passed=result.passed,
+                rationale=result.rationale,
+                score_cache_key=key,
+                from_cache=False,
+            )
+        )
+        fresh_costs.append(_last_judge_call_cost_usd(call_model))
+
+    verdict = reduce_panel_votes(votes)
+    all_cached = all(v.from_cache for v in votes)
+    cost_usd = Decimal("0") if all_cached else _sum_panel_cost(fresh_costs)
+    return _JudgeOutcome(
+        passed=verdict.passed,
+        rationale=None,
+        bias_mitigations_applied=verdict.bias_mitigations_applied,
+        cost_usd=cost_usd,
+        score_cache_key=None,
+        from_cache=all_cached,
+        axis=axis,
+        panel_votes=votes,
+        quorum_reached=verdict.quorum_reached,
+    )
+
+
 async def _judge_all_axes(
     output: str,
     reference: str,
-    call_model: Callable[[str], Awaitable[str]],
-    cached_scores: dict[str, Score] | None,
     axes: list[str] | None,
+    call_model: Callable[[str], Awaitable[str]] | None = None,
+    cached_scores: dict[str, Score] | None = None,
+    panel: PanelSpec | None = None,
+    cached_votes: dict[str, PanelVote] | None = None,
 ) -> list[_JudgeOutcome] | None:
     """Judge `output` against `reference` once per configured axis (or
-    once, holistically, if `axes` is `None`) — one `_judge_with_cache`
-    call per axis, per docs/rfcs/2026-09-05-evals-multi-axis-judging.md's
-    one-call-per-axis design, never one call trying to cover several.
+    once, holistically, if `axes` is `None`) — one call per axis, per
+    docs/rfcs/2026-09-05-evals-multi-axis-judging.md's one-call-per-axis
+    design, never one call trying to cover several.
+
+    Exactly one of `call_model` (single-judge, via `_judge_with_cache`)
+    or `panel` (multi-judge, via `_judge_panel_with_cache`) must be given
+    — callers (`_judge_case`/`_score_and_record`) decide which mode is
+    active up front from the mutually-exclusive `--llm-judge`/
+    `--llm-judge-panel` flags, per docs/rfcs/2026-09-08-evals-judge-
+    panel-reducer.md.
 
     Returns `None` if ANY axis's judge call fails — the whole case is
     treated as `JUDGE_ERROR`, mirroring the pre-existing single-axis
     all-or-nothing behavior, rather than persisting a confusing partial
     set of per-axis `Score`s for one case.
     """
-    if axes is None:
-        outcome = await _judge_with_cache(
-            output, reference, DEFAULT_JUDGE_MODEL, call_model, cached_scores
+
+    async def _one_axis(axis: str | None) -> _JudgeOutcome | None:
+        if panel is not None:
+            return await _judge_panel_with_cache(
+                output, reference, panel, cached_votes, axis=axis
+            )
+        return await _judge_with_cache(
+            output, reference, DEFAULT_JUDGE_MODEL, call_model, cached_scores, axis=axis
         )
+
+    if axes is None:
+        outcome = await _one_axis(None)
         return None if outcome is None else [outcome]
     outcomes: list[_JudgeOutcome] = []
     for axis in axes:
-        outcome = await _judge_with_cache(
-            output, reference, DEFAULT_JUDGE_MODEL, call_model, cached_scores, axis=axis
-        )
+        outcome = await _one_axis(axis)
         if outcome is None:
             return None
         outcomes.append(outcome)
@@ -327,9 +534,11 @@ async def _judge_all_axes(
 
 def _judge_case(
     case: EvalCase,
-    call_model: Callable[[str], Awaitable[str]],
-    cached_scores: dict[str, Score] | None,
     axes: list[str] | None = None,
+    call_model: Callable[[str], Awaitable[str]] | None = None,
+    cached_scores: dict[str, Score] | None = None,
+    panel: PanelSpec | None = None,
+    cached_votes: dict[str, PanelVote] | None = None,
 ) -> list[_JudgeOutcome] | None:
     """`run_cmd`'s own entry point into `_judge_all_axes` — synchronous,
     since `run_cmd` itself never runs inside an event loop (unlike
@@ -344,7 +553,15 @@ def _judge_case(
             f"case {case.id!r}: LLM-judge scoring requires a reference"
         )
     return asyncio.run(
-        _judge_all_axes(output, case.reference, call_model, cached_scores, axes)
+        _judge_all_axes(
+            output,
+            case.reference,
+            axes,
+            call_model=call_model,
+            cached_scores=cached_scores,
+            panel=panel,
+            cached_votes=cached_votes,
+        )
     )
 
 
@@ -498,6 +715,19 @@ def main() -> None:
     ),
 )
 @click.option(
+    "--llm-judge-panel",
+    is_flag=True,
+    default=False,
+    help=(
+        "Score with a 2-judge disjoint-provider panel (Anthropic + "
+        "OpenAI) instead of a single judge, majority-reduced via "
+        "evals.judge.llm_judge.reduce_panel_votes. Mutually exclusive "
+        "with --llm-judge. Requires both ANTHROPIC_API_KEY and "
+        "OPENAI_API_KEY in the environment. See "
+        "docs/rfcs/2026-09-08-evals-judge-panel-reducer.md."
+    ),
+)
+@click.option(
     "--use-score-cache",
     is_flag=True,
     default=False,
@@ -515,8 +745,9 @@ def main() -> None:
     help=(
         "Comma-separated rubric axes (e.g. correctness,safety) to judge "
         "independently, one real LLM-judge call per axis, instead of one "
-        "holistic verdict. Only meaningful together with --llm-judge. "
-        "Omit for the original single-verdict behavior, unchanged. See "
+        "holistic verdict. Only meaningful together with --llm-judge or "
+        "--llm-judge-panel. Omit for the original single-verdict "
+        "behavior, unchanged. See "
         "docs/rfcs/2026-09-05-evals-multi-axis-judging.md."
     ),
 )
@@ -525,14 +756,32 @@ def run_cmd(
     suite_path: Path,
     scores_path: Path,
     llm_judge: bool,
+    llm_judge_panel: bool,
     use_score_cache: bool,
     judge_axes: str | None,
     confidence: float,
 ) -> None:
     """Run a suite of EvalCases and print pass/fail plus a Wilson CI."""
+    if llm_judge and llm_judge_panel:
+        raise click.UsageError(
+            "--llm-judge and --llm-judge-panel are mutually exclusive."
+        )
+
     cases = _load_cases(suite_path)
     call_model = make_anthropic_call_model() if llm_judge else None
-    cached_scores = _load_cached_scores(scores_path) if use_score_cache else None
+    panel: PanelSpec | None = None
+    cached_scores = None
+    cached_votes = None
+    if llm_judge_panel:
+        panel = [
+            (DEFAULT_JUDGE_MODEL, make_anthropic_call_model()),
+            (OPENAI_DEFAULT_JUDGE_MODEL, make_openai_call_model()),
+        ]
+        cached_votes = (
+            _load_cached_panel_votes(scores_path) if use_score_cache else None
+        )
+    else:
+        cached_scores = _load_cached_scores(scores_path) if use_score_cache else None
     axes = _parse_judge_axes(judge_axes)
 
     successes = 0
@@ -540,8 +789,15 @@ def run_cmd(
     scores: list[Score] = []
     for case in cases:
         total += 1
-        if llm_judge:
-            outcomes = _judge_case(case, call_model, cached_scores, axes)
+        if llm_judge or llm_judge_panel:
+            outcomes = _judge_case(
+                case,
+                axes,
+                call_model=call_model,
+                cached_scores=cached_scores,
+                panel=panel,
+                cached_votes=cached_votes,
+            )
             if outcomes is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
                 continue
@@ -550,14 +806,20 @@ def run_cmd(
             # it's correct on every other one. Single-axis (axes=None)
             # degenerates to exactly today's one-outcome behavior.
             passed = all(o.passed for o in outcomes)
+            scorer_type = "llm_judge_panel" if llm_judge_panel else "llm_judge"
+            scorer_id = (
+                "panel:" + "+".join(sid for sid, _ in panel)
+                if llm_judge_panel
+                else DEFAULT_JUDGE_MODEL
+            )
             for outcome in outcomes:
                 scores.append(
                     Score(
                         eval_case_id=case.id,
                         eval_case_revision=case.revision,
                         run_id=None,
-                        scorer_id=DEFAULT_JUDGE_MODEL,
-                        scorer_type="llm_judge",
+                        scorer_id=scorer_id,
+                        scorer_type=scorer_type,
                         value=outcome.passed,
                         rationale=outcome.rationale,
                         bias_mitigations_applied=outcome.bias_mitigations_applied,
@@ -568,6 +830,8 @@ def run_cmd(
                         tier=case.tier,
                         tags=list(case.tags),
                         flaky=case.flaky,
+                        panel_votes=outcome.panel_votes,
+                        quorum_reached=outcome.quorum_reached,
                     )
                 )
                 if outcome.axis is not None:
@@ -896,6 +1160,19 @@ def ingest_cmd(
         "ANTHROPIC_API_KEY in the environment."
     ),
 )
+@click.option(
+    "--llm-judge-panel",
+    is_flag=True,
+    default=False,
+    help=(
+        "Score with a 2-judge disjoint-provider panel (Anthropic + "
+        "OpenAI) instead of a single judge, majority-reduced via "
+        "evals.judge.llm_judge.reduce_panel_votes. Mutually exclusive "
+        "with --llm-judge. Requires both ANTHROPIC_API_KEY and "
+        "OPENAI_API_KEY in the environment. See "
+        "docs/rfcs/2026-09-08-evals-judge-panel-reducer.md."
+    ),
+)
 @click.option("--confidence", default=0.95, show_default=True, type=float)
 @click.option(
     "--use-cache",
@@ -971,6 +1248,7 @@ def rollout_cmd(
     scores_path: Path,
     traces_path: Path,
     llm_judge: bool,
+    llm_judge_panel: bool,
     confidence: float,
     use_cache: bool,
     use_score_cache: bool,
@@ -980,6 +1258,11 @@ def rollout_cmd(
     early_stop_relative_mixing_variance: float,
 ) -> None:
     """Run a suite of EvalCases through the Rollout Scheduler and score them."""
+    if llm_judge and llm_judge_panel:
+        raise click.UsageError(
+            "--llm-judge and --llm-judge-panel are mutually exclusive."
+        )
+
     early_stop_params = (early_stop_max_trials, early_stop_baseline_pass_rate)
     early_stop_given = sum(p is not None for p in early_stop_params)
     if early_stop_given not in (0, len(early_stop_params)):
@@ -990,6 +1273,19 @@ def rollout_cmd(
 
     cases = _load_cases(suite_path)
     call_model = make_anthropic_call_model() if llm_judge else None
+    panel: PanelSpec | None = None
+    cached_scores = None
+    cached_votes = None
+    if llm_judge_panel:
+        panel = [
+            (DEFAULT_JUDGE_MODEL, make_anthropic_call_model()),
+            (OPENAI_DEFAULT_JUDGE_MODEL, make_openai_call_model()),
+        ]
+        cached_votes = (
+            _load_cached_panel_votes(scores_path) if use_score_cache else None
+        )
+    else:
+        cached_scores = _load_cached_scores(scores_path) if use_score_cache else None
 
     cached_runs = None
     if use_cache:
@@ -998,7 +1294,6 @@ def rollout_cmd(
             for r in load_runs(results_path)
             if r.status == "completed" and not r.from_cache and r.cache_key is not None
         }
-    cached_scores = _load_cached_scores(scores_path) if use_score_cache else None
     axes = _parse_judge_axes(judge_axes)
 
     successes = 0
@@ -1028,13 +1323,19 @@ def rollout_cmd(
         if run.status != "completed":
             click.echo(f"{case.id}: {run.status.upper()}")
             return False
-        if llm_judge:
+        if llm_judge or llm_judge_panel:
             if case.reference is None:
                 raise click.ClickException(
                     f"case {case.id!r}: LLM-judge scoring requires a reference"
                 )
             outcomes = await _judge_all_axes(
-                run.stdout.strip(), case.reference, call_model, cached_scores, axes
+                run.stdout.strip(),
+                case.reference,
+                axes,
+                call_model=call_model,
+                cached_scores=cached_scores,
+                panel=panel,
+                cached_votes=cached_votes,
             )
             if outcomes is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
@@ -1043,14 +1344,20 @@ def rollout_cmd(
             # run_cmd's identical AND-semantics for why. axes=None
             # degenerates to exactly today's one-outcome behavior.
             passed = all(o.passed for o in outcomes)
+            scorer_type = "llm_judge_panel" if llm_judge_panel else "llm_judge"
+            scorer_id = (
+                "panel:" + "+".join(sid for sid, _ in panel)
+                if llm_judge_panel
+                else DEFAULT_JUDGE_MODEL
+            )
             for outcome in outcomes:
                 scores.append(
                     Score(
                         eval_case_id=case.id,
                         eval_case_revision=case.revision,
                         run_id=run.id,
-                        scorer_id=DEFAULT_JUDGE_MODEL,
-                        scorer_type="llm_judge",
+                        scorer_id=scorer_id,
+                        scorer_type=scorer_type,
                         value=outcome.passed,
                         rationale=outcome.rationale,
                         bias_mitigations_applied=outcome.bias_mitigations_applied,
@@ -1061,6 +1368,8 @@ def rollout_cmd(
                         tier=case.tier,
                         tags=list(case.tags),
                         flaky=case.flaky,
+                        panel_votes=outcome.panel_votes,
+                        quorum_reached=outcome.quorum_reached,
                     )
                 )
                 if outcome.axis is not None:
@@ -1288,11 +1597,22 @@ def report_cmd(
             eligible = _gate_eligible(group)
             excluded = len(group) - len(eligible)
             note = f" ({excluded} flaky excluded from gate)" if excluded else ""
+            # docs/rfcs/2026-09-08-evals-judge-panel-reducer.md: a
+            # quorum-tie is a real, disagreement-driven fail-closed
+            # verdict, not a genuine unanimous FAIL -- surface the count
+            # so an operator can tell the two apart, mirroring the
+            # flaky-exclusion note's own pattern exactly.
+            tie_note = ""
+            if scorer_type == "llm_judge_panel":
+                ties = sum(1 for s in group if s.quorum_reached is False)
+                if ties:
+                    tie_note = f" ({ties} quorum-tie, fail-closed)"
             click.echo(
                 f"{scorer_type}: "
                 + format_report(group_successes, len(group), confidence=confidence)
                 + f" {_format_group_cost(group)}"
                 + note
+                + tie_note
             )
             if eligible:
                 eligible_successes = sum(1 for s in eligible if s.value)

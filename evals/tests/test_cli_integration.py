@@ -34,7 +34,8 @@ from click.testing import CliRunner
 import evals.cli as cli_module
 import evals.rollout.scheduler as scheduler_module
 from evals.cli import main
-from evals.models import Score, Span
+from evals.judge.cache import compute_score_cache_key
+from evals.models import PanelVote, Score, Span
 from evals.results_store import (
     append_scores,
     append_spans,
@@ -165,7 +166,9 @@ def _write_scores(path, scores):
     append_scores(scores, path)
 
 
-def _make_score(eval_case_id, scorer_type, value, cost_usd=Decimal("0")):
+def _make_score(
+    eval_case_id, scorer_type, value, cost_usd=Decimal("0"), quorum_reached=None
+):
     return Score(
         eval_case_id=eval_case_id,
         eval_case_revision=1,
@@ -173,6 +176,20 @@ def _make_score(eval_case_id, scorer_type, value, cost_usd=Decimal("0")):
         scorer_type=scorer_type,
         value=value,
         cost_usd=cost_usd,
+        quorum_reached=quorum_reached,
+    )
+
+
+def _panel_vote_for_test(output, reference, scorer_id, passed, from_cache=False):
+    # The REAL cache key for (output, reference, scorer_id) -- a mismatched
+    # placeholder key would make a from_cache exclusion test pass for the
+    # wrong reason (a lookup miss, not the from_cache filter itself).
+    return PanelVote(
+        scorer_id=scorer_id,
+        passed=passed,
+        rationale="test rationale",
+        score_cache_key=compute_score_cache_key(output, reference, scorer_id),
+        from_cache=from_cache,
     )
 
 
@@ -224,6 +241,80 @@ def test_report_scores_never_blends_distinct_scorer_types(tmp_path):
     # Cost is summed within each group, never across groups.
     assert "total_cost_usd=0" in lines[0]
     assert "total_cost_usd=0.006" in lines[1]
+
+
+def test_report_scores_prints_llm_judge_and_panel_as_separate_never_blended_lines(
+    tmp_path,
+):
+    # docs/rfcs/2026-09-08-evals-judge-panel-reducer.md: llm_judge_panel is
+    # a genuinely distinct scorer_type, never folded into llm_judge's own
+    # number -- report_cmd needs zero code changes to guarantee this since
+    # it already groups purely by scorer_type, but the guarantee itself is
+    # worth a dedicated test, mirroring the never-blended test just above.
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(
+        scores_path,
+        [
+            _make_score("c1", "llm_judge", True),
+            _make_score("c1", "llm_judge_panel", True, quorum_reached=True),
+            _make_score("c2", "llm_judge_panel", False, quorum_reached=False),
+        ],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if "pass_rate=" in line]
+    assert len(lines) == 2
+    assert lines[0].startswith("llm_judge:")
+    assert lines[1].startswith("llm_judge_panel:")
+    assert "pass_rate=1.0000 (1/1)" in lines[0]
+    assert "pass_rate=0.5000 (1/2)" in lines[1]
+
+
+def test_report_scores_shows_quorum_tie_count_for_llm_judge_panel_group(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(
+        scores_path,
+        [
+            _make_score("c1", "llm_judge_panel", True, quorum_reached=True),
+            _make_score("c2", "llm_judge_panel", False, quorum_reached=False),
+            _make_score("c3", "llm_judge_panel", False, quorum_reached=False),
+        ],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code == 0, result.output
+    line = next(
+        line
+        for line in result.output.splitlines()
+        if line.startswith("llm_judge_panel:")
+    )
+    assert "(2 quorum-tie, fail-closed)" in line
+
+
+def test_report_scores_shows_no_quorum_tie_note_when_every_panel_verdict_reached_quorum(
+    tmp_path,
+):
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(
+        scores_path,
+        [_make_score("c1", "llm_judge_panel", True, quorum_reached=True)],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code == 0, result.output
+    line = next(
+        line
+        for line in result.output.splitlines()
+        if line.startswith("llm_judge_panel:")
+    )
+    assert "quorum-tie" not in line
 
 
 def test_report_scores_fail_under_checks_each_scorer_type_group_independently(
@@ -566,6 +657,394 @@ def test_run_deterministic_scores_have_exact_zero_cost(tmp_path):
     persisted = load_scores(scores_path)
     assert len(persisted) == 3
     assert all(s.cost_usd == Decimal("0") for s in persisted)
+
+
+def _monkeypatch_panel_providers(monkeypatch, anthropic_response, openai_response):
+    """Shared setup for a 2-provider panel test: distinct, fixed responses
+    per provider (never a shared iter()/next() counter) so the test's own
+    correctness never depends on asyncio.gather's real scheduling order.
+    """
+
+    async def fake_anthropic(prompt: str) -> str:
+        return anthropic_response
+
+    async def fake_openai(prompt: str) -> str:
+        return openai_response
+
+    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
+    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+
+
+def test_run_with_llm_judge_panel_scores_via_real_wiring_using_fake_providers(
+    tmp_path, monkeypatch
+):
+    _monkeypatch_panel_providers(
+        monkeypatch,
+        anthropic_response="REASONING: matches exactly.\nVERDICT: PASS\n",
+        openai_response="REASONING: matches exactly.\nVERDICT: PASS\n",
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge-panel",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "judge-pass-case: PASS" in result.output
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 2
+    assert all(s.scorer_type == "llm_judge_panel" for s in persisted)
+    assert persisted[0].scorer_id == "panel:claude-haiku-4-5-20251001+gpt-4o-mini"
+    assert persisted[0].quorum_reached is True
+    assert persisted[0].panel_votes is not None
+    assert len(persisted[0].panel_votes) == 2
+    assert {v.scorer_id for v in persisted[0].panel_votes} == {
+        "claude-haiku-4-5-20251001",
+        "gpt-4o-mini",
+    }
+
+
+def test_run_with_llm_judge_panel_disagreement_is_fail_closed(tmp_path, monkeypatch):
+    _monkeypatch_panel_providers(
+        monkeypatch,
+        anthropic_response="REASONING: matches.\nVERDICT: PASS\n",
+        openai_response="REASONING: does not match.\nVERDICT: FAIL\n",
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge-panel",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "judge-pass-case: FAIL" in result.output
+
+    persisted = load_scores(scores_path)
+    pass_case = next(s for s in persisted if s.eval_case_id == "judge-pass-case")
+    assert pass_case.value is False
+    assert pass_case.quorum_reached is False
+
+
+def test_run_with_llm_judge_and_llm_judge_panel_together_is_a_usage_error(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--llm-judge-panel",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_run_with_llm_judge_panel_sums_cost_across_both_providers_from_fakes(
+    tmp_path, monkeypatch
+):
+    class _FakeCostExposingCallModel:
+        def __init__(self, response: str, cost: Decimal) -> None:
+            self._response = response
+            self._cost = cost
+            self.last_call_cost = None
+
+        async def __call__(self, prompt: str) -> str:
+            self.last_call_cost = SimpleNamespace(cost_usd=self._cost)
+            return self._response
+
+    anthropic_fake = _FakeCostExposingCallModel(
+        "REASONING: matches.\nVERDICT: PASS\n", Decimal("0.001")
+    )
+    openai_fake = _FakeCostExposingCallModel(
+        "REASONING: matches.\nVERDICT: PASS\n", Decimal("0.0004")
+    )
+    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: anthropic_fake)
+    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: openai_fake)
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge-panel",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    persisted = load_scores(scores_path)
+    pass_case = next(s for s in persisted if s.eval_case_id == "judge-pass-case")
+    assert pass_case.cost_usd == Decimal("0.0014")
+
+
+def test_run_with_llm_judge_panel_cost_is_none_when_any_panelist_cost_is_unknown(
+    tmp_path, monkeypatch
+):
+    # The Anthropic fake below exposes no last_call_cost at all (a plain
+    # async function, like the un-cost-exposing single-judge fakes
+    # elsewhere in this file) -- the WHOLE panel's cost_usd must be None,
+    # never a silently-understated partial sum from the OpenAI side alone.
+    _monkeypatch_panel_providers(
+        monkeypatch,
+        anthropic_response="REASONING: matches.\nVERDICT: PASS\n",
+        openai_response="REASONING: matches.\nVERDICT: PASS\n",
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge-panel",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    persisted = load_scores(scores_path)
+    assert all(s.cost_usd is None for s in persisted)
+
+
+def test_run_with_llm_judge_panel_use_score_cache_second_invocation_makes_no_calls(
+    tmp_path, monkeypatch
+):
+    anthropic_calls = {"n": 0}
+    openai_calls = {"n": 0}
+
+    async def fake_anthropic(prompt: str) -> str:
+        anthropic_calls["n"] += 1
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    async def fake_openai(prompt: str) -> str:
+        openai_calls["n"] += 1
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
+    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+
+    scores_path = tmp_path / "scores.jsonl"
+    args = [
+        "run",
+        "--suite",
+        "tests/fixtures/llm_judge_example.json",
+        "--scores",
+        str(scores_path),
+        "--llm-judge-panel",
+        "--use-score-cache",
+    ]
+    runner = CliRunner()
+
+    first = runner.invoke(main, args)
+    assert first.exit_code == 0, first.output
+    assert anthropic_calls["n"] == 2
+    assert openai_calls["n"] == 2
+
+    second = runner.invoke(main, args)
+    assert second.exit_code == 0, second.output
+    # Every panelist's vote for both cases hits the score cache -- no new
+    # calls to either provider at all.
+    assert anthropic_calls["n"] == 2
+    assert openai_calls["n"] == 2
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 4
+    second_pass_case = persisted[2]
+    assert second_pass_case.from_cache is True
+    assert second_pass_case.cost_usd == Decimal("0")
+    assert all(v.from_cache for v in second_pass_case.panel_votes)
+
+
+def test_run_with_llm_judge_panel_use_score_cache_reuses_a_prior_standalone_score(
+    tmp_path, monkeypatch
+):
+    # docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's cache-key design:
+    # a panelist's vote is keyed identically whether it came from a
+    # standalone --llm-judge run or a --llm-judge-panel run. Seed a prior
+    # standalone Anthropic Score for judge-pass-case; a later panel run
+    # must reuse it and only call the OpenAI provider fresh.
+    anthropic_calls = {"n": 0}
+    openai_calls = {"n": 0}
+
+    async def fake_anthropic(prompt: str) -> str:
+        anthropic_calls["n"] += 1
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    async def fake_openai(prompt: str) -> str:
+        openai_calls["n"] += 1
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
+    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    standalone = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--use-score-cache",
+        ],
+    )
+    assert standalone.exit_code == 0, standalone.output
+    assert anthropic_calls["n"] == 2
+    assert openai_calls["n"] == 0
+
+    panel_run = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge-panel",
+            "--use-score-cache",
+        ],
+    )
+    assert panel_run.exit_code == 0, panel_run.output
+    # The Anthropic half of both cases is reused from the standalone run
+    # above -- only the OpenAI half needs a genuinely fresh call.
+    assert anthropic_calls["n"] == 2
+    assert openai_calls["n"] == 2
+
+    persisted = load_scores(scores_path)
+    panel_scores = [s for s in persisted if s.scorer_type == "llm_judge_panel"]
+    assert len(panel_scores) == 2
+    for score in panel_scores:
+        anthropic_vote = next(
+            v for v in score.panel_votes if v.scorer_id == "claude-haiku-4-5-20251001"
+        )
+        openai_vote = next(v for v in score.panel_votes if v.scorer_id == "gpt-4o-mini")
+        assert anthropic_vote.from_cache is True
+        assert openai_vote.from_cache is False
+
+
+def test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cache_hit(
+    tmp_path, monkeypatch
+):
+    # A previously-cached (from_cache=True) panel Score must never itself
+    # be treated as a reusable source -- only a genuinely fresh vote is.
+    # Seed the scores file directly with a from_cache=True panel Score
+    # (bypassing the CLI, so this isolates exactly the property under
+    # test) and confirm a later --use-score-cache invocation still makes
+    # real calls for that case, rather than incorrectly reusing the stale
+    # cache-hit entry as if it were an original source.
+    scores_path = tmp_path / "scores.jsonl"
+    _write_scores(
+        scores_path,
+        [
+            Score(
+                eval_case_id="judge-pass-case",
+                eval_case_revision=1,
+                scorer_id="panel:claude-haiku-4-5-20251001+gpt-4o-mini",
+                scorer_type="llm_judge_panel",
+                value=True,
+                cost_usd=Decimal("0"),
+                from_cache=True,
+                quorum_reached=True,
+                panel_votes=[
+                    _panel_vote_for_test(
+                        "Paris",
+                        "Paris",
+                        "claude-haiku-4-5-20251001",
+                        True,
+                        from_cache=True,
+                    ),
+                    _panel_vote_for_test(
+                        "Paris", "Paris", "gpt-4o-mini", True, from_cache=True
+                    ),
+                ],
+            )
+        ],
+    )
+
+    anthropic_calls = {"n": 0}
+    openai_calls = {"n": 0}
+
+    async def fake_anthropic(prompt: str) -> str:
+        anthropic_calls["n"] += 1
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    async def fake_openai(prompt: str) -> str:
+        openai_calls["n"] += 1
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
+    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge-panel",
+            "--use-score-cache",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # Both providers were genuinely called AT LEAST once (once for
+    # judge-fail-case, which has no cache entry at all, plus once more for
+    # judge-pass-case specifically -- checked directly below -- since the
+    # llm_judge_example.json fixture has 2 cases total).
+    assert anthropic_calls["n"] == 2
+    assert openai_calls["n"] == 2
+
+    # The precise property under test: judge-pass-case's own persisted
+    # panel_votes must both be genuinely fresh (from_cache=False), proving
+    # the seeded from_cache=True entry was correctly never reused as a
+    # source, rather than just inferring this from a raw global count.
+    persisted = load_scores(scores_path)
+    pass_case_scores = [
+        s
+        for s in persisted
+        if s.eval_case_id == "judge-pass-case" and s.scorer_type == "llm_judge_panel"
+    ]
+    latest_pass_case_score = pass_case_scores[-1]
+    assert latest_pass_case_score.from_cache is False
+    assert all(not v.from_cache for v in latest_pass_case_score.panel_votes)
 
 
 def test_run_llm_judge_requires_a_reference_and_fails_loudly(tmp_path, monkeypatch):
@@ -1123,6 +1602,56 @@ def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
         "cot_forcing",
         "reference_guided_grading",
     ]
+
+
+def test_rollout_with_llm_judge_panel_scores_captured_stdout_via_real_wiring(
+    tmp_path, monkeypatch
+):
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    async def fake_anthropic(prompt: str) -> str:
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    async def fake_openai(prompt: str) -> str:
+        return "REASONING: matches.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
+    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "rollout",
+            "--suite",
+            "tests/fixtures/rollout_example.json",
+            "--results",
+            str(results_path),
+            "--scores",
+            str(scores_path),
+            "--traces",
+            str(traces_path),
+            "--llm-judge-panel",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+    persisted_runs = load_runs(results_path)
+    persisted_scores = load_scores(scores_path)
+    assert len(persisted_scores) == 2
+    assert all(s.scorer_type == "llm_judge_panel" for s in persisted_scores)
+    assert persisted_scores[0].run_id == persisted_runs[0].id
+    assert persisted_scores[0].panel_votes is not None
+    assert len(persisted_scores[0].panel_votes) == 2
 
 
 def test_rollout_with_judge_axes_scores_each_axis_independently_and_ands_the_verdict(

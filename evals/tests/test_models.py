@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from evals.models import EvalCase, Run, Score, Span
+from evals.models import EvalCase, PanelVote, Run, Score, Span
 
 
 def _make_case(**overrides) -> EvalCase:
@@ -269,11 +269,42 @@ def test_score_invalid_scorer_type_rejected():
 
 def test_score_accepts_llm_judge_panel_scorer_type():
     # docs/rfcs/2026-09-07-evals-judge-panel-interface.md widened
-    # ScorerType to include this value, interface-only -- no real scorer
-    # constructs one yet (the v2 panel itself is unbuilt), but the type
-    # must genuinely accept it now, not just claim to in prose.
+    # ScorerType to include this value; docs/rfcs/2026-09-08-evals-judge-
+    # panel-reducer.md made it real -- evals.cli's --llm-judge-panel flag
+    # constructs one.
     score = _make_score(scorer_type="llm_judge_panel")
     assert score.scorer_type == "llm_judge_panel"
+
+
+def test_panel_vote_is_frozen_and_defaults_cache_fields_to_none_and_false():
+    vote = PanelVote(
+        scorer_id="claude-haiku-4-5-20251001", passed=True, rationale="matches"
+    )
+    assert vote.score_cache_key is None
+    assert vote.from_cache is False
+    with pytest.raises(ValidationError):
+        vote.passed = False  # type: ignore[misc]
+
+
+def test_score_llm_judge_panel_carries_panel_votes_and_quorum_reached():
+    votes = [
+        PanelVote(scorer_id="claude-haiku-4-5-20251001", passed=True, rationale="a"),
+        PanelVote(scorer_id="gpt-4o-mini", passed=True, rationale="b"),
+    ]
+    score = _make_score(
+        scorer_type="llm_judge_panel",
+        scorer_id="panel:claude-haiku-4-5-20251001+gpt-4o-mini",
+        panel_votes=votes,
+        quorum_reached=True,
+    )
+    assert score.panel_votes == votes
+    assert score.quorum_reached is True
+
+
+def test_score_panel_votes_and_quorum_reached_default_to_none_for_non_panel_scores():
+    score = _make_score(scorer_type="llm_judge")
+    assert score.panel_votes is None
+    assert score.quorum_reached is None
 
 
 def test_score_instances_are_frozen():
@@ -317,6 +348,31 @@ def test_old_shape_score_json_line_still_validates_with_new_fields_defaulted():
     assert score.tier is None
     assert score.tags == []
     assert score.flaky is False
+    assert score.panel_votes is None
+    assert score.quorum_reached is None
+
+
+def test_score_with_panel_votes_round_trips_through_json():
+    # docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's load-bearing
+    # proof: a real llm_judge_panel Score's embedded per-judge audit
+    # trail survives a full serialize/deserialize cycle exactly, since a
+    # persisted --scores JSONL line is this codebase's only real
+    # cross-process transport for panel_votes.
+    votes = [
+        PanelVote(scorer_id="claude-haiku-4-5-20251001", passed=True, rationale="a"),
+        PanelVote(scorer_id="gpt-4o-mini", passed=False, rationale="b"),
+    ]
+    score = _make_score(
+        scorer_type="llm_judge_panel",
+        scorer_id="panel:claude-haiku-4-5-20251001+gpt-4o-mini",
+        panel_votes=votes,
+        quorum_reached=False,
+        value=False,
+    )
+    round_tripped = Score.model_validate_json(score.model_dump_json())
+    assert round_tripped == score
+    assert round_tripped.panel_votes == votes
+    assert round_tripped.quorum_reached is False
 
 
 def _make_span(**overrides) -> Span:

@@ -1,0 +1,60 @@
+name: evals judge/panel accuracy (nightly)
+
+# Deliberately separate from ci.yml's per-push evals job, per
+# docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's CI-scheduling
+# decision: real, unbounded dollar cost against two live paid providers
+# (Anthropic + OpenAI) on every push/PR update would be a genuine, real
+# cost this repo doesn't otherwise carry; neither provider call site in
+# evals/evals/judge/providers.py sets a temperature parameter, so a
+# judge/panel verdict on an identical prompt is genuinely non-
+# deterministic run-to-run at each provider's own API default — gating
+# PR mergeability on a probabilistic call whose own corpus is
+# deliberately built to include ambiguous boundary cases would be a
+# real, self-inflicted CI-flakiness source. Nightly + workflow_dispatch
+# gives a real, recurring, unattended, live-running gate with zero
+# coupling to PR mergeability.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  judge-accuracy:
+    name: evals judge + panel accuracy against the real judge-accuracy corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: judge + panel accuracy run against real Anthropic + OpenAI
+        # Deliberately excludes the existing 113-case deterministic
+        # regression corpus (regression_corpus_*.json) -- that's
+        # separately-tracked work with its own unresolved calibration
+        # question (several of those cases are deliberate, honestly-
+        # documented FAIL cases), not this workflow's concern. This
+        # workflow's own tests/fixtures/regression_corpus_judge_accuracy
+        # .json slice does not exist yet as of this workflow's creation
+        # (2026-09-08) -- it requires a live-key-gated authoring pass per
+        # that RFC's Phase 4, and this job will fail loudly (a real
+        # missing-file error) until it's added, never silently skip.
+        working-directory: evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          uv sync
+          uv run evals run --suite tests/fixtures/regression_corpus_judge_accuracy.json \
+            --scores judge-accuracy-scores.jsonl --llm-judge
+          uv run evals run --suite tests/fixtures/regression_corpus_judge_accuracy.json \
+            --scores judge-accuracy-scores.jsonl --llm-judge-panel
+          uv run evals report --scores judge-accuracy-scores.jsonl --tier regression \
+            --fail-under 0.60 --category-fail-under "category:judge:0.60"
+      - name: upload real scores for later disagreement-rate analysis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-accuracy-scores-${{ github.run_id }}
+          path: evals/judge-accuracy-scores.jsonl
+          retention-days: 90

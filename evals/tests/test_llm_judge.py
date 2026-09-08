@@ -2,7 +2,8 @@ import asyncio
 
 import pytest
 
-from evals.judge.llm_judge import build_judge_prompt, judge
+from evals.judge.llm_judge import build_judge_prompt, judge, reduce_panel_votes
+from evals.models import PanelVote
 
 
 def _make_fake_call_model(response: str):
@@ -165,19 +166,94 @@ def test_judge_accepts_a_length_one_list_identically_to_a_bare_call_model():
     assert bare_result == list_result
 
 
-def test_judge_rejects_a_panel_of_more_than_one_call_model():
-    # The multi-judge panel itself is an explicit v2 non-goal (per that
-    # same RFC) -- judge() must fail loudly, not silently score with only
-    # the first judge or fabricate a majority-vote result it doesn't
-    # implement.
-    fake_response = "REASONING: matches.\nVERDICT: PASS\n"
+def test_judge_panel_of_two_passes_only_when_both_agree_pass():
+    # Real behavior change from the interface RFC's own NotImplementedError
+    # placeholder, per docs/rfcs/2026-09-08-evals-judge-panel-reducer.md --
+    # a panel now actually scores, majority-reduced.
+    pass_response = "REASONING: matches.\nVERDICT: PASS\n"
+    panel = [_make_fake_call_model(pass_response), _make_fake_call_model(pass_response)]
+
+    result = asyncio.run(judge(output="Paris", reference="Paris", call_model=panel))
+
+    assert result.passed is True
+    assert result.quorum_reached is True
+    assert result.panel_votes is not None
+    assert len(result.panel_votes) == 2
+    assert all(v.passed for v in result.panel_votes)
+
+
+def test_judge_panel_of_two_fails_when_both_agree_fail():
+    fail_response = "REASONING: wrong.\nVERDICT: FAIL\n"
+    panel = [_make_fake_call_model(fail_response), _make_fake_call_model(fail_response)]
+
+    result = asyncio.run(judge(output="Paris", reference="London", call_model=panel))
+
+    assert result.passed is False
+    assert result.quorum_reached is True
+    assert all(not v.passed for v in result.panel_votes)
+
+
+def test_judge_panel_of_two_is_fail_closed_when_judges_disagree():
     panel = [
-        _make_fake_call_model(fake_response),
-        _make_fake_call_model(fake_response),
+        _make_fake_call_model("REASONING: fine.\nVERDICT: PASS\n"),
+        _make_fake_call_model("REASONING: not fine.\nVERDICT: FAIL\n"),
     ]
 
-    with pytest.raises(NotImplementedError):
-        asyncio.run(judge(output="Paris", reference="Paris", call_model=panel))
+    result = asyncio.run(judge(output="Paris", reference="Paris", call_model=panel))
+
+    assert result.passed is False
+    assert result.quorum_reached is False
+
+
+def test_judge_panel_returns_panel_votes_and_quorum_reached_on_the_judge_result():
+    pass_response = "REASONING: matches.\nVERDICT: PASS\n"
+    panel = [_make_fake_call_model(pass_response), _make_fake_call_model(pass_response)]
+
+    result = asyncio.run(judge(output="Paris", reference="Paris", call_model=panel))
+
+    assert result.panel_votes is not None
+    assert result.quorum_reached is not None
+    assert {"panelist_0", "panelist_1"} == {v.scorer_id for v in result.panel_votes}
+
+
+def test_judge_single_call_model_still_has_none_panel_votes_and_quorum_reached():
+    # Backward-compatibility proof: a bare (non-panel) call must be
+    # byte-for-byte unaffected by this module now supporting panels.
+    result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=_make_fake_call_model("REASONING: matches.\nVERDICT: PASS\n"),
+        )
+    )
+
+    assert result.panel_votes is None
+    assert result.quorum_reached is None
+
+
+def test_judge_panel_uses_identical_prompt_and_independent_refutation():
+    # The concrete independent-refutation proof: neither panelist's
+    # captured prompt may contain the other's raw response text.
+    captured_prompts: list[str] = []
+
+    async def call_model_a(prompt: str) -> str:
+        captured_prompts.append(prompt)
+        return "REASONING: model A reasoning unique-marker-AAA.\nVERDICT: PASS\n"
+
+    async def call_model_b(prompt: str) -> str:
+        captured_prompts.append(prompt)
+        return "REASONING: model B reasoning unique-marker-BBB.\nVERDICT: FAIL\n"
+
+    asyncio.run(
+        judge(
+            output="Paris", reference="Paris", call_model=[call_model_a, call_model_b]
+        )
+    )
+
+    assert len(captured_prompts) == 2
+    assert captured_prompts[0] == captured_prompts[1]
+    assert "unique-marker-AAA" not in captured_prompts[1]
+    assert "unique-marker-BBB" not in captured_prompts[0]
 
 
 def test_judge_rejects_an_empty_call_model_list():
@@ -205,3 +281,64 @@ def test_judge_with_different_axes_can_disagree():
 
     assert correctness_result.passed is True
     assert safety_result.passed is False
+
+
+def _vote(scorer_id: str, passed: bool) -> PanelVote:
+    return PanelVote(scorer_id=scorer_id, passed=passed, rationale="")
+
+
+def test_reduce_panel_votes_unanimous_pass_reaches_quorum():
+    verdict = reduce_panel_votes([_vote("a", True), _vote("b", True)])
+
+    assert verdict.passed is True
+    assert verdict.quorum_reached is True
+
+
+def test_reduce_panel_votes_unanimous_fail_reaches_quorum():
+    verdict = reduce_panel_votes([_vote("a", False), _vote("b", False)])
+
+    assert verdict.passed is False
+    assert verdict.quorum_reached is True
+
+
+def test_reduce_panel_votes_two_judge_tie_is_fail_closed_no_quorum():
+    # The load-bearing case: a 2-judge panel's every possible disagreement
+    # IS a 1-1 tie -- this must always fail closed, never fail open.
+    verdict = reduce_panel_votes([_vote("a", True), _vote("b", False)])
+
+    assert verdict.passed is False
+    assert verdict.quorum_reached is False
+
+
+def test_reduce_panel_votes_three_judge_strict_majority_reaches_quorum():
+    verdict = reduce_panel_votes(
+        [_vote("a", True), _vote("b", True), _vote("c", False)]
+    )
+
+    assert verdict.passed is True
+    assert verdict.quorum_reached is True
+
+
+def test_reduce_panel_votes_four_judge_even_split_is_fail_closed_no_quorum():
+    # A larger, even-sized panel can also tie -- fail-closed generalizes
+    # beyond the guaranteed 2-judge case.
+    verdict = reduce_panel_votes(
+        [_vote("a", True), _vote("b", True), _vote("c", False), _vote("d", False)]
+    )
+
+    assert verdict.passed is False
+    assert verdict.quorum_reached is False
+
+
+def test_reduce_panel_votes_raises_on_empty_votes():
+    with pytest.raises(ValueError):
+        reduce_panel_votes([])
+
+
+def test_reduce_panel_votes_bias_mitigations_include_panel_level_mitigations():
+    verdict = reduce_panel_votes([_vote("a", True), _vote("b", True)])
+
+    assert "cot_forcing" in verdict.bias_mitigations_applied
+    assert "reference_guided_grading" in verdict.bias_mitigations_applied
+    assert "independent_refutation" in verdict.bias_mitigations_applied
+    assert "disjoint_model_family_panel" in verdict.bias_mitigations_applied

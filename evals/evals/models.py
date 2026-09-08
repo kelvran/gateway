@@ -125,6 +125,36 @@ class Run(BaseModel):
 ScorerType = Literal["deterministic", "llm_judge", "llm_judge_panel"]
 
 
+class PanelVote(BaseModel):
+    """One judge's independent verdict within a multi-judge panel, per
+    docs/rfcs/2026-09-08-evals-judge-panel-reducer.md.
+
+    Defined here, not in `evals.judge.llm_judge` (where the research that
+    designed this shape sketched it) — `.importlinter`'s layers contract
+    places `evals.judge.llm_judge` ABOVE `evals.models`, so `Score`
+    (below) embedding a type from `evals.judge.llm_judge` (above) would
+    be a real, CI-caught layering violation. `evals.judge.llm_judge`
+    imports this type downward instead; that module has never previously
+    imported from `evals.models`, a real, deliberate new dependency edge,
+    not an accident.
+
+    `score_cache_key`/`from_cache` mirror `Score`'s own same-named fields'
+    exact convention (see `Score`'s docstring) — `None`/`False` when this
+    vote came from `judge()`'s own cache-agnostic internal panel branch
+    (that module has no caching concept at all, per its own docstring); a
+    real, always-computed value only when `evals.cli`'s panel-aware
+    caching wrapper (`_judge_panel_with_cache`) produced or reused it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    scorer_id: str
+    passed: bool
+    rationale: str
+    score_cache_key: str | None = None
+    from_cache: bool = False
+
+
 class Score(BaseModel):
     """The result of one scorer's judgment on one `EvalCase`'s output.
 
@@ -138,20 +168,18 @@ class Score(BaseModel):
       fabricated stand-in" convention. `eval_case_id`/`eval_case_revision`
       are the universal join key both `evals run` and `evals rollout` can
       always honestly supply, regardless of whether a `Run` exists.
-    - `scorer_type` is narrowed to `deterministic`/`llm_judge` (the two
-      values this codebase's real scorers produce today) plus
-      `llm_judge_panel` — added 2026-09-07, interface-only, per
-      docs/rfcs/2026-09-07-evals-judge-panel-interface.md: no scorer in
-      this codebase constructs a `Score` with this value yet, since the
-      v2 multi-judge panel itself (`evals.judge.llm_judge.judge()` called
-      with more than one `call_model`) is still unbuilt and explicitly
-      out of scope for that RFC. Widened now anyway because retrofitting
-      this `Literal` once more callers pattern-match on its two current
-      values is strictly more expensive than typing it correctly once,
-      per that RFC's own reasoning. Deliberately named to match Inspect
-      AI's `multi_scorer()` naming, not ARCHITECTURE.md's original sketch
-      spelling (`skeptic_panel`) — see that RFC's Design section for why.
-      `human` (also in the original sketch) stays dropped, still
+    - `scorer_type` is narrowed to `deterministic`/`llm_judge`/
+      `llm_judge_panel` — the `Literal` was widened interface-only on
+      2026-09-07 (per docs/rfcs/2026-09-07-evals-judge-panel-interface.md,
+      before any scorer constructed a `Score` with the panel value) and
+      the panel itself became real on 2026-09-08 (per docs/rfcs/2026-09-
+      08-evals-judge-panel-reducer.md — `evals.cli`'s `--llm-judge-panel`
+      flag now constructs real `llm_judge_panel` Scores via
+      `evals.judge.llm_judge.judge()` called with more than one
+      `call_model`). Deliberately named to match Inspect AI's
+      `multi_scorer()` naming, not ARCHITECTURE.md's original sketch
+      spelling (`skeptic_panel`) — see the interface RFC's Design section
+      for why. `human` (also in the original sketch) stays dropped, still
       `v2`-scoped per `PRD.md`.
     - `rubric_axis` is `None` for a holistic verdict (the default), or the
       configured axis name (e.g. `"correctness"`, `"safety"`) when
@@ -210,6 +238,19 @@ class Score(BaseModel):
       `--category-fail-under` read `tier`/`tags` here; its flaky-
       exclusion logic reads `flaky` here — never the originating
       `EvalCase` directly, which `report_cmd` never loads.
+    - `panel_votes`/`quorum_reached` (added 2026-09-08, per docs/rfcs/2026-
+      09-08-evals-judge-panel-reducer.md) are real, populated fields only
+      for `scorer_type="llm_judge_panel"` — `None` for every other
+      scorer_type, the same "`None` = not applicable" convention already
+      used throughout this class (see `tier` above). `panel_votes` is the
+      full per-judge audit trail (never collapsed away once computed);
+      `quorum_reached` is `True` iff a strict majority (`count * 2 >
+      panel_size`) agreed — `False` on a tie means `value` was set
+      fail-closed, not that no verdict exists. `cost_usd` for a panel
+      score is the `Decimal` SUM of every panelist's real per-call cost
+      (or `None` if any one panelist's cost is unmeasured), never just
+      the first judge's — a real divergence from a single-judge
+      `llm_judge` score's `cost_usd`, which is exactly one call's cost.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -229,6 +270,8 @@ class Score(BaseModel):
     tier: EvalTier | None = None
     tags: list[str] = Field(default_factory=list)
     flaky: bool = False
+    panel_votes: list[PanelVote] | None = None
+    quorum_reached: bool | None = None
 
 
 SpanStatus = Literal["UNSET", "OK", "ERROR"]
