@@ -981,3 +981,28 @@ func TestLoadHealthProbeSectionParsesFields(t *testing.T) {
 		t.Errorf("HealthProbe.HealthyThreshold = %d, want 4", cfg.HealthProbe.HealthyThreshold)
 	}
 }
+
+// TestLoadHealthProbeSectionParsesRecoveryRampFields is the same proof as
+// TestLoadHealthProbeSectionParsesFields, extended to the two
+// recovery-ramp fields added alongside the post-recovery weight-ramp
+// feature (see docs/rfcs/2026-09-07-gateway-active-health-probing.md and
+// gateway/internal/router/health.go's own recovery-ramp doc comments).
+func TestLoadHealthProbeSectionParsesRecoveryRampFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nhealth_probe:\n  interval_seconds: 60\n  unhealthy_threshold: 5\n  healthy_threshold: 4\n  recovery_ramp_steps: 6\n  recovery_ramp_initial_percent: 10\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a health_probe section's recovery-ramp fields: %v", err)
+	}
+	if cfg.HealthProbe.RecoveryRampSteps != 6 {
+		t.Errorf("HealthProbe.RecoveryRampSteps = %d, want 6", cfg.HealthProbe.RecoveryRampSteps)
+	}
+	if cfg.HealthProbe.RecoveryRampInitialPercent != 10 {
+		t.Errorf("HealthProbe.RecoveryRampInitialPercent = %d, want 10", cfg.HealthProbe.RecoveryRampInitialPercent)
+	}
+}
