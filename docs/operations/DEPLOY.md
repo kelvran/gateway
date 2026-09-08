@@ -41,6 +41,16 @@ Readiness for v1 is "the container is listening on `:8080`" — there is no `/he
 
 Everything else `gateway` needs is YAML config, **not** an environment variable — the config file path (`-config` flag, defaults to `config.yaml`), the Redis address (`rate_limit.redis_addr`), the budget-persistence path (`budget.persist_path`), and every virtual key's secret (only its SHA-256 *hash* ever lives in `config.yaml`; the raw secret is client-held and sent as a bearer token, never stored by the gateway process at all — see `docs/rfcs/2026-09-02-virtual-keys-budgets.md`). Secrets handling rule: never in a committed file, environment variables or a secrets manager only — this doesn't get restated per-variable, it's a blanket rule cross-linked from `SECURITY.md`.
 
+`evals` has its own, separate env-var table — real, judge-related credentials, never YAML config:
+
+| Variable | Required | Read by | Purpose |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | Only for `evals run --llm-judge` | `judge/providers.py`'s `make_anthropic_call_model` (Anthropic SDK reads it directly) | Single-judge mode's direct Anthropic API call |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | Only for `evals run --llm-judge-panel` | `judge/providers.py`'s `make_bedrock_call_model` (boto3's standard credential chain) | The 2-judge panel's two Bedrock-hosted Claude calls (Sonnet 5 + Haiku 4.5) |
+| `OPENAI_API_KEY` | Not required by anything today | `make_openai_call_model` exists but has no real caller (the panel moved to Bedrock) | Reserved for a future caller |
+
+Unlike `gateway`, `evals` auto-loads these from `evals/.env` (gitignored; copy from `evals/.env.example`) via `evals.cli.main`'s `_load_env_file()` — a local-dev convenience, not a requirement. A real, already-exported process env var (a CI secret, an explicit `export`) always wins over the file (`override=False`), so CI and production behavior is unaffected either way.
+
 ## Independent Deployability & Contract Compatibility
 
 The one thing genuinely specific to a two-deployable system: `gateway` and `evals` can be deployed and upgraded independently, but only within a compatible `api/` contract version range. Before either deployable ships, confirm:

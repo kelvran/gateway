@@ -37,6 +37,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import click
+from dotenv import load_dotenv
 from google.protobuf.json_format import MessageToJson
 
 from evals.ingestion.decode import decode_gateway_decision_event
@@ -67,6 +68,22 @@ from evals.results_store import (
 )
 from evals.rollout.scheduler import EarlyStopConfig, run_suite
 from evals.stats import wilson_interval
+
+# evals/.env, next to evals/pyproject.toml — never the process's cwd,
+# since `evals` commands get run from different directories across this
+# codebase's own docs/scripts. Real, already-exported env vars (a CI
+# secret, an explicit `export`) always win over this file: `load_dotenv`'s
+# default `override=False` is relied on deliberately, not just accepted.
+_ENV_FILE_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _load_env_file(path: Path = _ENV_FILE_PATH) -> None:
+    """Populate `os.environ` from `path` if it exists, without overriding
+    any variable already set. A no-op, not an error, when `path` doesn't
+    exist — the file is a local-dev convenience, never a requirement
+    (CI and production set real env vars directly).
+    """
+    load_dotenv(path, override=False)
 
 
 def _load_cases(suite_path: Path) -> list[EvalCase]:
@@ -684,6 +701,7 @@ def _parse_category_fail_under(raw: tuple[str, ...]) -> list[tuple[str, float]]:
 @click.group()
 def main() -> None:
     """Kelvran evals CLI."""
+    _load_env_file()
 
 
 @main.command("run")
