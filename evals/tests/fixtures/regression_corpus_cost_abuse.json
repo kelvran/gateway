@@ -14,7 +14,10 @@
     },
     "reference": "at most 1 of 20 concurrent requests should be allowed when only one request's worth of budget headroom remains; recorded spend should never exceed the configured cap",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -32,7 +35,10 @@
     },
     "reference": "at most as many concurrent requests as the configured TPM bucket capacity supports should pass the pre-check before any Debit call lands",
     "tier": "regression",
-    "tags": ["category:routing", "provenance:hand-written"],
+    "tags": [
+      "category:routing",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -50,7 +56,10 @@
     },
     "reference": "1 of 20 concurrent requests allowed against a capacity-1 bucket, every run",
     "tier": "regression",
-    "tags": ["category:routing", "provenance:hand-written"],
+    "tags": [
+      "category:routing",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -68,7 +77,10 @@
     },
     "reference": "adapter.ChatRequest has no api_base/base_url/upstream-endpoint field of any kind; every Deployment.BaseURL comes exclusively from operator-controlled static config or the operator-gated Admin API, never from a client request body",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -86,7 +98,10 @@
     },
     "reference": "Kelvran's Admin API v1 has exactly one credential tier (a single static bearer token) with no per-caller ownership/scope concept at all; every field of virtualKeyRequest is fully mutable by any holder of that token for any virtual key",
     "tier": "regression",
-    "tags": ["category:routing", "provenance:hand-written"],
+    "tags": [
+      "category:routing",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -104,7 +119,10 @@
     },
     "reference": "budget.Tracker.Allow is called at the top of both HandleChatCompletion and HandleChatCompletionStream, with no run-level or session-level caching of the decision anywhere in the pipeline",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -122,7 +140,10 @@
     },
     "reference": "a legitimate-mechanism token-amplification run (e.g. SkillBloat-style, 26x-75x cost blowup with no single request out of the ordinary) should surface a cost-velocity or cost-multiple-of-baseline anomaly signal distinct from the flat cap, so it isn't invisible until the flat cap is hit or exceeded",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -140,7 +161,10 @@
     },
     "reference": "costaccounting.Calculator has exactly one pricing path against one static PriceTable; costaccounting.Usage/adapter.Usage carry no cache-token field of any kind (PromptTokens/CompletionTokens/TotalTokens only)",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -158,7 +182,10 @@
     },
     "reference": "Every stream decoder (openai, anthropic, openaicompat) captures the provider's real usage data whenever it is sent, unconditionally on whatever else is present in that same chunk/event",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -176,7 +203,10 @@
     },
     "reference": "when no provider chunk ever carries usage, Kelvran records an explicit zero-value Usage and emits a stream_missing_usage warning log; it never substitutes a locally-computed token-count estimate",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -194,7 +224,10 @@
     },
     "reference": "on a cache hit, finalize computes cost from the cached response's own real, originally-recorded Usage numbers for telemetry only; budget.Record and KeyLimiter.RecordTokens are both skipped via the billable=false gate",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -212,7 +245,10 @@
     },
     "reference": "budget.Tracker.Record ignores any negative costUSD by design (spend only ever accumulates upward); Kelvran has no refund/credit-back mechanism of any kind today",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -230,7 +266,10 @@
     },
     "reference": "budget.Tracker.Allow/Record enforcement is keyed exclusively on vk.ID; Deployment.APIKey/AccessKeyID/SecretAccessKey/SessionToken resolution is fully decoupled from vk -- Allow(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval) takes no Deployment/credential parameter of any kind, and Deployment is resolved via p.router.Select(model)+p.deploymentsByName, never via vk",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -248,7 +287,10 @@
     },
     "reference": "a mid-stream runaway-completion guard now bounds a single streaming request's own accumulated output length, per docs/rfcs/2026-09-08-gateway-streaming-runaway-completion-guard.md: streaming.go's streamDeployment (line 313) and streamDeploymentBedrock (line 425) check streamaccumulator.go's totalContentLen() (line 104) against streamrunaway.go's streamRunawayCharsCeiling (line 91 -- MaxTokens*4*10 chars if the client set MaxTokens, else a fixed 750,000-char floor) once per decoded chunk batch (streaming.go lines 395/493); crossing it logs streaming_runaway_guard_triggered, cancels a per-call upstreamCtx (never the caller's own ctx), and lets the stream finish cleanly via the existing finishStreamedResponse path, so finalize's Reconcile/ReconcileTPM still run on the truncated partial result. This closes the unbounded-single-request-growth half of the original gap. It does NOT add a live recheck of the key's actual budget/TPM headroom against a concurrent sibling request's spend: budget.Reserve/limiter.ReserveTPM (dataplane.go, streaming.go) are still called exactly once, before the stream begins, and finalize's Reconcile/ReconcileTPM still run exactly once, after the stream ends -- a sibling request's own Reconcile call still has zero effect on an already-in-flight stream, exactly as revision 1 documented; that half of the original scenario is a deliberate, separate scope limit (see the RFC's Alternatives Considered), not fixed here",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -266,7 +308,10 @@
     },
     "reference": "the real dollar cost recorded against a virtual key's budget should reflect the price of the MODEL THAT ACTUALLY SERVED THE RESPONSE (dep.Model/the deployment resolved by attemptFallbackChain), never the client's originally-requested model, whenever a fallback_chains hop switches to a genuinely different model -- FIXED: finalize now computes cost via realServingModel(dep, req.Model), which resolves to dep.Model whenever a real deployment served the response",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -284,7 +329,10 @@
     },
     "reference": "a virtual key's PerModel rate-limit override for a given model should be enforced for every request that ends up actually served by that model, including one reached via a fallback_chains hop from a different originally-requested model -- not only for requests that name that model directly -- FIXED: attemptFallbackChain now consults AllowForModel(vk.ID, target-model) immediately before each real fallback attempt",
     "tier": "regression",
-    "tags": ["category:routing", "provenance:hand-written"],
+    "tags": [
+      "category:routing",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -302,7 +350,10 @@
     },
     "reference": "telemetry.ChatCompletionResult.DeploymentName/Provider are populated from dep.Name/dep.Provider -- dep is the ACTUAL serving deployment returned by attemptFallbackChain/nextDeployment, correctly reflecting which deployment really served the response, even on the same request where RequestModel/ResponseModel/CostUSD are all misattributed to the client's originally-requested model per the sibling cases above",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -320,7 +371,10 @@
     },
     "reference": "Reserve(fresh_key, cap=$100)_call_1=allowed_true_reservedUSD_$100 (100% of the cap, on a brand-new key with zero billing history); Reserve(fresh_key, cap=$100)_call_2_before_call_1_reconciles=allowed_false_reservedUSD_$0; after call_1 reconciles with its real cost of $0.01, spent=$0.01",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -338,7 +392,10 @@
     },
     "reference": "under a frozen clock (zero elapsed wall-clock time between calls), ReserveTPM(fresh_bucket_100000_capacity)_call_1=allowed_true_reservedTokens_100000 (100% of capacity); ReserveTPM_call_2_before_call_1_reconciles=allowed_false_reservedTokens_0; after call_1 reconciles with its real usage of 50 tokens, tokens=99950. Under a REAL (non-frozen) clock, call_2 can instead succeed with a small, non-deterministic reservation, because TPM's continuous time-based refill (unlike budget.Tracker's non-refilling cumulative cap) adds back a small amount of headroom during the real elapsed time between the two calls",
     "tier": "regression",
-    "tags": ["category:cost", "provenance:hand-written"],
+    "tags": [
+      "category:cost",
+      "provenance:hand-written"
+    ],
     "flaky": false
   },
   {
@@ -352,11 +409,14 @@
       "description": "Investigated for real, not assumed: gateway/internal/ratelimit.KeyConfig declares TPMCapacity/TPMRefillPerSecond as single, key-scoped fields (limiter.go) -- there is no TPM analog of KeyConfig.PerModel at all. KeyLimiter.ReserveTPM/ReconcileTPM (limiter.go) and the TokenBucket.ReserveTPM/ReconcileTPM/reservationAmountLocked they call (ratelimit.go) all take keyID alone, never a model parameter; checkRateLimit's own ReserveTPM call site (dataplane.go) is `p.limiter.ReserveTPM(vk.ID)`, with no model argument to even key a per-model bucket on. This means the RPM fix this same pass shipped (a `rateLimitOK func(model string) bool` closure attemptFallbackChain consults immediately before each real fallback attempt) has structurally nothing to mirror for TPM: there is no PerModel TPM bucket for that closure to check against, because the feature itself does not exist, for ANY access path (direct or via fallback) -- this is a feature absence, not an enforcement-ordering bug in an existing check. Separately, TPM's own RECONCILIATION already correctly uses the response's REAL token count (resp.Usage.TotalTokens, applied via ReconcileTPM regardless of which model served the request) -- since TPM counts raw tokens, not dollars, there is no model-price-table-style mispricing analogous to the cost-accounting sibling gap either. If a PerModel TPM feature were ever added to mirror RPM's, a correct fallback-hop-aware version of it would need materially more than this pass's stateless per-attempt RPM check: TPM's own check is a RESERVATION (a provisional debit that must later be reconciled with real usage), so a fallback-aware PerModel TPM check would need to (a) reserve against a candidate hop's own per-model bucket before attempting it, (b) release that reservation if the walk moves on to yet another target rather than using it, and (c) thread the FINAL, successfully-used hop's own (bucket key, reservedTokens) pair all the way back out through attemptFallbackChain -> runMissPath/streamDeploymentWithFallback -> HandleChatCompletion/HandleChatCompletionStream -> finalize's ReconcileTPM call, replacing the single flat tpmReserved/tpmReservedTokens pair those call sites carry today (reserved once, before routing ever runs) with one that can point at any of N candidate hops' own bucket. That is a genuinely deeper, multi-call-site plumbing change than mirroring an existing atomic, non-reserving check (RPM's Allow) immediately before a real call -- explicitly not attempted in this pass, per this task's own instruction to scope out rather than rush a half-correct fix for a sub-part that needs a materially deeper redesign.",
       "verified_against": "gateway/internal/ratelimit/limiter.go (KeyConfig struct: TPMCapacity/TPMRefillPerSecond are single fields, PerModel exists only for RPM; ReserveTPM(keyID string)/ReconcileTPM(keyID string, ...), neither takes a model parameter); gateway/internal/ratelimit/ratelimit.go (TokenBucket.ReserveTPM/ReconcileTPM/reservationAmountLocked, all keyed on the bucket alone, no model concept); gateway/internal/gateway/dataplane/dataplane.go's checkRateLimit (`p.limiter.ReserveTPM(vk.ID)` -- no model argument) and finalize's ReconcileTPM call (`p.limiter.ReconcileTPM(vk.ID, tpmReservedTokens, realTokens)`, realTokens = resp.Usage.TotalTokens, applied regardless of which model served the request); docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md (documents TPM's own Reserve-then-Reconcile design, the bookkeeping obligation this case's own reasoning turns on); the sibling, now-fixed costabuse-permodel-ratelimit-bypassed-via-crossmodel-fallback-chain case's own fix (fallback.go's attemptFallbackChain rateLimitOK parameter), read in full to confirm it genuinely has no TPM equivalent to extend.",
       "verdict": "verified_real_gap",
-      "corpus_note": "Honestly scoped out, per this task's own explicit instruction: a well-scoped partial fix (the RPM fix and the cost-accounting fix, both shipped this same pass) beats a rushed, half-correct attempt at also retrofitting a PerModel TPM dimension and its fallback-hop-aware re-targeting under time pressure. This case exists so the gap is captured as a new, clearly-named, honestly-scoped FAIL entry rather than silently lost -- matching this project's own established discipline (Cache L3-lite deferring real embeddings, Guardrails deferring NER) of naming a deferred sub-part explicitly rather than letting it vanish. Not a regression: no PerModel TPM feature existed before this pass either, so nothing was broken or narrowed -- this is a pre-existing absence, newly documented. Distinct from the sibling costabuse-ratelimit-tpm-reserve-coldstart-conservatism-verified-exact-magnitude case, which verifies TPM's own reservation-sizing timing behavior in isolation and has nothing to do with cross-model fallback or a PerModel dimension."
+      "corpus_note": "Honestly scoped out, per this task's own explicit instruction: a well-scoped partial fix (the RPM fix and the cost-accounting fix, both shipped this same pass) beats a rushed, half-correct attempt at also retrofitting a PerModel TPM dimension and its fallback-hop-aware re-targeting under time pressure. This case exists so the gap is captured as a new, clearly-named, honestly-scoped FAIL entry rather than silently lost -- matching this project's own established discipline (Cache L3-lite deferring real embeddings, Guardrails deferring NER) of naming a deferred sub-part explicitly rather than letting it vanish. Not a regression: no PerModel TPM feature existed before this pass either, so nothing was broken or narrowed -- this is a pre-existing absence, newly documented. Distinct from the sibling costabuse-ratelimit-tpm-reserve-coldstart-conservatism-verified-exact-magnitude case, which verifies TPM's own reservation-sizing timing behavior in isolation and has nothing to do with cross-model fallback or a PerModel dimension. RESEARCHED 2026-09-09, per docs/upgrade-research/gateway-tpm-permodel-fallback-2026-09-09.md: confirmed this gap is industry-wide and structurally hard, not a Kelvran-specific oversight. No production LLM gateway surveyed (LiteLLM, Kong AI Gateway, Envoy AI Gateway, Bifrost, TensorZero, Helicone) implements reservation-transfer bookkeeping for token-rate limits across a fallback/retry hop -- the field either debits tokens retrospectively (no pre-call reservation at all, e.g. Envoy AI Gateway, Kong's cost strategy, Bifrost) or ships the identical gap shape as a documented, unfixed limitation (Kong: \"the request may succeed even if the final model has reached its limit\" after a failover). Real exposure is bounded, not open-ended: the now-fixed per-model RPM check (checkFallbackTargetRateLimit) and the pre-existing key-level TPM ceiling (ReserveTPM(vk.ID), reserved once pre-routing) both still apply on every fallback hop today, so an adversary cannot drive unbounded token throughput through a fallback chain even without per-model TPM -- what is missing is only an operator's ability to cap ONE specific model's token throughput independently of the key's aggregate cap, a cost-governance-granularity gap, not an open door to unbounded adversarial cost/DoS. Decision: defer this gap a second time, explicitly, with this research as the justification -- do not build mid-chain TPM reservation-transfer, since it would be a genuinely novel mechanism with zero production precedent to validate its shape against. A real, optional, separately-scoped follow-up remains available if desired: extend PerModel to TPM for the DIRECT (non-fallback) path only, explicitly excluding fallback hops from that check's coverage the same way the RPM fix's own checkFallbackTargetRateLimit is explicitly scoped IN to fallback hops today."
     },
     "reference": "an operator who needs to bound TOKEN THROUGHPUT (not just request rate) specifically for an expensive model reached via a cross-model fallback_chains hop has no per-model TPM cap to configure at all today, on any access path -- and retrofitting one correctly would require re-targeting TPM's own Reserve-then-Reconcile bookkeeping mid-fallback-walk (release the pre-routing reservation, reserve against the actually-served hop's own bucket, and thread the final reservation state back out to finalize's ReconcileTPM call), a materially deeper change than the stateless per-attempt RPM check this same pass added to attemptFallbackChain -- explicitly scoped out of this pass, not fixed",
     "tier": "regression",
-    "tags": ["category:routing", "provenance:hand-written"],
+    "tags": [
+      "category:routing",
+      "provenance:hand-written"
+    ],
     "flaky": false
   }
 ]

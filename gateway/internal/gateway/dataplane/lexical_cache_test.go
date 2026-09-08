@@ -109,6 +109,37 @@ func TestHandleChatCompletionVolatileQueryNeverHitsL3(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionVolatileKeywordInSystemPromptDoesNotBypassL3
+// proves the fix for isVolatileQuery's role-scoping bug (docs/upgrade-
+// research/gateway-cache-volatility-scope-2026-09-09.md): a STATIC
+// system prompt containing a volatility keyword must never disable L3
+// for the whole deployment — only the user's own message content should
+// drive the bypass decision. Both requests share the identical system
+// prompt (containing "current"); the user message is a lexical
+// near-duplicate with no volatility content of its own, so this must be
+// a real L3 hit, not a bypass.
+func TestHandleChatCompletionVolatileKeywordInSystemPromptDoesNotBypassL3(t *testing.T) {
+	var upstreamCalls int
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	systemPrompt := adapter.Message{Role: "system", Content: "You may discuss current stock prices with the customer."}
+	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{systemPrompt, {Role: "user", Content: "Explain how binary search works in a sorted array"}}}
+	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{systemPrompt, {Role: "user", Content: "Explain how binary search   works in a sorted array"}}}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first); err != nil {
+		t.Fatalf("first HandleChatCompletion: %v", err)
+	}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second); err != nil {
+		t.Fatalf("second HandleChatCompletion: %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstreamCalls = %d, want 1 — a volatility keyword in a STATIC system prompt must never bypass L3; only the user's own message content should drive the bypass decision", upstreamCalls)
+	}
+}
+
 // failingLexicalCache is a cache.LexicalCache whose Search always errors —
 // simulating a real L3 backend outage (e.g. a future networked
 // implementation), never exercised by inprocess.LexicalCache itself, which

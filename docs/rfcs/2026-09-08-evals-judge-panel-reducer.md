@@ -314,6 +314,17 @@ the shared `providers.py` call sites would be a real behavioral change
 affecting every existing `--llm-judge` caller too, out of scope here —
 named as a separate future hardening candidate.
 
+**Researched 2026-09-09** (`docs/upgrade-research/evals-judge-temperature-
+determinism-2026-09-09.md`): this deferral is reaffirmed, now with real
+evidence rather than intuition. `temperature=0` reduces but does not
+eliminate judge non-determinism (a GPU-serving batch-invariance
+mechanism, not client-side-fixable), and has a directly-measured
+"spurious certainty" cost specifically on ambiguous/boundary-case
+grading — exactly this corpus's hard subset. No serious eval framework
+treats it as sufficient alone. Decision recorded in `DECISIONS.md`
+(2026-09-09): do not pin it blanket; a scoped, nightly-corpus-only
+version remains available as optional future work if wanted.
+
 **Corrected 2026-09-08 (later still, same day): the workflow's own gate
 was wrong, found by a real, live full-pipeline dry run against the
 finished Phase 4 corpus.** The originally-planned `evals report

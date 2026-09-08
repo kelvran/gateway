@@ -753,10 +753,23 @@ const (
 // a soft risk-score adjustment.
 var volatileQueryPattern = regexp.MustCompile(`(?i)\b(weather|price|stock|score|today|current|currently|now|latest)\b`)
 
-// isVolatileQuery reports whether any message matches the volatility
-// keyword list above.
+// isVolatileQuery reports whether any USER-role message matches the
+// volatility keyword list above. Scoped to role == "user" only — never
+// "system" — per docs/upgrade-research/gateway-cache-volatility-scope-
+// 2026-09-09.md: a system prompt is static/repeated across every request
+// through one deployment, so a system prompt that happens to contain a
+// volatility keyword (e.g. "you may discuss current stock prices") must
+// never drive a per-request cache-bypass decision — that would silently
+// disable L3 for the entire deployment, not just requests that are
+// actually about volatile content. This mirrors Portkey's Semantic Cache
+// and GPTCache's own default skip_list, both of which independently
+// converge on excluding system-role content from per-request cache
+// eligibility decisions.
 func isVolatileQuery(messages []adapter.Message) bool {
 	for _, m := range messages {
+		if m.Role != "user" {
+			continue
+		}
 		if volatileQueryPattern.MatchString(m.Content) {
 			return true
 		}
