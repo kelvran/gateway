@@ -455,5 +455,103 @@
       "provenance:hand-written"
     ],
     "flaky": false
+  },
+  {
+    "id": "adversarial-cache-l2-normalization-preserves-code-indentation",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "l2_normalization_allowlist_safety_code_indentation",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "def f():\n    return 1"
+          }
+        ]
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "def f():\n        return 1"
+          }
+        ]
+      },
+      "output": "l2_key_distinct:indentation_preserved_no_collision",
+      "match": "exact",
+      "rationale": "PASS -- re-verifies, at the L2-key level (not just normalizeMessages' own string output), the real design decision docs/agents/LOGS.md's [2026-09-03] Cache L2 entry names: the grounding research's own 6-operation normalization allowlist proposal (including internal-whitespace-collapse) was narrowed to 3 safe operations (TrimSpace, NFC, last-message-only trailing terminal punctuation strip) specifically because whitespace-collapse/case-folding have a real collision risk for pasted code, where indentation is genuinely meaningful. Verified directly against the real, current normalizeMessages (dataplane.go): a 4-space-indented body and an 8-space-indented body of the identical function produce two DIFFERENT normalized-message strings (only the outer TrimSpace/NFC/trailing-punctuation ops apply; the differing internal indentation is never touched), and feeding each into cache.NormalizedKey with identical remaining fields (tenant/model/temperature/max_tokens/guardrail_policy) therefore produces two DIFFERENT L2 hashes -- no false L2 hit across differently-indented code. This is the existing, shipped TestNormalizeMessagesNeverCollapsesCodeIndentation invariant, independently re-confirmed at the full L2-key level during this pass via a temporary Go probe test in internal/gateway/dataplane, run and deleted before this pass's own final commit."
+    },
+    "reference": "l2_key_distinct:indentation_preserved_no_collision",
+    "tier": "regression",
+    "tags": ["category:cache", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-l2-normalization-preserves-identifier-case",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "l2_normalization_allowlist_safety_case_folding",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "if x == True:\n    pass"
+          }
+        ]
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "if x == true:\n    pass"
+          }
+        ]
+      },
+      "output": "l2_key_distinct:identifier_case_preserved_no_collision",
+      "match": "exact",
+      "rationale": "PASS -- sibling to the indentation case above, verifying the SECOND of the two operations the Cache L2 RFC's own grounding research explicitly excluded from the narrowed 3-op allowlist for the same real collision-risk reason: case-folding would collapse Python's capitalized boolean literal True with an entirely different, lowercase reserved-word-shaped token true (a real distinction in most languages, e.g. JSON/JavaScript/Go's own lowercase true vs. Python's capitalized True). Verified directly against the real, current normalizeMessages: neither strings.TrimSpace, golang.org/x/text/unicode/norm.NFC, nor the last-message trailing-terminal-punctuation strip touch letter case at all, so the two messages above normalize to two DIFFERENT strings, producing two DIFFERENT L2 hashes via cache.NormalizedKey with identical remaining fields -- no false L2 hit across a capitalized-vs-lowercase identifier pair. This is the existing, shipped TestNormalizeMessagesNeverFoldsCase invariant, independently re-confirmed at the full L2-key level during this pass via a temporary Go probe test in internal/gateway/dataplane, run and deleted before this pass's own final commit."
+    },
+    "reference": "l2_key_distinct:identifier_case_preserved_no_collision",
+    "tier": "regression",
+    "tags": ["category:cache", "provenance:hand-written"],
+    "flaky": false
+  },
+  {
+    "id": "adversarial-cache-l3-volatile-bypass-scans-entire-history-not-just-query",
+    "revision": 1,
+    "task_spec": {
+      "attack_class": "l3_volatility_bypass_overtriggers_on_unrelated_history_false_positive",
+      "cached_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful assistant with access to current documentation."
+          },
+          {
+            "role": "user",
+            "content": "What is the capital of France?"
+          }
+        ]
+      },
+      "new_query": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful assistant with access to current documentation."
+          },
+          {
+            "role": "user",
+            "content": "What is the capital of France?"
+          }
+        ]
+      },
+      "output": "isVolatileQuery=true_for_every_request_in_this_session (forces an L3 bypass to upstream on EVERY turn, even a fully static, timeless question, purely because the SYSTEM PROMPT contains the word 'current')",
+      "match": "exact",
+      "rationale": "REAL, VERIFIED GAP -- not fixed in this pass (corpus authoring only), genuinely new and complementary to (not a duplicate of) the already-documented adversarial-cache-document-drift-volatility-keyword-gap case, which is about FALSE NEGATIVES (a drift-sensitive query outside the 9-word vocabulary that should bypass but doesn't). This case is the opposite direction: a FALSE POSITIVE caused by scope, not vocabulary. dataplane.isVolatileQuery (dataplane.go) loops over ALL of req.Messages -- the full conversation history including the system prompt -- not just the current/last user turn, per its own doc comment ('reports whether ANY message matches the volatility keyword list'). A system prompt as ordinary as 'You are a helpful assistant with access to current documentation' contains the word 'current' (matched by volatileQueryPattern's \\bcurrent\\b), which forces isVolatileQuery=true for EVERY request in that session, regardless of how static the actual user question is -- 'What is the capital of France?' alone (no system prompt) correctly returns isVolatileQuery=false, but adding that exact system prompt flips it to true even though the user's question is unchanged and entirely timeless. This directly undermines PRD.md's core cost-savings mission: any operator whose system prompt happens to contain one of the 9 fixed keywords (weather|price|stock|score|today|current|currently|now|latest) gets ZERO L3-lite cache benefit for the entire lifetime of that deployment, for every query regardless of content. Verified directly against the real, current isVolatileQuery via a temporary Go probe test in internal/gateway/dataplane, run and deleted before this pass's own final commit: isVolatileQuery(static_question_alone)=false, isVolatileQuery(system_prompt_with_'current'+static_question)=true, isVolatileQuery(system_prompt_alone)=true -- confirming the system prompt alone is sufficient to trigger it, independent of the user's own question content."
+    },
+    "reference": "isVolatileQuery should be scoped to the query content that actually determines freshness risk (e.g. the current/last user turn), not the entire conversation history including an unrelated system prompt, so a static question is never force-bypassed to upstream purely because of unrelated prior/system content",
+    "tier": "regression",
+    "tags": ["category:cache", "provenance:hand-written"],
+    "flaky": false
   }
 ]
