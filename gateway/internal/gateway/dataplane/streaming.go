@@ -178,7 +178,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	resp, dep, fallback, err = p.streamDeploymentWithFallback(ctx, dep, req, sw)
+	resp, dep, fallback, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID)
 	if err != nil {
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
 		return
@@ -262,11 +262,18 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 // though err is still non-nil — a streaming response that errored after
 // its first chunk did NOT fall back, and the two must never be conflated
 // in GatewayDecisionEvent.
-func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
+//
+// keyID (vk.ID) is threaded through purely so streamDeployment/
+// streamDeploymentBedrock can attribute the mid-stream runaway-completion
+// guard's "streaming_runaway_guard_triggered" warning log (see
+// streamrunaway.go) to the virtual key whose stream was cut off — it has
+// no effect on fallback routing, error classification, or anything else
+// this function already did.
+func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
 	var firstChunkSent bool
 	var fallback fallbackInfo
 
-	resp, err := p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
+	resp, err := p.streamDeployment(ctx, dep, req, sw, &firstChunkSent, keyID)
 	if err == nil || firstChunkSent {
 		return resp, dep, fallback, err
 	}
@@ -276,7 +283,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 		tried := map[string]bool{dep.Name: true}
 		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 			func(d Deployment) (adapter.ChatResponse, error) {
-				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent)
+				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID)
 			},
 			func() bool { return firstChunkSent },
 		)
@@ -287,7 +294,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
 		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 		dep = fallbackDep
-		resp, err = p.streamDeployment(ctx, dep, req, sw, &firstChunkSent)
+		resp, err = p.streamDeployment(ctx, dep, req, sw, &firstChunkSent, keyID)
 	}
 	return resp, dep, fallback, err
 }
@@ -299,9 +306,13 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 // cache write-back), exactly per the RFC's dataplane wiring design.
 // *firstChunkSent is set to true the moment any chunk is successfully
 // written to the client, so the caller can enforce the fallback rule above.
-func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool) (adapter.ChatResponse, error) {
+//
+// keyID is used only by the mid-stream runaway-completion guard below, to
+// attribute its warning log to the virtual key whose stream was cut off —
+// see streamrunaway.go.
+func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string) (adapter.ChatResponse, error) {
 	if dep.Provider == "bedrock" {
-		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent)
+		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent, keyID)
 	}
 
 	a, ok := p.adapters[dep.Provider]
@@ -323,7 +334,20 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		return adapter.ChatResponse{}, fmt.Errorf("adapter %q ToProvider: %w", dep.Provider, err)
 	}
 
-	body, err := p.upstreamStream(ctx, dep, providerReq)
+	// upstreamCtx is a CHILD of ctx, scoped to exactly this one upstream
+	// stream call — deliberately not ctx itself. The mid-stream runaway
+	// guard below cancels upstreamCtx (never ctx) once it trips, so it
+	// stops/interrupts only the upstream connection/body Read; ctx itself
+	// stays live for finishStreamedResponse's guardrail post-call check
+	// below and for finalize (dataplane.go, run via defer in the caller),
+	// both of which must still run normally on this path. Canceled
+	// unconditionally via defer on every return — a no-op by the time a
+	// normal, non-runaway completion reaches here, since nothing is left
+	// reading from upstreamCtx's request by then.
+	upstreamCtx, cancelUpstream := context.WithCancel(ctx)
+	defer cancelUpstream()
+
+	body, err := p.upstreamStream(upstreamCtx, dep, providerReq)
 	if err != nil {
 		return adapter.ChatResponse{}, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
 	}
@@ -333,6 +357,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 	reader := streaming.NewReader(body)
 	acc := newStreamAccumulator()
 	var finalUsage *adapter.Usage
+	runawayCeiling := streamRunawayCharsCeiling(req.MaxTokens)
 
 	for {
 		ev, readErr := reader.Next()
@@ -357,6 +382,28 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 			}
 			*firstChunkSent = true
 		}
+		// Mid-stream runaway-completion guard — see streamrunaway.go's
+		// package doc. Checked once per decoded batch, right after the
+		// same acc.add loop that just ran above, using acc's own
+		// accumulated-character-length proxy (no real token count is
+		// available yet, possibly ever). Tripping this does NOT return an
+		// error: the request already legitimately started and passed its
+		// own budget/TPM reservation, so it finishes as a normal,
+		// truncated-but-valid stream via finishStreamedResponse below —
+		// exactly as if the provider itself had simply stopped sending
+		// chunks, never classified as an upstream failure.
+		if accumulatedChars := acc.totalContentLen(); accumulatedChars > runawayCeiling {
+			p.logger.Warn("streaming_runaway_guard_triggered",
+				"key_id", keyID,
+				"deployment", dep.Name,
+				"provider", dep.Provider,
+				"model", req.Model,
+				"accumulated_chars", accumulatedChars,
+				"ceiling_chars", runawayCeiling,
+			)
+			cancelUpstream()
+			break
+		}
 		if done {
 			break
 		}
@@ -375,7 +422,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 // binary-framed implementor. Everything after decoding (accumulation,
 // client tee, final-response assembly) is identical, via the shared
 // finishStreamedResponse.
-func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string) (adapter.ChatResponse, error) {
 	a, ok := p.adapters[dep.Provider]
 	if !ok {
 		return adapter.ChatResponse{}, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
@@ -395,7 +442,13 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 		return adapter.ChatResponse{}, fmt.Errorf("adapter %q ToProvider: %w", dep.Provider, err)
 	}
 
-	body, err := p.upstreamStream(ctx, dep, providerReq)
+	// See streamDeployment's identical upstreamCtx comment: scoped to
+	// exactly this upstream call, canceled by the runaway guard below
+	// without ever touching ctx itself.
+	upstreamCtx, cancelUpstream := context.WithCancel(ctx)
+	defer cancelUpstream()
+
+	body, err := p.upstreamStream(upstreamCtx, dep, providerReq)
 	if err != nil {
 		return adapter.ChatResponse{}, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
 	}
@@ -405,6 +458,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	eventDecoder := eventstream.NewDecoder()
 	acc := newStreamAccumulator()
 	var finalUsage *adapter.Usage
+	runawayCeiling := streamRunawayCharsCeiling(req.MaxTokens)
 
 	// payloadBuf is reused across Decode calls per eventstream.Decoder's own
 	// doc comment -- safe because each message's Payload is fully consumed
@@ -434,6 +488,19 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 				return adapter.ChatResponse{}, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
 			}
 			*firstChunkSent = true
+		}
+		// See streamDeployment's identical runaway-guard comment/rationale.
+		if accumulatedChars := acc.totalContentLen(); accumulatedChars > runawayCeiling {
+			p.logger.Warn("streaming_runaway_guard_triggered",
+				"key_id", keyID,
+				"deployment", dep.Name,
+				"provider", dep.Provider,
+				"model", req.Model,
+				"accumulated_chars", accumulatedChars,
+				"ceiling_chars", runawayCeiling,
+			)
+			cancelUpstream()
+			break
 		}
 	}
 

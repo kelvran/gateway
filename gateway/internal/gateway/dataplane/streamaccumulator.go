@@ -90,6 +90,25 @@ func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 	}
 }
 
+// totalContentLen returns the sum, across every choice folded in so far,
+// of that choice's own accumulated content length — the provider-agnostic
+// PROXY the mid-stream runaway-completion guard (streaming.go's
+// streamDeployment/streamDeploymentBedrock, via streamrunaway.go's
+// streamRunawayCharsCeiling) checks against a character-length ceiling,
+// since no real token count is available until (if ever) the provider's
+// own final usage frame arrives — see streamrunaway.go's package doc for
+// why this proxy is used instead of a real token count.
+// strings.Builder.Len() is O(1) (length is tracked incrementally as
+// content is written, never re-scanned), so calling this once per decoded
+// chunk batch in the hot read loop is cheap.
+func (acc *streamAccumulator) totalContentLen() int {
+	total := 0
+	for _, c := range acc.choices {
+		total += c.content.Len()
+	}
+	return total
+}
+
 // build reconstructs the canonical ChatResponse from every chunk folded in
 // so far via add. Safe to call at most once per accumulator's logical use
 // (it does not reset internal state), matching this type's one-request
