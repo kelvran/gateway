@@ -1,15 +1,19 @@
-"""Real Anthropic- and OpenAI-backed `call_model` implementations for
-`judge()`.
+"""Real Anthropic-, OpenAI-, and Bedrock-backed `call_model`
+implementations for `judge()`.
 
 This is the ONLY file in `evals/` that imports `anthropic` or `openai` —
 per docs/rfcs/2026-09-04-evals-llm-judge-provider-wiring.md, that
-property has never changed. `judge()`/`llm_judge.py`'s scoring logic
-itself was originally never modified either, but that narrower claim no
-longer holds as of docs/rfcs/2026-09-07-evals-judge-panel-interface.md,
-which widened `judge()`'s `call_model` type to also accept a `list` —
-still zero SDK imports and zero network calls added to that module, so
-this file remains the sole SDK-importing file and `judge()` remains
-fully testable without a live provider API key, unchanged.
+property has never changed (`boto3`, added below, is already a real
+`evals/` dependency for object-storage ingestion, per docs/rfcs/2026-09-
+07-evals-trace-ingestion-object-storage.md — not a new SDK surface for
+this file to uniquely own the way `anthropic`/`openai` are). `judge()`/
+`llm_judge.py`'s scoring logic itself was originally never modified
+either, but that narrower claim no longer holds as of docs/rfcs/2026-09-
+07-evals-judge-panel-interface.md, which widened `judge()`'s `call_model`
+type to also accept a `list` — still zero SDK imports and zero network
+calls added to that module, so this file remains the sole SDK-importing
+file and `judge()` remains fully testable without a live provider API
+key, unchanged.
 The OpenAI provider (added 2026-09-05, per that same RFC's own named
 follow-on: "a same-shaped follow-on function") reuses the exact same
 design the Anthropic provider established — same `call_model` contract,
@@ -17,19 +21,40 @@ same lazy-key, same `last_call_cost` side channel — deliberately, not
 because it happened to be convenient, since `judge()`'s DI seam was
 already real and this is exactly the kind of swap it exists for.
 
-Importing this module never requires a key: both `AsyncAnthropic()` and
-`AsyncOpenAI()` read their respective env vars (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`) lazily, inside their own `make_*_call_model()`
-factories, not at import time. Only calling a factory (or the callable it
-returns) does.
+The Bedrock provider (added 2026-09-08, per docs/rfcs/2026-09-08-evals-
+judge-panel-reducer.md's revised panel composition) is the real
+`--llm-judge-panel` judge pair going forward: two Claude models (Sonnet 5
++ Haiku 4.5) invoked via AWS Bedrock's Converse API instead of Anthropic
++ OpenAI's own direct APIs — an explicit, accepted tradeoff (both judges
+share the same vendor/architecture/RLHF lineage, so the panel's bias-
+reduction premise is weaker than a genuinely disjoint pair; see that
+RFC's own honest accounting of this) made deliberately for AWS-only
+operational simplicity. `boto3`'s `bedrock-runtime` client is
+synchronous — `_BedrockCallModel.__call__` wraps the blocking
+`client.converse()` call in `asyncio.to_thread`, per this project's own
+"no blocking calls inside async functions" convention (`AGENTS.md`), the
+one place in this module a call isn't already natively async (unlike
+`AsyncAnthropic`/`AsyncOpenAI`).
+
+Importing this module never requires a key: `AsyncAnthropic()`,
+`AsyncOpenAI()`, and `boto3.client("bedrock-runtime")` all read their
+respective credentials (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and
+boto3's own standard AWS credential chain — `AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`/`AWS_REGION` env vars, a shared credentials file,
+or an IAM role, never a Kelvran-specific env var name) lazily, inside
+their own `make_*_call_model()` factories, not at import time. Only
+calling a factory (or the callable it returns) does.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
+import boto3
 from anthropic import AsyncAnthropic
 from anthropic.types import Usage
 from openai import AsyncOpenAI
@@ -232,3 +257,149 @@ def make_openai_call_model(
     """
     openai_client = client or AsyncOpenAI()
     return _OpenAICallModel(model=model, client=openai_client)
+
+
+# Real, current Bedrock model IDs for Claude Sonnet 5 and Claude Haiku 4.5,
+# verified 2026-09-08 directly against AWS's own live model-card pages
+# (docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-
+# claude-{sonnet-5,haiku-4-5}.html's own "Programmatic Access" tables) —
+# never guessed from a plausible-looking naming pattern. Deliberately the
+# bare `bedrock-runtime` model IDs, not a cross-region inference-profile
+# ID (the `us.`/`eu.`/`au.`/`global.` prefixed forms Bedrock also
+# publishes) — the bare form is the correct default for a single-region
+# judge workload; callers needing cross-region routing pass a different
+# `model` string to the factories below, no code change required. Note
+# the real, asymmetric naming confirmed directly from AWS's own docs:
+# Sonnet 5's id carries no date suffix; Haiku 4.5's does.
+BEDROCK_SONNET_5_MODEL_ID = "anthropic.claude-sonnet-5"
+BEDROCK_HAIKU_4_5_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# Bedrock bills these two (both third-party models) through AWS
+# Marketplace, per each model's own live "Pricing" section, which defers
+# to a separate, JS-rendered pricing page rather than publishing an
+# inline per-token number on the model card itself — a live fetch of that
+# page did not surface a real, current per-token rate for either model in
+# this pass, so NEITHER gets a price-table entry here. This means
+# `_compute_bedrock_cost_usd` honestly returns `None` for both today,
+# mirroring `_compute_anthropic_cost_usd`/`_compute_openai_cost_usd`'s own
+# established "no price-table entry -> genuinely unmeasured, never a
+# fabricated estimate" convention exactly — not a gap unique to this
+# provider. Add real entries here once verified directly against a live
+# AWS bill or the rendered pricing page, the same "bumped by hand only,
+# re-verify before trusting in production" posture the other two price
+# tables already carry.
+_BEDROCK_MODEL_PRICE_PER_MTOK_USD: dict[str, tuple[Decimal, Decimal]] = {}
+
+
+def _compute_bedrock_cost_usd(
+    model: str, input_tokens: int, output_tokens: int
+) -> Decimal | None:
+    """Bedrock analogue of `_compute_anthropic_cost_usd`/
+    `_compute_openai_cost_usd` — same `None`-for-unpriced convention.
+    Takes raw token counts (not a provider-specific `Usage` object) since
+    Bedrock Converse's own `usage` shape (`inputTokens`/`outputTokens`, a
+    plain dict via `boto3`) doesn't need a typed wrapper the way the
+    `anthropic`/`openai` SDKs' response objects do.
+    """
+    prices = _BEDROCK_MODEL_PRICE_PER_MTOK_USD.get(model)
+    if prices is None:
+        return None
+    input_price, output_price = prices
+    return (
+        Decimal(input_tokens) * input_price + Decimal(output_tokens) * output_price
+    ) / Decimal(1_000_000)
+
+
+class _BedrockCallModel:
+    """A `call_model` implementation backed by a real AWS Bedrock Converse
+    API call — the Bedrock analogue of `_AnthropicCallModel`/
+    `_OpenAICallModel`, same `last_call_cost` side-channel design and its
+    same sequential-callers-only caveat (see `_AnthropicCallModel`'s own
+    docstring for the full reasoning, not repeated here).
+
+    Unlike the Anthropic/OpenAI SDKs, `boto3`'s Bedrock client is
+    synchronous — `__call__` wraps the blocking `client.converse()` call
+    in `asyncio.to_thread`, per this project's own "no blocking calls
+    inside async functions" convention (`AGENTS.md`), so this class still
+    satisfies `Callable[[str], Awaitable[str]]` without blocking the event
+    loop.
+
+    Converse's real request/response wire shape (`messages[].content[]
+    {text}`, `usage.inputTokens`/`usage.outputTokens`,
+    `output.message.content[].text`) was cross-verified directly against
+    this same repo's own `gateway/internal/adapter/bedrock/bedrock.go` —
+    Kelvran's gateway already talks to this exact API in Go — rather than
+    assumed from general knowledge of the Converse API.
+
+    `client` is typed `Any`, not a real `boto3` client type: `boto3`
+    generates its client classes dynamically at runtime with no
+    importable static type (confirmed — this repo's existing `boto3`
+    caller, `evals/ingestion/object_store.py`, doesn't type its own
+    client variable either), so `Any` here is honest, not a skipped type.
+    """
+
+    def __init__(self, model: str, client: Any) -> None:
+        self._model = model
+        self._client = client
+        self.last_call_cost: JudgeCallCost | None = None
+
+    def _invoke(self, prompt: str) -> dict:
+        return self._client.converse(
+            modelId=self._model,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+        )
+
+    async def __call__(self, prompt: str) -> str:
+        response = await asyncio.to_thread(self._invoke, prompt)
+        usage = response["usage"]
+        input_tokens = usage["inputTokens"]
+        output_tokens = usage["outputTokens"]
+        self.last_call_cost = JudgeCallCost(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=_compute_bedrock_cost_usd(
+                self._model, input_tokens, output_tokens
+            ),
+        )
+        content_blocks = response["output"]["message"]["content"]
+        text_blocks = [b["text"] for b in content_blocks if "text" in b]
+        if not text_blocks:
+            raise ValueError(
+                f"Bedrock Converse call for model {self._model!r} returned no text "
+                "content block (a real refusal or a tool-only response) — judge() "
+                "cannot score an empty verdict"
+            )
+        return "".join(text_blocks)
+
+
+def make_bedrock_call_model(
+    model: str,
+    client: Any | None = None,
+    region_name: str | None = None,
+) -> Callable[[str], Awaitable[str]]:
+    """Build a `call_model` callable backed by a real AWS Bedrock Converse
+    API call, per docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's
+    revised panel composition.
+
+    `model` is required (unlike `make_anthropic_call_model`/
+    `make_openai_call_model`'s own defaulted `model` parameter) —
+    deliberately, since this factory is called twice with two DIFFERENT
+    real model ids (`BEDROCK_SONNET_5_MODEL_ID`,
+    `BEDROCK_HAIKU_4_5_MODEL_ID`) to build the panel's two disjoint-size
+    (not disjoint-vendor — see the RFC's own honest accounting of this
+    tradeoff) judges; a single implicit default would silently produce
+    two identical judges if a caller forgot to pass `model` twice.
+
+    Credentials and region resolve via `boto3`'s own standard AWS
+    credential chain (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
+    `AWS_REGION` env vars, a shared credentials file, or an IAM role) —
+    never a Kelvran-specific env var name, so this factory composes with
+    however AWS credentials are already configured for any other caller
+    in this environment (e.g. the object-storage ingestion path's own
+    `boto3` usage). `region_name`, when given, overrides whatever
+    `AWS_REGION`/`AWS_DEFAULT_REGION` would otherwise resolve to — most
+    callers should leave it `None` and configure the region via the
+    standard env var instead.
+    """
+    bedrock_client = client or boto3.client("bedrock-runtime", region_name=region_name)
+    return _BedrockCallModel(model=model, client=bedrock_client)

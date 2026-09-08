@@ -50,10 +50,11 @@ from evals.judge.cache import compute_score_cache_key
 from evals.judge.deterministic import exact_match, regex_match
 from evals.judge.llm_judge import judge, reduce_panel_votes
 from evals.judge.providers import (
+    BEDROCK_HAIKU_4_5_MODEL_ID,
+    BEDROCK_SONNET_5_MODEL_ID,
     DEFAULT_JUDGE_MODEL,
-    OPENAI_DEFAULT_JUDGE_MODEL,
     make_anthropic_call_model,
-    make_openai_call_model,
+    make_bedrock_call_model,
 )
 from evals.models import EvalCase, PanelVote, Run, Score, Span
 from evals.results_store import (
@@ -719,12 +720,17 @@ def main() -> None:
     is_flag=True,
     default=False,
     help=(
-        "Score with a 2-judge disjoint-provider panel (Anthropic + "
-        "OpenAI) instead of a single judge, majority-reduced via "
-        "evals.judge.llm_judge.reduce_panel_votes. Mutually exclusive "
-        "with --llm-judge. Requires both ANTHROPIC_API_KEY and "
-        "OPENAI_API_KEY in the environment. See "
-        "docs/rfcs/2026-09-08-evals-judge-panel-reducer.md."
+        "Score with a 2-judge Bedrock panel (Claude Sonnet 5 + Claude "
+        "Haiku 4.5, via AWS Bedrock's Converse API) instead of a single "
+        "judge, majority-reduced via evals.judge.llm_judge."
+        "reduce_panel_votes -- fail-closed on a disagreement. Mutually "
+        "exclusive with --llm-judge. Both judges share the same vendor/"
+        "architecture, an explicit, accepted tradeoff for AWS-only "
+        "operational simplicity -- see that RFC's own honest accounting "
+        "of the weaker bias-reduction premise this implies. Requires AWS "
+        "credentials resolvable via boto3's standard credential chain "
+        "(AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION or "
+        "equivalent). See docs/rfcs/2026-09-08-evals-judge-panel-reducer.md."
     ),
 )
 @click.option(
@@ -774,8 +780,14 @@ def run_cmd(
     cached_votes = None
     if llm_judge_panel:
         panel = [
-            (DEFAULT_JUDGE_MODEL, make_anthropic_call_model()),
-            (OPENAI_DEFAULT_JUDGE_MODEL, make_openai_call_model()),
+            (
+                BEDROCK_SONNET_5_MODEL_ID,
+                make_bedrock_call_model(BEDROCK_SONNET_5_MODEL_ID),
+            ),
+            (
+                BEDROCK_HAIKU_4_5_MODEL_ID,
+                make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID),
+            ),
         ]
         cached_votes = (
             _load_cached_panel_votes(scores_path) if use_score_cache else None
@@ -1165,12 +1177,17 @@ def ingest_cmd(
     is_flag=True,
     default=False,
     help=(
-        "Score with a 2-judge disjoint-provider panel (Anthropic + "
-        "OpenAI) instead of a single judge, majority-reduced via "
-        "evals.judge.llm_judge.reduce_panel_votes. Mutually exclusive "
-        "with --llm-judge. Requires both ANTHROPIC_API_KEY and "
-        "OPENAI_API_KEY in the environment. See "
-        "docs/rfcs/2026-09-08-evals-judge-panel-reducer.md."
+        "Score with a 2-judge Bedrock panel (Claude Sonnet 5 + Claude "
+        "Haiku 4.5, via AWS Bedrock's Converse API) instead of a single "
+        "judge, majority-reduced via evals.judge.llm_judge."
+        "reduce_panel_votes -- fail-closed on a disagreement. Mutually "
+        "exclusive with --llm-judge. Both judges share the same vendor/"
+        "architecture, an explicit, accepted tradeoff for AWS-only "
+        "operational simplicity -- see that RFC's own honest accounting "
+        "of the weaker bias-reduction premise this implies. Requires AWS "
+        "credentials resolvable via boto3's standard credential chain "
+        "(AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION or "
+        "equivalent). See docs/rfcs/2026-09-08-evals-judge-panel-reducer.md."
     ),
 )
 @click.option("--confidence", default=0.95, show_default=True, type=float)
@@ -1278,8 +1295,14 @@ def rollout_cmd(
     cached_votes = None
     if llm_judge_panel:
         panel = [
-            (DEFAULT_JUDGE_MODEL, make_anthropic_call_model()),
-            (OPENAI_DEFAULT_JUDGE_MODEL, make_openai_call_model()),
+            (
+                BEDROCK_SONNET_5_MODEL_ID,
+                make_bedrock_call_model(BEDROCK_SONNET_5_MODEL_ID),
+            ),
+            (
+                BEDROCK_HAIKU_4_5_MODEL_ID,
+                make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID),
+            ),
         ]
         cached_votes = (
             _load_cached_panel_votes(scores_path) if use_score_cache else None

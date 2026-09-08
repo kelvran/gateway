@@ -659,20 +659,31 @@ def test_run_deterministic_scores_have_exact_zero_cost(tmp_path):
     assert all(s.cost_usd == Decimal("0") for s in persisted)
 
 
-def _monkeypatch_panel_providers(monkeypatch, anthropic_response, openai_response):
-    """Shared setup for a 2-provider panel test: distinct, fixed responses
-    per provider (never a shared iter()/next() counter) so the test's own
-    correctness never depends on asyncio.gather's real scheduling order.
+def _monkeypatch_panel_providers(monkeypatch, sonnet_response, haiku_response):
+    """Shared setup for a 2-judge Bedrock panel test: distinct, fixed
+    responses per judge (never a shared iter()/next() counter) so the
+    test's own correctness never depends on asyncio.gather's real
+    scheduling order. Both judges go through the same
+    make_bedrock_call_model(model_id) factory -- dispatch on model_id to
+    return the right fake for each.
     """
 
-    async def fake_anthropic(prompt: str) -> str:
-        return anthropic_response
+    async def fake_sonnet(prompt: str) -> str:
+        return sonnet_response
 
-    async def fake_openai(prompt: str) -> str:
-        return openai_response
+    async def fake_haiku(prompt: str) -> str:
+        return haiku_response
 
-    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
-    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+    def fake_make_bedrock_call_model(model_id, client=None, region_name=None):
+        if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID:
+            return fake_sonnet
+        if model_id == cli_module.BEDROCK_HAIKU_4_5_MODEL_ID:
+            return fake_haiku
+        raise ValueError(f"unexpected model_id in test fake: {model_id!r}")
+
+    monkeypatch.setattr(
+        cli_module, "make_bedrock_call_model", fake_make_bedrock_call_model
+    )
 
 
 def test_run_with_llm_judge_panel_scores_via_real_wiring_using_fake_providers(
@@ -680,8 +691,8 @@ def test_run_with_llm_judge_panel_scores_via_real_wiring_using_fake_providers(
 ):
     _monkeypatch_panel_providers(
         monkeypatch,
-        anthropic_response="REASONING: matches exactly.\nVERDICT: PASS\n",
-        openai_response="REASONING: matches exactly.\nVERDICT: PASS\n",
+        sonnet_response="REASONING: matches exactly.\nVERDICT: PASS\n",
+        haiku_response="REASONING: matches exactly.\nVERDICT: PASS\n",
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -704,21 +715,24 @@ def test_run_with_llm_judge_panel_scores_via_real_wiring_using_fake_providers(
     persisted = load_scores(scores_path)
     assert len(persisted) == 2
     assert all(s.scorer_type == "llm_judge_panel" for s in persisted)
-    assert persisted[0].scorer_id == "panel:claude-haiku-4-5-20251001+gpt-4o-mini"
+    assert (
+        persisted[0].scorer_id
+        == "panel:anthropic.claude-sonnet-5+anthropic.claude-haiku-4-5-20251001-v1:0"
+    )
     assert persisted[0].quorum_reached is True
     assert persisted[0].panel_votes is not None
     assert len(persisted[0].panel_votes) == 2
     assert {v.scorer_id for v in persisted[0].panel_votes} == {
-        "claude-haiku-4-5-20251001",
-        "gpt-4o-mini",
+        cli_module.BEDROCK_SONNET_5_MODEL_ID,
+        cli_module.BEDROCK_HAIKU_4_5_MODEL_ID,
     }
 
 
 def test_run_with_llm_judge_panel_disagreement_is_fail_closed(tmp_path, monkeypatch):
     _monkeypatch_panel_providers(
         monkeypatch,
-        anthropic_response="REASONING: matches.\nVERDICT: PASS\n",
-        openai_response="REASONING: does not match.\nVERDICT: FAIL\n",
+        sonnet_response="REASONING: matches.\nVERDICT: PASS\n",
+        haiku_response="REASONING: does not match.\nVERDICT: FAIL\n",
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -777,14 +791,23 @@ def test_run_with_llm_judge_panel_sums_cost_across_both_providers_from_fakes(
             self.last_call_cost = SimpleNamespace(cost_usd=self._cost)
             return self._response
 
-    anthropic_fake = _FakeCostExposingCallModel(
+    sonnet_fake = _FakeCostExposingCallModel(
         "REASONING: matches.\nVERDICT: PASS\n", Decimal("0.001")
     )
-    openai_fake = _FakeCostExposingCallModel(
+    haiku_fake = _FakeCostExposingCallModel(
         "REASONING: matches.\nVERDICT: PASS\n", Decimal("0.0004")
     )
-    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: anthropic_fake)
-    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: openai_fake)
+
+    def fake_make_bedrock_call_model(model_id, client=None, region_name=None):
+        return (
+            sonnet_fake
+            if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
+            else haiku_fake
+        )
+
+    monkeypatch.setattr(
+        cli_module, "make_bedrock_call_model", fake_make_bedrock_call_model
+    )
 
     scores_path = tmp_path / "scores.jsonl"
     runner = CliRunner()
@@ -815,8 +838,8 @@ def test_run_with_llm_judge_panel_cost_is_none_when_any_panelist_cost_is_unknown
     # never a silently-understated partial sum from the OpenAI side alone.
     _monkeypatch_panel_providers(
         monkeypatch,
-        anthropic_response="REASONING: matches.\nVERDICT: PASS\n",
-        openai_response="REASONING: matches.\nVERDICT: PASS\n",
+        sonnet_response="REASONING: matches.\nVERDICT: PASS\n",
+        haiku_response="REASONING: matches.\nVERDICT: PASS\n",
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -841,19 +864,27 @@ def test_run_with_llm_judge_panel_cost_is_none_when_any_panelist_cost_is_unknown
 def test_run_with_llm_judge_panel_use_score_cache_second_invocation_makes_no_calls(
     tmp_path, monkeypatch
 ):
-    anthropic_calls = {"n": 0}
-    openai_calls = {"n": 0}
+    sonnet_calls = {"n": 0}
+    haiku_calls = {"n": 0}
 
-    async def fake_anthropic(prompt: str) -> str:
-        anthropic_calls["n"] += 1
+    async def fake_sonnet(prompt: str) -> str:
+        sonnet_calls["n"] += 1
         return "REASONING: matches.\nVERDICT: PASS\n"
 
-    async def fake_openai(prompt: str) -> str:
-        openai_calls["n"] += 1
+    async def fake_haiku(prompt: str) -> str:
+        haiku_calls["n"] += 1
         return "REASONING: matches.\nVERDICT: PASS\n"
 
-    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
-    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+    def fake_make_bedrock_call_model(model_id, client=None, region_name=None):
+        return (
+            fake_sonnet
+            if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
+            else fake_haiku
+        )
+
+    monkeypatch.setattr(
+        cli_module, "make_bedrock_call_model", fake_make_bedrock_call_model
+    )
 
     scores_path = tmp_path / "scores.jsonl"
     args = [
@@ -869,15 +900,15 @@ def test_run_with_llm_judge_panel_use_score_cache_second_invocation_makes_no_cal
 
     first = runner.invoke(main, args)
     assert first.exit_code == 0, first.output
-    assert anthropic_calls["n"] == 2
-    assert openai_calls["n"] == 2
+    assert sonnet_calls["n"] == 2
+    assert haiku_calls["n"] == 2
 
     second = runner.invoke(main, args)
     assert second.exit_code == 0, second.output
     # Every panelist's vote for both cases hits the score cache -- no new
-    # calls to either provider at all.
-    assert anthropic_calls["n"] == 2
-    assert openai_calls["n"] == 2
+    # calls to either judge at all.
+    assert sonnet_calls["n"] == 2
+    assert haiku_calls["n"] == 2
 
     persisted = load_scores(scores_path)
     assert len(persisted) == 4
@@ -887,47 +918,76 @@ def test_run_with_llm_judge_panel_use_score_cache_second_invocation_makes_no_cal
     assert all(v.from_cache for v in second_pass_case.panel_votes)
 
 
-def test_run_with_llm_judge_panel_use_score_cache_reuses_a_prior_standalone_score(
+def test_run_with_llm_judge_panel_use_score_cache_reuses_per_case_not_per_suite(
     tmp_path, monkeypatch
 ):
     # docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's cache-key design:
-    # a panelist's vote is keyed identically whether it came from a
-    # standalone --llm-judge run or a --llm-judge-panel run. Seed a prior
-    # standalone Anthropic Score for judge-pass-case; a later panel run
-    # must reuse it and only call the OpenAI provider fresh.
-    anthropic_calls = {"n": 0}
-    openai_calls = {"n": 0}
+    # a panelist's vote is keyed by (output, reference, its own real model
+    # id), independent of panel membership or which suite invocation
+    # produced it -- reuse happens per CASE, not merely "the whole suite
+    # ran before." Seed a real prior llm_judge_panel Score covering only
+    # judge-pass-case (via a real --llm-judge-panel invocation against a
+    # single-case suite, not hand-constructed), then run the full 2-case
+    # suite and confirm ONLY judge-fail-case (genuinely new) triggers
+    # fresh calls -- the stronger, more specific proof than "run the
+    # identical suite twice, zero new calls" (already covered by the
+    # sibling *_second_invocation_makes_no_calls test).
+    #
+    # NOTE on scope, honestly: the RFC's own design also describes
+    # cross-mode reuse between a standalone --llm-judge run and a
+    # --llm-judge-panel run for the SAME model id. That specific scenario
+    # has no real code path today -- --llm-judge still uses direct-
+    # Anthropic-API's DEFAULT_JUDGE_MODEL ("claude-haiku-4-5-20251001"),
+    # while the panel now uses two Bedrock model ids
+    # ("anthropic.claude-sonnet-5", "anthropic.claude-haiku-4-5-20251001-
+    # v1:0") -- disjoint id strings, so no cache overlap between the two
+    # modes currently exists.
+    single_case_suite = tmp_path / "single_case_suite.json"
+    single_case_suite.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "judge-pass-case",
+                    "revision": 1,
+                    "task_spec": {"output": "Paris"},
+                    "reference": "Paris",
+                    "tier": "golden",
+                    "tags": ["judge"],
+                }
+            ]
+        )
+    )
 
-    async def fake_anthropic(prompt: str) -> str:
-        anthropic_calls["n"] += 1
+    calls = {"n": 0}
+
+    async def fake_judge(prompt: str) -> str:
+        calls["n"] += 1
         return "REASONING: matches.\nVERDICT: PASS\n"
 
-    async def fake_openai(prompt: str) -> str:
-        openai_calls["n"] += 1
-        return "REASONING: matches.\nVERDICT: PASS\n"
-
-    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
-    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, client=None, region_name=None: fake_judge,
+    )
 
     scores_path = tmp_path / "scores.jsonl"
     runner = CliRunner()
-    standalone = runner.invoke(
+    seed = runner.invoke(
         main,
         [
             "run",
             "--suite",
-            "tests/fixtures/llm_judge_example.json",
+            str(single_case_suite),
             "--scores",
             str(scores_path),
-            "--llm-judge",
+            "--llm-judge-panel",
             "--use-score-cache",
         ],
     )
-    assert standalone.exit_code == 0, standalone.output
-    assert anthropic_calls["n"] == 2
-    assert openai_calls["n"] == 0
+    assert seed.exit_code == 0, seed.output
+    assert calls["n"] == 2  # 1 case x 2 panelists
 
-    panel_run = runner.invoke(
+    full = runner.invoke(
         main,
         [
             "run",
@@ -939,22 +999,24 @@ def test_run_with_llm_judge_panel_use_score_cache_reuses_a_prior_standalone_scor
             "--use-score-cache",
         ],
     )
-    assert panel_run.exit_code == 0, panel_run.output
-    # The Anthropic half of both cases is reused from the standalone run
-    # above -- only the OpenAI half needs a genuinely fresh call.
-    assert anthropic_calls["n"] == 2
-    assert openai_calls["n"] == 2
+    assert full.exit_code == 0, full.output
+    # judge-pass-case's 2 votes are reused; judge-fail-case's 2 are fresh.
+    assert calls["n"] == 4
 
     persisted = load_scores(scores_path)
-    panel_scores = [s for s in persisted if s.scorer_type == "llm_judge_panel"]
-    assert len(panel_scores) == 2
-    for score in panel_scores:
-        anthropic_vote = next(
-            v for v in score.panel_votes if v.scorer_id == "claude-haiku-4-5-20251001"
-        )
-        openai_vote = next(v for v in score.panel_votes if v.scorer_id == "gpt-4o-mini")
-        assert anthropic_vote.from_cache is True
-        assert openai_vote.from_cache is False
+    pass_case_scores = [
+        s
+        for s in persisted
+        if s.eval_case_id == "judge-pass-case" and s.scorer_type == "llm_judge_panel"
+    ]
+    latest_pass_case_score = pass_case_scores[-1]
+    assert all(v.from_cache for v in latest_pass_case_score.panel_votes)
+    fail_case_score = next(
+        s
+        for s in persisted
+        if s.eval_case_id == "judge-fail-case" and s.scorer_type == "llm_judge_panel"
+    )
+    assert all(not v.from_cache for v in fail_case_score.panel_votes)
 
 
 def test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cache_hit(
@@ -974,7 +1036,7 @@ def test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cach
             Score(
                 eval_case_id="judge-pass-case",
                 eval_case_revision=1,
-                scorer_id="panel:claude-haiku-4-5-20251001+gpt-4o-mini",
+                scorer_id="panel:anthropic.claude-sonnet-5+anthropic.claude-haiku-4-5-20251001-v1:0",
                 scorer_type="llm_judge_panel",
                 value=True,
                 cost_usd=Decimal("0"),
@@ -984,31 +1046,43 @@ def test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cach
                     _panel_vote_for_test(
                         "Paris",
                         "Paris",
-                        "claude-haiku-4-5-20251001",
+                        cli_module.BEDROCK_SONNET_5_MODEL_ID,
                         True,
                         from_cache=True,
                     ),
                     _panel_vote_for_test(
-                        "Paris", "Paris", "gpt-4o-mini", True, from_cache=True
+                        "Paris",
+                        "Paris",
+                        cli_module.BEDROCK_HAIKU_4_5_MODEL_ID,
+                        True,
+                        from_cache=True,
                     ),
                 ],
             )
         ],
     )
 
-    anthropic_calls = {"n": 0}
-    openai_calls = {"n": 0}
+    sonnet_calls = {"n": 0}
+    haiku_calls = {"n": 0}
 
-    async def fake_anthropic(prompt: str) -> str:
-        anthropic_calls["n"] += 1
+    async def fake_sonnet(prompt: str) -> str:
+        sonnet_calls["n"] += 1
         return "REASONING: matches.\nVERDICT: PASS\n"
 
-    async def fake_openai(prompt: str) -> str:
-        openai_calls["n"] += 1
+    async def fake_haiku(prompt: str) -> str:
+        haiku_calls["n"] += 1
         return "REASONING: matches.\nVERDICT: PASS\n"
 
-    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
-    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+    def fake_make_bedrock_call_model(model_id, client=None, region_name=None):
+        return (
+            fake_sonnet
+            if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
+            else fake_haiku
+        )
+
+    monkeypatch.setattr(
+        cli_module, "make_bedrock_call_model", fake_make_bedrock_call_model
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1025,12 +1099,12 @@ def test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cach
     )
 
     assert result.exit_code == 0, result.output
-    # Both providers were genuinely called AT LEAST once (once for
+    # Both judges were genuinely called AT LEAST once (once for
     # judge-fail-case, which has no cache entry at all, plus once more for
     # judge-pass-case specifically -- checked directly below -- since the
     # llm_judge_example.json fixture has 2 cases total).
-    assert anthropic_calls["n"] == 2
-    assert openai_calls["n"] == 2
+    assert sonnet_calls["n"] == 2
+    assert haiku_calls["n"] == 2
 
     # The precise property under test: judge-pass-case's own persisted
     # panel_votes must both be genuinely fresh (from_cache=False), proving
@@ -1614,14 +1688,14 @@ def test_rollout_with_llm_judge_panel_scores_captured_stdout_via_real_wiring(
 
     monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
 
-    async def fake_anthropic(prompt: str) -> str:
+    async def fake_judge(prompt: str) -> str:
         return "REASONING: matches.\nVERDICT: PASS\n"
 
-    async def fake_openai(prompt: str) -> str:
-        return "REASONING: matches.\nVERDICT: PASS\n"
-
-    monkeypatch.setattr(cli_module, "make_anthropic_call_model", lambda: fake_anthropic)
-    monkeypatch.setattr(cli_module, "make_openai_call_model", lambda: fake_openai)
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, client=None, region_name=None: fake_judge,
+    )
 
     results_path = tmp_path / "results.jsonl"
     scores_path = tmp_path / "scores.jsonl"

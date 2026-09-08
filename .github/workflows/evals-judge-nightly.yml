@@ -2,17 +2,23 @@ name: evals judge/panel accuracy (nightly)
 
 # Deliberately separate from ci.yml's per-push evals job, per
 # docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's CI-scheduling
-# decision: real, unbounded dollar cost against two live paid providers
-# (Anthropic + OpenAI) on every push/PR update would be a genuine, real
-# cost this repo doesn't otherwise carry; neither provider call site in
-# evals/evals/judge/providers.py sets a temperature parameter, so a
-# judge/panel verdict on an identical prompt is genuinely non-
-# deterministic run-to-run at each provider's own API default — gating
-# PR mergeability on a probabilistic call whose own corpus is
-# deliberately built to include ambiguous boundary cases would be a
-# real, self-inflicted CI-flakiness source. Nightly + workflow_dispatch
-# gives a real, recurring, unattended, live-running gate with zero
-# coupling to PR mergeability.
+# decision: real, unbounded dollar cost against live paid providers
+# (Anthropic for --llm-judge, AWS Bedrock for --llm-judge-panel) on every
+# push/PR update would be a genuine, real cost this repo doesn't
+# otherwise carry; no provider call site in evals/evals/judge/providers
+# .py sets a temperature parameter, so a judge/panel verdict on an
+# identical prompt is genuinely non-deterministic run-to-run at each
+# provider's own API default — gating PR mergeability on a probabilistic
+# call whose own corpus is deliberately built to include ambiguous
+# boundary cases would be a real, self-inflicted CI-flakiness source.
+# Nightly + workflow_dispatch gives a real, recurring, unattended,
+# live-running gate with zero coupling to PR mergeability.
+#
+# --llm-judge-panel's 2 judges (Claude Sonnet 5 + Claude Haiku 4.5) are
+# both served via AWS Bedrock, per that RFC's own panel-composition
+# revision (an explicit, accepted same-vendor-correlation tradeoff for
+# AWS-only operational simplicity) -- credentials resolve via boto3's
+# standard AWS credential chain, never a Kelvran-specific env var name.
 on:
   schedule:
     - cron: "0 7 * * *"
@@ -28,7 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: judge + panel accuracy run against real Anthropic + OpenAI
+      - name: judge + panel accuracy run against real Anthropic + Bedrock
         # Deliberately excludes the existing 113-case deterministic
         # regression corpus (regression_corpus_*.json) -- that's
         # separately-tracked work with its own unresolved calibration
@@ -42,7 +48,9 @@ jobs:
         working-directory: evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           uv sync
           uv run evals run --suite tests/fixtures/regression_corpus_judge_accuracy.json \
