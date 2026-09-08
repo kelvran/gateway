@@ -181,6 +181,20 @@ type Config struct {
 	// Pipeline test construction to change for a control most of those
 	// tests aren't exercising.
 	Concurrency *ratelimit.ConcurrencyLimiter
+	// DeploymentConcurrency bounds each shared deployment's own aggregate
+	// in-flight-request count, across every virtual key and every
+	// fallback hop that routes to it — a genuinely different scope from
+	// Concurrency above (per virtual key), per docs/upgrade-research/
+	// gateway-per-deployment-concurrency-2026-09-09.md. Deliberately
+	// optional (nil-safe), matching Concurrency's own convention.
+	DeploymentConcurrency *ratelimit.ConcurrencyLimiter
+	// DeploymentLimiter enforces each shared deployment's own aggregate
+	// RPM ceiling, checked on every call to it regardless of which
+	// virtual key initiated the request. Optional (nil-safe) — unlike
+	// Limiter below (required; every virtual key always has SOME rate
+	// limit), "no deployment-level throughput ceiling configured at all"
+	// is the common, valid v1 state.
+	DeploymentLimiter *ratelimit.KeyLimiter
 	// Budget tracks each virtual key's cumulative spend against its
 	// configured BudgetUSD cap. See internal/budget.
 	Budget *budget.Tracker
@@ -255,6 +269,13 @@ type Pipeline struct {
 	// that field's own doc comment; checkConcurrency/releaseConcurrency
 	// treat a nil concurrency as "no cap configured," never panicking.
 	concurrency *ratelimit.ConcurrencyLimiter
+	// deploymentConcurrency/deploymentLimiter are nil whenever
+	// Config.DeploymentConcurrency/DeploymentLimiter were left unset —
+	// checkDeploymentConcurrency/checkDeploymentRateLimit treat a nil
+	// value as "no cap configured," never panicking, mirroring
+	// concurrency's own convention above.
+	deploymentConcurrency *ratelimit.ConcurrencyLimiter
+	deploymentLimiter     *ratelimit.KeyLimiter
 	// retryBackoff tracks each virtual key's own consecutive-rejection
 	// streak for the client-facing Retry-After signal, per
 	// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
@@ -361,26 +382,28 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}
 
 	p := &Pipeline{
-		limiter:           cfg.Limiter,
-		concurrency:       cfg.Concurrency,
-		retryBackoff:      ratelimit.NewRetryBackoff(),
-		budget:            cfg.Budget,
-		cache:             cfg.Cache,
-		cacheL2:           cfg.CacheL2,
-		cacheL3:           cfg.CacheL3,
-		guardrails:        cfg.Guardrails,
-		adapters:          cfg.Adapters,
-		router:            cfg.Router,
-		deploymentsByName: byName,
-		costCalc:          cfg.CostCalculator,
-		upstream:          cfg.Upstream,
-		upstreamStream:    cfg.UpstreamStream,
-		logger:            logger,
-		cacheTTL:          ttl,
-		cacheL2TTL:        l2TTL,
-		cacheL3TTL:        l3TTL,
-		probeSchedule:     map[string]*healthProbeSchedule{},
-		now:               time.Now,
+		limiter:               cfg.Limiter,
+		concurrency:           cfg.Concurrency,
+		deploymentConcurrency: cfg.DeploymentConcurrency,
+		deploymentLimiter:     cfg.DeploymentLimiter,
+		retryBackoff:          ratelimit.NewRetryBackoff(),
+		budget:                cfg.Budget,
+		cache:                 cfg.Cache,
+		cacheL2:               cfg.CacheL2,
+		cacheL3:               cfg.CacheL3,
+		guardrails:            cfg.Guardrails,
+		adapters:              cfg.Adapters,
+		router:                cfg.Router,
+		deploymentsByName:     byName,
+		costCalc:              cfg.CostCalculator,
+		upstream:              cfg.Upstream,
+		upstreamStream:        cfg.UpstreamStream,
+		logger:                logger,
+		cacheTTL:              ttl,
+		cacheL2TTL:            l2TTL,
+		cacheL3TTL:            l3TTL,
+		probeSchedule:         map[string]*healthProbeSchedule{},
+		now:                   time.Now,
 	}
 	p.verifier.Store(cfg.Verifier)
 	return p, nil
@@ -611,6 +634,100 @@ func (p *Pipeline) releaseConcurrency(vk *identity.VirtualKey) {
 		return
 	}
 	p.concurrency.Release(vk.ID)
+}
+
+// checkDeploymentConcurrency reserves one in-flight slot against
+// depName's own aggregate cap, per docs/upgrade-research/gateway-per-
+// deployment-concurrency-2026-09-09.md. Always true when
+// Config.DeploymentConcurrency is nil. Every true return MUST be paired
+// with exactly one releaseDeploymentConcurrency call for the SAME
+// depName once THIS HOP's own call finishes (success or error) — unlike
+// per-key concurrency (checkConcurrency, held for the whole request),
+// this is acquired/released PER HOP: once a request moves on to a
+// different deployment, the original one is no longer receiving load
+// from it and must not keep holding its slot.
+func (p *Pipeline) checkDeploymentConcurrency(depName string) bool {
+	if p.deploymentConcurrency == nil {
+		return true
+	}
+	return p.deploymentConcurrency.Acquire(depName)
+}
+
+// releaseDeploymentConcurrency frees the slot checkDeploymentConcurrency
+// reserved for depName. A no-op when Config.DeploymentConcurrency was
+// left unset, mirroring releaseConcurrency.
+func (p *Pipeline) releaseDeploymentConcurrency(depName string) {
+	if p.deploymentConcurrency == nil {
+		return
+	}
+	p.deploymentConcurrency.Release(depName)
+}
+
+// checkDeploymentRateLimit reports whether depName's own aggregate RPM
+// ceiling allows one more call. Deployment-scoped, never per-model in
+// v1 — model is deliberately never threaded through, unlike
+// checkFallbackTargetRateLimit's own AllowForModel call. Fails OPEN on a
+// backend error, mirroring checkFallbackTargetRateLimit's identical
+// policy and rationale: an infra problem with the rate limiter itself
+// must never silently remove a deployment from consideration.
+//
+// Checks KeyLimiter.HasLimit before ever calling Allow — a REAL,
+// load-bearing check, not a redundant optimization: unlike a virtual key
+// (which always resolves to a positive fallback capacity before
+// construction), a deployment with no configured rate_limit is meant to
+// be genuinely unlimited. Allow's own TokenBucket has no way to
+// distinguish "never configured" from "configured with Capacity 0" —
+// both have zero tokens and both would make Allow return false, which
+// would silently deny every call to every deployment that never
+// configured a rate_limit at all. HasLimit is what makes "0/unconfigured
+// means unlimited" (per docs/upgrade-research/gateway-per-deployment-
+// concurrency-2026-09-09.md) actually true rather than the opposite.
+func (p *Pipeline) checkDeploymentRateLimit(ctx context.Context, depName string) bool {
+	if p.deploymentLimiter == nil || !p.deploymentLimiter.HasLimit(depName) {
+		return true
+	}
+	allowed, err := p.deploymentLimiter.Allow(ctx, depName)
+	if err != nil {
+		p.logger.Warn("deployment_ratelimit_backend_unavailable", "deployment", depName, "error", err.Error())
+		return true
+	}
+	return allowed
+}
+
+// checkDeploymentCapacity is the combined skip-gate attemptFallbackChain
+// checks immediately before attempting each candidate target, in the
+// SAME position rateLimitOK already occupies — see
+// attemptFallbackChain's own doc comment. A false return means depName
+// is skipped exactly like an unhealthy or per-key-rate-limited target:
+// no realAttempts/consecutiveFailures increment, no backoff sleep
+// charged, and NOTHING is acquired. A true return has ALREADY acquired
+// depName's concurrency slot — the caller MUST release it, exactly
+// once, via releaseDeploymentConcurrency, on every path once its call to
+// depName returns; callDeploymentWithCapacityCheck/
+// streamDeploymentWithCapacityCheck do this via defer.
+func (p *Pipeline) checkDeploymentCapacity(ctx context.Context, depName string) bool {
+	if !p.checkDeploymentRateLimit(ctx, depName) {
+		return false
+	}
+	return p.checkDeploymentConcurrency(depName)
+}
+
+// callDeploymentWithCapacityCheck wraps callDeployment with dep's own
+// checkDeploymentCapacity gate and guaranteed release — used for EVERY
+// call to a deployment, hop 1 included, unlike the per-key rate-limit/
+// concurrency checks (checked once before routing, held for the whole
+// request). A rejection returns a *DeploymentCapacityError (fallback.go),
+// never a bare ErrRateLimited/ErrConcurrencyLimitExceeded, since this is
+// a backend-capacity condition, not a per-caller one.
+func (p *Pipeline) callDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest) (adapter.ChatResponse, error) {
+	if !p.checkDeploymentRateLimit(ctx, dep.Name) {
+		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "rate_limit"}
+	}
+	if !p.checkDeploymentConcurrency(dep.Name) {
+		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "concurrency"}
+	}
+	defer p.releaseDeploymentConcurrency(dep.Name)
+	return p.callDeployment(ctx, dep, req)
 }
 
 // fallbackInfo captures whether a request fell back away from its first
@@ -1065,7 +1182,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			return nil, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		}
 
-		resp, err := p.callDeployment(ctx, dep, req)
+		resp, err := p.callDeploymentWithCapacityCheck(ctx, dep, req)
 		var fallback fallbackInfo
 		if err != nil {
 			// Error-classified, multi-hop fallback, per
@@ -1077,9 +1194,13 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			if targets, configured := fallbackTargets(dep, err); configured {
 				tried := map[string]bool{dep.Name: true}
 				hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
-					func(d Deployment) (adapter.ChatResponse, error) { return p.callDeployment(ctx, d, req) },
+					func(d Deployment) (adapter.ChatResponse, error) {
+						defer p.releaseDeploymentConcurrency(d.Name)
+						return p.callDeployment(ctx, d, req)
+					},
 					func() bool { return false },
 					func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, vk.ID, model) },
+					func(depName string) bool { return p.checkDeploymentCapacity(ctx, depName) },
 				)
 				if attempted {
 					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
@@ -1088,7 +1209,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
 				fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 				dep = fallbackDep
-				resp, err = p.callDeployment(ctx, dep, req)
+				resp, err = p.callDeploymentWithCapacityCheck(ctx, dep, req)
 			}
 		}
 		if err != nil {

@@ -55,6 +55,25 @@ func (e *UpstreamHTTPError) Error() string {
 	return fmt.Sprintf("upstream returned status %d: %s", e.StatusCode, e.Body)
 }
 
+// DeploymentCapacityError is returned when a shared deployment's own
+// aggregate rate-limit or concurrency ceiling rejects a call, per
+// docs/upgrade-research/gateway-per-deployment-concurrency-2026-09-09.md
+// — a server/backend-capacity condition (HTTP 503 semantics), never a
+// client-facing rate-limit decision: the caller may be nowhere near ITS
+// OWN rate limit or concurrency cap (ErrRateLimited/
+// ErrConcurrencyLimitExceeded, both client-facing 429s); the deployment
+// it happened to route or fall back to is simply, aggregately, at
+// capacity across every virtual key currently converging on it. Reason
+// is "concurrency" or "rate_limit", for logging only.
+type DeploymentCapacityError struct {
+	Deployment string
+	Reason     string
+}
+
+func (e *DeploymentCapacityError) Error() string {
+	return fmt.Sprintf("deployment %q at capacity (%s)", e.Deployment, e.Reason)
+}
+
 // contextWindowExceededKeywords and contentPolicyKeywords are checked,
 // lowercased, against an UpstreamHTTPError's Body — a best-effort,
 // provider-agnostic heuristic over free text, not a structured field.
@@ -94,6 +113,18 @@ var contentPolicyKeywords = []string{
 // error — classifies as FallbackClassGeneric, matching LiteLLM's own
 // generic/rate-limit bucket.
 func classifyFallbackError(err error) string {
+	var capacityErr *DeploymentCapacityError
+	if errors.As(err, &capacityErr) {
+		// Explicit, not incidental: bucketed alongside rate limits under
+		// FallbackClassGeneric — never ContentPolicy/ContextWindowExceeded,
+		// which exist to route to a DIFFERENTLY-SHAPED target (bigger
+		// context, different moderation) for a reason capacity exhaustion
+		// shares nothing with. A real branch, not left to the
+		// UpstreamHTTPError fallthrough below, so this classification
+		// can't silently break if that branch is ever restructured.
+		return FallbackClassGeneric
+	}
+
 	var httpErr *UpstreamHTTPError
 	if !errors.As(err, &httpErr) {
 		return FallbackClassGeneric
@@ -240,7 +271,16 @@ const (
 //     TPM follow-on finding for why re-targeting TPM's own Reserve/
 //     Reconcile bookkeeping mid-chain is a materially deeper, explicitly
 //     out-of-scope change, not attempted here).
-func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
+//   - deploymentCapacityOK, checked immediately after rateLimitOK, in the
+//     same position — per docs/upgrade-research/gateway-per-deployment-
+//     concurrency-2026-09-09.md: a false return skips this target
+//     exactly like an unhealthy or per-key-rate-limited one (no
+//     realAttempts/consecutiveFailures increment, no backoff charged). A
+//     true return has ALREADY acquired the target's own deployment-
+//     scoped concurrency slot — callers' own call closure MUST release
+//     it via a defer, since attemptFallbackChain itself has no way to
+//     know when call's real work against that deployment finishes.
+func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
 	consecutiveFailures := 0
 	realAttempts := 0
 	for _, name := range targets {
@@ -269,6 +309,10 @@ func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, t
 		}
 
 		if !rateLimitOK(nextDep.Model) {
+			continue
+		}
+
+		if !deploymentCapacityOK(nextDep.Name) {
 			continue
 		}
 

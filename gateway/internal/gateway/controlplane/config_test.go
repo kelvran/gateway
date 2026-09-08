@@ -701,6 +701,96 @@ func TestLoadRejectsNonPositivePerModelRateLimit(t *testing.T) {
 	}
 }
 
+// TestLoadDeploymentRateLimitParsesAllFields proves a deployment's
+// rate_limit mapping parses into DeploymentConfig's burst/refill/TPM/
+// max_concurrent_requests fields — the backward-compatible additive
+// config surface per docs/upgrade-research/gateway-per-deployment-
+// concurrency-2026-09-09.md.
+func TestLoadDeploymentRateLimitParsesAllFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	extra := "    rate_limit:\n" +
+		"      burst: 500\n" +
+		"      refill_per_second: 200\n" +
+		"      tpm_capacity: 100000\n" +
+		"      tpm_refill_per_second: 1000\n" +
+		"      max_concurrent_requests: 50\n"
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dep := cfg.Deployments[0]
+	if dep.RateLimitBurst != 500 || dep.RateLimitRefill != 200 {
+		t.Errorf("RateLimitBurst/RateLimitRefill = %v/%v, want 500/200", dep.RateLimitBurst, dep.RateLimitRefill)
+	}
+	if dep.TPMCapacity != 100000 || dep.TPMRefillPerSecond != 1000 {
+		t.Errorf("TPMCapacity/TPMRefillPerSecond = %v/%v, want 100000/1000", dep.TPMCapacity, dep.TPMRefillPerSecond)
+	}
+	if dep.MaxConcurrentRequests != 50 {
+		t.Errorf("MaxConcurrentRequests = %d, want 50", dep.MaxConcurrentRequests)
+	}
+}
+
+// TestLoadDeploymentWithoutRateLimitLeavesFieldsZero is the direct
+// backward-compatibility proof at the parser level, mirroring
+// TestLoadDeploymentWithoutFallbackChainsLeavesFieldNil: a deployment
+// with no rate_limit section at all — every config file written before
+// this feature existed — must parse identically to before (all four
+// fields zero, meaning "no ceiling at all", never a load error).
+func TestLoadDeploymentWithoutRateLimitLeavesFieldsZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dep := cfg.Deployments[0]
+	if dep.RateLimitBurst != 0 || dep.RateLimitRefill != 0 || dep.TPMCapacity != 0 || dep.TPMRefillPerSecond != 0 || dep.MaxConcurrentRequests != 0 {
+		t.Errorf("dep = %+v, want every rate_limit field zero", dep)
+	}
+}
+
+// TestLoadRejectsDeploymentRateLimitBurstWithoutRefill and its sibling
+// below prove the "must be set together or neither" load-time validation
+// parseDeploymentRateLimit enforces — mirroring
+// TestLoadRejectsNonPositivePerModelRateLimit's discipline, but for the
+// deployment-level (not per-model) burst/refill pair, which — unlike a
+// virtual key's own top-level burst/refill — has no "0 means use the
+// gateway's default" fallback to silently resolve a half-set pair to.
+func TestLoadRejectsDeploymentRateLimitBurstWithoutRefill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	extra := "    rate_limit:\n      burst: 500\n"
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with deployment rate_limit.burst set but refill_per_second unset returned nil error")
+	}
+}
+
+func TestLoadRejectsDeploymentRateLimitTPMCapacityWithoutRefill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	extra := "    rate_limit:\n      tpm_capacity: 100000\n"
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with deployment rate_limit.tpm_capacity set but tpm_refill_per_second unset returned nil error")
+	}
+}
+
 // TestLoadWithoutPerModelRateLimitsLeavesFieldNil is the direct
 // backward-compatibility proof at the parser level, mirroring
 // TestLoadDeploymentWithoutFallbackChainsLeavesFieldNil: a virtual key

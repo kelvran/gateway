@@ -125,6 +125,23 @@ deployments:
       # differently-tuned moderation — worth one real cross-provider
       # attempt before giving up.
       content_policy: "claude-opus-primary,gemini-flash-primary"
+    # Optional; omit entirely for no deployment-wide ceiling (every config
+    # file written before this feature existed keeps working unchanged).
+    # A genuinely different scope from a virtual key's own rate_limit
+    # above: THIS caps the deployment's own aggregate load — across every
+    # virtual key, and every fallback hop, that converges on it — never a
+    # single caller's own rate. Per docs/upgrade-research/gateway-per-
+    # deployment-concurrency-2026-09-09.md. burst/refill_per_second must
+    # be set together or neither (a load-time config error otherwise);
+    # tpm_capacity/tpm_refill_per_second are parsed but not yet enforced
+    # (deployment-scoped TPM is deferred — see that doc's own scope
+    # limit). max_concurrent_requests bounds simultaneous in-flight calls
+    # to this deployment specifically, checked PER HOP, unlike a virtual
+    # key's own max_concurrent_requests (held for the whole request).
+    rate_limit:
+      burst: 500
+      refill_per_second: 200
+      max_concurrent_requests: 50
 
   claude-opus-primary:
     model: "claude-opus-4"

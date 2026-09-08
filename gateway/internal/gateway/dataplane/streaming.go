@@ -273,7 +273,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	var firstChunkSent bool
 	var fallback fallbackInfo
 
-	resp, err := p.streamDeployment(ctx, dep, req, sw, &firstChunkSent, keyID)
+	resp, err := p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID)
 	if err == nil || firstChunkSent {
 		return resp, dep, fallback, err
 	}
@@ -283,10 +283,12 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 		tried := map[string]bool{dep.Name: true}
 		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 			func(d Deployment) (adapter.ChatResponse, error) {
+				defer p.releaseDeploymentConcurrency(d.Name)
 				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID)
 			},
 			func() bool { return firstChunkSent },
 			func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, keyID, model) },
+			func(depName string) bool { return p.checkDeploymentCapacity(ctx, depName) },
 		)
 		if attempted {
 			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
@@ -295,9 +297,24 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
 		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 		dep = fallbackDep
-		resp, err = p.streamDeployment(ctx, dep, req, sw, &firstChunkSent, keyID)
+		resp, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID)
 	}
 	return resp, dep, fallback, err
+}
+
+// streamDeploymentWithCapacityCheck wraps streamDeployment with dep's
+// own checkDeploymentCapacity gate and guaranteed release — the
+// streaming sibling of callDeploymentWithCapacityCheck (dataplane.go),
+// used for EVERY call to a deployment, hop 1 included.
+func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string) (adapter.ChatResponse, error) {
+	if !p.checkDeploymentRateLimit(ctx, dep.Name) {
+		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "rate_limit"}
+	}
+	if !p.checkDeploymentConcurrency(dep.Name) {
+		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "concurrency"}
+	}
+	defer p.releaseDeploymentConcurrency(dep.Name)
+	return p.streamDeployment(ctx, dep, req, sw, firstChunkSent, keyID)
 }
 
 // streamDeployment runs the streaming-specific adapter+upstream-call steps

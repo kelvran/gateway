@@ -102,6 +102,43 @@ type DeploymentConfig struct {
 	// of the same name) — a no-op, harmless either way, on every other
 	// provider.
 	DisableCacheControlAutoPopulate bool
+	// MaxConcurrentRequests bounds how many requests may be simultaneously
+	// in flight against THIS deployment, aggregated across every virtual
+	// key that routes to it -- including via a fallback_chains hop, or
+	// the pre-existing single-fallback behavior -- per docs/upgrade-
+	// research/gateway-per-deployment-concurrency-2026-09-09.md. A
+	// genuinely different scope from VirtualKeyConfig.MaxConcurrentRequests
+	// above, which is per-CALLER: many different keys, each comfortably
+	// under their own cap, can still converge on one shared deployment
+	// with nothing bounding ITS aggregate load. <= 0 (the default, and
+	// every deployment configured before this field existed) means
+	// unlimited, matching VirtualKeyConfig.MaxConcurrentRequests' own
+	// convention.
+	MaxConcurrentRequests int
+	// RateLimitBurst/RateLimitRefill configure this deployment's own
+	// aggregate RPM ceiling, checked and consumed on EVERY call to this
+	// deployment (hop 1 or a fallback hop), regardless of which virtual
+	// key initiated it. Unlike VirtualKeyConfig.RateLimitBurst/
+	// RateLimitRefill, 0 here means "no ceiling at all", never "use the
+	// gateway's operational default" -- a deployment's real throughput
+	// ceiling is provider/plan-specific, with no principled platform-wide
+	// default to substitute. Must be set together or left both unset; a
+	// half-set pair is a load-time config error, per parseDeploymentRateLimit.
+	RateLimitBurst  float64
+	RateLimitRefill float64
+	// TPMCapacity/TPMRefillPerSecond configure this deployment's own
+	// aggregate tokens-per-minute ceiling. 0 (both, the default) means
+	// disabled. Parsed and validated here so the YAML surface doesn't
+	// need a second breaking change later, but deliberately NOT wired
+	// into the dataplane yet -- correct TPM accounting needs Reserve-
+	// then-Reconcile bookkeeping PER HOP (a reservation against a
+	// skipped/failed hop must be undone; only the hop that actually
+	// served the response reconciles), the same class of complexity
+	// docs/upgrade-research/gateway-tpm-permodel-fallback-2026-09-09.md
+	// found has no production precedent anywhere. Named future work, not
+	// a silent gap.
+	TPMCapacity        float64
+	TPMRefillPerSecond float64
 }
 
 // fallbackClassContentPolicy, fallbackClassContextWindowExceeded, and
@@ -498,6 +535,11 @@ func Load(path string) (*Config, error) {
 			dep.FallbackChains = chains
 		}
 		dep.DisableCacheControlAutoPopulate, _ = getBool(depMap, "disable_cache_control_auto_populate")
+		if rl, ok := getMap(depMap, "rate_limit"); ok {
+			if err := parseDeploymentRateLimit(name, rl, &dep); err != nil {
+				return nil, err
+			}
+		}
 		cfg.Deployments = append(cfg.Deployments, dep)
 	}
 	// Sort for deterministic ordering (map iteration order is random).
@@ -822,4 +864,31 @@ func parsePerModelRateLimits(keyName string, raw map[string]any) (map[string]Mod
 		out[model] = ModelRateLimitConfig{Burst: burst, RefillPerSecond: refill}
 	}
 	return out, nil
+}
+
+// parseDeploymentRateLimit parses one deployment's rate_limit mapping
+// into dep in place, per docs/upgrade-research/gateway-per-deployment-
+// concurrency-2026-09-09.md. Unlike a virtual key's own top-level
+// rate_limit.burst/refill_per_second (where 0 silently resolves to the
+// gateway's operational default), a deployment has no such default to
+// fall back to -- but unlike parsePerModelRateLimits' per-model entries
+// (which have no valid "disabled" state at all), a deployment's own
+// ceiling genuinely can be absent (0/0, meaning "no deployment-wide cap"
+// -- every config written before this feature existed). What's a real
+// config error is a HALF-set pair: burst set without refill_per_second,
+// or vice versa, which can only be a mistake, never a deliberate
+// "disabled" state. The same rule applies independently to the TPM pair.
+func parseDeploymentRateLimit(deploymentName string, rl map[string]any, dep *DeploymentConfig) error {
+	dep.RateLimitBurst, _ = getFloat(rl, "burst")
+	dep.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
+	if (dep.RateLimitBurst > 0) != (dep.RateLimitRefill > 0) {
+		return fmt.Errorf("controlplane: deployment %q rate_limit must set both burst and refill_per_second together, or neither", deploymentName)
+	}
+	dep.TPMCapacity, _ = getFloat(rl, "tpm_capacity")
+	dep.TPMRefillPerSecond, _ = getFloat(rl, "tpm_refill_per_second")
+	if (dep.TPMCapacity > 0) != (dep.TPMRefillPerSecond > 0) {
+		return fmt.Errorf("controlplane: deployment %q rate_limit.tpm_capacity/tpm_refill_per_second must both be set, or neither", deploymentName)
+	}
+	dep.MaxConcurrentRequests, _ = getInt(rl, "max_concurrent_requests")
+	return nil
 }

@@ -96,10 +96,12 @@ type KeyLimiter struct {
 // "no entry" as "unlimited" rather than misreading a zero-capacity
 // bucket (always empty) as "always blocked."
 func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
+	configs := make(map[string]KeyConfig, len(keys))
 	buckets := make(map[string]*TokenBucket, len(keys))
 	tpmBuckets := make(map[string]*TokenBucket, len(keys))
 	perModelBuckets := make(map[string]map[string]*TokenBucket, len(keys))
 	for _, k := range keys {
+		configs[k.ID] = k
 		buckets[k.ID] = NewTokenBucket(k.Capacity, k.RefillPerSecond)
 		if k.TPMCapacity > 0 {
 			tpmBuckets[k.ID] = NewTokenBucket(k.TPMCapacity, k.TPMRefillPerSecond)
@@ -108,7 +110,16 @@ func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 			perModelBuckets[k.ID] = models
 		}
 	}
-	return &KeyLimiter{buckets: buckets, tpmBuckets: tpmBuckets, perModelBuckets: perModelBuckets}
+	// configs is tracked in in-memory mode too (not just Redis mode,
+	// which already needed it for allow()'s backend branch) specifically
+	// so HasLimit below has a reliable source of truth — Allow/
+	// AllowForModel's own zero-capacity TokenBucket (Capacity <= 0, the
+	// default for a caller that never resolves it to a positive fallback,
+	// e.g. a deployment-scoped limiter per docs/upgrade-research/gateway-
+	// per-deployment-concurrency-2026-09-09.md) is indistinguishable from
+	// a real, deliberately-exhausted bucket by inspecting buckets alone —
+	// both have zero tokens and both return false from Allow().
+	return &KeyLimiter{configs: configs, buckets: buckets, tpmBuckets: tpmBuckets, perModelBuckets: perModelBuckets}
 }
 
 // buildPerModelBuckets constructs one TokenBucket per PerModel entry with
@@ -165,6 +176,29 @@ func (l *KeyLimiter) Allow(ctx context.Context, keyID string) (bool, error) {
 // docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md.
 func (l *KeyLimiter) AllowForModel(ctx context.Context, keyID, model string) (bool, error) {
 	return l.allow(ctx, keyID, model)
+}
+
+// HasLimit reports whether keyID has a real, configured rate limit
+// (Capacity > 0) — as opposed to "never registered at all" or
+// "registered with Capacity <= 0". This is the query a caller needs
+// BEFORE calling Allow/AllowForModel when, unlike a virtual key (which
+// always resolves to a positive fallback capacity before construction —
+// see dataplane's own defaultBurstCapacity/defaultRefillPerSecond),
+// "unconfigured" is meant to be a real, valid "no cap at all" state, not
+// "deny everything": Allow's own nil-bucket/zero-capacity branch returns
+// false for BOTH "never registered" and "registered with Capacity 0" —
+// it cannot distinguish the two, since a zero-capacity TokenBucket and a
+// bucket that was never created both simply have zero tokens. A caller
+// wanting "0/unconfigured means unlimited" (per docs/upgrade-research/
+// gateway-per-deployment-concurrency-2026-09-09.md's deployment-scoped
+// ceiling) must check HasLimit first and skip the Allow call entirely
+// when it's false, exactly like AllowTPM/AllowForModel's own
+// PerModel-absent branch already treats "no entry" as "unlimited" rather
+// than misreading a zero-capacity bucket as "always blocked."
+func (l *KeyLimiter) HasLimit(keyID string) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.configs[keyID].Capacity > 0
 }
 
 func (l *KeyLimiter) allow(ctx context.Context, keyID, model string) (bool, error) {
@@ -311,6 +345,7 @@ func (l *KeyLimiter) Register(cfg KeyConfig) {
 		l.configs[cfg.ID] = cfg
 		return
 	}
+	l.configs[cfg.ID] = cfg
 	l.buckets[cfg.ID] = NewTokenBucket(cfg.Capacity, cfg.RefillPerSecond)
 	if cfg.TPMCapacity > 0 {
 		l.tpmBuckets[cfg.ID] = NewTokenBucket(cfg.TPMCapacity, cfg.TPMRefillPerSecond)

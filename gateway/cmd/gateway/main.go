@@ -359,6 +359,18 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 
 	deployments := make([]dataplane.Deployment, 0, len(cfg.Deployments))
 	routerDeployments := make([]router.Deployment, 0, len(cfg.Deployments))
+	// deploymentConcurrencyConfigs/deploymentRateLimitConfigs feed
+	// ratelimit.NewConcurrencyLimiter/ratelimit.NewInMemoryKeyLimiter for
+	// the deployment-scoped (not per-key) ceilings, per docs/upgrade-
+	// research/gateway-per-deployment-concurrency-2026-09-09.md — built
+	// alongside deployments/routerDeployments above, from the same
+	// per-deployment loop. Always in-memory in v1, regardless of
+	// cfg.RateLimit.RedisAddr (which only governs the per-KEY limiter,
+	// via newKeyLimiter below) — a distributed backend is named future
+	// work, not built here, matching the same deferral this codebase
+	// already applies to the per-key ConcurrencyLimiter.
+	deploymentConcurrencyConfigs := make([]ratelimit.ConcurrencyConfig, 0, len(cfg.Deployments))
+	deploymentRateLimitConfigs := make([]ratelimit.KeyConfig, 0, len(cfg.Deployments))
 	for _, d := range cfg.Deployments {
 		// Fail fast at startup, not per-request, per
 		// docs/rfcs/2026-09-05-gateway-gen-ai-provider-name-validation.md
@@ -407,6 +419,15 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			Model:  d.Model,
 			Weight: d.Weight,
 		})
+		deploymentConcurrencyConfigs = append(deploymentConcurrencyConfigs, ratelimit.ConcurrencyConfig{
+			ID:          d.Name,
+			MaxInFlight: d.MaxConcurrentRequests,
+		})
+		deploymentRateLimitConfigs = append(deploymentRateLimitConfigs, ratelimit.KeyConfig{
+			ID:              d.Name,
+			Capacity:        d.RateLimitBurst,
+			RefillPerSecond: d.RateLimitRefill,
+		})
 	}
 	if err := validateFallbackChainTargets(deployments); err != nil {
 		return nil, err
@@ -450,17 +471,29 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		// (b), so this is safe to always wire in rather than needing its
 		// own "is anything configured" gate the way e.g. Redis rate-
 		// limiting does.
-		Concurrency:    ratelimit.NewConcurrencyLimiter(concurrencyConfigs),
-		Budget:         budgetTracker,
-		Cache:          inprocess.New(cfg.Cache.MaxEntries),
-		CacheL2:        inprocess.New(cfg.Cache.L2.MaxEntries),
-		CacheL3:        inprocess.NewLexicalCache(cfg.Cache.L3.MaxEntries),
-		Guardrails:     guardrailEngine,
-		Adapters:       registry,
-		Router:         depRouter,
-		Deployments:    deployments,
-		CostCalculator: costaccounting.NewCalculator(priceTable),
-		Upstream:       dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout}),
+		Concurrency: ratelimit.NewConcurrencyLimiter(concurrencyConfigs),
+		// DeploymentConcurrency/DeploymentLimiter are the deployment-scoped
+		// (never per-key) ceilings, per docs/upgrade-research/gateway-per-
+		// deployment-concurrency-2026-09-09.md — always constructed, never
+		// nil, mirroring Concurrency's own "absent means unlimited for that
+		// ID" precedent above: a deployment with no rate_limit: section
+		// (every config written before this feature existed) is simply
+		// absent from deploymentRateLimitConfigs/HasLimit, and
+		// MaxConcurrentRequests <= 0 is absent from
+		// deploymentConcurrencyConfigs' resulting limits map, so this is
+		// safe to always wire in.
+		DeploymentConcurrency: ratelimit.NewConcurrencyLimiter(deploymentConcurrencyConfigs),
+		DeploymentLimiter:     ratelimit.NewInMemoryKeyLimiter(deploymentRateLimitConfigs),
+		Budget:                budgetTracker,
+		Cache:                 inprocess.New(cfg.Cache.MaxEntries),
+		CacheL2:               inprocess.New(cfg.Cache.L2.MaxEntries),
+		CacheL3:               inprocess.NewLexicalCache(cfg.Cache.L3.MaxEntries),
+		Guardrails:            guardrailEngine,
+		Adapters:              registry,
+		Router:                depRouter,
+		Deployments:           deployments,
+		CostCalculator:        costaccounting.NewCalculator(priceTable),
+		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout}),
 		// Streaming upstream calls deliberately do NOT use client.Timeout
 		// (the field above) — that would kill a long-running-but-healthy
 		// stream mid-way, exactly as readily as a genuinely stalled one.
@@ -698,6 +731,7 @@ func handleStreamingChatCompletion(p *dataplane.Pipeline, w http.ResponseWriter,
 // HTTP status code.
 func writeErrorResponse(w http.ResponseWriter, err error) {
 	status := http.StatusBadGateway
+	var capErr *dataplane.DeploymentCapacityError
 	switch {
 	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey):
 		status = http.StatusUnauthorized
@@ -713,6 +747,17 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		// being throttled" decision. All three are distinguished by the
 		// error message body, not the status code.
 		status = http.StatusTooManyRequests
+	case errors.As(err, &capErr):
+		// A deployment-capacity rejection is a backend-capacity condition
+		// (503, per RFC 9110 §15.6.4/MDN's documented server-wants-to-
+		// shed-load semantics), never a client-facing rate-limit decision
+		// — see DeploymentCapacityError's own doc comment
+		// (internal/gateway/dataplane/fallback.go) and
+		// docs/upgrade-research/gateway-per-deployment-concurrency-
+		// 2026-09-09.md. Deliberately its own case, never folded into the
+		// 429 bucket above: the caller may be nowhere near its OWN rate
+		// limit or concurrency cap.
+		status = http.StatusServiceUnavailable
 	case errors.Is(err, dataplane.ErrModelNotAllowed):
 		status = http.StatusForbidden
 	case errors.Is(err, dataplane.ErrStreamingNotSupported):
