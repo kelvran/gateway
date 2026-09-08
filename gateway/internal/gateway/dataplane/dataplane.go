@@ -284,6 +284,29 @@ type Pipeline struct {
 	// golang.org/x/sync/singleflight's own documented contract; no
 	// construction needed in NewPipeline.
 	missGroup singleflight.Group
+	// probeMu guards probeSchedule — see probeDueDeployments/
+	// rescheduleDeployment, per
+	// docs/rfcs/2026-09-08-gateway-health-probe-backoff.md. A separate
+	// mutex from every other lock in this struct: probeSchedule is
+	// mutated from each deployment's own probe goroutine concurrently
+	// (mirroring healthMu's own per-concern-scoped-lock precedent in
+	// internal/router/health.go), never touched by request-handling
+	// code at all.
+	probeMu sync.Mutex
+	// probeSchedule tracks each deployment's own next-eligible-probe
+	// time and current backoff magnitude. Absent entry (never probed
+	// yet) is always due immediately — matching RunHealthProbeLoop's
+	// pre-existing "first pass happens after the first interval
+	// elapses" contract exactly, since every deployment starts with no
+	// entry at process start.
+	probeSchedule map[string]*healthProbeSchedule
+	// now returns the current time — real time.Now in production
+	// (NewPipeline's default), overridden directly by white-box tests
+	// needing a fake clock (mirroring internal/budget.Tracker.now's own
+	// identical convention) so probeDueDeployments' backoff growth can
+	// be proven deterministically, without sleeping on real elapsed
+	// time.
+	now func() time.Time
 }
 
 // NewPipeline validates cfg and constructs a Pipeline.
@@ -356,6 +379,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		cacheTTL:          ttl,
 		cacheL2TTL:        l2TTL,
 		cacheL3TTL:        l3TTL,
+		probeSchedule:     map[string]*healthProbeSchedule{},
+		now:               time.Now,
 	}
 	p.verifier.Store(cfg.Verifier)
 	return p, nil
@@ -1126,7 +1151,15 @@ const healthProbeMaxTokens = 1
 // Exported (rather than only reachable via RunHealthProbeLoop) so tests
 // can drive deterministic probe passes without depending on real
 // elapsed time — see health_probe_test.go. Production wiring
-// (cmd/gateway) only ever calls this indirectly, via RunHealthProbeLoop.
+// (cmd/gateway) only ever calls this indirectly, via RunHealthProbeLoop —
+// which, per docs/rfcs/2026-09-08-gateway-health-probe-backoff.md, no
+// longer calls this function at all: it drives the backoff-aware
+// probeDueDeployments instead. This function deliberately keeps its
+// original unconditional-every-deployment-every-call contract regardless
+// — it stays a real, useful "force a full probe pass right now,
+// ignoring any backoff" primitive (this file's own existing tests rely
+// on exactly that), it is simply no longer what production's own
+// scheduled loop uses tick-to-tick.
 func (p *Pipeline) ProbeDeployments(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, dep := range p.deploymentsByName {
@@ -1165,16 +1198,156 @@ func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
 	p.logger.Warn("health_probe_deployment_unhealthy", "deployment", dep.Name, "error", err)
 }
 
-// RunHealthProbeLoop runs ProbeDeployments once per interval until ctx is
-// canceled — the production wiring for
+// healthProbeBackoffGrowthFactor doubles a persistently-unhealthy
+// deployment's own probe interval on every consecutive unhealthy
+// reschedule, per docs/rfcs/2026-09-08-gateway-health-probe-backoff.md —
+// mirroring this codebase's own already-established exponential-backoff
+// idiom (internal/ratelimit.EqualJitterBackoff/RetryBackoff, used there
+// for the CLIENT-facing Retry-After signal on rejected requests) applied
+// here to Kelvran's OWN background probe traffic instead. Deliberately
+// NOT jittered, unlike RetryBackoff: jitter's whole value is
+// desynchronizing many independent callers converging on one shared
+// resource at once, which doesn't apply to a single per-instance
+// background loop probing its own configured deployment list — a plain
+// deterministic doubling is simpler and exactly provable against a fake
+// clock (see health_probe_backoff_test.go), with no loss of real
+// benefit.
+const healthProbeBackoffGrowthFactor = 2
+
+// healthProbeBackoffMaxMultiplier caps a backed-off probe interval at
+// this many multiples of the OPERATOR'S OWN configured interval, not a
+// fixed absolute duration — that interval is itself an operator-tunable
+// value (300s default per
+// docs/rfcs/2026-09-07-gateway-active-health-probing.md), so an absolute
+// cap could land at or below an operator's own configured cadence for a
+// longer-than-default interval, inverting the entire point of backing
+// off. 8x means a deployment that has stayed unhealthy long enough to
+// fully back off is checked roughly every 8 configured intervals instead
+// of every 1 — at the documented 300s default, every 40 minutes instead
+// of every 5 — materially cutting Kelvran's own probe load against an
+// already-struggling dependency while still bounding how long a real
+// recovery can go unnoticed to a human-reasonable window.
+const healthProbeBackoffMaxMultiplier = 8
+
+// healthProbeSchedule is one deployment's own next-eligible-probe time
+// and current backoff magnitude, per
+// docs/rfcs/2026-09-08-gateway-health-probe-backoff.md. backoff == 0
+// means "not backed off" — this deployment is due at the plain
+// configured interval, either because it has never gone unhealthy or
+// because it just recovered (see rescheduleDeployment). backoff > 0 is
+// this deployment's own current probe-interval override, grown by
+// healthProbeBackoffGrowthFactor (capped at
+// healthProbeBackoffMaxMultiplier * interval) on every consecutive
+// unhealthy reschedule, and reset straight back to 0 the instant a probe
+// reports healthy again — backoff must never linger past a real
+// recovery.
+type healthProbeSchedule struct {
+	nextProbeAt time.Time
+	backoff     time.Duration
+}
+
+// probeDueDeployments issues a probe (via probeOneDeployment — still
+// concurrently, each independently bounded by healthProbeCallTimeout)
+// for every configured deployment whose own next-eligible-probe time has
+// arrived, per docs/rfcs/2026-09-08-gateway-health-probe-backoff.md's
+// per-deployment backoff design. This is the backoff-AWARE entry point
+// RunHealthProbeLoop actually drives — unlike ProbeDeployments (which
+// always probes every deployment unconditionally; see its own doc
+// comment for why that stays true), only deployments genuinely due this
+// call are probed.
+//
+// A deployment with no schedule entry yet (never probed through this
+// path before) is always due — matching RunHealthProbeLoop's
+// pre-existing "first pass happens after the first interval elapses"
+// contract exactly, since every deployment starts with no entry at
+// process start; this function itself has no opinion about WHEN it is
+// first called, only about which deployments are due AT the moment it
+// IS called.
+//
+// Each due deployment's own next-eligible time and backoff are
+// recomputed, via rescheduleDeployment, from the FRESH health verdict
+// probeOneDeployment's own ReportProbeResult call just produced — never
+// a stale pre-probe verdict — so a deployment that just recovered on
+// THIS probe reverts to the plain interval starting with its very next
+// scheduling decision, and one that just went unhealthy starts backing
+// off starting with its very next probe, never the one that just ran
+// (that one was scheduled under the state before this call, which was
+// healthy right up until this probe's own result).
+func (p *Pipeline) probeDueDeployments(ctx context.Context, interval time.Duration) {
+	now := p.now()
+
+	var due []Deployment
+	p.probeMu.Lock()
+	for name, dep := range p.deploymentsByName {
+		if sched, ok := p.probeSchedule[name]; ok && now.Before(sched.nextProbeAt) {
+			continue
+		}
+		due = append(due, dep)
+	}
+	p.probeMu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, dep := range due {
+		wg.Add(1)
+		go func(dep Deployment) {
+			defer wg.Done()
+			p.probeOneDeployment(ctx, dep)
+			p.rescheduleDeployment(dep.Name, interval)
+		}(dep)
+	}
+	wg.Wait()
+}
+
+// rescheduleDeployment updates name's own next-eligible-probe time
+// immediately after one of its probes just completed — see
+// probeDueDeployments' own doc comment for the full contract. Currently
+// healthy (per p.router.IsHealthy, read fresh — including a deployment
+// that just recovered on the probe that preceded this call) always
+// resets straight back to the plain configured interval with zero
+// carried-over backoff: backoff must never apply to a currently-healthy
+// deployment. Currently unhealthy grows the backoff
+// (healthProbeBackoffGrowthFactor per step, capped at
+// healthProbeBackoffMaxMultiplier*interval) and schedules against that
+// instead.
+func (p *Pipeline) rescheduleDeployment(name string, interval time.Duration) {
+	p.probeMu.Lock()
+	defer p.probeMu.Unlock()
+
+	sched, ok := p.probeSchedule[name]
+	if !ok {
+		sched = &healthProbeSchedule{}
+		p.probeSchedule[name] = sched
+	}
+
+	now := p.now()
+	if p.router.IsHealthy(name) {
+		sched.backoff = 0
+		sched.nextProbeAt = now.Add(interval)
+		return
+	}
+
+	if sched.backoff <= 0 {
+		sched.backoff = interval
+	}
+	sched.backoff *= healthProbeBackoffGrowthFactor
+	if maxDelay := interval * healthProbeBackoffMaxMultiplier; sched.backoff > maxDelay {
+		sched.backoff = maxDelay
+	}
+	sched.nextProbeAt = now.Add(sched.backoff)
+}
+
+// RunHealthProbeLoop runs probeDueDeployments once per interval until
+// ctx is canceled — the production wiring for
 // docs/rfcs/2026-09-07-gateway-active-health-probing.md's background
-// active/synthetic health-probing loop. A no-op if interval <= 0
-// (health probing not configured) — matching every other optional
-// subsystem's "zero means disabled" convention (Redis, boltstore, OTel,
-// admin). Deliberately does not run a probe pass immediately at start —
-// the first pass happens after the first interval elapses, so a gateway
-// restart storm never adds a synchronized burst of extra upstream calls
-// on top of real traffic resuming.
+// active/synthetic health-probing loop, now backoff-aware per
+// docs/rfcs/2026-09-08-gateway-health-probe-backoff.md (probeDueDeployments'
+// own doc comment covers the per-deployment scheduling this drives). A
+// no-op if interval <= 0 (health probing not configured) — matching
+// every other optional subsystem's "zero means disabled" convention
+// (Redis, boltstore, OTel, admin). Deliberately does not run a probe
+// pass immediately at start — the first pass happens after the first
+// interval elapses, so a gateway restart storm never adds a synchronized
+// burst of extra upstream calls on top of real traffic resuming.
 func (p *Pipeline) RunHealthProbeLoop(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
@@ -1186,7 +1359,7 @@ func (p *Pipeline) RunHealthProbeLoop(ctx context.Context, interval time.Duratio
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.ProbeDeployments(ctx)
+			p.probeDueDeployments(ctx, interval)
 		}
 	}
 }
