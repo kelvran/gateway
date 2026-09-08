@@ -315,22 +315,40 @@ with the exact expected "no text content block" error, the 6th — the
 test proving that exact error — correctly still passed). Both restored
 with zero `git diff` trace.
 
-**Not yet done, tracked separately (the implementation plan's Phases
-4-6):** the judge-accuracy corpus slice (`regression_corpus_judge_
-accuracy.json`) requires live-verified `(output, reference)` verdicts
-against real AWS Bedrock access, which this implementation pass did not
-have available — cannot be fabricated without violating this codebase's
-own "verify, don't guess" discipline. The CI workflow YAML is written,
-validates, and its `env` block was updated to match the panel-
-composition revision (`ANTHROPIC_API_KEY` kept, for the still-Anthropic-
-direct `--llm-judge` half; `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
-`AWS_REGION` added, for the now-Bedrock `--llm-judge-panel` half;
-`OPENAI_API_KEY` removed, no longer used by anything in this workflow) —
-but it will still fail loudly on its first real tick until those secrets
-are actually added as GitHub repo secrets (a human Settings-page action)
-and the corpus slice exists. The real judge/panel
-disagreement-rate measurement (closing the research's own open question
-about panel diversity — now more directly relevant, since Sonnet 5 and
-Haiku 4.5 sharing a vendor makes this measurement more likely to show
-low disagreement, not less) depends on both of
-those and cannot happen until they do.
+**Phase 4 DONE 2026-09-08, once real AWS Bedrock access existed:** the
+24-case judge-accuracy corpus slice
+(`tests/fixtures/regression_corpus_judge_accuracy.json`) is built and
+live-verified — 8 designed obviously-correct, 8 obviously-incorrect, 8
+boundary/ambiguous. Verified via 2 separate real, live runs against the
+actual Bedrock panel (not fakes, not a single sample treated as ground
+truth): 22 of 24 cases were stable across both runs; 2 genuinely were
+not (`judgeacc-correct-units-2`, a unit-conversion-plus-rounding case
+originally designed as obviously-correct; `judgeacc-boundary-numeric-3`,
+a price-rounding case designed as boundary) — both reclassified to
+`flaky: true` with both real runs' actual verdicts and rationale
+recorded in their own `corpus_note`, not silently re-run until a
+"clean" result appeared. Only 7 of the other 8 designed-boundary cases
+turned out unanimous under live verification and were reclassified to
+`flaky: false` accordingly (per this RFC's own Phase 4 spec: "reclassify
+any that turn out unanimous") — a real, measured data point (not a
+guess) supporting the same-vendor-correlation concern raised before this
+panel's composition was decided: a same-vendor (both Claude) panel shows
+less, and less *stable*, disagreement than the originally-designed
+cross-vendor Anthropic+OpenAI pairing would have. The standalone
+`--llm-judge` (direct Anthropic) leg could not be live-verified in this
+same pass — no `ANTHROPIC_API_KEY` was available locally — named
+honestly rather than fabricated; the corpus content itself doesn't
+depend on which judge scores it, so this is a pure credential gap, not
+a design gap.
+
+**Not yet done, tracked separately (the implementation plan's remaining
+Phase 5/6 items):** GitHub repo secrets (`AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`/`ANTHROPIC_API_KEY`) still need
+adding — a human Settings-page action, not yet done — before
+`.github/workflows/evals-judge-nightly.yml` can succeed for real; it
+will keep failing loudly (a real credential error, no longer a missing-
+file error) until they exist. The real judge/panel disagreement-rate
+measurement (closing the research's own open question about panel
+diversity) still depends on the nightly workflow actually running with
+real secrets at least once — Phase 4's own 2-run local sample above is a
+real, honest starting data point, not a substitute for that.

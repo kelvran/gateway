@@ -1,0 +1,362 @@
+[
+  {
+    "id": "judgeacc-correct-paraphrase-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "Mitochondria produce most of the cell's energy, which is why they're called the cell's powerhouse.",
+      "corpus_note": "Live-verified 2026-09-08 against the real Bedrock panel (global.anthropic.claude-sonnet-5 + global.anthropic.claude-haiku-4-5-20251001-v1:0, the first real credential this feature ever ran against): unanimous PASS, as designed. Both judges independently identified the paraphrase as semantically identical to the reference."
+    },
+    "reference": "The mitochondria is the powerhouse of the cell.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-correct-reorder-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "The report covers results for Q1, Q3, and Q2.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous PASS, as designed. Reordering a set of three named quarters doesn't change the claim's truth value; both judges treated it as order-invariant."
+    },
+    "reference": "The report covers Q1, Q2, and Q3 results.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-correct-units-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "The tank holds 0.1 cubic meters.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous PASS, as designed. 100 liters == 0.1 cubic meters exactly; both judges did the unit conversion correctly rather than string-matching."
+    },
+    "reference": "The tank holds 100 liters.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-correct-paraphrase-2",
+    "revision": 1,
+    "task_spec": {
+      "output": "At sea-level atmospheric pressure, water reaches its boiling point at 212 degrees Fahrenheit.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous PASS, as designed. 100C == 212F exactly; both judges verified the temperature-scale conversion rather than treating the differing units as a mismatch."
+    },
+    "reference": "Water boils at 100 degrees Celsius at sea level.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-correct-reorder-2",
+    "revision": 1,
+    "task_spec": {
+      "output": "Yellow, red, and blue are the three primary colors.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous PASS, as designed. Same set-membership-not-order reasoning as judgeacc-correct-reorder-1."
+    },
+    "reference": "The three primary colors are red, blue, and yellow.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-correct-paraphrase-3",
+    "revision": 1,
+    "task_spec": {
+      "output": "Plants use photosynthesis to transform light energy from the sun into a chemical form of energy they can use.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous PASS, as designed."
+    },
+    "reference": "Photosynthesis converts sunlight into chemical energy.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-correct-units-2",
+    "revision": 2,
+    "task_spec": {
+      "output": "The package weighs approximately 1 kilogram.",
+      "corpus_note": "Designed as obviously-correct (unit conversion); **reclassified after a SECOND live run, 2026-09-08 -- this one is genuinely unstable, not a mis-design caught by one bad sample.** Run 1: unanimous PASS. Run 2 (same corpus, no code change, real run-to-run variance since no provider call site pins `temperature`): global.anthropic.claude-sonnet-5 voted PASS ('essentially equivalent, just expressed in different units'); global.anthropic.claude-haiku-4-5-20251001-v1:0 voted FAIL, reasoning through the exact same 1kg=2.2lb conversion and calling it 'mathematically equivalent' before still marking it incorrect for changing both the unit AND the precision level at once -- a real, substantive judgment call, not a model error. `flaky` set to `true`; this is the second real case (of 24) to show genuine live disagreement, not the originally-designed one -- see judgeacc-boundary-numeric-3's own corpus_note for the first."
+    },
+    "reference": "The package weighs 2.2 pounds.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": true
+  },
+  {
+    "id": "judgeacc-correct-paraphrase-4",
+    "revision": 1,
+    "task_spec": {
+      "output": "Next Friday is the meeting's new date; it's no longer happening on the originally planned day.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous PASS, as designed."
+    },
+    "reference": "The meeting was rescheduled to next Friday.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-incorrect-factwrong-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "The capital of Australia is Sydney.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous FAIL, as designed. A common real-world misconception (Sydney is Australia's largest city, not its capital) \u2014 both judges caught it rather than pattern-matching on 'a major Australian city was named'."
+    },
+    "reference": "The capital of Australia is Canberra.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-incorrect-contradict-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "The store is closed on Sundays.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous FAIL, as designed. A direct negation of the reference, not a paraphrase."
+    },
+    "reference": "The store is open on Sundays.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-incorrect-hallucination-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "According to the document, the price is $49.99 per month.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous FAIL, as designed. The reference is an explicit absence claim ('the document does not mention pricing'); the candidate fabricates a specific, plausible-sounding number not present in the reference \u2014 a real hallucination shape, not just a wrong fact."
+    },
+    "reference": "The document does not mention any pricing information.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-incorrect-factwrong-2",
+    "revision": 1,
+    "task_spec": {
+      "output": "K2 is the tallest mountain above sea level.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous FAIL, as designed. K2 is the second-tallest; both judges caught the substitution rather than treating 'a very tall mountain' as close enough."
+    },
+    "reference": "Mount Everest is the tallest mountain above sea level.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-incorrect-contradict-2",
+    "revision": 1,
+    "task_spec": {
+      "output": "The patient's test results showed significant abnormalities requiring immediate follow-up.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous FAIL, as designed. A high-stakes direct contradiction (normal vs. abnormal) \u2014 the kind of judge miss that would matter most in a real deployment; both judges caught it cleanly."
+    },
+    "reference": "The patient's test results were normal.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-incorrect-hallucination-2",
+    "revision": 1,
+    "task_spec": {
+      "output": "The API returns a 200 success status even when the resource is not found, silently returning an empty body.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous FAIL, as designed. A fabricated, technically-plausible-sounding API behavior that directly contradicts the reference \u2014 the same hallucination shape as judgeacc-incorrect-hallucination-1 but in a technical/API context."
+    },
+    "reference": "The API returns a 404 error when the resource is not found.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-incorrect-factwrong-3",
+    "revision": 1,
+    "task_spec": {
+      "output": "The chemical symbol for gold is Ag.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous FAIL, as designed. Ag is silver's symbol, not gold's \u2014 a real, adjacent-fact confusion; both judges caught the substitution rather than crediting 'a two-letter element symbol was given'."
+    },
+    "reference": "The chemical symbol for gold is Au.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-incorrect-contradict-3",
+    "revision": 1,
+    "task_spec": {
+      "output": "The function is synchronous and blocks until completion, returning the result directly.",
+      "corpus_note": "Live-verified 2026-09-08: unanimous FAIL, as designed. A direct technical contradiction (sync vs. async) that would matter in a real code-review/doc-QA judge deployment; both judges caught it."
+    },
+    "reference": "The function is asynchronous and returns a Promise.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-boundary-partial-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "The recipe requires flour, sugar, and eggs.",
+      "corpus_note": "Designed as boundary/ambiguous (a partial-information omission); **reclassified after live verification 2026-09-08 \u2014 turned out unanimous, not genuinely ambiguous for this panel**: both global.anthropic.claude-sonnet-5 and global.anthropic.claude-haiku-4-5-20251001-v1:0 independently voted FAIL, both citing the missing 'butter' ingredient as a real omission rather than an acceptable simplification. `flaky` set to `false` to reflect the real observed behavior, not the original design intent."
+    },
+    "reference": "The recipe requires flour, sugar, eggs, and butter.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-boundary-numeric-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "The population is approximately 8 million.",
+      "corpus_note": "Designed as boundary/ambiguous (numeric rounding); **reclassified after live verification 2026-09-08 \u2014 turned out unanimous**: both judges voted PASS, both explicitly reasoning that an 8.1-to-8 million rounding is an acceptable approximation for a population figure already qualified with 'approximately'. `flaky` set to `false`."
+    },
+    "reference": "The population is approximately 8.1 million.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-boundary-caveat-1",
+    "revision": 1,
+    "task_spec": {
+      "output": "The medication should be taken twice daily, though you should consult your doctor if you experience side effects.",
+      "corpus_note": "Designed as boundary/ambiguous (unrequested caveat); **reclassified after live verification 2026-09-08 \u2014 turned out unanimous**: both judges voted PASS, both treating the added safety caveat as a reasonable addition that doesn't contradict or dilute the core correct answer. `flaky` set to `false`."
+    },
+    "reference": "The medication should be taken twice daily.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-boundary-partial-2",
+    "revision": 1,
+    "task_spec": {
+      "output": "The error is caused by a null pointer issue somewhere in the code.",
+      "corpus_note": "Designed as boundary/ambiguous (vaguer-but-compatible diagnosis); **reclassified after live verification 2026-09-08 \u2014 turned out unanimous**: both judges voted FAIL, both citing the loss of the specific, actionable detail (parser module, dereference vs. generic 'issue') as a real precision regression, not just a stylistic simplification. `flaky` set to `false`."
+    },
+    "reference": "The error is caused by a null pointer dereference in the parser module.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-boundary-numeric-2",
+    "revision": 1,
+    "task_spec": {
+      "output": "The project will take about a month and a half.",
+      "corpus_note": "Designed as boundary/ambiguous (unit-scale rephrasing); **reclassified after live verification 2026-09-08 \u2014 turned out unanimous**: both judges voted PASS, both explicitly computing that 6 weeks equals exactly 1.5 months rather than treating the differing time units as a mismatch. `flaky` set to `false`."
+    },
+    "reference": "The project will take 6 weeks to complete.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-boundary-caveat-2",
+    "revision": 1,
+    "task_spec": {
+      "output": "Yes, pagination is supported, but I'd recommend checking the latest API docs since parameter names sometimes change between versions.",
+      "corpus_note": "Designed as boundary/ambiguous (hedge/caveat on a correct core answer); **reclassified after live verification 2026-09-08 \u2014 turned out unanimous**: both judges voted FAIL, both citing the omission of the specific parameter name ('page') the reference gave as a real loss of the answer's substance, not just added caution. `flaky` set to `false`."
+    },
+    "reference": "Yes, the endpoint supports pagination via the page query parameter.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-boundary-partial-3",
+    "revision": 1,
+    "task_spec": {
+      "output": "The outage was likely related to database issues under high load.",
+      "corpus_note": "Designed as boundary/ambiguous (hedged, less-precise root cause); **reclassified after live verification 2026-09-08 \u2014 turned out unanimous**: both judges voted FAIL, both citing the loss of the specific mechanism (connection pool exhaustion vs. generic 'database issues') as a real precision regression for what reads like an incident postmortem. `flaky` set to `false`."
+    },
+    "reference": "The outage was caused by a database connection pool exhaustion during peak traffic.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": false
+  },
+  {
+    "id": "judgeacc-boundary-numeric-3",
+    "revision": 2,
+    "task_spec": {
+      "output": "The discount brings the price down to roughly $90.",
+      "corpus_note": "Designed as boundary/ambiguous (price rounding); kept `flaky: true`. Run 1 (2026-09-08): genuine, real disagreement -- global.anthropic.claude-sonnet-5 voted FAIL ('grading standards typically require matching specific numeric values when given precisely, this is a partial match but not an exact match'); global.anthropic.claude-haiku-4-5-20251001-v1:0 voted PASS ('the difference is only $0.01, which is negligible... this is a valid approximation'). Panel result: FAIL, quorum_reached=False (fail-closed tie). Run 2 (same day, no code change -- real run-to-run variance, no provider call site pins `temperature`): BOTH judges voted PASS this time, unanimous, quorum_reached=True. Across 2 real runs this case disagreed once and agreed once -- itself the honest measurement, not a single deterministic fact. Combined with judgeacc-correct-units-2 (which flipped the OTHER direction, unanimous-to-split), 2 of 24 cases showed real cross-run instability -- a live, measured signal supporting this session's own earlier-flagged concern that a same-vendor (both Claude) panel shows less, and less stable, disagreement than the originally-designed cross-vendor Anthropic+OpenAI pairing would have. More runs (the nightly workflow will accumulate them) will sharpen this rate; 2 runs is an honest starting sample, not a final answer."
+    },
+    "reference": "The discount brings the price down to $89.99.",
+    "tier": "regression",
+    "tags": [
+      "category:judge",
+      "provenance:hand-written"
+    ],
+    "flaky": true
+  }
+]

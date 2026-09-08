@@ -39,12 +39,15 @@ jobs:
         # regression corpus (regression_corpus_*.json) -- that's
         # separately-tracked work with its own unresolved calibration
         # question (several of those cases are deliberate, honestly-
-        # documented FAIL cases), not this workflow's concern. This
-        # workflow's own tests/fixtures/regression_corpus_judge_accuracy
-        # .json slice does not exist yet as of this workflow's creation
-        # (2026-09-08) -- it requires a live-key-gated authoring pass per
-        # that RFC's Phase 4, and this job will fail loudly (a real
-        # missing-file error) until it's added, never silently skip.
+        # documented FAIL cases), not this workflow's concern.
+        # tests/fixtures/regression_corpus_judge_accuracy.json (Phase 4,
+        # 24 cases, live-verified 2026-09-08 against the real Bedrock
+        # panel) now exists and is real -- the --llm-judge-panel half of
+        # this job is expected to succeed once AWS secrets are added; the
+        # --llm-judge half additionally needs ANTHROPIC_API_KEY as a repo
+        # secret, still not added as of this comment, so this job will
+        # keep failing loudly (a real credential error, not a missing
+        # file) until both secret sets exist -- never silently skipped.
         working-directory: evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
