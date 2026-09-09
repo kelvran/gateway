@@ -1896,12 +1896,23 @@ func serializeMessages(messages []adapter.Message) string {
 // guardrail post-call check, per
 // docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md. Deliberately
 // minimal, mirroring serializeMessages' own scope — every choice's
-// message content, newline-joined, not a full JSON re-encoding (the
-// guardrail scans text, not structure).
+// message content plus any tool-call arguments, newline-joined, not a
+// full JSON re-encoding (the guardrail scans text, not structure).
+//
+// Tool-call arguments are included per
+// docs/rfcs/2026-09-09-gateway-guardrail-toolcall-scanning.md: this
+// function previously scanned only Content, leaving PII/secrets/
+// injected content hidden inside a model-generated ToolCall's
+// ArgumentsJSON invisible to the post-call check even though
+// serializeMessages' full JSON marshal already covers tool_calls on the
+// pre-call side — a real asymmetry, not an intentional scope narrowing.
 func serializeResponse(resp adapter.ChatResponse) string {
 	contents := make([]string, 0, len(resp.Choices))
 	for _, c := range resp.Choices {
 		contents = append(contents, c.Message.Content)
+		for _, tc := range c.Message.ToolCalls {
+			contents = append(contents, tc.ArgumentsJSON)
+		}
 	}
 	return strings.Join(contents, "\n")
 }
