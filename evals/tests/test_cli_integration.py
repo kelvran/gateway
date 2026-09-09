@@ -2405,3 +2405,173 @@ def test_run_with_judge_debias_fails_closed_on_position_disagreement(
     assert len(persisted) == 1
     assert persisted[0].value is False
     assert "[POSITION DISAGREEMENT — fail-closed]" in persisted[0].rationale
+
+
+def test_audit_corpus_writes_findings_for_flagged_cases_only(tmp_path, monkeypatch):
+    """`evals audit-corpus` must print every case's severity but write
+    ONLY the flagged (non-no_defect) findings to --out, per
+    docs/rfcs/2026-09-11-evals-audit-corpus.md.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "clean-case",
+                    "revision": 1,
+                    "task_spec": {"output": "x"},
+                    "reference": "x",
+                    "tier": "regression",
+                },
+                {
+                    "id": "flagged-case",
+                    "revision": 1,
+                    "task_spec": {"output": "y"},
+                    "reference": "y",
+                    "tier": "regression",
+                },
+            ]
+        )
+    )
+    out_path = tmp_path / "findings.json"
+
+    responses = iter(
+        [
+            "REASONING: Clear and correct.\nSEVERITY: no_defect\n",
+            "REASONING: The ground truth looks wrong.\nSEVERITY: major\n",
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        return next(responses)
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["audit-corpus", "--suite", str(suite_path), "--out", str(out_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "clean-case (rev 1): no_defect" in result.output
+    assert "flagged-case (rev 1): major" in result.output
+    assert "1 no_defect, 0 minor, 1 major (of 2 cases)" in result.output
+
+    findings = json.loads(out_path.read_text())
+    assert len(findings) == 1
+    assert findings[0]["eval_case_id"] == "flagged-case"
+    assert findings[0]["severity"] == "major"
+
+
+def test_audit_corpus_multiple_suite_files_combines_cases(tmp_path, monkeypatch):
+    suite_a = tmp_path / "a.json"
+    suite_a.write_text(
+        json.dumps(
+            [{"id": "case-a", "revision": 1, "task_spec": {}, "tier": "regression"}]
+        )
+    )
+    suite_b = tmp_path / "b.json"
+    suite_b.write_text(
+        json.dumps(
+            [{"id": "case-b", "revision": 1, "task_spec": {}, "tier": "regression"}]
+        )
+    )
+    out_path = tmp_path / "findings.json"
+
+    async def fake_call_model(prompt: str) -> str:
+        return "REASONING: fine.\nSEVERITY: no_defect\n"
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "audit-corpus",
+            "--suite",
+            str(suite_a),
+            "--suite",
+            str(suite_b),
+            "--out",
+            str(out_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "case-a" in result.output
+    assert "case-b" in result.output
+    assert "(of 2 cases)" in result.output
+
+
+def test_audit_corpus_unreadable_suite_raises_click_exception(tmp_path):
+    out_path = tmp_path / "findings.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "audit-corpus",
+            "--suite",
+            str(tmp_path / "does-not-exist.json"),
+            "--out",
+            str(out_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "does-not-exist.json" in result.output
+
+
+def test_audit_corpus_never_raises_on_all_cases_flagged_major(tmp_path, monkeypatch):
+    """The core report-only guarantee: even when EVERY case is flagged
+    major, the command must still exit 0 -- an audit tool is not a gate.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "bad-case-1",
+                    "revision": 1,
+                    "task_spec": {},
+                    "tier": "regression",
+                },
+                {
+                    "id": "bad-case-2",
+                    "revision": 1,
+                    "task_spec": {},
+                    "tier": "regression",
+                },
+            ]
+        )
+    )
+    out_path = tmp_path / "findings.json"
+
+    async def fake_call_model(prompt: str) -> str:
+        return "REASONING: This case is badly designed.\nSEVERITY: major\n"
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["audit-corpus", "--suite", str(suite_path), "--out", str(out_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "0 no_defect, 0 minor, 2 major (of 2 cases)" in result.output
+
+    findings = json.loads(out_path.read_text())
+    assert len(findings) == 2

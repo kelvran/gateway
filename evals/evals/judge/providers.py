@@ -383,16 +383,20 @@ class _BedrockCallModel:
     client variable either), so `Any` here is honest, not a skipped type.
     """
 
-    def __init__(self, model: str, client: Any) -> None:
+    def __init__(self, model: str, client: Any, max_tokens: int | None = None) -> None:
         self._model = model
         self._client = client
+        self._max_tokens = max_tokens
         self.last_call_cost: JudgeCallCost | None = None
 
     def _invoke(self, prompt: str) -> dict:
-        return self._client.converse(
-            modelId=self._model,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-        )
+        kwargs: dict[str, Any] = {
+            "modelId": self._model,
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        }
+        if self._max_tokens is not None:
+            kwargs["inferenceConfig"] = {"maxTokens": self._max_tokens}
+        return self._client.converse(**kwargs)
 
     async def __call__(self, prompt: str) -> str:
         response = await asyncio.to_thread(self._invoke, prompt)
@@ -421,6 +425,7 @@ def make_bedrock_call_model(
     model: str,
     client: Any | None = None,
     region_name: str | None = None,
+    max_tokens: int | None = None,
 ) -> Callable[[str], Awaitable[str]]:
     """Build a `call_model` callable backed by a real AWS Bedrock Converse
     API call, per docs/rfcs/2026-09-08-evals-judge-panel-reducer.md's
@@ -457,6 +462,26 @@ def make_bedrock_call_model(
     convention), falling back to `AWS_DEFAULT_REGION` — resolved here
     explicitly and passed to `boto3.client(...)` as a real value, never
     left as `None` for botocore's own env-var scan to (unreliably) find.
+
+    `max_tokens`, when given, sets `inferenceConfig.maxTokens` on the
+    real Converse call. Omitting it (the default, used by every
+    `--llm-judge`/`--llm-judge-panel` caller, unchanged) leaves Bedrock's
+    own service-side default in effect — a REAL, live-discovered gotcha
+    (2026-09-11, while sanity-checking `evals.audit_corpus`, per
+    docs/rfcs/2026-09-11-evals-audit-corpus.md): against a long,
+    JSON-heavy audit prompt (a full `EvalCase.task_spec`, unlike a short
+    judge comparison prompt), Claude Sonnet 5 spent its ENTIRE default
+    token budget on an internal `reasoningContent` block before ever
+    emitting visible text, surfacing as `_BedrockCallModel.__call__`'s
+    own "no text content block" `ValueError` — `stopReason: "max_tokens"`
+    with an empty `reasoningText.text`, confirmed by inspecting the raw
+    Converse response directly. `audit_corpus_cmd` passes an explicit,
+    generous `max_tokens` to avoid this; the underlying gap (no
+    `maxTokens` control at all) is pre-existing and shared by every
+    `--llm-judge`/`--llm-judge-panel` call site too, none of which have
+    hit it yet only because their prompts are short — named here as a
+    real, disclosed latent risk, not silently fixed for those callers in
+    this pass.
     """
     resolved_region = (
         region_name
@@ -466,4 +491,4 @@ def make_bedrock_call_model(
     bedrock_client = client or boto3.client(
         "bedrock-runtime", region_name=resolved_region
     )
-    return _BedrockCallModel(model=model, client=bedrock_client)
+    return _BedrockCallModel(model=model, client=bedrock_client, max_tokens=max_tokens)

@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -40,6 +40,7 @@ import click
 from dotenv import load_dotenv
 from google.protobuf.json_format import MessageToJson
 
+from evals.audit_corpus import AuditFinding, audit_case
 from evals.ingestion.decode import decode_gateway_decision_event
 from evals.ingestion.mapping import gateway_decision_event_to_eval_case_and_run
 from evals.ingestion.object_store import (
@@ -2136,6 +2137,85 @@ def report_cmd(
                 )
         if failures:
             raise click.ClickException("CI/CD gate failed:\n" + "\n".join(failures))
+
+
+@main.command("audit-corpus")
+@click.option(
+    "--suite",
+    "suite_paths",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "A regression-corpus suite file to audit. Repeatable -- pass "
+        "--suite once per file (e.g. all 6 regression_corpus_*.json "
+        "files in one invocation)."
+    ),
+)
+@click.option(
+    "--out",
+    "out_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="JSON file the flagged (non-no_defect) findings are written to.",
+)
+@click.option(
+    "--judge-model",
+    default=BEDROCK_SONNET_5_MODEL_ID,
+    show_default=True,
+    help=(
+        "Bedrock model id to audit with. Defaults to Sonnet 5, not the "
+        "panel's usual Haiku default -- a corpus-design audit benefits "
+        "from the more careful model, unlike routine per-case judging."
+    ),
+)
+def audit_corpus_cmd(
+    suite_paths: tuple[Path, ...], out_path: Path, judge_model: str
+) -> None:
+    """Audit one or more suite files for corpus-design defects (ambiguous
+    task design, wrong/unverifiable ground truth, environment/tooling
+    conflicts) via a real LLM call per case. Report-only: never exits
+    non-zero based on findings, no matter how many cases are flagged
+    major -- only a real tool/IO error is a hard failure. See
+    evals.audit_corpus's own module docstring for the full design
+    rationale.
+    """
+    cases: list[EvalCase] = []
+    for suite_path in suite_paths:
+        cases.extend(_load_cases(suite_path))
+
+    # max_tokens is generous and explicit here, unlike --llm-judge/
+    # --llm-judge-panel's own default-omitted call sites: a real,
+    # live-discovered gotcha (docs/rfcs/2026-09-11-evals-audit-corpus.md)
+    # is that a long, JSON-heavy audit prompt (a full EvalCase.task_spec)
+    # can make Claude Sonnet 5 exhaust Bedrock's own service-side default
+    # token budget on internal reasoning before ever emitting visible
+    # text -- see make_bedrock_call_model's own doc comment for the full
+    # story.
+    call_model = make_bedrock_call_model(judge_model, max_tokens=8192)
+    counts: dict[str, int] = {"no_defect": 0, "minor": 0, "major": 0}
+    findings: list[AuditFinding] = []
+    for case in cases:
+        finding = asyncio.run(audit_case(case, call_model))
+        cost = _last_judge_call_cost_usd(call_model)
+        finding = replace(finding, cost_usd=cost)
+        counts[finding.severity] += 1
+        if finding.severity == "no_defect":
+            click.echo(f"{case.id} (rev {case.revision}): {finding.severity}")
+        else:
+            click.echo(
+                f"{case.id} (rev {case.revision}): "
+                f"{finding.severity} -- {finding.reason}"
+            )
+            findings.append(finding)
+
+    click.echo(
+        f"audit-corpus: {counts['no_defect']} no_defect, {counts['minor']} minor, "
+        f"{counts['major']} major (of {len(cases)} cases)"
+    )
+    out_path.write_text(
+        json.dumps([asdict(f) for f in findings], indent=2, default=str)
+    )
 
 
 if __name__ == "__main__":
