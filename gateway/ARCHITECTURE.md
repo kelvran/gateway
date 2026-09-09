@@ -244,9 +244,21 @@ Every capability is a stage in one linear pipeline against a single canonical sc
     docs/rfcs/2026-09-07-gateway-active-health-probing.md — plus, on error, an error-classified,
     multi-hop fallback chain if the deployment configures one, else the pre-existing same-model
     single-fallback attempt, per docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md;
-    still no TRAFFIC-DERIVED statistical circuit breaker, deliberately)
+    still no TRAFFIC-DERIVED statistical circuit breaker, deliberately — though the filter/volume-floor
+    primitives for one exist, built but deliberately unwired, per docs/upgrade-research/gateway-router-
+    health-real-traffic-2026-09-09.md)
+  → deployment capacity check, PER HOP (every hop, not just the first): the resolved deployment's own
+    optional rate_limit/max_concurrent_requests ceiling — a genuinely different scope from the per-key
+    checks above, bounding one shared deployment's own AGGREGATE load across every virtual key and every
+    fallback hop that converges on it. A rejection here is a *DeploymentCapacityError, mapped to a
+    client-facing 503 (never the per-key 429 bucket), per docs/upgrade-research/gateway-per-deployment-
+    concurrency-2026-09-09.md — never applied to the synthetic health-probe loop itself
   → provider adapter: canonical → provider-native request translation
-  → upstream call (streaming: non-buffering pass-through, chunk-by-chunk, explicit Flush() per chunk)
+  → upstream call (streaming: non-buffering pass-through, chunk-by-chunk, explicit Flush() per chunk;
+    each chunk also re-checks a mid-stream runaway-completion ceiling and tops up the request's own
+    budget/TPM reservation to match real, growing output — closing the gap where a long stream's real
+    cost could silently exceed what a concurrent sibling on the same key could see, per docs/rfcs/2026-
+    09-08-gateway-streaming-runaway-completion-guard.md's own follow-on reservation-top-up fix)
   → provider adapter: provider-native response/chunk → canonical translation (stateful per-stream parser)
   → guardrail post-call
   → cache write-back (all layers)
