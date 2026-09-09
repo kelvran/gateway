@@ -1705,3 +1705,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None pre-existing — this pass adds new, additive functionality (a real CI gate; a new enum value) with one self-caught near-miss during implementation (the `isRetryStormEligible` eligibility-drop hazard), caught before it could ship, not after.
 
 **Next steps / resume point:** One item remains from this same post-plan cleanup round: real price-table entries for the two Bedrock judge models (`_compute_bedrock_cost_usd` in `evals/evals/judge/providers.py` currently always returns `None`). Not yet committed/pushed as of this entry.
+
+## [2026-09-09] Post-plan cleanup round 2 of 2: Bedrock judge model pricing re-checked, still not implementable
+
+**Files touched:** `evals/evals/judge/providers.py` (comment update only, no logic change), `DECISIONS.md`.
+
+**Intent/summary:** Final item from the post-plan cleanup round: real price-table entries for the two Bedrock judge models, since `_compute_bedrock_cost_usd` has always returned `None` for both (the original judge-panel build's own live pricing-page fetch didn't surface real rates). Re-checked directly rather than assuming the gap was permanent.
+
+**Decisions made:** Fetched AWS's own live Bedrock pricing page twice, independently — both times the rendered Anthropic on-demand table showed only legacy "Claude 3.5 Sonnet"/"Claude 3.5 Sonnet v2" rows, no row for Sonnet 5 or Haiku 4.5 at all. Separately found Anthropic's own direct-API pricing for these exact model names does exist and is published (Sonnet 5: $2/$10 per MTok; Haiku 4.5: $1/$5 per MTok, via claude.com/pricing) — but decided NOT to substitute it into the Bedrock price table: AWS Marketplace billing for a third-party model isn't guaranteed to match the vendor's own direct-API rate, and no independent confirmation of parity exists for these two specific models. Substituting it anyway would be exactly the fabricated-estimate shortcut this code's own established convention (real price-table entries only, verified against a live bill or the actual rendered page) exists to prevent — not implemented, decision recorded with the real evidence instead of silently leaving a stale comment behind.
+
+**Verification performed:** `cd evals && uv run pytest tests/test_providers.py -q` → 27 passed (no regression — comment-only change); `uvx ruff check evals/judge/providers.py` → clean.
+
+**Bugs found:** None — this is a research re-check that reconfirmed an existing, honestly-disclosed gap, updating the record with new (but still inconclusive) evidence.
+
+**Next steps / resume point:** Both post-plan cleanup rounds are now complete (CI gate + enum in round 1; this pricing re-check in round 2). No further work is queued. Revisit Bedrock judge pricing only once either a live AWS bill or the Bedrock pricing page itself finally publishes a rate for these two model ids — not on a schedule, no need to re-check again speculatively.

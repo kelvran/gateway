@@ -290,14 +290,33 @@ BEDROCK_HAIKU_4_5_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 # Marketplace, per each model's own live "Pricing" section, which defers
 # to a separate, JS-rendered pricing page rather than publishing an
 # inline per-token number on the model card itself — a live fetch of that
-# page did not surface a real, current per-token rate for either model in
-# this pass, so NEITHER gets a price-table entry here. This means
+# page did not surface a real, current per-token rate for either model,
+# confirmed independently TWICE now (this pass re-checked it, 2026-09-09,
+# specifically re-verifying the original judge-panel build's own earlier
+# same finding): aws.amazon.com/bedrock/pricing's rendered Anthropic
+# on-demand table shows only legacy "Claude 3.5 Sonnet"/"Claude 3.5 Sonnet
+# v2" rows — no row for Sonnet 5 or Haiku 4.5 exists on that page at all,
+# consistent with (though not confirmed as caused by) the same page's own
+# note that some newer, non-GA Anthropic model access is still gated.
+#
+# Anthropic's OWN direct-API pricing for these exact model names IS
+# published and was verified live (claude.com/pricing, 2026-09-09): Sonnet
+# 5 is $2/$10 per MTok (input/output), Haiku 4.5 is $1/$5 per MTok. This
+# is deliberately NOT used as a substitute Bedrock rate — AWS Marketplace
+# billing for a third-party foundation model is not guaranteed to match
+# that vendor's own direct-API price, and no independent confirmation of
+# parity for these two specific models exists. Reusing it here would be
+# exactly the kind of fabricated-estimate substitution this convention
+# exists to prevent, not a reasonable approximation.
+#
+# So: NEITHER model gets a price-table entry here, still. This means
 # `_compute_bedrock_cost_usd` honestly returns `None` for both today,
 # mirroring `_compute_anthropic_cost_usd`/`_compute_openai_cost_usd`'s own
 # established "no price-table entry -> genuinely unmeasured, never a
 # fabricated estimate" convention exactly — not a gap unique to this
 # provider. Add real entries here once verified directly against a live
-# AWS bill or the rendered pricing page, the same "bumped by hand only,
+# AWS bill or the rendered Bedrock pricing page ACTUALLY showing a rate
+# for these model ids specifically — the same "bumped by hand only,
 # re-verify before trusting in production" posture the other two price
 # tables already carry.
 _BEDROCK_MODEL_PRICE_PER_MTOK_USD: dict[str, tuple[Decimal, Decimal]] = {}
