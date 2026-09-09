@@ -1768,6 +1768,16 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// per-request data capture point" design — not a second, independent
 	// capture of the same fields.
 	telemetry.RecordChatCompletionMetrics(ctx, result)
+	// kelvran.cache.savings_usd, per
+	// docs/rfcs/2026-09-10-gateway-cache-savings-metric.md: cost is
+	// guaranteed populated here on every real hit (this branch only ever
+	// leaves cost at its zero value when err != nil, and a cache hit path
+	// never sets err) — a real, already-aggregatable exported counter,
+	// not a second capture of new data.
+	if cacheInfo.Hit() {
+		savingsUSD, _ := cost.Float64()
+		telemetry.RecordCacheSavings(ctx, cacheInfo.Layer, savingsUSD)
+	}
 
 	event := &gatewayeventsv1.GatewayDecisionEvent{
 		TraceId:                span.SpanContext().TraceID().String(),

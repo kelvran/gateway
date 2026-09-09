@@ -309,6 +309,16 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	RecordCacheL3GateOutcome(ctx, CacheL3GateEntityMismatch, true)
 	RecordCacheL3GateOutcome(ctx, CacheL3GateFreshnessRiskModel, false)
 
+	// kelvran.cache.savings_usd, per
+	// docs/rfcs/2026-09-10-gateway-cache-savings-metric.md — must be
+	// verified inside THIS shared test function (see its own package doc
+	// comment above): OTel Go's global meter only delegates to a real
+	// MeterProvider once per test binary, so a separate new test function
+	// would silently pass while verifying nothing.
+	RecordCacheSavings(ctx, "L1", 0.002)
+	RecordCacheSavings(ctx, "L1", 0.001)
+	RecordCacheSavings(ctx, "L3", 0.0015)
+
 	// Three RecordChatCompletionMetrics scenarios, each given a unique
 	// RequestModel so their attribute sets never collide into the same
 	// histogram data point: a genuine billable success (both histograms
@@ -351,21 +361,42 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	}
 
 	counts := map[[2]string]int64{}
+	savingsByLayer := map[string]float64{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != "kelvran.cache.l3.gate_outcome" {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("kelvran.cache.l3.gate_outcome data type = %T, want metricdata.Sum[int64]", m.Data)
-			}
-			for _, dp := range sum.DataPoints {
-				gate, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Gate))
-				outcome, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Outcome))
-				counts[[2]string{gate.AsString(), outcome.AsString()}] += dp.Value
+			switch m.Name {
+			case "kelvran.cache.l3.gate_outcome":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.cache.l3.gate_outcome data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					gate, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Gate))
+					outcome, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Outcome))
+					counts[[2]string{gate.AsString(), outcome.AsString()}] += dp.Value
+				}
+			case "kelvran.cache.savings_usd":
+				sum, ok := m.Data.(metricdata.Sum[float64])
+				if !ok {
+					t.Fatalf("kelvran.cache.savings_usd data type = %T, want metricdata.Sum[float64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					layer, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLayer))
+					savingsByLayer[layer.AsString()] += dp.Value
+				}
 			}
 		}
+	}
+
+	const savingsEpsilon = 1e-9
+	if got, want := savingsByLayer["L1"], 0.002+0.001; got < want-savingsEpsilon || got > want+savingsEpsilon {
+		t.Errorf("kelvran.cache.savings_usd[L1] = %v, want %v (both L1 RecordCacheSavings calls summed)", got, want)
+	}
+	if got, want := savingsByLayer["L3"], 0.0015; got < want-savingsEpsilon || got > want+savingsEpsilon {
+		t.Errorf("kelvran.cache.savings_usd[L3] = %v, want %v", got, want)
+	}
+	if got := savingsByLayer["L2"]; got != 0 {
+		t.Errorf("kelvran.cache.savings_usd[L2] = %v, want 0 (never recorded)", got)
 	}
 
 	want := map[[2]string]int64{

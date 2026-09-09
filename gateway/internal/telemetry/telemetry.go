@@ -113,6 +113,14 @@ func mustFloat64Histogram(m metric.Meter, name string, opts ...metric.Float64His
 	return histogram
 }
 
+func mustFloat64Counter(m metric.Meter, name string, opts ...metric.Float64CounterOption) metric.Float64Counter {
+	counter, err := m.Float64Counter(name, opts...)
+	if err != nil {
+		panic(fmt.Errorf("telemetry: constructing %q counter: %w", name, err))
+	}
+	return counter
+}
+
 // RecordRateLimitFailOpen increments the fail-open counter for keyID. The
 // caller (dataplane.checkRateLimit) calls this at the exact same point it
 // already logs a rate_limit_backend_unavailable warning — this is an
@@ -275,6 +283,35 @@ func RecordCacheL3GateOutcome(ctx context.Context, gate string, rejected bool) {
 		attribute.String(AttrKelvranCacheL3Outcome, outcome),
 		attribute.String(AttrKelvranInstanceID, InstanceID),
 	))
+}
+
+// cacheSavingsCounter is the notional USD cost of every cache-hit
+// request, summed by layer: what the request WOULD have cost had it not
+// been served from cache. Per docs/rfcs/2026-09-10-gateway-cache-savings-
+// metric.md: dataplane.finalize already computes this exact figure on
+// every cache hit (gated only on err == nil, never on billable — see
+// that function's own doc comment naming "a cache-savings dashboard" as
+// the intended use), and already emits kelvran.cache.hit/kelvran.cache.layer
+// on the same span — this instrument is the one missing piece, a real,
+// already-aggregatable exported counter an operator's own Prometheus/
+// Grafana can sum/graph by layer directly, rather than a raw-span query
+// they'd have to write themselves. Dimensioned by the SAME
+// AttrKelvranCacheLayer key the span attribute already uses, so one query
+// groups both signals identically.
+var cacheSavingsCounter = mustFloat64Counter(
+	meter,
+	"kelvran.cache.savings_usd",
+	metric.WithDescription("Notional USD cost of cache-hit requests -- what this request would have cost had it not been served from cache -- summed by cache layer."),
+	metric.WithUnit("{USD}"),
+)
+
+// RecordCacheSavings increments cacheSavingsCounter by savingsUSD,
+// dimensioned by layer ("L1"/"L2"/"L3"). Callers must only call this on a
+// genuine cache hit (layer non-empty) — mirrors
+// RecordChatCompletionMetrics's own "only record when meaningful" gating
+// convention, avoiding a misleading zero-value data point on every miss.
+func RecordCacheSavings(ctx context.Context, layer string, savingsUSD float64) {
+	cacheSavingsCounter.Add(ctx, savingsUSD, metric.WithAttributes(attribute.String(AttrKelvranCacheLayer, layer)))
 }
 
 // Config selects how spans are exported.
