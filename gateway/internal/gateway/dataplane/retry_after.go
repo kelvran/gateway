@@ -39,10 +39,18 @@ func (e *RetryAfterError) Unwrap() error { return e.err }
 // maintaining a second, parallel error taxonomy. Deliberately narrow: see
 // the RFC's design (a) for exactly why budget/guardrail/model-not-allowed/
 // auth are excluded rather than merely unconsidered.
+//
+// OUTCOME_DEPLOYMENT_CAPACITY is included deliberately, not merely left
+// over from when it was OUTCOME_UPSTREAM_ERROR: a deployment-scoped
+// capacity rejection (dataplane.DeploymentCapacityError) is arguably the
+// most canonical case Retry-After exists for — a real "shed load, ask the
+// client to wait" signal — so minting its own Outcome value must not
+// silently drop it out of this eligible set.
 func isRetryStormEligible(err error) bool {
 	switch outcomeFor(err) {
 	case gatewayeventsv1.GatewayDecisionEvent_OUTCOME_RATE_LIMITED,
-		gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR:
+		gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR,
+		gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY:
 		return true
 	default:
 		return false

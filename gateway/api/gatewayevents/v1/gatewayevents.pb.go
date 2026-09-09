@@ -49,6 +49,14 @@ const (
 	// request. Distinct from OUTCOME_UPSTREAM_ERROR so a guardrail
 	// rejection is never misclassified as an upstream failure.
 	GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED GatewayDecisionEvent_Outcome = 8
+	// Per docs/upgrade-research/gateway-per-deployment-concurrency-
+	// 2026-09-09.md: a deployment-scoped rate-limit or concurrency
+	// ceiling rejected this request (dataplane.DeploymentCapacityError) —
+	// a backend-capacity condition, distinct from OUTCOME_RATE_LIMITED
+	// (which covers the caller's OWN per-key rate limit/concurrency cap)
+	// and from the generic OUTCOME_UPSTREAM_ERROR bucket this value was
+	// originally folded into before this enum value existed.
+	GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY GatewayDecisionEvent_Outcome = 9
 )
 
 // Enum value maps for GatewayDecisionEvent_Outcome.
@@ -63,17 +71,19 @@ var (
 		6: "OUTCOME_NO_DEPLOYMENT",
 		7: "OUTCOME_UPSTREAM_ERROR",
 		8: "OUTCOME_GUARDRAIL_BLOCKED",
+		9: "OUTCOME_DEPLOYMENT_CAPACITY",
 	}
 	GatewayDecisionEvent_Outcome_value = map[string]int32{
-		"OUTCOME_UNSPECIFIED":       0,
-		"OUTCOME_OK":                1,
-		"OUTCOME_AUTH_FAILED":       2,
-		"OUTCOME_MODEL_NOT_ALLOWED": 3,
-		"OUTCOME_RATE_LIMITED":      4,
-		"OUTCOME_BUDGET_EXCEEDED":   5,
-		"OUTCOME_NO_DEPLOYMENT":     6,
-		"OUTCOME_UPSTREAM_ERROR":    7,
-		"OUTCOME_GUARDRAIL_BLOCKED": 8,
+		"OUTCOME_UNSPECIFIED":         0,
+		"OUTCOME_OK":                  1,
+		"OUTCOME_AUTH_FAILED":         2,
+		"OUTCOME_MODEL_NOT_ALLOWED":   3,
+		"OUTCOME_RATE_LIMITED":        4,
+		"OUTCOME_BUDGET_EXCEEDED":     5,
+		"OUTCOME_NO_DEPLOYMENT":       6,
+		"OUTCOME_UPSTREAM_ERROR":      7,
+		"OUTCOME_GUARDRAIL_BLOCKED":   8,
+		"OUTCOME_DEPLOYMENT_CAPACITY": 9,
 	}
 )
 
@@ -265,7 +275,7 @@ var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x85\x06\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa6\x06\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -279,7 +289,7 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\x18fallback_from_deployment\x18\t \x01(\tR\x16fallbackFromDeployment\x12'\n" +
 	"\x0ffallback_reason\x18\n" +
 	" \x01(\tR\x0efallbackReason\x12(\n" +
-	"\x10budget_spent_usd\x18\v \x01(\tR\x0ebudgetSpentUsd\"\xf7\x01\n" +
+	"\x10budget_spent_usd\x18\v \x01(\tR\x0ebudgetSpentUsd\"\x98\x02\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -290,7 +300,8 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\x17OUTCOME_BUDGET_EXCEEDED\x10\x05\x12\x19\n" +
 	"\x15OUTCOME_NO_DEPLOYMENT\x10\x06\x12\x1a\n" +
 	"\x16OUTCOME_UPSTREAM_ERROR\x10\a\x12\x1d\n" +
-	"\x19OUTCOME_GUARDRAIL_BLOCKED\x10\bBIZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3"
+	"\x19OUTCOME_GUARDRAIL_BLOCKED\x10\b\x12\x1f\n" +
+	"\x1bOUTCOME_DEPLOYMENT_CAPACITY\x10\tBIZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3"
 
 var (
 	file_gatewayevents_v1_gatewayevents_proto_rawDescOnce sync.Once

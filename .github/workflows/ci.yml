@@ -123,3 +123,75 @@ jobs:
         run: |
           uv run evals run --suite tests/fixtures/ci_gate_example.json --scores .ci-smoke-scores.jsonl
           uv run evals report --scores .ci-smoke-scores.jsonl --tier regression --fail-under 0.35 --category-fail-under "category:safety:0.15"
+      - name: Real regression corpus gate (113 cases across 5 files)
+        # The first REAL quality gate on this repo's own actual regression
+        # corpus (tests/fixtures/regression_corpus_{cache_adversarial,
+        # cost_abuse,dogfood,guardrail,routing_chaos}.json) — distinct from
+        # the smoke test above, which only proves the --fail-under/--tier/
+        # --category-fail-under PLUMBING works, against a synthetic 5-case
+        # fixture. This step was the one item left open from the older
+        # upgrade roadmap after the 2026-09-09 consolidated plan closed —
+        # see STATUS.md/DECISIONS.md.
+        #
+        # Every case in this corpus is deterministic (task_spec.output
+        # already baked in, scored via exact-match — no live LLM calls, no
+        # network, no AWS credentials needed) and tier="regression",
+        # flaky=false (confirmed directly, not assumed, before choosing
+        # thresholds) — so, unlike the judge-accuracy corpus's own now-
+        # removed nightly gate, there is zero run-to-run sampling noise
+        # here: the SAME pass/fail outcome recurs on every CI run until
+        # either the code or the corpus itself changes. That means every
+        # threshold below can be calibrated tightly, right up against the
+        # real measured baseline, with no risk of spurious flakiness.
+        #
+        # Real baseline, computed 2026-09-09 by actually running the full
+        # corpus (not estimated): 97/113 pass (85.84%), Wilson 95% lower
+        # bound 0.7823. Several of the 16 real FAILs are deliberate, honest
+        # FAIL cases documenting KNOWN, not-yet-fixed gaps (e.g.
+        # costabuse-tpm-no-permodel-dimension-crossmodel-fallback-gap) —
+        # the goal of this gate is catching a NEW regression (a
+        # previously-PASSING case starting to fail), never chasing 100%.
+        #
+        # Every threshold below (aggregate + one per real category: tag
+        # already used across these 5 files) is set at the exact midpoint
+        # between today's real Wilson lower bound and the Wilson lower
+        # bound ONE MORE case regressing would produce — computed directly
+        # via evals.stats.wilson_interval, not guessed — so a single new
+        # regression anywhere trips its own category's gate (and, for
+        # most categories, the aggregate gate too):
+        #   category:cache      13/19 -> 0.4601 | -1 -> 0.4104 | gate 0.43
+        #   category:cost       15/17 -> 0.6566 | -1 -> 0.5897 | gate 0.62
+        #   category:routing    20/26 -> 0.5795 | -1 -> 0.5392 | gate 0.56
+        #   category:streaming    6/6 -> 0.6097 | -1 -> 0.4365 | gate 0.52
+        #   category:guardrail  23/25 -> 0.7503 | -1 -> 0.7004 | gate 0.72
+        #   category:telemetry    7/7 -> 0.6457 | -1 -> 0.4869 | gate 0.56
+        #   category:harness      8/8 -> 0.6756 | -1 -> 0.5291 | gate 0.60
+        #   category:judge        5/5 -> 0.5655 | -1 -> 0.3755 | gate 0.47
+        #   aggregate           97/113 -> 0.7823 | -1 -> 0.7722 | gate 0.78
+        #
+        # IMPORTANT for future corpus-growth PRs: adding or fixing cases
+        # shifts every number above. Re-run the corpus for real (the 5
+        # `evals run` calls below into one --scores file, then `evals
+        # report` with the category flags) and recompute each threshold
+        # via the same midpoint method BEFORE merging a corpus-growth
+        # change — do not silently leave stale thresholds in place, and
+        # do not widen a threshold just to make a new PR pass without
+        # re-verifying the new baseline is a real, deliberate one.
+        working-directory: evals
+        run: |
+          rm -f .ci-regression-corpus-scores.jsonl
+          uv run evals run --suite tests/fixtures/regression_corpus_cache_adversarial.json --scores .ci-regression-corpus-scores.jsonl
+          uv run evals run --suite tests/fixtures/regression_corpus_cost_abuse.json --scores .ci-regression-corpus-scores.jsonl
+          uv run evals run --suite tests/fixtures/regression_corpus_dogfood.json --scores .ci-regression-corpus-scores.jsonl
+          uv run evals run --suite tests/fixtures/regression_corpus_guardrail.json --scores .ci-regression-corpus-scores.jsonl
+          uv run evals run --suite tests/fixtures/regression_corpus_routing_chaos.json --scores .ci-regression-corpus-scores.jsonl
+          uv run evals report --scores .ci-regression-corpus-scores.jsonl --tier regression \
+            --fail-under 0.78 \
+            --category-fail-under "category:cache:0.43" \
+            --category-fail-under "category:cost:0.62" \
+            --category-fail-under "category:routing:0.56" \
+            --category-fail-under "category:streaming:0.52" \
+            --category-fail-under "category:guardrail:0.72" \
+            --category-fail-under "category:telemetry:0.56" \
+            --category-fail-under "category:harness:0.60" \
+            --category-fail-under "category:judge:0.47"

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -50,6 +51,9 @@ func TestOutcomeForClassifiesEverySentinelError(t *testing.T) {
 		{"no deployment", ErrNoDeployment, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_NO_DEPLOYMENT},
 		{"guardrail blocked", ErrGuardrailBlocked, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED},
 		{"generic upstream error", context.DeadlineExceeded, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR},
+		{"deployment capacity (concurrency)", &DeploymentCapacityError{Deployment: "d1", Reason: "concurrency"}, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},
+		{"deployment capacity (rate_limit)", &DeploymentCapacityError{Deployment: "d1", Reason: "rate_limit"}, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},
+		{"wrapped deployment capacity is still classified through errors.As", fmt.Errorf("upstream call to deployment %q: %w", "d1", &DeploymentCapacityError{Deployment: "d1", Reason: "concurrency"}), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

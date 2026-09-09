@@ -1796,6 +1796,17 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 	case errors.Is(err, ErrGuardrailBlocked):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED
 	default:
+		var capErr *DeploymentCapacityError
+		if errors.As(err, &capErr) {
+			// A deployment-scoped rate-limit/concurrency ceiling rejected
+			// this request — a backend-capacity condition, distinct from
+			// OUTCOME_RATE_LIMITED (the caller's OWN per-key cap) and no
+			// longer folded into the generic OUTCOME_UPSTREAM_ERROR
+			// bucket it originally reused, per DeploymentCapacityError's
+			// own doc comment (fallback.go) and docs/upgrade-research/
+			// gateway-per-deployment-concurrency-2026-09-09.md.
+			return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY
+		}
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR
 	}
 }

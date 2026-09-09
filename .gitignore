@@ -13,6 +13,7 @@ evals/.venv/
 dist/
 build/
 evals/.ci-smoke-scores.jsonl
+evals/.ci-regression-corpus-scores.jsonl
 
 # Editors / OS
 .DS_Store
@@ -27,3 +28,6 @@ evals/.ci-smoke-scores.jsonl
 config.yaml
 !config.example.yaml
 .gstack/
+
+# Personal, per-session agent daily logs — never shared repo state.
+scratch-pad/
