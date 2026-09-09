@@ -327,6 +327,10 @@ type RateLimitConfig struct {
 type CacheL2Config struct {
 	TTLSeconds int
 	MaxEntries int
+	// JitterFraction, per docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md.
+	// <= 0 (absent) resolves to the real 10% default, mirroring
+	// TTLSeconds/MaxEntries's own zero-means-default convention.
+	JitterFraction float64
 }
 
 // CacheL3Config configures the L3-lite (lexical near-duplicate) cache
@@ -339,6 +343,10 @@ type CacheL2Config struct {
 type CacheL3Config struct {
 	TTLSeconds int
 	MaxEntries int
+	// JitterFraction, per docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md.
+	// <= 0 (absent) resolves to the real 10% default, mirroring
+	// TTLSeconds/MaxEntries's own zero-means-default convention.
+	JitterFraction float64
 }
 
 // CacheConfig configures the L1 (exact-match) cache layer and nests L2's
@@ -351,8 +359,12 @@ type CacheL3Config struct {
 type CacheConfig struct {
 	TTLSeconds int
 	MaxEntries int
-	L2         CacheL2Config
-	L3         CacheL3Config
+	// JitterFraction, per docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md.
+	// <= 0 (absent) resolves to the real 10% default, mirroring
+	// TTLSeconds/MaxEntries's own zero-means-default convention.
+	JitterFraction float64
+	L2             CacheL2Config
+	L3             CacheL3Config
 }
 
 // GuardrailsConfig configures the guardrail pre-call/post-call content
@@ -601,13 +613,16 @@ func Load(path string) (*Config, error) {
 	if cacheRaw, ok := getMap(root, "cache"); ok {
 		cfg.Cache.TTLSeconds, _ = getInt(cacheRaw, "ttl_seconds")
 		cfg.Cache.MaxEntries, _ = getInt(cacheRaw, "max_entries")
+		cfg.Cache.JitterFraction, _ = getFloat(cacheRaw, "jitter_fraction")
 		if l2Raw, ok := getMap(cacheRaw, "l2"); ok {
 			cfg.Cache.L2.TTLSeconds, _ = getInt(l2Raw, "ttl_seconds")
 			cfg.Cache.L2.MaxEntries, _ = getInt(l2Raw, "max_entries")
+			cfg.Cache.L2.JitterFraction, _ = getFloat(l2Raw, "jitter_fraction")
 		}
 		if l3Raw, ok := getMap(cacheRaw, "l3"); ok {
 			cfg.Cache.L3.TTLSeconds, _ = getInt(l3Raw, "ttl_seconds")
 			cfg.Cache.L3.MaxEntries, _ = getInt(l3Raw, "max_entries")
+			cfg.Cache.L3.JitterFraction, _ = getFloat(l3Raw, "jitter_fraction")
 		}
 	}
 

@@ -278,6 +278,56 @@ func TestLoadPriceTableParsesCacheTokenRates(t *testing.T) {
 	}
 }
 
+// TestLoadCacheSectionParsesJitterFraction proves the new
+// jitter_fraction key (L1, L2, and L3), per
+// docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md, is parsed correctly
+// -- mirroring TestLoadCacheSectionParsesL1AndNestedL2's own convention.
+func TestLoadCacheSectionParsesJitterFraction(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncache:\n  ttl_seconds: 300\n  jitter_fraction: 0.15\n  l2:\n    ttl_seconds: 75\n    jitter_fraction: 0.2\n  l3:\n    ttl_seconds: 300\n    jitter_fraction: 0.05\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with cache jitter_fraction keys: %v", err)
+	}
+	if cfg.Cache.JitterFraction != 0.15 {
+		t.Errorf("Cache.JitterFraction = %v, want 0.15", cfg.Cache.JitterFraction)
+	}
+	if cfg.Cache.L2.JitterFraction != 0.2 {
+		t.Errorf("Cache.L2.JitterFraction = %v, want 0.2", cfg.Cache.L2.JitterFraction)
+	}
+	if cfg.Cache.L3.JitterFraction != 0.05 {
+		t.Errorf("Cache.L3.JitterFraction = %v, want 0.05", cfg.Cache.L3.JitterFraction)
+	}
+}
+
+// TestLoadCacheSectionWithoutJitterFractionDefaultsToZero proves
+// omitting jitter_fraction leaves Config.Cache.JitterFraction at its
+// zero value -- resolveJitterFraction (cmd/gateway/main.go), not this
+// package, is responsible for turning that into the real 10% default,
+// mirroring TTLSeconds/MaxEntries's own resolution-happens-elsewhere
+// convention.
+func TestLoadCacheSectionWithoutJitterFractionDefaultsToZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncache:\n  ttl_seconds: 300\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load without jitter_fraction: %v", err)
+	}
+	if cfg.Cache.JitterFraction != 0 {
+		t.Errorf("Cache.JitterFraction = %v, want 0 (absent -- resolved elsewhere)", cfg.Cache.JitterFraction)
+	}
+}
+
 // TestLoadGuardrailsSectionParsesPolicyVersionAndOverrides proves the
 // guardrails: section, when present, is parsed correctly, per
 // docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md.

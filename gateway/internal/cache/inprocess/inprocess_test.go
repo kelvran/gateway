@@ -170,6 +170,74 @@ func TestEvictionRemovesLeastRecentlyUsed(t *testing.T) {
 	}
 }
 
+// expiresAtOf is a white-box helper (this file is `package inprocess`,
+// not `inprocess_test`) reaching into a Cache's own internal map to read
+// back the exact expiresAt a Put computed — the jitter tests below need
+// this since Get only ever surfaces writtenAt, never expiresAt, per
+// cache.Cache's own contract.
+func expiresAtOf(c *Cache, key string) time.Time {
+	elem := c.entries[key]
+	return elem.Value.(*cacheEntry).expiresAt
+}
+
+// TestPutAppliesJitterWithinConfiguredFraction proves the real jitter
+// formula: with rand pinned to its maximum (1.0) and jitterFraction=0.10,
+// expiresAt must be exactly writtenAt + ttl*1.10 — the additive-only
+// upper bound, per docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md.
+func TestPutAppliesJitterWithinConfiguredFraction(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewWithClockAndJitter(0, clock.now, 0.10, func() float64 { return 1.0 })
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "key1", []byte("value"), time.Minute); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	want := clock.t.Add(time.Minute + time.Duration(0.10*float64(time.Minute)))
+	if got := expiresAtOf(c, "key1"); !got.Equal(want) {
+		t.Errorf("expiresAt = %v, want %v (writtenAt + ttl*1.10, max jitter)", got, want)
+	}
+}
+
+// TestPutZeroRandProducesNoJitter proves the un-jittered floor: even with
+// jitterFraction configured non-zero, a rand() of exactly 0.0 must leave
+// expiresAt at exactly writtenAt+ttl, never less (jitter is additive-only,
+// per Put's own doc comment).
+func TestPutZeroRandProducesNoJitter(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewWithClockAndJitter(0, clock.now, 0.10, func() float64 { return 0.0 })
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "key1", []byte("value"), time.Minute); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	want := clock.t.Add(time.Minute)
+	if got := expiresAtOf(c, "key1"); !got.Equal(want) {
+		t.Errorf("expiresAt = %v, want %v (writtenAt + ttl, zero jitter)", got, want)
+	}
+}
+
+// TestNewWithClockStillHasZeroJitter is a regression guard: NewWithClock
+// itself (the pre-existing, documented "deterministic TTL testing"
+// constructor every other test in this file relies on) must still
+// produce byte-exact writtenAt+ttl expiry with no jitter at all, even
+// after New's own jitter-by-default change.
+func TestNewWithClockStillHasZeroJitter(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewWithClock(0, clock.now)
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "key1", []byte("value"), time.Minute); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	want := clock.t.Add(time.Minute)
+	if got := expiresAtOf(c, "key1"); !got.Equal(want) {
+		t.Errorf("expiresAt = %v, want %v (NewWithClock must stay jitter-free)", got, want)
+	}
+}
+
 // TestZeroOrNegativeMaxEntriesDefaultsToDefaultMaxEntries proves New(0)/
 // New(negative) never means "unbounded" — there is deliberately no such
 // mode, per this package's own doc comment.

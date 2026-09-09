@@ -241,15 +241,25 @@ telemetry:
 # case-folding were considered and rejected. L3 never serves a hit without
 # passing its entity/number/date hard gate and freshness/risk model first —
 # see the L3 RFC's "Never" rule in AGENTS.md before touching this.
+# jitter_fraction (per docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md),
+# on each of cache/l2/l3, adds up to that fraction of the configured TTL
+# as random additive jitter on write, avoiding a thundering-herd of
+# entries written together (e.g. after a deploy) all expiring in
+# near-lockstep. Omitting it (or a value <= 0) defaults to 10% -- there is
+# no way to disable jitter entirely, since it only smooths eviction
+# timing and carries no correctness risk.
 # cache:
 #   ttl_seconds: 300
 #   max_entries: 10000
+#   jitter_fraction: 0.10
 #   l2:
 #     ttl_seconds: 75
 #     max_entries: 10000
+#     jitter_fraction: 0.10
 #   l3:
 #     ttl_seconds: 300
 #     max_entries: 10000
+#     jitter_fraction: 0.10
 
 # Guardrails: pre-call/post-call content checks (regex/checksum PII+secrets
 # detection plus a prompt-injection heuristic) — see

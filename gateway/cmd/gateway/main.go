@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -294,6 +295,27 @@ func wrapHTTPServerSpan(handler http.Handler) http.Handler {
 	return otelhttp.NewHandler(handler, "gateway.http")
 }
 
+// defaultCacheJitterFraction is the real production default (10%) when an
+// operator's cache.jitter_fraction/l2.jitter_fraction/l3.jitter_fraction
+// is absent or <= 0 — mirroring inprocess.Cache's own identical constant,
+// per docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md. Resolving a
+// config-driven zero into the real default is this package's job, not
+// inprocess's: NewWithClockAndJitter always jitters by exactly
+// rand()*jitterFraction*ttl, whatever jitterFraction it's given, with no
+// "<=0 means default" special-casing of its own (that resolution only
+// matters for an operator's YAML field, which can't distinguish "not
+// set" from an explicit zero either way).
+const defaultCacheJitterFraction = 0.10
+
+// resolveJitterFraction turns a config-driven jitter fraction (0 or
+// unset, indistinguishable) into the real default.
+func resolveJitterFraction(f float64) float64 {
+	if f <= 0 {
+		return defaultCacheJitterFraction
+	}
+	return f
+}
+
 // buildPipeline resolves every secret referenced by name in cfg from the
 // environment and wires the full dataplane.Pipeline.
 func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pipeline, error) {
@@ -500,9 +522,9 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		DeploymentConcurrency: ratelimit.NewConcurrencyLimiter(deploymentConcurrencyConfigs),
 		DeploymentLimiter:     ratelimit.NewInMemoryKeyLimiter(deploymentRateLimitConfigs),
 		Budget:                budgetTracker,
-		Cache:                 inprocess.New(cfg.Cache.MaxEntries),
-		CacheL2:               inprocess.New(cfg.Cache.L2.MaxEntries),
-		CacheL3:               inprocess.NewLexicalCache(cfg.Cache.L3.MaxEntries),
+		Cache:                 inprocess.NewWithClockAndJitter(cfg.Cache.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.JitterFraction), rand.Float64),
+		CacheL2:               inprocess.NewWithClockAndJitter(cfg.Cache.L2.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.L2.JitterFraction), rand.Float64),
+		CacheL3:               inprocess.NewLexicalCacheWithClockAndJitter(cfg.Cache.L3.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.L3.JitterFraction), rand.Float64),
 		Guardrails:            guardrailEngine,
 		Adapters:              registry,
 		Router:                depRouter,

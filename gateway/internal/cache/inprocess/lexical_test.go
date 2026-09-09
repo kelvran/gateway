@@ -166,3 +166,65 @@ func TestLexicalSearchResultsSortedBySimilarityDescending(t *testing.T) {
 		t.Errorf("candidates not sorted by descending similarity: %v", candidates)
 	}
 }
+
+// expiresAtOfLexical is LexicalCache's counterpart to inprocess_test.go's
+// expiresAtOf -- a white-box helper reaching into a tenant bucket's front
+// entry to read back the exact expiresAt a Put computed.
+func expiresAtOfLexical(c *LexicalCache, tenantID string) time.Time {
+	bucket := c.tenants[tenantID]
+	return bucket.entries.Front().Value.(*lexicalEntry).expiresAt
+}
+
+// TestLexicalPutAppliesJitterWithinConfiguredFraction is LexicalCache's
+// counterpart to inprocess_test.go's identical Cache (L1/L2) proof, per
+// docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md.
+func TestLexicalPutAppliesJitterWithinConfiguredFraction(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewLexicalCacheWithClockAndJitter(0, clock.now, 0.10, func() float64 { return 1.0 })
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", time.Hour); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	want := clock.t.Add(time.Hour + time.Duration(0.10*float64(time.Hour)))
+	if got := expiresAtOfLexical(c, "team-alpha"); !got.Equal(want) {
+		t.Errorf("expiresAt = %v, want %v (writtenAt + ttl*1.10, max jitter)", got, want)
+	}
+}
+
+// TestLexicalPutZeroRandProducesNoJitter is LexicalCache's counterpart to
+// inprocess_test.go's identical proof.
+func TestLexicalPutZeroRandProducesNoJitter(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewLexicalCacheWithClockAndJitter(0, clock.now, 0.10, func() float64 { return 0.0 })
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", time.Hour); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	want := clock.t.Add(time.Hour)
+	if got := expiresAtOfLexical(c, "team-alpha"); !got.Equal(want) {
+		t.Errorf("expiresAt = %v, want %v (writtenAt + ttl, zero jitter)", got, want)
+	}
+}
+
+// TestLexicalNewWithClockStillHasZeroJitter is LexicalCache's counterpart
+// to inprocess_test.go's identical regression guard: the pre-existing
+// NewLexicalCacheWithClock constructor every other test in this file
+// relies on must stay jitter-free.
+func TestLexicalNewWithClockStillHasZeroJitter(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewLexicalCacheWithClock(0, clock.now)
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", time.Hour); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	want := clock.t.Add(time.Hour)
+	if got := expiresAtOfLexical(c, "team-alpha"); !got.Equal(want) {
+		t.Errorf("expiresAt = %v, want %v (NewLexicalCacheWithClock must stay jitter-free)", got, want)
+	}
+}

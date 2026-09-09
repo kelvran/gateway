@@ -3,6 +3,7 @@ package inprocess
 import (
 	"container/list"
 	"context"
+	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -40,29 +41,42 @@ type tenantBucket struct {
 // tradeoff against L1/L2's single shared-map cap, accepted here because
 // true partitioning is a security requirement, not a style choice.
 type LexicalCache struct {
-	mu         sync.Mutex
-	tenants    map[string]*tenantBucket
-	maxEntries int
-	now        func() time.Time
+	mu             sync.Mutex
+	tenants        map[string]*tenantBucket
+	maxEntries     int
+	now            func() time.Time
+	jitterFraction float64
+	rand           func() float64
 }
 
 // NewLexicalCache constructs an empty LexicalCache using the real wall
 // clock. maxEntries <= 0 uses the same defaultMaxEntries as Cache (L1/L2)
-// — never "unbounded," applied per tenant.
+// — never "unbounded," applied per tenant. Real, on-by-default TTL
+// jitter (defaultJitterFraction), mirroring Cache (L1/L2)'s own identical
+// treatment, per docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md.
 func NewLexicalCache(maxEntries int) *LexicalCache {
-	return NewLexicalCacheWithClock(maxEntries, time.Now)
+	return NewLexicalCacheWithClockAndJitter(maxEntries, time.Now, defaultJitterFraction, rand.Float64)
 }
 
 // NewLexicalCacheWithClock constructs an empty LexicalCache using the
-// given clock function, for deterministic TTL testing.
+// given clock function, for deterministic TTL testing. Deliberately ZERO
+// jitter — see Cache.NewWithClock's identical rationale.
 func NewLexicalCacheWithClock(maxEntries int, now func() time.Time) *LexicalCache {
+	return NewLexicalCacheWithClockAndJitter(maxEntries, now, 0, func() float64 { return 0 })
+}
+
+// NewLexicalCacheWithClockAndJitter is the fully-injectable constructor —
+// mirrors Cache.NewWithClockAndJitter exactly.
+func NewLexicalCacheWithClockAndJitter(maxEntries int, now func() time.Time, jitterFraction float64, randFn func() float64) *LexicalCache {
 	if maxEntries <= 0 {
 		maxEntries = defaultMaxEntries
 	}
 	return &LexicalCache{
-		tenants:    map[string]*tenantBucket{},
-		maxEntries: maxEntries,
-		now:        now,
+		tenants:        map[string]*tenantBucket{},
+		maxEntries:     maxEntries,
+		now:            now,
+		jitterFraction: jitterFraction,
+		rand:           randFn,
 	}
 }
 
@@ -151,6 +165,7 @@ func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint6
 	}
 
 	now := c.now()
+	jitter := time.Duration(c.rand() * c.jitterFraction * float64(ttl))
 	bucket.entries.PushFront(&lexicalEntry{
 		signature:              sigCopy,
 		resp:                   respCopy,
@@ -158,7 +173,7 @@ func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint6
 		writtenAt:              now,
 		modelID:                modelID,
 		guardrailPolicyVersion: guardrailPolicyVersion,
-		expiresAt:              now.Add(ttl),
+		expiresAt:              now.Add(ttl + jitter),
 	})
 	if bucket.entries.Len() > c.maxEntries {
 		bucket.entries.Remove(bucket.entries.Back())

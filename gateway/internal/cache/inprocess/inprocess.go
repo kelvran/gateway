@@ -11,6 +11,7 @@ package inprocess
 import (
 	"container/list"
 	"context"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -20,6 +21,14 @@ import (
 // is a real memory-growth risk this package used to have silently, per
 // docs/rfcs/2026-09-03-cache-l2-normalized-match.md's own motivation.
 const defaultMaxEntries = 10_000
+
+// defaultJitterFraction is New's real-production default (10%), per
+// docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md — AWS's own
+// caching-best-practices guidance (ttl = base + rand()*jitter) names this
+// as a standard, trivial-to-implement thundering-herd-avoidance fix for a
+// burst of entries written together (e.g. after a deploy, or a traffic
+// spike) that would otherwise expire in near-lockstep.
+const defaultJitterFraction = 0.10
 
 // cacheEntry is a single stored response plus its absolute expiry time and
 // the time of its most recent Put (writtenAt) — surfaced via Get per
@@ -39,31 +48,51 @@ type cacheEntry struct {
 // on wall-clock time to exercise TTL expiry, per docs/testing/TESTING.md
 // §1's testing philosophy.
 type Cache struct {
-	mu         sync.Mutex
-	entries    map[string]*list.Element // value type *cacheEntry
-	recency    *list.List               // front = most recently used
-	maxEntries int
-	now        func() time.Time
+	mu             sync.Mutex
+	entries        map[string]*list.Element // value type *cacheEntry
+	recency        *list.List               // front = most recently used
+	maxEntries     int
+	now            func() time.Time
+	jitterFraction float64
+	rand           func() float64
 }
 
 // New constructs an empty in-process Cache using the real wall clock,
 // holding at most maxEntries entries (maxEntries <= 0 uses
-// defaultMaxEntries — never "unbounded").
+// defaultMaxEntries — never "unbounded"), with real, on-by-default TTL
+// jitter (defaultJitterFraction) via the real rand.Float64 — the
+// production path, per docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md.
 func New(maxEntries int) *Cache {
-	return NewWithClock(maxEntries, time.Now)
+	return NewWithClockAndJitter(maxEntries, time.Now, defaultJitterFraction, rand.Float64)
 }
 
 // NewWithClock constructs an empty in-process Cache using the given clock
-// function, for deterministic TTL testing.
+// function, for deterministic TTL testing. Deliberately ZERO jitter —
+// this constructor's own long-standing contract is "deterministic TTL
+// testing," which real (non-zero, non-deterministic) jitter would break
+// for every existing exact-equality TTL-boundary test built against it.
+// Callers wanting to test jitter itself use NewWithClockAndJitter
+// directly, with an explicit jitterFraction and randFn.
 func NewWithClock(maxEntries int, now func() time.Time) *Cache {
+	return NewWithClockAndJitter(maxEntries, now, 0, func() float64 { return 0 })
+}
+
+// NewWithClockAndJitter is the fully-injectable constructor — mirrors
+// ratelimit.RetryBackoff's own exact "inject the rand source, not just
+// the clock" split (NewRetryBackoff vs. NewRetryBackoffWithRand). Put
+// adds rand()*jitterFraction*ttl on top of the configured ttl —
+// additive only, never shortening it.
+func NewWithClockAndJitter(maxEntries int, now func() time.Time, jitterFraction float64, randFn func() float64) *Cache {
 	if maxEntries <= 0 {
 		maxEntries = defaultMaxEntries
 	}
 	return &Cache{
-		entries:    make(map[string]*list.Element),
-		recency:    list.New(),
-		maxEntries: maxEntries,
-		now:        now,
+		entries:        make(map[string]*list.Element),
+		recency:        list.New(),
+		maxEntries:     maxEntries,
+		now:            now,
+		jitterFraction: jitterFraction,
+		rand:           randFn,
 	}
 }
 
@@ -107,7 +136,8 @@ func (c *Cache) Put(_ context.Context, key string, resp []byte, ttl time.Duratio
 	data := make([]byte, len(resp))
 	copy(data, resp)
 	now := c.now()
-	expiresAt := now.Add(ttl)
+	jitter := time.Duration(c.rand() * c.jitterFraction * float64(ttl))
+	expiresAt := now.Add(ttl + jitter)
 
 	if elem, found := c.entries[key]; found {
 		elem.Value.(*cacheEntry).data = data
