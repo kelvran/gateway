@@ -367,6 +367,7 @@ class _JudgeOutcome:
     axis: str | None = None
     panel_votes: list[PanelVote] | None = None
     quorum_reached: bool | None = None
+    quote_grounded: bool | None = None
 
 
 async def _judge_with_cache(
@@ -418,6 +419,7 @@ async def _judge_with_cache(
             score_cache_key=cache_key,
             from_cache=True,
             axis=axis,
+            quote_grounded=cached.quote_grounded,
         )
     try:
         result = await judge(
@@ -433,7 +435,21 @@ async def _judge_with_cache(
         score_cache_key=cache_key,
         from_cache=False,
         axis=axis,
+        quote_grounded=result.quote_grounded,
     )
+
+
+def _panel_quote_grounded(votes: list[PanelVote]) -> bool | None:
+    """AND-aggregate `quote_grounded` across every panelist's own vote,
+    per docs/rfcs/2026-09-09-evals-quote-grounded-verdict.md: a single,
+    printable panel-level signal for `evals report`, with full
+    per-panelist detail still recoverable from `panel_votes`. `None`
+    only when `votes` is empty (never expected in practice -- a panel
+    always has at least one vote by the time this is called).
+    """
+    if not votes:
+        return None
+    return all(v.quote_grounded for v in votes)
 
 
 def _sum_panel_cost(costs: list[Decimal | None]) -> Decimal:
@@ -506,6 +522,8 @@ async def _judge_panel_with_cache(
                     output, reference, real_ids[i], axis=axis
                 ),
                 from_cache=False,
+                trigger_quote=v.trigger_quote,
+                quote_grounded=v.quote_grounded,
             )
             for i, v in enumerate(result.panel_votes or [])
         ]
@@ -520,6 +538,7 @@ async def _judge_panel_with_cache(
             axis=axis,
             panel_votes=votes,
             quorum_reached=result.quorum_reached,
+            quote_grounded=_panel_quote_grounded(votes),
         )
 
     votes: list[PanelVote] = []
@@ -535,6 +554,8 @@ async def _judge_panel_with_cache(
                     rationale=cached.rationale,
                     score_cache_key=key,
                     from_cache=True,
+                    trigger_quote=cached.trigger_quote,
+                    quote_grounded=cached.quote_grounded,
                 )
             )
             continue
@@ -551,6 +572,7 @@ async def _judge_panel_with_cache(
                 rationale=result.rationale,
                 score_cache_key=key,
                 from_cache=False,
+                quote_grounded=result.quote_grounded,
             )
         )
         fresh_costs.append(_last_judge_call_cost_usd(call_model))
@@ -568,6 +590,7 @@ async def _judge_panel_with_cache(
         axis=axis,
         panel_votes=votes,
         quorum_reached=verdict.quorum_reached,
+        quote_grounded=_panel_quote_grounded(votes),
     )
 
 
@@ -942,6 +965,7 @@ def run_cmd(
                         flaky=case.flaky,
                         panel_votes=outcome.panel_votes,
                         quorum_reached=outcome.quorum_reached,
+                        quote_grounded=outcome.quote_grounded,
                     )
                 )
                 if outcome.axis is not None:
@@ -1495,6 +1519,7 @@ def rollout_cmd(
                         flaky=case.flaky,
                         panel_votes=outcome.panel_votes,
                         quorum_reached=outcome.quorum_reached,
+                        quote_grounded=outcome.quote_grounded,
                     )
                 )
                 if outcome.axis is not None:
@@ -1760,12 +1785,23 @@ def report_cmd(
                 ties = sum(1 for s in group if s.quorum_reached is False)
                 if ties:
                     tie_note = f" ({ties} quorum-tie, fail-closed)"
+            # Non-gating, measurement-only signal per docs/rfcs/2026-09-09-
+            # evals-quote-grounded-verdict.md -- printed for either judge
+            # scorer_type, never for deterministic (which has no QUOTE
+            # concept, so quote_grounded is always None there).
+            quote_note = ""
+            if scorer_type in ("llm_judge", "llm_judge_panel"):
+                grounding_known = [s for s in group if s.quote_grounded is not None]
+                if grounding_known:
+                    grounded = sum(1 for s in grounding_known if s.quote_grounded)
+                    quote_note = f" (quote_grounded: {grounded}/{len(grounding_known)})"
             click.echo(
                 f"{scorer_type}: "
                 + format_report(group_successes, len(group), confidence=confidence)
                 + f" {_format_group_cost(group)}"
                 + note
                 + tie_note
+                + quote_note
             )
             if eligible:
                 eligible_successes = sum(1 for s in eligible if s.value)

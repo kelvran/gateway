@@ -153,6 +153,14 @@ class PanelVote(BaseModel):
     rationale: str
     score_cache_key: str | None = None
     from_cache: bool = False
+    # trigger_quote/quote_grounded, added per docs/rfcs/2026-09-09-evals-
+    # quote-grounded-verdict.md: this panelist's own verbatim QUOTE, and
+    # whether it's a real substring of the judged output/reference.
+    # Measurement-only -- recorded, never used to discard or reweight a
+    # vote in reduce_panel_votes. None for a PanelVote built before this
+    # field existed.
+    trigger_quote: str | None = None
+    quote_grounded: bool | None = None
 
 
 class Score(BaseModel):
@@ -272,6 +280,14 @@ class Score(BaseModel):
     flaky: bool = False
     panel_votes: list[PanelVote] | None = None
     quorum_reached: bool | None = None
+    # quote_grounded, per docs/rfcs/2026-09-09-evals-quote-grounded-
+    # verdict.md: whether the judge's own QUOTE cites a real, verbatim
+    # span of the judged output/reference. Measurement-only -- recorded,
+    # never used to gate --fail-under. Single-judge: copied directly from
+    # JudgeResult.quote_grounded. Panel: an AND-aggregate across
+    # panel_votes (None if panel_votes is empty/absent). None for a Score
+    # built before this field existed.
+    quote_grounded: bool | None = None
 
 
 SpanStatus = Literal["UNSET", "OK", "ERROR"]

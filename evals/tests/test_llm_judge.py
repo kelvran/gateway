@@ -50,6 +50,89 @@ def test_judge_parses_fail_verdict():
     assert "wrong city" in result.rationale
 
 
+def test_judge_a_real_verbatim_quote_is_grounded():
+    fake_response = (
+        "REASONING: The candidate output states the capital correctly.\n"
+        "QUOTE: Paris\n"
+        "VERDICT: PASS\n"
+    )
+    result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=_make_fake_call_model(fake_response),
+        )
+    )
+
+    assert result.passed is True
+    assert result.quote_grounded is True
+
+
+def test_judge_a_fabricated_quote_is_not_grounded_but_does_not_affect_passed():
+    # The QUOTE is real text, but it appears nowhere in the actual output
+    # or reference -- a fabricated citation. quote_grounded must be
+    # False, but this is measurement-only: passed still reflects the
+    # judge's own VERDICT line, unaffected.
+    fake_response = (
+        "REASONING: The candidate output states the capital correctly.\n"
+        "QUOTE: This sentence never appeared anywhere in the real inputs.\n"
+        "VERDICT: PASS\n"
+    )
+    result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=_make_fake_call_model(fake_response),
+        )
+    )
+
+    assert result.passed is True
+    assert result.quote_grounded is False
+
+
+def test_judge_missing_quote_line_is_not_grounded_and_still_parses_reasoning():
+    # An older-format or QUOTE-instruction-ignoring response -- REASONING
+    # must still parse correctly up to VERDICT, and quote_grounded must
+    # be False (an empty quote is never grounded), never a parse error.
+    fake_response = (
+        "REASONING: The candidate output states the capital correctly.\nVERDICT: PASS\n"
+    )
+    result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=_make_fake_call_model(fake_response),
+        )
+    )
+
+    assert result.passed is True
+    assert "capital correctly" in result.rationale
+    assert result.quote_grounded is False
+
+
+def test_judge_panel_populates_trigger_quote_and_quote_grounded_per_vote():
+    grounded_response = "REASONING: matches.\nQUOTE: Paris\nVERDICT: PASS\n"
+    fabricated_response = (
+        "REASONING: matches.\nQUOTE: not in either text\nVERDICT: PASS\n"
+    )
+    result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=[
+                _make_fake_call_model(grounded_response),
+                _make_fake_call_model(fabricated_response),
+            ],
+        )
+    )
+
+    assert result.panel_votes is not None
+    assert len(result.panel_votes) == 2
+    assert result.panel_votes[0].trigger_quote == "Paris"
+    assert result.panel_votes[0].quote_grounded is True
+    assert result.panel_votes[1].quote_grounded is False
+
+
 def test_judge_verdict_is_case_insensitive():
     fake_response = "REASONING: fine.\nVERDICT: pass\n"
     result = asyncio.run(

@@ -29,10 +29,11 @@ Paris
 Candidate output:
 The capital of France is Paris.
 
-Think step by step about whether the candidate output is correct relative to the reference answer. Consider partial correctness, phrasing differences that don't change meaning, and any factual discrepancies. Write out your reasoning BEFORE giving your final verdict — do not state the verdict first.
+Think step by step about whether the candidate output is correct relative to the reference answer. Consider partial correctness, phrasing differences that don't change meaning, and any factual discrepancies. Write out your reasoning BEFORE giving your final verdict — do not state the verdict first. Then quote the exact, verbatim span (from either the reference answer or the candidate output above) that most directly grounds your verdict — do not paraphrase or summarize it.
 
 Respond in exactly this format, with no other text:
 REASONING: <your step-by-step reasoning>
+QUOTE: <a verbatim quote from the reference answer or candidate output above>
 VERDICT: <PASS or FAIL>
 """
 

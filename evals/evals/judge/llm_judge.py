@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from pydantic import BaseModel
 
@@ -47,9 +48,12 @@ from evals.models import PanelVote
 
 CallModel = Callable[[str], Awaitable[str]]
 
-_BIAS_MITIGATIONS_APPLIED = ["cot_forcing", "reference_guided_grading"]
+# Public (no leading underscore) so evals.cli's Phase 6 position-swapped
+# debiasing helper can extend this list rather than hand-duplicating it,
+# per docs/rfcs/2026-09-09-evals-judge-debiasing-position-swap.md.
+BIAS_MITIGATIONS_APPLIED = ["cot_forcing", "reference_guided_grading"]
 
-# Additive to _BIAS_MITIGATIONS_APPLIED for a panel score specifically —
+# Additive to BIAS_MITIGATIONS_APPLIED for a panel score specifically —
 # every panelist's own call already applies the two mitigations above;
 # these two describe properties of the PANEL itself, not any one call.
 _PANEL_BIAS_MITIGATIONS_ADDED = [
@@ -69,10 +73,14 @@ Candidate output:
 Think step by step about whether the candidate output is correct relative to \
 the reference answer. Consider partial correctness, phrasing differences that \
 don't change meaning, and any factual discrepancies. Write out your reasoning \
-BEFORE giving your final verdict — do not state the verdict first.
+BEFORE giving your final verdict — do not state the verdict first. Then quote \
+the exact, verbatim span (from either the reference answer or the candidate \
+output above) that most directly grounds your verdict — do not paraphrase or \
+summarize it.
 
 Respond in exactly this format, with no other text:
 REASONING: <your step-by-step reasoning>
+QUOTE: <a verbatim quote from the reference answer or candidate output above>
 VERDICT: <PASS or FAIL>
 """
 
@@ -98,17 +106,36 @@ verdict.
 
 Think step by step about whether the candidate output passes on this dimension \
 relative to the reference answer. Write out your reasoning BEFORE giving your \
-final verdict — do not state the verdict first.
+final verdict — do not state the verdict first. Then quote the exact, verbatim \
+span (from either the reference answer or the candidate output above) that most \
+directly grounds your verdict — do not paraphrase or summarize it.
 
 Respond in exactly this format, with no other text:
 REASONING: <your step-by-step reasoning, scoped to {axis} only>
+QUOTE: <a verbatim quote from the reference answer or candidate output above>
 VERDICT: <PASS or FAIL>
 """
 
 _VERDICT_PATTERN = re.compile(r"VERDICT:\s*(PASS|FAIL)", re.IGNORECASE)
+# Terminates at whichever of QUOTE:/VERDICT: comes first, deliberately —
+# a raw_response with no QUOTE line at all (an older-format response, a
+# judge that ignores the new instruction, or a cached response from
+# before this feature existed) must still parse REASONING correctly up
+# to VERDICT:, exactly as it always has. This is what keeps the QUOTE
+# addition backward-compatible rather than a breaking prompt-contract
+# change.
 _REASONING_PATTERN = re.compile(
-    r"REASONING:\s*(.*?)\s*VERDICT:", re.IGNORECASE | re.DOTALL
+    r"REASONING:\s*(.*?)\s*(?:QUOTE:|VERDICT:)", re.IGNORECASE | re.DOTALL
 )
+# QUOTE sits between REASONING and VERDICT in both prompt templates — see
+# their own "quote the exact, verbatim span... before giving your final
+# verdict" instruction, mirroring the existing REASONING-before-VERDICT
+# anti-post-hoc-rationalization ordering. Missing entirely (an older-
+# format or malformed response) falls back to "" via _parse_judge_response,
+# the same lenient fallback _REASONING_PATTERN already uses — this is a
+# measurement-only signal (see _quote_is_grounded), never a hard parse
+# error, per docs/rfcs/2026-09-09-evals-quote-grounded-verdict.md.
+_QUOTE_PATTERN = re.compile(r"QUOTE:\s*(.*?)\s*VERDICT:", re.IGNORECASE | re.DOTALL)
 
 
 class JudgeResult(BaseModel):
@@ -123,6 +150,17 @@ class JudgeResult(BaseModel):
     module supported a panel at all) — populated only when `call_model`
     was a panel of more than one, per
     docs/rfcs/2026-09-08-evals-judge-panel-reducer.md.
+
+    `quote_grounded` (per docs/rfcs/2026-09-09-evals-quote-grounded-
+    verdict.md) is whether the judge's own QUOTE cites a real, verbatim
+    span of the output or reference — measurement-only in this round,
+    recorded but never used to discard or reweight a verdict. `None` for
+    a `JudgeResult` built before this field existed; a real bool for a
+    single-judge call. Deliberately never a `list[bool]` for a panel
+    call, unlike `panel_votes` — callers read each panelist's own
+    `quote_grounded` there instead, since it's always present alongside
+    and duplicating it here would just be `[v.quote_grounded for v in
+    panel_votes]` restated.
     """
 
     passed: bool
@@ -130,6 +168,7 @@ class JudgeResult(BaseModel):
     bias_mitigations_applied: list[str]
     panel_votes: list[PanelVote] | None = None
     quorum_reached: bool | None = None
+    quote_grounded: bool | None = None
 
 
 class PanelVerdict(BaseModel):
@@ -173,7 +212,7 @@ def reduce_panel_votes(votes: list[PanelVote]) -> PanelVerdict:
 
     pass_count = sum(1 for v in votes if v.passed)
     fail_count = len(votes) - pass_count
-    mitigations = _BIAS_MITIGATIONS_APPLIED + _PANEL_BIAS_MITIGATIONS_ADDED
+    mitigations = BIAS_MITIGATIONS_APPLIED + _PANEL_BIAS_MITIGATIONS_ADDED
 
     if pass_count * 2 > len(votes):
         return PanelVerdict(
@@ -212,7 +251,34 @@ def build_judge_prompt(output: str, reference: str, axis: str | None = None) -> 
     )
 
 
-def _parse_judge_response(raw_response: str) -> tuple[bool, str]:
+@dataclass(frozen=True)
+class _ParsedJudgeResponse:
+    """A single judge call's parsed response — a frozen value object
+    (mirroring `evals.judge.providers.JudgeCallCost`'s own "small,
+    internal-only, transient value" shape) rather than a bare tuple:
+    `rationale`/`quote` are both plain strings, and a bare 2- or 3-tuple
+    would be a real, silent transposition hazard at every call site.
+    """
+
+    passed: bool
+    rationale: str
+    quote: str
+
+
+def _quote_is_grounded(quote: str, output: str, reference: str) -> bool:
+    """Whether `quote` is a verbatim substring of `output` or
+    `reference` — the measurement-only grounding check per
+    docs/rfcs/2026-09-09-evals-quote-grounded-verdict.md. An empty quote
+    (the judge omitted the QUOTE line, or emitted a blank one) is never
+    grounded — a vacuous "True" for an empty string would defeat the
+    whole point of the check.
+    """
+    if not quote:
+        return False
+    return quote in output or quote in reference
+
+
+def _parse_judge_response(raw_response: str) -> _ParsedJudgeResponse:
     verdict_match = _VERDICT_PATTERN.search(raw_response)
     if verdict_match is None:
         raise ValueError(
@@ -223,7 +289,10 @@ def _parse_judge_response(raw_response: str) -> tuple[bool, str]:
     reasoning_match = _REASONING_PATTERN.search(raw_response)
     rationale = reasoning_match.group(1).strip() if reasoning_match else ""
 
-    return passed, rationale
+    quote_match = _QUOTE_PATTERN.search(raw_response)
+    quote = quote_match.group(1).strip() if quote_match else ""
+
+    return _ParsedJudgeResponse(passed=passed, rationale=rationale, quote=quote)
 
 
 async def judge(
@@ -274,18 +343,25 @@ async def judge(
 
     if len(panel) == 1:
         raw_response = await panel[0](prompt)
-        passed, rationale = _parse_judge_response(raw_response)
+        parsed = _parse_judge_response(raw_response)
         return JudgeResult(
-            passed=passed,
-            rationale=rationale,
-            bias_mitigations_applied=list(_BIAS_MITIGATIONS_APPLIED),
+            passed=parsed.passed,
+            rationale=parsed.rationale,
+            bias_mitigations_applied=list(BIAS_MITIGATIONS_APPLIED),
+            quote_grounded=_quote_is_grounded(parsed.quote, output, reference),
         )
 
     raw_responses = await asyncio.gather(*(call(prompt) for call in panel))
+    parsed_responses = [_parse_judge_response(r) for r in raw_responses]
     votes = [
-        PanelVote(scorer_id=f"panelist_{i}", passed=passed, rationale=rationale)
-        for i, raw_response in enumerate(raw_responses)
-        for passed, rationale in [_parse_judge_response(raw_response)]
+        PanelVote(
+            scorer_id=f"panelist_{i}",
+            passed=parsed.passed,
+            rationale=parsed.rationale,
+            trigger_quote=parsed.quote,
+            quote_grounded=_quote_is_grounded(parsed.quote, output, reference),
+        )
+        for i, parsed in enumerate(parsed_responses)
     ]
     verdict = reduce_panel_votes(votes)
     return JudgeResult(
