@@ -2,7 +2,12 @@ import math
 
 import pytest
 
-from evals.stats import mixture_sprt_early_stop, wilson_interval
+from evals.stats import (
+    cohens_kappa,
+    confusion_matrix,
+    mixture_sprt_early_stop,
+    wilson_interval,
+)
 
 
 def test_known_reference_8_of_10_at_95_percent():
@@ -166,6 +171,69 @@ def test_does_not_stop_for_a_small_ambiguous_sample():
         trials_run=1,
         baseline_pass_rate=0.5,
     )
+
+
+# --- confusion_matrix / cohens_kappa ---
+# See docs/rfcs/2026-09-09-evals-judge-accuracy-metric.md
+
+
+def test_confusion_matrix_counts_all_four_quadrants():
+    judge = [True, True, True, False, False]
+    human = [True, True, False, False, False]
+    matrix = confusion_matrix(judge, human)
+    assert matrix.true_positive == 2
+    assert matrix.false_positive == 1
+    assert matrix.true_negative == 2
+    assert matrix.false_negative == 0
+    assert sum(matrix) == len(judge)
+
+
+def test_confusion_matrix_length_mismatch_raises():
+    with pytest.raises(ValueError):
+        confusion_matrix([True, False], [True])
+
+
+def test_confusion_matrix_empty_raises():
+    with pytest.raises(ValueError):
+        confusion_matrix([], [])
+
+
+def test_cohens_kappa_hand_computed_reference_value():
+    # judge=[T,T,T,F,F], human=[T,T,F,F,F]: p_o=0.8, judge_rate=0.6,
+    # human_rate=0.4, p_e=0.6*0.4+0.4*0.6=0.48,
+    # kappa=(0.8-0.48)/(1-0.48)=0.32/0.52.
+    judge = [True, True, True, False, False]
+    human = [True, True, False, False, False]
+    assert math.isclose(cohens_kappa(judge, human), 0.32 / 0.52, abs_tol=1e-9)
+
+
+def test_cohens_kappa_perfect_agreement_is_one():
+    judge = human = [True, True, False, False]
+    assert math.isclose(cohens_kappa(judge, human), 1.0, abs_tol=1e-9)
+
+
+def test_cohens_kappa_systematic_disagreement_is_negative_one():
+    judge = [True, True, False, False]
+    human = [False, False, True, True]
+    assert math.isclose(cohens_kappa(judge, human), -1.0, abs_tol=1e-9)
+
+
+def test_cohens_kappa_raises_when_p_expected_is_one():
+    # Both raters vote True on every case: judge_rate == human_rate == 1,
+    # so p_expected == 1*1 + 0*0 == 1 -- kappa is a literal 0/0, not a
+    # real 1.0 despite p_observed also being 1.0.
+    with pytest.raises(ValueError):
+        cohens_kappa([True, True, True], [True, True, True])
+
+
+def test_cohens_kappa_length_mismatch_raises():
+    with pytest.raises(ValueError):
+        cohens_kappa([True, False], [True])
+
+
+def test_cohens_kappa_empty_raises():
+    with pytest.raises(ValueError):
+        cohens_kappa([], [])
 
 
 def test_relative_mixing_variance_changes_detection_speed_not_the_decision_rule():

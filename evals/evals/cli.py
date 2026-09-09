@@ -65,7 +65,7 @@ from evals.results_store import (
     load_spans,
 )
 from evals.rollout.scheduler import EarlyStopConfig, run_suite
-from evals.stats import wilson_interval
+from evals.stats import cohens_kappa, confusion_matrix, wilson_interval
 
 # evals/.env, next to evals/pyproject.toml — never the process's cwd,
 # since `evals` commands get run from different directories across this
@@ -87,6 +87,43 @@ def _load_env_file(path: Path = _ENV_FILE_PATH) -> None:
 def _load_cases(suite_path: Path) -> list[EvalCase]:
     raw_cases = json.loads(suite_path.read_text())
     return [EvalCase(**raw_case) for raw_case in raw_cases]
+
+
+def _load_expected_verdicts(fixture_path: Path) -> dict[tuple[str, int], bool]:
+    """Read a fixture suite (the same JSON-array shape `_load_cases`
+    reads) and return `{(eval_case_id, revision): expected_verdict}`,
+    per each case's `task_spec.expected_verdict` — the ground-truth
+    label `report_cmd`'s `--judge-accuracy` joins real `Score`s against,
+    per docs/rfcs/2026-09-09-evals-judge-accuracy-metric.md.
+
+    A case whose `task_spec` has no `expected_verdict` key AT ALL is a
+    fixture-authoring bug (a required field an author forgot), not
+    something to silently skip -- raises `click.ClickException`. A case
+    whose `expected_verdict` is explicitly `None` is a real, honest
+    state (a genuinely ambiguous/boundary case this corpus deliberately
+    never resolved to a single stable ground truth, e.g. one whose live
+    verification showed real run-to-run disagreement) -- excluded from
+    the returned map, not an error, and never counted in any
+    kappa/confusion-matrix computation this feeds.
+    """
+    raw_cases = json.loads(fixture_path.read_text())
+    verdicts: dict[tuple[str, int], bool] = {}
+    for raw_case in raw_cases:
+        case_id = raw_case["id"]
+        revision = raw_case["revision"]
+        task_spec = raw_case.get("task_spec", {})
+        if "expected_verdict" not in task_spec:
+            raise click.ClickException(
+                f"{fixture_path}: case {case_id!r} (revision {revision}) has no "
+                "task_spec.expected_verdict -- every case in a --judge-accuracy "
+                "fixture must have one (a fixture-authoring bug, not something "
+                "to silently skip)"
+            )
+        expected = task_spec["expected_verdict"]
+        if expected is None:
+            continue
+        verdicts[(case_id, revision)] = bool(expected)
+    return verdicts
 
 
 def _append_cases_to_suite(cases: list[EvalCase], path: Path) -> None:
@@ -1606,6 +1643,25 @@ def rollout_cmd(
         "docs/rfcs/2026-09-07-evals-cigate-refinements.md."
     ),
 )
+@click.option(
+    "--judge-accuracy",
+    "judge_accuracy_fixture_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Path to a fixture suite (same JSON-array shape as a --suite "
+        "file, e.g. tests/fixtures/regression_corpus_judge_accuracy.json) "
+        "whose task_spec.expected_verdict is the ground-truth label. "
+        "Joined to matching Scores in --scores by (eval_case_id, "
+        "eval_case_revision); prints Cohen's kappa plus a full 2x2 "
+        "confusion matrix per scorer_type, IN ADDITION to the existing "
+        "pass_rate/CI line, never in place of it or affecting any gate. "
+        "A case whose expected_verdict is null is excluded (a genuinely "
+        "unresolved ground truth), not an error. Zero matches across the "
+        "whole file is a hard error. Only meaningful together with "
+        "--scores. See docs/rfcs/2026-09-09-evals-judge-accuracy-metric.md."
+    ),
+)
 def report_cmd(
     successes: int | None,
     total: int | None,
@@ -1615,6 +1671,7 @@ def report_cmd(
     fail_under: float | None,
     tier: str | None,
     category_fail_under_raw: tuple[str, ...],
+    judge_accuracy_fixture_path: Path | None,
 ) -> None:
     """Print a pass rate together with its Wilson CI.
 
@@ -1651,6 +1708,14 @@ def report_cmd(
         raise click.UsageError(
             "--category-fail-under is only meaningful together with --scores."
         )
+    if judge_accuracy_fixture_path is not None and scores_path is None:
+        raise click.UsageError(
+            "--judge-accuracy is only meaningful together with --scores."
+        )
+    expected_verdicts: dict[tuple[str, int], bool] = {}
+    if judge_accuracy_fixture_path is not None:
+        expected_verdicts = _load_expected_verdicts(judge_accuracy_fixture_path)
+    judge_accuracy_matched_any = False
 
     # (label, successes, total) triples checked against --fail-under;
     # (label, successes, total, threshold) quadruples checked against
@@ -1706,6 +1771,32 @@ def report_cmd(
                 eligible_successes = sum(1 for s in eligible if s.value)
                 gate_checks.append((scorer_type, eligible_successes, len(eligible)))
 
+            if judge_accuracy_fixture_path is not None:
+                judge_verdicts: list[bool] = []
+                human_verdicts: list[bool] = []
+                for s in group:
+                    human_verdict = expected_verdicts.get(
+                        (s.eval_case_id, s.eval_case_revision)
+                    )
+                    if human_verdict is None:
+                        continue
+                    judge_verdicts.append(s.value)
+                    human_verdicts.append(human_verdict)
+                if judge_verdicts:
+                    judge_accuracy_matched_any = True
+                    matrix = confusion_matrix(judge_verdicts, human_verdicts)
+                    try:
+                        kappa = cohens_kappa(judge_verdicts, human_verdicts)
+                        kappa_str = f"{kappa:.4f}"
+                    except ValueError:
+                        kappa_str = "undefined"
+                    click.echo(
+                        f"{scorer_type} [judge-accuracy]: kappa={kappa_str} "
+                        f"n={len(judge_verdicts)} "
+                        f"tp={matrix.true_positive} fp={matrix.false_positive} "
+                        f"tn={matrix.true_negative} fn={matrix.false_negative}"
+                    )
+
             for cat_tag, cat_threshold in category_gates:
                 tagged = [s for s in group if cat_tag in s.tags]
                 if not tagged:
@@ -1751,6 +1842,12 @@ def report_cmd(
             raise click.ClickException(
                 "--category-fail-under given for tag(s) with no matching "
                 f"Score: {', '.join(sorted(unmatched))}{tier_note}"
+            )
+        if judge_accuracy_fixture_path is not None and not judge_accuracy_matched_any:
+            raise click.ClickException(
+                f"--judge-accuracy {judge_accuracy_fixture_path}: no Score in "
+                f"{scores_path} matched any case with a non-null "
+                "task_spec.expected_verdict in the fixture"
             )
     else:
         click.echo(format_report(successes, total, confidence=confidence))

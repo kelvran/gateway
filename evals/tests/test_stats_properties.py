@@ -16,12 +16,13 @@ fuzzing's-sake.
 
 from __future__ import annotations
 
+import math
 import random
 
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from evals.stats import _EPSILON, mixture_sprt_early_stop, wilson_interval
+from evals.stats import _EPSILON, cohens_kappa, mixture_sprt_early_stop, wilson_interval
 
 # Keep `total` in a range large enough to be a meaningful sample size but
 # small enough that float arithmetic near the tails stays well-conditioned
@@ -145,6 +146,26 @@ def test_interval_contains_the_point_estimate_up_to_the_documented_clamp(
     point_estimate = successes / total
     lower, upper = wilson_interval(successes, total, confidence=confidence)
     assert lower - _EPSILON <= point_estimate <= upper + _EPSILON
+
+
+# --- cohens_kappa ---
+# See docs/rfcs/2026-09-09-evals-judge-accuracy-metric.md
+
+
+@given(
+    verdicts=st.lists(st.booleans(), min_size=2, max_size=200),
+)
+@settings(max_examples=300)
+def test_cohens_kappa_of_identical_verdicts_with_itself_is_one(verdicts):
+    # A judge compared against a copy of its OWN verdicts must show
+    # perfect agreement -- kappa == 1.0 -- for any non-degenerate input.
+    # This is the single most direct trap for a sign-flip or a
+    # transposed p_observed/p_expected: get either wrong and this stops
+    # being exactly 1.0. Degenerate (all-True or all-False) inputs are
+    # excluded via assume -- those raise ValueError by design (p_expected
+    # == 1.0), a separate, already-covered case in test_stats.py.
+    assume(any(verdicts) and not all(verdicts))
+    assert math.isclose(cohens_kappa(verdicts, verdicts), 1.0, abs_tol=1e-9)
 
 
 # --- mixture_sprt_early_stop ---

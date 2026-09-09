@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from statistics import NormalDist
+from typing import NamedTuple
 
 # A closed interval's edge exactly touching 0.0 or 1.0 reads, to a human or
 # a CI/CD gate, as "impossible" / "certain" — a claim no finite sample can
@@ -161,3 +162,116 @@ def mixture_sprt_early_stop(
 
     alpha = 1 - confidence
     return log_likelihood_ratio >= -math.log(alpha)
+
+
+class ConfusionMatrix(NamedTuple):
+    """A 2x2 confusion matrix for a binary judge verdict vs. a binary
+    human/ground-truth label. `true_positive`/`false_positive` treat the
+    judge's `True` (PASS) verdict as the positive class."""
+
+    true_positive: int
+    false_positive: int
+    true_negative: int
+    false_negative: int
+
+
+def confusion_matrix(
+    judge_verdicts: list[bool], human_verdicts: list[bool]
+) -> ConfusionMatrix:
+    """Return the 2x2 confusion matrix for paired judge/human verdicts.
+
+    Args:
+        judge_verdicts: one bool per case, the judge's own PASS/FAIL
+            verdict.
+        human_verdicts: one bool per case, the ground-truth label for
+            the same case, in the same order. Must be the same length
+            as `judge_verdicts` and non-empty.
+
+    Returns:
+        A `ConfusionMatrix` whose four counts sum to `len(judge_verdicts)`.
+
+    Raises:
+        ValueError: if the two lists have different lengths, or both
+            are empty.
+    """
+    if len(judge_verdicts) != len(human_verdicts):
+        raise ValueError(
+            "judge_verdicts and human_verdicts must be the same length, "
+            f"got {len(judge_verdicts)} and {len(human_verdicts)}"
+        )
+    if len(judge_verdicts) == 0:
+        raise ValueError("judge_verdicts/human_verdicts must be non-empty")
+
+    tp = fp = tn = fn = 0
+    for judge, human in zip(judge_verdicts, human_verdicts, strict=True):
+        if judge and human:
+            tp += 1
+        elif judge and not human:
+            fp += 1
+        elif not judge and not human:
+            tn += 1
+        else:
+            fn += 1
+    return ConfusionMatrix(
+        true_positive=tp, false_positive=fp, true_negative=tn, false_negative=fn
+    )
+
+
+def cohens_kappa(judge_verdicts: list[bool], human_verdicts: list[bool]) -> float:
+    """Return Cohen's kappa — chance-corrected agreement between a
+    judge's verdicts and human/ground-truth labels for the same cases.
+
+    Raw exact-match agreement systematically overstates how good a
+    judge actually is: a real 2026 study found exact-match exceeds
+    kappa by a ~38.6 percentage-point mean across 21 judges on MT-Bench
+    — any judge-accuracy metric built only on raw exact-match will look
+    far better than it actually is. Kappa corrects for this by
+    subtracting out the agreement rate two independent, chance-only
+    raters would produce given each one's own marginal PASS rate:
+
+        kappa = (p_o - p_e) / (1 - p_e)
+
+    where `p_o` is the observed agreement rate ((TP + TN) / N) and
+    `p_e` is the chance-expected agreement rate derived from the
+    judge's and human's own independent PASS rates. This is
+    deliberately NOT the same as Pearson/Spearman/Kendall-tau_b/phi/
+    Matthews correlation coefficient — those five are mathematically
+    identical to each other for binary verdicts, but kappa is a
+    genuinely different, chance-discounted statistic, most different
+    from them exactly when the judge's and human's marginal PASS rates
+    diverge.
+
+    Args:
+        judge_verdicts: one bool per case, the judge's own PASS/FAIL
+            verdict.
+        human_verdicts: one bool per case, the ground-truth label for
+            the same case, in the same order.
+
+    Returns:
+        Cohen's kappa, typically in [-1, 1] (1.0 = perfect agreement,
+        0.0 = chance-level agreement, negative = worse than chance).
+
+    Raises:
+        ValueError: on the same length-mismatch/empty conditions as
+            `confusion_matrix`, or if `p_e == 1.0` — both raters have
+            zero marginal variance in the identical direction (e.g.
+            every verdict on both sides is `True`), making kappa
+            undefined (a literal 0/0), not silently `NaN` or `1.0`.
+    """
+    matrix = confusion_matrix(judge_verdicts, human_verdicts)
+    n = float(len(judge_verdicts))
+
+    p_observed = (matrix.true_positive + matrix.true_negative) / n
+    judge_positive_rate = (matrix.true_positive + matrix.false_positive) / n
+    human_positive_rate = (matrix.true_positive + matrix.false_negative) / n
+    p_expected = judge_positive_rate * human_positive_rate + (
+        1 - judge_positive_rate
+    ) * (1 - human_positive_rate)
+
+    if p_expected >= 1 - _EPSILON:
+        raise ValueError(
+            "cohens_kappa is undefined when p_expected == 1.0 "
+            "(both raters have zero marginal variance in the same direction)"
+        )
+
+    return (p_observed - p_expected) / (1 - p_expected)
