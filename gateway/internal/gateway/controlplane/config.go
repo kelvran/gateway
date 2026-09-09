@@ -381,6 +381,16 @@ type AdminConfig struct {
 	// empty, cmd/gateway fails startup rather than running an
 	// unauthenticated admin surface.
 	TokenEnv string
+	// ViewerTokenEnv is the name of the environment variable holding an
+	// optional, read-only viewer credential, per
+	// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md. A viewer token
+	// can authenticate GET /admin/config but never a write route
+	// (POST/DELETE /admin/virtual_keys/{name}). Empty means no viewer
+	// tier is configured — GET /admin/config then requires the admin
+	// token exactly as it always has. If set but the named env var
+	// resolves empty, cmd/gateway fails startup, mirroring TokenEnv's
+	// own "never run with an unauthenticated surface" rule.
+	ViewerTokenEnv string
 }
 
 // HealthProbeConfig configures the active/synthetic health-probing
@@ -600,6 +610,7 @@ func Load(path string) (*Config, error) {
 	if adminRaw, ok := getMap(root, "admin"); ok {
 		cfg.Admin.ListenAddr, _ = getString(adminRaw, "listen_addr")
 		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
+		cfg.Admin.ViewerTokenEnv, _ = getString(adminRaw, "viewer_token_env")
 	}
 
 	if healthProbeRaw, ok := getMap(root, "health_probe"); ok {

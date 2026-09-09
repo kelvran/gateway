@@ -269,10 +269,16 @@ telemetry:
 # unauthenticated admin surface. listen_addr defaults to
 # "127.0.0.1:8081" (loopback-only) when omitted — reaching it from
 # outside the host requires a deliberate, explicit choice, never a
-# default.
+# default. viewer_token_env is an optional second, read-only credential
+# tier, per docs/rfcs/2026-09-09-gateway-admin-viewer-role.md — a viewer
+# credential can GET /admin/config but never mutate virtual keys; omit
+# it for the single-credential behavior every config had before this
+# field existed. Same "must resolve non-empty or refuse to start" rule
+# as token_env.
 # admin:
 #   listen_addr: "127.0.0.1:8081"
 #   token_env: "KELVRAN_ADMIN_TOKEN"
+#   viewer_token_env: "KELVRAN_ADMIN_VIEWER_TOKEN"
 
 # Active/synthetic health-probing: a background loop that issues a
 # lightweight, real chat-completion request to every configured

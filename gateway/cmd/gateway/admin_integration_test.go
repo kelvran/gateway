@@ -69,7 +69,7 @@ func newAdminIntegrationServers(t *testing.T, upstreamURL, upstreamKeyEnvVar str
 	t.Cleanup(clientSrv.Close)
 
 	adminToken = fakeAdminCredentialForIntegrationTest()
-	adminSrv = httptest.NewServer(admin.Handler(cfg, pipeline, adminToken))
+	adminSrv = httptest.NewServer(admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken}, logger))
 	t.Cleanup(adminSrv.Close)
 
 	return clientSrv, adminSrv, adminToken

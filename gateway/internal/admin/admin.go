@@ -4,14 +4,21 @@
 // live-mutable in v1, virtual keys (POST/DELETE /admin/virtual_keys/{name}).
 //
 // This is a deliberately separate credential space from client-facing
-// virtual keys (internal/identity) — Handler's own bearer token is
-// checked here, directly, and never delegates to identity.Verifier. A
+// virtual keys (internal/identity) — Handler's own bearer tokens are
+// checked here, directly, and never delegate to identity.Verifier. A
 // client's virtual key must never authenticate against this surface, and
-// this surface's token must never authenticate against
+// this surface's tokens must never authenticate against
 // /v1/chat/completions. cmd/gateway is responsible for binding this
 // Handler to its own separate net.Listener, never the same mux as the
 // client-facing gateway — see that RFC's "never internet-facing by
 // default" section for why.
+//
+// Two credential tiers exist, per
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md: Credentials.Admin
+// (required, full read/write) and an optional Credentials.Viewer
+// (read-only — GET /admin/config only, never a write route). Every
+// successful virtual-key create/delete is logged (name, never the
+// credential/key_hash value) via the Logger passed to Handler.
 package admin
 
 import (
@@ -19,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -29,6 +37,19 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
+
+// Credentials holds the admin surface's two credential tiers, per
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md. Admin is required
+// (callers must enforce this is non-empty before constructing a Handler
+// at all, same as the pre-existing single-token contract). Viewer is
+// optional — an empty Viewer means no viewer tier is configured, and
+// GET /admin/config then requires Admin exactly as it always has.
+// Viewer, when set, can never authenticate a write (POST/DELETE
+// /admin/virtual_keys/{name}) — those routes always require Admin.
+type Credentials struct {
+	Admin  string
+	Viewer string
+}
 
 // virtualKeyRequest is the POST /admin/virtual_keys/{name} request body.
 // Field names deliberately mirror config.yaml's own virtual_keys.<name>
@@ -81,15 +102,18 @@ type perModelRateLimitRequest struct {
 // secret-free static config (served verbatim by GET /admin/config — see
 // the RFC's "why Config is safe to return wholesale" section); pipeline
 // is the live dataplane.Pipeline whose virtual keys this surface can
-// mutate; token is the already-resolved (non-empty — callers must enforce
-// this before constructing a Handler at all, per the RFC's "never starts
-// with an empty/bypassable token" rule) admin bearer secret.
-func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, token string) http.Handler {
+// mutate; creds holds the already-resolved (Admin non-empty — callers
+// must enforce this before constructing a Handler at all, per the RFC's
+// "never starts with an empty/bypassable token" rule) credential tiers;
+// logger records a structured audit entry on every successful virtual-key
+// create/delete (never the credential/secret value itself), per
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md.
+func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Credentials, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /admin/config", getConfigHandler(cfg))
-	mux.HandleFunc("POST /admin/virtual_keys/{name}", upsertVirtualKeyHandler(pipeline))
-	mux.HandleFunc("DELETE /admin/virtual_keys/{name}", deleteVirtualKeyHandler(pipeline))
-	return requireBearerToken(token, mux)
+	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg)))
+	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, logger)))
+	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, logger)))
+	return mux
 }
 
 // requireBearerToken wraps next so every request must present
@@ -99,19 +123,56 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, token strin
 // single static secret instead of a hash-keyed map.
 func requireBearerToken(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const bearerPrefix = "Bearer "
-		auth := r.Header.Get("Authorization")
-		if len(auth) <= len(bearerPrefix) || auth[:len(bearerPrefix)] != bearerPrefix {
+		presented, ok := bearerToken(r)
+		if !ok {
 			http.Error(w, "missing or malformed Authorization header", http.StatusUnauthorized)
 			return
 		}
-		presented := auth[len(bearerPrefix):]
 		if subtle.ConstantTimeCompare([]byte(presented), []byte(token)) != 1 {
 			http.Error(w, "invalid admin token", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requireEitherBearerToken wraps next so a request authenticates with
+// EITHER creds.Admin OR, when configured (non-empty), creds.Viewer — used
+// only for the read-only GET /admin/config route. Write routes
+// (POST/DELETE /admin/virtual_keys/{name}) always use requireBearerToken
+// with creds.Admin specifically, never this function, per
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md.
+func requireEitherBearerToken(creds Credentials, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		presented, ok := bearerToken(r)
+		if !ok {
+			http.Error(w, "missing or malformed Authorization header", http.StatusUnauthorized)
+			return
+		}
+		presentedBytes := []byte(presented)
+		if subtle.ConstantTimeCompare(presentedBytes, []byte(creds.Admin)) == 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if creds.Viewer != "" && subtle.ConstantTimeCompare(presentedBytes, []byte(creds.Viewer)) == 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "invalid admin token", http.StatusUnauthorized)
+	})
+}
+
+// bearerToken extracts the raw token from a well-formed
+// "Authorization: Bearer <token>" header — shared by
+// requireBearerToken/requireEitherBearerToken so the malformed-header
+// check stays in exactly one place.
+func bearerToken(r *http.Request) (string, bool) {
+	const bearerPrefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if len(auth) <= len(bearerPrefix) || auth[:len(bearerPrefix)] != bearerPrefix {
+		return "", false
+	}
+	return auth[len(bearerPrefix):], true
 }
 
 // getConfigHandler serves the real, already-loaded *controlplane.Config
@@ -132,7 +193,9 @@ func getConfigHandler(cfg *controlplane.Config) http.HandlerFunc {
 // existing one with the same name, live — see
 // dataplane.Pipeline.UpsertVirtualKey's own doc comment for the exact
 // ordering guarantee (rate limiter registered before the Verifier swap).
-func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
+// logger records name (never the presented credential or key_hash) on
+// every successful upsert.
+func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if name == "" {
@@ -207,6 +270,7 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		logger.Info("admin_virtual_key_upserted", "name", name, "authorized_by", "admin")
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -214,8 +278,9 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 // deleteVirtualKeyHandler removes a virtual key, live. 404 if the name
 // doesn't match any configured key; 409 if it's the last remaining one
 // (dataplane.Pipeline.DeleteVirtualKey's own refusal — never leaves the
-// gateway with no client able to authenticate at all).
-func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
+// gateway with no client able to authenticate at all). logger records
+// name on every successful delete.
+func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if name == "" {
@@ -226,6 +291,7 @@ func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 		err := pipeline.DeleteVirtualKey(name)
 		switch {
 		case err == nil:
+			logger.Info("admin_virtual_key_deleted", "name", name, "authorized_by", "admin")
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, dataplane.ErrVirtualKeyNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)

@@ -193,13 +193,20 @@ func run(configPath string, logger *slog.Logger) error {
 		if adminToken == "" {
 			return fmt.Errorf("admin.token_env %q is set but resolves to an empty environment variable — refusing to start an unauthenticated admin server", cfg.Admin.TokenEnv)
 		}
+		var viewerToken string
+		if cfg.Admin.ViewerTokenEnv != "" {
+			viewerToken = os.Getenv(cfg.Admin.ViewerTokenEnv)
+			if viewerToken == "" {
+				return fmt.Errorf("admin.viewer_token_env %q is set but resolves to an empty environment variable — refusing to start an unauthenticated viewer tier", cfg.Admin.ViewerTokenEnv)
+			}
+		}
 		adminListenAddr := cfg.Admin.ListenAddr
 		if adminListenAddr == "" {
 			adminListenAddr = defaultAdminListenAddr
 		}
 		adminServer = &http.Server{
 			Addr:    adminListenAddr,
-			Handler: admin.Handler(cfg, pipeline, adminToken),
+			Handler: admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken}, logger),
 		}
 	}
 

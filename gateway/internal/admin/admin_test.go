@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,6 +36,13 @@ func fakeAdminCredential() string {
 func testHashOf(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(sum[:])
+}
+
+// discardLogger mirrors dataplane's own identically-named test helper —
+// a real *slog.Logger that discards everything, for tests that need to
+// pass one but don't care about its output.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // newTestPipeline builds a real *dataplane.Pipeline with one virtual key
@@ -108,7 +117,7 @@ func doRequest(t *testing.T, h http.Handler, method, path, bearerValue, body str
 }
 
 func TestRequestsWithoutTheAdminCredentialAreRejected(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	cases := []struct {
 		name        string
@@ -128,7 +137,7 @@ func TestRequestsWithoutTheAdminCredentialAreRejected(t *testing.T) {
 }
 
 func TestGetConfigReturnsTheRealLoadedConfig(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/config", fakeAdminCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -149,7 +158,7 @@ func TestGetConfigReturnsTheRealLoadedConfig(t *testing.T) {
 
 func TestUpsertVirtualKeyViaHTTPMakesTheKeyImmediatelyUsable(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, fakeAdminCredential())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	newBearerValue := "brand-new-value"
 	body := `{"key_hash":"` + testHashOf(newBearerValue) + `","rate_limit":{"burst":50,"refill_per_second":50}}`
@@ -172,7 +181,7 @@ func TestUpsertVirtualKeyViaHTTPMakesTheKeyImmediatelyUsable(t *testing.T) {
 // completeness discipline.
 func TestUpsertVirtualKeyWithPerModelRateLimitIsEnforced(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, fakeAdminCredential())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	newBearerValue := "per-model-test-value"
 	body := `{"key_hash":"` + testHashOf(newBearerValue) + `","rate_limit":{"burst":100,"refill_per_second":100,"per_model":{"gpt-4o":{"burst":1,"refill_per_second":0.0001}}}}`
@@ -195,7 +204,7 @@ func TestUpsertVirtualKeyWithPerModelRateLimitIsEnforced(t *testing.T) {
 // Admin API surface, so an operator gets the same validation regardless
 // of which of the two surfaces they use.
 func TestUpsertVirtualKeyRejectsNonPositivePerModelRateLimit(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","rate_limit":{"burst":100,"refill_per_second":100,"per_model":{"gpt-4o":{"burst":0,"refill_per_second":1}}}}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-epsilon", fakeAdminCredential(), body)
@@ -211,7 +220,7 @@ func TestUpsertVirtualKeyRejectsNonPositivePerModelRateLimit(t *testing.T) {
 // own default TPM bucket.
 func TestUpsertVirtualKeyWithPerModelTPMRateLimitIsEnforced(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, fakeAdminCredential())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	newBearerValue := "per-model-tpm-test-value"
 	body := `{"key_hash":"` + testHashOf(newBearerValue) + `","rate_limit":{"burst":100,"refill_per_second":100,"tpm_capacity":1000,"tpm_refill_per_second":0.0001,"per_model":{"gpt-4o":{"burst":100,"refill_per_second":100,"tpm_capacity":1,"tpm_refill_per_second":0.0001}}}}`
@@ -235,7 +244,7 @@ func TestUpsertVirtualKeyWithPerModelTPMRateLimitIsEnforced(t *testing.T) {
 // the same validation regardless of which of the two config surfaces
 // they use.
 func TestUpsertVirtualKeyRejectsPerModelTPMCapacityWithoutRefill(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","rate_limit":{"burst":100,"refill_per_second":100,"per_model":{"gpt-4o":{"burst":1,"refill_per_second":1,"tpm_capacity":1000}}}}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-eta", fakeAdminCredential(), body)
@@ -245,7 +254,7 @@ func TestUpsertVirtualKeyRejectsPerModelTPMCapacityWithoutRefill(t *testing.T) {
 }
 
 func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-gamma", fakeAdminCredential(), `{}`)
 	if rec.Code != http.StatusBadRequest {
@@ -255,7 +264,7 @@ func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
 
 func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, fakeAdminCredential())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	// Add a second key first, so deleting one still leaves one behind.
 	otherBearerValue := "other-bearer-value"
@@ -274,7 +283,7 @@ func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 }
 
 func TestDeleteVirtualKeyUnknownNameReturns404(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	rec := doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/never-existed", fakeAdminCredential(), "")
 	if rec.Code != http.StatusNotFound {
@@ -283,7 +292,7 @@ func TestDeleteVirtualKeyUnknownNameReturns404(t *testing.T) {
 }
 
 func TestDeleteVirtualKeyLastRemainingKeyReturns409(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	rec := doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeAdminCredential(), "")
 	if rec.Code != http.StatusConflict {
@@ -296,10 +305,135 @@ func TestDeleteVirtualKeyLastRemainingKeyReturns409(t *testing.T) {
 // bearer value must never work against /admin/*, since the two are
 // deliberately separate credential spaces.
 func TestClientVirtualKeyNeverAuthenticatesAgainstAdmin(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/config", "test-key", "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("GET /admin/config with a client virtual key's own bearer value: status = %d, want 401", rec.Code)
+	}
+}
+
+// fakeViewerCredential mirrors fakeAdminCredential's own
+// assembled-from-parts convention, for the same secret-scanning reason.
+func fakeViewerCredential() string {
+	parts := []string{"not", "a", "real", "viewer", "credential", "for", "tests"}
+	return strings.Join(parts, "-")
+}
+
+// TestViewerTokenCanReadConfigButNotMutateVirtualKeys proves
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md's core claim: a
+// configured viewer credential authenticates the read-only route but
+// never a write route.
+func TestViewerTokenCanReadConfigButNotMutateVirtualKeys(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/config", fakeViewerCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/config with the viewer credential: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `"}`
+	rec = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-theta", fakeViewerCredential(), body)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /admin/virtual_keys with the viewer credential: status = %d, want 401 — viewer must never authenticate a write route", rec.Code)
+	}
+
+	rec = doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeViewerCredential(), "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("DELETE /admin/virtual_keys with the viewer credential: status = %d, want 401 — viewer must never authenticate a write route", rec.Code)
+	}
+}
+
+// TestAdminTokenStillWorksForEverythingWhenAViewerTierIsConfigured
+// proves the new viewer tier is additive — configuring one never takes
+// away the admin credential's own existing full read/write access.
+func TestAdminTokenStillWorksForEverythingWhenAViewerTierIsConfigured(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/config", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/config with the admin credential: status = %d, want 200", rec.Code)
+	}
+
+	body := `{"key_hash":"` + testHashOf("viewer-tier-added-value") + `","rate_limit":{"burst":50,"refill_per_second":50}}`
+	rec = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-iota", fakeAdminCredential(), body)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /admin/virtual_keys with the admin credential: status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestOmittingTheViewerTierBehavesExactlyAsBefore proves the viewer
+// tier is fully optional — an empty Credentials.Viewer reproduces the
+// pre-viewer-role behavior exactly: only the admin credential works on
+// GET /admin/config, and an unrecognized value (that happens to equal
+// an empty string comparison edge case) is still rejected.
+func TestOmittingTheViewerTierBehavesExactlyAsBefore(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/config", "", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /admin/config with no credential at all: status = %d, want 401", rec.Code)
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/admin/config", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/config with the admin credential, no viewer tier configured: status = %d, want 200", rec.Code)
+	}
+}
+
+// capturingLogger returns a *slog.Logger backed by a *strings.Builder
+// the test can inspect, plus that builder — used to prove the audit-log
+// lines fire on success and never leak a secret value.
+func capturingLogger() (*slog.Logger, *strings.Builder) {
+	var buf strings.Builder
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
+}
+
+// TestUpsertVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret proves
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md's audit-logging
+// claim for a successful create.
+func TestUpsertVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+
+	newBearerValue := "audit-log-test-value"
+	body := `{"key_hash":"` + testHashOf(newBearerValue) + `"}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-kappa", fakeAdminCredential(), body)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "admin_virtual_key_upserted") || !strings.Contains(logOutput, "name=team-kappa") {
+		t.Errorf("expected an admin_virtual_key_upserted audit-log entry naming team-kappa; got: %s", logOutput)
+	}
+	if strings.Contains(logOutput, fakeAdminCredential()) || strings.Contains(logOutput, testHashOf(newBearerValue)) {
+		t.Errorf("audit log must never contain the presented credential or the key_hash; got: %s", logOutput)
+	}
+}
+
+// TestDeleteVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret mirrors
+// TestUpsertVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret for delete.
+func TestDeleteVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, logger)
+
+	otherBearerValue := "other-bearer-value-for-audit-test"
+	body := `{"key_hash":"` + testHashOf(otherBearerValue) + `"}`
+	doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-lambda", fakeAdminCredential(), body)
+
+	rec := doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/team-lambda", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "admin_virtual_key_deleted") || !strings.Contains(logOutput, "name=team-lambda") {
+		t.Errorf("expected an admin_virtual_key_deleted audit-log entry naming team-lambda; got: %s", logOutput)
+	}
+	if strings.Contains(logOutput, fakeAdminCredential()) {
+		t.Errorf("audit log must never contain the presented credential; got: %s", logOutput)
 	}
 }
