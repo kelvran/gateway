@@ -45,9 +45,29 @@ type KeyConfig struct {
 
 // ModelRateLimit is one virtual key's per-model RPM override — see
 // KeyConfig.PerModel's doc comment for the full design.
+//
+// TPMCapacity/TPMRefillPerSecond are the equivalent per-model override for
+// the TPM dimension, per docs/upgrade-research/gateway-per-deployment-
+// concurrency-2026-09-09.md's own Phase 4 follow-on (extending PerModel's
+// existing RPM-only shape to TPM for the direct, non-fallback path) —
+// mirroring Capacity/RefillPerSecond's exact convention: both must be set
+// together or neither (see buildPerModelTPMBuckets), and an entry with
+// TPMCapacity <= 0 is treated as "no TPM override for this model," never
+// "unlimited for this model" — falls through to the key's own default TPM
+// bucket, exactly like Capacity <= 0 falls through to the default RPM
+// bucket. Deliberately NOT consulted by checkFallbackTargetRateLimit
+// (dataplane/fallback.go) — TPM stays scoped to the single pre-routing
+// ReserveTPM call the caller already makes against the client's
+// originally-requested model, matching the already-recorded decision that
+// TPM mid-chain reservation-transfer across fallback hops has no
+// production precedent anywhere (docs/upgrade-research/gateway-tpm-
+// permodel-fallback-2026-09-09.md) — this extension only closes the gap
+// for the DIRECT (non-fallback) path.
 type ModelRateLimit struct {
-	Capacity        float64
-	RefillPerSecond float64
+	Capacity           float64
+	RefillPerSecond    float64
+	TPMCapacity        float64
+	TPMRefillPerSecond float64
 }
 
 // RedisBackend is implemented by internal/ratelimit/redislimiter.Limiter.
@@ -84,7 +104,14 @@ type KeyLimiter struct {
 	// takes capacity/refill per call rather than owning bucket state
 	// itself.
 	perModelBuckets map[string]map[string]*TokenBucket
-	backend         RedisBackend // non-nil in Redis mode only
+	// perModelTPMBuckets mirrors perModelBuckets exactly, one dimension
+	// over: keyID -> model -> that model's own TPM TokenBucket, in-memory
+	// mode only, absent entirely in Redis mode — TPM as a whole has no
+	// Redis-backed path anywhere in this package (see tpmBuckets' own
+	// doc comment), so this stays nil forever whenever backend != nil,
+	// exactly like tpmBuckets itself.
+	perModelTPMBuckets map[string]map[string]*TokenBucket
+	backend            RedisBackend // non-nil in Redis mode only
 }
 
 // NewInMemoryKeyLimiter builds a KeyLimiter backed by one TokenBucket per
@@ -100,6 +127,7 @@ func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 	buckets := make(map[string]*TokenBucket, len(keys))
 	tpmBuckets := make(map[string]*TokenBucket, len(keys))
 	perModelBuckets := make(map[string]map[string]*TokenBucket, len(keys))
+	perModelTPMBuckets := make(map[string]map[string]*TokenBucket, len(keys))
 	for _, k := range keys {
 		configs[k.ID] = k
 		buckets[k.ID] = NewTokenBucket(k.Capacity, k.RefillPerSecond)
@@ -108,6 +136,9 @@ func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 		}
 		if models := buildPerModelBuckets(k.PerModel); len(models) > 0 {
 			perModelBuckets[k.ID] = models
+		}
+		if models := buildPerModelTPMBuckets(k.PerModel); len(models) > 0 {
+			perModelTPMBuckets[k.ID] = models
 		}
 	}
 	// configs is tracked in in-memory mode too (not just Redis mode,
@@ -119,7 +150,7 @@ func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 	// per-deployment-concurrency-2026-09-09.md) is indistinguishable from
 	// a real, deliberately-exhausted bucket by inspecting buckets alone —
 	// both have zero tokens and both return false from Allow().
-	return &KeyLimiter{configs: configs, buckets: buckets, tpmBuckets: tpmBuckets, perModelBuckets: perModelBuckets}
+	return &KeyLimiter{configs: configs, buckets: buckets, tpmBuckets: tpmBuckets, perModelBuckets: perModelBuckets, perModelTPMBuckets: perModelTPMBuckets}
 }
 
 // buildPerModelBuckets constructs one TokenBucket per PerModel entry with
@@ -134,6 +165,25 @@ func buildPerModelBuckets(perModel map[string]ModelRateLimit) map[string]*TokenB
 	for model, mrl := range perModel {
 		if mrl.Capacity > 0 {
 			models[model] = NewTokenBucket(mrl.Capacity, mrl.RefillPerSecond)
+		}
+	}
+	return models
+}
+
+// buildPerModelTPMBuckets mirrors buildPerModelBuckets exactly, one
+// dimension over: one TokenBucket per PerModel entry with a positive
+// TPMCapacity, skipping any entry with TPMCapacity <= 0 — shared by
+// NewInMemoryKeyLimiter and Register so the "absent or non-positive means
+// no per-model TPM override" rule can't drift between the two
+// construction sites, matching buildPerModelBuckets' own precedent.
+func buildPerModelTPMBuckets(perModel map[string]ModelRateLimit) map[string]*TokenBucket {
+	if len(perModel) == 0 {
+		return nil
+	}
+	models := make(map[string]*TokenBucket, len(perModel))
+	for model, mrl := range perModel {
+		if mrl.TPMCapacity > 0 {
+			models[model] = NewTokenBucket(mrl.TPMCapacity, mrl.TPMRefillPerSecond)
 		}
 	}
 	return models
@@ -288,19 +338,30 @@ func (l *KeyLimiter) RecordTokens(keyID string, tokens int) {
 // docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md — see
 // TokenBucket.ReserveTPM for the full mechanism. allowed is true
 // unconditionally (reserved false, reservedTokens 0 — nothing is ever
-// reserved) when TPM isn't configured for keyID, exactly mirroring
-// AllowTPM's own "no entry means unlimited" behavior. reserved is false
-// whenever nothing was actually reserved against a real bucket — either
-// TPM isn't configured, or the bucket's own check rejected the request —
-// so a caller can gate whether a later ReconcileTPM call is even
-// meaningful without needing to inspect reservedTokens itself.
+// reserved) when TPM isn't configured for keyID at all (no per-model
+// override for model, and no key-level default either), exactly
+// mirroring AllowTPM's own "no entry means unlimited" behavior. reserved
+// is false whenever nothing was actually reserved against a real bucket
+// — either TPM isn't configured, or the bucket's own check rejected the
+// request — so a caller can gate whether a later ReconcileTPM call is
+// even meaningful without needing to inspect reservedTokens itself.
+//
+// model resolves keyID's own per-model TPM override first (see
+// ModelRateLimit.TPMCapacity's doc comment) — mirroring AllowForModel's
+// identical RPM-dimension resolution order exactly — falling back to
+// keyID's key-level default TPM bucket whenever model has no configured
+// override (or model is ""). This is the direct (non-fallback) path
+// only: checkFallbackTargetRateLimit deliberately never calls this with
+// a fallback-hop's own model, per ModelRateLimit's own doc comment.
 //
 // Every true `reserved` return MUST be paired with exactly one
-// ReconcileTPM call for the same keyID/reservedTokens, even on an
-// error/timeout path.
-func (l *KeyLimiter) ReserveTPM(keyID string) (allowed bool, reserved bool, reservedTokens float64) {
+// ReconcileTPM call for the same keyID/model/reservedTokens, even on an
+// error/timeout path — model must be the SAME value passed to the
+// ReserveTPM call being reconciled, so the reconciliation lands on the
+// exact bucket the reservation was actually taken from.
+func (l *KeyLimiter) ReserveTPM(keyID, model string) (allowed bool, reserved bool, reservedTokens float64) {
 	l.mu.RLock()
-	bucket := l.tpmBuckets[keyID]
+	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
 	if bucket == nil {
 		return true, false, 0
@@ -312,20 +373,38 @@ func (l *KeyLimiter) ReserveTPM(keyID string) (allowed bool, reserved bool, rese
 // ReconcileTPM undoes a previous ReserveTPM call's provisional debit and,
 // if realTokens is non-nil, debits the real usage in its place — a
 // no-op, matching RecordTokens' own existing "no TPM bucket for keyID"
-// behavior, when TPM isn't configured for keyID (including a Redis-mode
-// KeyLimiter, where TPM is a deliberate v1 no-op per
+// behavior, when TPM isn't configured for keyID/model (including a
+// Redis-mode KeyLimiter, where TPM is a deliberate v1 no-op per
 // docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md) — safe to call
 // unconditionally with whatever reservedTokens a prior ReserveTPM call
 // returned, even 0, since ReconcileTPM(0, nil) against a real bucket is
-// itself a genuine no-op (tokens += 0).
-func (l *KeyLimiter) ReconcileTPM(keyID string, reservedTokens float64, realTokens *float64) {
+// itself a genuine no-op (tokens += 0). model MUST be the exact value
+// passed to the ReserveTPM call this reconciles — see that method's own
+// doc comment.
+func (l *KeyLimiter) ReconcileTPM(keyID, model string, reservedTokens float64, realTokens *float64) {
 	l.mu.RLock()
-	bucket := l.tpmBuckets[keyID]
+	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
 	if bucket == nil {
 		return
 	}
 	bucket.ReconcileTPM(reservedTokens, realTokens)
+}
+
+// resolveTPMBucket resolves keyID's TPM bucket for model — its own
+// per-model override if one is configured, else keyID's key-level
+// default TPM bucket, else nil (no TPM configured at all). Callers MUST
+// already hold l.mu (read or write) — mirrors allow()'s identical
+// per-model-then-default resolution pattern for the RPM dimension.
+func (l *KeyLimiter) resolveTPMBucket(keyID, model string) *TokenBucket {
+	var bucket *TokenBucket
+	if model != "" {
+		bucket = l.perModelTPMBuckets[keyID][model]
+	}
+	if bucket == nil {
+		bucket = l.tpmBuckets[keyID]
+	}
+	return bucket
 }
 
 // Register upserts cfg's rate-limit parameters for one key, live: a new
@@ -366,6 +445,12 @@ func (l *KeyLimiter) Register(cfg KeyConfig) {
 		l.perModelBuckets[cfg.ID] = models
 	} else {
 		delete(l.perModelBuckets, cfg.ID)
+	}
+	// Same rule, same reason, for the per-model TPM dimension.
+	if models := buildPerModelTPMBuckets(cfg.PerModel); len(models) > 0 {
+		l.perModelTPMBuckets[cfg.ID] = models
+	} else {
+		delete(l.perModelTPMBuckets, cfg.ID)
 	}
 }
 

@@ -160,3 +160,106 @@ func TestHandleChatCompletionUnaffectedByTPMWhenNotConfigured(t *testing.T) {
 		t.Fatalf("upstreamCalls = %d, want 5 (TPM not configured, must never throttle)", upstreamCalls)
 	}
 }
+
+// perModelTPMTestPipeline mirrors tpmTestPipeline, but with two
+// deployments (so HandleChatCompletion can route two DIFFERENT client-
+// requested models through the SAME virtual key) and a PerModel TPM
+// override on "gpt-4o" only — "gpt-4o-mini" has no override, so it always
+// falls through to the key's own default TPM bucket, per the Phase 4
+// PerModel-for-TPM direct-path extension (docs/upgrade-research/gateway-
+// per-deployment-concurrency-2026-09-09.md's own follow-on).
+func perModelTPMTestPipeline(t *testing.T, upstream UpstreamCaller, defaultTPMCapacity, gpt4oTPMCapacity float64) *Pipeline {
+	t.Helper()
+	keys := defaultTestVirtualKeys()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{
+		{Name: "d1", Model: "gpt-4o-mini", Provider: "openai", UpstreamModel: "gpt-4o-mini", BaseURL: "http://unused"},
+		{Name: "d2", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+	limiter := ratelimit.NewInMemoryKeyLimiter([]ratelimit.KeyConfig{
+		{
+			ID: "test-key", Capacity: 100, RefillPerSecond: 100,
+			TPMCapacity: defaultTPMCapacity, TPMRefillPerSecond: 0,
+			PerModel: map[string]ratelimit.ModelRateLimit{
+				"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: gpt4oTPMCapacity, TPMRefillPerSecond: 0},
+			},
+		},
+	})
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        limiter,
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream:       upstream,
+		Logger:         discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	return p
+}
+
+// TestHandleChatCompletionPerModelTPMExhaustsIndependentlyOfDefaultBucket
+// is the load-bearing full-pipeline proof for the Phase 4 PerModel-for-
+// TPM direct-path extension: gpt-4o's own small TPM override bucket
+// exhausts after real usage while gpt-4o-mini (no override, same virtual
+// key) keeps succeeding against the key's own much larger default TPM
+// bucket, completely unaffected.
+func TestHandleChatCompletionPerModelTPMExhaustsIndependentlyOfDefaultBucket(t *testing.T) {
+	var upstreamCalls int
+	p := perModelTPMTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, 1000, 10) // default bucket: capacity 1000; gpt-4o's own override: capacity 10. Each real call costs 8 tokens (fakeOpenAIResponse's fixed usage).
+
+	// Two real gpt-4o calls exhaust its own 10-token override bucket: the
+	// first reserves its FULL fresh balance (10, no billing history yet)
+	// then reconciles down to a real 8-token cost (balance 2); the second
+	// reserves the now-established historical-average estimate (8, from
+	// billedTokens/billedCount) against a balance of only 2, going
+	// negative, then reconciles to the same real 8-token cost.
+	gpt4oReq1 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "gpt-4o request one"}}}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", gpt4oReq1); err != nil {
+		t.Fatalf("gpt-4o call 1: %v", err)
+	}
+	gpt4oReq2 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "gpt-4o request two"}}}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", gpt4oReq2); err != nil {
+		t.Fatalf("gpt-4o call 2: %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls after 2 gpt-4o calls = %d, want 2", upstreamCalls)
+	}
+
+	// A third gpt-4o call must now be rejected — its own override bucket
+	// is exhausted (negative balance after call 2).
+	gpt4oReq3 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "gpt-4o request three"}}}
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", gpt4oReq3)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("gpt-4o call 3 err = %v, want ErrRateLimited — its own override bucket should be exhausted", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls after gpt-4o call 3 = %d, want still 2 (rejected before reaching upstream)", upstreamCalls)
+	}
+
+	// A DIFFERENT model on the SAME virtual key must be completely
+	// unaffected — it has no PerModel TPM override, so it falls through
+	// to the key's own default 1000-token bucket, untouched by gpt-4o's
+	// own exhaustion.
+	miniReq := adapter.ChatRequest{Model: "gpt-4o-mini", Messages: []adapter.Message{{Role: "user", Content: "gpt-4o-mini request"}}}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", miniReq); err != nil {
+		t.Fatalf("gpt-4o-mini call: %v — must succeed against the key's own default TPM bucket, unaffected by gpt-4o's own exhausted override", err)
+	}
+	if upstreamCalls != 3 {
+		t.Fatalf("upstreamCalls after the gpt-4o-mini call = %d, want 3", upstreamCalls)
+	}
+}

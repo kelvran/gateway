@@ -63,14 +63,18 @@ type rateLimitRequest struct {
 }
 
 // perModelRateLimitRequest is one model's per-model RPM override within a
-// rateLimitRequest. Both fields are required and must be positive — see
-// upsertVirtualKeyHandler's validation, mirroring
+// rateLimitRequest. Burst/RefillPerSecond are both required and must be
+// positive — see upsertVirtualKeyHandler's validation, mirroring
 // controlplane.parsePerModelRateLimits' identical rule for the static
 // config file, so an operator gets the same validation regardless of
-// which of the two surfaces they use.
+// which of the two surfaces they use. TPMCapacity/TPMRefillPerSecond are
+// the optional per-model TPM override (must be set together or neither),
+// mirroring controlplane.ModelRateLimitConfig's identical fields.
 type perModelRateLimitRequest struct {
-	Burst           float64 `json:"burst"`
-	RefillPerSecond float64 `json:"refill_per_second"`
+	Burst              float64 `json:"burst"`
+	RefillPerSecond    float64 `json:"refill_per_second"`
+	TPMCapacity        float64 `json:"tpm_capacity"`
+	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
 }
 
 // Handler builds the admin HTTP surface. cfg is the already-loaded,
@@ -166,7 +170,16 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 						http.Error(w, fmt.Sprintf("rate_limit.per_model.%s must set positive burst and refill_per_second", model), http.StatusBadRequest)
 						return
 					}
-					perModel[model] = ratelimit.ModelRateLimit{Capacity: mrl.Burst, RefillPerSecond: mrl.RefillPerSecond}
+					if (mrl.TPMCapacity > 0) != (mrl.TPMRefillPerSecond > 0) {
+						http.Error(w, fmt.Sprintf("rate_limit.per_model.%s.tpm_capacity/tpm_refill_per_second must both be set, or neither", model), http.StatusBadRequest)
+						return
+					}
+					perModel[model] = ratelimit.ModelRateLimit{
+						Capacity:           mrl.Burst,
+						RefillPerSecond:    mrl.RefillPerSecond,
+						TPMCapacity:        mrl.TPMCapacity,
+						TPMRefillPerSecond: mrl.TPMRefillPerSecond,
+					}
 				}
 			}
 		}

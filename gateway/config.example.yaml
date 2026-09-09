@@ -73,6 +73,20 @@ virtual_keys:
         gpt-4o:
           burst: 5
           refill_per_second: 1
+          # Optional; omit both for no per-model TPM override (falls
+          # through to this key's own default tpm_capacity/
+          # tpm_refill_per_second above). Must be set together or
+          # neither — mirroring the deployment-level rate_limit.
+          # tpm_capacity's identical "set together or neither" rule.
+          # Per docs/upgrade-research/gateway-per-deployment-concurrency-
+          # 2026-09-09.md's Phase 4 follow-on: extends the "consumer x
+          # model" dimension above to the TPM axis, direct (non-fallback)
+          # path only — a fallback_chains hop's own TPM cost stays scoped
+          # to the single pre-routing reservation against the client's
+          # originally-requested model, per docs/upgrade-research/
+          # gateway-tpm-permodel-fallback-2026-09-09.md's own deferral.
+          tpm_capacity: 50000
+          tpm_refill_per_second: 500
       # Optional; omit (or <= 0) for unlimited. Bounds how many of this
       # key's requests may be SIMULTANEOUSLY outstanding, per
       # docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md — a

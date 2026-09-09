@@ -247,15 +247,29 @@ type VirtualKeyConfig struct {
 
 // ModelRateLimitConfig is one virtual key's per-model RPM override — see
 // VirtualKeyConfig.PerModelRateLimits' doc comment for the full design.
-// Both fields are required and must be positive for an entry to parse at
-// all (see parsePerModelRateLimits) — unlike RateLimitBurst/RateLimitRefill,
-// which resolve 0 to the gateway's own operational default, a per-model
-// entry has no equivalent "unset means use some other default" fallback
-// to resolve to, so a malformed entry is a config error, not a silent
-// no-op.
+// Burst/RefillPerSecond are required and must be positive for an entry to
+// parse at all (see parsePerModelRateLimits) — unlike RateLimitBurst/
+// RateLimitRefill, which resolve 0 to the gateway's own operational
+// default, a per-model entry has no equivalent "unset means use some
+// other default" fallback to resolve to, so a malformed entry is a
+// config error, not a silent no-op.
+//
+// TPMCapacity/TPMRefillPerSecond are the equivalent per-model override
+// for the TPM dimension — unlike Burst/RefillPerSecond, this pair is
+// OPTIONAL on top of an otherwise-valid entry (an entry may set RPM-only,
+// or RPM+TPM together, but never TPM-only, since Burst/RefillPerSecond
+// are already mandatory for the entry to exist at all): both must be set
+// together or neither, mirroring parseDeploymentRateLimit's identical
+// "set together or neither" convention for its own TPM pair. Unset (the
+// default, and every config written before this field existed) means no
+// per-model TPM override for that model — falls through to the key's own
+// key-level default TPM bucket, exactly like RateLimitBurst's own
+// top-level "0 means unlimited/default" fallback for the RPM dimension.
 type ModelRateLimitConfig struct {
-	Burst           float64
-	RefillPerSecond float64
+	Burst              float64
+	RefillPerSecond    float64
+	TPMCapacity        float64
+	TPMRefillPerSecond float64
 }
 
 // TelemetryConfig configures OTel span export, per
@@ -849,6 +863,11 @@ func parseFallbackChains(deploymentName string, raw map[string]any) (map[string]
 // time rather than silently producing a zero-capacity bucket that would
 // block every request for that model. keyName is only used for the error
 // message.
+//
+// tpm_capacity/tpm_refill_per_second are the optional per-model TPM
+// override, per ModelRateLimitConfig's own doc comment — must be set
+// together or neither; unlike burst/refill_per_second, omitting both is
+// valid (falls through to the key's own key-level default TPM bucket).
 func parsePerModelRateLimits(keyName string, raw map[string]any) (map[string]ModelRateLimitConfig, error) {
 	out := make(map[string]ModelRateLimitConfig, len(raw))
 	for model, v := range raw {
@@ -861,7 +880,12 @@ func parsePerModelRateLimits(keyName string, raw map[string]any) (map[string]Mod
 		if burst <= 0 || refill <= 0 {
 			return nil, fmt.Errorf("controlplane: virtual key %q rate_limit.per_model.%s must set positive burst and refill_per_second", keyName, model)
 		}
-		out[model] = ModelRateLimitConfig{Burst: burst, RefillPerSecond: refill}
+		tpmCapacity, _ := getFloat(modelMap, "tpm_capacity")
+		tpmRefill, _ := getFloat(modelMap, "tpm_refill_per_second")
+		if (tpmCapacity > 0) != (tpmRefill > 0) {
+			return nil, fmt.Errorf("controlplane: virtual key %q rate_limit.per_model.%s.tpm_capacity/tpm_refill_per_second must both be set, or neither", keyName, model)
+		}
+		out[model] = ModelRateLimitConfig{Burst: burst, RefillPerSecond: refill, TPMCapacity: tpmCapacity, TPMRefillPerSecond: tpmRefill}
 	}
 	return out, nil
 }

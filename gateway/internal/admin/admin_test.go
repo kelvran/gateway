@@ -204,6 +204,46 @@ func TestUpsertVirtualKeyRejectsNonPositivePerModelRateLimit(t *testing.T) {
 	}
 }
 
+// TestUpsertVirtualKeyWithPerModelTPMRateLimitIsEnforced mirrors
+// TestUpsertVirtualKeyWithPerModelRateLimitIsEnforced for the Phase 4
+// PerModel-for-TPM direct-path extension: a per-model TPM override set
+// via the live Admin API is genuinely enforced, independent of the key's
+// own default TPM bucket.
+func TestUpsertVirtualKeyWithPerModelTPMRateLimitIsEnforced(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, fakeAdminCredential())
+
+	newBearerValue := "per-model-tpm-test-value"
+	body := `{"key_hash":"` + testHashOf(newBearerValue) + `","rate_limit":{"burst":100,"refill_per_second":100,"tpm_capacity":1000,"tpm_refill_per_second":0.0001,"per_model":{"gpt-4o":{"burst":100,"refill_per_second":100,"tpm_capacity":1,"tpm_refill_per_second":0.0001}}}}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-zeta", fakeAdminCredential(), body)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	authHeader := "Bearer " + newBearerValue
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		t.Fatalf("first gpt-4o request: %v", err)
+	}
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, adapter.ChatRequest{Model: "gpt-4o"}); err == nil {
+		t.Fatal("second gpt-4o request succeeded, want a rate-limit rejection — the Admin-API-configured per_model TPM override (capacity 1) should already be exhausted")
+	}
+}
+
+// TestUpsertVirtualKeyRejectsPerModelTPMCapacityWithoutRefill mirrors
+// TestUpsertVirtualKeyRejectsNonPositivePerModelRateLimit for the TPM
+// pair's own "set together or neither" validation, so an operator gets
+// the same validation regardless of which of the two config surfaces
+// they use.
+func TestUpsertVirtualKeyRejectsPerModelTPMCapacityWithoutRefill(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","rate_limit":{"burst":100,"refill_per_second":100,"per_model":{"gpt-4o":{"burst":1,"refill_per_second":1,"tpm_capacity":1000}}}}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-eta", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
 	h := Handler(testConfig(), newTestPipeline(t), fakeAdminCredential())
 

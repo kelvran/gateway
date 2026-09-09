@@ -568,7 +568,7 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 	// RPM-exhausted request is always rejected for that reason first,
 	// matching this codebase's own existing check-ordering discipline
 	// (model-allowed before rate-limit before budget).
-	ok, tpmReserved, tpmReservedTokens = p.limiter.ReserveTPM(vk.ID)
+	ok, tpmReserved, tpmReservedTokens = p.limiter.ReserveTPM(vk.ID, model)
 	return ok, false, tpmReserved, tpmReservedTokens
 }
 
@@ -1660,7 +1660,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			realTokens = &rt
 		}
 		if tpmReserved || realTokens != nil {
-			p.limiter.ReconcileTPM(vk.ID, tpmReservedTokens, realTokens)
+			p.limiter.ReconcileTPM(vk.ID, req.Model, tpmReservedTokens, realTokens)
 		}
 	}
 

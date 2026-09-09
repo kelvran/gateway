@@ -57,8 +57,8 @@ func TestLoadExampleConfig(t *testing.T) {
 	if len(alpha.PerModelRateLimits) != 1 {
 		t.Fatalf("len(team-alpha.PerModelRateLimits) = %d, want 1", len(alpha.PerModelRateLimits))
 	}
-	if gpt4o := alpha.PerModelRateLimits["gpt-4o"]; gpt4o.Burst != 5 || gpt4o.RefillPerSecond != 1 {
-		t.Errorf("team-alpha.PerModelRateLimits[gpt-4o] = %+v, want {Burst:5 RefillPerSecond:1}", gpt4o)
+	if gpt4o := alpha.PerModelRateLimits["gpt-4o"]; gpt4o.Burst != 5 || gpt4o.RefillPerSecond != 1 || gpt4o.TPMCapacity != 50000 || gpt4o.TPMRefillPerSecond != 500 {
+		t.Errorf("team-alpha.PerModelRateLimits[gpt-4o] = %+v, want {Burst:5 RefillPerSecond:1 TPMCapacity:50000 TPMRefillPerSecond:500}", gpt4o)
 	}
 	wantModels := []string{"claude-opus-4", "gpt-4o"}
 	if len(alpha.AllowedModels) != len(wantModels) {
@@ -698,6 +698,127 @@ func TestLoadRejectsNonPositivePerModelRateLimit(t *testing.T) {
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load with a non-positive per_model burst returned nil error")
+	}
+}
+
+// TestLoadPerModelRateLimitParsesOptionalTPMFields proves a per_model
+// entry's optional tpm_capacity/tpm_refill_per_second pair parses
+// correctly alongside the mandatory burst/refill_per_second — the Phase 4
+// PerModel-for-TPM direct-path extension, per docs/upgrade-research/
+// gateway-per-deployment-concurrency-2026-09-09.md's own follow-on.
+func TestLoadPerModelRateLimitParsesOptionalTPMFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    rate_limit:\n" +
+		"      burst: 20\n" +
+		"      refill_per_second: 10\n" +
+		"      per_model:\n" +
+		"        gpt-4o:\n" +
+		"          burst: 5\n" +
+		"          refill_per_second: 1\n" +
+		"          tpm_capacity: 50000\n" +
+		"          tpm_refill_per_second: 500\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	mrl := cfg.VirtualKeys[0].PerModelRateLimits["gpt-4o"]
+	if mrl.Burst != 5 || mrl.RefillPerSecond != 1 {
+		t.Errorf("Burst/RefillPerSecond = %v/%v, want 5/1", mrl.Burst, mrl.RefillPerSecond)
+	}
+	if mrl.TPMCapacity != 50000 || mrl.TPMRefillPerSecond != 500 {
+		t.Errorf("TPMCapacity/TPMRefillPerSecond = %v/%v, want 50000/500", mrl.TPMCapacity, mrl.TPMRefillPerSecond)
+	}
+}
+
+// TestLoadPerModelRateLimitWithoutTPMFieldsLeavesThemZero is the direct
+// backward-compatibility proof: a per_model entry that sets only
+// burst/refill_per_second (every per_model entry written before this
+// field existed) must parse with TPMCapacity/TPMRefillPerSecond both
+// zero, never an error and never a silently-inferred value.
+func TestLoadPerModelRateLimitWithoutTPMFieldsLeavesThemZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    rate_limit:\n" +
+		"      burst: 20\n" +
+		"      refill_per_second: 10\n" +
+		"      per_model:\n" +
+		"        gpt-4o:\n" +
+		"          burst: 5\n" +
+		"          refill_per_second: 1\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	mrl := cfg.VirtualKeys[0].PerModelRateLimits["gpt-4o"]
+	if mrl.TPMCapacity != 0 || mrl.TPMRefillPerSecond != 0 {
+		t.Errorf("TPMCapacity/TPMRefillPerSecond = %v/%v, want 0/0", mrl.TPMCapacity, mrl.TPMRefillPerSecond)
+	}
+}
+
+// TestLoadRejectsPerModelRateLimitTPMCapacityWithoutRefill mirrors
+// TestLoadRejectsDeploymentRateLimitTPMCapacityWithoutRefill for the
+// per-model TPM pair: half-set is a config error, since (unlike
+// burst/refill_per_second's own top-level fallback) there is no
+// "unset means use some other default" resolution to fall back to.
+func TestLoadRejectsPerModelRateLimitTPMCapacityWithoutRefill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    rate_limit:\n" +
+		"      burst: 20\n" +
+		"      refill_per_second: 10\n" +
+		"      per_model:\n" +
+		"        gpt-4o:\n" +
+		"          burst: 5\n" +
+		"          refill_per_second: 1\n" +
+		"          tpm_capacity: 50000\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with per_model.gpt-4o.tpm_capacity set but tpm_refill_per_second unset returned nil error")
 	}
 }
 

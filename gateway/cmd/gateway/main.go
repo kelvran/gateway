@@ -328,7 +328,12 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		if len(vk.PerModelRateLimits) > 0 {
 			perModel = make(map[string]ratelimit.ModelRateLimit, len(vk.PerModelRateLimits))
 			for model, mrl := range vk.PerModelRateLimits {
-				perModel[model] = ratelimit.ModelRateLimit{Capacity: mrl.Burst, RefillPerSecond: mrl.RefillPerSecond}
+				perModel[model] = ratelimit.ModelRateLimit{
+					Capacity:           mrl.Burst,
+					RefillPerSecond:    mrl.RefillPerSecond,
+					TPMCapacity:        mrl.TPMCapacity,
+					TPMRefillPerSecond: mrl.TPMRefillPerSecond,
+				}
 			}
 		}
 		keyConfigs = append(keyConfigs, ratelimit.KeyConfig{

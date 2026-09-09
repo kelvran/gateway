@@ -372,3 +372,148 @@ func TestRegisterDisablingPerModelRemovesTheStaleBucket(t *testing.T) {
 		t.Fatal("AllowForModel(gpt-4o) = false after Register() disabled the override, want true — gpt-4o should now fall through to the fresh default bucket, not a stale exhausted override")
 	}
 }
+
+// TestReserveTPMUsesItsOwnPerModelBucketSeparateFromTheDefault mirrors
+// TestAllowForModelUsesItsOwnBucketSeparateFromTheDefault exactly, one
+// dimension over — per the Phase 4 PerModel-for-TPM direct-path
+// extension (docs/upgrade-research/gateway-per-deployment-concurrency-
+// 2026-09-09.md's own follow-on): a model with its own TPM override is
+// reserved from independently of the key's default TPM bucket, and an
+// unconfigured model still shares the default bucket unaffected.
+func TestReserveTPMUsesItsOwnPerModelBucketSeparateFromTheDefault(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}},
+	}})
+
+	allowed, reserved, tokens := l.ReserveTPM("team-alpha", "gpt-4o")
+	if !allowed || !reserved || tokens != 10 {
+		t.Fatalf("first ReserveTPM(gpt-4o) = (%v, %v, %v), want (true, true, 10) — gpt-4o's own fresh 10-token bucket has no billing history yet, so TokenBucket.reservationAmountLocked's own \"no history\" fallback reserves its ENTIRE current balance in one call", allowed, reserved, tokens)
+	}
+	if allowed, _, _ := l.ReserveTPM("team-alpha", "gpt-4o"); allowed {
+		t.Fatal("second ReserveTPM(gpt-4o) = true, want false — the first call already reserved gpt-4o's entire 10-token balance")
+	}
+	// The default bucket (1000 tokens) must be completely untouched by
+	// gpt-4o's own exhausted override — proven via an UNCONFIGURED model
+	// (claude-opus-4), which necessarily falls back to that same shared
+	// default bucket: if gpt-4o's exhaustion had bled into it, this would
+	// fail too. A single assertion, not two — ReserveTPM's own "reserve
+	// the entire remaining balance on a bucket with no billing history
+	// yet" semantics means a second, separate call against the default
+	// bucket here would itself drain it, corrupting a later check.
+	if allowed, _, tokens := l.ReserveTPM("team-alpha", "claude-opus-4"); !allowed || tokens != 1000 {
+		t.Fatalf("ReserveTPM(claude-opus-4) = (%v, _, %v), want (true, 1000) — an unconfigured model must fall back to the FULL, untouched shared default TPM bucket, unaffected by gpt-4o's own override", allowed, tokens)
+	}
+}
+
+// TestReserveTPMByteIdenticalToKeyLevelWhenNoPerModelTPMConfigured proves
+// the backward-compatibility guarantee: a key with a default TPM bucket
+// but no PerModel TPM overrides behaves exactly the same whichever model
+// (or "") is passed — mirroring
+// TestAllowForModelByteIdenticalToAllowWhenNoPerModelConfigured.
+func TestReserveTPMByteIdenticalToKeyLevelWhenNoPerModelTPMConfigured(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 5, RefillPerSecond: 1}}, // RPM-only override, no TPM
+	}})
+
+	// First reservation, via the model-qualified entry point, drains the
+	// shared default bucket entirely — a fresh bucket with no billing
+	// history yet reserves its full current balance in one call.
+	allowed, _, tokens := l.ReserveTPM("team-alpha", "gpt-4o")
+	if !allowed || tokens != 1000 {
+		t.Fatalf("ReserveTPM(gpt-4o) with an RPM-only override (no TPM override) = (%v, _, %v), want (true, 1000) — falls through to the shared default TPM bucket", allowed, tokens)
+	}
+	// The bare, no-model entry point must see the IDENTICAL, now-exhausted
+	// bucket — proving both entry points share one bucket when no
+	// PerModel TPM override exists, mirroring AllowForModel/Allow's own
+	// identical byte-identical proof.
+	if allowed, _, _ := l.ReserveTPM("team-alpha", ""); allowed {
+		t.Fatal("ReserveTPM(\"\") = true after gpt-4o's own call (no TPM override) drained the shared default bucket, want false")
+	}
+}
+
+// TestReserveTPMPerModelEntryWithNonPositiveCapacityTreatedAsAbsent
+// mirrors TestPerModelEntryWithNonPositiveCapacityTreatedAsAbsent for the
+// TPM dimension.
+func TestReserveTPMPerModelEntryWithNonPositiveCapacityTreatedAsAbsent(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 5, RefillPerSecond: 1, TPMCapacity: 0, TPMRefillPerSecond: 10}},
+	}})
+	allowed, _, tokens := l.ReserveTPM("team-alpha", "gpt-4o")
+	if !allowed || tokens <= 0 {
+		t.Fatalf("ReserveTPM(gpt-4o) = (%v, _, %v), want (true, >0) — a TPMCapacity<=0 override must fall through to the default TPM bucket, not an always-zero bucket", allowed, tokens)
+	}
+}
+
+// TestReconcileTPMCreditsBackTheSamePerModelBucketItReservedFrom is the
+// load-bearing round-trip proof: a reservation taken from a per-model
+// bucket must be reconciled against that EXACT bucket, never the
+// key-level default one, or the two dimensions would silently leak
+// capacity into each other.
+func TestReconcileTPMCreditsBackTheSamePerModelBucketItReservedFrom(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}},
+	}})
+
+	_, reserved, reservedTokens := l.ReserveTPM("team-alpha", "gpt-4o")
+	if !reserved {
+		t.Fatal("setup: ReserveTPM(gpt-4o) did not reserve anything")
+	}
+	realTokens := 1.0
+	l.ReconcileTPM("team-alpha", "gpt-4o", reservedTokens, &realTokens)
+
+	// The default bucket must be entirely untouched by this reserve+
+	// reconcile cycle against gpt-4o's own bucket.
+	if allowed, _, tokens := l.ReserveTPM("team-alpha", ""); !allowed || tokens <= 0 {
+		t.Errorf("ReserveTPM(\"\") after reconciling gpt-4o's own bucket = (%v, _, %v), want the default bucket's full, untouched reservation", allowed, tokens)
+	}
+	// gpt-4o's own bucket, having reconciled down to a real cost of only
+	// 1 token (far below its reserved amount), should have most of its
+	// 10-token capacity available again — provably not the same as
+	// having been left at its exhausted, still-reserved balance.
+	if allowed, _, _ := l.ReserveTPM("team-alpha", "gpt-4o"); !allowed {
+		t.Error("ReserveTPM(gpt-4o) after reconciling down to a 1-token real cost = false, want true — the reconciliation should have credited most of the reservation back")
+	}
+}
+
+// TestReconcileTPMNoOpWhenPerModelTPMNotConfigured mirrors
+// TestRecordTokensNoOpWhenTPMNotConfigured for the per-model path — a
+// ReconcileTPM call against a model with no TPM override at all
+// (default TPM bucket also absent) must never panic.
+func TestReconcileTPMNoOpWhenPerModelTPMNotConfigured(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}})
+	realTokens := 5.0
+	l.ReconcileTPM("team-alpha", "gpt-4o", 0, &realTokens) // must not panic
+}
+
+// TestRegisterDisablingPerModelTPMRemovesTheStaleBucket mirrors
+// TestRegisterDisablingPerModelRemovesTheStaleBucket for the TPM
+// dimension.
+func TestRegisterDisablingPerModelTPMRemovesTheStaleBucket(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 1, TPMRefillPerSecond: 0}},
+	}})
+
+	allowed, _, tokens := l.ReserveTPM("team-alpha", "gpt-4o")
+	if !allowed || tokens != 1 {
+		t.Fatalf("first ReserveTPM(gpt-4o) = (%v, _, %v), want (true, 1) — a fresh 1-token bucket reserves its entire balance in one call", allowed, tokens)
+	}
+	if allowed, _, _ := l.ReserveTPM("team-alpha", "gpt-4o"); allowed {
+		t.Fatal("setup: gpt-4o's 1-token override bucket should now be exhausted")
+	}
+
+	l.Register(KeyConfig{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100, TPMCapacity: 1000, TPMRefillPerSecond: 0}) // PerModel omitted = disabled
+
+	if allowed, _, _ := l.ReserveTPM("team-alpha", "gpt-4o"); !allowed {
+		t.Fatal("ReserveTPM(gpt-4o) = false after Register() disabled the override, want true — gpt-4o should now fall through to the fresh default TPM bucket, not a stale exhausted override")
+	}
+}
