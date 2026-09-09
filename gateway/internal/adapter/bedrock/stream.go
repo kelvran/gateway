@@ -244,9 +244,11 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 			return nil, nil, fmt.Errorf("bedrock: decoding metadata: %w", err)
 		}
 		usage := &adapter.Usage{
-			PromptTokens:     ev.Usage.InputTokens,
-			CompletionTokens: ev.Usage.OutputTokens,
-			TotalTokens:      ev.Usage.TotalTokens,
+			PromptTokens:        ev.Usage.InputTokens + ev.Usage.CacheReadInputTokens + ev.Usage.CacheWriteInputTokens,
+			CompletionTokens:    ev.Usage.OutputTokens,
+			TotalTokens:         ev.Usage.TotalTokens + ev.Usage.CacheReadInputTokens + ev.Usage.CacheWriteInputTokens,
+			CacheReadTokens:     ev.Usage.CacheReadInputTokens,
+			CacheCreationTokens: ev.Usage.CacheWriteInputTokens,
 		}
 		return nil, usage, nil
 

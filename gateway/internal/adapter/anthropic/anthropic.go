@@ -185,9 +185,15 @@ type Response struct {
 
 // Usage is Anthropic's native token-accounting shape (note the different
 // field names from OpenAI's prompt_tokens/completion_tokens).
+// CacheCreationInputTokens/CacheReadInputTokens are real response fields
+// (verified live against platform.claude.com/docs/en/api/messages) --
+// previously silently dropped by json.Unmarshal since this struct had no
+// field for them.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 // Adapter implements adapter.Adapter for Anthropic.
@@ -380,9 +386,11 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			{Index: 0, Message: message, FinishReason: finishReason},
 		},
 		Usage: adapter.Usage{
-			PromptTokens:     native.Usage.InputTokens,
-			CompletionTokens: native.Usage.OutputTokens,
-			TotalTokens:      native.Usage.InputTokens + native.Usage.OutputTokens,
+			PromptTokens:        native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens,
+			CompletionTokens:    native.Usage.OutputTokens,
+			TotalTokens:         native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens + native.Usage.OutputTokens,
+			CacheReadTokens:     native.Usage.CacheReadInputTokens,
+			CacheCreationTokens: native.Usage.CacheCreationInputTokens,
 		},
 	}, nil
 }

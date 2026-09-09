@@ -112,6 +112,53 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFromProviderIncludesCacheTokensInPromptAndTotal proves the
+// cache-token cost-accounting fix: Bedrock's real cacheReadInputTokens/
+// cacheWriteInputTokens response fields are read (not silently dropped)
+// and folded into PromptTokens/TotalTokens -- Converse's own totalTokens
+// is documented as inputTokens+outputTokens ONLY, so cache tokens must be
+// added on top here, unlike Anthropic's native totalTokens which already
+// includes them.
+func TestFromProviderIncludesCacheTokensInPromptAndTotal(t *testing.T) {
+	a := New()
+	nativeResp := &Response{
+		Output: Output{
+			Message: Message{
+				Role:    "assistant",
+				Content: []ContentBlock{{Text: "hello"}},
+			},
+		},
+		StopReason: "end_turn",
+		Usage: Usage{
+			InputTokens:           8,
+			OutputTokens:          10,
+			TotalTokens:           18,
+			CacheReadInputTokens:  0,
+			CacheWriteInputTokens: 5120,
+		},
+	}
+
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+
+	wantPrompt := 8 + 5120
+	wantTotal := 18 + 5120
+	if got.Usage.PromptTokens != wantPrompt {
+		t.Errorf("Usage.PromptTokens = %d, want %d (cache-inclusive)", got.Usage.PromptTokens, wantPrompt)
+	}
+	if got.Usage.TotalTokens != wantTotal {
+		t.Errorf("Usage.TotalTokens = %d, want %d", got.Usage.TotalTokens, wantTotal)
+	}
+	if got.Usage.CacheReadTokens != 0 {
+		t.Errorf("Usage.CacheReadTokens = %d, want 0", got.Usage.CacheReadTokens)
+	}
+	if got.Usage.CacheCreationTokens != 5120 {
+		t.Errorf("Usage.CacheCreationTokens = %d, want 5120", got.Usage.CacheCreationTokens)
+	}
+}
+
 // TestToProviderToolResultMessageNeedsNoNameLookup proves the real,
 // named simplification vs. Gemini's functionResponse.name hazard: a
 // Bedrock toolResult correlates purely by ToolUseID, with no "name"

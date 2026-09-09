@@ -231,6 +231,53 @@ func TestLoadCacheSectionParsesL1AndNestedL2(t *testing.T) {
 	}
 }
 
+// TestLoadPriceTableParsesCacheTokenRates proves the cache-token
+// cost-accounting fix's config surface: cache_read_per_token/
+// cache_creation_per_token, when present under a price_table entry, are
+// parsed into non-nil pointers -- distinguishable from the omitted case
+// below, which must resolve to nil (unset), never a bare decimal.Zero.
+func TestLoadPriceTableParsesCacheTokenRates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  claude-opus-4:\n    prompt_per_token: 0.000015\n    completion_per_token: 0.000075\n    cache_read_per_token: 0.0000003\n    cache_creation_per_token: 0.00001\n  gpt-4o:\n    prompt_per_token: 0.0000025\n    completion_per_token: 0.00001\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a price_table section: %v", err)
+	}
+
+	opus, ok := cfg.PriceTable["claude-opus-4"]
+	if !ok {
+		t.Fatal("missing price_table entry \"claude-opus-4\"")
+	}
+	if opus.CacheReadPerToken == nil {
+		t.Fatal("claude-opus-4.CacheReadPerToken = nil, want a set rate")
+	}
+	if !opus.CacheReadPerToken.Equal(decimal.RequireFromString("0.0000003")) {
+		t.Errorf("claude-opus-4.CacheReadPerToken = %v, want 0.0000003", *opus.CacheReadPerToken)
+	}
+	if opus.CacheCreationPerToken == nil {
+		t.Fatal("claude-opus-4.CacheCreationPerToken = nil, want a set rate")
+	}
+	if !opus.CacheCreationPerToken.Equal(decimal.RequireFromString("0.00001")) {
+		t.Errorf("claude-opus-4.CacheCreationPerToken = %v, want 0.00001", *opus.CacheCreationPerToken)
+	}
+
+	gpt4o, ok := cfg.PriceTable["gpt-4o"]
+	if !ok {
+		t.Fatal("missing price_table entry \"gpt-4o\"")
+	}
+	if gpt4o.CacheReadPerToken != nil {
+		t.Errorf("gpt-4o.CacheReadPerToken = %v, want nil (unset -- omitted from config)", *gpt4o.CacheReadPerToken)
+	}
+	if gpt4o.CacheCreationPerToken != nil {
+		t.Errorf("gpt-4o.CacheCreationPerToken = %v, want nil (unset -- omitted from config)", *gpt4o.CacheCreationPerToken)
+	}
+}
+
 // TestLoadGuardrailsSectionParsesPolicyVersionAndOverrides proves the
 // guardrails: section, when present, is parsed correctly, per
 // docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md.

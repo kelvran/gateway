@@ -1663,9 +1663,11 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// OpenAI-shaped APIs) and must never double as the price-table
 		// key too.
 		cost = p.costCalc.Calculate(realServingModel(dep, req.Model), costaccounting.Usage{
-			PromptTokens:     resp.Usage.PromptTokens,
-			CompletionTokens: resp.Usage.CompletionTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
+			PromptTokens:        resp.Usage.PromptTokens,
+			CompletionTokens:    resp.Usage.CompletionTokens,
+			TotalTokens:         resp.Usage.TotalTokens,
+			CacheReadTokens:     resp.Usage.CacheReadTokens,
+			CacheCreationTokens: resp.Usage.CacheCreationTokens,
 		})
 	}
 

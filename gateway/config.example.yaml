@@ -335,6 +335,16 @@ price_table:
     prompt_per_token: 0.0000025
     completion_per_token: 0.00001
 
+  # cache_read_per_token/cache_creation_per_token, per
+  # docs/rfcs/2026-09-10-gateway-cache-token-cost-accounting.md, price a
+  # cache-read/cache-write token slice (Anthropic cache_read_input_tokens
+  # /cache_creation_input_tokens, Bedrock cacheReadInputTokens/
+  # cacheWriteInputTokens) at its OWN rate instead of prompt_per_token.
+  # Omitting either key (as gpt-4o above does) falls back to
+  # prompt_per_token for that slice -- an unset cache rate is never
+  # unpriced ($0); it's priced as an ordinary prompt token.
   claude-opus-4:
     prompt_per_token: 0.000015
     completion_per_token: 0.000075
+    cache_read_per_token: 0.0000003
+    cache_creation_per_token: 0.00001

@@ -192,6 +192,37 @@ func TestDecodeMetadataProducesUsage(t *testing.T) {
 	}
 }
 
+// TestDecodeMetadataUsageIncludesCacheTokens proves the cache-token
+// cost-accounting fix on the streaming path: cacheReadInputTokens/
+// cacheWriteInputTokens arrive in the same single metadata event as
+// inputTokens/outputTokens/totalTokens, and must be folded into
+// PromptTokens/TotalTokens -- Converse's totalTokens is documented as
+// inputTokens+outputTokens ONLY, so cache tokens are added on top here.
+func TestDecodeMetadataUsageIncludesCacheTokens(t *testing.T) {
+	msg := newEventMessage("metadata", `{"usage":{"inputTokens":8,"outputTokens":0,"totalTokens":8,"cacheReadInputTokens":0,"cacheWriteInputTokens":5120}}`)
+
+	_, usage, err := NewStreamDecoder().Decode(msg)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if usage == nil {
+		t.Fatal("usage = nil, want non-nil")
+	}
+	wantPrompt := 8 + 5120
+	if usage.PromptTokens != wantPrompt {
+		t.Errorf("usage.PromptTokens = %d, want %d", usage.PromptTokens, wantPrompt)
+	}
+	if usage.TotalTokens != 8+5120 {
+		t.Errorf("usage.TotalTokens = %d, want %d", usage.TotalTokens, 8+5120)
+	}
+	if usage.CacheReadTokens != 0 {
+		t.Errorf("usage.CacheReadTokens = %d, want 0", usage.CacheReadTokens)
+	}
+	if usage.CacheCreationTokens != 5120 {
+		t.Errorf("usage.CacheCreationTokens = %d, want 5120", usage.CacheCreationTokens)
+	}
+}
+
 // newExceptionMessage builds a real eventstream.Message for one of
 // ConverseStream's real ":exception-type" values.
 func newExceptionMessage(exceptionType, payload string) eventstream.Message {

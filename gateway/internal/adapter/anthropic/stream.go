@@ -61,12 +61,15 @@ type streamDecoder struct {
 	// stream once closed (Anthropic does not guarantee otherwise, and this
 	// decoder must not assume it).
 	blockKinds map[int]blockKind
-	// inputTokens is captured from message_start's usage field.
-	// Anthropic splits usage across two separate events — input tokens at
-	// message_start, output tokens at message_delta — so the decoder must
-	// remember the first half in order to hand back one complete
-	// adapter.Usage when the second half arrives.
-	inputTokens int
+	// inputTokens, cacheReadTokens, and cacheCreationTokens are all
+	// captured from message_start's usage field. Anthropic splits usage
+	// across two separate events — input/cache tokens at message_start,
+	// output tokens at message_delta — so the decoder must remember the
+	// first half in order to hand back one complete adapter.Usage when the
+	// second half arrives.
+	inputTokens         int
+	cacheReadTokens     int
+	cacheCreationTokens int
 }
 
 // rawEnvelope is unmarshaled first, for every event, purely to read the
@@ -80,7 +83,9 @@ type rawMessageStart struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage struct {
-			InputTokens int `json:"input_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -194,6 +199,8 @@ func (d *streamDecoder) decodeMessageStart(data string) ([]streaming.ChatComplet
 	d.id = m.Message.ID
 	d.model = m.Message.Model
 	d.inputTokens = m.Message.Usage.InputTokens
+	d.cacheReadTokens = m.Message.Usage.CacheReadInputTokens
+	d.cacheCreationTokens = m.Message.Usage.CacheCreationInputTokens
 	return nil, false, nil, nil
 }
 
@@ -274,9 +281,11 @@ func (d *streamDecoder) decodeMessageDelta(data string) ([]streaming.ChatComplet
 		return nil, false, nil, fmt.Errorf("anthropic: decoding message_delta: %w", err)
 	}
 	usage := &adapter.Usage{
-		PromptTokens:     d.inputTokens,
-		CompletionTokens: m.Usage.OutputTokens,
-		TotalTokens:      d.inputTokens + m.Usage.OutputTokens,
+		PromptTokens:        d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens,
+		CompletionTokens:    m.Usage.OutputTokens,
+		TotalTokens:         d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens + m.Usage.OutputTokens,
+		CacheReadTokens:     d.cacheReadTokens,
+		CacheCreationTokens: d.cacheCreationTokens,
 	}
 	// message_delta is the ONLY event that ever carries stop_reason — a
 	// chunk reconstructing the full canonical response (for cache

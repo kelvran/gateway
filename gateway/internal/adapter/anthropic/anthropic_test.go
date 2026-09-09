@@ -107,6 +107,49 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFromProviderIncludesCacheTokensInPromptAndTotal proves the
+// cache-token cost-accounting fix: Anthropic's real cache_read_input_tokens
+// /cache_creation_input_tokens response fields are read (not silently
+// dropped), folded into PromptTokens/TotalTokens per Anthropic's own
+// confirmed total_input_tokens formula, and surfaced separately via
+// CacheReadTokens/CacheCreationTokens for cost-accounting to price.
+func TestFromProviderIncludesCacheTokensInPromptAndTotal(t *testing.T) {
+	a := New()
+	nativeResp := &Response{
+		ID:         "msg_cached",
+		Model:      "claude-opus-4",
+		Role:       "assistant",
+		Content:    []ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: "end_turn",
+		Usage: Usage{
+			InputTokens:              50,
+			OutputTokens:             10,
+			CacheReadInputTokens:     1800,
+			CacheCreationInputTokens: 248,
+		},
+	}
+
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+
+	wantPrompt := 50 + 1800 + 248
+	wantTotal := wantPrompt + 10
+	if got.Usage.PromptTokens != wantPrompt {
+		t.Errorf("Usage.PromptTokens = %d, want %d (cache-inclusive)", got.Usage.PromptTokens, wantPrompt)
+	}
+	if got.Usage.TotalTokens != wantTotal {
+		t.Errorf("Usage.TotalTokens = %d, want %d", got.Usage.TotalTokens, wantTotal)
+	}
+	if got.Usage.CacheReadTokens != 1800 {
+		t.Errorf("Usage.CacheReadTokens = %d, want 1800", got.Usage.CacheReadTokens)
+	}
+	if got.Usage.CacheCreationTokens != 248 {
+		t.Errorf("Usage.CacheCreationTokens = %d, want 248", got.Usage.CacheCreationTokens)
+	}
+}
+
 // TestToProviderToolResultMessage covers the canonical role:"tool" ->
 // native role:"user"/tool_result-block translation this adapter also
 // performs, since Anthropic has no native "tool" role.

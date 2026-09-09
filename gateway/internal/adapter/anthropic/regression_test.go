@@ -114,3 +114,33 @@ func TestRegressionFromProviderMatchesCanonicalWireFormat(t *testing.T) {
 	wantJSON := mustReadTestdata(t, "response_canonical.golden.json")
 	assertJSONEqual(t, gotJSON, wantJSON)
 }
+
+// TestRegressionFromProviderMatchesCanonicalWireFormatWithCacheTokens is
+// the cache-token-cost-accounting counterpart to the test above: a real
+// Anthropic-native response fixture carrying cache_creation_input_tokens/
+// cache_read_input_tokens must fold them into prompt_tokens/total_tokens
+// and surface them as cache_read_tokens/cache_creation_tokens on the
+// canonical side -- catching an accidental change to the wire format
+// (a dropped field, a wrong sum) immediately.
+func TestRegressionFromProviderMatchesCanonicalWireFormatWithCacheTokens(t *testing.T) {
+	nativeJSON := mustReadTestdata(t, "response_anthropic_native_cached.json")
+
+	var native Response
+	if err := json.Unmarshal(nativeJSON, &native); err != nil {
+		t.Fatalf("unmarshaling response_anthropic_native_cached.json: %v", err)
+	}
+
+	a := New()
+	canonical, err := a.FromProvider(&native)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+
+	gotJSON, err := json.Marshal(canonical)
+	if err != nil {
+		t.Fatalf("marshaling FromProvider output: %v", err)
+	}
+
+	wantJSON := mustReadTestdata(t, "response_canonical_cached.golden.json")
+	assertJSONEqual(t, gotJSON, wantJSON)
+}

@@ -456,8 +456,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	priceTable := costaccounting.PriceTable{}
 	for model, price := range cfg.PriceTable {
 		priceTable[model] = costaccounting.ModelPrice{
-			PromptPerToken:     price.PromptPerToken,
-			CompletionPerToken: price.CompletionPerToken,
+			PromptPerToken:        price.PromptPerToken,
+			CompletionPerToken:    price.CompletionPerToken,
+			CacheReadPerToken:     price.CacheReadPerToken,
+			CacheCreationPerToken: price.CacheCreationPerToken,
 		}
 	}
 

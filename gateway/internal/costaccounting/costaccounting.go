@@ -10,20 +10,36 @@ package costaccounting
 import "github.com/shopspring/decimal"
 
 // Usage is token accounting for a single completion. This is a local
-// type (mirroring internal/adapter.Usage's shape) rather than a direct
-// dependency on the adapter package, so costaccounting stays a leaf that
-// doesn't need to know about the canonical request/response schema.
+// type (mirroring internal/adapter.Usage's shape, including the
+// cache-inclusive PromptTokens convention -- see that type's doc comment)
+// rather than a direct dependency on the adapter package, so
+// costaccounting stays a leaf that doesn't need to know about the
+// canonical request/response schema.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// CacheReadTokens/CacheCreationTokens are the subset of PromptTokens
+	// served from / spent creating a provider-side prompt cache entry --
+	// see adapter.Usage's doc comment. Invariant, enforced by every
+	// producer: CacheReadTokens+CacheCreationTokens <= PromptTokens.
+	CacheReadTokens     int
+	CacheCreationTokens int
 }
 
-// ModelPrice is the per-token price for one model's prompt and
-// completion tokens, in USD.
+// ModelPrice is the per-token price for one model's prompt and completion
+// tokens, in USD, plus OPTIONAL per-cache-class rates.
+// CacheReadPerToken/CacheCreationPerToken are *decimal.Decimal, not a bare
+// decimal.Decimal: nil means "not configured for this model" -- distinct
+// from an operator's explicit decimal.Zero (e.g. "cache reads are free
+// for this model"), which a bare zero-value decimal.Decimal could never
+// represent. See Calculate/resolveCacheRate for the fallback behavior
+// when nil.
 type ModelPrice struct {
-	PromptPerToken     decimal.Decimal
-	CompletionPerToken decimal.Decimal
+	PromptPerToken        decimal.Decimal
+	CompletionPerToken    decimal.Decimal
+	CacheReadPerToken     *decimal.Decimal
+	CacheCreationPerToken *decimal.Decimal
 }
 
 // PriceTable maps a model name to its ModelPrice.
@@ -45,12 +61,34 @@ func NewCalculator(prices PriceTable) *Calculator {
 // than guessing a price — this pass has no error-reporting path wired for
 // pricing gaps yet, so a visibly-zero cost is the honest default, not a
 // silently wrong estimate.
+//
+// freshPromptTokens excludes the cache slice already counted inside
+// PromptTokens (see Usage's doc comment) -- priced at the base
+// PromptPerToken rate; the cache slice is priced separately, at its own
+// (possibly-unset) rate, per resolveCacheRate.
 func (c *Calculator) Calculate(model string, usage Usage) decimal.Decimal {
 	price, ok := c.prices[model]
 	if !ok {
 		return decimal.Zero
 	}
-	promptCost := decimal.NewFromInt(int64(usage.PromptTokens)).Mul(price.PromptPerToken)
-	completionCost := decimal.NewFromInt(int64(usage.CompletionTokens)).Mul(price.CompletionPerToken)
-	return promptCost.Add(completionCost)
+	freshPromptTokens := usage.PromptTokens - usage.CacheReadTokens - usage.CacheCreationTokens
+	cost := decimal.NewFromInt(int64(freshPromptTokens)).Mul(price.PromptPerToken)
+	cost = cost.Add(decimal.NewFromInt(int64(usage.CacheReadTokens)).Mul(resolveCacheRate(price.CacheReadPerToken, price.PromptPerToken)))
+	cost = cost.Add(decimal.NewFromInt(int64(usage.CacheCreationTokens)).Mul(resolveCacheRate(price.CacheCreationPerToken, price.PromptPerToken)))
+	cost = cost.Add(decimal.NewFromInt(int64(usage.CompletionTokens)).Mul(price.CompletionPerToken))
+	return cost
+}
+
+// resolveCacheRate returns *rate, or fallbackRate when rate is nil
+// (unset). Per the confirmed decision, every caller in this package
+// passes price.PromptPerToken as fallbackRate: an operator who hasn't
+// configured an explicit cache rate for a model has that model's cache
+// tokens priced as ordinary prompt tokens, closing the undercounting
+// defect (cache tokens previously contributed $0 to cost) immediately,
+// with zero config change required.
+func resolveCacheRate(rate *decimal.Decimal, fallbackRate decimal.Decimal) decimal.Decimal {
+	if rate != nil {
+		return *rate
+	}
+	return fallbackRate
 }

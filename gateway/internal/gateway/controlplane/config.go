@@ -176,6 +176,13 @@ var validFallbackClasses = map[string]bool{
 type ModelPriceConfig struct {
 	PromptPerToken     decimal.Decimal
 	CompletionPerToken decimal.Decimal
+	// CacheReadPerToken/CacheCreationPerToken are nil (unset) unless the
+	// operator explicitly configured cache_read_per_token/
+	// cache_creation_per_token for this model -- see
+	// costaccounting.ModelPrice's doc comment for why a pointer, not a
+	// bare decimal.Decimal.
+	CacheReadPerToken     *decimal.Decimal
+	CacheCreationPerToken *decimal.Decimal
 }
 
 // VirtualKeyConfig is one statically-configured virtual key, per
@@ -638,10 +645,17 @@ func Load(path string) (*Config, error) {
 			}
 			promptPer, _ := getDecimal(priceMap, "prompt_per_token")
 			completionPer, _ := getDecimal(priceMap, "completion_per_token")
-			cfg.PriceTable[model] = ModelPriceConfig{
+			entry := ModelPriceConfig{
 				PromptPerToken:     promptPer,
 				CompletionPerToken: completionPer,
 			}
+			if cacheReadPer, ok := getDecimal(priceMap, "cache_read_per_token"); ok {
+				entry.CacheReadPerToken = &cacheReadPer
+			}
+			if cacheCreationPer, ok := getDecimal(priceMap, "cache_creation_per_token"); ok {
+				entry.CacheCreationPerToken = &cacheCreationPer
+			}
+			cfg.PriceTable[model] = entry
 		}
 	}
 

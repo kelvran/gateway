@@ -29,6 +29,98 @@ func TestCalculateUnknownModelReturnsZero(t *testing.T) {
 	}
 }
 
+// TestCalculateCacheTokensPricedAtCacheRate proves the cache-token
+// cost-accounting fix: when a ModelPrice sets explicit
+// CacheReadPerToken/CacheCreationPerToken, those rates are charged for
+// exactly the cache slice, and the remaining "fresh" prompt tokens
+// (PromptTokens - CacheReadTokens - CacheCreationTokens) are still priced
+// at the ordinary PromptPerToken rate -- never double-priced.
+func TestCalculateCacheTokensPricedAtCacheRate(t *testing.T) {
+	cacheReadRate := decimal.RequireFromString("0.0000003")
+	cacheCreationRate := decimal.RequireFromString("0.00001")
+	c := NewCalculator(PriceTable{
+		"claude-opus-4": {
+			PromptPerToken:        decimal.RequireFromString("0.000015"),
+			CompletionPerToken:    decimal.RequireFromString("0.000075"),
+			CacheReadPerToken:     &cacheReadRate,
+			CacheCreationPerToken: &cacheCreationRate,
+		},
+	})
+
+	got := c.Calculate("claude-opus-4", Usage{
+		PromptTokens:        2098, // 50 fresh + 1800 cache-read + 248 cache-creation
+		CompletionTokens:    12,
+		CacheReadTokens:     1800,
+		CacheCreationTokens: 248,
+	})
+	// fresh: 50*0.000015 = 0.00075; cache-read: 1800*0.0000003 = 0.00054;
+	// cache-creation: 248*0.00001 = 0.00248; completion: 12*0.000075 = 0.0009
+	want := decimal.RequireFromString("0.00075").
+		Add(decimal.RequireFromString("0.00054")).
+		Add(decimal.RequireFromString("0.00248")).
+		Add(decimal.RequireFromString("0.0009"))
+	if !got.Equal(want) {
+		t.Errorf("Calculate() = %v, want %v", got, want)
+	}
+}
+
+// TestCalculateUnsetCacheRateFallsBackToPromptRate proves the confirmed
+// fallback decision: a ModelPrice with no CacheReadPerToken/
+// CacheCreationPerToken set (nil, the zero value for the pointer fields)
+// prices the cache slice at the model's ordinary PromptPerToken rate --
+// closing the undercounting defect (cache tokens previously contributed
+// $0) with zero config change required.
+func TestCalculateUnsetCacheRateFallsBackToPromptRate(t *testing.T) {
+	c := NewCalculator(PriceTable{
+		"claude-opus-4": {
+			PromptPerToken:     decimal.RequireFromString("0.000015"),
+			CompletionPerToken: decimal.RequireFromString("0.000075"),
+			// CacheReadPerToken/CacheCreationPerToken deliberately unset.
+		},
+	})
+
+	got := c.Calculate("claude-opus-4", Usage{
+		PromptTokens:        2098,
+		CompletionTokens:    0,
+		CacheReadTokens:     1800,
+		CacheCreationTokens: 248,
+	})
+	// Every one of the 2098 prompt tokens (fresh + cache-read +
+	// cache-creation) priced identically at PromptPerToken, since no
+	// cache-specific rate is configured.
+	want := decimal.NewFromInt(2098).Mul(decimal.RequireFromString("0.000015"))
+	if !got.Equal(want) {
+		t.Errorf("Calculate() = %v, want %v (unset cache rate should equal pricing the whole PromptTokens count at PromptPerToken)", got, want)
+	}
+}
+
+// TestCalculateCacheReadPlusCreationNeverExceedsPromptTokensInvariant is a
+// property-style sanity check: freshPromptTokens (PromptTokens -
+// CacheReadTokens - CacheCreationTokens) must never go negative for a
+// realistic usage value, i.e. cost must never come out negative just
+// because of how the cache slice is subtracted back out.
+func TestCalculateCacheReadPlusCreationNeverExceedsPromptTokensInvariant(t *testing.T) {
+	c := NewCalculator(PriceTable{
+		"claude-opus-4": {
+			PromptPerToken:     decimal.RequireFromString("0.000015"),
+			CompletionPerToken: decimal.RequireFromString("0.000075"),
+		},
+	})
+
+	// CacheReadTokens + CacheCreationTokens == PromptTokens exactly (no
+	// fresh tokens at all) -- the boundary case every real producer site
+	// can legitimately hit (e.g. a fully-cached system prompt with no new
+	// user turn).
+	got := c.Calculate("claude-opus-4", Usage{
+		PromptTokens:        2048,
+		CacheReadTokens:     1800,
+		CacheCreationTokens: 248,
+	})
+	if got.IsNegative() {
+		t.Errorf("Calculate() = %v, want non-negative even when CacheReadTokens+CacheCreationTokens == PromptTokens exactly", got)
+	}
+}
+
 func TestCalculateZeroUsage(t *testing.T) {
 	c := NewCalculator(PriceTable{
 		"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.000002"), CompletionPerToken: decimal.RequireFromString("0.00001")},

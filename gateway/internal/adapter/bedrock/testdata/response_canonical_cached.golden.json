@@ -1,0 +1,20 @@
+{
+  "id": "",
+  "model": "",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "It's 72°F and sunny in Boston."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 5128,
+    "completion_tokens": 0,
+    "total_tokens": 5128,
+    "cache_creation_tokens": 5120
+  }
+}
