@@ -182,8 +182,14 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              (POST/DELETE /admin/virtual_keys/{name}, via a new
                              dataplane.Pipeline.UpsertVirtualKey/DeleteVirtualKey pair built around
                              identity.Verifier becoming an atomic.Pointer). Auth is a deliberately
-                             separate static bearer credential from client-facing virtual keys — never
-                             delegates to identity.Verifier. Admin mutations are in-memory-only in v1
+                             separate, two-tier static bearer credential space from client-facing virtual
+                             keys — never delegates to identity.Verifier. An optional second, read-only
+                             viewer credential (admin.viewer_token_env) can authenticate GET /admin/config
+                             but is structurally rejected by POST/DELETE /admin/virtual_keys/{name}
+                             (per-route middleware wrapping); omitting it reproduces the original
+                             single-credential behavior exactly. Every successful virtual-key
+                             create/delete now writes a structured audit-log entry (key name only, never
+                             the credential). Admin mutations are in-memory-only in v1
                              (lost on restart, reverting to config.yaml); every other config section
                              (guardrails, budgets' shape, rate limits, routing, cache, price table,
                              telemetry) stays static-YAML-only, named explicitly as later follow-on work
