@@ -391,6 +391,24 @@ func (l *KeyLimiter) ReconcileTPM(keyID, model string, reservedTokens float64, r
 	bucket.ReconcileTPM(reservedTokens, realTokens)
 }
 
+// IncreaseReservationTPM is ReserveTPM's mid-stream top-up sibling — see
+// TokenBucket.IncreaseReservation's own doc comment for the shared
+// design rationale. model resolves the same per-model-then-default
+// bucket ReserveTPM/ReconcileTPM already use — MUST be the same model
+// value the original ReserveTPM call for this reservation used, exactly
+// like ReconcileTPM's own contract. A no-op, always allowed, when TPM
+// isn't configured for keyID/model at all (nil bucket), mirroring
+// ReserveTPM's own "no entry means unlimited" behavior.
+func (l *KeyLimiter) IncreaseReservationTPM(keyID, model string, currentReservedTokens, newReservedTokens float64) (allowed bool, appliedTokens float64) {
+	l.mu.RLock()
+	bucket := l.resolveTPMBucket(keyID, model)
+	l.mu.RUnlock()
+	if bucket == nil {
+		return true, currentReservedTokens
+	}
+	return bucket.IncreaseReservation(currentReservedTokens, newReservedTokens)
+}
+
 // resolveTPMBucket resolves keyID's TPM bucket for model — its own
 // per-model override if one is configured, else keyID's key-level
 // default TPM bucket, else nil (no TPM configured at all). Callers MUST

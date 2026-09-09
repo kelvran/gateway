@@ -184,6 +184,35 @@ func (b *TokenBucket) ReconcileTPM(reservedTokens float64, realTokens *float64) 
 	}
 }
 
+// IncreaseReservation is ReserveTPM's mid-stream top-up sibling — see
+// budget.Tracker.IncreaseReservation's doc comment for the shared design
+// rationale (the streaming concurrent-sibling reservation gap). A no-op,
+// always allowed (returns currentReservedTokens unchanged), when
+// newReservedTokens is not actually larger than currentReservedTokens —
+// callers are expected to check this cheaply themselves before calling,
+// to avoid acquiring b.mu on every one of a stream's many chunks, but
+// this method stays correct even if a caller doesn't bother. Otherwise
+// atomically checks whether the delta fits under the bucket's current
+// balance and, if so, debits it (b.tokens -= delta) and returns (true,
+// newReservedTokens); if it doesn't fit, b.tokens is left completely
+// unchanged and this returns (false, currentReservedTokens) — mirroring
+// ReserveTPM's own "insufficient balance" outcome exactly.
+func (b *TokenBucket) IncreaseReservation(currentReservedTokens, newReservedTokens float64) (allowed bool, appliedTokens float64) {
+	if newReservedTokens <= currentReservedTokens {
+		return true, currentReservedTokens
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refillLocked()
+	delta := newReservedTokens - currentReservedTokens
+	if b.tokens < delta {
+		return false, currentReservedTokens
+	}
+	b.tokens -= delta
+	return true, newReservedTokens
+}
+
 // refillLocked adds tokens for elapsed time since the last refill, capped
 // at capacity. Callers must hold b.mu.
 func (b *TokenBucket) refillLocked() {

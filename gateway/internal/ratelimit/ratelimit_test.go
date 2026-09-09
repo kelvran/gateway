@@ -122,3 +122,79 @@ func TestDebitRecoversViaOrdinaryRefill(t *testing.T) {
 		t.Fatal("HasBalance() = false after enough refill to recover from the overdraft, want true")
 	}
 }
+
+// TestIncreaseReservationAppliesWhenDeltaFitsBalance is the direct unit
+// proof for IncreaseReservation — the mid-stream reservation top-up half
+// of the streaming concurrent-sibling reservation gap fix, per
+// docs/upgrade-research/gateway-streaming-concurrent-sibling-
+// reservation-gap-2026-09-09.md.
+func TestIncreaseReservationAppliesWhenDeltaFitsBalance(t *testing.T) {
+	b := NewTokenBucket(100, 0)
+	allowed, reserved := b.ReserveTPM() // fresh bucket, no history: reserves the full 100
+	if !allowed || reserved != 100 {
+		t.Fatalf("setup ReserveTPM() = (%v, %v), want (true, 100)", allowed, reserved)
+	}
+	// b.tokens is now 0. Topping up FROM 100 (the current reservation) TO
+	// 100 (no real increase) must be a no-op regardless of balance.
+	allowed2, applied2 := b.IncreaseReservation(100, 100)
+	if !allowed2 || applied2 != 100 {
+		t.Fatalf("IncreaseReservation(100 -> 100, no change) = (%v, %v), want (true, 100)", allowed2, applied2)
+	}
+
+	// A bucket with real remaining balance: reserve 2, top up to 5.
+	b2 := NewTokenBucket(100, 0)
+	b2.ReserveTPM() // reserves the full 100, tokens now 0
+	realTokens := 2.0
+	b2.ReconcileTPM(100, &realTokens) // tokens back to 100 - 2 = 98, billedCount=1
+	_, small := b2.ReserveTPM()       // historical average 2/1=2; tokens now 98-2=96
+	if small != 2 {
+		t.Fatalf("second ReserveTPM() reservation = %v, want 2 (historical average)", small)
+	}
+	allowed3, applied3 := b2.IncreaseReservation(small, 50)
+	if !allowed3 || applied3 != 50 {
+		t.Fatalf("IncreaseReservation(2 -> 50) = (%v, %v), want (true, 50) — 48 more delta fits comfortably in the 96-token balance", allowed3, applied3)
+	}
+}
+
+// TestIncreaseReservationRejectsWhenDeltaExceedsBalance is the
+// load-bearing proof this fix exists for: a top-up that would push past
+// the bucket's real remaining balance must be rejected outright, leaving
+// the bucket's balance completely untouched — never a partial top-up.
+func TestIncreaseReservationRejectsWhenDeltaExceedsBalance(t *testing.T) {
+	b := NewTokenBucket(10, 0)
+	b.Debit(9) // balance now 1 — as if a small reservation already reduced it
+	current := 1.0
+
+	allowed, applied := b.IncreaseReservation(current, 5)
+	if allowed {
+		t.Fatal("IncreaseReservation(1 -> 5) against a balance of only 1 = true, want false")
+	}
+	if applied != current {
+		t.Errorf("appliedTokens on rejection = %v, want the ORIGINAL current reservation (1), unchanged", applied)
+	}
+	if b.tokens != 1 {
+		t.Errorf("b.tokens after a REJECTED top-up = %v, want 1 — balance must be completely untouched", b.tokens)
+	}
+}
+
+// TestIncreaseReservationNoOpWhenNotActuallyIncreasing mirrors
+// budget.Tracker's identical proof: a call where newReservedTokens is
+// not strictly greater than currentReservedTokens changes nothing and
+// always succeeds, even with near-zero real balance left — callers rely
+// on this cheap fast path to skip the lock-acquiring path on every chunk
+// of a stream that hasn't grown past its own reservation yet.
+func TestIncreaseReservationNoOpWhenNotActuallyIncreasing(t *testing.T) {
+	b := NewTokenBucket(10, 0)
+	b.Debit(9.99) // balance now 0.01
+	current := 5.0
+
+	for _, newAmount := range []float64{5, 3, 0} {
+		allowed, applied := b.IncreaseReservation(current, newAmount)
+		if !allowed || applied != current {
+			t.Errorf("IncreaseReservation(5 -> %v) = (%v, %v), want (true, 5) — not an increase, must be a no-op even with near-zero real balance left", newAmount, allowed, applied)
+		}
+	}
+	if diff := b.tokens - 0.01; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("b.tokens after only no-op calls = %v, want ~0.01 — unchanged", b.tokens)
+	}
+}

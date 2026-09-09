@@ -178,7 +178,8 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	resp, dep, fallback, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID)
+	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, tpmReservedTokens: &tpmReservedTokens}
+	resp, dep, fallback, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
 	if err != nil {
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
 		return
@@ -268,12 +269,17 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 // guard's "streaming_runaway_guard_triggered" warning log (see
 // streamrunaway.go) to the virtual key whose stream was cut off — it has
 // no effect on fallback routing, error classification, or anything else
-// this function already did.
-func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
+// this function already did. msr carries the SAME request's own
+// outstanding budget/TPM reservations (see midStreamReservation's own doc
+// comment) — threaded through unchanged across a fallback hop, since a
+// reservation made against the client's originally-requested model stays
+// that same reservation regardless of which deployment ultimately serves
+// the response.
+func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
 	var firstChunkSent bool
 	var fallback fallbackInfo
 
-	resp, err := p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID)
+	resp, err := p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr)
 	if err == nil || firstChunkSent {
 		return resp, dep, fallback, err
 	}
@@ -284,7 +290,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 			func(d Deployment) (adapter.ChatResponse, error) {
 				defer p.releaseDeploymentConcurrency(d.Name)
-				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID)
+				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID, msr)
 			},
 			func() bool { return firstChunkSent },
 			func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, keyID, model) },
@@ -297,7 +303,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
 		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 		dep = fallbackDep
-		resp, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID)
+		resp, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr)
 	}
 	return resp, dep, fallback, err
 }
@@ -306,7 +312,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 // own checkDeploymentCapacity gate and guaranteed release — the
 // streaming sibling of callDeploymentWithCapacityCheck (dataplane.go),
 // used for EVERY call to a deployment, hop 1 included.
-func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation) (adapter.ChatResponse, error) {
 	if !p.checkDeploymentRateLimit(ctx, dep.Name) {
 		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "rate_limit"}
 	}
@@ -314,7 +320,7 @@ func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep De
 		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "concurrency"}
 	}
 	defer p.releaseDeploymentConcurrency(dep.Name)
-	return p.streamDeployment(ctx, dep, req, sw, firstChunkSent, keyID)
+	return p.streamDeployment(ctx, dep, req, sw, firstChunkSent, keyID, msr)
 }
 
 // streamDeployment runs the streaming-specific adapter+upstream-call steps
@@ -327,10 +333,12 @@ func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep De
 //
 // keyID is used only by the mid-stream runaway-completion guard below, to
 // attribute its warning log to the virtual key whose stream was cut off —
-// see streamrunaway.go.
-func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string) (adapter.ChatResponse, error) {
+// see streamrunaway.go. msr is that same guard's sibling: this request's
+// own outstanding budget/TPM reservations, topped up in place as real
+// accumulated output grows past them — see checkMidStreamReservationTopup.
+func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation) (adapter.ChatResponse, error) {
 	if dep.Provider == "bedrock" {
-		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent, keyID)
+		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent, keyID, msr)
 	}
 
 	a, ok := p.adapters[dep.Provider]
@@ -410,7 +418,8 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		// truncated-but-valid stream via finishStreamedResponse below —
 		// exactly as if the provider itself had simply stopped sending
 		// chunks, never classified as an upstream failure.
-		if accumulatedChars := acc.totalContentLen(); accumulatedChars > runawayCeiling {
+		accumulatedChars := acc.totalContentLen()
+		if accumulatedChars > runawayCeiling {
 			p.logger.Warn("streaming_runaway_guard_triggered",
 				"key_id", keyID,
 				"deployment", dep.Name,
@@ -418,6 +427,26 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 				"model", req.Model,
 				"accumulated_chars", accumulatedChars,
 				"ceiling_chars", runawayCeiling,
+			)
+			cancelUpstream()
+			break
+		}
+		// Mid-stream reservation top-up guard — see
+		// checkMidStreamReservationTopup's own doc comment
+		// (streamrunaway.go). Distinct from the runaway-completion
+		// ceiling check above: that guards against an unreasonably LONG
+		// completion regardless of budget; this guards against THIS
+		// stream's own growing real cost silently exceeding what it
+		// reserved, which a concurrent sibling on the same key would
+		// otherwise never see. Same non-error, graceful-truncation
+		// treatment on trip.
+		if !p.checkMidStreamReservationTopup(dep, req, accumulatedChars, msr) {
+			p.logger.Warn("streaming_midstream_reservation_topup_exhausted",
+				"key_id", keyID,
+				"deployment", dep.Name,
+				"provider", dep.Provider,
+				"model", req.Model,
+				"accumulated_chars", accumulatedChars,
 			)
 			cancelUpstream()
 			break
@@ -440,7 +469,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 // binary-framed implementor. Everything after decoding (accumulation,
 // client tee, final-response assembly) is identical, via the shared
 // finishStreamedResponse.
-func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation) (adapter.ChatResponse, error) {
 	a, ok := p.adapters[dep.Provider]
 	if !ok {
 		return adapter.ChatResponse{}, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
@@ -508,7 +537,8 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 			*firstChunkSent = true
 		}
 		// See streamDeployment's identical runaway-guard comment/rationale.
-		if accumulatedChars := acc.totalContentLen(); accumulatedChars > runawayCeiling {
+		accumulatedChars := acc.totalContentLen()
+		if accumulatedChars > runawayCeiling {
 			p.logger.Warn("streaming_runaway_guard_triggered",
 				"key_id", keyID,
 				"deployment", dep.Name,
@@ -516,6 +546,19 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 				"model", req.Model,
 				"accumulated_chars", accumulatedChars,
 				"ceiling_chars", runawayCeiling,
+			)
+			cancelUpstream()
+			break
+		}
+		// See streamDeployment's identical mid-stream reservation
+		// top-up guard comment/rationale.
+		if !p.checkMidStreamReservationTopup(dep, req, accumulatedChars, msr) {
+			p.logger.Warn("streaming_midstream_reservation_topup_exhausted",
+				"key_id", keyID,
+				"deployment", dep.Name,
+				"provider", dep.Provider,
+				"model", req.Model,
+				"accumulated_chars", accumulatedChars,
 			)
 			cancelUpstream()
 			break

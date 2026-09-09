@@ -366,6 +366,63 @@ func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, realCost 
 	}
 }
 
+// IncreaseReservation attempts to raise an existing outstanding
+// reservation (previously granted by Reserve, or a prior
+// IncreaseReservation call for the same keyID) from currentReservedUSD to
+// newReservedUSD — the mid-stream top-up half of the reserve-then-
+// reconcile design, per docs/upgrade-research/gateway-streaming-
+// concurrent-sibling-reservation-gap-2026-09-09.md: a long-running
+// streaming request's real cost can grow well past its own initial
+// reservation (sized off cold-start full-headroom or historical-average
+// estimates, neither of which anticipates an unusually long stream),
+// silently understating its true claim on the key's headroom to any
+// concurrent sibling for the FULL DURATION of the stream — not just one
+// HTTP round-trip, the case Reserve/Reconcile's own reserve-then-
+// reconcile design was originally built to bound. This closes that gap
+// by letting the stream periodically true up its own reservation as
+// real-time evidence (the caller's own output-length-based cost
+// estimate) shows it growing.
+//
+// A no-op, always allowed (returns currentReservedUSD unchanged), when
+// capUSD.Sign() <= 0 (unlimited key) or newReservedUSD is not actually
+// larger than currentReservedUSD (nothing to top up — callers are
+// expected to check this cheaply themselves before calling, to avoid
+// acquiring t.mu on every one of a stream's many chunks, but this method
+// stays correct even if a caller doesn't bother). Otherwise atomically
+// checks whether the DELTA (newReservedUSD − currentReservedUSD) fits
+// under the remaining headroom and, if so, applies it (spent[keyID] +=
+// delta) and returns (true, newReservedUSD). If the delta does not fit,
+// spent[keyID] is left COMPLETELY UNCHANGED (the existing, smaller
+// reservation stays exactly as it was) and this returns (false,
+// currentReservedUSD) — the caller must then treat this exactly like a
+// runaway-completion-guard trip (streamrunaway.go): stop accepting
+// further chunks from this request, but finish gracefully via the
+// existing truncated-but-valid path, never as an error, since the
+// request already legitimately passed its own initial admission check.
+//
+// The caller MUST use whichever of (newReservedUSD on success,
+// currentReservedUSD unchanged on failure) this returns as the
+// reservedUSD argument to its EVENTUAL Reconcile call — never the
+// ORIGINAL pre-topup amount blindly, or Reconcile's own exact-inverse
+// arithmetic (see its own doc comment) would undo the wrong amount.
+func (t *Tracker) IncreaseReservation(keyID string, capUSD, currentReservedUSD, newReservedUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, appliedUSD decimal.Decimal) {
+	if t.resetIfNeeded(keyID, resetInterval) {
+		t.persistZeroIfStoreConfigured(keyID)
+	}
+	if capUSD.Sign() <= 0 || !newReservedUSD.GreaterThan(currentReservedUSD) {
+		return true, currentReservedUSD
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delta := newReservedUSD.Sub(currentReservedUSD)
+	if t.spent[keyID].Add(delta).GreaterThan(capUSD) {
+		return false, currentReservedUSD
+	}
+	t.spent[keyID] = t.spent[keyID].Add(delta)
+	return true, newReservedUSD
+}
+
 // Close releases the underlying store, if any. Safe to call even on a
 // Tracker constructed via NewTracker (no store).
 func (t *Tracker) Close() error {

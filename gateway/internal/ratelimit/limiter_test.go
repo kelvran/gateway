@@ -483,6 +483,48 @@ func TestReconcileTPMCreditsBackTheSamePerModelBucketItReservedFrom(t *testing.T
 	}
 }
 
+// TestIncreaseReservationTPMResolvesTheSamePerModelBucketAsReserveTPM
+// proves KeyLimiter.IncreaseReservationTPM resolves the identical
+// per-model-then-default bucket ReserveTPM/ReconcileTPM already use — the
+// mid-stream reservation top-up half of the streaming concurrent-sibling
+// reservation gap fix, per docs/upgrade-research/gateway-streaming-
+// concurrent-sibling-reservation-gap-2026-09-09.md.
+func TestIncreaseReservationTPMResolvesTheSamePerModelBucketAsReserveTPM(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}},
+	}})
+
+	_, _, reservedTokens := l.ReserveTPM("team-alpha", "gpt-4o") // reserves the full 10, tokens now 0
+	if reservedTokens != 10 {
+		t.Fatalf("setup: ReserveTPM(gpt-4o) reserved %v, want 10", reservedTokens)
+	}
+	// gpt-4o's own bucket has 0 tokens left — a top-up beyond its reserved
+	// 10 must be rejected, while the DEFAULT bucket (1000 tokens, entirely
+	// separate) must stay completely unaffected.
+	allowed, applied := l.IncreaseReservationTPM("team-alpha", "gpt-4o", reservedTokens, 20)
+	if allowed {
+		t.Fatal("IncreaseReservationTPM(gpt-4o, 10 -> 20) against an exhausted 10-token bucket = true, want false")
+	}
+	if applied != reservedTokens {
+		t.Errorf("appliedTokens on rejection = %v, want the original 10, unchanged", applied)
+	}
+	if allowed, _, tokens := l.ReserveTPM("team-alpha", ""); !allowed || tokens != 1000 {
+		t.Errorf("ReserveTPM(\"\") after gpt-4o's own rejected top-up = (%v, _, %v), want (true, 1000) — the default bucket must be untouched", allowed, tokens)
+	}
+}
+
+// TestIncreaseReservationTPMNoOpWhenTPMNotConfigured mirrors
+// ReconcileTPM's own "no TPM configured" no-op convention.
+func TestIncreaseReservationTPMNoOpWhenTPMNotConfigured(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}})
+	allowed, applied := l.IncreaseReservationTPM("team-alpha", "gpt-4o", 0, 1000)
+	if !allowed || applied != 0 {
+		t.Errorf("IncreaseReservationTPM with TPM unconfigured = (%v, %v), want (true, 0)", allowed, applied)
+	}
+}
+
 // TestReconcileTPMNoOpWhenPerModelTPMNotConfigured mirrors
 // TestRecordTokensNoOpWhenTPMNotConfigured for the per-model path — a
 // ReconcileTPM call against a model with no TPM override at all
