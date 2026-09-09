@@ -2268,3 +2268,140 @@ def test_rollout_against_a_real_docker_daemon(tmp_path):
         assert span.status == "OK"
         assert span.container_id is not None
         assert len(span.container_id) == 64
+
+
+def test_run_with_judge_debias_makes_two_sequential_calls_and_sums_both_costs(
+    tmp_path, monkeypatch
+):
+    """Per docs/rfcs/2026-09-09-evals-judge-debiasing-position-swap.md:
+    `--judge-debias` must make exactly TWO calls to the SAME `call_model`
+    for one case (never zero, never one, never more), in a real order
+    (the fake below would deadlock/misbehave if called concurrently,
+    since it mutates shared state each call and expects to be awaited
+    one at a time), and the persisted `cost_usd` must be the SUM of both
+    calls' cost, never just the second call's (which a naive
+    'last_call_cost' read after only the final call would silently
+    produce).
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "debias-case",
+                    "revision": 1,
+                    "task_spec": {"output": "Paris"},
+                    "reference": "Paris",
+                    "tier": "golden",
+                }
+            ]
+        )
+    )
+    scores_path = tmp_path / "scores.jsonl"
+
+    call_order = []
+
+    class _FakeSequentialCostExposingCallModel:
+        def __init__(self) -> None:
+            self.last_call_cost = None
+
+        async def __call__(self, prompt: str) -> str:
+            call_number = len(call_order) + 1
+            call_order.append(call_number)
+            self.last_call_cost = SimpleNamespace(
+                cost_usd=Decimal("0.001") * call_number
+            )
+            return "REASONING: matches.\nQUOTE: Paris\nVERDICT: PASS\n"
+
+    fake_call_model = _FakeSequentialCostExposingCallModel()
+    monkeypatch.setattr(
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--judge-debias",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert call_order == [1, 2]
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 1
+    assert persisted[0].value is True
+    # 0.001 (call 1) + 0.002 (call 2) -- the SUM, not just the last call's.
+    assert persisted[0].cost_usd == Decimal("0.003")
+    assert "position_swap_debiasing" in persisted[0].bias_mitigations_applied
+
+
+def test_run_with_judge_debias_fails_closed_on_position_disagreement(
+    tmp_path, monkeypatch
+):
+    """A judge that flips its verdict depending on which side of the
+    prompt the candidate output appears on is exactly the failure mode
+    debiasing exists to surface -- per `reduce_panel_votes`'s own
+    fail-closed-on-tie precedent, a disagreement between the two
+    position-swapped calls must resolve to `passed=False`, never
+    `True`, and the rationale must carry a visible marker rather than
+    silently picking one side.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "disagreement-case",
+                    "revision": 1,
+                    "task_spec": {"output": "Paris"},
+                    "reference": "Paris",
+                    "tier": "golden",
+                }
+            ]
+        )
+    )
+    scores_path = tmp_path / "scores.jsonl"
+
+    responses = iter(
+        [
+            "REASONING: matches.\nQUOTE: Paris\nVERDICT: PASS\n",
+            "REASONING: does not match.\nQUOTE: Paris\nVERDICT: FAIL\n",
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        return next(responses)
+
+    monkeypatch.setattr(
+        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--judge-debias",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "disagreement-case: FAIL" in result.output
+
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 1
+    assert persisted[0].value is False
+    assert "[POSITION DISAGREEMENT — fail-closed]" in persisted[0].rationale

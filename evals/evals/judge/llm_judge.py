@@ -41,6 +41,7 @@ import asyncio
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -131,9 +132,9 @@ _REASONING_PATTERN = re.compile(
 # their own "quote the exact, verbatim span... before giving your final
 # verdict" instruction, mirroring the existing REASONING-before-VERDICT
 # anti-post-hoc-rationalization ordering. Missing entirely (an older-
-# format or malformed response) falls back to "" via _parse_judge_response,
+# format or malformed response) falls back to "" via parse_judge_response,
 # the same lenient fallback _REASONING_PATTERN already uses — this is a
-# measurement-only signal (see _quote_is_grounded), never a hard parse
+# measurement-only signal (see quote_is_grounded), never a hard parse
 # error, per docs/rfcs/2026-09-09-evals-quote-grounded-verdict.md.
 _QUOTE_PATTERN = re.compile(r"QUOTE:\s*(.*?)\s*VERDICT:", re.IGNORECASE | re.DOTALL)
 
@@ -251,8 +252,188 @@ def build_judge_prompt(output: str, reference: str, axis: str | None = None) -> 
     )
 
 
+# Kelvran's own implementation of the "Combined Budget" technique's SHAPE
+# (a merged CoT+rubric prompt, called twice with position swapped) named
+# in docs/upgrade-research/evals-next-upgrade-2026-09-09.md's Finding 1 —
+# an explicit three-point rubric checklist folded into one CoT-forcing
+# prompt, not a verbatim reproduction of the cited paper's own exact
+# wording (which this project doesn't have direct access to). Reference/
+# candidate order is deliberately the one thing that swaps between the
+# two templates below — everything else (the rubric itself, the QUOTE
+# contract) is held identical, so a position effect is genuinely
+# isolated to ordering, not confounded with a second, incidental prompt
+# difference. See docs/rfcs/2026-09-09-evals-judge-debiasing-position-
+# swap.md.
+_DEBIASED_JUDGE_PROMPT_TEMPLATE_REFERENCE_FIRST = """\
+You are an impartial grader comparing a candidate output against a reference answer.
+
+Reference answer:
+{reference}
+
+Candidate output:
+{output}
+
+Work through this rubric, in order, before giving your verdict:
+1. Factual accuracy: does the candidate state the same facts as the reference, \
+with no contradictions or fabrications?
+2. Completeness: does the candidate cover everything the reference covers, with \
+no material omissions?
+3. Phrasing equivalence: do any differences in wording, units, ordering, or \
+format actually change the meaning?
+
+Think step by step through all three points BEFORE giving your final verdict — \
+do not state the verdict first. Then quote the exact, verbatim span (from \
+either the reference answer or the candidate output above) that most directly \
+grounds your verdict — do not paraphrase or summarize it.
+
+Respond in exactly this format, with no other text:
+REASONING: <your step-by-step reasoning through the rubric above>
+QUOTE: <a verbatim quote from the reference answer or candidate output above>
+VERDICT: <PASS or FAIL>
+"""
+
+_DEBIASED_JUDGE_PROMPT_TEMPLATE_CANDIDATE_FIRST = """\
+You are an impartial grader comparing a candidate output against a reference answer.
+
+Candidate output:
+{output}
+
+Reference answer:
+{reference}
+
+Work through this rubric, in order, before giving your verdict:
+1. Factual accuracy: does the candidate state the same facts as the reference, \
+with no contradictions or fabrications?
+2. Completeness: does the candidate cover everything the reference covers, with \
+no material omissions?
+3. Phrasing equivalence: do any differences in wording, units, ordering, or \
+format actually change the meaning?
+
+Think step by step through all three points BEFORE giving your final verdict — \
+do not state the verdict first. Then quote the exact, verbatim span (from \
+either the reference answer or the candidate output above) that most directly \
+grounds your verdict — do not paraphrase or summarize it.
+
+Respond in exactly this format, with no other text:
+REASONING: <your step-by-step reasoning through the rubric above>
+QUOTE: <a verbatim quote from the reference answer or candidate output above>
+VERDICT: <PASS or FAIL>
+"""
+
+_DEBIASED_JUDGE_PROMPT_TEMPLATE_WITH_AXIS_REFERENCE_FIRST = """\
+You are an impartial grader comparing a candidate output against a reference answer.
+
+Reference answer:
+{reference}
+
+Candidate output:
+{output}
+
+Grade specifically on this dimension: {axis}. Consider only this dimension when \
+forming your verdict — a candidate output may be correct on other dimensions and \
+still fail this one, or vice versa; do not let other dimensions influence this \
+verdict.
+
+Work through this rubric, in order, before giving your verdict, scoped to \
+{axis} only:
+1. Factual accuracy on this dimension: does the candidate contradict or \
+fabricate anything relative to the reference, specifically on {axis}?
+2. Completeness on this dimension: does the candidate cover everything the \
+reference covers on {axis}, with no material omissions?
+3. Phrasing equivalence on this dimension: do any wording/format differences \
+actually change the {axis} judgment?
+
+Think step by step through all three points BEFORE giving your final verdict — \
+do not state the verdict first. Then quote the exact, verbatim span (from \
+either the reference answer or the candidate output above) that most directly \
+grounds your verdict — do not paraphrase or summarize it.
+
+Respond in exactly this format, with no other text:
+REASONING: <your step-by-step reasoning through the rubric above, scoped to \
+{axis} only>
+QUOTE: <a verbatim quote from the reference answer or candidate output above>
+VERDICT: <PASS or FAIL>
+"""
+
+_DEBIASED_JUDGE_PROMPT_TEMPLATE_WITH_AXIS_CANDIDATE_FIRST = """\
+You are an impartial grader comparing a candidate output against a reference answer.
+
+Candidate output:
+{output}
+
+Reference answer:
+{reference}
+
+Grade specifically on this dimension: {axis}. Consider only this dimension when \
+forming your verdict — a candidate output may be correct on other dimensions and \
+still fail this one, or vice versa; do not let other dimensions influence this \
+verdict.
+
+Work through this rubric, in order, before giving your verdict, scoped to \
+{axis} only:
+1. Factual accuracy on this dimension: does the candidate contradict or \
+fabricate anything relative to the reference, specifically on {axis}?
+2. Completeness on this dimension: does the candidate cover everything the \
+reference covers on {axis}, with no material omissions?
+3. Phrasing equivalence on this dimension: do any wording/format differences \
+actually change the {axis} judgment?
+
+Think step by step through all three points BEFORE giving your final verdict — \
+do not state the verdict first. Then quote the exact, verbatim span (from \
+either the reference answer or the candidate output above) that most directly \
+grounds your verdict — do not paraphrase or summarize it.
+
+Respond in exactly this format, with no other text:
+REASONING: <your step-by-step reasoning through the rubric above, scoped to \
+{axis} only>
+QUOTE: <a verbatim quote from the reference answer or candidate output above>
+VERDICT: <PASS or FAIL>
+"""
+
+
+def build_debiased_judge_prompt(
+    output: str,
+    reference: str,
+    position: Literal["reference_first", "candidate_first"],
+    axis: str | None = None,
+) -> str:
+    """Build the position-swapped, rubric+CoT-merged debiasing prompt,
+    per docs/rfcs/2026-09-09-evals-judge-debiasing-position-swap.md.
+
+    `position` controls which of the reference answer / candidate
+    output is presented first — the one deliberate axis this function
+    introduces that `build_judge_prompt` has no concept of at all. A
+    real caller (`evals.cli`'s `_debiased_judge_verdict`) calls this
+    TWICE per judge, once per position, and combines the two verdicts;
+    this function itself makes no network call and has no opinion on
+    how its two outputs get combined — that policy lives in `evals.cli`,
+    mirroring `judge()`'s own "pure prompt-building, zero I/O" precedent.
+
+    `axis`, when given, scopes the verdict to a single named rubric
+    dimension, composing with `position` independently (4 real template
+    variants exist: 2 positions x {holistic, with-axis}).
+    """
+    if position not in ("reference_first", "candidate_first"):
+        raise ValueError(
+            f"position must be 'reference_first' or 'candidate_first', got {position!r}"
+        )
+    if axis is None:
+        template = (
+            _DEBIASED_JUDGE_PROMPT_TEMPLATE_REFERENCE_FIRST
+            if position == "reference_first"
+            else _DEBIASED_JUDGE_PROMPT_TEMPLATE_CANDIDATE_FIRST
+        )
+        return template.format(reference=reference, output=output)
+    template = (
+        _DEBIASED_JUDGE_PROMPT_TEMPLATE_WITH_AXIS_REFERENCE_FIRST
+        if position == "reference_first"
+        else _DEBIASED_JUDGE_PROMPT_TEMPLATE_WITH_AXIS_CANDIDATE_FIRST
+    )
+    return template.format(reference=reference, output=output, axis=axis)
+
+
 @dataclass(frozen=True)
-class _ParsedJudgeResponse:
+class ParsedJudgeResponse:
     """A single judge call's parsed response — a frozen value object
     (mirroring `evals.judge.providers.JudgeCallCost`'s own "small,
     internal-only, transient value" shape) rather than a bare tuple:
@@ -265,7 +446,7 @@ class _ParsedJudgeResponse:
     quote: str
 
 
-def _quote_is_grounded(quote: str, output: str, reference: str) -> bool:
+def quote_is_grounded(quote: str, output: str, reference: str) -> bool:
     """Whether `quote` is a verbatim substring of `output` or
     `reference` — the measurement-only grounding check per
     docs/rfcs/2026-09-09-evals-quote-grounded-verdict.md. An empty quote
@@ -278,7 +459,7 @@ def _quote_is_grounded(quote: str, output: str, reference: str) -> bool:
     return quote in output or quote in reference
 
 
-def _parse_judge_response(raw_response: str) -> _ParsedJudgeResponse:
+def parse_judge_response(raw_response: str) -> ParsedJudgeResponse:
     verdict_match = _VERDICT_PATTERN.search(raw_response)
     if verdict_match is None:
         raise ValueError(
@@ -292,7 +473,7 @@ def _parse_judge_response(raw_response: str) -> _ParsedJudgeResponse:
     quote_match = _QUOTE_PATTERN.search(raw_response)
     quote = quote_match.group(1).strip() if quote_match else ""
 
-    return _ParsedJudgeResponse(passed=passed, rationale=rationale, quote=quote)
+    return ParsedJudgeResponse(passed=passed, rationale=rationale, quote=quote)
 
 
 async def judge(
@@ -316,7 +497,7 @@ async def judge(
     per docs/rfcs/2026-09-08-evals-judge-panel-reducer.md: every panelist
     is given the IDENTICAL prompt via `asyncio.gather` (independent
     refutation — none sees another's response or verdict), each parsed
-    via `_parse_judge_response`, then majority-reduced via
+    via `parse_judge_response`, then majority-reduced via
     `reduce_panel_votes` (see that function's own doc comment for the
     fail-closed tie-break policy). `judge()` itself has no way to know
     which real model id each opaque `call_model` wraps, so each panelist's
@@ -343,23 +524,23 @@ async def judge(
 
     if len(panel) == 1:
         raw_response = await panel[0](prompt)
-        parsed = _parse_judge_response(raw_response)
+        parsed = parse_judge_response(raw_response)
         return JudgeResult(
             passed=parsed.passed,
             rationale=parsed.rationale,
             bias_mitigations_applied=list(BIAS_MITIGATIONS_APPLIED),
-            quote_grounded=_quote_is_grounded(parsed.quote, output, reference),
+            quote_grounded=quote_is_grounded(parsed.quote, output, reference),
         )
 
     raw_responses = await asyncio.gather(*(call(prompt) for call in panel))
-    parsed_responses = [_parse_judge_response(r) for r in raw_responses]
+    parsed_responses = [parse_judge_response(r) for r in raw_responses]
     votes = [
         PanelVote(
             scorer_id=f"panelist_{i}",
             passed=parsed.passed,
             rationale=parsed.rationale,
             trigger_quote=parsed.quote,
-            quote_grounded=_quote_is_grounded(parsed.quote, output, reference),
+            quote_grounded=quote_is_grounded(parsed.quote, output, reference),
         )
         for i, parsed in enumerate(parsed_responses)
     ]

@@ -175,6 +175,20 @@ class _AnthropicCallModel:
     awaited, `last_call_cost` read, before the next call) — v1's CLI never
     runs judge calls concurrently. A future concurrent caller would need
     per-call storage instead of this one shared attribute.
+
+    Two call sites now depend on this invariant, not one:
+    `evals.cli`'s ordinary judge-invocation path, and (added 2026-09-09,
+    per docs/rfcs/2026-09-09-evals-judge-debiasing-position-swap.md)
+    `_debiased_judge_verdict`'s position-swapped debiasing helper, which
+    deliberately makes its two calls to the SAME `call_model` instance
+    sequentially, reading `last_call_cost` after each, specifically to
+    stay safe under this exact constraint rather than racing on it via
+    `asyncio.gather`. The real trigger for finally fixing this properly
+    (returning cost alongside the response instead of via this side
+    channel) is the day two calls to the same instance genuinely need to
+    run concurrently — which doesn't exist even with debiasing on, since
+    debiasing's own design keeps its two calls sequential by
+    construction.
     """
 
     def __init__(self, model: str, client: AsyncAnthropic) -> None:

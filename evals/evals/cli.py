@@ -49,7 +49,14 @@ from evals.ingestion.object_store import (
 )
 from evals.judge.cache import compute_score_cache_key
 from evals.judge.deterministic import exact_match, regex_match
-from evals.judge.llm_judge import judge, reduce_panel_votes
+from evals.judge.llm_judge import (
+    BIAS_MITIGATIONS_APPLIED,
+    build_debiased_judge_prompt,
+    judge,
+    parse_judge_response,
+    quote_is_grounded,
+    reduce_panel_votes,
+)
 from evals.judge.providers import (
     BEDROCK_HAIKU_4_5_MODEL_ID,
     BEDROCK_SONNET_5_MODEL_ID,
@@ -370,6 +377,88 @@ class _JudgeOutcome:
     quote_grounded: bool | None = None
 
 
+@dataclass(frozen=True)
+class _DebiasedVerdict:
+    """The combined result of `_debiased_judge_verdict`'s two
+    position-swapped calls — a plain internal value object, not
+    `_JudgeOutcome` itself, since `_judge_with_cache`/
+    `_judge_panel_with_cache` still own building that (cache-key,
+    from_cache, etc.). `cost_usd` is the SUM of both calls' real cost
+    (via `_sum_panel_cost` — `None` if either is unmeasured), not just
+    one call's, since a debiased verdict genuinely made two real calls."""
+
+    passed: bool
+    rationale: str
+    quote_grounded: bool | None
+    cost_usd: Decimal | None
+
+
+async def _debiased_judge_verdict(
+    output: str,
+    reference: str,
+    call_model: Callable[[str], Awaitable[str]],
+    axis: str | None = None,
+) -> _DebiasedVerdict | None:
+    """Two SEQUENTIAL calls to the SAME `call_model`, position-swapped
+    (reference-first, then candidate-first), combined fail-closed on
+    disagreement — per docs/rfcs/2026-09-09-evals-judge-debiasing-
+    position-swap.md.
+
+    Deliberately sequential, never `asyncio.gather`'d: `call_model`
+    implementations (`evals.judge.providers`) expose real per-call cost
+    via a shared, REBOUND `last_call_cost` attribute, explicitly
+    documented there as safe only when callers use it sequentially —
+    concurrent calls to the same instance would race on it. This
+    function reads `_last_judge_call_cost_usd` immediately after each
+    call, before the next one can rebind it, then sums both via the
+    existing `_sum_panel_cost` (reused, not reinvented — `None` if
+    either call's cost is unmeasured, never a silently-understated
+    partial sum).
+
+    `judge()`/`llm_judge.py`'s core stays untouched: this function
+    builds its own prompts via `build_debiased_judge_prompt` and parses
+    responses via the same `parse_judge_response` `judge()` itself
+    uses, but never calls `judge()` — mirroring `_judge_panel_with_cache`'s
+    own existing precedent of bypassing `judge()`'s dichotomy when a
+    caching/orchestration need doesn't fit it.
+
+    Returns `None` on any call failure or malformed response — the
+    caller counts that as a judged error, mirroring `_judge_with_cache`'s
+    own "no exception ever escapes this layer" convention.
+    """
+    try:
+        prompt_a = build_debiased_judge_prompt(
+            output, reference, "reference_first", axis=axis
+        )
+        raw_a = await call_model(prompt_a)
+        parsed_a = parse_judge_response(raw_a)
+        cost_a = _last_judge_call_cost_usd(call_model)
+
+        prompt_b = build_debiased_judge_prompt(
+            output, reference, "candidate_first", axis=axis
+        )
+        raw_b = await call_model(prompt_b)
+        parsed_b = parse_judge_response(raw_b)
+        cost_b = _last_judge_call_cost_usd(call_model)
+    except Exception:
+        return None
+
+    agree = parsed_a.passed == parsed_b.passed
+    marker = "" if agree else " [POSITION DISAGREEMENT — fail-closed]"
+    rationale = (
+        f"reference_first: {parsed_a.rationale}; "
+        f"candidate_first: {parsed_b.rationale}{marker}"
+    )
+    grounded_a = quote_is_grounded(parsed_a.quote, output, reference)
+    grounded_b = quote_is_grounded(parsed_b.quote, output, reference)
+    return _DebiasedVerdict(
+        passed=parsed_a.passed if agree else False,
+        rationale=rationale,
+        quote_grounded=grounded_a and grounded_b,
+        cost_usd=_sum_panel_cost([cost_a, cost_b]),
+    )
+
+
 async def _judge_with_cache(
     output: str,
     reference: str,
@@ -377,6 +466,7 @@ async def _judge_with_cache(
     call_model: Callable[[str], Awaitable[str]],
     cached_scores: dict[str, Score] | None,
     axis: str | None = None,
+    debias: bool = False,
 ) -> _JudgeOutcome | None:
     """Score `output` against `reference` with a real LLM-judge call,
     reusing a prior cached `Score` instead when `--use-score-cache` is
@@ -405,7 +495,9 @@ async def _judge_with_cache(
     "one case's failure never aborts the suite" precedent. Never raised
     for a cache hit, since no call was made to fail.
     """
-    cache_key = compute_score_cache_key(output, reference, scorer_id, axis=axis)
+    cache_key = compute_score_cache_key(
+        output, reference, scorer_id, axis=axis, debias=debias
+    )
     cached = cached_scores.get(cache_key) if cached_scores is not None else None
     if cached is not None:
         return _JudgeOutcome(
@@ -420,6 +512,25 @@ async def _judge_with_cache(
             from_cache=True,
             axis=axis,
             quote_grounded=cached.quote_grounded,
+        )
+    if debias:
+        debiased = await _debiased_judge_verdict(
+            output, reference, call_model, axis=axis
+        )
+        if debiased is None:
+            return None
+        return _JudgeOutcome(
+            passed=debiased.passed,
+            rationale=debiased.rationale,
+            bias_mitigations_applied=[
+                *BIAS_MITIGATIONS_APPLIED,
+                "position_swap_debiasing",
+            ],
+            cost_usd=debiased.cost_usd,
+            score_cache_key=cache_key,
+            from_cache=False,
+            axis=axis,
+            quote_grounded=debiased.quote_grounded,
         )
     try:
         result = await judge(
@@ -476,25 +587,39 @@ async def _judge_panel_with_cache(
     panel: PanelSpec,
     cached_votes: dict[str, PanelVote] | None,
     axis: str | None = None,
+    debias: bool = False,
 ) -> _JudgeOutcome | None:
     """Panel analogue of `_judge_with_cache` — scores `output` against
     `reference` with a real 2+ judge panel, majority-reduced via
     `reduce_panel_votes`, per docs/rfcs/2026-09-08-evals-judge-panel-
     reducer.md.
 
-    When `cached_votes is None` (the common default, caching off):
-    delegates directly to `judge()`'s own real multi-callable branch —
-    this exercises that branch as genuine production code, not just
-    unit-tested in isolation — then remaps its placeholder-id votes to
-    each panelist's REAL model id and computes each vote's own cache key
-    unconditionally (mirrors `Score.score_cache_key`'s "always computed
-    regardless of whether caching is active this run" convention), so a
-    LATER cache-enabled invocation can reuse them even though this one
-    never consulted a cache itself.
+    When `cached_votes is None` (the common default, caching off) and
+    `debias` is `False`: delegates directly to `judge()`'s own real
+    multi-callable branch — this exercises that branch as genuine
+    production code, not just unit-tested in isolation — then remaps
+    its placeholder-id votes to each panelist's REAL model id and
+    computes each vote's own cache key unconditionally (mirrors
+    `Score.score_cache_key`'s "always computed regardless of whether
+    caching is active this run" convention), so a LATER cache-enabled
+    invocation can reuse them even though this one never consulted a
+    cache itself.
+
+    When `debias` is `True` (per docs/rfcs/2026-09-09-evals-judge-
+    debiasing-position-swap.md): `judge()`'s own panel branch is
+    bypassed entirely — each panelist's OWN inner work becomes 2
+    SEQUENTIAL calls (via `_debiased_judge_verdict`) instead of 1, but
+    cross-panelist concurrency is unchanged: every panelist's 2-call
+    chain still runs concurrently with every other panelist's, via
+    `asyncio.gather` across panelists (never across a panelist's own
+    two calls, which must stay sequential — see
+    `_debiased_judge_verdict`'s own docstring for why). A 2-judge panel
+    with debiasing on therefore makes 4 total calls: 2 concurrent chains
+    of 2 sequential calls each.
 
     When `cached_votes is not None`: does per-panelist fine-grained
-    skip/call, reusing `judge()`'s existing SINGLE-callable path (never
-    the panel branch, never a private parsing function) for any panelist
+    skip/call, reusing `judge()`'s existing SINGLE-callable path (or,
+    when `debias` is `True`, `_debiased_judge_verdict`) for any panelist
     that needs a fresh call — never re-chains a cache hit off another
     cache hit, mirroring `_judge_with_cache`'s own discipline.
 
@@ -503,6 +628,46 @@ async def _judge_panel_with_cache(
     all-or-nothing precedent for multi-axis judging.
     """
     if cached_votes is None:
+        real_ids = [scorer_id for scorer_id, _ in panel]
+        if debias:
+            debiased_results = await asyncio.gather(
+                *(
+                    _debiased_judge_verdict(output, reference, cm, axis=axis)
+                    for _, cm in panel
+                )
+            )
+            if any(r is None for r in debiased_results):
+                return None
+            votes = [
+                PanelVote(
+                    scorer_id=real_ids[i],
+                    passed=r.passed,
+                    rationale=r.rationale,
+                    score_cache_key=compute_score_cache_key(
+                        output, reference, real_ids[i], axis=axis, debias=True
+                    ),
+                    from_cache=False,
+                    quote_grounded=r.quote_grounded,
+                )
+                for i, r in enumerate(debiased_results)
+            ]
+            verdict = reduce_panel_votes(votes)
+            cost_usd = _sum_panel_cost([r.cost_usd for r in debiased_results])
+            return _JudgeOutcome(
+                passed=verdict.passed,
+                rationale=None,
+                bias_mitigations_applied=[
+                    *verdict.bias_mitigations_applied,
+                    "position_swap_debiasing",
+                ],
+                cost_usd=cost_usd,
+                score_cache_key=None,
+                from_cache=False,
+                axis=axis,
+                panel_votes=votes,
+                quorum_reached=verdict.quorum_reached,
+                quote_grounded=_panel_quote_grounded(votes),
+            )
         try:
             result = await judge(
                 output=output,
@@ -512,7 +677,6 @@ async def _judge_panel_with_cache(
             )
         except Exception:
             return None
-        real_ids = [scorer_id for scorer_id, _ in panel]
         votes = [
             PanelVote(
                 scorer_id=real_ids[i],
@@ -544,7 +708,9 @@ async def _judge_panel_with_cache(
     votes: list[PanelVote] = []
     fresh_costs: list[Decimal | None] = []
     for scorer_id, call_model in panel:
-        key = compute_score_cache_key(output, reference, scorer_id, axis=axis)
+        key = compute_score_cache_key(
+            output, reference, scorer_id, axis=axis, debias=debias
+        )
         cached = cached_votes.get(key)
         if cached is not None:
             votes.append(
@@ -558,6 +724,24 @@ async def _judge_panel_with_cache(
                     quote_grounded=cached.quote_grounded,
                 )
             )
+            continue
+        if debias:
+            debiased = await _debiased_judge_verdict(
+                output, reference, call_model, axis=axis
+            )
+            if debiased is None:
+                return None
+            votes.append(
+                PanelVote(
+                    scorer_id=scorer_id,
+                    passed=debiased.passed,
+                    rationale=debiased.rationale,
+                    score_cache_key=key,
+                    from_cache=False,
+                    quote_grounded=debiased.quote_grounded,
+                )
+            )
+            fresh_costs.append(debiased.cost_usd)
             continue
         try:
             result = await judge(
@@ -602,6 +786,7 @@ async def _judge_all_axes(
     cached_scores: dict[str, Score] | None = None,
     panel: PanelSpec | None = None,
     cached_votes: dict[str, PanelVote] | None = None,
+    debias: bool = False,
 ) -> list[_JudgeOutcome] | None:
     """Judge `output` against `reference` once per configured axis (or
     once, holistically, if `axes` is `None`) — one call per axis, per
@@ -615,6 +800,12 @@ async def _judge_all_axes(
     `--llm-judge-panel` flags, per docs/rfcs/2026-09-08-evals-judge-
     panel-reducer.md.
 
+    `debias` (per docs/rfcs/2026-09-09-evals-judge-debiasing-position-
+    swap.md) is threaded straight through to whichever of
+    `_judge_with_cache`/`_judge_panel_with_cache` is active this call —
+    it changes each judge call's own internal call count (1 vs. 2,
+    position-swapped), never the one-call-per-axis structure above it.
+
     Returns `None` if ANY axis's judge call fails — the whole case is
     treated as `JUDGE_ERROR`, mirroring the pre-existing single-axis
     all-or-nothing behavior, rather than persisting a confusing partial
@@ -624,7 +815,7 @@ async def _judge_all_axes(
     async def _one_axis(axis: str | None) -> _JudgeOutcome | None:
         if panel is not None:
             return await _judge_panel_with_cache(
-                output, reference, panel, cached_votes, axis=axis
+                output, reference, panel, cached_votes, axis=axis, debias=debias
             )
         return await _judge_with_cache(
             output,
@@ -633,6 +824,7 @@ async def _judge_all_axes(
             call_model,
             cached_scores,
             axis=axis,
+            debias=debias,
         )
 
     if axes is None:
@@ -654,6 +846,7 @@ def _judge_case(
     cached_scores: dict[str, Score] | None = None,
     panel: PanelSpec | None = None,
     cached_votes: dict[str, PanelVote] | None = None,
+    debias: bool = False,
 ) -> list[_JudgeOutcome] | None:
     """`run_cmd`'s own entry point into `_judge_all_axes` — synchronous,
     since `run_cmd` itself never runs inside an event loop (unlike
@@ -676,6 +869,7 @@ def _judge_case(
             cached_scores=cached_scores,
             panel=panel,
             cached_votes=cached_votes,
+            debias=debias,
         )
     )
 
@@ -876,6 +1070,20 @@ def main() -> None:
         "docs/rfcs/2026-09-05-evals-multi-axis-judging.md."
     ),
 )
+@click.option(
+    "--judge-debias",
+    is_flag=True,
+    default=False,
+    help=(
+        "Make each LLM-judge call twice, position-swapped (reference-"
+        "first, then candidate-first), combining fail-closed on "
+        "disagreement -- the 'Combined Budget' technique. Off by default: "
+        "doubles judge-call cost/latency, and the accuracy gain is a "
+        "single unreplicated preprint finding. Only meaningful together "
+        "with --llm-judge or --llm-judge-panel. See "
+        "docs/rfcs/2026-09-09-evals-judge-debiasing-position-swap.md."
+    ),
+)
 @click.option("--confidence", default=0.95, show_default=True, type=float)
 def run_cmd(
     suite_path: Path,
@@ -884,6 +1092,7 @@ def run_cmd(
     llm_judge_panel: bool,
     use_score_cache: bool,
     judge_axes: str | None,
+    judge_debias: bool,
     confidence: float,
 ) -> None:
     """Run a suite of EvalCases and print pass/fail plus a Wilson CI."""
@@ -930,6 +1139,7 @@ def run_cmd(
                 cached_scores=cached_scores,
                 panel=panel,
                 cached_votes=cached_votes,
+                debias=judge_debias,
             )
             if outcomes is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
@@ -1351,6 +1561,20 @@ def ingest_cmd(
     ),
 )
 @click.option(
+    "--judge-debias",
+    is_flag=True,
+    default=False,
+    help=(
+        "Make each LLM-judge call twice, position-swapped (reference-"
+        "first, then candidate-first), combining fail-closed on "
+        "disagreement -- the 'Combined Budget' technique. Off by default: "
+        "doubles judge-call cost/latency, and the accuracy gain is a "
+        "single unreplicated preprint finding. Only meaningful together "
+        "with --llm-judge or --llm-judge-panel. See "
+        "docs/rfcs/2026-09-09-evals-judge-debiasing-position-swap.md."
+    ),
+)
+@click.option(
     "--early-stop-max-trials",
     default=None,
     type=int,
@@ -1394,6 +1618,7 @@ def rollout_cmd(
     use_cache: bool,
     use_score_cache: bool,
     judge_axes: str | None,
+    judge_debias: bool,
     early_stop_max_trials: int | None,
     early_stop_baseline_pass_rate: float | None,
     early_stop_relative_mixing_variance: float,
@@ -1485,6 +1710,7 @@ def rollout_cmd(
                 cached_scores=cached_scores,
                 panel=panel,
                 cached_votes=cached_votes,
+                debias=judge_debias,
             )
             if outcomes is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")

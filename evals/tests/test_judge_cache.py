@@ -68,3 +68,41 @@ def test_different_axes_on_the_same_output_never_collide():
     )
     key_b = compute_score_cache_key("output", "reference", "some-model", axis="safety")
     assert key_a != key_b
+
+
+def test_omitting_debias_matches_the_original_pre_debias_key_exactly():
+    # Same backward-compatibility proof as
+    # test_omitting_axis_matches_the_original_pre_axis_key_exactly, for
+    # the debias parameter -- every score_cache_key computed before this
+    # parameter existed must still match today, byte-for-byte.
+    original_canonical = json.dumps(
+        {"output": "out", "reference": "ref", "scorer_id": "model"},
+        sort_keys=True,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+    original_key = hashlib.sha256(original_canonical.encode("utf-8")).hexdigest()
+
+    assert compute_score_cache_key("out", "ref", "model") == original_key
+    assert compute_score_cache_key("out", "ref", "model", debias=False) == original_key
+
+
+def test_debiased_and_non_debiased_keys_differ_for_identical_inputs():
+    non_debiased = compute_score_cache_key("output", "reference", "some-model")
+    debiased = compute_score_cache_key("output", "reference", "some-model", debias=True)
+    assert non_debiased != debiased
+
+
+def test_debias_and_axis_can_both_be_set_without_colliding_with_either_alone():
+    both = compute_score_cache_key(
+        "output", "reference", "some-model", axis="correctness", debias=True
+    )
+    axis_only = compute_score_cache_key(
+        "output", "reference", "some-model", axis="correctness"
+    )
+    debias_only = compute_score_cache_key(
+        "output", "reference", "some-model", debias=True
+    )
+    assert both != axis_only
+    assert both != debias_only

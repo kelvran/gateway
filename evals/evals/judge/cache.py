@@ -15,12 +15,16 @@ import json
 
 
 def compute_score_cache_key(
-    output: str, reference: str, scorer_id: str, axis: str | None = None
+    output: str,
+    reference: str,
+    scorer_id: str,
+    axis: str | None = None,
+    debias: bool = False,
 ) -> str:
     """SHA-256 hex digest over the canonical JSON of
-    `{output, reference, scorer_id, axis}` — a judge verdict is a function
-    of exactly these four inputs, plus the judge prompt template baked
-    into `evals.judge.llm_judge.judge()` itself. Like
+    `{output, reference, scorer_id, axis, debias}` — a judge verdict is a
+    function of exactly these five inputs, plus the judge prompt template
+    baked into `evals.judge.llm_judge.judge()` itself. Like
     `compute_run_cache_key`'s own deliberate omission of a harness/runner
     code version, this key does NOT version the prompt template — a
     prompt change is a code change, not a config change, and invalidating
@@ -40,17 +44,30 @@ def compute_score_cache_key(
     unenforced intention, verified by
     `test_omitting_axis_matches_the_original_pre_axis_key_exactly`.
 
+    `debias` (added 2026-09-09, per docs/rfcs/2026-09-09-evals-judge-
+    debiasing-position-swap.md) mirrors `axis`'s exact same pattern for
+    the identical reason: a debiased (position-swapped, two-call)
+    verdict and a non-debiased (single-call) verdict for the identical
+    `(output, reference, scorer_id, axis)` are genuinely different
+    judgments — a debiased-off run flipping `--judge-debias` on later
+    must never reuse the other's cached verdict. Included in the key
+    ONLY when `True` (the default `False` is omitted), so every
+    `score_cache_key` computed before this parameter existed still
+    matches byte-for-byte.
+
     Canonicalization matches `compute_run_cache_key`'s own RFC-8785-style
     choices (`sort_keys`, no whitespace, ASCII-only, NaN/Infinity
     rejected) for the same stable-hashing correctness reasons.
     """
-    fields: dict[str, str] = {
+    fields: dict[str, str | bool] = {
         "output": output,
         "reference": reference,
         "scorer_id": scorer_id,
     }
     if axis is not None:
         fields["axis"] = axis
+    if debias:
+        fields["debias"] = True
     canonical = json.dumps(
         fields,
         sort_keys=True,
