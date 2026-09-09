@@ -585,6 +585,46 @@ func TestLoadDeploymentDisableCacheControlAutoPopulateParsesTrue(t *testing.T) {
 	}
 }
 
+// TestLoadDeploymentSharedAcrossTenantsUnsetDefaultsToFalse proves a
+// deployment with no shared_across_tenants key parses to false —
+// matching every deployment configured before this field existed, per
+// docs/rfcs/2026-09-09-gateway-cache-shared-tenant-flag.md.
+func TestLoadDeploymentSharedAcrossTenantsUnsetDefaultsToFalse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].SharedAcrossTenants; got {
+		t.Errorf("SharedAcrossTenants = %v, want false (unset -- not declared shared)", got)
+	}
+}
+
+// TestLoadDeploymentSharedAcrossTenantsParsesTrue proves an explicit
+// shared_across_tenants: true key parses through, per
+// docs/rfcs/2026-09-09-gateway-cache-shared-tenant-flag.md.
+func TestLoadDeploymentSharedAcrossTenantsParsesTrue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := minimalDeploymentConfig("    shared_across_tenants: true\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].SharedAcrossTenants; !got {
+		t.Errorf("SharedAcrossTenants = %v, want true", got)
+	}
+}
+
 // TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists proves
 // each error-class key parses into an ORDERED slice (not just a set) —
 // this file's YAML-subset parser has no list support, so fallback_chains

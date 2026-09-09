@@ -403,6 +403,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			Region:                          d.Region,
 			FallbackChains:                  d.FallbackChains,
 			DisableCacheControlAutoPopulate: d.DisableCacheControlAutoPopulate,
+			SharedAcrossTenants:             d.SharedAcrossTenants,
 		}
 		if d.Provider == "bedrock" {
 			dep.AccessKeyID = os.Getenv(d.AccessKeyIDEnv)

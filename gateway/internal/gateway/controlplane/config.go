@@ -102,6 +102,14 @@ type DeploymentConfig struct {
 	// of the same name) — a no-op, harmless either way, on every other
 	// provider.
 	DisableCacheControlAutoPopulate bool
+	// SharedAcrossTenants declares this deployment's upstream credential
+	// is deliberately shared by more than one tenant's virtual key(s),
+	// per docs/rfcs/2026-09-09-gateway-cache-shared-tenant-flag.md. When
+	// true, forces CacheControl auto-populate off for this deployment
+	// regardless of DisableCacheControlAutoPopulate's own value — see
+	// dataplane.Deployment.effectiveCacheControlAutoDisabled for the
+	// composition. False (the default) means not declared shared.
+	SharedAcrossTenants bool
 	// MaxConcurrentRequests bounds how many requests may be simultaneously
 	// in flight against THIS deployment, aggregated across every virtual
 	// key that routes to it -- including via a fallback_chains hop, or
@@ -559,6 +567,7 @@ func Load(path string) (*Config, error) {
 			dep.FallbackChains = chains
 		}
 		dep.DisableCacheControlAutoPopulate, _ = getBool(depMap, "disable_cache_control_auto_populate")
+		dep.SharedAcrossTenants, _ = getBool(depMap, "shared_across_tenants")
 		if rl, ok := getMap(depMap, "rate_limit"); ok {
 			if err := parseDeploymentRateLimit(name, rl, &dep); err != nil {
 				return nil, err

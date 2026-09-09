@@ -142,7 +142,46 @@ type Deployment struct {
 	// every ToProvider call site (callDeployment here;
 	// streamDeployment/streamDeploymentBedrock in streaming.go),
 	// mirroring how UpstreamModel is already threaded onto Model.
+	//
+	// Never read directly at those call sites — see
+	// effectiveCacheControlAutoDisabled, which also composes this field
+	// with SharedAcrossTenants below.
 	DisableCacheControlAutoPopulate bool
+	// SharedAcrossTenants declares that this deployment's own upstream
+	// credential (APIKey, or AccessKeyID/SecretAccessKey for Bedrock) is
+	// deliberately shared by more than one tenant's virtual key(s) — a
+	// real, structural possibility since routing (internal/router)
+	// selects purely by canonical model name with no tenant awareness at
+	// all, and a config can legitimately point multiple virtual keys at
+	// deployments sharing one "model" value. Per
+	// docs/rfcs/2026-09-09-gateway-cache-shared-tenant-flag.md: when
+	// true, CacheControl auto-populate is force-disabled for this
+	// deployment regardless of DisableCacheControlAutoPopulate's own
+	// value, closing a cross-tenant provider-side prompt-cache-leakage
+	// risk (structurally the same shared-credential mechanism a 2026
+	// CacheProbe/SAGAI'26 study measured live against OpenRouter) that
+	// the 2026-09-07 auto-populate default-ON change otherwise exposes
+	// by default on every shared deployment. An operator-declared fact,
+	// not something Kelvran can detect itself — which virtual keys route
+	// to a given deployment is a config-time property, not a per-request
+	// signal checkable at cache-lookup time. False (the default) means
+	// this deployment is not declared shared, and behaves exactly as
+	// before this field existed.
+	SharedAcrossTenants bool
+}
+
+// effectiveCacheControlAutoDisabled reports whether CacheControl
+// auto-populate should be treated as disabled for this deployment —
+// either the operator's own DisableCacheControlAutoPopulate opt-out, or
+// because SharedAcrossTenants declares this deployment's credential is
+// shared across tenants, which forces the same effective behavior
+// regardless of DisableCacheControlAutoPopulate's own value. Every real
+// call site (callDeployment here; streamDeployment/
+// streamDeploymentBedrock in streaming.go) calls this method, never the
+// two raw fields directly, so a future fourth call site can't forget
+// the OR. Per docs/rfcs/2026-09-09-gateway-cache-shared-tenant-flag.md.
+func (d Deployment) effectiveCacheControlAutoDisabled() bool {
+	return d.DisableCacheControlAutoPopulate || d.SharedAcrossTenants
 }
 
 // UpstreamCaller performs the actual upstream HTTP call for one
@@ -1254,7 +1293,7 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	// Per-deployment CacheControl-auto-populate opt-out, per
 	// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md — a
 	// no-op field read only by the anthropic/bedrock adapters.
-	upstreamReq.DisableCacheControlAutoPopulate = dep.DisableCacheControlAutoPopulate
+	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled()
 
 	providerReq, err := a.ToProvider(upstreamReq)
 	if err != nil {

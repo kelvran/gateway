@@ -128,3 +128,68 @@ func TestCallDeploymentThreadsDisableCacheControlAutoPopulateFromDeployment(t *t
 		t.Errorf("auto-off deployment's real upstream-bound System = %+v, want NO cache_control marker -- dataplane must thread this deployment's own DisableCacheControlAutoPopulate=true through to ToProvider", offReq.System)
 	}
 }
+
+// TestEffectiveCacheControlAutoDisabledComposesBothFields is the
+// unit-level proof of Deployment.effectiveCacheControlAutoDisabled's own
+// OR composition, per docs/rfcs/2026-09-09-gateway-cache-shared-tenant-
+// flag.md — all four combinations of the two source fields.
+func TestEffectiveCacheControlAutoDisabledComposesBothFields(t *testing.T) {
+	cases := []struct {
+		name                string
+		disableAutoPopulate bool
+		sharedAcrossTenants bool
+		want                bool
+	}{
+		{"neither set", false, false, false},
+		{"disable-auto-populate only", true, false, true},
+		{"shared-across-tenants only", false, true, true},
+		{"both set", true, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := Deployment{DisableCacheControlAutoPopulate: c.disableAutoPopulate, SharedAcrossTenants: c.sharedAcrossTenants}
+			if got := d.effectiveCacheControlAutoDisabled(); got != c.want {
+				t.Errorf("effectiveCacheControlAutoDisabled() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestCallDeploymentSharedAcrossTenantsForcesCacheControlOffEvenWhenNotExplicitlyDisabled
+// proves the full-pipeline composition claim: a deployment declared
+// SharedAcrossTenants must never emit a cache_control marker, even
+// though its own DisableCacheControlAutoPopulate is left at the default
+// false — the cross-tenant leakage risk this flag closes exists
+// specifically for deployments an operator hasn't already opted out via
+// the pre-existing flag.
+func TestCallDeploymentSharedAcrossTenantsForcesCacheControlOffEvenWhenNotExplicitlyDisabled(t *testing.T) {
+	var captured *anthropic.Request
+	upstream := func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		req, ok := providerReq.(*anthropic.Request)
+		if !ok {
+			t.Fatalf("upstream received %T, want *anthropic.Request", providerReq)
+		}
+		captured = req
+		return fakeAnthropicResponse(dep.UpstreamModel), nil
+	}
+
+	deployments := []Deployment{
+		{Name: "shared", Model: "claude-shared", Provider: "anthropic", UpstreamModel: "claude-opus-4", BaseURL: "http://unused", SharedAcrossTenants: true},
+	}
+	p := newAnthropicTestPipeline(t, upstream, deployments)
+
+	messages := []adapter.Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "hi"},
+	}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "claude-shared", Messages: messages}); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("no request captured")
+	}
+	if len(captured.System) != 1 || captured.System[0].CacheControl != nil {
+		t.Errorf("shared deployment's real upstream-bound System = %+v, want NO cache_control marker despite DisableCacheControlAutoPopulate being left false -- SharedAcrossTenants must force it off on its own", captured.System)
+	}
+}

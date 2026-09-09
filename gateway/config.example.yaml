@@ -171,6 +171,18 @@ deployments:
     # explicit, caller-supplied CacheControl always wins regardless.
     # Only anthropic/bedrock deployments ever read this field.
     # disable_cache_control_auto_populate: true
+    #
+    # This deployment is a real worked example of shared_across_tenants
+    # below: both team-alpha (allowed_models includes claude-opus-4) and
+    # team-beta (no allowed_models restriction at all) resolve to this
+    # SAME deployment and its ONE api_key_env credential — routing
+    # (internal/router) selects purely by canonical model name, with no
+    # tenant awareness. Uncommenting this line would force CacheControl
+    # auto-populate off here regardless of the line above, closing the
+    # cross-tenant provider-side cache-leakage risk that combination
+    # otherwise creates by default — see
+    # docs/rfcs/2026-09-09-gateway-cache-shared-tenant-flag.md.
+    # shared_across_tenants: true
 
   gemini-flash-primary:
     model: "gemini-2.5-flash"
