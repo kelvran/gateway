@@ -291,6 +291,24 @@ type ChatRequest struct {
 	// auto-populate stays ON, matching this schema's own "zero value
 	// preserves prior behavior" convention.
 	DisableCacheControlAutoPopulate bool `json:"-"`
+	// PromptID, when set, names a server-side prompt/template (see
+	// internal/prompt) to resolve into real Messages content at the
+	// gateway, before routing -- per this feature's own global,
+	// operator-managed design (the same category as price_table/
+	// deployments/guardrails config), any virtual key may reference any
+	// PromptID; there is no per-key ownership/authorization concept.
+	// Empty (the default, and every ChatRequest built before this field
+	// existed) is a silent no-op -- PromptVersion/PromptVariables below
+	// are meaningless without it.
+	PromptID string `json:"prompt_id,omitempty"`
+	// PromptVersion pins PromptID to a specific historical version;
+	// <= 0 (the default) means "the latest version at resolution time."
+	// Meaningless when PromptID == "".
+	PromptVersion int `json:"prompt_version,omitempty"`
+	// PromptVariables supplies the {{name}} substitution values
+	// internal/prompt.Store.Resolve applies to PromptID's stored
+	// content. Meaningless when PromptID == "".
+	PromptVariables map[string]string `json:"prompt_variables,omitempty"`
 }
 
 // Usage is token accounting for a single completion. PromptTokens is the

@@ -97,6 +97,14 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		err = fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
 		return
 	}
+	// See HandleChatCompletion's identical block/comment — same
+	// placement (after the model-allowlist check, before rate-limiting),
+	// same resolvePromptIfSet helper.
+	var promptFP string
+	req, promptFP, err = p.resolvePromptIfSet(req)
+	if err != nil {
+		return
+	}
 	var rateLimitOK bool
 	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {
@@ -127,8 +135,8 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat))
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat))
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {

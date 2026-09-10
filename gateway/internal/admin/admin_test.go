@@ -437,3 +437,207 @@ func TestDeleteVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret(t *testing.T) {
 		t.Errorf("audit log must never contain the presented credential; got: %s", logOutput)
 	}
 }
+
+// TestUpsertPromptCreatesVersionOneThenVersionTwo proves POST
+// /admin/prompts/{id} auto-bumps the version on a repeat upsert, per
+// prompt.Store.Upsert's own doc comment, and returns the created
+// version in its response body.
+func TestUpsertPromptCreatesVersionOneThenVersionTwo(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"messages":[{"role":"system","content":"You are {{persona}}."}]}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first POST status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var first promptResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if first.ID != "greeting" || first.Version != 1 {
+		t.Errorf("first upsert: ID=%q Version=%d, want ID=greeting Version=1", first.ID, first.Version)
+	}
+
+	rec = doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second POST status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var second promptResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if second.Version != 2 {
+		t.Errorf("second upsert: Version = %d, want 2", second.Version)
+	}
+}
+
+func TestUpsertPromptRejectsEmptyMessages(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestGetPromptRoutesReturnLatestSpecificVersionAndNotFound exercises
+// all three GET routes against the same upserted prompt.
+func TestGetPromptRoutesReturnLatestSpecificVersionAndNotFound(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v2"}]}`)
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/prompts/greeting", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET latest status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var latest promptResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &latest); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if latest.Version != 2 || latest.Messages[0].Content != "v2" {
+		t.Errorf("GET latest = %+v, want version 2 with content v2", latest)
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/greeting/versions/1", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET version 1 status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var pinned promptResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &pinned); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if pinned.Version != 1 || pinned.Messages[0].Content != "v1" {
+		t.Errorf("GET version 1 = %+v, want version 1 with content v1", pinned)
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/greeting/versions/99", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET unknown version status = %d, want 404", rec.Code)
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/does-not-exist", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET unknown id status = %d, want 404", rec.Code)
+	}
+}
+
+func TestListPromptsReturnsLatestVersionOfEveryPromptSortedByID(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	doRequest(t, h, http.MethodPost, "/admin/prompts/zeta", fakeAdminCredential(), `{"messages":[{"role":"user","content":"z"}]}`)
+	doRequest(t, h, http.MethodPost, "/admin/prompts/alpha", fakeAdminCredential(), `{"messages":[{"role":"user","content":"a1"}]}`)
+	doRequest(t, h, http.MethodPost, "/admin/prompts/alpha", fakeAdminCredential(), `{"messages":[{"role":"user","content":"a2"}]}`)
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/prompts", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var list []promptResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("List returned %d entries, want 2", len(list))
+	}
+	if list[0].ID != "alpha" || list[1].ID != "zeta" {
+		t.Errorf("order = [%s, %s], want [alpha, zeta]", list[0].ID, list[1].ID)
+	}
+	if list[0].Version != 2 {
+		t.Errorf("alpha's Version = %d, want 2 (the latest)", list[0].Version)
+	}
+}
+
+func TestDeletePromptRemovesItAndUnknownIDReturns404(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
+
+	rec := doRequest(t, h, http.MethodDelete, "/admin/prompts/greeting", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/greeting", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET after DELETE status = %d, want 404", rec.Code)
+	}
+
+	rec = doRequest(t, h, http.MethodDelete, "/admin/prompts/does-not-exist", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("DELETE unknown id status = %d, want 404", rec.Code)
+	}
+}
+
+// TestViewerTokenCanReadPromptsButNotMutateThem mirrors
+// TestViewerTokenCanReadConfigButNotMutateVirtualKeys for the new prompt
+// routes -- viewer authenticates every GET but is rejected (401, this
+// codebase's existing viewer-role-rejection status) on POST/DELETE.
+func TestViewerTokenCanReadPromptsButNotMutateThem(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger())
+
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/prompts", fakeViewerCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /admin/prompts with the viewer credential: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/greeting", fakeViewerCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /admin/prompts/greeting with the viewer credential: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/greeting/versions/1", fakeViewerCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /admin/prompts/greeting/versions/1 with the viewer credential: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeViewerCredential(), `{"messages":[{"role":"user","content":"nope"}]}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("POST /admin/prompts with the viewer credential: status = %d, want 401 — viewer must never authenticate a write route", rec.Code)
+	}
+	rec = doRequest(t, h, http.MethodDelete, "/admin/prompts/greeting", fakeViewerCredential(), "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("DELETE /admin/prompts with the viewer credential: status = %d, want 401 — viewer must never authenticate a write route", rec.Code)
+	}
+}
+
+// TestUpsertPromptLogsAnAuditEntryWithoutLeakingContent mirrors
+// TestUpsertVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret: logs the
+// prompt ID and resulting version, never the message content.
+func TestUpsertPromptLogsAnAuditEntryWithoutLeakingContent(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+
+	const secretLookingContent = "the-eagle-has-landed-42"
+	body := `{"messages":[{"role":"system","content":"` + secretLookingContent + `"}]}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "admin_prompt_upserted") || !strings.Contains(logOutput, "id=greeting") || !strings.Contains(logOutput, "version=1") {
+		t.Errorf("expected an admin_prompt_upserted audit-log entry naming greeting/version 1; got: %s", logOutput)
+	}
+	if strings.Contains(logOutput, secretLookingContent) {
+		t.Errorf("audit log must never contain prompt message content; got: %s", logOutput)
+	}
+}
+
+// TestDeletePromptLogsAnAuditEntry mirrors
+// TestDeleteVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret.
+func TestDeletePromptLogsAnAuditEntry(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
+	rec := doRequest(t, h, http.MethodDelete, "/admin/prompts/greeting", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "admin_prompt_deleted") || !strings.Contains(logOutput, "id=greeting") {
+		t.Errorf("expected an admin_prompt_deleted audit-log entry naming greeting; got: %s", logOutput)
+	}
+}

@@ -28,13 +28,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/shopspring/decimal"
 
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/prompt"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
 
@@ -113,6 +116,16 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg)))
 	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, logger)))
 	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, logger)))
+	// Prompt/template management, per this feature's own design: prompts
+	// are GLOBAL, operator-managed config (the same category as
+	// price_table/deployments/guardrails config above) -- reads are
+	// viewer-or-admin, like GET /admin/config; writes are admin-only,
+	// like the virtual-key routes above.
+	mux.Handle("GET /admin/prompts", requireEitherBearerToken(creds, listPromptsHandler(pipeline)))
+	mux.Handle("GET /admin/prompts/{id}", requireEitherBearerToken(creds, getPromptHandler(pipeline)))
+	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline)))
+	mux.Handle("POST /admin/prompts/{id}", requireBearerToken(creds.Admin, upsertPromptHandler(pipeline, logger)))
+	mux.Handle("DELETE /admin/prompts/{id}", requireBearerToken(creds.Admin, deletePromptHandler(pipeline, logger)))
 	return mux
 }
 
@@ -297,6 +310,143 @@ func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 			http.Error(w, err.Error(), http.StatusNotFound)
 		case errors.Is(err, dataplane.ErrCannotDeleteLastVirtualKey):
 			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+}
+
+// promptRequest is the POST /admin/prompts/{id} request body -- unlike
+// virtualKeyRequest, there is no static config.yaml section to mirror
+// here (prompts are Admin-API-only, per this feature's own design), so
+// this shape is simply the raw canonical message list a caller wants
+// stored as the next version.
+type promptRequest struct {
+	Messages []adapter.Message `json:"messages"`
+}
+
+// promptResponse is what every read/write prompt route returns --
+// mirrors virtualKeyRequest's own "never expose the internal package
+// type directly across the HTTP boundary" convention.
+type promptResponse struct {
+	ID        string            `json:"id"`
+	Version   int               `json:"version"`
+	Messages  []adapter.Message `json:"messages"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
+func promptToResponse(p prompt.Prompt) promptResponse {
+	return promptResponse{ID: p.ID, Version: p.Version, Messages: p.Messages, CreatedAt: p.CreatedAt}
+}
+
+// writeJSONResponse encodes v as the response body -- shared by every
+// prompt read/write route below, mirroring getConfigHandler's own
+// identical encode-or-500 pattern.
+func writeJSONResponse(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, "encoding response", http.StatusInternalServerError)
+	}
+}
+
+// listPromptsHandler serves the latest version of every stored prompt,
+// per pipeline.ListPrompts (already sorted by ID).
+func listPromptsHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		prompts := pipeline.ListPrompts()
+		responses := make([]promptResponse, 0, len(prompts))
+		for _, p := range prompts {
+			responses = append(responses, promptToResponse(p))
+		}
+		writeJSONResponse(w, responses)
+	}
+}
+
+// getPromptHandler serves id's latest version, or 404 if id is unknown.
+func getPromptHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		p, ok := pipeline.GetPrompt(id, 0)
+		if !ok {
+			http.Error(w, fmt.Sprintf("prompt %q not found", id), http.StatusNotFound)
+			return
+		}
+		writeJSONResponse(w, promptToResponse(p))
+	}
+}
+
+// getPromptVersionHandler serves one specific historical version of id,
+// or 404 if id or that version is unknown, or 400 if version isn't a
+// positive integer.
+func getPromptVersionHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		versionStr := r.PathValue("version")
+		version, convErr := strconv.Atoi(versionStr)
+		if convErr != nil || version <= 0 {
+			http.Error(w, fmt.Sprintf("invalid version %q: must be a positive integer", versionStr), http.StatusBadRequest)
+			return
+		}
+		p, ok := pipeline.GetPrompt(id, version)
+		if !ok {
+			http.Error(w, fmt.Sprintf("prompt %q version %d not found", id, version), http.StatusNotFound)
+			return
+		}
+		writeJSONResponse(w, promptToResponse(p))
+	}
+}
+
+// upsertPromptHandler creates a new version of id, live -- see
+// dataplane.Pipeline.UpsertPrompt/prompt.Store.Upsert's own doc comments
+// for the exact version-bump rule. logger records id and the resulting
+// version (never the prompt's own message content) on every successful
+// upsert, mirroring upsertVirtualKeyHandler's identical "log identifiers,
+// not payload content" discipline.
+func upsertPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			http.Error(w, "prompt id is required", http.StatusBadRequest)
+			return
+		}
+
+		var req promptRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(req.Messages) == 0 {
+			http.Error(w, "messages is required and must be non-empty", http.StatusBadRequest)
+			return
+		}
+
+		p, err := pipeline.UpsertPrompt(id, req.Messages)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		logger.Info("admin_prompt_upserted", "id", id, "version", p.Version, "authorized_by", "admin")
+		writeJSONResponse(w, promptToResponse(p))
+	}
+}
+
+// deletePromptHandler removes every version of id. 404 if id doesn't
+// match any stored prompt. logger records id on every successful delete.
+func deletePromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			http.Error(w, "prompt id is required", http.StatusBadRequest)
+			return
+		}
+
+		err := pipeline.DeletePrompt(id)
+		switch {
+		case err == nil:
+			logger.Info("admin_prompt_deleted", "id", id, "authorized_by", "admin")
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, prompt.ErrPromptNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
 		default:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}

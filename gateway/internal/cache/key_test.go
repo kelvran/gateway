@@ -6,8 +6,8 @@ func TestKeyIsDeterministic(t *testing.T) {
 	temp := 0.5
 	maxTokens := 100
 
-	k1 := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "")
-	k2 := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "")
+	k1 := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "", "")
+	k2 := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "", "")
 	if k1 != k2 {
 		t.Errorf("Key is not deterministic: %q != %q", k1, k2)
 	}
@@ -16,16 +16,16 @@ func TestKeyIsDeterministic(t *testing.T) {
 func TestKeyDiffersOnAnyField(t *testing.T) {
 	temp := 0.5
 	maxTokens := 100
-	base := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "")
+	base := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "", "")
 
-	otherTenant := Key("team-beta", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "")
-	otherModel := Key("team-alpha", "gpt-4o-mini", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "")
-	otherMessages := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"bye"}]`, &temp, &maxTokens, "v1", "")
+	otherTenant := Key("team-beta", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "", "")
+	otherModel := Key("team-alpha", "gpt-4o-mini", `[{"role":"user","content":"hi"}]`, &temp, &maxTokens, "v1", "", "")
+	otherMessages := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"bye"}]`, &temp, &maxTokens, "v1", "", "")
 	otherTemp := 0.9
-	otherTempKey := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &otherTemp, &maxTokens, "v1", "")
+	otherTempKey := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &otherTemp, &maxTokens, "v1", "", "")
 	otherMaxTokens := 200
-	otherMaxTokensKey := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &otherMaxTokens, "v1", "")
-	nilTemp := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, nil, &maxTokens, "v1", "")
+	otherMaxTokensKey := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, &temp, &otherMaxTokens, "v1", "", "")
+	nilTemp := Key("team-alpha", "gpt-4o", `[{"role":"user","content":"hi"}]`, nil, &maxTokens, "v1", "", "")
 
 	for name, k := range map[string]string{
 		"tenant":     otherTenant,
@@ -53,14 +53,14 @@ func TestKeyIsolatesTenantsOnOtherwiseIdenticalRequests(t *testing.T) {
 	maxTokens := 100
 	messages := `[{"role":"user","content":"identical question"}]`
 
-	alphaKey := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "")
-	betaKey := Key("team-beta", "gpt-4o", messages, &temp, &maxTokens, "v1", "")
+	alphaKey := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	betaKey := Key("team-beta", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
 	if alphaKey == betaKey {
 		t.Fatalf("two different tenants asking an identical question produced the same cache key %q — cross-tenant cache leakage", alphaKey)
 	}
 
 	// Same tenant, same everything else: still deterministic.
-	alphaKeyAgain := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "")
+	alphaKeyAgain := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
 	if alphaKey != alphaKeyAgain {
 		t.Errorf("same tenant + identical request produced different keys: %q != %q", alphaKey, alphaKeyAgain)
 	}
@@ -76,13 +76,13 @@ func TestNormalizedKeyIsolatesTenantsOnOtherwiseIdenticalRequests(t *testing.T) 
 	maxTokens := 100
 	normalized := "user: identical question"
 
-	alphaKey := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "")
-	betaKey := NormalizedKey("team-beta", "gpt-4o", normalized, &temp, &maxTokens, "v1", "")
+	alphaKey := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "", "")
+	betaKey := NormalizedKey("team-beta", "gpt-4o", normalized, &temp, &maxTokens, "v1", "", "")
 	if alphaKey == betaKey {
 		t.Fatalf("two different tenants with identical normalized content produced the same L2 key %q — cross-tenant cache leakage", alphaKey)
 	}
 
-	alphaKeyAgain := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "")
+	alphaKeyAgain := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "", "")
 	if alphaKey != alphaKeyAgain {
 		t.Errorf("NormalizedKey is not deterministic: %q != %q", alphaKey, alphaKeyAgain)
 	}
@@ -100,8 +100,8 @@ func TestKeyDiffersOnGuardrailPolicyVersion(t *testing.T) {
 	maxTokens := 100
 	messages := `[{"role":"user","content":"hi"}]`
 
-	v1 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "")
-	v2 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v2", "")
+	v1 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	v2 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v2", "", "")
 	if v1 == v2 {
 		t.Errorf("Key did not change when guardrailPolicyVersion changed: %q == %q", v1, v2)
 	}
@@ -112,8 +112,8 @@ func TestNormalizedKeyDiffersOnGuardrailPolicyVersion(t *testing.T) {
 	maxTokens := 100
 	normalized := "user: hi"
 
-	v1 := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "")
-	v2 := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v2", "")
+	v1 := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "", "")
+	v2 := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v2", "", "")
 	if v1 == v2 {
 		t.Errorf("NormalizedKey did not change when guardrailPolicyVersion changed: %q == %q", v1, v2)
 	}
@@ -130,8 +130,8 @@ func TestKeyAndNormalizedKeyNeverCollide(t *testing.T) {
 	maxTokens := 100
 	messages := `[{"role":"user","content":"hi"}]`
 
-	l1 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "")
-	l2 := NormalizedKey("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "")
+	l1 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	l2 := NormalizedKey("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
 	if l1 == l2 {
 		t.Errorf("Key and NormalizedKey produced the same hash %q for identical remaining inputs — their leading layer tag should make this impossible", l1)
 	}
@@ -149,8 +149,8 @@ func TestKeyDiffersOnResponseFormatFingerprint(t *testing.T) {
 	maxTokens := 100
 	messages := `[{"role":"user","content":"hi"}]`
 
-	noFormat := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "")
-	withFormat := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", `{"type":"json_schema","json_schema":{"name":"x","schema":{}}}`)
+	noFormat := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	withFormat := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", `{"type":"json_schema","json_schema":{"name":"x","schema":{}}}`, "")
 	if noFormat == withFormat {
 		t.Errorf("Key did not change when responseFormatFingerprint changed: %q == %q", noFormat, withFormat)
 	}
@@ -161,8 +161,8 @@ func TestNormalizedKeyDiffersOnResponseFormatFingerprint(t *testing.T) {
 	maxTokens := 100
 	normalized := "user: hi"
 
-	noFormat := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "")
-	withFormat := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", `{"type":"json_schema","json_schema":{"name":"x","schema":{}}}`)
+	noFormat := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "", "")
+	withFormat := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", `{"type":"json_schema","json_schema":{"name":"x","schema":{}}}`, "")
 	if noFormat == withFormat {
 		t.Errorf("NormalizedKey did not change when responseFormatFingerprint changed: %q == %q", noFormat, withFormat)
 	}
@@ -184,7 +184,60 @@ func TestKeyEmptyResponseFormatFingerprintIsByteIdenticalToPreExistingBehavior(t
 	messages := `[{"role":"user","content":"hi"}]`
 
 	const wantPreExisting = "8f695eebf80febfdac0ac6ed13ccec4143da82318f37e547437beb97db21cad5"
-	if got := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", ""); got != wantPreExisting {
-		t.Errorf("Key(..., \"\") = %q, want %q (the exact pre-existing hash, unchanged by adding an empty response_format segment)", got, wantPreExisting)
+	if got := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", ""); got != wantPreExisting {
+		t.Errorf(`Key(..., "", "") = %q, want %q (the exact pre-existing hash, unchanged by adding an empty response_format segment)`, got, wantPreExisting)
+	}
+}
+
+// TestKeyDiffersOnPromptFingerprint and its NormalizedKey sibling are the
+// load-bearing proof for internal/prompt's own cache-key fold: two
+// requests that happen to resolve to the same message content (e.g. two
+// different prompt_id/prompt_version combinations that coincidentally
+// produce identical text) must still be distinguishable at the cache-key
+// level, mirroring responseFormatFingerprint's own identical rationale.
+func TestKeyDiffersOnPromptFingerprint(t *testing.T) {
+	temp := 0.5
+	maxTokens := 100
+	messages := `[{"role":"user","content":"hi"}]`
+
+	noPrompt := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	withPrompt := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "greeting:v1:abc123")
+	if noPrompt == withPrompt {
+		t.Errorf("Key did not change when promptFingerprint changed: %q == %q", noPrompt, withPrompt)
+	}
+
+	otherPrompt := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "greeting:v2:def456")
+	if withPrompt == otherPrompt {
+		t.Errorf("Key did not change when promptFingerprint changed between two non-empty values: %q == %q", withPrompt, otherPrompt)
+	}
+}
+
+func TestNormalizedKeyDiffersOnPromptFingerprint(t *testing.T) {
+	temp := 0.5
+	maxTokens := 100
+	normalized := "user: hi"
+
+	noPrompt := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "", "")
+	withPrompt := NormalizedKey("team-alpha", "gpt-4o", normalized, &temp, &maxTokens, "v1", "", "greeting:v1:abc123")
+	if noPrompt == withPrompt {
+		t.Errorf("NormalizedKey did not change when promptFingerprint changed: %q == %q", noPrompt, withPrompt)
+	}
+}
+
+// TestKeyEmptyPromptFingerprintIsByteIdenticalToPreExistingBehavior is
+// promptFingerprint's own version of
+// TestKeyEmptyResponseFormatFingerprintIsByteIdenticalToPreExistingBehavior
+// above: a request with no PromptID at all (fingerprint "") must produce
+// the exact same key as before this parameter existed -- the same fixed,
+// independently-computed hash, not merely two freshly-computed empty
+// calls compared against each other.
+func TestKeyEmptyPromptFingerprintIsByteIdenticalToPreExistingBehavior(t *testing.T) {
+	temp := 0.5
+	maxTokens := 100
+	messages := `[{"role":"user","content":"hi"}]`
+
+	const wantPreExisting = "8f695eebf80febfdac0ac6ed13ccec4143da82318f37e547437beb97db21cad5"
+	if got := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", ""); got != wantPreExisting {
+		t.Errorf(`Key(..., "", "") = %q, want %q (the exact pre-existing hash, unchanged by adding an empty prompt segment)`, got, wantPreExisting)
 	}
 }

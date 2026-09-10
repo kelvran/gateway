@@ -58,6 +58,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/prompt"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/router"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
@@ -100,6 +101,24 @@ var ErrNoDeployment = errors.New("dataplane: no deployment configured for reques
 // docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md. Never returned
 // for a Warn-tier finding, which never blocks.
 var ErrGuardrailBlocked = errors.New("dataplane: request blocked by guardrail policy")
+
+// ErrPromptAndMessagesBothSet is returned when a request sets both
+// PromptID and a non-empty Messages -- a real client error, per this
+// feature's own "replace, never merge" design (see resolvePromptIfSet
+// and internal/prompt): there is no principled way to decide whose
+// content wins or in what order, so this is rejected outright rather
+// than silently merged/prepended. Mapped to a 400 by
+// cmd/gateway/main.go's writeErrorResponse, the same "this request
+// itself is malformed" bucket ErrGuardrailBlocked already occupies.
+var ErrPromptAndMessagesBothSet = errors.New("dataplane: request sets both prompt_id and messages")
+
+// ErrPromptResolutionFailed wraps a prompt.Store.Resolve failure -- an
+// unknown PromptID or PromptVersion. Mapped to a 400 by
+// writeErrorResponse: asking for a prompt_id/version this gateway has
+// never been told about is a client-request-shape problem, not an
+// upstream/server failure, the same reasoning ErrModelNotAllowed already
+// applies to an unresolvable model name.
+var ErrPromptResolutionFailed = errors.New("dataplane: failed to resolve prompt_id")
 
 // Deployment is a resolved upstream route: a concrete provider/endpoint a
 // canonical model can be sent to, with its API key already resolved from
@@ -259,7 +278,16 @@ type Config struct {
 	// Budget tracks each virtual key's cumulative spend against its
 	// configured BudgetUSD cap. See internal/budget.
 	Budget *budget.Tracker
-	Cache  cache.Cache
+	// Prompts holds every operator-managed server-side prompt/template
+	// (see internal/prompt), resolved into real Messages content on a
+	// request naming PromptID. Optional -- nil defaults to a fresh,
+	// empty prompt.NewStore() in NewPipeline (never left nil on the
+	// constructed Pipeline itself), matching this codebase's "unset
+	// means the feature's default, empty state" convention rather than
+	// requiring every existing Config literal in this codebase's own
+	// tests to be updated for a field they don't exercise.
+	Prompts *prompt.Store
+	Cache   cache.Cache
 	// CacheL2 is the normalized-match layer checked on an L1 (Cache) miss,
 	// per docs/rfcs/2026-09-03-cache-l2-normalized-match.md. Required,
 	// like every other dependency here — cmd/gateway always constructs
@@ -345,8 +373,15 @@ type Pipeline struct {
 	// no external resource to make optional, and every request needs
 	// SOME answer to "reset or record this key's streak," never a
 	// nil-check branch.
-	retryBackoff      *ratelimit.RetryBackoff
-	budget            *budget.Tracker
+	retryBackoff *ratelimit.RetryBackoff
+	budget       *budget.Tracker
+	// prompts is always non-nil (NewPipeline defaults it to a fresh
+	// prompt.NewStore() when Config.Prompts is unset) -- every real call
+	// site (resolvePromptIfSet, UpsertPrompt/DeletePrompt/GetPrompt/
+	// ListPrompts) calls straight through with no nil-check, mirroring
+	// retryBackoff's own identical "always constructed, no optional-ness
+	// to check" convention.
+	prompts           *prompt.Store
 	cache             cache.Cache
 	cacheL2           cache.Cache
 	cacheL3           cache.LexicalCache
@@ -441,6 +476,10 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	if l3TTL <= 0 {
 		l3TTL = 5 * time.Minute
 	}
+	prompts := cfg.Prompts
+	if prompts == nil {
+		prompts = prompt.NewStore()
+	}
 
 	p := &Pipeline{
 		limiter:               cfg.Limiter,
@@ -449,6 +488,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		deploymentLimiter:     cfg.DeploymentLimiter,
 		retryBackoff:          ratelimit.NewRetryBackoff(),
 		budget:                cfg.Budget,
+		prompts:               prompts,
 		cache:                 cfg.Cache,
 		cacheL2:               cfg.CacheL2,
 		cacheL3:               cfg.CacheL3,
@@ -571,6 +611,62 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 
 	p.verifier.Store(newVerifier)
 	return nil
+}
+
+// UpsertPrompt creates a NEW version of id from messages, live -- see
+// prompt.Store.Upsert's own doc comment for the exact version-bump rule.
+// Delegates straight through to p.prompts, mirroring
+// UpsertVirtualKey/DeleteVirtualKey's own shape: this method owns no
+// pipeline-level logic of its own, since prompts are global config with
+// no per-request-pipeline concern (rate limiting, budget, tenant
+// isolation) to enforce at the admin-mutation boundary.
+func (p *Pipeline) UpsertPrompt(id string, messages []adapter.Message) (prompt.Prompt, error) {
+	return p.prompts.Upsert(id, messages)
+}
+
+// DeletePrompt removes every version of id, live.
+func (p *Pipeline) DeletePrompt(id string) error {
+	return p.prompts.Delete(id)
+}
+
+// GetPrompt returns id's prompt at version (version <= 0 means latest).
+func (p *Pipeline) GetPrompt(id string, version int) (prompt.Prompt, bool) {
+	return p.prompts.Get(id, version)
+}
+
+// ListPrompts returns the latest version of every stored prompt, sorted
+// by ID.
+func (p *Pipeline) ListPrompts() []prompt.Prompt {
+	return p.prompts.List()
+}
+
+// resolvePromptIfSet resolves req.PromptID into real Messages content via
+// p.prompts, immediately after the model-allowlist check and before
+// rate-limiting -- both HandleChatCompletion and
+// HandleChatCompletionStream call this at that exact point, per this
+// feature's own design (prompts are a global, operator-managed resource;
+// any virtual key may reference any prompt_id, so no per-tenant check
+// belongs here). Returns req unchanged and an empty fingerprint when
+// PromptID == "" -- the common case, and every request built before this
+// field existed.
+//
+// req.PromptID set together with a non-empty req.Messages is a real
+// client error (ErrPromptAndMessagesBothSet) -- replace, never silently
+// merge or prepend the two message sources, since there is no
+// principled way to decide whose content wins or in what order.
+func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequest, string, error) {
+	if req.PromptID == "" {
+		return req, "", nil
+	}
+	if len(req.Messages) > 0 {
+		return req, "", ErrPromptAndMessagesBothSet
+	}
+	messages, fingerprint, err := p.prompts.Resolve(req.PromptID, req.PromptVersion, req.PromptVariables)
+	if err != nil {
+		return req, "", fmt.Errorf("%w: %w", ErrPromptResolutionFailed, err)
+	}
+	req.Messages = messages
+	return req, fingerprint, nil
 }
 
 // checkRateLimit reports whether vk may proceed against model, and
@@ -1115,6 +1211,12 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
+	var promptFP string
+	req, promptFP, err = p.resolvePromptIfSet(req)
+	if err != nil {
+		return
+	}
+
 	var rateLimitOK bool
 	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {
@@ -1144,8 +1246,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat))
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat))
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {

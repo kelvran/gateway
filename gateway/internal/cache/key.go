@@ -64,7 +64,21 @@ import (
 // request produces the EXACT SAME key this function produced before
 // this parameter existed, byte for byte, not merely "a key that's stable
 // going forward."
-func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string) string {
+//
+// promptFingerprint is folded in exactly the same conditional way as
+// responseFormatFingerprint immediately above -- per the server-side
+// prompt-management feature (internal/prompt): callers (dataplane)
+// compute this as internal/prompt.Store.Resolve's own returned
+// fingerprint whenever a request set PromptID, else "" (every request
+// that doesn't use prompt_id at all, including every one built before
+// this parameter existed). Folding it in matters because dataplane
+// resolves PromptID into req.Messages BEFORE computing this key, so two
+// requests naming a different prompt_id/prompt_version that happen to
+// resolve to byte-identical message content would otherwise be
+// indistinguishable to this function -- an unlikely but real collision
+// this fold closes the same way guardrailPolicyVersion already closes
+// its own "stored provenance, not just message bytes" gap.
+func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string) string {
 	h := sha256.New()
 	// hash.Hash.Write (which fmt.Fprint[f] calls into here) is documented
 	// to never return an error, so there is nothing a caller could ever
@@ -90,6 +104,9 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 	if responseFormatFingerprint != "" {
 		_, _ = fmt.Fprintf(h, "\x00response_format=%s", responseFormatFingerprint)
 	}
+	if promptFingerprint != "" {
+		_, _ = fmt.Fprintf(h, "\x00prompt=%s", promptFingerprint)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -102,8 +119,9 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 // the conservative allowlist that RFC specifies — this function has no
 // opinion on normalization itself, matching Key's own "primitive/
 // serialized inputs only" contract so this package still never needs to
-// import internal/adapter.
-func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string) string {
+// import internal/adapter. promptFingerprint mirrors Key's own identical
+// parameter -- see its doc comment above.
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "layer=l2\x00tenant=%s\x00model=%s\x00messages=%s\x00temperature=", tenantID, model, normalizedMessages)
 	if temperature != nil {
@@ -116,6 +134,9 @@ func NormalizedKey(tenantID string, model string, normalizedMessages string, tem
 	_, _ = fmt.Fprintf(h, "\x00guardrail_policy=%s", guardrailPolicyVersion)
 	if responseFormatFingerprint != "" {
 		_, _ = fmt.Fprintf(h, "\x00response_format=%s", responseFormatFingerprint)
+	}
+	if promptFingerprint != "" {
+		_, _ = fmt.Fprintf(h, "\x00prompt=%s", promptFingerprint)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

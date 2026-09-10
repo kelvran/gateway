@@ -26,6 +26,7 @@ components:
   controlplane:      { in: gateway/controlplane }
   dataplane:         { in: gateway/dataplane }
   admin:             { in: admin }
+  prompt:            { in: prompt }
   gatewayevents:     { in: ../api/gatewayevents/v1 }
 
 # Components deliberately absent from `deps:` below (identity, budget,
@@ -66,6 +67,9 @@ deps:
     mayDependOn:
       - adapter
       - streaming
+  prompt:
+    mayDependOn:
+      - adapter
   dataplane:
     mayDependOn:
       - adapter
@@ -76,13 +80,16 @@ deps:
       - gatewayevents
       - guardrail
       - identity
+      - prompt
       - ratelimit
       - router
       - streaming
       - telemetry
   admin:
     mayDependOn:
+      - adapter
       - controlplane
       - dataplane
       - identity
+      - prompt
       - ratelimit

@@ -807,6 +807,12 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		// failure, matching OpenAI's own API convention for
 		// moderation/content-policy rejections.
 		status = http.StatusBadRequest
+	case errors.Is(err, dataplane.ErrPromptAndMessagesBothSet), errors.Is(err, dataplane.ErrPromptResolutionFailed):
+		// 400, the same "this request itself is malformed" bucket
+		// ErrGuardrailBlocked already occupies — setting both prompt_id
+		// and messages, or naming an unknown prompt_id/prompt_version, is
+		// a client-request-shape problem, never an upstream failure.
+		status = http.StatusBadRequest
 	}
 
 	// Retry-After, per docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's
