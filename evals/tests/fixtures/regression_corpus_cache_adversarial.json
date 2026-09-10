@@ -14,7 +14,7 @@
         ]
       },
       "new_query": {
-        "model": "gpt-4\\u0000messages=[{\"role\":\"user\",\"content\":\"REAL\"}]",
+        "model": "gpt-4\u0000messages=[{\"role\":\"user\",\"content\":\"REAL\"}]",
         "messages": [
           {
             "role": "user",
@@ -417,7 +417,7 @@
       },
       "new_query": {
         "tenant": "tenant-B",
-        "path": "L3 Search/Put -- a long, realistic-length query related to tenant-A's own"
+        "path": "L3 Search/Put -- a long, realistic-length query related to tenant-A's own cached query"
       },
       "output": "l3_tenant_partitioning_is_structural_separate_map_bucket_per_tenant_never_a_shared_similarity_computation",
       "match": "exact",
