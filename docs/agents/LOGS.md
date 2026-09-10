@@ -1837,3 +1837,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None new — this pass fixed a doc-staleness gap (`STATUS.md` frozen at the `v0.4.0` tag), not a code defect.
 
 **Next steps / resume point:** `gateway/v0.6.0` and `evals/v0.6.0` tagged, pushed, and released on GitHub. No further Kelvran work is currently queued beyond the two items already named as open: `costabuse-no-custom-pricing-cache-token-doublecount-path`'s human-review flag, and the PyPI trademark clearance blocker.
+
+## [2026-09-10] Closed the last open triage item: cache-token double-count security re-analysis
+
+**Files touched:** `evals/tests/fixtures/regression_corpus_cost_abuse.json`, `DECISIONS.md`.
+
+**Intent/summary:** The triage swarm had flagged `costabuse-no-custom-pricing-cache-token-doublecount-path` for human review rather than auto-fixing it, since its "no cache-token field exists" ground truth was falsified by a later commit and the right fix needed a security re-analysis of the new cache-aware pricing path, not a mechanical edit. Re-reading that reasoning: the blocker was the need for careful investigation, not that the task was outside an agent's reach — so did the analysis directly instead of leaving it open for the founder.
+
+**Decisions made:** Traced every consumer of the cache-token fields (`grep` for `PromptPerToken`/`CompletionPerToken`/`CacheReadPerToken`/`CacheCreationPerToken` across the whole repo) to confirm `Calculator.Calculate` is still the sole pricing path; read `Calculate`'s own partition logic (fresh/cache-read/cache-creation/completion, 4 disjoint buckets summing back to the original usage) and confirmed the `CacheReadTokens+CacheCreationTokens <= PromptTokens` invariant holds by construction in every real producer (Anthropic and Bedrock's buffered and streaming paths all assemble `PromptTokens` as the sum of fresh+cache-read+cache-creation); confirmed `Calculate`'s only 2 real callers (the final per-request cost in `dataplane.go`, and a mid-stream reservation estimate in `streamrunaway.go` that deliberately never touches the cache fields) never both contribute to the same charge; confirmed the cache-savings telemetry metric reuses the same already-computed cost rather than re-pricing. Concluded no double-count bug exists — the newer cache-aware code is correct — and rewrote the case's ground truth to state that conclusion, replacing the now-false "no cache-token field of any kind" claim, while naming the one real narrower gap the analysis surfaced (OpenAI/Gemini/openaicompat never populate the cache-token fields, so cache-discount pass-through is Anthropic/Bedrock-only).
+
+**Verification performed:** Confirmed the file is still valid JSON and `output`/`reference` still match exactly (the case's own `match: "exact"` requirement). Full `evals` suite: 399 passed, 11 skipped; `ruff check .` clean; `lint-imports` 3/3 contracts kept.
+
+**Bugs found:** None — this pass confirmed the absence of a bug (the double-count vulnerability class doesn't apply to the current code) and corrected a corpus case whose ground truth had gone stale, which is itself a real corpus-data defect fixed, not a code defect.
+
+**Next steps / resume point:** This closes the last item that was open from the audit-corpus triage effort. The only remaining open item repo-wide is the PyPI trademark clearance blocker, which genuinely needs the founder (a manual USPTO TESS search or attorney review) — no further Kelvran work is currently queued.
