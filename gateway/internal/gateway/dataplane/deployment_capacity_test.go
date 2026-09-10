@@ -217,7 +217,7 @@ func TestAttemptFallbackChainSkipsCapacityConstrainedTargetsWithoutAttemptingThe
 	}
 
 	start := time.Now()
-	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, func(depName string) bool { return p.checkDeploymentCapacity(context.Background(), depName) })
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, func(depName string) bool { return p.checkDeploymentCapacity(context.Background(), depName) }, alwaysAllowCapability)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)

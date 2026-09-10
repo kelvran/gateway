@@ -184,6 +184,28 @@ func (d Deployment) effectiveCacheControlAutoDisabled() bool {
 	return d.DisableCacheControlAutoPopulate || d.SharedAcrossTenants
 }
 
+// capabilityOKForRequest reports whether dep can satisfy req's own
+// capability requirements -- in v1, exclusively whether dep can satisfy
+// a non-nil req.ResponseFormat, via adapter.SupportsStructuredOutput. A
+// nil ResponseFormat (the default, and every ChatRequest built before
+// this field existed) is always OK, regardless of dep -- this function
+// only ever narrows the set of eligible fallback targets when the
+// CLIENT'S OWN request actually asked for structured output. Passed as
+// attemptFallbackChain's capabilityOK closure (fallback.go) at both real
+// call sites (runMissPath here; streamDeploymentWithFallback in
+// streaming.go).
+func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
+	if req.ResponseFormat == nil {
+		return true
+	}
+	// UpstreamModel, not Model -- adapter.SupportsStructuredOutput's
+	// Bedrock branch matches against the real provider-facing model ID
+	// (the same value callDeployment/streamDeployment set as
+	// upstreamReq.Model before calling ToProvider), never the
+	// client-facing canonical model name.
+	return adapter.SupportsStructuredOutput(dep.Provider, dep.UpstreamModel)
+}
+
 // UpstreamCaller performs the actual upstream HTTP call for one
 // deployment, given the provider-native request adapter.ToProvider
 // produced. It returns the provider-native response value
@@ -1122,8 +1144,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat))
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat))
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {
@@ -1240,6 +1262,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 					func() bool { return false },
 					func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, vk.ID, model) },
 					func(depName string) bool { return p.checkDeploymentCapacity(ctx, depName) },
+					func(d Deployment) bool { return capabilityOKForRequest(d, req) },
 				)
 				if attempted {
 					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
@@ -1939,6 +1962,25 @@ func serializeMessages(messages []adapter.Message) string {
 	b, err := json.Marshal(messages)
 	if err != nil {
 		panic(fmt.Sprintf("dataplane: marshaling messages for cache key: %v", err))
+	}
+	return string(b)
+}
+
+// responseFormatFingerprint computes the cache-key fold value for
+// req.ResponseFormat, per internal/cache.Key/NormalizedKey's own
+// responseFormatFingerprint parameter doc comment: the raw JSON marshal
+// of ResponseFormat when non-nil, else "" (the empty-string case that
+// keeps Key/NormalizedKey byte-identical to their pre-existing output
+// for every request that doesn't use this field at all). encoding/json
+// cannot fail on this struct shape, mirroring serializeMessages' own
+// panic-on-marshal-failure convention below.
+func responseFormatFingerprint(rf *adapter.ResponseFormat) string {
+	if rf == nil {
+		return ""
+	}
+	b, err := json.Marshal(rf)
+	if err != nil {
+		panic(fmt.Sprintf("dataplane: marshaling ResponseFormat for cache key: %v", err))
 	}
 	return string(b)
 }

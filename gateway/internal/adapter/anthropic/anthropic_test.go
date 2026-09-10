@@ -725,3 +725,129 @@ func TestToProviderToolDefAndMessageCacheControlBothApply(t *testing.T) {
 		t.Fatalf("native.Messages = %+v, want 1 message with a cache_control-marked last block", native.Messages)
 	}
 }
+
+// TestToProviderResponseFormatMapsToOutputConfig proves a canonical
+// ResponseFormat/JSONSchema maps onto Anthropic's real top-level
+// output_config.format.{type,schema} shape -- confirmed live-verified:
+// no beta header required, and (unlike OpenAI) no "name" field exists on
+// Anthropic's own real wire shape at all.
+func TestToProviderResponseFormatMapsToOutputConfig(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "claude-opus-4",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name:   "weather_response",
+				Schema: json.RawMessage(`{"type":"object","properties":{"temp_f":{"type":"number"}},"required":["temp_f"]}`),
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.OutputConfig == nil || native.OutputConfig.Format == nil {
+		t.Fatal("native.OutputConfig.Format = nil, want a populated OutputFormat")
+	}
+	if native.OutputConfig.Format.Type != "json_schema" {
+		t.Errorf("OutputConfig.Format.Type = %q, want json_schema", native.OutputConfig.Format.Type)
+	}
+	if native.OutputConfig.Format.Schema["type"] != "object" {
+		t.Errorf("OutputConfig.Format.Schema = %v, want the parsed schema object", native.OutputConfig.Format.Schema)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	var wireTree map[string]any
+	if err := json.Unmarshal(b, &wireTree); err != nil {
+		t.Fatalf("unmarshaling marshaled request: %v", err)
+	}
+	oc, ok := wireTree["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("marshaled request has no output_config object: %s", b)
+	}
+	format, ok := oc["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_config has no format object: %v", oc)
+	}
+	if format["type"] != "json_schema" {
+		t.Errorf("output_config.format.type = %v, want json_schema", format["type"])
+	}
+	if _, hasName := format["name"]; hasName {
+		t.Errorf("output_config.format carries a name field, want none -- Anthropic's real shape has no name key")
+	}
+}
+
+// TestToProviderNilResponseFormatOmitsOutputConfig proves the unset (nil,
+// the default) case never emits output_config at all -- byte-identical
+// to every ChatRequest built before this field existed.
+func TestToProviderNilResponseFormatOmitsOutputConfig(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "claude-opus-4",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.OutputConfig != nil {
+		t.Errorf("native.OutputConfig = %+v, want nil", native.OutputConfig)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "output_config") {
+		t.Errorf("marshaled request contains output_config despite ResponseFormat being nil: %s", b)
+	}
+}
+
+// TestToProviderToolStrictMapsToWireStrictTrueOnly proves ToolDef.Strict
+// maps onto Anthropic's real per-tool "strict" sibling key, and that an
+// unset (false) ToolDef.Strict never emits a spurious "strict":false --
+// only an explicit true is ever placed on the wire.
+func TestToProviderToolStrictMapsToWireStrictTrueOnly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "claude-opus-4",
+		Messages: []adapter.Message{{Role: "user", Content: "what's the weather?"}},
+		Tools: []adapter.ToolDef{
+			{Name: "get_weather", ParametersJSON: `{"type":"object"}`, Strict: true},
+			{Name: "get_time", ParametersJSON: `{"type":"object"}`},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if len(native.Tools) != 2 {
+		t.Fatalf("native.Tools len = %d, want 2", len(native.Tools))
+	}
+	if native.Tools[0].Strict == nil || !*native.Tools[0].Strict {
+		t.Errorf("Tools[0] (get_weather, Strict:true) native Strict = %v, want a pointer to true", native.Tools[0].Strict)
+	}
+	if native.Tools[1].Strict != nil {
+		t.Errorf("Tools[1] (get_time, Strict unset) native Strict = %v, want nil", native.Tools[1].Strict)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), `"strict":false`) {
+		t.Errorf("marshaled request contains a spurious \"strict\":false: %s", b)
+	}
+	if !strings.Contains(string(b), `"strict":true`) {
+		t.Errorf("marshaled request is missing the expected \"strict\":true: %s", b)
+	}
+}

@@ -6,10 +6,12 @@ import (
 	"fmt"
 )
 
-// Key fabricates the L1 exact-match cache key from the five fields that
+// Key fabricates the L1 exact-match cache key from the fields that
 // determine whether two requests are byte-for-byte equivalent for caching
 // purposes: the tenant (virtual key) making the request, model, the
-// serialized message history, temperature, and max_tokens. This is a real
+// serialized message history, temperature, max_tokens, and (see
+// responseFormatFingerprint's own doc comment below) the requested
+// response format. This is a real
 // key fabricator, not a placeholder — callers (the dataplane pipeline) are
 // expected to serialize a request's messages deterministically (e.g.
 // canonical JSON) before calling Key, so the same logical request always
@@ -41,7 +43,28 @@ import (
 // every existing L1/L2 entry; the existing key-equality check IS the
 // version check, with zero new stored fields or "is this hit still
 // valid" code.
-func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string) string {
+// responseFormatFingerprint is folded into the hash the same way
+// guardrailPolicyVersion already is, per this feature's own structured-
+// output/JSON-schema normalization work: two requests differing only in
+// their ResponseFormat must never collide on the same cache entry
+// (serving a schema-conforming JSON response to a caller that asked for
+// unstructured text, or vice versa, is exactly the kind of
+// correctness-breaking collision this cache's whole "gated on
+// correctness, not just similarity" design exists to prevent). Callers
+// (dataplane) compute this as the raw JSON marshal of
+// adapter.ChatRequest.ResponseFormat when non-nil, else "" — this
+// package still never imports internal/adapter itself, matching Key's
+// own "primitive/serialized inputs only" contract.
+//
+// Unlike guardrailPolicyVersion (always real, never empty in practice),
+// an empty responseFormatFingerprint is the common, expected case (every
+// request with no ResponseFormat at all) and the segment is omitted
+// entirely for it, never emitted as an empty "\x00response_format=" --
+// this is the backward-compatibility guarantee: a nil-ResponseFormat
+// request produces the EXACT SAME key this function produced before
+// this parameter existed, byte for byte, not merely "a key that's stable
+// going forward."
+func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string) string {
 	h := sha256.New()
 	// hash.Hash.Write (which fmt.Fprint[f] calls into here) is documented
 	// to never return an error, so there is nothing a caller could ever
@@ -64,6 +87,9 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 		_, _ = fmt.Fprintf(h, "%v", *maxTokens)
 	}
 	_, _ = fmt.Fprintf(h, "\x00guardrail_policy=%s", guardrailPolicyVersion)
+	if responseFormatFingerprint != "" {
+		_, _ = fmt.Fprintf(h, "\x00response_format=%s", responseFormatFingerprint)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -77,7 +103,7 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 // opinion on normalization itself, matching Key's own "primitive/
 // serialized inputs only" contract so this package still never needs to
 // import internal/adapter.
-func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string) string {
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "layer=l2\x00tenant=%s\x00model=%s\x00messages=%s\x00temperature=", tenantID, model, normalizedMessages)
 	if temperature != nil {
@@ -88,5 +114,8 @@ func NormalizedKey(tenantID string, model string, normalizedMessages string, tem
 		_, _ = fmt.Fprintf(h, "%v", *maxTokens)
 	}
 	_, _ = fmt.Fprintf(h, "\x00guardrail_policy=%s", guardrailPolicyVersion)
+	if responseFormatFingerprint != "" {
+		_, _ = fmt.Fprintf(h, "\x00response_format=%s", responseFormatFingerprint)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }

@@ -223,3 +223,64 @@ func TestToProviderInvalidToolArguments(t *testing.T) {
 		t.Fatal("expected error for invalid ArgumentsJSON, got nil")
 	}
 }
+
+// TestToProviderResponseFormatMapsToNativeShape proves this package
+// mirrors internal/adapter/openai's response_format wiring exactly, per
+// its own "near-verbatim copy" convention.
+func TestToProviderResponseFormatMapsToNativeShape(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "llama-3-70b",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name:   "weather_response",
+				Strict: true,
+				Schema: json.RawMessage(`{"type":"object","properties":{"temp_f":{"type":"number"}}}`),
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.ResponseFormat == nil || native.ResponseFormat.JSONSchema == nil {
+		t.Fatal("native.ResponseFormat/.JSONSchema = nil, want populated")
+	}
+	if native.ResponseFormat.Type != "json_schema" {
+		t.Errorf("ResponseFormat.Type = %q, want json_schema", native.ResponseFormat.Type)
+	}
+	if native.ResponseFormat.JSONSchema.Name != "weather_response" || !native.ResponseFormat.JSONSchema.Strict {
+		t.Errorf("JSONSchema = %+v, want Name=weather_response Strict=true", native.ResponseFormat.JSONSchema)
+	}
+}
+
+// TestToProviderNilResponseFormatOmitsField proves the unset (nil, the
+// default) case never emits response_format at all -- byte-identical to
+// every ChatRequest built before this field existed.
+func TestToProviderNilResponseFormatOmitsField(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "llama-3-70b",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.ResponseFormat != nil {
+		t.Errorf("native.ResponseFormat = %+v, want nil", native.ResponseFormat)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "response_format") {
+		t.Errorf("marshaled request contains response_format despite ResponseFormat being nil: %s", b)
+	}
+}

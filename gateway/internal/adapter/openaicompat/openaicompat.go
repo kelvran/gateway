@@ -46,11 +46,36 @@ type Request struct {
 	// self-hosted runtime surveyed (vLLM, llama.cpp, Ollama, TGI, LocalAI)
 	// correctly honors this flag, matching real OpenAI's own behavior.
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+	// ResponseFormat mirrors real OpenAI's own response_format wire shape
+	// exactly (see internal/adapter/openai.Request.ResponseFormat's doc
+	// comment), per this package's own "near-verbatim copy" convention.
+	// Fidelity caveat, not silently assumed: unlike the OpenAI-hosted API, actual
+	// grammar-backed ENFORCEMENT of the schema varies by self-hosted
+	// backend (vLLM/TGI/Ollama/llama.cpp/LocalAI each implement their own
+	// constrained-decoding support, at varying completeness) --
+	// SupportsStructuredOutput("openaicompat", ...) is unconditionally
+	// true purely on wire-shape-acceptance grounds, the same "wire shape
+	// matches, enforcement quality is the operator's own responsibility"
+	// stance this package's doc comment already takes for tool-calling.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
 
 // StreamOptions is the native streaming-configuration object.
 type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+// ResponseFormat mirrors internal/adapter/openai.ResponseFormat exactly.
+type ResponseFormat struct {
+	Type       string      `json:"type"`
+	JSONSchema *JSONSchema `json:"json_schema,omitempty"`
+}
+
+// JSONSchema mirrors internal/adapter/openai.JSONSchema exactly.
+type JSONSchema struct {
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 // Message is the native message shape. Content is json.RawMessage, not
@@ -203,14 +228,32 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	return &Request{
-		Model:         req.Model,
-		Messages:      messages,
-		Temperature:   req.Temperature,
-		MaxTokens:     req.MaxTokens,
-		Tools:         tools,
-		Stream:        req.Stream,
-		StreamOptions: streamOpts,
+		Model:          req.Model,
+		Messages:       messages,
+		Temperature:    req.Temperature,
+		MaxTokens:      req.MaxTokens,
+		Tools:          tools,
+		Stream:         req.Stream,
+		StreamOptions:  streamOpts,
+		ResponseFormat: responseFormatToProvider(req.ResponseFormat),
 	}, nil
+}
+
+// responseFormatToProvider mirrors internal/adapter/openai's identically
+// named helper exactly -- see that copy's doc comment.
+func responseFormatToProvider(rf *adapter.ResponseFormat) *ResponseFormat {
+	if rf == nil {
+		return nil
+	}
+	native := &ResponseFormat{Type: rf.Type}
+	if rf.JSONSchema != nil {
+		native.JSONSchema = &JSONSchema{
+			Name:   rf.JSONSchema.Name,
+			Strict: rf.JSONSchema.Strict,
+			Schema: rf.JSONSchema.Schema,
+		}
+	}
+	return native
 }
 
 // FromProvider implements adapter.Adapter, converting a native Response

@@ -432,3 +432,98 @@ func TestToProviderToolDefCacheControlHasNoEffect(t *testing.T) {
 		t.Errorf("marshaled request leaked the tool-level CacheControl.Key into the wire format: %s", jsonWithMarker)
 	}
 }
+
+// TestToProviderResponseFormatMapsToNativeShape proves a canonical
+// ResponseFormat/JSONSchema maps directly onto OpenAI's real
+// response_format/json_schema wire shape (name/strict/schema, confirmed
+// against OpenAI's own live shared_params/response_format_json_schema.py).
+func TestToProviderResponseFormatMapsToNativeShape(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name:   "weather_response",
+				Strict: true,
+				Schema: json.RawMessage(`{"type":"object","properties":{"temp_f":{"type":"number"}},"required":["temp_f"]}`),
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.ResponseFormat == nil {
+		t.Fatal("native.ResponseFormat = nil, want a populated *ResponseFormat")
+	}
+	if native.ResponseFormat.Type != "json_schema" {
+		t.Errorf("native.ResponseFormat.Type = %q, want %q", native.ResponseFormat.Type, "json_schema")
+	}
+	if native.ResponseFormat.JSONSchema == nil {
+		t.Fatal("native.ResponseFormat.JSONSchema = nil, want a populated *JSONSchema")
+	}
+	if native.ResponseFormat.JSONSchema.Name != "weather_response" {
+		t.Errorf("JSONSchema.Name = %q, want %q", native.ResponseFormat.JSONSchema.Name, "weather_response")
+	}
+	if !native.ResponseFormat.JSONSchema.Strict {
+		t.Error("JSONSchema.Strict = false, want true")
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	var wireTree map[string]any
+	if err := json.Unmarshal(b, &wireTree); err != nil {
+		t.Fatalf("unmarshaling marshaled request: %v", err)
+	}
+	rf, ok := wireTree["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("marshaled request has no response_format object: %s", b)
+	}
+	if rf["type"] != "json_schema" {
+		t.Errorf("wire response_format.type = %v, want json_schema", rf["type"])
+	}
+	js, ok := rf["json_schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("wire response_format has no json_schema object: %v", rf)
+	}
+	if js["name"] != "weather_response" || js["strict"] != true {
+		t.Errorf("wire json_schema = %v, want name=weather_response strict=true", js)
+	}
+	if _, ok := js["schema"].(map[string]any); !ok {
+		t.Errorf("wire json_schema.schema is not an object: %v", js)
+	}
+}
+
+// TestToProviderNilResponseFormatOmitsField proves the unset (nil, the
+// default) case never emits response_format at all, matching this
+// schema's existing optional-field convention — byte-identical to every
+// ChatRequest built before this field existed.
+func TestToProviderNilResponseFormatOmitsField(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.ResponseFormat != nil {
+		t.Errorf("native.ResponseFormat = %+v, want nil", native.ResponseFormat)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "response_format") {
+		t.Errorf("marshaled request contains response_format despite ResponseFormat being nil: %s", b)
+	}
+}

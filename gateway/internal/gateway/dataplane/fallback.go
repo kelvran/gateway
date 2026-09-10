@@ -337,7 +337,24 @@ const (
 //     scoped concurrency slot — callers' own call closure MUST release
 //     it via a defer, since attemptFallbackChain itself has no way to
 //     know when call's real work against that deployment finishes.
-func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
+//   - capabilityOK, checked immediately after deploymentCapacityOK, in
+//     the same position and with the same skip-without-charging-backoff
+//     semantics (no realAttempts/consecutiveFailures increment, no
+//     backoff charged) — closes the structured-output/JSON-schema
+//     capability gap for FALLBACK hops specifically: a target that
+//     cannot satisfy the request's own adapter.ChatRequest.ResponseFormat
+//     (e.g. a Bedrock deployment whose model isn't on
+//     adapter.SupportsStructuredOutput's whitelist) is skipped entirely,
+//     never attempted, never sent a request it would either reject or
+//     silently under-enforce. Callers pass a closure over the ORIGINAL
+//     request's own ResponseFormat, never the just-failed hop's — the
+//     capability requirement travels with the client's request, not with
+//     whichever deployment most recently failed. Deliberately scoped to
+//     fallback hops only, not the first-attempt router pick — see
+//     bedrock.additionalModelRequestFieldsFor's own doc comment for why
+//     that narrower first-attempt gap is a named, accepted one, not
+//     closed here.
+func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool, capabilityOK func(d Deployment) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
 	consecutiveFailures := 0
 	realAttempts := 0
 	for _, name := range targets {
@@ -370,6 +387,10 @@ func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, t
 		}
 
 		if !deploymentCapacityOK(nextDep.Name) {
+			continue
+		}
+
+		if !capabilityOK(nextDep) {
 			continue
 		}
 

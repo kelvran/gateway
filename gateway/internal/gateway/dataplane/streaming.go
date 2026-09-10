@@ -127,8 +127,8 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version())
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat))
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat))
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {
@@ -295,6 +295,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 			func() bool { return firstChunkSent },
 			func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, keyID, model) },
 			func(depName string) bool { return p.checkDeploymentCapacity(ctx, depName) },
+			func(d Deployment) bool { return capabilityOKForRequest(d, req) },
 		)
 		if attempted {
 			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}

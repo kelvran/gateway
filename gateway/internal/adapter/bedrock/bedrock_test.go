@@ -830,3 +830,108 @@ func TestToProviderToolDefAndMessageCacheControlBothApply(t *testing.T) {
 		t.Fatalf("native.Messages[0].Content = %+v, want [text, cachePoint]", blocks)
 	}
 }
+
+// TestToProviderResponseFormatSetsAdditionalModelRequestFieldsOnWhitelistedModel
+// proves a canonical ResponseFormat/JSONSchema maps onto Converse's real
+// additionalModelRequestFields.output_config.format.{type,schema} escape
+// hatch, but ONLY when req.Model is on
+// adapter.SupportsStructuredOutput's Bedrock whitelist.
+func TestToProviderResponseFormatSetsAdditionalModelRequestFieldsOnWhitelistedModel(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name:   "weather_response",
+				Schema: json.RawMessage(`{"type":"object","properties":{"temp_f":{"type":"number"}}}`),
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.AdditionalModelRequestFields == nil {
+		t.Fatal("native.AdditionalModelRequestFields = nil, want a populated map for a whitelisted model")
+	}
+	outputConfig, ok := native.AdditionalModelRequestFields["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("AdditionalModelRequestFields = %v, want an output_config key", native.AdditionalModelRequestFields)
+	}
+	format, ok := outputConfig["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_config = %v, want a format key", outputConfig)
+	}
+	if format["type"] != "json_schema" {
+		t.Errorf("output_config.format.type = %v, want json_schema", format["type"])
+	}
+	schema, ok := format["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" {
+		t.Errorf("output_config.format.schema = %v, want the parsed schema object", format["schema"])
+	}
+}
+
+// TestToProviderResponseFormatOmitsAdditionalModelRequestFieldsOnUnsupportedModel
+// is the named, accepted-gap proof: a request with ResponseFormat set
+// against a Bedrock model NOT on the structured-output whitelist (e.g.
+// Claude 3.5 Sonnet) must NOT send additionalModelRequestFields at all --
+// AWS itself rejects output_config.format for such models with a real
+// ValidationException, so this adapter never sends that combination.
+// Capability-gating THIS specific gap for a first-attempt (non-fallback)
+// call is a named, accepted scope limit -- see
+// additionalModelRequestFieldsFor's own doc comment.
+func TestToProviderResponseFormatOmitsAdditionalModelRequestFieldsOnUnsupportedModel(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name:   "weather_response",
+				Schema: json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.AdditionalModelRequestFields != nil {
+		t.Errorf("native.AdditionalModelRequestFields = %v, want nil for a model not on the structured-output whitelist", native.AdditionalModelRequestFields)
+	}
+}
+
+// TestToProviderNilResponseFormatOmitsAdditionalModelRequestFields proves
+// the unset (nil, the default) case never emits
+// additionalModelRequestFields at all -- byte-identical to every
+// ChatRequest built before this field existed.
+func TestToProviderNilResponseFormatOmitsAdditionalModelRequestFields(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.AdditionalModelRequestFields != nil {
+		t.Errorf("native.AdditionalModelRequestFields = %v, want nil", native.AdditionalModelRequestFields)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "additionalModelRequestFields") {
+		t.Errorf("marshaled request contains additionalModelRequestFields despite ResponseFormat being nil: %s", b)
+	}
+}

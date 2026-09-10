@@ -443,3 +443,66 @@ func TestToProviderCacheControlIsUnaffected(t *testing.T) {
 		t.Errorf("CacheControl changed Gemini's native request output:\nwithout marker: %s\nwith marker:    %s", jsonWithout, jsonWith)
 	}
 }
+
+// TestToProviderResponseFormatSetsResponseMimeTypeAndSchema proves a
+// canonical ResponseFormat/JSONSchema maps onto Gemini's real
+// generationConfig.responseMimeType ("application/json")/responseSchema
+// fields, and that this alone is enough to force a GenerationConfig to
+// exist even when Temperature/MaxTokens are both unset.
+func TestToProviderResponseFormatSetsResponseMimeTypeAndSchema(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "gemini-2.5-flash",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name:   "weather_response",
+				Schema: json.RawMessage(`{"type":"object","properties":{"temp_f":{"type":"number"}}}`),
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.GenerationConfig == nil {
+		t.Fatal("native.GenerationConfig = nil, want a populated *GenerationConfig (ResponseFormat alone must force one to exist)")
+	}
+	if native.GenerationConfig.ResponseMimeType != "application/json" {
+		t.Errorf("GenerationConfig.ResponseMimeType = %q, want application/json", native.GenerationConfig.ResponseMimeType)
+	}
+	if native.GenerationConfig.ResponseSchema["type"] != "object" {
+		t.Errorf("GenerationConfig.ResponseSchema = %v, want the parsed schema object", native.GenerationConfig.ResponseSchema)
+	}
+}
+
+// TestToProviderNilResponseFormatOmitsResponseMimeType proves the unset
+// (nil, the default) case never emits responseMimeType/responseSchema at
+// all -- byte-identical to every ChatRequest built before this field
+// existed.
+func TestToProviderNilResponseFormatOmitsResponseMimeType(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "gemini-2.5-flash",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.GenerationConfig != nil {
+		t.Errorf("native.GenerationConfig = %+v, want nil", native.GenerationConfig)
+	}
+
+	b, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if strings.Contains(string(b), "responseMimeType") || strings.Contains(string(b), "responseSchema") {
+		t.Errorf("marshaled request contains responseMimeType/responseSchema despite ResponseFormat being nil: %s", b)
+	}
+}

@@ -43,6 +43,29 @@ type Request struct {
 	Temperature *float64      `json:"temperature,omitempty"`
 	Tools       []Tool        `json:"tools,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
+	// OutputConfig is Anthropic's real structured-output request field --
+	// a top-level output_config object, sibling of model/messages/tools,
+	// live-verified against the current Messages API (no beta header
+	// required -- the older structured-outputs-2025-11-13 beta header is
+	// deprecated/legacy-only). Nil (the default) omits the field
+	// entirely, byte-identical to today's existing behavior.
+	OutputConfig *OutputConfig `json:"output_config,omitempty"`
+}
+
+// OutputConfig is Anthropic's real top-level structured-output request
+// object.
+type OutputConfig struct {
+	Format *OutputFormat `json:"format,omitempty"`
+}
+
+// OutputFormat is Anthropic's real output_config.format shape --
+// {"type":"json_schema","schema":{...}}. Unlike OpenAI's equivalent,
+// Anthropic's own real shape carries no "name" field at all -- the
+// canonical adapter.JSONSchema.Name has no Anthropic wire counterpart, a
+// named scope limit, not an oversight.
+type OutputFormat struct {
+	Type   string         `json:"type"`
+	Schema map[string]any `json:"schema,omitempty"`
 }
 
 // SystemBlock is one block of Anthropic's real system-array shape, per
@@ -171,6 +194,15 @@ type Tool struct {
 	Description  string            `json:"description,omitempty"`
 	InputSchema  map[string]any    `json:"input_schema,omitempty"`
 	CacheControl *CacheControlWire `json:"cache_control,omitempty"`
+	// Strict, when set, opts this tool's InputSchema into strict
+	// grammar-backed validation -- confirmed by Anthropic's own docs to
+	// share the same grammar mechanism as OutputFormat above, and
+	// independently composable per tool (not global). A pointer so an
+	// unset (false, the canonical adapter.ToolDef.Strict zero value)
+	// ToolDef never emits a spurious "strict":false -- only an explicit
+	// true is ever placed on the wire, per this codebase's "never
+	// fabricate a value" convention.
+	Strict *bool `json:"strict,omitempty"`
 }
 
 // Response is Anthropic's native Messages API response shape.
@@ -292,6 +324,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 				Description:  t.Description,
 				InputSchema:  schema,
 				CacheControl: cacheControlWire(t.CacheControl),
+				Strict:       strictPtr(t.Strict),
 			})
 		}
 	}
@@ -301,15 +334,50 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		maxTokens = *req.MaxTokens
 	}
 
+	outputConfig, err := outputConfigToProvider(req.ResponseFormat)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Request{
-		Model:       req.Model,
-		System:      systemBlocks,
-		Messages:    messages,
-		MaxTokens:   maxTokens,
-		Temperature: req.Temperature,
-		Tools:       tools,
-		Stream:      req.Stream,
+		Model:        req.Model,
+		System:       systemBlocks,
+		Messages:     messages,
+		MaxTokens:    maxTokens,
+		Temperature:  req.Temperature,
+		Tools:        tools,
+		Stream:       req.Stream,
+		OutputConfig: outputConfig,
 	}, nil
+}
+
+// strictPtr returns nil when strict is false (the canonical
+// adapter.ToolDef.Strict zero value/unset case), or a pointer to true
+// when strict is true -- never a pointer to false, so an unset ToolDef
+// never emits a spurious "strict":false onto the wire.
+func strictPtr(strict bool) *bool {
+	if !strict {
+		return nil
+	}
+	return &strict
+}
+
+// outputConfigToProvider converts a canonical adapter.ResponseFormat
+// into Anthropic's native OutputConfig -- output_config.format.
+// {type,schema}, per OutputFormat's own doc comment. Nil in, nil out.
+func outputConfigToProvider(rf *adapter.ResponseFormat) (*OutputConfig, error) {
+	if rf == nil {
+		return nil, nil
+	}
+	format := &OutputFormat{Type: rf.Type}
+	if rf.JSONSchema != nil && len(rf.JSONSchema.Schema) > 0 {
+		var schema map[string]any
+		if err := json.Unmarshal(rf.JSONSchema.Schema, &schema); err != nil {
+			return nil, fmt.Errorf("anthropic: response_format has invalid JSONSchema.Schema: %w", err)
+		}
+		format.Schema = schema
+	}
+	return &OutputConfig{Format: format}, nil
 }
 
 // contentPartToBlock converts one canonical adapter.ContentPart into

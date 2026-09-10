@@ -86,6 +86,87 @@ func TestRegressionToProviderMatchesGeminiWireFormat(t *testing.T) {
 	assertJSONEqual(t, gotJSON, wantJSON)
 }
 
+// TestRegressionToProviderNilResponseFormatMatchesExistingGoldenFixture
+// is the backward-compatibility half of the structured-output schema-
+// bearing proof below: a request with ResponseFormat left nil (the
+// default, and every request built before this field existed) must
+// produce output BYTE-IDENTICAL to the pre-existing golden fixture.
+func TestRegressionToProviderNilResponseFormatMatchesExistingGoldenFixture(t *testing.T) {
+	canonicalJSON := mustReadTestdata(t, "request_canonical.json")
+
+	var req adapter.ChatRequest
+	if err := json.Unmarshal(canonicalJSON, &req); err != nil {
+		t.Fatalf("unmarshaling request_canonical.json: %v", err)
+	}
+	if req.ResponseFormat != nil {
+		t.Fatal("setup: request_canonical.json fixture must not itself set response_format")
+	}
+
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	gotJSON, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling ToProvider output: %v", err)
+	}
+
+	wantJSON := mustReadTestdata(t, "request_gemini_native.golden.json")
+	assertJSONEqual(t, gotJSON, wantJSON)
+}
+
+// TestRegressionToProviderResponseFormatMatchesGeminiWireFormat is the
+// schema-bearing round-trip proof for structured output: a canonical
+// request carrying ResponseFormat must translate onto Gemini's real
+// generationConfig.responseMimeType/responseSchema fields -- the
+// canonical JSON Schema passed through verbatim, per the OpenAPI-3.0-
+// subset-dialect fidelity caveat documented on GenerationConfig.
+func TestRegressionToProviderResponseFormatMatchesGeminiWireFormat(t *testing.T) {
+	canonicalJSON := mustReadTestdata(t, "request_canonical.json")
+
+	var req adapter.ChatRequest
+	if err := json.Unmarshal(canonicalJSON, &req); err != nil {
+		t.Fatalf("unmarshaling request_canonical.json: %v", err)
+	}
+	req.ResponseFormat = &adapter.ResponseFormat{
+		Type: "json_schema",
+		JSONSchema: &adapter.JSONSchema{
+			Name:   "weather_response",
+			Schema: json.RawMessage(`{"type":"object","properties":{"temp_f":{"type":"number"}},"required":["temp_f"]}`),
+		},
+	}
+
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	gotJSON, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling ToProvider output: %v", err)
+	}
+
+	wantJSON := mustReadTestdata(t, "request_gemini_native.golden.json")
+	var wantTree map[string]any
+	if err := json.Unmarshal(wantJSON, &wantTree); err != nil {
+		t.Fatalf("unmarshaling golden fixture: %v", err)
+	}
+	genConfig, ok := wantTree["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatal("setup: golden fixture has no generationConfig object to extend")
+	}
+	genConfig["responseMimeType"] = "application/json"
+	genConfig["responseSchema"] = map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"temp_f": map[string]any{"type": "number"}},
+		"required":   []any{"temp_f"},
+	}
+	wantJSONWithFormat, err := json.Marshal(wantTree)
+	if err != nil {
+		t.Fatalf("marshaling augmented golden fixture: %v", err)
+	}
+	assertJSONEqual(t, gotJSON, wantJSONWithFormat)
+}
+
 // TestRegressionFromProviderMatchesCanonicalWireFormat loads a real
 // Gemini-native response fixture, runs it through FromProvider, and
 // asserts the produced canonical response byte-for-field matches the

@@ -111,9 +111,21 @@ type FunctionDeclaration struct {
 
 // GenerationConfig carries the subset of Gemini's real generationConfig
 // fields this adapter maps from the canonical schema.
+//
+// ResponseMimeType/ResponseSchema are Gemini's real structured-output
+// fields. Fidelity caveat, not silently glossed over: Gemini's own
+// response_schema uses an OpenAPI-3.0-SUBSET schema dialect, not full
+// JSON Schema (e.g. no "$ref"/"$defs", a narrower keyword set) -- this
+// adapter passes the canonical adapter.JSONSchema.Schema through
+// verbatim, unparsed and unvalidated, never attempting to translate or
+// validate dialect differences between the two, per this feature's own
+// v1 scope (request-shape normalization only, no schema-validation
+// library in this module).
 type GenerationConfig struct {
-	Temperature     *float64 `json:"temperature,omitempty"`
-	MaxOutputTokens *int     `json:"maxOutputTokens,omitempty"`
+	Temperature      *float64       `json:"temperature,omitempty"`
+	MaxOutputTokens  *int           `json:"maxOutputTokens,omitempty"`
+	ResponseMimeType string         `json:"responseMimeType,omitempty"`
+	ResponseSchema   map[string]any `json:"responseSchema,omitempty"`
 }
 
 // Request is Gemini's native generateContent/streamGenerateContent request
@@ -255,11 +267,22 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		tools = []Tool{{FunctionDeclarations: decls}}
 	}
 
+	var responseSchema map[string]any
+	if req.ResponseFormat != nil && req.ResponseFormat.JSONSchema != nil && len(req.ResponseFormat.JSONSchema.Schema) > 0 {
+		if err := json.Unmarshal(req.ResponseFormat.JSONSchema.Schema, &responseSchema); err != nil {
+			return nil, fmt.Errorf("gemini: response_format has invalid JSONSchema.Schema: %w", err)
+		}
+	}
+
 	var genConfig *GenerationConfig
-	if req.Temperature != nil || req.MaxTokens != nil {
+	if req.Temperature != nil || req.MaxTokens != nil || req.ResponseFormat != nil {
 		genConfig = &GenerationConfig{
 			Temperature:     req.Temperature,
 			MaxOutputTokens: req.MaxTokens,
+		}
+		if req.ResponseFormat != nil {
+			genConfig.ResponseMimeType = "application/json"
+			genConfig.ResponseSchema = responseSchema
 		}
 	}
 

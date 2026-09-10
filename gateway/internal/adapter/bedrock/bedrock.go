@@ -237,6 +237,18 @@ func appendToolCachePointIfNeeded(tools []Tool, cc *adapter.CacheControl) []Tool
 
 // ToolSpec describes one callable tool. InputSchema.JSON is a parsed JSON
 // Schema object, not a string, same as Anthropic's InputSchema.
+//
+// Deliberately has no Strict field: unlike Anthropic's direct Messages
+// API (see anthropic.Tool.Strict), no per-tool "strict" wire shape for
+// Converse's toolSpec is confirmed real -- this session's live
+// verification covered only the request-level additionalModelRequestFields/
+// output_config escape hatch above, not a per-tool grammar flag. Given
+// AWS's OWN demonstrated behavior of hard-rejecting unrecognized fields
+// (the very output_config.format ValidationException that motivated this
+// feature), guessing at an unconfirmed field here risks a real, breaking
+// AWS error rather than a silent no-op. adapter.ToolDef.Strict is
+// therefore read only by the Anthropic adapter in v1; Bedrock is a named
+// scope limit, not an oversight.
 type ToolSpec struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description,omitempty"`
@@ -267,6 +279,20 @@ type Request struct {
 	System          []SystemContentBlock `json:"system,omitempty"`
 	InferenceConfig *InferenceConfig     `json:"inferenceConfig,omitempty"`
 	ToolConfig      *ToolConfig          `json:"toolConfig,omitempty"`
+	// AdditionalModelRequestFields is Converse's real, genuine escape-hatch
+	// field for model-specific request parameters the Converse API itself
+	// doesn't otherwise model -- confirmed real and used here for the
+	// first time, live-verified 2026-09-10 against a real Converse API
+	// call: {"output_config": {"format": {"type": "json_schema",
+	// "schema": {...}}}} produces schema-conforming output -- but ONLY for
+	// a specific whitelist of Bedrock-hosted Claude models (see
+	// adapter.SupportsStructuredOutput's own doc comment). Calling it
+	// against a model NOT on that whitelist is a real, AWS-enforced
+	// rejection (a clean ValidationException: "output_config.format:
+	// Extra inputs are not permitted"), not a silently-ignored no-op --
+	// see additionalModelRequestFieldsFor for how this adapter avoids
+	// ever sending that combination.
+	AdditionalModelRequestFields map[string]any `json:"additionalModelRequestFields,omitempty"`
 }
 
 // Usage is Converse's native token-accounting shape (confirmed real field
@@ -413,12 +439,57 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 	}
 
+	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Model)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Request{
-		Messages:        messages,
-		System:          systemBlocks,
-		InferenceConfig: inferenceConfig,
-		ToolConfig:      toolConfig,
+		Messages:                     messages,
+		System:                       systemBlocks,
+		InferenceConfig:              inferenceConfig,
+		ToolConfig:                   toolConfig,
+		AdditionalModelRequestFields: additionalFields,
 	}, nil
+}
+
+// additionalModelRequestFieldsFor builds Converse's real
+// additionalModelRequestFields escape-hatch value from rf, but ONLY when
+// model is on adapter.SupportsStructuredOutput's Bedrock whitelist --
+// calling output_config.format against an unsupported model is a real,
+// AWS-enforced rejection (see Request.AdditionalModelRequestFields' own
+// doc comment), never something this adapter sends and hopes for the
+// best on. model is expected to already be the deployment's real
+// upstream model ID (dataplane.callDeployment/streamDeployment already
+// set req.Model to dep.UpstreamModel before calling ToProvider), not the
+// client-facing canonical model name -- the same value
+// adapter.SupportsStructuredOutput's Bedrock branch is designed to match
+// against.
+//
+// A named, accepted scope limit for the non-whitelisted case: this
+// helper simply omits the field rather than erroring, so a FIRST-ATTEMPT
+// (non-fallback) call against an unsupported model with ResponseFormat
+// set silently proceeds WITHOUT schema enforcement. Closing that gap is
+// deliberately scoped to fallback hops only -- dataplane's
+// attemptFallbackChain capabilityOK gate skips an incapable fallback
+// TARGET before ever calling it -- not the first-attempt router pick,
+// per this feature's own v1 design.
+func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (map[string]any, error) {
+	if rf == nil {
+		return nil, nil
+	}
+	if !adapter.SupportsStructuredOutput("bedrock", model) {
+		return nil, nil
+	}
+	format := map[string]any{"type": rf.Type}
+	if rf.JSONSchema != nil && len(rf.JSONSchema.Schema) > 0 {
+		var schema map[string]any
+		if err := json.Unmarshal(rf.JSONSchema.Schema, &schema); err != nil {
+			return nil, fmt.Errorf("bedrock: response_format has invalid JSONSchema.Schema: %w", err)
+		}
+		format["schema"] = schema
+	}
+	return map[string]any{"output_config": map[string]any{"format": format}}, nil
 }
 
 // contentPartToBlock converts one canonical adapter.ContentPart into

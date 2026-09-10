@@ -160,6 +160,18 @@ type ToolDef struct {
 	// no-op for every adapter, matching Message/ContentPart's own
 	// CacheControl convention.
 	CacheControl *CacheControl
+	// Strict, when true, opts this specific tool's input schema into
+	// strict grammar-backed validation. Anthropic's own docs confirm this
+	// shares the same grammar mechanism as
+	// ChatRequest.ResponseFormat's output_config.format, and is an
+	// independently-composable per-tool flag, not a global one. Read only
+	// by the Anthropic and Bedrock adapters (both translate it onto their
+	// native Tool's own sibling "strict" key, mirroring CacheControl's
+	// placement); OpenAI/openaicompat/Gemini never read this field at all
+	// in v1, a named scope limit (OpenAI's own per-tool "strict" flag is
+	// deliberately deferred, not wired). False (the default) is a silent
+	// no-op for every adapter.
+	Strict bool
 }
 
 type toolDefWire struct {
@@ -174,6 +186,9 @@ type toolDefWire struct {
 	// shape" convention Message.CacheControl already established (a
 	// sibling of Role/Content).
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	// Strict mirrors CacheControl's own sibling-of-Type/Function
+	// placement -- the wire-level counterpart of ToolDef.Strict above.
+	Strict bool `json:"strict,omitempty"`
 }
 
 // MarshalJSON implements json.Marshaler.
@@ -186,6 +201,7 @@ func (t ToolDef) MarshalJSON() ([]byte, error) {
 		w.Function.Parameters = json.RawMessage(t.ParametersJSON)
 	}
 	w.CacheControl = t.CacheControl
+	w.Strict = t.Strict
 	return json.Marshal(w)
 }
 
@@ -201,7 +217,44 @@ func (t *ToolDef) UnmarshalJSON(data []byte) error {
 		t.ParametersJSON = string(w.Function.Parameters)
 	}
 	t.CacheControl = w.CacheControl
+	t.Strict = w.Strict
 	return nil
+}
+
+// ResponseFormat requests structured, schema-conforming JSON output from
+// the model. Nil (the default) is a silent no-op for every adapter, matching
+// CacheControl's own "unset is a no-op" convention. Type is always
+// "json_schema" in v1 -- the canonical schema names no other value, and
+// this mirrors both Anthropic's and OpenAI's own top-level
+// discriminator field.
+//
+// v1 is request-shape normalization only: no JSON Schema validation
+// library exists in this module's go.mod/go.sum, and none is added by
+// this feature -- a provider with no NATIVE schema-enforcement mechanism
+// of its own simply gets no v1 support for this field (see
+// adapter.SupportsStructuredOutput), never a client-side re-validation
+// fallback.
+type ResponseFormat struct {
+	Type string `json:"type"`
+	// JSONSchema carries the schema itself, set whenever Type ==
+	// "json_schema".
+	JSONSchema *JSONSchema `json:"json_schema,omitempty"`
+}
+
+// JSONSchema is the schema payload carried by a ResponseFormat.
+type JSONSchema struct {
+	// Name identifies the schema -- required by OpenAI's and Anthropic's
+	// own real wire shapes alike.
+	Name string `json:"name"`
+	// Strict, when true, requests the provider's strictest grammar-backed
+	// enforcement of Schema, mirroring ToolDef.Strict's own per-tool flag
+	// but scoped to the response format itself.
+	Strict bool `json:"strict,omitempty"`
+	// Schema is the raw JSON Schema document. Kept as json.RawMessage,
+	// never parsed or validated by Kelvran itself -- this feature is
+	// request-shape normalization only (see ResponseFormat's own doc
+	// comment).
+	Schema json.RawMessage `json:"schema"`
 }
 
 // ChatRequest is the canonical, provider-agnostic chat completion request.
@@ -212,6 +265,11 @@ type ChatRequest struct {
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
 	Tools       []ToolDef `json:"tools,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
+	// ResponseFormat, when set, requests structured JSON output
+	// conforming to a caller-supplied schema. Nil (the default, and every
+	// ChatRequest built before this field existed) is a silent no-op --
+	// byte-identical to today's existing behavior.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 	// DisableCacheControlAutoPopulate, when true, suppresses the
 	// Anthropic and Bedrock adapters' auto-population of a default
 	// CacheControl marker on an otherwise-unmarked system message, per

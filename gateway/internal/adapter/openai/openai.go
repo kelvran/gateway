@@ -37,11 +37,36 @@ type Request struct {
 	// entirely (never a fabricated value) when no caller-supplied Key is
 	// found.
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// ResponseFormat is OpenAI's real structured-output request field,
+	// confirmed against OpenAI's own live shared_params/
+	// response_format_json_schema.py: {"type":"json_schema",
+	// "json_schema":{"name":...,"strict":...,"schema":...}} -- an exact
+	// match for the canonical adapter.ResponseFormat/adapter.JSONSchema
+	// shape, so this adapter's translation is a direct field mapping.
+	// Nil (the default) omits the field entirely, byte-identical to
+	// today's existing behavior.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
 
 // StreamOptions is OpenAI's native streaming-configuration object.
 type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+// ResponseFormat is OpenAI's native structured-output request shape.
+type ResponseFormat struct {
+	Type       string      `json:"type"`
+	JSONSchema *JSONSchema `json:"json_schema,omitempty"`
+}
+
+// JSONSchema is OpenAI's native structured-output schema payload,
+// confirmed real (name/strict/schema, name and schema required, strict
+// optional) against OpenAI's own shared_params/
+// response_format_json_schema.py.
+type JSONSchema struct {
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 // Message is OpenAI's native message shape. Content is json.RawMessage,
@@ -195,7 +220,27 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		Stream:         req.Stream,
 		StreamOptions:  streamOpts,
 		PromptCacheKey: findCacheKey(req.Messages),
+		ResponseFormat: responseFormatToProvider(req.ResponseFormat),
 	}, nil
+}
+
+// responseFormatToProvider converts a canonical adapter.ResponseFormat
+// into OpenAI's native ResponseFormat -- a direct field mapping, since
+// OpenAI's own real shape matches the canonical schema exactly (see
+// Request.ResponseFormat's own doc comment). Nil in, nil out.
+func responseFormatToProvider(rf *adapter.ResponseFormat) *ResponseFormat {
+	if rf == nil {
+		return nil
+	}
+	native := &ResponseFormat{Type: rf.Type}
+	if rf.JSONSchema != nil {
+		native.JSONSchema = &JSONSchema{
+			Name:   rf.JSONSchema.Name,
+			Strict: rf.JSONSchema.Strict,
+			Schema: rf.JSONSchema.Schema,
+		}
+	}
+	return native
 }
 
 // findCacheKey scans every message (and, for multi-modal messages, every
