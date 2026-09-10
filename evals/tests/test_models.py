@@ -1,9 +1,10 @@
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
-from evals.models import EvalCase, PanelVote, Run, Score, Span
+from evals.models import EvalCase, PanelVote, Run, Score, Span, TrendSnapshot
 
 
 def _make_case(**overrides) -> EvalCase:
@@ -434,3 +435,106 @@ def test_span_instances_are_frozen():
     span = _make_span()
     with pytest.raises(ValidationError):
         span.status = "ERROR"  # type: ignore[misc]
+
+
+def _make_trend_snapshot(**overrides) -> TrendSnapshot:
+    defaults = {
+        "series": "quote_grounding_rate",
+        "recorded_at": datetime(2026, 9, 10, 12, 0, 0, tzinfo=UTC),
+        "n": 10,
+        "rate_value": 0.9,
+        "scorer_type": "llm_judge",
+        "source_command": "report",
+    }
+    defaults.update(overrides)
+    return TrendSnapshot(**defaults)
+
+
+def test_trend_snapshot_construct_with_rate_value():
+    snap = _make_trend_snapshot()
+    assert snap.series == "quote_grounding_rate"
+    assert snap.n == 10
+    assert snap.rate_value == 0.9
+    assert snap.cost_usd_value is None
+    assert snap.scorer_type == "llm_judge"
+    assert snap.category_tag is None
+    assert snap.source_command == "report"
+
+
+def test_trend_snapshot_construct_with_cost_usd_value():
+    snap = _make_trend_snapshot(
+        series="cost_usd", rate_value=None, cost_usd_value=Decimal("0.0042")
+    )
+    assert snap.series == "cost_usd"
+    assert snap.cost_usd_value == Decimal("0.0042")
+    assert snap.rate_value is None
+
+
+def test_trend_snapshot_rate_value_can_be_none_for_a_non_cost_series():
+    # A real, meaningful state -- e.g. an undefined Cohen's kappa, or no
+    # known quote_grounded data yet -- distinct from "not applicable".
+    snap = _make_trend_snapshot(series="judge_accuracy_kappa", rate_value=None)
+    assert snap.rate_value is None
+    assert snap.cost_usd_value is None
+
+
+def test_trend_snapshot_audit_corpus_defect_rate_has_no_scorer_type():
+    snap = _make_trend_snapshot(
+        series="audit_corpus_defect_rate",
+        scorer_type=None,
+        source_command="audit-corpus",
+    )
+    assert snap.scorer_type is None
+    assert snap.source_command == "audit-corpus"
+
+
+def test_trend_snapshot_category_tag_defaults_to_none():
+    snap = _make_trend_snapshot()
+    assert snap.category_tag is None
+
+
+def test_trend_snapshot_invalid_series_rejected():
+    with pytest.raises(ValidationError):
+        _make_trend_snapshot(series="not-a-real-series")
+
+
+def test_trend_snapshot_invalid_source_command_rejected():
+    with pytest.raises(ValidationError):
+        _make_trend_snapshot(source_command="rollout")
+
+
+def test_trend_snapshot_instances_are_frozen():
+    snap = _make_trend_snapshot()
+    with pytest.raises(ValidationError):
+        snap.n = 99  # type: ignore[misc]
+
+
+def test_trend_snapshot_rejects_both_rate_value_and_cost_usd_value_set():
+    with pytest.raises(ValidationError):
+        _make_trend_snapshot(
+            series="cost_usd", rate_value=0.5, cost_usd_value=Decimal("1.00")
+        )
+
+
+def test_trend_snapshot_cost_series_with_rate_value_instead_of_cost_usd_value():
+    with pytest.raises(ValidationError):
+        _make_trend_snapshot(series="cost_usd", rate_value=0.5, cost_usd_value=None)
+
+
+def test_trend_snapshot_non_cost_series_with_cost_usd_value_instead_of_rate_value():
+    with pytest.raises(ValidationError):
+        _make_trend_snapshot(
+            series="quote_grounding_rate",
+            rate_value=None,
+            cost_usd_value=Decimal("1.00"),
+        )
+
+
+def test_trend_snapshot_cost_usd_value_round_trips_through_json_as_decimal():
+    snap = _make_trend_snapshot(
+        series="cost_usd", rate_value=None, cost_usd_value=Decimal("0.0000075")
+    )
+    round_tripped = TrendSnapshot.model_validate_json(snap.model_dump_json())
+    assert round_tripped == snap
+    assert isinstance(round_tripped.cost_usd_value, Decimal)
+    assert round_tripped.cost_usd_value == Decimal("0.0000075")

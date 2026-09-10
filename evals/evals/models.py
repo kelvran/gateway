@@ -14,10 +14,11 @@ immutability convention.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 EvalTier = Literal["golden", "regression", "drift_sample"]
 
@@ -346,3 +347,103 @@ class Span(BaseModel):
     container_image_name: str
     container_id: str | None = None
     error: str | None = None
+
+
+TrendSeriesName = Literal[
+    "judge_accuracy_kappa",
+    "quote_grounding_rate",
+    "audit_corpus_defect_rate",
+    "cost_usd",
+]
+
+
+class TrendSnapshot(BaseModel):
+    """One persisted history point for one named quality-trend series.
+
+    Per this repo's own already-documented principle (`evals.cli`'s
+    module docstring: "never blended across `deterministic` and
+    `llm_judge`") and every 2026 eval platform surveyed while designing
+    this feature (Langfuse/Braintrust/Arize all trend named score series
+    side by side, never fused into one composite) -- a `TrendSnapshot`
+    always names exactly one `series`. There is no combined "eval
+    quality score" anywhere in this model or in `evals trend show`,
+    which reads it.
+
+    Exactly one of `rate_value`/`cost_usd_value` is the "active" field
+    for a given `series` -- `series == "cost_usd"` uses `cost_usd_value`
+    (a real `Decimal`, per `Score.cost_usd`'s own established Decimal-
+    not-float cost-accounting convention -- never cast to `float`, which
+    would reintroduce the exact imprecision `Decimal` exists to
+    prevent); every other `series` uses `rate_value`. The field that is
+    NOT active for a given `series` is always `None` -- enforced below.
+    `rate_value` being `None` for its own active series is still a
+    legitimate, meaningful value, distinct from "not applicable": a
+    `judge_accuracy_kappa` snapshot records `None` when Cohen's kappa is
+    genuinely undefined (zero-variance verdicts -- the same
+    `kappa_str == "undefined"` case `evals.cli.report_cmd` already
+    handles), and a `quote_grounding_rate` snapshot records `None` when
+    no `Score` in that report run had a known `quote_grounded` value yet
+    (`n=0`) -- both are honest "measured, but no real number exists"
+    facts, mirroring `Run.cost_usd`/`Score.cost_usd`'s own "`None` means
+    not applicable, never a fabricated stand-in" convention used
+    throughout this file. `cost_usd_value` has no such "measured but
+    undefined" case in any real call site today -- a real total cost is
+    always computable -- so the validator below treats it more strictly.
+
+    `category_tag` is reserved for a future per-category trend
+    (mirroring `Score.tags`/`report_cmd --category-fail-under`'s own
+    tag-scoping) -- no real call site in `evals.cli` populates it yet;
+    always `None` today.
+
+    `scorer_type` is `None` for `audit_corpus_defect_rate` (audited per
+    suite file, not per scorer) and real (`"deterministic"`/
+    `"llm_judge"`/`"llm_judge_panel"`) for the other three series, all
+    computed inside `report_cmd`'s own per-`scorer_type` grouping loop --
+    never blended across scorer types, the same discipline `report_cmd`'s
+    own pass_rate/CI lines already enforce.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    series: TrendSeriesName
+    recorded_at: datetime
+    n: int
+    rate_value: float | None = None
+    cost_usd_value: Decimal | None = None
+    scorer_type: ScorerType | None = None
+    category_tag: str | None = None
+    source_command: Literal["report", "audit-corpus"]
+
+    @model_validator(mode="after")
+    def _check_value_field_matches_series(self) -> TrendSnapshot:
+        """Enforce the one-field-per-series rule described in this
+        class's own docstring.
+
+        Deliberately NOT a bare "exactly one of the two is not-None"
+        check -- that would reject the legitimate `rate_value=None`
+        cases described above. The real invariant enforced here is
+        narrower and more useful: the field that does NOT belong to
+        `series` must never carry a value -- `cost_usd_value` must be
+        `None` for any non-`cost_usd` series, and `rate_value` must be
+        `None` for `series == "cost_usd"` (cost is always a real,
+        computed `Decimal` in every real `evals.cli` call site, never
+        legitimately unmeasured the way kappa/quote-grounding can be).
+        """
+        if self.series == "cost_usd":
+            if self.cost_usd_value is None:
+                raise ValueError(
+                    "TrendSnapshot(series='cost_usd') requires cost_usd_value "
+                    "to be set."
+                )
+            if self.rate_value is not None:
+                raise ValueError(
+                    "TrendSnapshot(series='cost_usd') must not set rate_value "
+                    "-- cost_usd_value is the only field this series ever "
+                    "populates."
+                )
+        elif self.cost_usd_value is not None:
+            raise ValueError(
+                f"TrendSnapshot(series={self.series!r}) must not set "
+                "cost_usd_value -- only series='cost_usd' ever populates it."
+            )
+        return self

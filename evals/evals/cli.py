@@ -33,6 +33,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -63,14 +64,16 @@ from evals.judge.providers import (
     BEDROCK_SONNET_5_MODEL_ID,
     make_bedrock_call_model,
 )
-from evals.models import EvalCase, PanelVote, Run, Score, Span
+from evals.models import EvalCase, PanelVote, Run, Score, Span, TrendSnapshot
 from evals.results_store import (
     append_runs,
     append_scores,
     append_spans,
+    append_trend_snapshots,
     load_runs,
     load_scores,
     load_spans,
+    load_trend_snapshots,
 )
 from evals.rollout.scheduler import EarlyStopConfig, run_suite
 from evals.stats import cohens_kappa, confusion_matrix, wilson_interval
@@ -885,19 +888,30 @@ def format_report(successes: int, total: int, confidence: float = 0.95) -> str:
     )
 
 
+def _sum_known_costs(scores: list[Score]) -> tuple[Decimal, int]:
+    """Sum `scores`' real `cost_usd`, returning `(total, unknown_count)`.
+
+    A `Score` with `cost_usd=None` (currently unreachable in v1 — only
+    one priced judge model exists) is excluded from the sum and counted
+    separately, never silently treated as zero. Shared by
+    `_format_group_cost` (the printed `report --scores` line) and
+    `report_cmd`'s own `--record-trend` cost-series collection — one
+    real cost computation, two consumers.
+    """
+    known_costs = [s.cost_usd for s in scores if s.cost_usd is not None]
+    unknown_count = len(scores) - len(known_costs)
+    total_cost = sum(known_costs, start=Decimal("0"))
+    return total_cost, unknown_count
+
+
 def _format_group_cost(scores: list[Score]) -> str:
     """Sum a `Score` group's real `cost_usd` for `report --scores`.
 
     Per docs/rfcs/2026-09-04-evals-score-model.md's own named revisit
     trigger ("the moment evals gets a suite-level cost aggregation...
-    Decimal should be adopted immediately"), which this crosses. A `Score`
-    with `cost_usd=None` (currently unreachable in v1 — only one priced
-    judge model exists) is excluded from the sum and counted explicitly,
-    never silently treated as zero.
+    Decimal should be adopted immediately"), which this crosses.
     """
-    known_costs = [s.cost_usd for s in scores if s.cost_usd is not None]
-    unknown_count = len(scores) - len(known_costs)
-    total_cost = sum(known_costs, start=Decimal("0"))
+    total_cost, unknown_count = _sum_known_costs(scores)
     if unknown_count:
         return f"total_cost_usd={total_cost} ({unknown_count} unknown excluded)"
     return f"total_cost_usd={total_cost}"
@@ -1914,6 +1928,24 @@ def rollout_cmd(
         "--scores. See docs/rfcs/2026-09-09-evals-judge-accuracy-metric.md."
     ),
 )
+@click.option(
+    "--record-trend",
+    "record_trend_path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=(
+        "Path to append persisted TrendSnapshots to (see `evals trend "
+        "show`). Opt-in: omitting this flag runs zero trend-related code "
+        "and leaves the target file, if any, completely untouched. Only "
+        "meaningful together with --scores. Collects one "
+        "judge_accuracy_kappa snapshot per scorer_type when "
+        "--judge-accuracy also matched at least one case, one "
+        "quote_grounding_rate snapshot per llm_judge/llm_judge_panel "
+        "scorer_type group, and one cost_usd snapshot per scorer_type "
+        "group -- always as separate series, never fused into one "
+        "combined number."
+    ),
+)
 def report_cmd(
     successes: int | None,
     total: int | None,
@@ -1924,6 +1956,7 @@ def report_cmd(
     tier: str | None,
     category_fail_under_raw: tuple[str, ...],
     judge_accuracy_fixture_path: Path | None,
+    record_trend_path: Path | None,
 ) -> None:
     """Print a pass rate together with its Wilson CI.
 
@@ -1964,6 +1997,10 @@ def report_cmd(
         raise click.UsageError(
             "--judge-accuracy is only meaningful together with --scores."
         )
+    if record_trend_path is not None and scores_path is None:
+        raise click.UsageError(
+            "--record-trend is only meaningful together with --scores."
+        )
     expected_verdicts: dict[tuple[str, int], bool] = {}
     if judge_accuracy_fixture_path is not None:
         expected_verdicts = _load_expected_verdicts(judge_accuracy_fixture_path)
@@ -1977,6 +2014,12 @@ def report_cmd(
     # per docs/rfcs/2026-09-05-evals-report-fail-under.md.
     gate_checks: list[tuple[str, int, int]] = []
     category_gate_checks: list[tuple[str, int, int, float]] = []
+    # Collected only when --record-trend is given; persisted once, right
+    # before this command returns (or raises on a failed gate) -- see
+    # that persistence call's own comment for why it happens regardless
+    # of the gate outcome.
+    trend_snapshots: list[TrendSnapshot] = []
+    recorded_at = datetime.now(UTC)
 
     if traces_path is not None:
         spans = load_spans(traces_path)
@@ -2019,9 +2062,24 @@ def report_cmd(
             quote_note = ""
             if scorer_type in ("llm_judge", "llm_judge_panel"):
                 grounding_known = [s for s in group if s.quote_grounded is not None]
+                grounded = sum(1 for s in grounding_known if s.quote_grounded)
                 if grounding_known:
-                    grounded = sum(1 for s in grounding_known if s.quote_grounded)
                     quote_note = f" (quote_grounded: {grounded}/{len(grounding_known)})"
+                if record_trend_path is not None:
+                    trend_snapshots.append(
+                        TrendSnapshot(
+                            series="quote_grounding_rate",
+                            recorded_at=recorded_at,
+                            n=len(grounding_known),
+                            rate_value=(
+                                grounded / len(grounding_known)
+                                if grounding_known
+                                else None
+                            ),
+                            scorer_type=scorer_type,
+                            source_command="report",
+                        )
+                    )
             click.echo(
                 f"{scorer_type}: "
                 + format_report(group_successes, len(group), confidence=confidence)
@@ -2030,6 +2088,18 @@ def report_cmd(
                 + tie_note
                 + quote_note
             )
+            if record_trend_path is not None:
+                group_total_cost, group_unknown_cost_count = _sum_known_costs(group)
+                trend_snapshots.append(
+                    TrendSnapshot(
+                        series="cost_usd",
+                        recorded_at=recorded_at,
+                        n=len(group) - group_unknown_cost_count,
+                        cost_usd_value=group_total_cost,
+                        scorer_type=scorer_type,
+                        source_command="report",
+                    )
+                )
             if eligible:
                 eligible_successes = sum(1 for s in eligible if s.value)
                 gate_checks.append((scorer_type, eligible_successes, len(eligible)))
@@ -2052,6 +2122,7 @@ def report_cmd(
                         kappa = cohens_kappa(judge_verdicts, human_verdicts)
                         kappa_str = f"{kappa:.4f}"
                     except ValueError:
+                        kappa = None
                         kappa_str = "undefined"
                     click.echo(
                         f"{scorer_type} [judge-accuracy]: kappa={kappa_str} "
@@ -2059,6 +2130,17 @@ def report_cmd(
                         f"tp={matrix.true_positive} fp={matrix.false_positive} "
                         f"tn={matrix.true_negative} fn={matrix.false_negative}"
                     )
+                    if record_trend_path is not None:
+                        trend_snapshots.append(
+                            TrendSnapshot(
+                                series="judge_accuracy_kappa",
+                                recorded_at=recorded_at,
+                                n=len(judge_verdicts),
+                                rate_value=kappa,
+                                scorer_type=scorer_type,
+                                source_command="report",
+                            )
+                        )
 
             for cat_tag, cat_threshold in category_gates:
                 tagged = [s for s in group if cat_tag in s.tags]
@@ -2116,6 +2198,13 @@ def report_cmd(
         click.echo(format_report(successes, total, confidence=confidence))
         gate_checks.append(("pass_rate", successes, total))
 
+    if record_trend_path is not None:
+        # Persisted regardless of whether the --fail-under/
+        # --category-fail-under gate below ultimately fails and raises --
+        # a report that fails its own gate is exactly the kind of history
+        # a trend is for, not a case to silently skip recording.
+        append_trend_snapshots(trend_snapshots, record_trend_path)
+
     if fail_under is not None or category_gate_checks:
         failures = []
         if fail_under is not None:
@@ -2169,8 +2258,23 @@ def report_cmd(
         "from the more careful model, unlike routine per-case judging."
     ),
 )
+@click.option(
+    "--record-trend",
+    "record_trend_path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=(
+        "Path to append one persisted audit_corpus_defect_rate "
+        "TrendSnapshot to (see `evals trend show`). Opt-in: omitting "
+        "this flag runs zero trend-related code and leaves the target "
+        "file, if any, completely untouched."
+    ),
+)
 def audit_corpus_cmd(
-    suite_paths: tuple[Path, ...], out_path: Path, judge_model: str
+    suite_paths: tuple[Path, ...],
+    out_path: Path,
+    judge_model: str,
+    record_trend_path: Path | None,
 ) -> None:
     """Audit one or more suite files for corpus-design defects (ambiguous
     task design, wrong/unverifiable ground truth, environment/tooling
@@ -2213,9 +2317,96 @@ def audit_corpus_cmd(
         f"audit-corpus: {counts['no_defect']} no_defect, {counts['minor']} minor, "
         f"{counts['major']} major (of {len(cases)} cases)"
     )
+    if record_trend_path is not None:
+        defect_count = counts["minor"] + counts["major"]
+        append_trend_snapshots(
+            [
+                TrendSnapshot(
+                    series="audit_corpus_defect_rate",
+                    recorded_at=datetime.now(UTC),
+                    n=len(cases),
+                    rate_value=defect_count / len(cases) if cases else None,
+                    scorer_type=None,
+                    source_command="audit-corpus",
+                )
+            ],
+            record_trend_path,
+        )
     out_path.write_text(
         json.dumps([asdict(f) for f in findings], indent=2, default=str)
     )
+
+
+@main.group("trend")
+def trend_group() -> None:
+    """Read persisted TrendSnapshots (see `--record-trend` on `report`/
+    `audit-corpus`). Every subcommand here prints each series' history
+    separately -- judge_accuracy_kappa, quote_grounding_rate,
+    audit_corpus_defect_rate, and cost_usd are never averaged or fused
+    into one combined number, mirroring this module's own module-
+    docstring principle ("never blended across `deterministic` and
+    `llm_judge`") and every 2026 eval platform surveyed for this feature
+    (Langfuse/Braintrust/Arize all trend named score series side by
+    side, never as a composite).
+    """
+
+
+@trend_group.command("show")
+@click.option(
+    "--path",
+    "trend_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to a JSONL file of persisted TrendSnapshots.",
+)
+@click.option(
+    "--series",
+    default=None,
+    type=click.Choice(
+        [
+            "judge_accuracy_kappa",
+            "quote_grounding_rate",
+            "audit_corpus_defect_rate",
+            "cost_usd",
+        ]
+    ),
+    help=(
+        "Only print this one series' history. Omit to print every "
+        "series found in the file."
+    ),
+)
+def trend_show_cmd(trend_path: Path, series: str | None) -> None:
+    """Print each series' snapshot history, sorted by `recorded_at`.
+
+    One block per series, one line per snapshot within it -- never
+    averaged or combined across series into a single number or line.
+    """
+    snapshots = load_trend_snapshots(trend_path)
+    if not snapshots:
+        raise click.ClickException(f"{trend_path}: no TrendSnapshots found")
+
+    if series is not None:
+        snapshots = [s for s in snapshots if s.series == series]
+        if not snapshots:
+            raise click.ClickException(
+                f"{trend_path}: no TrendSnapshots found for series={series!r}"
+            )
+
+    for series_name in sorted({s.series for s in snapshots}):
+        group = sorted(
+            (s for s in snapshots if s.series == series_name),
+            key=lambda s: s.recorded_at,
+        )
+        click.echo(f"{series_name}:")
+        for snap in group:
+            value = (
+                snap.cost_usd_value if series_name == "cost_usd" else snap.rate_value
+            )
+            scorer_note = f" scorer_type={snap.scorer_type}" if snap.scorer_type else ""
+            click.echo(
+                f"  {snap.recorded_at.isoformat()} n={snap.n} value={value}"
+                f"{scorer_note} source={snap.source_command}"
+            )
 
 
 if __name__ == "__main__":

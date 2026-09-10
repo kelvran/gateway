@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from evals.models import Run, Score, Span
+from evals.models import Run, Score, Span, TrendSnapshot
 
 
 def _append_models[ModelT: BaseModel](models: list[ModelT], path: Path) -> None:
@@ -76,3 +76,13 @@ def append_spans(spans: list[Span], path: Path) -> None:
 def load_spans(path: Path) -> list[Span]:
     """Load every `Span` recorded at `path`, in append order."""
     return _load_models(Span, path)
+
+
+def append_trend_snapshots(snapshots: list[TrendSnapshot], path: Path) -> None:
+    """Append each `TrendSnapshot` in `snapshots` to `path` as one JSON line."""
+    _append_models(snapshots, path)
+
+
+def load_trend_snapshots(path: Path) -> list[TrendSnapshot]:
+    """Load every `TrendSnapshot` recorded at `path`, in append order."""
+    return _load_models(TrendSnapshot, path)
