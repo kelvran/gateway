@@ -2444,16 +2444,17 @@ func (r *idleTimeoutReader) Close() error {
 }
 
 // bedrockSigningName is the real AWS SigV4 service-signing name for
-// Bedrock Runtime, confirmed directly against aws-sdk-go-v2's own
-// endpoint-resolution source (service/bedrockruntime/endpoints.go) — it
-// is the unconditional fallback used because zero per-region SigningName
-// overrides exist anywhere in that package's endpoint-resolution table,
-// not "bedrock" as a plausible-sounding guess would suggest. Getting this
-// exactly right matters: a wrong service name fails signing with a real
-// AWS-side SignatureDoesNotMatch/InvalidSignatureException, not a local
-// error this codebase's own tests can catch without a live AWS account.
-// See docs/rfcs/2026-09-04-bedrock-adapter.md's Motivation section.
-const bedrockSigningName = "amazonbedrockfrontendservice"
+// Bedrock Runtime (the bedrock-runtime.{region}.amazonaws.com host this
+// adapter actually calls). A prior version of this constant
+// ("amazonbedrockfrontendservice") was confirmed only against static SDK
+// source reading, never a live call — exactly the failure mode its own
+// comment warned about but couldn't self-detect: it produced a real,
+// live AWS 403 ("Credential should be scoped to correct service:
+// 'bedrock'.") on every genuine request, caught only once a real,
+// credentialed end-to-end call was actually made (2026-09-11). "bedrock"
+// is confirmed correct directly against that live response, re-verified
+// with a second real call after this fix.
+const bedrockSigningName = "bedrock"
 
 // setUpstreamAuthHeaders sets the provider-specific auth header(s) for an
 // outgoing upstream request. Anthropic's Messages API uses an "x-api-key"

@@ -54,6 +54,24 @@ func TestSetUpstreamAuthHeadersBedrockSignsRealSigV4Headers(t *testing.T) {
 	}
 }
 
+// TestBedrockSigningNameIsTheRealLiveVerifiedValue pins the literal
+// string, not just a reference to the constant -- a prior value
+// ("amazonbedrockfrontendservice") was confirmed only against static SDK
+// source reading and passed every existing test (which only checks
+// self-consistency against the constant, never against a real signature)
+// while failing every real, credentialed call with a live AWS 403
+// ("Credential should be scoped to correct service: 'bedrock'."), caught
+// only by an actual end-to-end call against real AWS Bedrock
+// (2026-09-11). This test cannot re-verify the live claim itself (no
+// credentials in CI), but it stops the exact silent-regression shape
+// that let the wrong value survive an entire test suite once already.
+func TestBedrockSigningNameIsTheRealLiveVerifiedValue(t *testing.T) {
+	const wantLiveVerified = "bedrock"
+	if bedrockSigningName != wantLiveVerified {
+		t.Errorf("bedrockSigningName = %q, want %q (live-verified against a real AWS Bedrock Converse call -- see dataplane.go's doc comment)", bedrockSigningName, wantLiveVerified)
+	}
+}
+
 // TestSetUpstreamAuthHeadersBedrockIncludesSessionToken proves a session
 // value, when present, is genuinely signed in (X-Amz-Security-Token) --
 // not silently dropped.
