@@ -45,7 +45,21 @@ from evals.models import EvalCase
 
 AuditCallModel = Callable[[str], Awaitable[str]]
 
-AuditSeverity = Literal["no_defect", "minor", "major"]
+# "error" is not a design-defect opinion at all -- it means the audit
+# CALL itself failed (a real, live-discovered case: Claude Sonnet 5
+# exhausting its entire max_tokens budget on internal extended-thinking
+# reasoning without ever emitting a visible text block, against a
+# dense, technical audit prompt -- confirmed empirically 2026-09-15 via
+# a direct Converse call reproducing the exact crash: `stopReason:
+# "max_tokens"`, `content: [{"reasoningContent": ...}]`, zero text
+# blocks; also covers any other real audit_case failure, e.g. a
+# genuine content-safety refusal or a network error). A single case
+# hitting this must become a scoreable, distinguishable AuditFinding,
+# never an exception that aborts the entire multi-case batch -- see
+# evals.cli.audit_corpus_cmd's own per-case try/except, which mirrors
+# evals.rollout.scheduler.run_suite's identical "a single case's
+# failure never aborts the suite" precedent.
+AuditSeverity = Literal["no_defect", "minor", "major", "error"]
 
 _AUDIT_PROMPT_TEMPLATE = """\
 You are auditing one test case from an automated-evaluation regression \
@@ -96,6 +110,14 @@ class AuditFinding:
     `evals.cli`'s own `_last_judge_call_cost_usd`/`_JudgeOutcome` split
     (a "read the real per-call cost off `call_model` after awaiting it"
     pattern this module deliberately reuses rather than reinventing).
+
+    A `severity="error"` finding is never produced by `audit_case`/
+    `parse_audit_response` itself (the regex-based parser only ever
+    recognizes `no_defect`/`minor`/`major` in a real model response) --
+    it is constructed directly by `evals.cli.audit_corpus_cmd`'s own
+    per-case exception handler when the audit CALL itself fails, so
+    `reason` on an `"error"` finding is the caught exception's own
+    message, never LLM-generated text.
     """
 
     eval_case_id: str

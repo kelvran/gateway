@@ -2460,7 +2460,7 @@ def test_audit_corpus_writes_findings_for_flagged_cases_only(tmp_path, monkeypat
     assert result.exit_code == 0, result.output
     assert "clean-case (rev 1): no_defect" in result.output
     assert "flagged-case (rev 1): major" in result.output
-    assert "1 no_defect, 0 minor, 1 major (of 2 cases)" in result.output
+    assert "1 no_defect, 0 minor, 1 major, 0 error (of 2 cases)" in result.output
 
     findings = json.loads(out_path.read_text())
     assert len(findings) == 1
@@ -2571,7 +2571,81 @@ def test_audit_corpus_never_raises_on_all_cases_flagged_major(tmp_path, monkeypa
     )
 
     assert result.exit_code == 0, result.output
-    assert "0 no_defect, 0 minor, 2 major (of 2 cases)" in result.output
+    assert "0 no_defect, 0 minor, 2 major, 0 error (of 2 cases)" in result.output
 
     findings = json.loads(out_path.read_text())
     assert len(findings) == 2
+
+
+def test_audit_corpus_one_case_raising_never_aborts_the_batch(tmp_path, monkeypatch):
+    """The real, live-discovered bug this test guards against: before
+    the fix, a single case's audit_case() exception (e.g. Claude Sonnet
+    5 exhausting its entire max_tokens budget on internal reasoning
+    without emitting visible text -- see AuditSeverity's own doc
+    comment) killed the ENTIRE multi-case batch run, discarding every
+    already-computed finding for every other case. It must instead
+    become one scoreable severity="error" AuditFinding, and every other
+    case in the suite must still be audited normally.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "exhausts-budget-case",
+                    "revision": 1,
+                    "task_spec": {},
+                    "tier": "regression",
+                },
+                {
+                    "id": "clean-case",
+                    "revision": 1,
+                    "task_spec": {},
+                    "tier": "regression",
+                },
+            ]
+        )
+    )
+    out_path = tmp_path / "findings.json"
+
+    responses = iter(
+        [
+            None,  # sentinel: the first call raises instead of returning
+            "REASONING: Clear and correct.\nSEVERITY: no_defect\n",
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        response = next(responses)
+        if response is None:
+            raise ValueError(
+                "Bedrock Converse call for model 'x' returned no text "
+                "content block (a real refusal or a tool-only response)"
+            )
+        return response
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["audit-corpus", "--suite", str(suite_path), "--out", str(out_path)],
+    )
+
+    # The core guarantee: exit 0 despite a real per-case exception, and
+    # the SECOND case was still audited (proving the batch continued).
+    assert result.exit_code == 0, result.output
+    assert "exhausts-budget-case (rev 1): error -- audit call failed:" in result.output
+    assert "clean-case (rev 1): no_defect" in result.output
+    assert "0 no_defect, 0 minor, 0 major, 1 error (of 2 cases)" not in result.output
+    assert "1 no_defect, 0 minor, 0 major, 1 error (of 2 cases)" in result.output
+
+    findings = json.loads(out_path.read_text())
+    assert len(findings) == 1
+    assert findings[0]["eval_case_id"] == "exhausts-budget-case"
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["cost_usd"] is None

@@ -2367,12 +2367,38 @@ def audit_corpus_cmd(
     # text -- see make_bedrock_call_model's own doc comment for the full
     # story.
     call_model = make_bedrock_call_model(judge_model, max_tokens=8192)
-    counts: dict[str, int] = {"no_defect": 0, "minor": 0, "major": 0}
+    counts: dict[str, int] = {"no_defect": 0, "minor": 0, "major": 0, "error": 0}
     findings: list[AuditFinding] = []
     for case in cases:
-        finding = asyncio.run(audit_case(case, call_model))
-        cost = _last_judge_call_cost_usd(call_model)
-        finding = replace(finding, cost_usd=cost)
+        # Deliberately broad, mirroring evals.rollout.scheduler.run_suite's
+        # own identical philosophy ("a single case's failure never aborts
+        # the suite"): a real, live-discovered failure mode is Claude
+        # Sonnet 5 exhausting its entire max_tokens budget on internal
+        # extended-thinking reasoning without ever emitting visible text,
+        # against a dense/technical audit prompt (confirmed empirically
+        # 2026-09-15 -- see AuditSeverity's own doc comment). Before this
+        # fix, that single case's ValueError killed the ENTIRE multi-case
+        # batch run, discarding every already-computed finding. cost_usd
+        # is deliberately left None here, never read via
+        # _last_judge_call_cost_usd -- that side channel is only known-
+        # fresh immediately after a call that reached its own usage-read
+        # line (see providers.py's _BedrockCallModel.__call__ ordering);
+        # for an exception raised before that point (e.g. a network
+        # error), reading it here would silently attribute a STALE cost
+        # from a PRIOR case's successful call to this one -- an honest
+        # None is safer than a possibly-wrong number.
+        try:
+            finding = asyncio.run(audit_case(case, call_model))
+            cost = _last_judge_call_cost_usd(call_model)
+            finding = replace(finding, cost_usd=cost)
+        except Exception as exc:
+            finding = AuditFinding(
+                eval_case_id=case.id,
+                eval_case_revision=case.revision,
+                severity="error",
+                reason=f"audit call failed: {exc}",
+                cost_usd=None,
+            )
         counts[finding.severity] += 1
         if finding.severity == "no_defect":
             click.echo(f"{case.id} (rev {case.revision}): {finding.severity}")
@@ -2385,17 +2411,27 @@ def audit_corpus_cmd(
 
     click.echo(
         f"audit-corpus: {counts['no_defect']} no_defect, {counts['minor']} minor, "
-        f"{counts['major']} major (of {len(cases)} cases)"
+        f"{counts['major']} major, {counts['error']} error (of {len(cases)} cases)"
     )
     if record_trend_path is not None:
+        # An "error" finding is not a design-defect opinion at all -- the
+        # case was never actually audited -- so it is excluded from both
+        # the numerator and denominator here, the same "measured but
+        # genuinely undefined" honesty TrendSnapshot's own validator
+        # already applies elsewhere (rate_value=None when there is no
+        # real number to report), rather than silently treating an
+        # unaudited case as either a defect or a clean pass.
+        audited_count = counts["no_defect"] + counts["minor"] + counts["major"]
         defect_count = counts["minor"] + counts["major"]
         append_trend_snapshots(
             [
                 TrendSnapshot(
                     series="audit_corpus_defect_rate",
                     recorded_at=datetime.now(UTC),
-                    n=len(cases),
-                    rate_value=defect_count / len(cases) if cases else None,
+                    n=audited_count,
+                    rate_value=(
+                        defect_count / audited_count if audited_count else None
+                    ),
                     scorer_type=None,
                     source_command="audit-corpus",
                 )

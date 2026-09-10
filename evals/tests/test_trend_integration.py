@@ -526,6 +526,82 @@ def test_audit_corpus_record_trend_produces_one_defect_rate_snapshot(
     assert snap.source_command == "audit-corpus"
 
 
+def test_audit_corpus_record_trend_excludes_error_findings_from_defect_rate(
+    tmp_path, monkeypatch
+):
+    """An "error" finding means the case was never actually audited --
+    it is not a design-defect opinion at all. It must be excluded from
+    BOTH the numerator and the denominator of audit_corpus_defect_rate,
+    the same "measured but genuinely undefined" honesty this codebase
+    already applies elsewhere, rather than silently counting an
+    unaudited case as either a clean pass or a real defect.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "errors-case",
+                    "revision": 1,
+                    "task_spec": {},
+                    "tier": "regression",
+                },
+                {
+                    "id": "flagged-case",
+                    "revision": 1,
+                    "task_spec": {"output": "y"},
+                    "reference": "y",
+                    "tier": "regression",
+                },
+            ]
+        )
+    )
+    trend_path = tmp_path / "trend.jsonl"
+
+    responses = iter(
+        [
+            None,  # sentinel: the first call raises instead of returning
+            "REASONING: The ground truth looks wrong.\nSEVERITY: major\n",
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        response = next(responses)
+        if response is None:
+            raise ValueError("no text content block")
+        return response
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "audit-corpus",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "findings.json"),
+            "--record-trend",
+            str(trend_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    snapshots = load_trend_snapshots(trend_path)
+    assert len(snapshots) == 1
+    snap = snapshots[0]
+    # n excludes the errored case entirely (1 audited case, not 2):
+    assert snap.n == 1
+    # and that one audited case was flagged major, so the rate is 1.0,
+    # not 0.5 (which is what a naive len(cases)-denominator would give).
+    assert snap.rate_value == 1.0
+
+
 def test_audit_corpus_without_record_trend_leaves_trend_file_absent(
     tmp_path, monkeypatch
 ):
