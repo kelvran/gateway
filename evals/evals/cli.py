@@ -42,6 +42,7 @@ from dotenv import load_dotenv
 from google.protobuf.json_format import MessageToJson
 
 from evals.audit_corpus import AuditFinding, audit_case
+from evals.auto_flag import FlagCandidate, flag_candidates
 from evals.ingestion.decode import decode_gateway_decision_event
 from evals.ingestion.mapping import gateway_decision_event_to_eval_case_and_run
 from evals.ingestion.object_store import (
@@ -1335,6 +1336,75 @@ def promote_cmd(
         f"promoted {original_case.id}@{original_case.revision} (run {run.id}) "
         f"-> {new_case.id} (tier={tier}) in {output_path}"
     )
+
+
+@main.command("flag-candidates")
+@click.option(
+    "--suite",
+    "suite_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Path to the JSON EvalCase suite file to scan for drift_sample "
+        "promotion candidates."
+    ),
+)
+@click.option(
+    "--results",
+    "results_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="JSONL file of persisted Runs (see --results on `rollout`/`promote`).",
+)
+@click.option(
+    "--out",
+    "out_path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Optional JSON file the flagged candidates are written to.",
+)
+def flag_candidates_cmd(
+    suite_path: Path,
+    results_path: Path,
+    out_path: Path | None,
+) -> None:
+    """Rule-based auto-flag pass over `drift_sample` EvalCases, surfacing
+    promotion CANDIDATES for the still-fully-human-triggered `evals
+    promote` command -- never a new promotion path. Prints each candidate
+    plus the exact `evals promote` command to run for it. Report-only,
+    always: never calls any suite-mutation helper, never constructs an
+    EvalCase, and never exits non-zero based on findings, no matter how
+    many cases match a rule -- only a real tool/IO error, or zero
+    drift_sample cases present in --suite at all, is a hard failure. See
+    evals.auto_flag's own module docstring for the full design rationale.
+    """
+    cases = _load_cases(suite_path)
+    drift_sample_cases = [c for c in cases if c.tier == "drift_sample"]
+    if not drift_sample_cases:
+        raise click.ClickException(f"{suite_path}: no drift_sample EvalCases found")
+
+    runs = load_runs(results_path)
+    candidates: list[FlagCandidate] = flag_candidates(drift_sample_cases, runs)
+
+    for c in candidates:
+        click.echo(
+            f"{c.eval_case_id}@{c.eval_case_revision} (run {c.run_id}): "
+            f"matched [{', '.join(c.matched_rules)}]"
+        )
+        click.echo(
+            f"  -> evals promote --suite {suite_path} --results {results_path} "
+            f"--run-id {c.run_id} --tier drift_sample --output <path>"
+        )
+
+    click.echo(
+        f"{len(candidates)} candidates flagged (of {len(drift_sample_cases)} "
+        "drift_sample cases)"
+    )
+
+    if out_path is not None:
+        out_path.write_text(
+            json.dumps([asdict(c) for c in candidates], indent=2) + "\n"
+        )
 
 
 @main.command("ingest")

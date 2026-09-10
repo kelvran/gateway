@@ -7,7 +7,7 @@ type = layers
 layers =
     evals.cli
     evals.rollout.scheduler | evals.ingestion.decode | evals.ingestion.object_store | evals.ingestion.mapping
-    evals.tracing | evals.results_store | evals.rollout.cache | evals.rollout.sandbox | evals.judge.deterministic | evals.judge.llm_judge | evals.judge.providers | evals.audit_corpus
+    evals.tracing | evals.results_store | evals.rollout.cache | evals.rollout.sandbox | evals.judge.deterministic | evals.judge.llm_judge | evals.judge.providers | evals.audit_corpus | evals.auto_flag
     evals.models | evals.stats
 
 [importlinter:contract:judge-independence]
