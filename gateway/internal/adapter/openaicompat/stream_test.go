@@ -248,6 +248,31 @@ func TestDecodeFinalUsageChunk(t *testing.T) {
 	}
 }
 
+// TestDecodeFinalUsageChunkExtractsRealCachedTokens proves the streaming
+// path populates CacheReadTokens too when a self-hosted runtime sends
+// prompt_tokens_details, sharing the same cacheReadTokensFromUsage call
+// as the buffered FromProvider path.
+func TestDecodeFinalUsageChunkExtractsRealCachedTokens(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	_, done, finalUsage, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"id":"x","model":"llama-3.1-70b-instruct","choices":[],"usage":{"prompt_tokens":1024,"completion_tokens":10,"total_tokens":1034,"prompt_tokens_details":{"cached_tokens":896}}}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if done {
+		t.Error("done = true, want false (only [DONE] sets it)")
+	}
+	if finalUsage == nil {
+		t.Fatal("finalUsage = nil, want non-nil")
+	}
+	want := adapter.Usage{PromptTokens: 1024, CompletionTokens: 10, TotalTokens: 1034, CacheReadTokens: 896}
+	if *finalUsage != want {
+		t.Errorf("finalUsage = %+v, want %+v", *finalUsage, want)
+	}
+}
+
 // TestDecodeDoneSentinel explicitly exercises the "[DONE]" sentinel path
 // in isolation: a stream that is nothing but the sentinel must decode to
 // zero chunks, done=true, nil usage, nil error — and the literal string

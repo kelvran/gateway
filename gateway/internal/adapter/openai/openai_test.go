@@ -114,6 +114,67 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFromProviderExtractsRealCachedTokens proves adapter.Usage.CacheReadTokens
+// is populated from OpenAI's real prompt_tokens_details.cached_tokens field,
+// decoded from a raw JSON payload shaped exactly like OpenAI's own OpenAPI
+// spec (openapi.yaml's CompletionUsage schema) -- not hand-constructed Go
+// structs, so a wrong json tag would be caught here too.
+func TestFromProviderExtractsRealCachedTokens(t *testing.T) {
+	raw := []byte(`{
+		"id": "chatcmpl-test",
+		"model": "gpt-4o",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+		"usage": {
+			"prompt_tokens": 1024,
+			"completion_tokens": 10,
+			"total_tokens": 1034,
+			"prompt_tokens_details": {"cached_tokens": 896}
+		}
+	}`)
+	var nativeResp Response
+	if err := json.Unmarshal(raw, &nativeResp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	a := New()
+	got, err := a.FromProvider(&nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+
+	if got.Usage.PromptTokens != 1024 {
+		t.Errorf("Usage.PromptTokens = %d, want 1024", got.Usage.PromptTokens)
+	}
+	if got.Usage.CacheReadTokens != 896 {
+		t.Errorf("Usage.CacheReadTokens = %d, want 896", got.Usage.CacheReadTokens)
+	}
+	if got.Usage.CacheCreationTokens != 0 {
+		t.Errorf("Usage.CacheCreationTokens = %d, want 0 -- OpenAI's automatic caching has no cache-creation charge", got.Usage.CacheCreationTokens)
+	}
+}
+
+// TestFromProviderMissingPromptTokensDetailsDefaultsToZeroCacheRead proves
+// the common case (an older API response, or a model that never populates
+// prompt_tokens_details at all) stays exactly as it behaved before this
+// field existed -- no nil-pointer panic, CacheReadTokens simply 0.
+func TestFromProviderMissingPromptTokensDetailsDefaultsToZeroCacheRead(t *testing.T) {
+	nativeResp := &Response{
+		ID:      "chatcmpl-test",
+		Model:   "gpt-4o",
+		Choices: []Choice{{Index: 0, Message: Message{Role: "assistant", Content: json.RawMessage(`"hi"`)}, FinishReason: "stop"}},
+		Usage:   Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}
+
+	a := New()
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Usage.CacheReadTokens != 0 {
+		t.Errorf("Usage.CacheReadTokens = %d, want 0 when PromptTokensDetails is absent", got.Usage.CacheReadTokens)
+	}
+}
+
 func TestName(t *testing.T) {
 	if got := New().Name(); got != "openai" {
 		t.Errorf("Name() = %q, want %q", got, "openai")

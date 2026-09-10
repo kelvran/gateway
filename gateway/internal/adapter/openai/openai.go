@@ -143,11 +143,35 @@ type Choice struct {
 	FinishReason string  `json:"finish_reason"`
 }
 
-// Usage is OpenAI's native token-accounting shape.
+// Usage is OpenAI's native token-accounting shape. PromptTokens is
+// already cache-inclusive (OpenAI's own convention, matching Anthropic's
+// and Bedrock's) — PromptTokensDetails.CachedTokens is the SUBSET of it
+// served from OpenAI's automatic, zero-opt-in prompt cache, live-verified
+// directly against OpenAI's own OpenAPI spec (openapi.yaml's
+// CompletionUsage schema) rather than assumed. There is no separate
+// cache-CREATION signal or charge here the way Anthropic's/Bedrock's
+// opt-in caching has — see FromProvider's own doc comment on why
+// adapter.Usage.CacheCreationTokens stays 0 for every OpenAI response.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails is OpenAI's breakdown of Usage.PromptTokens.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// cacheReadTokensFromUsage returns native's cached-token count, or 0 when
+// PromptTokensDetails is absent (an older API response, or a model that
+// never populates it) — never a nil-pointer panic on the common case.
+func cacheReadTokensFromUsage(native Usage) int {
+	if native.PromptTokensDetails == nil {
+		return 0
+	}
+	return native.PromptTokensDetails.CachedTokens
 }
 
 // Adapter implements adapter.Adapter for OpenAI.
@@ -309,6 +333,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			PromptTokens:     native.Usage.PromptTokens,
 			CompletionTokens: native.Usage.CompletionTokens,
 			TotalTokens:      native.Usage.TotalTokens,
+			CacheReadTokens:  cacheReadTokensFromUsage(native.Usage),
 		},
 	}, nil
 }

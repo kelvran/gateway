@@ -115,6 +115,64 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFromProviderExtractsRealCachedTokens proves adapter.Usage.CacheReadTokens
+// is populated from a prompt_tokens_details.cached_tokens field, when a
+// self-hosted runtime sends one (mirrors real OpenAI's own field --
+// whether a given runtime actually populates it is runtime-dependent
+// and NOT independently verified here; see Usage's own doc comment).
+func TestFromProviderExtractsRealCachedTokens(t *testing.T) {
+	raw := []byte(`{
+		"id": "cmpl-test",
+		"model": "llama-3-70b",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+		"usage": {
+			"prompt_tokens": 1024,
+			"completion_tokens": 10,
+			"total_tokens": 1034,
+			"prompt_tokens_details": {"cached_tokens": 896}
+		}
+	}`)
+	var nativeResp Response
+	if err := json.Unmarshal(raw, &nativeResp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	a := New()
+	got, err := a.FromProvider(&nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+
+	if got.Usage.CacheReadTokens != 896 {
+		t.Errorf("Usage.CacheReadTokens = %d, want 896", got.Usage.CacheReadTokens)
+	}
+	if got.Usage.CacheCreationTokens != 0 {
+		t.Errorf("Usage.CacheCreationTokens = %d, want 0", got.Usage.CacheCreationTokens)
+	}
+}
+
+// TestFromProviderMissingPromptTokensDetailsDefaultsToZeroCacheRead proves
+// the overwhelming-majority case (a runtime that never sends
+// prompt_tokens_details at all) stays exactly as it behaved before this
+// field existed -- no nil-pointer panic, CacheReadTokens simply 0.
+func TestFromProviderMissingPromptTokensDetailsDefaultsToZeroCacheRead(t *testing.T) {
+	nativeResp := &Response{
+		ID:      "cmpl-test",
+		Model:   "llama-3-70b",
+		Choices: []Choice{{Index: 0, Message: Message{Role: "assistant", Content: json.RawMessage(`"hi"`)}, FinishReason: "stop"}},
+		Usage:   Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}
+
+	a := New()
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Usage.CacheReadTokens != 0 {
+		t.Errorf("Usage.CacheReadTokens = %d, want 0 when PromptTokensDetails is absent", got.Usage.CacheReadTokens)
+	}
+}
+
 func TestName(t *testing.T) {
 	if got := New().Name(); got != "openaicompat" {
 		t.Errorf("Name() = %q, want %q", got, "openaicompat")

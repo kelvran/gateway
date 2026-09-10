@@ -158,11 +158,33 @@ type Choice struct {
 	FinishReason string  `json:"finish_reason"`
 }
 
-// Usage is the native token-accounting shape.
+// Usage is the native token-accounting shape. PromptTokensDetails mirrors
+// real OpenAI's own prompt_tokens_details.cached_tokens field (see
+// internal/adapter/openai's identical struct) — whether a given
+// self-hosted runtime actually populates it is runtime-dependent and
+// NOT verified here the way OpenAI's own spec was: this is a best-effort
+// wire-compatible read, harmless (stays 0, unchanged from before this
+// field existed) for any runtime that never sends it.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails is the breakdown of Usage.PromptTokens.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// cacheReadTokensFromUsage returns native's cached-token count, or 0 when
+// PromptTokensDetails is absent (the overwhelming majority of self-hosted
+// runtimes today) — never a nil-pointer panic on the common case.
+func cacheReadTokensFromUsage(native Usage) int {
+	if native.PromptTokensDetails == nil {
+		return 0
+	}
+	return native.PromptTokensDetails.CachedTokens
 }
 
 // Adapter implements adapter.Adapter for generic OpenAI-compatible
@@ -294,6 +316,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			PromptTokens:     native.Usage.PromptTokens,
 			CompletionTokens: native.Usage.CompletionTokens,
 			TotalTokens:      native.Usage.TotalTokens,
+			CacheReadTokens:  cacheReadTokensFromUsage(native.Usage),
 		},
 	}, nil
 }
