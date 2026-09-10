@@ -52,6 +52,7 @@ Dated, honest — updated as the system evolves rather than left as boilerplate:
 - `2026-09-05` (corrected — stale since the 2026-09-03 release): the line above no longer describes reality. `gateway/v0.1.0`/`evals/v0.1.0` shipped 2026-09-03 with real attack surface a report could target today — virtual keys/budgets (`internal/identity`/`internal/budget`), the live-mutable Admin API (`internal/admin`, per `docs/rfcs/2026-09-05-gateway-admin-api.md`), and the Evals sandbox executor (`evals/rollout/sandbox.py`). This document's own severity taxonomy and threat-class table above are real, verified security posture, not aspirational — see `THREAT_MODEL.md` for the current, actively-reviewed detail.
 - Kelvran does not currently support (and has no near-term plan to support) a hosted/managed offering — self-hosting is the only deployment model, per `PRD.md`'s non-goals.
 - `2026-09-04`: The Evals sandbox's threat mitigations are narrower than this document previously implied — see the corrected `THREAT_MODEL.md` § Evals table row above. Package-registry-proxy hardening, cross-sandbox isolation, scoped per-tool credentials, and audit-trail-tied-to-a-trace are all unbuilt; splitting these into separate future RFCs, not fixed in one pass, per that document's own change log.
+- `2026-09-15`: Server-side prompt/template management (`docs/rfcs/2026-09-13-gateway-prompt-management.md`) shipped with prompts deliberately GLOBAL, not tenant-scoped, per that RFC's own resolved design fork — any virtual key may resolve any `prompt_id`, with no ownership/authorization concept anywhere in `internal/prompt`. This is a direct instance of the **P1** threat class above (that class's own definition already names "prompts" explicitly, predating this feature) — see `THREAT_MODEL.md`'s Gateway Information Disclosure row for the full detail. Not a bug: it's the accepted, disclosed cost of the global-config design. Operator guidance below.
 
 ## Security Best Practices for Operators
 
@@ -59,6 +60,7 @@ Dated, honest — updated as the system evolves rather than left as boilerplate:
 - Issue least-privilege virtual keys per team/agent, not one shared key across an entire organization.
 - Restrict network exposure of the Gateway's admin API to a private network or VPN; it is not designed to be internet-facing.
 - Terminate TLS at or before the Gateway — plaintext prompt/completion traffic should never traverse an untrusted network segment.
+- Never embed tenant-specific secrets, PII, or confidential business logic in a shared prompt template (`internal/prompt`) — prompts are global config, not tenant-scoped, so any virtual key can resolve and indirectly probe any prompt's content by design (see the `2026-09-15` entry above).
 
 ## Provider & Data-Flow Inventory
 

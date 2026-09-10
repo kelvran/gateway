@@ -191,6 +191,46 @@ func TestPromptFingerprintBustsACacheHitEvenWithByteIdenticalResolvedContent(t *
 	}
 }
 
+// TestPromptVariablesInjectedPIIIsCaughtByPreCallGuardrail is the
+// missing regression proof named by THREAT_MODEL.md's 2026-09-10
+// Information Disclosure entry: resolvePromptIfSet runs before the
+// pre-call Guardrails check on both the buffered and streaming paths
+// (dataplane.go/streaming.go), and prompt.Resolve's substitute() splices
+// a caller-supplied PromptVariables value verbatim into the resolved
+// Content -- so a PII/secret-shaped value placed there must be caught by
+// the SAME pre-call check that already covers ordinary Messages content
+// and multi-modal Parts[].Text (see the 2026-09-06 multi-modal RFC's own
+// TestHandleChatCompletionPreCallBlocksBlockTierRequest-style proof in
+// guardrail_test.go, which this test mirrors for the PromptVariables
+// injection path specifically).
+func TestPromptVariablesInjectedPIIIsCaughtByPreCallGuardrail(t *testing.T) {
+	var upstreamCalls int
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, deployments)
+
+	if _, err := p.UpsertPrompt("cardinfo", []adapter.Message{
+		{Role: "user", Content: "My card number is {{cardnumber}}."},
+	}); err != nil {
+		t.Fatalf("UpsertPrompt: %v", err)
+	}
+
+	req := adapter.ChatRequest{
+		Model:           "gpt-4o",
+		PromptID:        "cardinfo",
+		PromptVariables: map[string]string{"cardnumber": fakeCreditCardNumber},
+	}
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	if !errors.Is(err, ErrGuardrailBlocked) {
+		t.Errorf("err = %v, want ErrGuardrailBlocked -- a PII value injected via PromptVariables must be caught after resolution, same as if it had been typed directly into Messages", err)
+	}
+	if upstreamCalls != 0 {
+		t.Errorf("upstreamCalls = %d, want 0 -- a Block-tier resolved prompt must never reach the upstream", upstreamCalls)
+	}
+}
+
 // TestPromptVersionChangeBustsACacheHit proves the same fold from the
 // angle the spec calls out explicitly: pinning a DIFFERENT
 // PromptVersion of the SAME prompt_id must not reuse the prior
