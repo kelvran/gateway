@@ -435,7 +435,7 @@ def test_make_bedrock_call_model_resolves_region_from_aws_region_env_var(
     monkeypatch.setenv("AWS_REGION", "eu-west-1")
     captured = {}
 
-    def fake_boto3_client(service_name, region_name=None):
+    def fake_boto3_client(service_name, region_name=None, config=None):
         captured["region_name"] = region_name
         return object()
 
@@ -455,7 +455,7 @@ def test_make_bedrock_call_model_falls_back_to_aws_default_region_env_var(
     monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-1")
     captured = {}
 
-    def fake_boto3_client(service_name, region_name=None):
+    def fake_boto3_client(service_name, region_name=None, config=None):
         captured["region_name"] = region_name
         return object()
 
@@ -474,7 +474,7 @@ def test_make_bedrock_call_model_explicit_region_name_wins_over_env_vars(
     monkeypatch.setenv("AWS_REGION", "eu-west-1")
     captured = {}
 
-    def fake_boto3_client(service_name, region_name=None):
+    def fake_boto3_client(service_name, region_name=None, config=None):
         captured["region_name"] = region_name
         return object()
 
@@ -485,3 +485,35 @@ def test_make_bedrock_call_model_explicit_region_name_wins_over_env_vars(
     make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID, region_name="us-west-2")
 
     assert captured["region_name"] == "us-west-2"
+
+
+def test_make_bedrock_call_model_uses_a_generous_read_timeout_not_botocores_default(
+    monkeypatch,
+):
+    """Real, live-discovered gotcha (2026-09-11, while running
+    evals.audit_corpus's full-corpus sanity pass): botocore's own default
+    read_timeout (60s) is too short for a generous max_tokens budget
+    against an extended-thinking model on a long prompt -- a real Converse
+    call exceeded 60s and raised botocore.exceptions.ReadTimeoutError
+    mid-run. make_bedrock_call_model must pass a real, longer read_timeout
+    via a botocore Config, for every client it builds, not just callers
+    who pass max_tokens.
+    """
+    captured = {}
+
+    def fake_boto3_client(service_name, region_name=None, config=None):
+        captured["config"] = config
+        return object()
+
+    import evals.judge.providers as providers_module
+
+    monkeypatch.setattr(providers_module.boto3, "client", fake_boto3_client)
+
+    make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID)
+
+    assert captured["config"] is not None
+    assert (
+        captured["config"].read_timeout
+        == providers_module._BEDROCK_READ_TIMEOUT_SECONDS
+    )
+    assert captured["config"].read_timeout > 60

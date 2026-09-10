@@ -58,6 +58,7 @@ from typing import Any
 import boto3
 from anthropic import AsyncAnthropic
 from anthropic.types import Usage
+from botocore.config import Config as BotoConfig
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage as OpenAIUsage
 
@@ -300,6 +301,23 @@ def make_openai_call_model(
 BEDROCK_SONNET_5_MODEL_ID = "global.anthropic.claude-sonnet-5"
 BEDROCK_HAIKU_4_5_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
+# botocore's own default read_timeout (60s) is too short for a generous
+# max_tokens budget against an extended-thinking model on a long prompt —
+# a REAL, live-discovered gotcha (2026-09-11, while running
+# evals.audit_corpus's own full-corpus live sanity pass, per
+# docs/rfcs/2026-09-11-evals-audit-corpus.md): a real Converse call to
+# Sonnet 5 with max_tokens=8192 against a long audit prompt exceeded 60s
+# and raised botocore.exceptions.ReadTimeoutError mid-run, confirmed by
+# reading the raw traceback directly ("read timeout=60"). This is
+# distinct from (and a second real gap alongside) the missing-maxTokens
+# gotcha documented on make_bedrock_call_model below -- that gap causes
+# an empty response; this one causes a real network-level timeout even
+# once maxTokens is set generously enough to get a real response.
+# Applied to every Bedrock client this factory builds, not just
+# audit_corpus_cmd's own generous-max_tokens caller: any future caller
+# raising max_tokens is exposed to the identical timeout risk.
+_BEDROCK_READ_TIMEOUT_SECONDS = 300
+
 # Bedrock bills these two (both third-party models) through AWS
 # Marketplace, per each model's own live "Pricing" section, which defers
 # to a separate, JS-rendered pricing page rather than publishing an
@@ -482,6 +500,12 @@ def make_bedrock_call_model(
     hit it yet only because their prompts are short — named here as a
     real, disclosed latent risk, not silently fixed for those callers in
     this pass.
+
+    Every client built by this factory (not just callers who pass
+    `max_tokens`) uses `_BEDROCK_READ_TIMEOUT_SECONDS` (300s) instead of
+    botocore's own 60s default — see that constant's own doc comment for
+    the second, distinct real gotcha this closes (a genuine network-level
+    `ReadTimeoutError`, not the empty-response gotcha above).
     """
     resolved_region = (
         region_name
@@ -489,6 +513,8 @@ def make_bedrock_call_model(
         or os.environ.get("AWS_DEFAULT_REGION")
     )
     bedrock_client = client or boto3.client(
-        "bedrock-runtime", region_name=resolved_region
+        "bedrock-runtime",
+        region_name=resolved_region,
+        config=BotoConfig(read_timeout=_BEDROCK_READ_TIMEOUT_SECONDS),
     )
     return _BedrockCallModel(model=model, client=bedrock_client, max_tokens=max_tokens)
