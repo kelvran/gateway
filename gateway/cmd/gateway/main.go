@@ -716,6 +716,11 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 
+		if err := adapter.ValidateResponseFormatSchema(req.ResponseFormat); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		if req.Stream {
 			handleStreamingChatCompletion(p, w, r, req)
 			return
