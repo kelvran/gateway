@@ -1865,3 +1865,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** The Bedrock SigV4 signing-name bug above — a real, previously-shipped defect that would have failed every genuine production Bedrock call, invisible to the entire existing test suite because none of it exercises a real AWS account. This is exactly the residual-risk class that constant's own doc comment had already, correctly, named as untestable without live AWS access — now closed both in code and with a test that at least prevents silent future drift.
 
 **Next steps / resume point:** Gateway+cache+evals are now genuinely confirmed working end to end against real Bedrock, not just via mocked/isolated tests — a real basis for the next release cut whenever it happens. No further Kelvran work is currently queued beyond the still-open PyPI trademark clearance blocker.
+
+## [2026-09-11] Release cut — gateway v0.7.0 + evals v0.7.0
+
+**Files touched:** `gateway/changelog/0.7.0.md` (new), `gateway/changelog/unreleased.md`, `evals/changelog/0.7.0.md` (new), `evals/changelog/unreleased.md`, `evals/pyproject.toml`, `evals/uv.lock`, `STATUS.md`, `DECISIONS.md`, `docs/agents/LOGS.md`.
+
+**Intent/summary:** After the real end-to-end verification pass found and fixed the Bedrock signing bug (see the entry above) and closed the cache-token double-count investigation, the project owner asked to cut a new release with these latest changes. Checked `git log gateway/v0.6.0..HEAD` (2 commits: the evals cache-token fix, the gateway signing fix) and both `changelog/unreleased.md` files (still empty) before proceeding — matching the same pre-flight check this project now runs before every cut since the `v0.6.0` staleness gap.
+
+**Decisions made:** Both fixes each got one dedicated `Fixed` changelog entry (gateway, evals). Version bumped `0.6.0` → `0.7.0` (SemVer MINOR), matching every prior cut's precedent of treating a bug-fix-only round the same as a feature round for versioning purposes. `STATUS.md` was updated in the same pass this time (Status/Current Version/Last Completed Task/Next Action) rather than as a separate follow-up catch-up, since the `v0.6.0` cut had already established that keeping it current at cut-time, not after, is the right discipline.
+
+**Verification performed:** Full `evals` suite (399 passed, 11 skipped), `ruff check .` clean, `lint-imports` 3/3 contracts kept — unchanged from the pre-cut state, confirming the version bump touched no test-relevant code. `gh run watch` confirmed CI green (api/gateway/evals all passed) on this release-cut commit.
+
+**Bugs found:** None new — this pass only froze already-fixed, already-verified changes into a release.
+
+**Next steps / resume point:** `gateway/v0.7.0` and `evals/v0.7.0` tagged, pushed, and released on GitHub. No further Kelvran work is currently queued beyond the still-open PyPI trademark clearance blocker.
