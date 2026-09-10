@@ -1893,3 +1893,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** The OpenAI cache-token undercounting gap itself (real, pre-existing, not introduced by this pass) — every OpenAI cache hit was silently priced at the full prompt rate before this fix.
 
 **Next steps / resume point:** This closes the one real backlog item found unblocked. Everything else on the backlog remains genuinely gated on production traffic or the founder's own trademark clearance action. Not yet committed/pushed — that's the immediate next step, then watch CI, then decide whether this warrants its own release cut or waits to bundle with future work.
+
+## [2026-09-11] Release cut — gateway v0.8.0 (first single-deployable release)
+
+**Files touched:** `gateway/changelog/0.8.0.md` (new), `gateway/changelog/unreleased.md`, `STATUS.md`, `DECISIONS.md`, `docs/agents/LOGS.md`.
+
+**Intent/summary:** After the OpenAI cache-token fix was committed and CI confirmed green, the user asked to continue the flow, which for this project has meant cutting a release after every fix. Checked `git diff --stat` for the commit and confirmed it touched only `gateway/` and docs — zero `evals/` files.
+
+**Decisions made:** Given zero evals changes, bumping `evals/pyproject.toml` anyway (to keep the version numbers paired, as every prior cut in this session happened to do) would have been dishonest versioning with an empty changelog behind it. `AGENTS.md` already states the two deployables version independently via their own `changelog/` folders — this cut is simply the first time that independence was ever actually exercised, since every prior round genuinely touched both sides. Cut `gateway/v0.8.0` alone; `evals` stays at `v0.7.0`.
+
+**Verification performed:** Full gateway suite (build/vet/test-race/golangci-lint/go-arch-lint/gofmt/go-mod-tidy) clean except the two pre-existing, already-documented rootless-Docker failures — unchanged from the pre-cut state, since this was a pure changelog/version/doc cut with zero further code changes. `gh run watch` confirmed CI green.
+
+**Bugs found:** None new — this pass only froze an already-fixed, already-verified change into a release.
+
+**Next steps / resume point:** `gateway/v0.8.0` tagged, pushed, and released on GitHub. No further Kelvran work is currently queued beyond the still-open PyPI trademark clearance blocker.
