@@ -549,30 +549,56 @@ var ErrVirtualKeyNotFound = errors.New("dataplane: virtual key not found")
 // limiter entry existed would hit the exact nil-bucket/zero-capacity
 // hazard docs/rfcs/2026-09-05-gateway-admin-api.md's Design section
 // found and named, not a hypothetical.
+// Retries via CompareAndSwap rather than a plain Load-then-Store — per a
+// round-3 backlog-audit finding, the prior plain Load-then-Store here had
+// no synchronization around its multi-statement read-modify-write
+// sequence at all (atomic.Pointer's atomicity covers only the single
+// final Store, never the Load...Store span around it), so two genuinely
+// concurrent admin writes (e.g. UpsertVirtualKey(A) racing
+// UpsertVirtualKey(B), or an Upsert racing a Delete) could both Load the
+// same starting Verifier, each independently build and Store their own
+// updated Verifier, and have the second Store silently discard the
+// first caller's change — even though that caller's own HTTP request
+// already returned 204 success. Mirrors internal/prompt.Store.Upsert's
+// own already-proven-lossless CAS-retry pattern (see that function's own
+// doc comment and TestConcurrentUpsertGetResolveUnderRace) exactly.
+// p.limiter.Register(rateLimit) stays OUTSIDE the loop and runs exactly
+// once, before any retry attempt: it depends only on vk.ID/rateLimit
+// (fixed for this whole call), never on the Verifier's own current key
+// list, so retrying it on every CAS loss would be redundant, and it must
+// still run before the FIRST attempted Store either way — the ordering
+// docs/rfcs/2026-09-05-gateway-admin-api.md's Design section requires
+// (register before an ID becomes resolvable) is satisfied identically
+// whether the very first CAS wins or a later retry does.
 func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.KeyConfig) error {
-	current := p.verifier.Load().Keys()
-	updated := make([]identity.VirtualKey, 0, len(current)+1)
-	replaced := false
-	for _, k := range current {
-		if k.ID == vk.ID {
-			updated = append(updated, vk)
-			replaced = true
-			continue
-		}
-		updated = append(updated, k)
-	}
-	if !replaced {
-		updated = append(updated, vk)
-	}
-
-	newVerifier, err := identity.NewVerifier(updated)
-	if err != nil {
-		return fmt.Errorf("dataplane: UpsertVirtualKey: %w", err)
-	}
-
 	p.limiter.Register(rateLimit)
-	p.verifier.Store(newVerifier)
-	return nil
+	for {
+		old := p.verifier.Load()
+		current := old.Keys()
+		updated := make([]identity.VirtualKey, 0, len(current)+1)
+		replaced := false
+		for _, k := range current {
+			if k.ID == vk.ID {
+				updated = append(updated, vk)
+				replaced = true
+				continue
+			}
+			updated = append(updated, k)
+		}
+		if !replaced {
+			updated = append(updated, vk)
+		}
+
+		newVerifier, err := identity.NewVerifier(updated)
+		if err != nil {
+			return fmt.Errorf("dataplane: UpsertVirtualKey: %w", err)
+		}
+
+		if p.verifier.CompareAndSwap(old, newVerifier) {
+			return nil
+		}
+		// Lost the race to a concurrent writer -- retry against fresh state.
+	}
 }
 
 // DeleteVirtualKey removes the virtual key identified by name, live — no
@@ -589,28 +615,39 @@ func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.
 // real, self-limiting v1 gap rather than solved here — cleanup only
 // matters if virtual-key churn ever becomes high-volume, which nothing
 // about this feature's own use case implies.
+// Retries via CompareAndSwap for the identical reason UpsertVirtualKey's
+// own doc comment names -- a lost concurrent Delete is especially
+// security-relevant: an operator revoking a leaked/compromised virtual
+// key must never receive a false 204 success while that key remains live
+// in the Verifier because a concurrent write silently overwrote the
+// removal.
 func (p *Pipeline) DeleteVirtualKey(name string) error {
-	current := p.verifier.Load().Keys()
-	updated := make([]identity.VirtualKey, 0, len(current))
-	found := false
-	for _, k := range current {
-		if k.ID == name {
-			found = true
-			continue
+	for {
+		old := p.verifier.Load()
+		current := old.Keys()
+		updated := make([]identity.VirtualKey, 0, len(current))
+		found := false
+		for _, k := range current {
+			if k.ID == name {
+				found = true
+				continue
+			}
+			updated = append(updated, k)
 		}
-		updated = append(updated, k)
-	}
-	if !found {
-		return fmt.Errorf("%w: %q", ErrVirtualKeyNotFound, name)
-	}
+		if !found {
+			return fmt.Errorf("%w: %q", ErrVirtualKeyNotFound, name)
+		}
 
-	newVerifier, err := identity.NewVerifier(updated)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrCannotDeleteLastVirtualKey, err)
-	}
+		newVerifier, err := identity.NewVerifier(updated)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrCannotDeleteLastVirtualKey, err)
+		}
 
-	p.verifier.Store(newVerifier)
-	return nil
+		if p.verifier.CompareAndSwap(old, newVerifier) {
+			return nil
+		}
+		// Lost the race to a concurrent writer -- retry against fresh state.
+	}
 }
 
 // UpsertPrompt creates a NEW version of id from messages, live -- see

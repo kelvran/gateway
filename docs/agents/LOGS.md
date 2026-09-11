@@ -2172,4 +2172,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The rate-limit-default gap itself (real, previously undetected, contradicted by the code's own false doc comment) — found by the round-3 audit's gateway-admin-identity agent, independently re-verified line-for-line before trusting it.
 
-**Next steps / resume point:** Committed, push+CI pending. Next: the CAS/concurrency fix for UpsertVirtualKey/DeleteVirtualKey, then read-route audit logging.
+**Next steps / resume point:** Committed (`955d3e2`), pushed, CI confirmed green. Next: the CAS/concurrency fix for UpsertVirtualKey/DeleteVirtualKey, then read-route audit logging.
+
+## [2026-09-11] gateway: UpsertVirtualKey/DeleteVirtualKey now use CompareAndSwap retry (round-3 finding #2)
+
+**Files touched:** `gateway/internal/gateway/dataplane/dataplane.go`, `gateway/internal/gateway/dataplane/virtualkey_admin_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** Second of 3 gateway-admin-identity findings. Both functions did a plain Load-then-Store around a multi-statement read-modify-write sequence, with no protection against two genuinely concurrent admin writes racing each other — whichever caller's `Store()` lands SECOND wins outright and silently discards the FIRST caller's change, even though that first caller's own HTTP request already returned a 204. Security-relevant for Delete specifically: a revoked/leaked key could remain live if a concurrent write raced the revocation.
+
+**Decisions made:** Ported `internal/prompt.Store`'s own already-proven CAS-retry pattern exactly rather than inventing a new one — this codebase had already solved this exact class of problem once, and `prompt.go`'s own doc comment already named `identity.Verifier`'s Upsert/Delete as the weaker pattern it deliberately moved away from, so this fix closes a gap the codebase's own history had already flagged as an inconsistency. `p.limiter.Register` stays outside the loop (idempotent, no dependency on loop state, ordering requirement preserved either way).
+
+**Verification performed:** New `TestConcurrentUpsertDeleteVirtualKeyUnderRace` under `-race`: 50 concurrent Upserts + 20 concurrent Deletes, asserting zero lost writes either direction. Sanity-checked-by-breaking decisively: temporarily replaced `CompareAndSwap` with an unconditional `Store` in both functions (reproducing the exact pre-fix behavior) — the test failed massively (34/50 Upserts lost, 19/20 Deletes lost, final count 28 instead of 51), a strong, unambiguous signal, not a marginal flake. Fully reverted, re-confirmed passing 3x in a row plus the full existing virtual-key test suite. Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** The concurrency race itself — real, previously untested (grepped: zero existing test exercised concurrent admin writes to virtual keys), and independently reproduced (not just theorized) via the sanity-check-by-breaking step above.
+
+**Next steps / resume point:** Committed, push+CI pending. Next: the last gateway-admin-identity finding — Admin API read routes emit zero audit-log entry. Then the 2 gateway-newer-features-resweep findings, then the evals audit-corpus interruption-safety finding.

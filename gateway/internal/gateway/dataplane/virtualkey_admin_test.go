@@ -3,6 +3,8 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -153,5 +155,88 @@ func TestDeleteVirtualKeyUnknownNameReturnsNotFound(t *testing.T) {
 	err := p.DeleteVirtualKey("never-configured")
 	if !errors.Is(err, ErrVirtualKeyNotFound) {
 		t.Fatalf("DeleteVirtualKey(unknown) = %v, want ErrVirtualKeyNotFound", err)
+	}
+}
+
+// TestConcurrentUpsertDeleteVirtualKeyUnderRace hammers UpsertVirtualKey/
+// DeleteVirtualKey from many goroutines simultaneously, run under -race
+// (per go test -race). Mirrors internal/prompt's own
+// TestConcurrentUpsertGetResolveUnderRace: confirms no data race (the
+// race detector itself would fail this test) and no lost write --
+// before the CAS-retry fix, a plain Load-then-Store here meant a losing
+// concurrent writer's Store call could silently overwrite an earlier
+// winner's Store, discarding that earlier caller's create/delete even
+// though its own HTTP call already returned success. Every one of the
+// concurrent Upserts (distinct new IDs) and Deletes (distinct
+// pre-existing IDs) must be reflected in the final Verifier state, never
+// silently dropped.
+func TestConcurrentUpsertDeleteVirtualKeyUnderRace(t *testing.T) {
+	const numUpserts = 50
+	const numDeletes = 20
+
+	seedKeys := []identity.VirtualKey{
+		{ID: "seed", KeyHash: testHashOf("seed-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	for i := 0; i < numDeletes; i++ {
+		seedKeys = append(seedKeys, identity.VirtualKey{
+			ID: fmt.Sprintf("del-%d", i), KeyHash: testHashOf(fmt.Sprintf("del-secret-%d", i)),
+			RateLimitBurst: 100, RateLimitRefill: 100,
+		})
+	}
+
+	p := newTestPipelineWithKeys(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, seedKeys)
+
+	var wg sync.WaitGroup
+	for i := 0; i < numUpserts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			vk := identity.VirtualKey{
+				ID: fmt.Sprintf("key-%d", i), KeyHash: testHashOf(fmt.Sprintf("key-secret-%d", i)),
+				RateLimitBurst: 100, RateLimitRefill: 100,
+			}
+			if err := p.UpsertVirtualKey(vk, ratelimit.KeyConfig{ID: vk.ID, Capacity: 100, RefillPerSecond: 100}); err != nil {
+				t.Errorf("UpsertVirtualKey(key-%d): %v", i, err)
+			}
+		}(i)
+	}
+	for i := 0; i < numDeletes; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := p.DeleteVirtualKey(fmt.Sprintf("del-%d", i)); err != nil {
+				t.Errorf("DeleteVirtualKey(del-%d): %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	finalKeys := p.verifier.Load().Keys()
+	byID := make(map[string]bool, len(finalKeys))
+	for _, k := range finalKeys {
+		byID[k.ID] = true
+	}
+
+	if !byID["seed"] {
+		t.Error("\"seed\" is missing from the final Verifier -- it was never touched by any concurrent writer")
+	}
+	for i := 0; i < numUpserts; i++ {
+		id := fmt.Sprintf("key-%d", i)
+		if !byID[id] {
+			t.Errorf("%q is missing from the final Verifier -- a concurrent Upsert was silently lost", id)
+		}
+	}
+	for i := 0; i < numDeletes; i++ {
+		id := fmt.Sprintf("del-%d", i)
+		if byID[id] {
+			t.Errorf("%q is still present in the final Verifier -- a concurrent Delete was silently lost", id)
+		}
+	}
+
+	wantTotal := 1 + numUpserts // seed + every new key; every del-* key removed
+	if len(finalKeys) != wantTotal {
+		t.Errorf("final Verifier has %d keys, want %d", len(finalKeys), wantTotal)
 	}
 }
