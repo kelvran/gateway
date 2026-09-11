@@ -2341,3 +2341,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** The missing resource-limit gap itself — real, previously undetected, closing the entire round-4 backlog audit.
 
 **Next steps / resume point:** This closes round 4 entirely — all 11 confirmed findings shipped, 0 refuted, 0 not_yet, across all 4 domains (gateway-router-health-probing, gateway-cache-resweep, evals-rollout-sandbox, gateway-identity-guardrail). Not yet committed. Next: commit, push, watch CI, then report a final summary to the user.
+
+## [2026-09-11] 10 parallel /deep-research passes scoped Kelvran's v2 upgrade — synthesized into a 5-phase implementation plan
+
+**Files touched:** `docs/upgrade-research/*-2026-09-11.md` (10 new research reports), `/Users/sairamugge/.claude/plans/snuggly-exploring-finch.md` (implementation plan), `DECISIONS.md`.
+
+**Intent/summary:** User asked for 10 parallel `/deep-research` passes across gateway (model-routing intelligence, realtime streaming, enterprise multi-tenancy, MCP/A2A brokering), cache (semantic caching, geo-distribution, cost observability), and evals (agentic multi-turn, continuous monitoring, benchmark interop) to gather end-to-end input for a next-version upgrade. All 10 completed, each independently adversarially verified (3-vote refutation passes) with `build_now`/`not_yet` verdicts and named triggers. User then asked for synthesis into a phased, priority-ordered implementation plan.
+
+**Decisions made:** Before finalizing the plan, ran 3 parallel Explore passes to re-ground every `build_now` item against current code — caught 3 real corrections (see `DECISIONS.md`'s 2026-09-11 entry): the guardrail tool-result test was already shipped (dropped from plan); the cache negation/antonym gate conflicts with an already-reasoned 2026-09-08 decision (rescoped narrower); the cost-tier routing filter assumed cost data that doesn't exist per-deployment (rescoped to add new plumbing first). Also found `kelvran.cache.l3.gate_outcome` was already shipped, needing only a doc fix. Plan: 5 phases in priority order — (1) cache cost-observability, (2) evals continuous-monitoring alerting, (3) cache negation-gate correctness fix, (4) gateway cost-tier routing, (5) gateway MCP/A2A outbound-credential RFC (design-only).
+
+**Verification performed:** N/A — this entry covers research + planning only, no code changes yet.
+
+**Bugs found:** None in code — the 3 corrections above are premise errors in the research itself, caught before implementation.
+
+**Next steps / resume point:** Plan approved by user. Implementing phase by phase, committing/pushing/watching CI green between each, per this project's established rhythm.
