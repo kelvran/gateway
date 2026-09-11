@@ -42,6 +42,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # judge-accuracy-trend.jsonl carries real TrendSnapshot history
+      # ACROSS runs on this ephemeral runner -- per
+      # docs/upgrade-research/evals-continuous-monitoring-2026-09-11.md
+      # Finding 3, `evals trend alert`'s threshold+window check needs
+      # more than one run's worth of data to mean anything.
+      # actions/cache, not actions/upload-artifact (this job's own
+      # pre-existing scores upload below): artifacts are scoped to the
+      # run that created them with no built-in "latest across all past
+      # runs" lookup, exactly wrong for a file meant to accumulate
+      # indefinitely. actions/cache/restore + a run-id-suffixed save key
+      # (below) sidesteps cache keys' own immutability -- restore-keys'
+      # prefix match always finds the most recent previous save, and a
+      # fresh key every run means this run's save never collides with
+      # (or is blocked by) an old one. No error on a cache miss -- that
+      # is the normal, expected state on the very first run ever.
+      - name: restore prior trend history, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: evals/judge-accuracy-trend.jsonl
+          key: judge-accuracy-trend-${{ github.run_id }}
+          restore-keys: |
+            judge-accuracy-trend-
       - name: judge + panel accuracy run against real AWS Bedrock
         # Deliberately excludes the existing 113-case deterministic
         # regression corpus (regression_corpus_*.json) -- that's
@@ -84,7 +106,9 @@ jobs:
             --scores judge-accuracy-scores.jsonl --llm-judge
           uv run evals run --suite tests/fixtures/regression_corpus_judge_accuracy.json \
             --scores judge-accuracy-scores.jsonl --llm-judge-panel
-          uv run evals report --scores judge-accuracy-scores.jsonl --tier regression
+          uv run evals report --scores judge-accuracy-scores.jsonl --tier regression \
+            --judge-accuracy tests/fixtures/regression_corpus_judge_accuracy.json \
+            --record-trend judge-accuracy-trend.jsonl
       - name: upload real scores for later disagreement-rate analysis
         if: always()
         uses: actions/upload-artifact@v4
@@ -92,3 +116,33 @@ jobs:
           name: judge-accuracy-scores-${{ github.run_id }}
           path: evals/judge-accuracy-scores.jsonl
           retention-days: 90
+      # Real trend gate, per docs/upgrade-research/evals-continuous-
+      # monitoring-2026-09-11.md Finding 3 -- static thresholds are the
+      # thresholds every 2026 platform surveyed actually ships. Both
+      # bounds are STARTING-POINT values, explicitly not calibrated
+      # against real production data yet (see docs/operations/
+      # TELEMETRY.md's own "no concrete target numbers yet" stance) --
+      # revisit once this corpus's own accuracy-vs-designed-label metric
+      # (named as separately-scoped future work above) exists. Never
+      # gates this job's own exit code on a triggered alert (report-
+      # only, per `evals trend alert`'s own docstring) -- this workflow
+      # stays a data-collection run, not a pass/fail gate, matching the
+      # report step above. continue-on-error also covers the one real
+      # non-alert failure mode: the trend file genuinely absent (the
+      # report step above failed before ever writing it) -- the same
+      # "expected, not masked" posture the restore step above already
+      # takes on a cache miss.
+      - name: check judge-accuracy trend thresholds
+        if: always()
+        continue-on-error: true
+        working-directory: evals
+        run: |
+          uv run evals trend alert --path judge-accuracy-trend.jsonl \
+            --threshold judge_accuracy_kappa:below:0.2:warning \
+            --threshold judge_panel_tie_rate:above:0.6:warning
+      - name: save trend history for next run
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: evals/judge-accuracy-trend.jsonl
+          key: judge-accuracy-trend-${{ github.run_id }}

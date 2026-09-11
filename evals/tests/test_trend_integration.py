@@ -16,6 +16,7 @@ call, ever).
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,8 +24,12 @@ from click.testing import CliRunner
 
 import evals.cli as cli_module
 from evals.cli import main
-from evals.models import EvalCase, Score
-from evals.results_store import append_scores, load_trend_snapshots
+from evals.models import EvalCase, Score, TrendSnapshot
+from evals.results_store import (
+    append_scores,
+    append_trend_snapshots,
+    load_trend_snapshots,
+)
 
 
 def _make_case(case_id: str, **overrides) -> EvalCase:
@@ -921,3 +926,272 @@ def test_trend_show_series_with_no_matching_snapshots_raises_click_exception(
     assert "no TrendSnapshots found for series='judge_accuracy_kappa'" in (
         result.output
     )
+
+
+# -- trend alert ----------------------------------------------------------------
+
+
+def _write_trend_snapshots(path: Path, snapshots: list[TrendSnapshot]) -> None:
+    append_trend_snapshots(snapshots, path)
+
+
+def _kappa_snapshot(value: float | None, day: int) -> TrendSnapshot:
+    return TrendSnapshot(
+        series="judge_accuracy_kappa",
+        recorded_at=datetime(2026, 9, day, tzinfo=UTC),
+        n=1,
+        rate_value=value,
+        scorer_type="llm_judge",
+        source_command="report",
+    )
+
+
+def test_trend_alert_prints_a_triggered_alert_and_exits_zero(tmp_path):
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(
+        trend_path, [_kappa_snapshot(0.1, 1), _kappa_snapshot(0.15, 2)]
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[warning] judge_accuracy_kappa" in result.output
+    assert "1 alerts triggered (of 1 rules checked)" in result.output
+
+
+def test_trend_alert_no_triggered_alerts_still_exits_zero(tmp_path):
+    # Report-only, per this command's own docstring: never a hard
+    # failure just because a rule didn't trigger, or did.
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.9, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "0 alerts triggered (of 1 rules checked)" in result.output
+
+
+def test_trend_alert_custom_severity_is_carried_into_the_printed_line(tmp_path):
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4:critical",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[critical] judge_accuracy_kappa" in result.output
+
+
+def test_trend_alert_writes_out_json(tmp_path):
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
+    out_path = tmp_path / "alerts.json"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4",
+            "--out",
+            str(out_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    written = json.loads(out_path.read_text())
+    assert len(written) == 1
+    assert written[0]["series"] == "judge_accuracy_kappa"
+    assert written[0]["severity"] == "warning"
+
+
+def test_trend_alert_unknown_series_raises_click_exception(tmp_path):
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "not_a_real_series:below:0.4",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "unknown series" in result.output
+
+
+def test_trend_alert_invalid_direction_raises_click_exception(tmp_path):
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:sideways:0.4",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "direction must be 'below' or 'above'" in result.output
+
+
+def test_trend_alert_non_numeric_value_raises_click_exception(tmp_path):
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:not-a-number",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "is not a number" in result.output
+
+
+def test_trend_alert_empty_trend_file_raises_click_exception(tmp_path):
+    trend_path = tmp_path / "trend.jsonl"
+    trend_path.write_text("")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "no TrendSnapshots found" in result.output
+
+
+def test_trend_alert_posts_to_webhook_only_when_alerts_triggered(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append((request.full_url, json.loads(request.data), timeout))
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        return _Resp()
+
+    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4",
+            "--notify-webhook",
+            "https://example.invalid/hook",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    url, body, timeout = calls[0]
+    assert url == "https://example.invalid/hook"
+    assert len(body["alerts"]) == 1
+    assert timeout == 10
+
+
+def test_trend_alert_never_calls_webhook_when_no_alerts_triggered(
+    tmp_path, monkeypatch
+):
+    def fake_urlopen(request, timeout=None):
+        raise AssertionError("webhook must not be called when zero alerts triggered")
+
+    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.9, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4",
+            "--notify-webhook",
+            "https://example.invalid/hook",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output

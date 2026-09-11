@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -79,6 +80,7 @@ from evals.results_store import (
 )
 from evals.rollout.scheduler import EarlyStopConfig, run_suite
 from evals.stats import cohens_kappa, confusion_matrix, wilson_interval
+from evals.trend_alert import TrendAlert, TrendAlertRule, check_trend_alerts
 
 # evals/.env, next to evals/pyproject.toml — never the process's cwd,
 # since `evals` commands get run from different directories across this
@@ -2675,6 +2677,151 @@ def trend_show_cmd(trend_path: Path, series: str | None) -> None:
                 f"  {snap.recorded_at.isoformat()} n={snap.n} value={value}"
                 f"{scorer_note} source={snap.source_command}"
             )
+
+
+# The same 5 series `trend_show_cmd`'s own --series Choice already
+# enumerates -- duplicated here (not refactored into a shared constant)
+# since trend_show_cmd's inline list is pre-existing, working code this
+# change has no reason to touch.
+_TREND_ALERT_KNOWN_SERIES = frozenset(
+    {
+        "judge_accuracy_kappa",
+        "quote_grounding_rate",
+        "audit_corpus_defect_rate",
+        "judge_panel_tie_rate",
+        "cost_usd",
+    }
+)
+
+
+@trend_group.command("alert")
+@click.option(
+    "--path",
+    "trend_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to a JSONL file of persisted TrendSnapshots.",
+)
+@click.option(
+    "--threshold",
+    "threshold_specs",
+    required=True,
+    multiple=True,
+    help=(
+        "One rule, repeatable: SERIES:DIRECTION:VALUE[:SEVERITY]. SERIES "
+        "is one of judge_accuracy_kappa/quote_grounding_rate/"
+        "audit_corpus_defect_rate/judge_panel_tie_rate/cost_usd; DIRECTION "
+        "is 'below' or 'above'; VALUE is the numeric bound; SEVERITY "
+        "defaults to 'warning' (e.g. judge_accuracy_kappa:below:0.4:critical)."
+    ),
+)
+@click.option(
+    "--window",
+    default=5,
+    show_default=True,
+    help="Number of most-recent snapshots per (series, scorer_type) averaged over.",
+)
+@click.option(
+    "--out",
+    "out_path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Optional JSON file the triggered alerts are written to.",
+)
+@click.option(
+    "--notify-webhook",
+    "webhook_url",
+    default=None,
+    help=(
+        "POST a JSON body of triggered alerts to this URL. A plain HTTP "
+        "POST, not a Slack/PagerDuty-specific integration -- no such "
+        "requirement is scoped here. Never called when zero alerts "
+        "triggered."
+    ),
+)
+def trend_alert_cmd(
+    trend_path: Path,
+    threshold_specs: tuple[str, ...],
+    window: int,
+    out_path: Path | None,
+    webhook_url: str | None,
+) -> None:
+    """Evaluate operator-supplied threshold rules (static values, per
+    docs/upgrade-research/evals-continuous-monitoring-2026-09-11.md
+    Finding 3 -- every 2026 platform surveyed alerts this way, never via
+    a statistical drift detector) against persisted TrendSnapshot
+    history. Report-only: never exits non-zero based on a triggered
+    alert, no matter the severity -- only a real tool/IO error, a
+    malformed --threshold spec, or zero TrendSnapshots found at all, is
+    a hard failure. See evals.trend_alert's own module docstring for why
+    this is a static-threshold-only design.
+    """
+    snapshots = load_trend_snapshots(trend_path)
+    if not snapshots:
+        raise click.ClickException(f"{trend_path}: no TrendSnapshots found")
+
+    rules: list[TrendAlertRule] = []
+    for spec in threshold_specs:
+        parts = spec.split(":")
+        if len(parts) not in (3, 4):
+            raise click.ClickException(
+                f"--threshold {spec!r}: want SERIES:DIRECTION:VALUE[:SEVERITY]"
+            )
+        series, direction, value_str, *rest = parts
+        if series not in _TREND_ALERT_KNOWN_SERIES:
+            raise click.ClickException(
+                f"--threshold {spec!r}: unknown series {series!r} "
+                f"(want one of {sorted(_TREND_ALERT_KNOWN_SERIES)})"
+            )
+        if direction not in ("below", "above"):
+            raise click.ClickException(
+                f"--threshold {spec!r}: direction must be 'below' or 'above'"
+            )
+        try:
+            value = float(value_str)
+        except ValueError as err:
+            raise click.ClickException(
+                f"--threshold {spec!r}: {value_str!r} is not a number"
+            ) from err
+        severity = rest[0] if rest else "warning"
+        rules.append(
+            TrendAlertRule(
+                series=series,
+                direction=direction,
+                threshold=value,
+                window=window,
+                severity=severity,
+            )
+        )
+
+    alerts: list[TrendAlert] = check_trend_alerts(snapshots, rules)
+
+    for a in alerts:
+        scorer_note = f" scorer_type={a.scorer_type}" if a.scorer_type else ""
+        click.echo(
+            f"[{a.severity}] {a.series}{scorer_note}: "
+            f"window_mean={a.window_mean:.4f} (n={a.window_n}) "
+            f"{a.direction} {a.threshold} threshold"
+        )
+
+    click.echo(f"{len(alerts)} alerts triggered (of {len(rules)} rules checked)")
+
+    if out_path is not None:
+        out_path.write_text(json.dumps([asdict(a) for a in alerts], indent=2) + "\n")
+
+    # Deliberately no try/except around the POST -- a failed webhook
+    # delivery is exactly the "real tool/IO error" class this module's
+    # other commands already let propagate as a natural, unhandled
+    # exception, not a case to silently swallow.
+    if webhook_url is not None and alerts:
+        body = json.dumps({"alerts": [asdict(a) for a in alerts]}).encode("utf-8")
+        request = urllib.request.Request(
+            webhook_url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(request, timeout=10)
 
 
 if __name__ == "__main__":

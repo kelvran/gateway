@@ -2369,3 +2369,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None — this phase is additive instrumentation, no behavioral change to existing request handling.
 
 **Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then start Phase 2 (evals continuous-monitoring alerting).
+
+## [2026-09-12] Phase 2 of v2-upgrade plan: evals continuous-monitoring alerting
+
+**Files touched:** `evals/evals/trend_alert.py` (new), `evals/evals/cli.py`, `evals/.importlinter`, `evals/tests/test_trend_alert.py` (new), `evals/tests/test_trend_integration.py`, `.github/workflows/evals-judge-nightly.yml`.
+
+**Intent/summary:** Second phase of the v2-upgrade-research plan. Added `evals trend alert` — static threshold+window checking over persisted `TrendSnapshot` history, with optional JSON output and a minimal webhook notification hook. Wired it into the nightly judge-accuracy workflow, which turned out to have a real, previously-undiscovered gap: it never passed `--record-trend` (no trend history was accumulating at all) or `--judge-accuracy` (so `judge_accuracy_kappa` specifically would still never have been recorded even after adding `--record-trend`).
+
+**Decisions made:** Static thresholds only, no baseline-derived "automatic" mode — no real production traffic to calibrate one against yet. Cross-run trend-file persistence uses `actions/cache/restore`+`actions/cache/save` with a run-id-suffixed key, not `actions/upload-artifact` — artifacts can't look up "the latest across all past runs," and a fixed cache key would hit GitHub Actions' own cache-key immutability. Alert step is `continue-on-error: true` and never gates the job's exit code — report-only by design.
+
+**Verification performed:** Sanity-checked-by-breaking twice: the webhook's `and alerts` gate, and `check_trend_alerts`'s window slice — both failed for the exact predicted reason, both reverted. Full evals suite clean (456 passed, up from 438, 15 skipped), ruff clean, 3/3 import-linter contracts kept. Nightly workflow YAML validated for syntax only (not actually triggered — that's a real Bedrock-calling scheduled job).
+
+**Bugs found:** The nightly workflow's missing `--record-trend`/`--judge-accuracy` wiring — real, previously undetected, would have made the entire alerting feature silently inert against this specific workflow's own real data.
+
+**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then start Phase 3 (cache negation-gate correctness fix).
