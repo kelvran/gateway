@@ -27,6 +27,28 @@ const (
 	AttrGenAIResponseFinishReasons = "gen_ai.response.finish_reasons"
 	AttrGenAIUsageInputTokens      = "gen_ai.usage.input_tokens"
 	AttrGenAIUsageOutputTokens     = "gen_ai.usage.output_tokens"
+	// AttrGenAIUsageCacheReadInputTokens/CacheCreationInputTokens are
+	// real GenAI semantic-convention attributes, added in the spec's
+	// v1.40.0 (Feb 2026) — confirmed directly against
+	// open-telemetry/semantic-conventions-genai, not assumed. Round-4
+	// research (docs/upgrade-research/gateway-observability-sre-round4-
+	// 2026-09-11.md, Finding 1) initially dismissed these as inapplicable
+	// to Kelvran ("no provider-side prompt-caching integration yet") —
+	// found FALSE by a later backlog audit: Kelvran's own cache-token
+	// cost-accounting work (adapter.Usage.CacheReadTokens/
+	// CacheCreationTokens, populated for all 5 adapters) already computes
+	// exactly this data on every request; it simply never reached these
+	// two span attributes. Deliberately span-attributes only in this
+	// pass — NOT also added to the gen_ai.client.token.usage histogram's
+	// token-type breakdown (telemetry.go's GenAITokenTypeInput/Output):
+	// this codebase could not independently verify whether the spec's
+	// gen_ai.token.type enum has real "cache_read"/"cache_creation"
+	// values (as opposed to only "input"/"output"), and fabricating an
+	// enum value neither this file nor its research grounding actually
+	// confirmed is worse than a narrower, honestly-scoped fix — named
+	// here as a real, disclosed gap rather than guessed at.
+	AttrGenAIUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
+	AttrGenAIUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
 	// AttrGenAIRequestModel is defined above but was previously never set
 	// on the span — RecordChatCompletionMetrics now sets it on the two
 	// new GenAI Metrics histograms (see telemetry.go), per
@@ -70,6 +92,29 @@ const (
 	// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md — see
 	// InstanceID's own doc comment (telemetry.go).
 	AttrKelvranInstanceID = "kelvran.instance.id"
+	// AttrKelvranPromptID/PromptVersion are per
+	// docs/rfcs/2026-09-13-gateway-prompt-management.md — prompts are a
+	// full, admin-API-exposed, versioned resource, but resolving one had
+	// zero corresponding observability signal until now (found by a
+	// post-round-4 backlog audit): an operator debugging a bad response
+	// from a resolved prompt template had no way to see which prompt_id/
+	// version produced it from any span. Only set when req.PromptID !=
+	// "" — every request that doesn't use server-side prompt management
+	// (the common case) emits neither attribute, never a fabricated "".
+	AttrKelvranPromptID      = "kelvran.prompt.id"
+	AttrKelvranPromptVersion = "kelvran.prompt.version"
+	// AttrKelvranResponseFormatRequestedNotEnforced is per
+	// docs/rfcs/2026-09-12-gateway-structured-output-normalization.md's
+	// own disclosed Drawback: a first-attempt (non-fallback) call to a
+	// Bedrock model outside the structured-output whitelist silently
+	// omits schema enforcement, with zero prior error/log/span signal —
+	// found by a post-round-4 backlog audit to have no way for an
+	// operator to detect this silent degradation happened. Set only
+	// when a request actually asked for adapter.ChatRequest.ResponseFormat
+	// AND the serving deployment could not honor it — never emitted
+	// (not even `false`) for a request that never asked for structured
+	// output at all, or that got it correctly enforced.
+	AttrKelvranResponseFormatRequestedNotEnforced = "kelvran.response_format.requested_not_enforced"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider
@@ -138,6 +183,37 @@ type ChatCompletionResult struct {
 	// RecordChatCompletionResult emits it whenever CacheLayer != "".
 	CacheSimilarity float64
 	CacheAgeMs      float64
+	// CacheReadTokens/CacheCreationTokens mirror
+	// adapter.Usage.CacheReadTokens/CacheCreationTokens (already computed
+	// by cost accounting at dataplane.finalize's call site, for all 5
+	// adapters) — see AttrGenAIUsageCacheReadInputTokens's own doc
+	// comment for why this data previously never reached a span
+	// attribute despite already existing on every request. Left at 0
+	// (the honest "no cache tokens" default, real for the large majority
+	// of requests) when not applicable; RecordChatCompletionResult only
+	// emits the corresponding attribute when > 0, matching
+	// InputTokens/OutputTokens's own identical convention.
+	CacheReadTokens     int
+	CacheCreationTokens int
+	// PromptID/PromptVersion are req.PromptID/req.PromptVersion at
+	// dataplane.finalize's call site — "" / 0 (PromptID's own zero
+	// value) whenever server-side prompt management wasn't used for
+	// this request. See AttrKelvranPromptID's own doc comment.
+	PromptID      string
+	PromptVersion int
+	// ResponseFormatRequestedNotEnforced is true only when this request
+	// asked for structured output (adapter.ChatRequest.ResponseFormat !=
+	// nil) AND the deployment that actually served it (dep, at
+	// dataplane.finalize's call site) could not honor that requirement —
+	// re-derived via the same capabilityOKForRequest pure function
+	// attemptFallbackChain already uses to skip an incapable FALLBACK
+	// target, called again here purely for observability on whichever
+	// deployment ultimately served the request (including a first-
+	// attempt deployment attemptFallbackChain's own capability check
+	// never runs against at all, per that RFC's own disclosed v1 scope
+	// limit). See AttrKelvranResponseFormatRequestedNotEnforced's own
+	// doc comment.
+	ResponseFormatRequestedNotEnforced bool
 	// CostUSD is a pre-formatted decimal string (e.g. "0.0000575"), not a
 	// float64 — per docs/rfcs/2026-09-02-decimal-cost-accounting.md, OTel's
 	// attribute value model has no decimal type, and converting back to
@@ -217,8 +293,23 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	if r.OutputTokens > 0 {
 		attrs = append(attrs, attribute.Int(AttrGenAIUsageOutputTokens, r.OutputTokens))
 	}
+	if r.CacheReadTokens > 0 {
+		attrs = append(attrs, attribute.Int(AttrGenAIUsageCacheReadInputTokens, r.CacheReadTokens))
+	}
+	if r.CacheCreationTokens > 0 {
+		attrs = append(attrs, attribute.Int(AttrGenAIUsageCacheCreationInputTokens, r.CacheCreationTokens))
+	}
 	if r.AgentRunID != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranAgentRunID, r.AgentRunID))
+	}
+	if r.PromptID != "" {
+		attrs = append(attrs,
+			attribute.String(AttrKelvranPromptID, r.PromptID),
+			attribute.Int(AttrKelvranPromptVersion, r.PromptVersion),
+		)
+	}
+	if r.ResponseFormatRequestedNotEnforced {
+		attrs = append(attrs, attribute.Bool(AttrKelvranResponseFormatRequestedNotEnforced, true))
 	}
 	// kelvran.cache.hit and kelvran.cost.usd are always meaningful (false/
 	// "0" are real values, not "unknown"), so these are always set.

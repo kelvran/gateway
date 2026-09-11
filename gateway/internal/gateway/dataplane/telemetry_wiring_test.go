@@ -16,7 +16,14 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/budget"
+	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
+	"github.com/kelvran/gateway/gateway/internal/costaccounting"
+	"github.com/kelvran/gateway/gateway/internal/guardrail"
+	"github.com/kelvran/gateway/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
@@ -297,5 +304,60 @@ func TestHandleChatCompletionStreamEmitsSpanOnSuccessAndCacheHit(t *testing.T) {
 	}
 	if v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrGenAIProviderName); !ok || v.AsString() != "openai" {
 		t.Errorf("first span's %s = %v, ok=%v, want %q", telemetry.AttrGenAIProviderName, v, ok, "openai")
+	}
+}
+
+// TestHandleChatCompletionEmitsCacheReadAndCreationTokenSpanAttributes
+// closes a real backlog-audit finding: resp.Usage.CacheReadTokens/
+// CacheCreationTokens are already computed by cost accounting on every
+// request (fakeAnthropicResponseWithCacheTokens mirrors a genuine
+// provider-side cache hit), but never reached a span attribute at all
+// until now.
+func TestHandleChatCompletionEmitsCacheReadAndCreationTokenSpanAttributes(t *testing.T) {
+	before := len(spanRecorder.Ended())
+
+	keys := defaultTestVirtualKeys()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "claude-opus-4", Provider: "anthropic", UpstreamModel: "claude-opus-4", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:   verifier,
+		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:     budget.NewTracker(),
+		Cache:      inprocess.New(0),
+		CacheL2:    inprocess.New(0),
+		CacheL3:    inprocess.NewLexicalCache(0),
+		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters: adapter.Registry{
+			"anthropic": anthropic.New(),
+		},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+			return fakeAnthropicResponseWithCacheTokens(dep.UpstreamModel), nil
+		},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "claude-opus-4", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+
+	spans := spansSince(before)
+	if len(spans) != 1 {
+		t.Fatalf("len(spans) = %d, want 1", len(spans))
+	}
+	if v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrGenAIUsageCacheReadInputTokens); !ok || v.AsInt64() != 1800 {
+		t.Errorf("%s = %v, ok=%v, want 1800", telemetry.AttrGenAIUsageCacheReadInputTokens, v, ok)
+	}
+	if v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrGenAIUsageCacheCreationInputTokens); !ok || v.AsInt64() != 248 {
+		t.Errorf("%s = %v, ok=%v, want 248", telemetry.AttrGenAIUsageCacheCreationInputTokens, v, ok)
 	}
 }

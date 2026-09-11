@@ -1862,6 +1862,17 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if err == nil {
 		responseModel = realServingModel(dep, resp.Model)
 	}
+	// dep.Name != "" is required in addition to the ResponseFormat/
+	// capability check below: on any path where no deployment was ever
+	// resolved at all (a guardrail block, auth failure, no deployment
+	// configured for req.Model), dep is Deployment{}'s zero value, and
+	// capabilityOKForRequest(dep, req) would report false for THAT
+	// reason alone — a real deployment never got a chance to either
+	// honor or silently skip anything, so reporting this attribute here
+	// would be a false, misleading signal, not the real "silent
+	// degradation" case this exists to surface.
+	responseFormatRequestedNotEnforced := dep.Name != "" &&
+		req.ResponseFormat != nil && !capabilityOKForRequest(dep, req)
 	result := telemetry.ChatCompletionResult{
 		VirtualKeyID:    virtualKeyID,
 		Provider:        dep.Provider,
@@ -1876,16 +1887,25 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		CacheLayer:      cacheInfo.Layer,
 		CacheSimilarity: cacheInfo.Similarity,
 		CacheAgeMs:      cacheInfo.AgeMs,
+		// CacheReadTokens/CacheCreationTokens: already computed above for
+		// cost accounting (costaccounting.Usage), now also surfaced to
+		// telemetry — see ChatCompletionResult.CacheReadTokens's own doc
+		// comment for why this previously never reached a span attribute.
+		CacheReadTokens:     resp.Usage.CacheReadTokens,
+		CacheCreationTokens: resp.Usage.CacheCreationTokens,
 		// telemetry stays a dependency-free leaf (no decimal.Decimal
 		// import) per docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md —
 		// the exact decimal string is formatted here, at the boundary,
 		// per docs/rfcs/2026-09-02-decimal-cost-accounting.md.
-		CostUSD:    cost.String(),
-		AgentRunID: telemetry.AgentRunIDFromContext(ctx),
-		Billable:   billable,
-		Duration:   duration,
-		ErrorType:  errorType,
-		Err:        err,
+		CostUSD:                            cost.String(),
+		AgentRunID:                         telemetry.AgentRunIDFromContext(ctx),
+		Billable:                           billable,
+		Duration:                           duration,
+		ErrorType:                          errorType,
+		Err:                                err,
+		PromptID:                           req.PromptID,
+		PromptVersion:                      req.PromptVersion,
+		ResponseFormatRequestedNotEnforced: responseFormatRequestedNotEnforced,
 	}
 	telemetry.RecordChatCompletionResult(span, result)
 	// Same result struct, per

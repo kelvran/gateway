@@ -124,6 +124,11 @@ func TestRecordChatCompletionResultSkipsEmptyOptionalFields(t *testing.T) {
 		AttrGenAIResponseFinishReasons,
 		AttrGenAIUsageInputTokens,
 		AttrGenAIUsageOutputTokens,
+		AttrGenAIUsageCacheReadInputTokens,
+		AttrGenAIUsageCacheCreationInputTokens,
+		AttrKelvranPromptID,
+		AttrKelvranPromptVersion,
+		AttrKelvranResponseFormatRequestedNotEnforced,
 	} {
 		if _, ok := attrValue(t, attrs, attribute.Key(key)); ok {
 			t.Errorf("attribute %q is set on a result with no value for it — must be absent, not an empty placeholder", key)
@@ -137,6 +142,82 @@ func TestRecordChatCompletionResultSkipsEmptyOptionalFields(t *testing.T) {
 	}
 	if _, ok := attrValue(t, attrs, attribute.Key(AttrKelvranCostUSD)); !ok {
 		t.Errorf("%s not set even though it's always meaningful", AttrKelvranCostUSD)
+	}
+}
+
+// TestRecordChatCompletionResultEmitsCacheTokenAttributesOnlyWhenPositive
+// closes a real backlog-audit finding: CacheReadTokens/CacheCreationTokens
+// were already computed by cost accounting on every request, but never
+// reached a span attribute at all until now.
+func TestRecordChatCompletionResultEmitsCacheTokenAttributesOnlyWhenPositive(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
+	tracer := tp.Tracer("result_test")
+
+	_, span := tracer.Start(t.Context(), "test-span")
+	RecordChatCompletionResult(span, ChatCompletionResult{
+		CostUSD:             "0.0001",
+		CacheReadTokens:     1800,
+		CacheCreationTokens: 248,
+	})
+	span.End()
+
+	attrs := sr.Ended()[0].Attributes()
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIUsageCacheReadInputTokens)); !ok || v.AsInt64() != 1800 {
+		t.Errorf("%s = %v, ok=%v, want 1800", AttrGenAIUsageCacheReadInputTokens, v, ok)
+	}
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIUsageCacheCreationInputTokens)); !ok || v.AsInt64() != 248 {
+		t.Errorf("%s = %v, ok=%v, want 248", AttrGenAIUsageCacheCreationInputTokens, v, ok)
+	}
+}
+
+// TestRecordChatCompletionResultEmitsPromptIDAndVersionOnlyWhenSet closes
+// the other half of the same finding: a resolved server-side prompt
+// template had zero corresponding observability signal at request time.
+func TestRecordChatCompletionResultEmitsPromptIDAndVersionOnlyWhenSet(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
+	tracer := tp.Tracer("result_test")
+
+	_, span := tracer.Start(t.Context(), "test-span")
+	RecordChatCompletionResult(span, ChatCompletionResult{
+		CostUSD:       "0.0001",
+		PromptID:      "support-triage",
+		PromptVersion: 3,
+	})
+	span.End()
+
+	attrs := sr.Ended()[0].Attributes()
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranPromptID)); !ok || v.AsString() != "support-triage" {
+		t.Errorf("%s = %v, ok=%v, want %q", AttrKelvranPromptID, v, ok, "support-triage")
+	}
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranPromptVersion)); !ok || v.AsInt64() != 3 {
+		t.Errorf("%s = %v, ok=%v, want 3", AttrKelvranPromptVersion, v, ok)
+	}
+}
+
+// TestRecordChatCompletionResultEmitsResponseFormatRequestedNotEnforcedOnlyWhenTrue
+// closes the structured-output RFC's own disclosed Drawback: a request
+// against an unsupported Bedrock model with ResponseFormat set previously
+// had zero error/log/span signal that enforcement was silently skipped.
+func TestRecordChatCompletionResultEmitsResponseFormatRequestedNotEnforcedOnlyWhenTrue(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
+	tracer := tp.Tracer("result_test")
+
+	_, span := tracer.Start(t.Context(), "test-span")
+	RecordChatCompletionResult(span, ChatCompletionResult{
+		CostUSD:                            "0.0001",
+		ResponseFormatRequestedNotEnforced: true,
+	})
+	span.End()
+
+	attrs := sr.Ended()[0].Attributes()
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranResponseFormatRequestedNotEnforced)); !ok || v.AsBool() != true {
+		t.Errorf("%s = %v, ok=%v, want true", AttrKelvranResponseFormatRequestedNotEnforced, v, ok)
 	}
 }
 

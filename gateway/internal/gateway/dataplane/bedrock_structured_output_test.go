@@ -15,6 +15,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // unsupportedBedrockStructuredOutputModel is NOT on
@@ -133,5 +134,80 @@ func TestHandleChatCompletionSilentlyOmitsStructuredOutputEnforcementForUnsuppor
 	}
 	if h.captured.AdditionalModelRequestFields != nil {
 		t.Errorf("AdditionalModelRequestFields = %v, want nil -- schema enforcement must be silently omitted for a first-attempt call to a Bedrock model outside the structured-output whitelist", h.captured.AdditionalModelRequestFields)
+	}
+}
+
+// TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttribute
+// closes the observability half of the same gap the test above proves at
+// the wire level: before a post-round-4 backlog audit, this exact silent
+// omission had zero span/log/metric signal at all -- an operator had no
+// way to detect it happened. Reuses the identical harness/scenario.
+func TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttribute(t *testing.T) {
+	before := len(spanRecorder.Ended())
+	h := newBedrockStructuredOutputPipeline(t, unsupportedBedrockStructuredOutputModel)
+
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", structuredOutputChatRequest())
+	if err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+
+	spans := spansSince(before)
+	if len(spans) != 1 {
+		t.Fatalf("len(spans) = %d, want 1", len(spans))
+	}
+	v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranResponseFormatRequestedNotEnforced)
+	if !ok || v.AsBool() != true {
+		t.Errorf("%s = %v, ok=%v, want true", telemetry.AttrKelvranResponseFormatRequestedNotEnforced, v, ok)
+	}
+}
+
+// TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedWhenSupported
+// proves the negative: a Bedrock model that DOES support structured
+// output must never carry this attribute, even though ResponseFormat was
+// requested -- it was genuinely enforced, not silently skipped.
+func TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedWhenSupported(t *testing.T) {
+	before := len(spanRecorder.Ended())
+	// Any model on adapter.SupportsStructuredOutput's real Bedrock
+	// whitelist -- matches the live-verified allowlist named in
+	// docs/rfcs/2026-09-12-gateway-structured-output-normalization.md.
+	h := newBedrockStructuredOutputPipeline(t, "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", structuredOutputChatRequest())
+	if err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+
+	spans := spansSince(before)
+	if len(spans) != 1 {
+		t.Fatalf("len(spans) = %d, want 1", len(spans))
+	}
+	if _, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranResponseFormatRequestedNotEnforced); ok {
+		t.Error("attribute is set even though this model genuinely supports and enforces structured output")
+	}
+}
+
+// TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedOnAuthFailure
+// is the guard this attribute's own dataplane.go wiring comment names
+// explicitly: on any path where no deployment was ever resolved at all
+// (dep is Deployment{}'s zero value), the attribute must never fire --
+// a real deployment never got a chance to either honor or silently skip
+// anything, so reporting it would be a false signal.
+func TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedOnAuthFailure(t *testing.T) {
+	before := len(spanRecorder.Ended())
+	h := newBedrockStructuredOutputPipeline(t, unsupportedBedrockStructuredOutputModel)
+
+	// Deliberately wrong bearer token -- fails auth before routing ever
+	// selects a deployment.
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer wrong-credential", structuredOutputChatRequest())
+	if err == nil {
+		t.Fatal("expected an auth error")
+	}
+
+	spans := spansSince(before)
+	if len(spans) != 1 {
+		t.Fatalf("len(spans) = %d, want 1", len(spans))
+	}
+	if _, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranResponseFormatRequestedNotEnforced); ok {
+		t.Error("attribute is set on an auth-failure span where no deployment was ever resolved")
 	}
 }
