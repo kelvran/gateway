@@ -161,10 +161,23 @@ type Choice struct {
 // Usage is the native token-accounting shape. PromptTokensDetails mirrors
 // real OpenAI's own prompt_tokens_details.cached_tokens field (see
 // internal/adapter/openai's identical struct) — whether a given
-// self-hosted runtime actually populates it is runtime-dependent and
-// NOT verified here the way OpenAI's own spec was: this is a best-effort
-// wire-compatible read, harmless (stays 0, unchanged from before this
-// field existed) for any runtime that never sends it.
+// self-hosted runtime actually populates it is runtime-dependent, and
+// unlike OpenAI's own spec, this is NOT independently verified against a
+// live runtime by this codebase; it stays 0 (unchanged from before this
+// field existed) for any runtime that never sends it, harmlessly.
+//
+// A source-level survey (docs/upgrade-research/cache-provider-native-caching-audit-round4-2026-09-11.md,
+// Finding 2) found the real support split is uneven across the runtimes this
+// adapter targets: vLLM, Ollama, and llama.cpp genuinely wire a real
+// prefix/KV-cache-hit count into this exact field — vLLM only behind a
+// default-off server flag (`enable_prompt_tokens_details`); Ollama only via
+// its legacy llama.cpp-backed and experimental MLX runners, not its newer
+// pure-Go engine path; llama.cpp natively, from `n_prompt_tokens_cache`. TGI
+// has zero cache-token support anywhere in its own response types — this
+// field will simply never appear for a TGI-backed deployment. This is a
+// real, source-grounded claim about upstream behavior, not a fabricated one
+// — but it is still an assertion about code this codebase doesn't run
+// itself, not a live-verified guarantee the way OpenAI's spec is.
 type Usage struct {
 	PromptTokens        int                  `json:"prompt_tokens"`
 	CompletionTokens    int                  `json:"completion_tokens"`

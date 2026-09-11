@@ -157,6 +157,21 @@ func TestLoadExampleConfig(t *testing.T) {
 		t.Errorf("gpt-4o price = %+v", priceGPT)
 	}
 
+	// claude-fable-5-1's cache_read_per_token must be exactly 0.025x its own
+	// prompt_per_token -- Anthropic's real, model-specific discounted
+	// cache-read tier (not the standard 0.1x every other model, including
+	// claude-opus-4 above, uses), per
+	// docs/upgrade-research/cache-provider-native-caching-audit-round4-2026-09-11.md's
+	// Finding 5.
+	priceFable, ok := cfg.PriceTable["claude-fable-5-1"]
+	if !ok {
+		t.Fatal("missing price_table entry \"claude-fable-5-1\"")
+	}
+	wantCacheRead := priceFable.PromptPerToken.Mul(decimal.RequireFromString("0.025"))
+	if priceFable.CacheReadPerToken == nil || !priceFable.CacheReadPerToken.Equal(wantCacheRead) {
+		t.Errorf("claude-fable-5-1.CacheReadPerToken = %v, want %v (0.025x PromptPerToken)", priceFable.CacheReadPerToken, wantCacheRead)
+	}
+
 	if cfg.Telemetry.Exporter != "stdout" {
 		t.Errorf("Telemetry.Exporter = %q, want %q", cfg.Telemetry.Exporter, "stdout")
 	}

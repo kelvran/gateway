@@ -260,6 +260,56 @@ func TestFromProviderSafetyMapsToContentFilter(t *testing.T) {
 	}
 }
 
+// TestFromProviderExtractsRealCachedTokens proves adapter.Usage.CacheReadTokens
+// is populated from Gemini's real usageMetadata.cachedContentTokenCount field
+// (implicit, on-by-default caching — no CachedContent API call needed), per
+// docs/upgrade-research/cache-provider-native-caching-audit-round4-2026-09-11.md's
+// Finding 1.
+func TestFromProviderExtractsRealCachedTokens(t *testing.T) {
+	resp := &Response{
+		Candidates: []Candidate{
+			{Content: Content{Role: "model", Parts: []Part{{Text: "hello"}}}, FinishReason: "STOP"},
+		},
+		UsageMetadata: UsageMetadata{
+			PromptTokenCount:        1024,
+			CandidatesTokenCount:    10,
+			TotalTokenCount:         1034,
+			CachedContentTokenCount: 896,
+		},
+	}
+
+	got, err := New().FromProvider(resp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Usage.CacheReadTokens != 896 {
+		t.Errorf("Usage.CacheReadTokens = %d, want 896", got.Usage.CacheReadTokens)
+	}
+	if got.Usage.CacheCreationTokens != 0 {
+		t.Errorf("Usage.CacheCreationTokens = %d, want 0 -- Gemini's implicit caching has no cache-creation charge", got.Usage.CacheCreationTokens)
+	}
+}
+
+// TestFromProviderMissingCachedContentTokenCountDefaultsToZeroCacheRead
+// proves the common case (no cache hit, or an older/non-caching model) stays
+// exactly as it behaved before this field existed -- CacheReadTokens simply 0.
+func TestFromProviderMissingCachedContentTokenCountDefaultsToZeroCacheRead(t *testing.T) {
+	resp := &Response{
+		Candidates: []Candidate{
+			{Content: Content{Role: "model", Parts: []Part{{Text: "hello"}}}, FinishReason: "STOP"},
+		},
+		UsageMetadata: UsageMetadata{PromptTokenCount: 1024, CandidatesTokenCount: 10, TotalTokenCount: 1034},
+	}
+
+	got, err := New().FromProvider(resp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Usage.CacheReadTokens != 0 {
+		t.Errorf("Usage.CacheReadTokens = %d, want 0", got.Usage.CacheReadTokens)
+	}
+}
+
 func TestName(t *testing.T) {
 	if got := New().Name(); got != "gemini" {
 		t.Errorf("Name() = %q, want %q", got, "gemini")

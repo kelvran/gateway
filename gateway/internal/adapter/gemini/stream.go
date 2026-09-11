@@ -126,5 +126,6 @@ func usageFromNative(native Response) *adapter.Usage {
 		PromptTokens:     u.PromptTokenCount,
 		CompletionTokens: u.CandidatesTokenCount,
 		TotalTokens:      u.TotalTokenCount,
+		CacheReadTokens:  u.CachedContentTokenCount,
 	}
 }

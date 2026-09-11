@@ -151,6 +151,13 @@ type UsageMetadata struct {
 	PromptTokenCount     int `json:"promptTokenCount"`
 	CandidatesTokenCount int `json:"candidatesTokenCount"`
 	TotalTokenCount      int `json:"totalTokenCount"`
+
+	// CachedContentTokenCount is the subset of PromptTokenCount served from
+	// Gemini's automatic implicit caching (on-by-default, no explicit
+	// CachedContent API call needed) — confirmed real per
+	// docs/upgrade-research/cache-provider-native-caching-audit-round4-2026-09-11.md's
+	// Finding 1. Absent (zero value) on a response with no cache hit.
+	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
 }
 
 // Response is Gemini's native generateContent response shape. Confirmed
@@ -378,6 +385,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			PromptTokens:     native.UsageMetadata.PromptTokenCount,
 			CompletionTokens: native.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:      native.UsageMetadata.TotalTokenCount,
+			CacheReadTokens:  native.UsageMetadata.CachedContentTokenCount,
 		},
 	}, nil
 }

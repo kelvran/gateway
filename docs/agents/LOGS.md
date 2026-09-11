@@ -1934,4 +1934,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The Go 1.25 EOL toolchain gap itself (6 real reachable stdlib CVEs, all pre-existing, not introduced by this pass) — found only because `govulncheck` was being wired into CI for the first time.
 
-**Next steps / resume point:** Not yet committed/pushed. Next: commit all of Phase 1's changes, push, watch CI green, then start Phase 2 (cross-provider caching fixes).
+**Next steps / resume point:** Committed (`60785ee`), pushed, CI confirmed green (all 3 jobs: api/evals/gateway). Next: Phase 2 (cross-provider caching fixes).
+
+## [2026-09-11] Round-4 Phase 2 — cross-provider caching fixes
+
+**Files touched:** `gateway/internal/adapter/gemini/gemini.go`, `gateway/internal/adapter/gemini/gemini_test.go`, `gateway/internal/adapter/gemini/stream.go`, `gateway/internal/adapter/gemini/stream_test.go`, `gateway/internal/adapter/openaicompat/openaicompat.go`, `gateway/config.example.yaml`, `gateway/internal/gateway/controlplane/config_test.go`, `docs/rfcs/2026-09-10-gateway-cache-token-cost-accounting.md`, `DECISIONS.md`.
+
+**Intent/summary:** Second phase of the approved round-4 plan. Three items: (1) close Gemini's cache-token read-side gap the original cost-accounting RFC left as an open question, (2) tighten openaicompat's runtime-support disclosure from a blanket caveat to the real per-runtime split the round-4 research found, (3) document Anthropic's Fable 5.1/Mythos 5.1 cache-read pricing tier.
+
+**Decisions made:** Item 1 needed no `PromptTokens` change (unlike the original Anthropic/Bedrock fix) since Gemini's `promptTokenCount` is already cache-inclusive, matching OpenAI's shape rather than requiring restructuring. Item 2 is documentation-only — the field/extraction code for openaicompat already shipped in the prior session's OpenAI addendum; only the doc comment's accuracy needed fixing. Item 3 confirmed via Explore that `price_table` YAML parsing is fully generic, so zero Go code changes were needed — decided to write the example's base prompt/completion rates as explicitly-disclosed illustrative placeholders rather than fabricate unverified "real" pricing for two models with no independently-confirmed published rate, since only the 0.025x cache-read *ratio* itself was actually verified by the research.
+
+**Verification performed:** New Gemini tests (`TestFromProviderExtractsRealCachedTokens`, `TestFromProviderMissingCachedContentTokenCountDefaultsToZeroCacheRead`, `TestDecodeFinalUsageChunkExtractsRealCachedTokens`) pass; sanity-checked-by-breaking (zeroed the extraction, confirmed the predicted failure, restored). Extended `TestLoadExampleConfig` to assert `claude-fable-5-1`'s `CacheReadPerToken` is exactly `PromptPerToken * 0.025`; sanity-checked-by-breaking (set a wrong ratio in the example, confirmed the predicted failure, restored). Full gateway suite (build/vet/gofmt/test-race/golangci-lint/go-arch-lint/go-mod-tidy) clean except the two pre-existing rootless-Docker failures — including the pre-existing golden-fixture regression tests, confirming no wire-format drift from the new `omitempty` field.
+
+**Bugs found:** None new this phase — closed a previously-open question (Gemini) and two documentation gaps, no new defects discovered.
+
+**Next steps / resume point:** Not yet committed/pushed. Next: commit all of Phase 2's changes, push, watch CI green, then start Phase 3 (evals corpus governance).

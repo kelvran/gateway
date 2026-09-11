@@ -358,3 +358,25 @@ price_table:
     completion_per_token: 0.000075
     cache_read_per_token: 0.0000003
     cache_creation_per_token: 0.00001
+
+  # claude-fable-5-1 (and claude-mythos-5-1, same rate) get a REAL, model-
+  # specific cache-read multiplier: as of 2026-09-01, Anthropic prices cache
+  # reads on these two models at 0.025x base input cost, not the standard
+  # 0.1x multiplier every other model (including claude-opus-4 above) uses —
+  # per docs/upgrade-research/cache-provider-native-caching-audit-round4-2026-09-11.md's
+  # Finding 5, confirmed against two independent, current, official
+  # Anthropic documentation pages. A flat per-vendor cache-read multiplier
+  # would overcharge this model's cache reads by 4x. prompt_per_token/
+  # completion_per_token/cache_creation_per_token below are illustrative
+  # placeholders, NOT verified current pricing (unlike the 0.025x cache-
+  # read multiplier itself, which IS verified — cache-write pricing is
+  # unchanged/unspecial for these two models, per the same Finding 5) — an
+  # operator configuring this model must fill in the real, current rates
+  # from Anthropic's own pricing page; the point of this example is the
+  # RATIO (cache_read_per_token = prompt_per_token * 0.025), not these
+  # specific values.
+  claude-fable-5-1:
+    prompt_per_token: 0.000002
+    completion_per_token: 0.00001
+    cache_read_per_token: 0.00000005
+    cache_creation_per_token: 0.0000025

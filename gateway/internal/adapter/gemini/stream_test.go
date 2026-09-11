@@ -174,3 +174,26 @@ func TestDecodeFinalUsageChunk(t *testing.T) {
 		t.Errorf("finalUsage = %+v, want %+v", *result.finalUsage, want)
 	}
 }
+
+// TestDecodeFinalUsageChunkExtractsRealCachedTokens proves the streaming
+// path populates CacheReadTokens too, not just the buffered FromProvider
+// path -- both share the same native UsageMetadata type and usageFromNative
+// helper, but this is the load-bearing proof they actually reach it, not
+// two independently-drifting copies.
+func TestDecodeFinalUsageChunkExtractsRealCachedTokens(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	_, _, finalUsage, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1024,"candidatesTokenCount":10,"totalTokenCount":1034,"cachedContentTokenCount":896}}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if finalUsage == nil {
+		t.Fatal("finalUsage = nil, want non-nil")
+	}
+	want := adapter.Usage{PromptTokens: 1024, CompletionTokens: 10, TotalTokens: 1034, CacheReadTokens: 896}
+	if *finalUsage != want {
+		t.Errorf("finalUsage = %+v, want %+v", *finalUsage, want)
+	}
+}
