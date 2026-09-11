@@ -69,7 +69,15 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 /internal/streaming        — transport-level SSE plumbing, provider-agnostic: canonical ChatCompletionChunk/
                              ChunkChoice/MessageDelta/ToolCallDelta types, the StreamDecoder/StreamingAdapter
                              interfaces every streaming-capable adapter implements against, and the actual
-                             Reader (SSE frame parser)/Writer (SSE frame writer, Flush()-per-chunk) — ACTIVE
+                             Reader (SSE frame parser)/Writer (SSE frame writer, Flush()-per-chunk) — ACTIVE.
+                             **Explicitly out of scope for v2, per docs/upgrade-research/gateway-realtime-
+                             streaming-2026-09-11.md's Finding 5**: bidirectional/WebSocket realtime
+                             (OpenAI Realtime-API-style voice/multimodal streaming). Every real production
+                             precedent that research found (LiteLLM, Portkey) is purpose-built for OpenAI's
+                             voice use case specifically, with no generalized bidirectional text-completion
+                             analog anywhere, and no confirmed Kelvran customer demand for one. This SSE-
+                             only design — with its own real resilience (runaway-completion guard, mid-
+                             stream budget/TPM reservation top-up) — is unaffected and remains the v2 design.
 /internal/router          — **ACTIVE**, per docs/rfcs/2026-09-04-weighted-routing.md: weighted round-robin
                              deployment selection (the LVS/IPVS `wrr.c` smooth-WRR algorithm — O(1) state
                              per deployment, no goroutine, no ticker), closing the "weighted" half of
