@@ -229,36 +229,60 @@ func (r *Router) IsHealthy(name string) bool {
 	return h.healthy
 }
 
-// admitRampedTurn reports whether name's currently-offered turn should be
-// admitted, applying the post-recovery weight-ramp gate: a deployment not
-// currently ramping always admits (the exact pre-ramp behavior, zero
-// overhead, no state touched) — this is what keeps every model group with
-// no active recovery ramp completely unaffected by this feature. A
-// ramping deployment instead runs a Bresenham-style (pixel-rasterization
-// / rate-limiter) thinning gate: its persistent rampCredit accumulates
-// the deployment's CURRENT effective-weight percentage on every offered
-// turn, and admits (returning true, then subtracting rampCreditFull)
-// only once that accumulator reaches rampCreditFull — carrying any
-// remainder forward rather than discarding it, so no fractional share is
-// ever lost across calls. This is deliberately layered OUTSIDE
-// modelState/wrr.go's own cursor math (selectHealthy just treats a
-// rejected offer the same way it already treats an unhealthy one: skip
-// and keep searching) rather than reconstructing modelState's gcd/maxW/
-// sumW cursor with adjusted weights — the smooth-WRR schedule itself
-// (wrr.go) is never touched, so its own byte-identical-to-before
-// guarantee for every non-ramping deployment holds with zero special
-// casing.
+// admitTurn atomically decides whether name's currently-offered turn
+// should be admitted — the current health verdict AND, if name is within
+// its post-recovery weight ramp, the ramp-admission gate, both read and
+// mutated under ONE critical section. A round-4 backlog-audit finding:
+// selectHealthy used to call r.IsHealthy(name) and then, only if that
+// returned true, a SEPARATE admitRampedTurn(name) call — two independent
+// lock acquisitions with no lock held across both. ReportProbeResult runs
+// concurrently from the background probe loop and, on a failure that
+// trips UnhealthyThreshold, sets h.healthy=false AND h.ramping=false
+// together in one locked write — so if that transition landed in the
+// window between the two separate calls, the second call's own
+// "not ramping -> always admit" branch would admit a deployment that is
+// now actually unhealthy, without ever re-checking health. Merging both
+// checks into this single function/lock-hold closes that window: by the
+// time this function returns, no concurrent ReportProbeResult call could
+// have changed the verdict out from under it. IsHealthy itself is left
+// completely untouched — it's still called independently and correctly
+// by dataplane.go/fallback.go and their own tests, none of which involve
+// this specific two-decision sequence selectHealthy alone had.
+//
+// A deployment not currently ramping always admits once healthy (the
+// exact pre-ramp behavior, zero extra overhead) — this is what keeps
+// every model group with no active recovery ramp completely unaffected
+// by the ramp feature. A ramping deployment instead runs a
+// Bresenham-style (pixel-rasterization / rate-limiter) thinning gate:
+// its persistent rampCredit accumulates the deployment's CURRENT
+// effective-weight percentage on every offered turn, and admits
+// (returning true, then subtracting rampCreditFull) only once that
+// accumulator reaches rampCreditFull — carrying any remainder forward
+// rather than discarding it, so no fractional share is ever lost across
+// calls. This is deliberately layered OUTSIDE modelState/wrr.go's own
+// cursor math (selectHealthy just treats a rejected offer the same way
+// it already treats an unhealthy one: skip and keep searching) rather
+// than reconstructing modelState's gcd/maxW/sumW cursor with adjusted
+// weights — the smooth-WRR schedule itself (wrr.go) is never touched, so
+// its own byte-identical-to-before guarantee for every non-ramping
+// deployment holds with zero special casing.
 //
 // The percentage itself is r.healthCfg.RecoveryRampInitialPercent at
 // rampStep 0, increasing linearly to (but never quite reaching, from
 // this gate's perspective — see ReportProbeResult) 100 as rampStep
 // advances toward RecoveryRampSteps.
-func (r *Router) admitRampedTurn(name string) bool {
+func (r *Router) admitTurn(name string) bool {
 	r.healthMu.Lock()
 	defer r.healthMu.Unlock()
 
 	h, ok := r.health[name]
-	if !ok || !h.ramping {
+	if !ok {
+		return true
+	}
+	if !h.healthy {
+		return false
+	}
+	if !h.ramping {
 		return true
 	}
 
@@ -283,8 +307,8 @@ func (r *Router) admitRampedTurn(name string) bool {
 // deployment in the group at least once even under the most skewed
 // weight configuration (see wrr.go's sumW doc comment) — returning the
 // first offered candidate Router currently considers both healthy and
-// (if it's within its post-recovery weight ramp, see admitRampedTurn)
-// admitted for this particular turn.
+// (if it's within its post-recovery weight ramp, see admitTurn) admitted
+// for this particular turn.
 //
 // If every deployment in the group is currently unhealthy, or every
 // offer within this bounded search happens to be ramp-rejected despite
@@ -306,10 +330,7 @@ func (r *Router) selectHealthy(ms *modelState) (string, bool) {
 		if !ok {
 			return "", false
 		}
-		if !r.IsHealthy(name) {
-			continue
-		}
-		if r.admitRampedTurn(name) {
+		if r.admitTurn(name) {
 			return name, true
 		}
 	}

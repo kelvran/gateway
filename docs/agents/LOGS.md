@@ -2270,4 +2270,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** A real hard-block bypass for SecretKeyDetector specifically (Block tier, "masking isn't enough" — not merely a missed Warn) — live-reproduced through the full `guardrail.NewEngine` wiring before trusting the audit's claim.
 
-**Next steps / resume point:** Not yet committed. Next: the router/concurrency TOCTOU fix, then the L3 cache gates, then the evals rollout/sandbox findings.
+**Next steps / resume point:** Committed (`6bee922`), pushed, CI confirmed green. Next: the router/concurrency TOCTOU fix, then the L3 cache gates, then the evals rollout/sandbox findings.
+
+## [2026-09-11] gateway: router.selectHealthy's health-check-then-ramp-admission is now atomic (round-4 finding #3 — closes gateway-router-health-probing domain)
+
+**Files touched:** `gateway/internal/router/health.go`, `gateway/internal/router/admit_turn_toctou_test.go` (new), `DECISIONS.md`.
+
+**Intent/summary:** Last of the gateway-router-health-probing domain's 3 findings. `selectHealthy` called `IsHealthy` then, separately, `admitRampedTurn` — two independent lock acquisitions. A concurrent `ReportProbeResult` tripping unhealthy in that window (which clears `ramping` to false in the same write) let the second call's own "not ramping -> admit" shortcut wrongly admit a now-unhealthy deployment, never re-checking health.
+
+**Decisions made:** Merged both checks into one `admitTurn` function/lock hold, checking `h.healthy` first. Left `IsHealthy` itself completely untouched — it's independently used elsewhere and none of those call sites have this specific race. Same fix shape (merge check-then-act into one lock) this codebase already proved twice for the 2026-09-08 budget/TPM TOCTOU races — a direct, low-risk reuse, not a new pattern.
+
+**Verification performed:** A deterministic direct test constructing the exact `healthy=false, ramping=false` state via real `ReportProbeResult` calls, then asserting the merged `admitTurn` rejects it. A concurrent stress test under `-race` for additional confidence. Sanity-checked-by-breaking (reverted to the old split-check's shortcut, confirmed the direct test failed for the exact predicted reason, restored). Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** A real, previously-untested logical race — not caught by `go test -race` since each individual lock/unlock pair was already correctly synchronized; only the multi-step operation across them wasn't atomic.
+
+**Next steps / resume point:** This closes all 3 gateway-router-health-probing findings. Not yet committed. Next: the L3 cache response_format + prompt-fingerprint gates, then the 3 evals rollout/sandbox findings.
