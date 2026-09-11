@@ -115,6 +115,22 @@ const (
 	// (not even `false`) for a request that never asked for structured
 	// output at all, or that got it correctly enforced.
 	AttrKelvranResponseFormatRequestedNotEnforced = "kelvran.response_format.requested_not_enforced"
+	// AttrKelvranFallbackHopErrorClass/FallbackHopDurationMs are per the
+	// round-2 backlog audit's gateway-observability finding: fallback.go's
+	// attemptFallbackChain already computes both classifyFallbackError's
+	// low-cardinality bucket and the real elapsed time of each individual
+	// hop attempt, but until now a chain walking through 2+ failing
+	// intermediate targets before landing on a working one (or exhausting
+	// the chain) left every one of those intermediate attempts with zero
+	// record anywhere — no log, no span attribute, nothing — even though
+	// each one is a real upstream call that cost latency and, for a
+	// billable attempt, money. See RecordFallbackHop's own doc comment
+	// (telemetry.go) for why this is a span EVENT keyed on the target
+	// deployment name (AttrKelvranDeploymentName, reused — same meaning,
+	// different scope: this event's deployment, not the request's final
+	// one), never a second span or a fabricated success record.
+	AttrKelvranFallbackHopErrorClass = "kelvran.fallback.hop.error_class"
+	AttrKelvranFallbackHopDurationMs = "kelvran.fallback.hop.duration_ms"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider

@@ -16,6 +16,7 @@ import (
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // FallbackClassContentPolicy, FallbackClassContextWindowExceeded, and
@@ -404,10 +405,15 @@ func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, t
 
 		attempted = true
 		dep = nextDep
+		hopStart := time.Now()
 		resp, err = call(dep)
 		if err == nil {
 			return dep, resp, nil, true
 		}
+		// Only a failed hop gets recorded here — see
+		// telemetry.RecordFallbackHop's own doc comment for why a
+		// successful terminal hop needs no separate event.
+		telemetry.RecordFallbackHop(ctx, dep.Name, classifyFallbackError(err), time.Since(hopStart))
 		consecutiveFailures++
 	}
 	return dep, resp, err, attempted

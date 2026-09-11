@@ -27,7 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // faultInjector is a stateful, controllable UpstreamCaller test double.
@@ -267,5 +270,71 @@ func TestFaultInjectionInsertsRealMeasurableBackoffBeforeSecondChainHop(t *testi
 	minExpected := fallbackChainInterHopBackoffBase / 2
 	if gap < minExpected {
 		t.Errorf("gap between hop2's and hop3's real calls = %v, want >= %v (real backoff, not a no-op)", gap, minExpected)
+	}
+}
+
+// TestFaultInjectionEmitsFallbackHopSpanEventForEachFailedChainHop is
+// Experiment 4 -- closes the round-2 backlog audit's gateway-observability
+// finding that a fallback chain walking through 2+ failing intermediate
+// targets before landing on a working one left every intermediate attempt
+// with zero record anywhere. Reuses Experiment 3's exact scenario
+// (primary fails its own pre-chain attempt; the chain then fails hop2,
+// succeeds on hop3) since it already proves the multi-hop-with-one-real-
+// failure-inside-the-loop shape live.
+//
+// Steady state: attemptFallbackChain's loop has zero span-event
+// visibility into which intermediate targets it tried and why they
+// failed.
+// Hypothesis: RecordFallbackHop (telemetry.go), wired into that loop's
+// own err != nil branch, produces a real "fallback_hop" span event for
+// hop2's failed attempt -- and, just as importantly, does NOT produce
+// one for primary (whose failure happens BEFORE the chain walk even
+// starts, a separate code path) or hop3 (whose attempt succeeded -- see
+// RecordFallbackHop's own doc comment on why a successful terminal hop
+// is deliberately not double-recorded here).
+// Inject: identical to Experiment 3 -- primary and hop2 fail every call,
+// hop3 succeeds immediately.
+// Compare: exactly one "fallback_hop" event exists on the request's own
+// span, naming hop2 and a real, low-cardinality error class -- never
+// primary, never hop3.
+func TestFaultInjectionEmitsFallbackHopSpanEventForEachFailedChainHop(t *testing.T) {
+	before := len(spanRecorder.Ended())
+
+	injector := newFaultInjector(&UpstreamHTTPError{StatusCode: 503, Body: "transient"})
+	injector.failDeploymentForCalls("primary", 1_000_000)
+	injector.failDeploymentForCalls("hop2", 1_000_000)
+	// hop3 left unconfigured -- succeeds immediately.
+
+	p := newTestPipeline(t, injector.caller(), faultInjectionDeployments())
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", newFaultInjectionRequest())
+	if err != nil {
+		t.Fatalf("HandleChatCompletion: %v, want success via hop3", err)
+	}
+
+	spans := spansSince(before)
+	if len(spans) != 1 {
+		t.Fatalf("len(spans) = %d, want 1", len(spans))
+	}
+	events := spans[0].Events()
+	var fallbackHopEvents []attribute.KeyValue
+	fallbackHopCount := 0
+	for _, ev := range events {
+		if ev.Name != "fallback_hop" {
+			continue
+		}
+		fallbackHopCount++
+		fallbackHopEvents = ev.Attributes
+	}
+	if fallbackHopCount != 1 {
+		t.Fatalf("fallback_hop event count = %d, want exactly 1 (hop2's failure only -- never primary's pre-chain attempt, never hop3's successful one)", fallbackHopCount)
+	}
+	if v, ok := spanAttr(t, fallbackHopEvents, telemetry.AttrKelvranDeploymentName); !ok || v.AsString() != "hop2" {
+		t.Errorf("fallback_hop event's %s = %v, ok=%v, want %q", telemetry.AttrKelvranDeploymentName, v, ok, "hop2")
+	}
+	if v, ok := spanAttr(t, fallbackHopEvents, telemetry.AttrKelvranFallbackHopErrorClass); !ok || v.AsString() != FallbackClassGeneric {
+		t.Errorf("fallback_hop event's %s = %v, ok=%v, want %q", telemetry.AttrKelvranFallbackHopErrorClass, v, ok, FallbackClassGeneric)
+	}
+	if _, ok := spanAttr(t, fallbackHopEvents, telemetry.AttrKelvranFallbackHopDurationMs); !ok {
+		t.Error("fallback_hop event has no duration attribute at all")
 	}
 }

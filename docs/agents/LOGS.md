@@ -2103,3 +2103,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None — a real coverage gap (3 already-computed/already-resolved signals with zero prior telemetry), not a defect in the underlying mechanisms themselves.
 
 **Next steps / resume point:** Commit, push, watch CI green. 2 round-2 gateway-observability findings remain, both entirely unstarted: fallback-chain intermediate-hop failures are invisible in every telemetry surface (`fallback.go`'s `attemptFallbackChain`, add `span.AddEvent("fallback_hop", ...)` inside the existing loop); trace_id/span_id correlation is missing from ~31 structured log calls (promote to top-level `logRequest` fields in `dataplane.go`, thread `ctx` into mid-pipeline `Warn` calls that already have a live span in scope).
+
+## [2026-09-11] gateway: fallback-chain intermediate-hop failures now emit a span event (3 of 4 gateway-observability findings)
+
+**Files touched:** `gateway/internal/telemetry/telemetry.go`, `gateway/internal/telemetry/result.go`, `gateway/internal/gateway/dataplane/fallback.go`, `gateway/internal/gateway/dataplane/faultinjection_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** 3rd of the 4 remaining round-2 gateway-observability findings. `attemptFallbackChain`'s loop already computes a low-cardinality error class and real per-hop elapsed time for every intermediate target it tries, but none of it was ever recorded anywhere — a multi-hop chain walk was a total blind spot beyond its final outcome.
+
+**Decisions made:** New `telemetry.RecordFallbackHop(ctx, ...)` uses `trace.SpanFromContext(ctx)` rather than an explicit `trace.Span` parameter, breaking from `RecordChatCompletionResult`'s own convention — justified since `attemptFallbackChain` is called from 2 real call sites several stack frames below the request's own span creation, and `ctx` already carries that exact span through every intermediate frame; threading an explicit span through ~13 call sites (2 real, 11 pre-existing tests) for one event would be pure churn with no behavioral benefit. Scoped the event to failed hops only — a successful terminal hop is already fully represented by the request's own final span attributes, so recording it a second time here would be redundant.
+
+**Verification performed:** New `TestFaultInjectionEmitsFallbackHopSpanEventForEachFailedChainHop`, reusing the existing fault-injection harness's Experiment 3 scenario exactly (primary fails pre-chain, hop2 fails inside the chain walk, hop3 succeeds) — asserts exactly one `fallback_hop` event, naming hop2, with a real error-class and duration attribute. Sanity-checked-by-breaking twice: removing the `RecordFallbackHop` call was caught by the Go compiler itself (unused `hopStart`/import) before the test could even run; moving the call to fire unconditionally (on success too) failed the test for the exact predicted reason (2 events instead of 1). Both reverted. Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** None — a real coverage gap (already-computed per-hop data with zero telemetry surface), not a defect.
+
+**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then the final round-2 gateway-observability finding — trace_id/span_id correlation missing from ~31 structured log calls.

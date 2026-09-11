@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -34,6 +35,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Tracer is the package-level Tracer gateway's dataplane starts spans
@@ -128,6 +130,43 @@ func mustFloat64Counter(m metric.Meter, name string, opts ...metric.Float64Count
 // line.
 func RecordRateLimitFailOpen(ctx context.Context, keyID string) {
 	rateLimitFailOpenCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
+}
+
+// RecordFallbackHop emits a "fallback_hop" span event for a single FAILED
+// fallback-chain hop attempt, per AttrKelvranFallbackHopErrorClass's own
+// doc comment (result.go). Uses trace.SpanFromContext(ctx) rather than an
+// explicit trace.Span parameter (unlike RecordChatCompletionResult):
+// dataplane.attemptFallbackChain is called from two real call sites
+// (runMissPath, streamDeploymentWithFallback) several stack frames below
+// HandleChatCompletion/HandleChatCompletionStream's own span, and ctx
+// already carries that exact span end to end (telemetry.Tracer.Start
+// reassigns ctx, not just a bare span) — threading an explicit span
+// parameter through attemptFallbackChain's own ~13 call sites (2 real, 11
+// pre-existing unit tests) for a single event emission would be needless
+// churn for no behavioral gain. A no-op span (every pre-existing unit
+// test calling attemptFallbackChain directly against
+// context.Background()) silently discards AddEvent, per the OTel API's
+// own documented contract — safe, not a bug, and requires zero test
+// updates.
+//
+// An event on the request's already-open chat span, not a new child
+// span: each hop is a lightweight, in-process routing decision plus one
+// upstream call, exactly OTel's own "events vs. spans" guidance for a
+// sub-step that doesn't need its own timing/status/parent-child
+// relationship.
+//
+// Only ever called for a hop that failed — see attemptFallbackChain's own
+// call site. A hop that SUCCEEDS is the chain's terminal result, already
+// fully captured by the request's own final span attributes at
+// finalize() (kelvran.deployment.name, gen_ai.response.*, etc. via
+// RecordChatCompletionResult) — recording it a second time here would be
+// redundant, not additive.
+func RecordFallbackHop(ctx context.Context, deploymentName, errorClass string, duration time.Duration) {
+	trace.SpanFromContext(ctx).AddEvent("fallback_hop", trace.WithAttributes(
+		attribute.String(AttrKelvranDeploymentName, deploymentName),
+		attribute.String(AttrKelvranFallbackHopErrorClass, errorClass),
+		attribute.Float64(AttrKelvranFallbackHopDurationMs, float64(duration.Milliseconds())),
+	))
 }
 
 // tokenUsageHistogram and operationDurationHistogram are the OTel GenAI
