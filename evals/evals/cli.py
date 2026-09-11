@@ -87,6 +87,18 @@ from evals.stats import cohens_kappa, confusion_matrix, wilson_interval
 # default `override=False` is relied on deliberately, not just accepted.
 _ENV_FILE_PATH = Path(__file__).resolve().parent.parent / ".env"
 
+# Every --llm-judge/--llm-judge-panel Bedrock call site uses this default,
+# per make_bedrock_call_model's own doc comment: omitting max_tokens
+# leaves Bedrock's service-side default in effect, and a long enough
+# prompt (a longer regression-corpus case, --judge-axes' multiple calls,
+# --judge-debias' longer rubric-based prompts) can make Claude Sonnet 5
+# spend that entire default budget on internal reasoning before ever
+# emitting visible text -- the exact failure mode audit_corpus_cmd was
+# fixed for on 2026-09-11 (see its own doc comment), found not to have
+# been propagated to the judge/panel call sites by a later backlog audit.
+# 8192 mirrors that same already-live-verified value.
+_JUDGE_MAX_TOKENS = 8192
+
 
 def _load_env_file(path: Path = _ENV_FILE_PATH) -> None:
     """Populate `os.environ` from `path` if it exists, without overriding
@@ -1120,7 +1132,11 @@ def run_cmd(
 
     cases = _load_cases(suite_path)
     call_model = (
-        make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID) if llm_judge else None
+        make_bedrock_call_model(
+            BEDROCK_HAIKU_4_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
+        )
+        if llm_judge
+        else None
     )
     panel: PanelSpec | None = None
     cached_scores = None
@@ -1129,11 +1145,15 @@ def run_cmd(
         panel = [
             (
                 BEDROCK_SONNET_5_MODEL_ID,
-                make_bedrock_call_model(BEDROCK_SONNET_5_MODEL_ID),
+                make_bedrock_call_model(
+                    BEDROCK_SONNET_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
+                ),
             ),
             (
                 BEDROCK_HAIKU_4_5_MODEL_ID,
-                make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID),
+                make_bedrock_call_model(
+                    BEDROCK_HAIKU_4_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
+                ),
             ),
         ]
         cached_votes = (
@@ -1725,7 +1745,11 @@ def rollout_cmd(
 
     cases = _load_cases(suite_path)
     call_model = (
-        make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID) if llm_judge else None
+        make_bedrock_call_model(
+            BEDROCK_HAIKU_4_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
+        )
+        if llm_judge
+        else None
     )
     panel: PanelSpec | None = None
     cached_scores = None
@@ -1734,11 +1758,15 @@ def rollout_cmd(
         panel = [
             (
                 BEDROCK_SONNET_5_MODEL_ID,
-                make_bedrock_call_model(BEDROCK_SONNET_5_MODEL_ID),
+                make_bedrock_call_model(
+                    BEDROCK_SONNET_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
+                ),
             ),
             (
                 BEDROCK_HAIKU_4_5_MODEL_ID,
-                make_bedrock_call_model(BEDROCK_HAIKU_4_5_MODEL_ID),
+                make_bedrock_call_model(
+                    BEDROCK_HAIKU_4_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
+                ),
             ),
         ]
         cached_votes = (
@@ -2367,7 +2395,7 @@ def audit_corpus_cmd(
     # token budget on internal reasoning before ever emitting visible
     # text -- see make_bedrock_call_model's own doc comment for the full
     # story.
-    call_model = make_bedrock_call_model(judge_model, max_tokens=8192)
+    call_model = make_bedrock_call_model(judge_model, max_tokens=_JUDGE_MAX_TOKENS)
     counts: dict[str, int] = {"no_defect": 0, "minor": 0, "major": 0, "error": 0}
     findings: list[AuditFinding] = []
     for case in cases:

@@ -553,7 +553,9 @@ def test_run_with_llm_judge_scores_via_real_wiring_using_a_fake_provider(
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -593,6 +595,62 @@ def test_run_with_llm_judge_scores_via_real_wiring_using_a_fake_provider(
     assert persisted[0].cost_usd is None
 
 
+def test_run_with_llm_judge_passes_a_generous_max_tokens_to_every_bedrock_call_site(
+    tmp_path, monkeypatch
+):
+    """Real, live-discovered gap (2026-09-11, round-2 backlog audit):
+    every --llm-judge/--llm-judge-panel Bedrock call site omitted
+    max_tokens entirely, exposing them to the exact silent-empty-response
+    failure already found and fixed for `evals audit-corpus` (Claude
+    Sonnet 5 spending its entire default token budget on internal
+    reasoning before ever emitting visible text). This proves the fix:
+    every real `make_bedrock_call_model` call cli.py makes for
+    --llm-judge and --llm-judge-panel passes a real, non-None max_tokens.
+    """
+    captured_max_tokens: list[int | None] = []
+
+    async def fake_call_model(prompt: str) -> str:
+        return "REASONING: ok.\nVERDICT: PASS\n"
+
+    def capturing_dispatcher(model_id, client=None, region_name=None, **kwargs):
+        captured_max_tokens.append(kwargs.get("max_tokens"))
+        return fake_call_model
+
+    monkeypatch.setattr(cli_module, "make_bedrock_call_model", capturing_dispatcher)
+
+    runner = CliRunner()
+
+    single = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(tmp_path / "single.jsonl"),
+            "--llm-judge",
+        ],
+    )
+    assert single.exit_code == 0, single.output
+
+    panel = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(tmp_path / "panel.jsonl"),
+            "--llm-judge-panel",
+        ],
+    )
+    assert panel.exit_code == 0, panel.output
+
+    assert len(captured_max_tokens) == 3  # 1 single + 2 panel (sonnet, haiku)
+    assert all(mt == cli_module._JUDGE_MAX_TOKENS for mt in captured_max_tokens)
+    assert all(mt is not None for mt in captured_max_tokens)
+
+
 def test_run_with_llm_judge_persists_real_cost_from_a_cost_exposing_fake(
     tmp_path, monkeypatch
 ):
@@ -613,7 +671,9 @@ def test_run_with_llm_judge_persists_real_cost_from_a_cost_exposing_fake(
 
     fake_call_model = _FakeCostExposingCallModel()
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -674,7 +734,9 @@ def _monkeypatch_panel_providers(monkeypatch, sonnet_response, haiku_response):
     async def fake_haiku(prompt: str) -> str:
         return haiku_response
 
-    def fake_make_bedrock_call_model(model_id, client=None, region_name=None):
+    def fake_make_bedrock_call_model(
+        model_id, client=None, region_name=None, **_kwargs
+    ):
         if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID:
             return fake_sonnet
         if model_id == cli_module.BEDROCK_HAIKU_4_5_MODEL_ID:
@@ -799,7 +861,9 @@ def test_run_with_llm_judge_panel_sums_cost_across_both_providers_from_fakes(
         "REASONING: matches.\nVERDICT: PASS\n", Decimal("0.0004")
     )
 
-    def fake_make_bedrock_call_model(model_id, client=None, region_name=None):
+    def fake_make_bedrock_call_model(
+        model_id, client=None, region_name=None, **_kwargs
+    ):
         return (
             sonnet_fake
             if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
@@ -876,7 +940,9 @@ def test_run_with_llm_judge_panel_use_score_cache_second_invocation_makes_no_cal
         haiku_calls["n"] += 1
         return "REASONING: matches.\nVERDICT: PASS\n"
 
-    def fake_make_bedrock_call_model(model_id, client=None, region_name=None):
+    def fake_make_bedrock_call_model(
+        model_id, client=None, region_name=None, **_kwargs
+    ):
         return (
             fake_sonnet
             if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
@@ -965,7 +1031,7 @@ def test_run_with_llm_judge_panel_use_score_cache_reuses_per_case_not_per_suite(
     monkeypatch.setattr(
         cli_module,
         "make_bedrock_call_model",
-        lambda model_id, client=None, region_name=None: fake_judge,
+        lambda model_id, client=None, region_name=None, **_kwargs: fake_judge,
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1050,7 +1116,7 @@ def test_run_with_llm_judge_panel_reuses_a_prior_standalone_haiku_score(
     monkeypatch.setattr(
         cli_module,
         "make_bedrock_call_model",
-        lambda model_id, client=None, region_name=None: (
+        lambda model_id, client=None, region_name=None, **_kwargs: (
             counting_sonnet
             if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
             else counting_haiku
@@ -1136,10 +1202,10 @@ def test_run_with_llm_judge_reuses_a_prior_panel_haiku_vote(tmp_path, monkeypatc
     # dispatcher covering Sonnet; wrap it so Haiku alone gets counted.
     fake_dispatcher = cli_module.make_bedrock_call_model
 
-    def counting_dispatcher(model_id, client=None, region_name=None):
+    def counting_dispatcher(model_id, client=None, region_name=None, **kwargs):
         if model_id == cli_module.BEDROCK_HAIKU_4_5_MODEL_ID:
             return counting_haiku
-        return fake_dispatcher(model_id, client, region_name)
+        return fake_dispatcher(model_id, client, region_name, **kwargs)
 
     monkeypatch.setattr(cli_module, "make_bedrock_call_model", counting_dispatcher)
 
@@ -1240,7 +1306,9 @@ def test_run_with_llm_judge_panel_never_re_chains_a_cached_vote_off_another_cach
         haiku_calls["n"] += 1
         return "REASONING: matches.\nVERDICT: PASS\n"
 
-    def fake_make_bedrock_call_model(model_id, client=None, region_name=None):
+    def fake_make_bedrock_call_model(
+        model_id, client=None, region_name=None, **_kwargs
+    ):
         return (
             fake_sonnet
             if model_id == cli_module.BEDROCK_SONNET_5_MODEL_ID
@@ -1309,7 +1377,9 @@ def test_run_llm_judge_requires_a_reference_and_fails_loudly(tmp_path, monkeypat
         return "REASONING: n/a.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     runner = CliRunner()
@@ -1345,7 +1415,9 @@ def test_run_llm_judge_call_error_marks_judge_error_and_does_not_abort_suite(
         return "REASONING: ok.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: flaky_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: flaky_call_model,
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1387,7 +1459,9 @@ def test_run_use_score_cache_second_invocation_makes_no_new_judge_calls(
         return "REASONING: does not match.\nVERDICT: FAIL\n"
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1431,7 +1505,9 @@ def test_run_without_use_score_cache_rejudges_every_time(tmp_path, monkeypatch):
         return "REASONING: ok.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1470,7 +1546,9 @@ def test_run_with_judge_axes_scores_each_axis_independently_and_ands_the_verdict
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1527,7 +1605,9 @@ def test_run_with_judge_axes_any_axis_error_marks_the_whole_case_judge_error(
         return "REASONING: fine.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: flaky_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: flaky_call_model,
     )
 
     scores_path = tmp_path / "scores.jsonl"
@@ -1582,7 +1662,9 @@ def test_run_with_judge_axes_use_score_cache_discriminates_by_axis(
         return "REASONING: ok.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     runner = CliRunner()
@@ -1645,7 +1727,9 @@ def test_rollout_use_score_cache_second_invocation_makes_no_new_judge_calls(
         return "REASONING: ok.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     results_path = tmp_path / "results.jsonl"
@@ -1803,7 +1887,9 @@ def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     results_path = tmp_path / "results.jsonl"
@@ -1845,6 +1931,56 @@ def test_rollout_with_llm_judge_scores_captured_stdout_via_real_wiring(
     ]
 
 
+def test_rollout_with_llm_judge_passes_a_generous_max_tokens_to_bedrock(
+    tmp_path, monkeypatch
+):
+    # rollout_cmd's judge/panel wiring is a separate code path from
+    # run_cmd's (see test_run_with_llm_judge_passes_a_generous_max_tokens_
+    # to_every_bedrock_call_site's own docstring for the full gap this
+    # closes) -- proven independently here rather than assumed from
+    # run_cmd's own proof, since the two call sites could drift apart.
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    captured_max_tokens: list[int | None] = []
+
+    async def fake_call_model(prompt: str) -> str:
+        return "REASONING: ok.\nVERDICT: PASS\n"
+
+    def capturing_dispatcher(model_id, client=None, region_name=None, **kwargs):
+        captured_max_tokens.append(kwargs.get("max_tokens"))
+        return fake_call_model
+
+    monkeypatch.setattr(cli_module, "make_bedrock_call_model", capturing_dispatcher)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "rollout",
+            "--suite",
+            "tests/fixtures/rollout_example.json",
+            "--results",
+            str(tmp_path / "results.jsonl"),
+            "--scores",
+            str(tmp_path / "scores.jsonl"),
+            "--traces",
+            str(tmp_path / "traces.jsonl"),
+            "--llm-judge-panel",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    # The panel's 2 model instances are constructed ONCE per invocation,
+    # before the per-case loop -- not once per case.
+    assert len(captured_max_tokens) == 2  # sonnet + haiku
+    assert all(mt == cli_module._JUDGE_MAX_TOKENS for mt in captured_max_tokens)
+
+
 def test_rollout_with_llm_judge_panel_scores_captured_stdout_via_real_wiring(
     tmp_path, monkeypatch
 ):
@@ -1861,7 +1997,7 @@ def test_rollout_with_llm_judge_panel_scores_captured_stdout_via_real_wiring(
     monkeypatch.setattr(
         cli_module,
         "make_bedrock_call_model",
-        lambda model_id, client=None, region_name=None: fake_judge,
+        lambda model_id, client=None, region_name=None, **_kwargs: fake_judge,
     )
 
     results_path = tmp_path / "results.jsonl"
@@ -1925,7 +2061,9 @@ def test_rollout_with_judge_axes_scores_each_axis_independently_and_ands_the_ver
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     results_path = tmp_path / "results.jsonl"
@@ -2171,7 +2309,9 @@ def test_rollout_early_stop_with_llm_judge_never_double_calls_judge(
         return "REASONING: matches.\nVERDICT: PASS\n"
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     suite_path = _repeated_trial_suite_path(tmp_path, n=6)
@@ -2315,7 +2455,9 @@ def test_run_with_judge_debias_makes_two_sequential_calls_and_sums_both_costs(
 
     fake_call_model = _FakeSequentialCostExposingCallModel()
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     runner = CliRunner()
@@ -2381,7 +2523,9 @@ def test_run_with_judge_debias_fails_closed_on_position_disagreement(
         return next(responses)
 
     monkeypatch.setattr(
-        cli_module, "make_bedrock_call_model", lambda model_id: fake_call_model
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
     )
 
     runner = CliRunner()

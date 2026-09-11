@@ -2060,4 +2060,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** None in shipped product code — this batch was entirely doc-staleness/comment fixes. The genuinely new pattern worth naming: this is the second time a round-4 research doc's own "build now, documentation only" recommendation (the kappa baseline note) fell through the cracks of phase synthesis AND a first backlog audit before being caught by a second — worth watching whether a third occurrence of this shape appears, which would suggest a process gap in how doc-only recommendations get tracked, not just isolated oversights.
 
-**Next steps / resume point:** Not yet committed. Next: commit this doc-only batch, push, watch CI, then the remaining code-level findings (2 evals-judge-harness fixes, 4 gateway-observability fixes).
+**Next steps / resume point:** Committed (`bcaa7d1`), pushed, CI confirmed green. Next: the remaining code-level findings (2 evals-judge-harness fixes, 4 gateway-observability fixes).
+
+## [2026-09-11] evals: max_tokens wired into every judge/panel Bedrock call site
+
+**Files touched:** `evals/evals/cli.py`, `evals/tests/test_cli_integration.py`, `DECISIONS.md`.
+
+**Intent/summary:** First of the round-2 code-level findings. All 6 `--llm-judge`/`--llm-judge-panel` Bedrock call sites (across `run_cmd`/`rollout_cmd`) omitted `max_tokens`, exposed to the same silent-empty-response failure already fixed for `audit_corpus_cmd`.
+
+**Decisions made:** Added a shared `_JUDGE_MAX_TOKENS = 8192` module constant rather than repeating the literal 6+1 times, and switched `audit_corpus_cmd`'s own existing inline `8192` to reference it too, for consistency. Corrected the original finding's own severity claim during verification — judge calls are already per-case exception-wrapped (`run_suite`'s "one case never aborts the suite" precedent), so the real failure mode is a silent `JUDGE_ERROR` downgrade, not a full-run abort — recorded the correction rather than silently accepting the more dramatic framing.
+
+**Verification performed:** Discovered mid-implementation that this fix broke 25 pre-existing tests in `test_cli_integration.py` — their fake `make_bedrock_call_model` monkeypatches had fixed signatures with no `max_tokens` parameter, so passing the real kwarg raised `TypeError` at every one of them. Fixed all 25 fake signatures to accept `**kwargs`. Added 2 new dedicated tests (`run` and `rollout` sides) using a spy dispatcher that captures the real `max_tokens` value passed at each call site; sanity-checked-by-breaking (removed `max_tokens` from one call site, confirmed the new test failed for the exact predicted reason, restored). Full evals suite (433 passed, up from 431, 13 skipped), ruff clean, 3/3 import-linter contracts kept.
+
+**Bugs found:** The missing-`max_tokens` gap itself (real, pre-existing, already disclosed in `make_bedrock_call_model`'s own doc comment as unfixed) — found by the round-2 backlog-audit workflow's evals-judge-harness agent, independently re-verified (with one severity correction) before trusting it.
+
+**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then the panel-disagreement TrendSnapshot series, then the 4 gateway-observability fixes.
