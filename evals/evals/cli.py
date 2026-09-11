@@ -2416,45 +2416,70 @@ def audit_corpus_cmd(
     call_model = make_bedrock_call_model(judge_model, max_tokens=_JUDGE_MAX_TOKENS)
     counts: dict[str, int] = {"no_defect": 0, "minor": 0, "major": 0, "error": 0}
     findings: list[AuditFinding] = []
-    for case in cases:
-        # Deliberately broad, mirroring evals.rollout.scheduler.run_suite's
-        # own identical philosophy ("a single case's failure never aborts
-        # the suite"): a real, live-discovered failure mode is Claude
-        # Sonnet 5 exhausting its entire max_tokens budget on internal
-        # extended-thinking reasoning without ever emitting visible text,
-        # against a dense/technical audit prompt (confirmed empirically
-        # 2026-09-15 -- see AuditSeverity's own doc comment). Before this
-        # fix, that single case's ValueError killed the ENTIRE multi-case
-        # batch run, discarding every already-computed finding. cost_usd
-        # is deliberately left None here, never read via
-        # _last_judge_call_cost_usd -- that side channel is only known-
-        # fresh immediately after a call that reached its own usage-read
-        # line (see providers.py's _BedrockCallModel.__call__ ordering);
-        # for an exception raised before that point (e.g. a network
-        # error), reading it here would silently attribute a STALE cost
-        # from a PRIOR case's successful call to this one -- an honest
-        # None is safer than a possibly-wrong number.
-        try:
-            finding = asyncio.run(audit_case(case, call_model))
-            cost = _last_judge_call_cost_usd(call_model)
-            finding = replace(finding, cost_usd=cost)
-        except Exception as exc:
-            finding = AuditFinding(
-                eval_case_id=case.id,
-                eval_case_revision=case.revision,
-                severity="error",
-                reason=f"audit call failed: {exc}",
-                cost_usd=None,
-            )
-        counts[finding.severity] += 1
-        if finding.severity == "no_defect":
-            click.echo(f"{case.id} (rev {case.revision}): {finding.severity}")
-        else:
-            click.echo(
-                f"{case.id} (rev {case.revision}): "
-                f"{finding.severity} -- {finding.reason}"
-            )
-            findings.append(finding)
+    # The `for` loop below is wrapped in try/finally -- a round-3
+    # backlog-audit finding: the per-case `except Exception` guard two
+    # lines down already stops one case's OWN raised exception from
+    # aborting the batch (see that guard's own doc comment), but it
+    # cannot catch KeyboardInterrupt/SystemExit at all (both are
+    # BaseException, not Exception) -- an operator's Ctrl-C, or any
+    # other interruption, during any single case's audit call propagated
+    # straight out of this function, skipping out_path.write_text
+    # entirely and discarding every already-computed (and already
+    # real-money-billed) finding for every OTHER case in the batch. The
+    # finally block below persists whatever findings accumulated so far
+    # regardless of how the loop exits. The summary click.echo and
+    # --record-trend append after the try/finally are deliberately left
+    # OUTSIDE it: Python only reaches them on a normal loop completion --
+    # on interruption, the finally runs and the exception then continues
+    # propagating, automatically skipping both. This is the right
+    # behavior for trend recording specifically: a partial run's
+    # audit_corpus_defect_rate is not apples-to-apples with a complete
+    # run's, so it must never be silently persisted under the same
+    # series.
+    try:
+        for case in cases:
+            # Deliberately broad, mirroring evals.rollout.scheduler.run_suite's
+            # own identical philosophy ("a single case's failure never aborts
+            # the suite"): a real, live-discovered failure mode is Claude
+            # Sonnet 5 exhausting its entire max_tokens budget on internal
+            # extended-thinking reasoning without ever emitting visible text,
+            # against a dense/technical audit prompt (confirmed empirically
+            # 2026-09-15 -- see AuditSeverity's own doc comment). Before this
+            # fix, that single case's ValueError killed the ENTIRE multi-case
+            # batch run, discarding every already-computed finding. cost_usd
+            # is deliberately left None here, never read via
+            # _last_judge_call_cost_usd -- that side channel is only known-
+            # fresh immediately after a call that reached its own usage-read
+            # line (see providers.py's _BedrockCallModel.__call__ ordering);
+            # for an exception raised before that point (e.g. a network
+            # error), reading it here would silently attribute a STALE cost
+            # from a PRIOR case's successful call to this one -- an honest
+            # None is safer than a possibly-wrong number.
+            try:
+                finding = asyncio.run(audit_case(case, call_model))
+                cost = _last_judge_call_cost_usd(call_model)
+                finding = replace(finding, cost_usd=cost)
+            except Exception as exc:
+                finding = AuditFinding(
+                    eval_case_id=case.id,
+                    eval_case_revision=case.revision,
+                    severity="error",
+                    reason=f"audit call failed: {exc}",
+                    cost_usd=None,
+                )
+            counts[finding.severity] += 1
+            if finding.severity == "no_defect":
+                click.echo(f"{case.id} (rev {case.revision}): {finding.severity}")
+            else:
+                click.echo(
+                    f"{case.id} (rev {case.revision}): "
+                    f"{finding.severity} -- {finding.reason}"
+                )
+                findings.append(finding)
+    finally:
+        out_path.write_text(
+            json.dumps([asdict(f) for f in findings], indent=2, default=str)
+        )
 
     click.echo(
         f"audit-corpus: {counts['no_defect']} no_defect, {counts['minor']} minor, "
@@ -2485,9 +2510,6 @@ def audit_corpus_cmd(
             ],
             record_trend_path,
         )
-    out_path.write_text(
-        json.dumps([asdict(f) for f in findings], indent=2, default=str)
-    )
 
 
 @main.command("check-corpus-staleness")

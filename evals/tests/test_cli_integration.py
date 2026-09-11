@@ -2793,3 +2793,82 @@ def test_audit_corpus_one_case_raising_never_aborts_the_batch(tmp_path, monkeypa
     assert findings[0]["eval_case_id"] == "exhausts-budget-case"
     assert findings[0]["severity"] == "error"
     assert findings[0]["cost_usd"] is None
+
+
+def test_audit_corpus_keyboard_interrupt_mid_batch_persists_partial_findings(
+    tmp_path, monkeypatch
+):
+    """A round-3 backlog-audit finding: the per-case `except Exception`
+    guard proven above does NOT catch KeyboardInterrupt (a BaseException,
+    not an Exception) -- before the fix, an operator's Ctrl-C (or any
+    other interruption) during any single case's audit call propagated
+    straight out of audit_corpus_cmd, skipping out_path.write_text
+    entirely and discarding every already-computed finding for every
+    OTHER case in the batch, even a case that flagged a real, already
+    real-money-billed major defect. Proves the fix's `finally` block
+    persists that already-computed finding despite the interruption, and
+    that the third case (never reached) is correctly absent.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "flagged-case",
+                    "revision": 1,
+                    "task_spec": {},
+                    "tier": "regression",
+                },
+                {
+                    "id": "interrupted-case",
+                    "revision": 1,
+                    "task_spec": {},
+                    "tier": "regression",
+                },
+                {
+                    "id": "never-reached-case",
+                    "revision": 1,
+                    "task_spec": {},
+                    "tier": "regression",
+                },
+            ]
+        )
+    )
+    out_path = tmp_path / "findings.json"
+
+    responses = iter(
+        [
+            "REASONING: A real, verified defect.\nSEVERITY: major\n",
+            None,  # sentinel: this call raises KeyboardInterrupt instead of returning
+            "REASONING: Clear and correct.\nSEVERITY: no_defect\n",
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        response = next(responses)
+        if response is None:
+            raise KeyboardInterrupt
+        return response
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
+    )
+
+    runner = CliRunner()
+    # Click's own top-level main() converts a real KeyboardInterrupt into
+    # a plain SystemExit(1) (its standard, built-in interrupt-handling
+    # behavior) -- confirmed empirically, not assumed. The load-bearing
+    # assertion here is what's on disk AFTER that exit, not the exact
+    # exception type Click reports.
+    result = runner.invoke(
+        main,
+        ["audit-corpus", "--suite", str(suite_path), "--out", str(out_path)],
+    )
+    assert result.exit_code != 0, result.output
+
+    findings = json.loads(out_path.read_text())
+    assert len(findings) == 1
+    assert findings[0]["eval_case_id"] == "flagged-case"
+    assert findings[0]["severity"] == "major"

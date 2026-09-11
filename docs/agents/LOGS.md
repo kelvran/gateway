@@ -2228,4 +2228,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The MIME-validation gap itself — real, previously undetected on both paths.
 
-**Next steps / resume point:** This closes all 7 gateway findings from round 3. Committed, push+CI pending. Next: the last remaining round-3 finding — evals `audit-corpus`'s interruption-safety gap (`KeyboardInterrupt` not caught, discarding all already-computed findings) — to close round 3 entirely.
+**Next steps / resume point:** This closes all 7 gateway findings from round 3. Committed (`6af538b`), pushed, CI confirmed green. Next: the last remaining round-3 finding — evals `audit-corpus`'s interruption-safety gap (`KeyboardInterrupt` not caught, discarding all already-computed findings) — to close round 3 entirely.
+
+## [2026-09-11] evals: audit-corpus persists findings on interruption (round-3 finding #6 — closes round 3 entirely)
+
+**Files touched:** `evals/evals/cli.py`, `evals/tests/test_cli_integration.py`, `DECISIONS.md`.
+
+**Intent/summary:** Last of round 3's 8 confirmed findings. The existing `except Exception` guard around each case's audit call cannot catch `KeyboardInterrupt`/`SystemExit` (both `BaseException`) — an interruption mid-batch discarded every already-computed finding, including already-billed ones.
+
+**Decisions made:** Wrapped the loop in `try`/`finally`, moving `out_path.write_text` into the `finally`. Deliberately left the summary echo and `--record-trend` append OUTSIDE the `try`/`finally` — Python's own control flow (code after a try/finally only runs on normal completion) gives "skip trend recording on a partial run" for free, no extra flag needed.
+
+**Verification performed:** New test with 3 cases (real finding, then interrupt, then never-reached) asserting the real finding survives on disk. Discovered empirically that Click's own CliRunner converts a real `KeyboardInterrupt` into `SystemExit(1)` rather than propagating it — adjusted the test to assert on the persisted file/exit code, not the exact exception type. Sanity-checked-by-breaking (reverted to the bare pre-fix shape, confirmed a real `FileNotFoundError` for the exact predicted reason, restored). Full evals suite clean (437 passed, up from 436, 13 skipped), ruff clean, 3/3 import-linter contracts kept.
+
+**Bugs found:** The interruption-safety gap itself — real, previously undetected, and matching a scenario the feature's own RFC already documented happening once during its first live sanity pass.
+
+**Next steps / resume point:** This closes the entire round-3 backlog audit — all 8 confirmed findings shipped, 0 refuted. Committed, push+CI pending. Report a final summary to the user.
