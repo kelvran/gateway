@@ -344,15 +344,21 @@ func fingerprintFor(p Prompt) string {
 // variables into every message's text content (see substitute's own doc
 // comment for the unresolved-placeholder design decision), and returns
 // the result alongside a stable fingerprint for the cache-key fold (see
-// fingerprintFor). Returns ErrPromptNotFound (wrapped with id/version
-// context) if no such prompt/version exists.
-func (s *Store) Resolve(id string, version int, variables map[string]string) ([]adapter.Message, string, error) {
+// fingerprintFor) and the REAL version that was resolved -- distinct from
+// the caller-supplied version parameter whenever that parameter is <= 0
+// ("latest"): a round-3 backlog-audit finding found that callers had no
+// way to learn which concrete version "latest" resolved to, since the
+// only value this function returned before now was id's fingerprint,
+// with p.Version computed and then silently discarded once used for
+// that. Returns ErrPromptNotFound (wrapped with id/version context) if
+// no such prompt/version exists.
+func (s *Store) Resolve(id string, version int, variables map[string]string) ([]adapter.Message, string, int, error) {
 	p, ok := s.Get(id, version)
 	if !ok {
 		if version > 0 {
-			return nil, "", fmt.Errorf("%w: %q version %d", ErrPromptNotFound, id, version)
+			return nil, "", 0, fmt.Errorf("%w: %q version %d", ErrPromptNotFound, id, version)
 		}
-		return nil, "", fmt.Errorf("%w: %q", ErrPromptNotFound, id)
+		return nil, "", 0, fmt.Errorf("%w: %q", ErrPromptNotFound, id)
 	}
 
 	resolved := make([]adapter.Message, len(p.Messages))
@@ -378,5 +384,5 @@ func (s *Store) Resolve(id string, version int, variables map[string]string) ([]
 		}
 		resolved[i] = m
 	}
-	return resolved, fingerprintFor(p), nil
+	return resolved, fingerprintFor(p), p.Version, nil
 }

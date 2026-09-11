@@ -14,6 +14,7 @@ import (
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // providerMessageContents decodes an *openai.Request's own Messages into
@@ -267,5 +268,43 @@ func TestPromptVersionChangeBustsACacheHit(t *testing.T) {
 	}
 	if upstreamCalls != 2 {
 		t.Errorf("after pinning a different version with byte-identical content: upstreamCalls = %d, want 2 (the promptFingerprint cache-key fold must bust the would-be collision)", upstreamCalls)
+	}
+}
+
+// TestUnpinnedPromptVersionTelemetryReportsTheRealResolvedVersionNotZero
+// is a round-3 backlog-audit finding: a request that doesn't pin a
+// PromptVersion (0, "latest" -- the common case this feature's whole
+// append-only-version-history design is built around) previously kept
+// req.PromptVersion at its client-supplied 0 all the way through to
+// finalize's telemetry.ChatCompletionResult.PromptVersion, so the
+// emitted kelvran.prompt.version span attribute was always literally 0,
+// never the real version that actually served the response.
+func TestUnpinnedPromptVersionTelemetryReportsTheRealResolvedVersionNotZero(t *testing.T) {
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, deployments)
+
+	if _, err := p.UpsertPrompt("greeting", []adapter.Message{{Role: "user", Content: "hello v1"}}); err != nil {
+		t.Fatalf("UpsertPrompt v1: %v", err)
+	}
+	if _, err := p.UpsertPrompt("greeting", []adapter.Message{{Role: "user", Content: "hello v2"}}); err != nil {
+		t.Fatalf("UpsertPrompt v2: %v", err)
+	}
+
+	before := len(spanRecorder.Ended())
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting"}); err != nil {
+		t.Fatalf("HandleChatCompletion (unpinned \"latest\"): %v", err)
+	}
+
+	spans := spansSince(before)
+	if len(spans) != 1 {
+		t.Fatalf("len(spans) = %d, want 1", len(spans))
+	}
+	if v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranPromptVersion); !ok || v.AsInt64() != 2 {
+		t.Errorf("%s = %v, ok=%v, want 2 (the real latest version -- never the client's unpinned 0)", telemetry.AttrKelvranPromptVersion, v, ok)
+	}
+	if v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranPromptID); !ok || v.AsString() != "greeting" {
+		t.Errorf("%s = %v, ok=%v, want %q", telemetry.AttrKelvranPromptID, v, ok, "greeting")
 	}
 }

@@ -135,7 +135,7 @@ func TestDelete(t *testing.T) {
 	if _, ok := s.Get("greeting", 0); ok {
 		t.Errorf("Get after Delete: ok = true, want false")
 	}
-	if _, _, err := s.Resolve("greeting", 0, nil); !errors.Is(err, ErrPromptNotFound) {
+	if _, _, _, err := s.Resolve("greeting", 0, nil); !errors.Is(err, ErrPromptNotFound) {
 		t.Errorf("Resolve after Delete: err = %v, want ErrPromptNotFound", err)
 	}
 }
@@ -156,7 +156,7 @@ func TestResolveSubstitutesKnownVariables(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	resolved, _, err := s.Resolve("greeting", 0, map[string]string{"persona": "a pirate", "name": "Ada"})
+	resolved, _, _, err := s.Resolve("greeting", 0, map[string]string{"persona": "a pirate", "name": "Ada"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestResolveSubstitutesTextContentPartsNotJustMessageContent(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	resolved, _, err := s.Resolve("multimodal", 0, map[string]string{"name": "Ada"})
+	resolved, _, _, err := s.Resolve("multimodal", 0, map[string]string{"name": "Ada"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestResolveWithNoVariablesLeavesEveryPlaceholderLiteral(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	resolved, _, err := s.Resolve("greeting", 0, nil)
+	resolved, _, _, err := s.Resolve("greeting", 0, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -226,14 +226,14 @@ func TestResolveWithNoVariablesLeavesEveryPlaceholderLiteral(t *testing.T) {
 
 func TestResolveUnknownPromptReturnsErrPromptNotFound(t *testing.T) {
 	s := NewStore()
-	if _, _, err := s.Resolve("does-not-exist", 0, nil); !errors.Is(err, ErrPromptNotFound) {
+	if _, _, _, err := s.Resolve("does-not-exist", 0, nil); !errors.Is(err, ErrPromptNotFound) {
 		t.Errorf("Resolve(unknown id): err = %v, want ErrPromptNotFound", err)
 	}
 
 	if _, err := s.Upsert("greeting", msgs("hi")); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	if _, _, err := s.Resolve("greeting", 99, nil); !errors.Is(err, ErrPromptNotFound) {
+	if _, _, _, err := s.Resolve("greeting", 99, nil); !errors.Is(err, ErrPromptNotFound) {
 		t.Errorf("Resolve(unknown version): err = %v, want ErrPromptNotFound", err)
 	}
 }
@@ -247,11 +247,11 @@ func TestResolveFingerprintIsStableForRepeatedCallsAgainstTheSameVersion(t *test
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	_, fp1, err := s.Resolve("greeting", 0, map[string]string{"unused": "x"})
+	_, fp1, _, err := s.Resolve("greeting", 0, map[string]string{"unused": "x"})
 	if err != nil {
 		t.Fatalf("Resolve #1: %v", err)
 	}
-	_, fp2, err := s.Resolve("greeting", 0, nil)
+	_, fp2, _, err := s.Resolve("greeting", 0, nil)
 	if err != nil {
 		t.Fatalf("Resolve #2: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestResolveFingerprintChangesWhenTheUnderlyingContentChanges(t *testing.T) 
 	if _, err := s.Upsert("greeting", msgs("hello v1")); err != nil {
 		t.Fatalf("Upsert v1: %v", err)
 	}
-	_, fpV1, err := s.Resolve("greeting", 0, nil)
+	_, fpV1, _, err := s.Resolve("greeting", 0, nil)
 	if err != nil {
 		t.Fatalf("Resolve v1: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestResolveFingerprintChangesWhenTheUnderlyingContentChanges(t *testing.T) 
 	if _, err := s.Upsert("greeting", msgs("hello v2")); err != nil {
 		t.Fatalf("Upsert v2: %v", err)
 	}
-	_, fpV2, err := s.Resolve("greeting", 0, nil)
+	_, fpV2, _, err := s.Resolve("greeting", 0, nil)
 	if err != nil {
 		t.Fatalf("Resolve v2: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestResolveFingerprintChangesWhenTheUnderlyingContentChanges(t *testing.T) 
 	// The OLD, pinned version's own fingerprint must still reproduce
 	// exactly what it always did -- fingerprintFor is derived fresh from
 	// Get's result, so this is automatic, but worth asserting directly.
-	_, fpV1Again, err := s.Resolve("greeting", 1, nil)
+	_, fpV1Again, _, err := s.Resolve("greeting", 1, nil)
 	if err != nil {
 		t.Fatalf("Resolve pinned v1: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestConcurrentUpsertGetResolveUnderRace(t *testing.T) {
 			go func(id string) {
 				defer wg.Done()
 				s.Get(id, 0)
-				_, _, _ = s.Resolve(id, 0, map[string]string{"x": "y"})
+				_, _, _, _ = s.Resolve(id, 0, map[string]string{"x": "y"})
 				s.List()
 			}(id)
 		}

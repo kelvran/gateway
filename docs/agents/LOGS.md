@@ -2200,4 +2200,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The audit-logging gap itself — real, previously undetected (every existing test only checked response codes, never log output, for these 4 routes).
 
-**Next steps / resume point:** This closes all 3 gateway-admin-identity findings — 5 of round 3's 8 findings now shipped. Committed, push+CI pending. Next: the 2 gateway-newer-features-resweep findings (prompt-version telemetry bug, then the MIME-validation gap), then the evals audit-corpus interruption-safety finding — the last 3 remaining from round 3.
+**Next steps / resume point:** This closes all 3 gateway-admin-identity findings — 5 of round 3's 8 findings now shipped. Committed (`676d66b`), pushed, CI confirmed green. Next: the 2 gateway-newer-features-resweep findings (prompt-version telemetry bug, then the MIME-validation gap), then the evals audit-corpus interruption-safety finding — the last 3 remaining from round 3.
+
+## [2026-09-11] gateway: kelvran.prompt.version telemetry now reports the real resolved version (round-3 finding #8)
+
+**Files touched:** `gateway/internal/prompt/prompt.go`, `gateway/internal/prompt/prompt_test.go`, `gateway/internal/gateway/dataplane/dataplane.go`, `gateway/internal/gateway/dataplane/prompt_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** First of the 2 gateway-newer-features-resweep findings. An unpinned ("latest") prompt request's `kelvran.prompt.version` span attribute was always literally `0` — `Store.Resolve` already computes the real resolved version internally (via `Get`) but only ever used it to build the fingerprint, then discarded it.
+
+**Decisions made:** Widened `Resolve`'s return signature to surface the real version, since that's the one place it's actually computed — rather than re-deriving it a second time at the call site (which would need a second `Get` call, wasted work). Overwriting `req.PromptVersion` in `resolvePromptIfSet` (rather than threading a new field through `finalize`) means `finalize` needs zero changes: it already reads `req.PromptVersion` verbatim.
+
+**Verification performed:** New full-pipeline test asserting the span attribute equals the real latest version (2), not 0. Sanity-checked-by-breaking (discarded `resolvedVersion` instead of assigning it, confirmed the exact predicted failure, restored). Discovered mid-implementation, exactly mirroring this session's earlier `max_tokens` lesson: 12 pre-existing test call sites in `prompt_test.go` destructured `Resolve`'s old 3-value return and needed mechanical updates to the new 4-value shape. Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** The version-resolution gap itself — real, previously untested (no existing test exercised the unpinned/"latest" case against the telemetry attribute, only against cache-busting behavior).
+
+**Next steps / resume point:** Committed, push+CI pending. Next: the resolved-prompt-content MIME-validation gap (the last gateway-newer-features-resweep finding), then the evals audit-corpus interruption-safety finding to close out round 3 entirely.

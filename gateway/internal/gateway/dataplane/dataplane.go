@@ -698,11 +698,22 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 	if len(req.Messages) > 0 {
 		return req, "", ErrPromptAndMessagesBothSet
 	}
-	messages, fingerprint, err := p.prompts.Resolve(req.PromptID, req.PromptVersion, req.PromptVariables)
+	messages, fingerprint, resolvedVersion, err := p.prompts.Resolve(req.PromptID, req.PromptVersion, req.PromptVariables)
 	if err != nil {
 		return req, "", fmt.Errorf("%w: %w", ErrPromptResolutionFailed, err)
 	}
 	req.Messages = messages
+	// A round-3 backlog-audit finding: req.PromptVersion previously kept
+	// the client's own requested pin (0 for "latest") all the way through
+	// to finalize's telemetry.ChatCompletionResult.PromptVersion -- for
+	// every unpinned request (the common case this feature's whole
+	// append-only-version-history design is built around), the emitted
+	// kelvran.prompt.version span attribute was always literally 0, never
+	// the real version that actually served the response. Overwriting
+	// req.PromptVersion here with the REAL resolved value means finalize
+	// needs no change at all: it already reads req.PromptVersion
+	// verbatim.
+	req.PromptVersion = resolvedVersion
 	return req, fingerprint, nil
 }
 
