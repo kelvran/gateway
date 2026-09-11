@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -474,6 +475,24 @@ func TestUpsertPromptCreatesVersionOneThenVersionTwo(t *testing.T) {
 func TestUpsertPromptRejectsEmptyMessages(t *testing.T) {
 	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertPromptRejectsMIMESpoofedContent is the write-time defense-in-
+// depth half of a round-3 backlog-audit finding: a prompt author's own
+// inline Parts[].Data/MediaType is validated at write time, the same
+// declared-vs-detected MIME-spoof check every directly-client-supplied
+// message must already pass, per adapter.ValidateContentParts. Fails
+// fast for the prompt author rather than only ever being caught later,
+// at every future request-time resolution of this same prompt.
+func TestUpsertPromptRejectsMIMESpoofedContent(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	spoofedData := base64.StdEncoding.EncodeToString([]byte("this is plain text, not an image"))
+	body := `{"messages":[{"role":"user","content":"here's an image","parts":[{"type":"image","media_type":"image/png","data":"` + spoofedData + `"}]}]}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/mime-spoofed", fakeAdminCredential(), body)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
 	}

@@ -120,6 +120,29 @@ var ErrPromptAndMessagesBothSet = errors.New("dataplane: request sets both promp
 // applies to an unresolvable model name.
 var ErrPromptResolutionFailed = errors.New("dataplane: failed to resolve prompt_id")
 
+// ErrResolvedPromptContentInvalid wraps a adapter.ValidateContentParts
+// failure detected on a prompt's RESOLVED content -- distinct from
+// ErrPromptResolutionFailed, whose own doc comment scopes it to the
+// lookup itself failing (an unknown id/version). Here the prompt_id/
+// version resolved successfully; what it resolved TO fails the same
+// client-declared-MIME-type-spoof check every directly-client-supplied
+// message must already pass (cmd/gateway/main.go's own pre-resolution
+// ValidateContentParts call, which only ever ran against req.Messages
+// BEFORE resolvePromptIfSet populates it -- a round-3 backlog-audit
+// finding: a resolved prompt template's own inline Parts[].Data/
+// MediaType never passed this check at all, on either the request-time
+// resolution path or the Admin-API prompt-write path, per
+// docs/rfcs/2026-09-12-gateway-structured-output-normalization.md's own
+// OWASP File Upload Cheat Sheet citation for why a client-declared
+// Content-Type must never be trusted for security purposes -- a prompt
+// author is exactly that kind of untrusted declarer for this specific
+// check, per docs/rfcs/2026-09-13-gateway-prompt-management.md's own
+// "prompt authors are less-trusted operators than those touching source
+// code" framing. Mapped to a 400 by writeErrorResponse, the same "this
+// request itself is malformed" bucket ErrPromptResolutionFailed already
+// occupies.
+var ErrResolvedPromptContentInvalid = errors.New("dataplane: resolved prompt content failed validation")
+
 // Deployment is a resolved upstream route: a concrete provider/endpoint a
 // canonical model can be sent to, with its API key already resolved from
 // the environment (never the raw config file) by the caller (cmd/gateway).
@@ -701,6 +724,15 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 	messages, fingerprint, resolvedVersion, err := p.prompts.Resolve(req.PromptID, req.PromptVersion, req.PromptVariables)
 	if err != nil {
 		return req, "", fmt.Errorf("%w: %w", ErrPromptResolutionFailed, err)
+	}
+	// A round-3 backlog-audit finding: a resolved prompt's own inline
+	// Parts[].Data/MediaType never passed the same client-declared-MIME-
+	// type-spoof check every directly-client-supplied message must
+	// already pass (cmd/gateway/main.go's ValidateContentParts call runs
+	// BEFORE this function ever populates req.Messages from a prompt
+	// template) -- see ErrResolvedPromptContentInvalid's own doc comment.
+	if err := adapter.ValidateContentParts(messages); err != nil {
+		return req, "", fmt.Errorf("%w: %w", ErrResolvedPromptContentInvalid, err)
 	}
 	req.Messages = messages
 	// A round-3 backlog-audit finding: req.PromptVersion previously kept

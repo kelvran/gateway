@@ -2214,4 +2214,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The version-resolution gap itself — real, previously untested (no existing test exercised the unpinned/"latest" case against the telemetry attribute, only against cache-busting behavior).
 
-**Next steps / resume point:** Committed, push+CI pending. Next: the resolved-prompt-content MIME-validation gap (the last gateway-newer-features-resweep finding), then the evals audit-corpus interruption-safety finding to close out round 3 entirely.
+**Next steps / resume point:** Committed (`04f4762`), pushed, CI confirmed green. Next: the resolved-prompt-content MIME-validation gap (the last gateway-newer-features-resweep finding), then the evals audit-corpus interruption-safety finding to close out round 3 entirely.
+
+## [2026-09-11] gateway: resolved prompt content now MIME-validated (round-3 finding #7 — closes all 7 gateway round-3 findings)
+
+**Files touched:** `gateway/internal/gateway/dataplane/dataplane.go`, `gateway/internal/gateway/dataplane/prompt_test.go`, `gateway/internal/admin/admin.go`, `gateway/internal/admin/admin_test.go`, `gateway/cmd/gateway/main.go`, `DECISIONS.md`.
+
+**Intent/summary:** Last of the 2 gateway-newer-features-resweep findings. `ValidateContentParts`'s MIME-spoof check only ever ran against the raw, pre-resolution client body — a stored prompt template's own inline content never passed it at all, on either the request-time resolution path or the Admin-API write path.
+
+**Decisions made:** New `ErrResolvedPromptContentInvalid` sentinel rather than reusing `ErrPromptResolutionFailed` — that error's own doc comment scopes it specifically to the lookup itself failing, and overloading it for a content-validation failure would have been semantically dishonest even though both map to the same 400 bucket. Implemented both halves of the proposed fix (request-time + admin-write-time defense-in-depth), not just the minimum request-time fix — catching it at write time fails fast for the prompt author instead of only ever surfacing at every future resolution.
+
+**Verification performed:** Full-pipeline positive + negative case (rejects a MIME-spoofed prompt, accepts genuinely valid multi-modal content). Write-time admin test. Sanity-checked-by-breaking BOTH call sites independently — each failed for its own exact predicted reason, proving neither silently covers for the other. Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** The MIME-validation gap itself — real, previously undetected on both paths.
+
+**Next steps / resume point:** This closes all 7 gateway findings from round 3. Committed, push+CI pending. Next: the last remaining round-3 finding — evals `audit-corpus`'s interruption-safety gap (`KeyboardInterrupt` not caught, discarding all already-computed findings) — to close round 3 entirely.

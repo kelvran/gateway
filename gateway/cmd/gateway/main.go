@@ -805,6 +805,12 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		// and messages, or naming an unknown prompt_id/prompt_version, is
 		// a client-request-shape problem, never an upstream failure.
 		status = http.StatusBadRequest
+	case errors.Is(err, dataplane.ErrResolvedPromptContentInvalid):
+		// 400, the identical bucket -- a resolved prompt's own content
+		// failing the MIME-spoof check is the same "this request itself
+		// is malformed" shape as ErrPromptResolutionFailed, just caught
+		// one step later (after resolution succeeded, not during it).
+		status = http.StatusBadRequest
 	}
 
 	// Retry-After, per docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's

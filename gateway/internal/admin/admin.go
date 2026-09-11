@@ -479,6 +479,18 @@ func upsertPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http
 			http.Error(w, "messages is required and must be non-empty", http.StatusBadRequest)
 			return
 		}
+		// Defense-in-depth for a round-3 backlog-audit finding: a prompt
+		// template's own inline Parts[].Data/MediaType previously never
+		// passed the same client-declared-MIME-type-spoof check every
+		// directly-client-supplied message must already pass. Rejecting
+		// it here, at write time, fails fast for a prompt author (a
+		// less-trusted operator than one touching source code, per this
+		// feature's own RFC) rather than only ever being caught later, at
+		// every future request-time resolution of this same prompt.
+		if err := adapter.ValidateContentParts(req.Messages); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		p, err := pipeline.UpsertPrompt(id, req.Messages)
 		if err != nil {

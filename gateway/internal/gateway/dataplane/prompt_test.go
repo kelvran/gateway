@@ -8,6 +8,7 @@ package dataplane
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -127,6 +128,74 @@ func TestUnknownPromptIDFailsWithErrPromptResolutionFailed(t *testing.T) {
 	}
 	if upstreamCalls != 0 {
 		t.Errorf("upstreamCalls = %d, want 0", upstreamCalls)
+	}
+}
+
+// TestResolvedPromptContentFailsMIMEValidationThroughTheFullPipeline is a
+// round-3 backlog-audit finding: a stored prompt's own inline
+// Parts[].Data/MediaType never passed adapter.ValidateContentParts's
+// declared-vs-detected MIME-spoof check at all -- cmd/gateway/main.go's
+// own pre-resolution call only ever ran against the raw, client-supplied
+// req.Messages, which is empty for a PromptID-only request. Proves the
+// same check now runs on the RESOLVED content, through the real
+// HandleChatCompletion path (not the isolated adapter-unit-level check
+// adapter's own validate_test.go already proves), and that the upstream
+// is never called for a rejected request.
+func TestResolvedPromptContentFailsMIMEValidationThroughTheFullPipeline(t *testing.T) {
+	var upstreamCalls int
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, deployments)
+
+	spoofedData := base64.StdEncoding.EncodeToString([]byte("this is plain text, not an image"))
+	if _, err := p.UpsertPrompt("mime-spoofed", []adapter.Message{
+		{Role: "user", Content: "here's an image", Parts: []adapter.ContentPart{
+			{Type: "image", MediaType: "image/png", Data: spoofedData},
+		}},
+	}); err != nil {
+		t.Fatalf("UpsertPrompt: %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "mime-spoofed"}
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	if !errors.Is(err, ErrResolvedPromptContentInvalid) {
+		t.Errorf("err = %v, want ErrResolvedPromptContentInvalid", err)
+	}
+	if upstreamCalls != 0 {
+		t.Errorf("upstreamCalls = %d, want 0 -- a MIME-spoofed resolved prompt must never reach the upstream call", upstreamCalls)
+	}
+}
+
+// TestResolvedPromptContentWithGenuinelyMatchingMIMETypePasses is the
+// negative case: a prompt whose inline content's declared MediaType
+// genuinely matches its detected type must resolve and reach the
+// upstream call normally -- the new validation must never reject
+// legitimate multi-modal prompt content.
+func TestResolvedPromptContentWithGenuinelyMatchingMIMETypePasses(t *testing.T) {
+	var upstreamCalls int
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, deployments)
+
+	realPNGSignature := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	if _, err := p.UpsertPrompt("mime-valid", []adapter.Message{
+		{Role: "user", Content: "here's an image", Parts: []adapter.ContentPart{
+			{Type: "image", MediaType: "image/png", Data: base64.StdEncoding.EncodeToString(realPNGSignature)},
+		}},
+	}); err != nil {
+		t.Fatalf("UpsertPrompt: %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "mime-valid"}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+		t.Fatalf("HandleChatCompletion: %v, want success for genuinely matching MIME content", err)
+	}
+	if upstreamCalls != 1 {
+		t.Errorf("upstreamCalls = %d, want 1", upstreamCalls)
 	}
 }
 
