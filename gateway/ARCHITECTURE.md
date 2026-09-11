@@ -132,6 +132,24 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              threshold — closing a thundering-herd-on-recovery gap the plain N-of-M
                              threshold model left open. `ProbeDeployments` itself and `router.go`'s own
                              `Select`/`ReportProbeResult` surface are unchanged by either feature.
+                             **Updated 2026-09-12**: `Deployment` gained an optional `CostTier` field (a
+                             *configured*, operator-set cost-preference band — never a learned or
+                             usage-derived signal, and still explicitly NOT what "usage/latency/cost-based
+                             selection signals" above refers to). `health.go`'s `activeCostTier`/
+                             `selectHealthy` prefer the lowest tier with a currently-healthy deployment,
+                             falling through to the next tier only once every deployment in the cheaper one
+                             is unhealthy — layered outside `wrr.go`'s own cursor math, the same way the
+                             ramp feature is, so a model group with no tier configured (every deployment
+                             configured before this existed) is byte-for-byte unchanged. Strict opt-in: a
+                             group with even one untiered deployment disables filtering for that whole
+                             group. Still explicitly NOT built: automatic price discovery, and any
+                             cross-model "virtual model" grouping (a single client-facing name spanning
+                             several genuinely different underlying models at different prices, the way
+                             OpenRouter's own cost-tier mechanism works) — `CostTier` is per-deployment
+                             within one canonical model's existing WRR pool, not a new grouping concept; see
+                             DECISIONS.md's `[2026-09-12]` entry for why `PriceTable` (keyed by canonical
+                             model, identical for every deployment sharing one `Model` value) couldn't
+                             already express this.
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,

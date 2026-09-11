@@ -13,4 +13,10 @@ type Deployment struct {
 	// normalized to 1 in newModelState — never here, and never in
 	// controlplane's parser, which only validates it's non-negative.
 	Weight int
+	// CostTier is an optional, operator-configured cost-preference band
+	// (lower = cheaper) — see controlplane.DeploymentConfig.CostTier's
+	// doc comment for the full rationale and the "every deployment in a
+	// group must be tiered, or filtering is off for that whole group"
+	// rule Router.activeCostTier (health.go) applies. Zero means "unset."
+	CostTier int
 }

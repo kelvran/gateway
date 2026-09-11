@@ -40,6 +40,13 @@ type Router struct {
 	healthMu  sync.Mutex
 	healthCfg HealthConfig
 	health    map[string]*deploymentHealth
+
+	// costTiers maps deployment Name -> configured CostTier (see
+	// Deployment.CostTier's own doc comment). Populated once, at New()
+	// time, from the exact same input deployments used to build models —
+	// read-only afterward, safe for concurrent access without a lock,
+	// exactly like models itself.
+	costTiers map[string]int
 }
 
 // New builds a Router from deployments, grouping by Model in the exact
@@ -58,8 +65,10 @@ type Router struct {
 // dataplane.Pipeline.RunHealthProbeLoop).
 func New(deployments []Deployment, health HealthConfig) *Router {
 	byModel := map[string][]weightedDeployment{}
+	costTiers := make(map[string]int, len(deployments))
 	for _, d := range deployments {
 		byModel[d.Model] = append(byModel[d.Model], weightedDeployment{name: d.Name, weight: d.Weight})
+		costTiers[d.Name] = d.CostTier
 	}
 
 	models := make(map[string]*modelState, len(byModel))
@@ -70,6 +79,7 @@ func New(deployments []Deployment, health HealthConfig) *Router {
 		models:    models,
 		healthCfg: health.normalized(),
 		health:    map[string]*deploymentHealth{},
+		costTiers: costTiers,
 	}
 }
 

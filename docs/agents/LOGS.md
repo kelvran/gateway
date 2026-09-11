@@ -2397,3 +2397,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None in shipped code — the methodology issue above was caught in my own test-writing process before it ever reached a committed test.
 
 **Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then start Phase 4 (gateway cost-tier deployment routing).
+
+## [2026-09-12] Phase 4 of v2-upgrade plan: gateway cost-tier deployment routing
+
+**Files touched:** `gateway/internal/gateway/controlplane/{config,config_test}.go`, `gateway/internal/router/{deployment,router,health}.go`, `gateway/internal/router/cost_tier_test.go` (new), `gateway/cmd/gateway/main.go`, `gateway/config.example.yaml`, `gateway/ARCHITECTURE.md`.
+
+**Intent/summary:** Fourth phase of the v2-upgrade-research plan. Added an optional, operator-configured per-deployment `CostTier`, letting `router.Router` prefer the cheapest currently-healthy tier among deployments sharing one canonical model, with fallthrough to a more expensive tier only when every cheaper deployment is unhealthy. Closes the real gap Phase-planning grounding found: `PriceTable` is keyed by canonical model, identical for every deployment in one WRR pool, so there was no per-deployment cost signal to route on at all.
+
+**Decisions made:** Strict opt-in — filtering only activates once EVERY deployment in a model group has an explicit tier; even one untiered deployment disables it for the whole group, keeping every pre-existing config byte-for-byte unchanged. Deliberately did NOT thread the field through `dataplane.Deployment` (a scope trim from the approved plan) — dataplane has no use for it, routing decisions live entirely in `router.Router`. Accepted a narrow, disclosed race window in `activeCostTier` (health snapshots taken before the admission loop) rather than adding complexity to close it — worst case is a cost-preference suboptimality, never a health-safety violation, since `admitTurn`'s own fresh check still independently protects against admitting an unhealthy deployment.
+
+**Verification performed:** Sanity-checked-by-breaking twice (the untiered-disables-filtering guard, and the filter's application inside `selectHealthy`) — both failed for the exact predicted reason, both reverted. New tests cover tier preference, fallthrough, and the critical mixed-tiered/untiered backward-compat case. Full gateway suite clean (build/vet/`test -race`/golangci-lint/go-arch-lint/gofmt/go mod tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** None — purely additive, opt-in feature.
+
+**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then start Phase 5 (gateway MCP/A2A outbound-credential RFC, design-only — the final phase).

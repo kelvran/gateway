@@ -437,9 +437,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		}
 		deployments = append(deployments, dep)
 		routerDeployments = append(routerDeployments, router.Deployment{
-			Name:   d.Name,
-			Model:  d.Model,
-			Weight: d.Weight,
+			Name:     d.Name,
+			Model:    d.Model,
+			Weight:   d.Weight,
+			CostTier: d.CostTier,
 		})
 		deploymentConcurrencyConfigs = append(deploymentConcurrencyConfigs, ratelimit.ConcurrencyConfig{
 			ID:          d.Name,

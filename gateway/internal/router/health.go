@@ -302,6 +302,62 @@ func (r *Router) admitTurn(name string) bool {
 	return false
 }
 
+// activeCostTier reports the tier selectHealthy should currently prefer
+// for ms's model group, and whether tier filtering applies at all — see
+// Deployment.CostTier's own doc comment for the full rationale. Strict
+// opt-in: filtering applies ONLY when EVERY deployment in the group has
+// an explicit tier configured (CostTier > 0); a group with even one
+// untiered deployment returns filterActive=false, leaving that whole
+// group byte-for-byte unaffected, mirroring HealthConfig/ramp's own
+// "zero means unset, unchanged behavior" convention throughout this
+// package.
+//
+// Among an all-tiered group, the preferred tier is the lowest tier with
+// at least one CURRENTLY HEALTHY deployment — recomputed fresh on every
+// call (health is dynamic), never cached across Select calls. If no
+// deployment in the group is healthy at all, returns filterActive=false
+// too, deferring entirely to selectHealthy's own existing fail-open
+// behavior rather than layering a second, redundant "nothing is
+// healthy" case on top of it.
+//
+// Disclosed, accepted race window (a narrower, lower-stakes cousin of
+// the TOCTOU admitTurn's own doc comment fixed): this reads IsHealthy
+// for each deployment in ms.deps as a series of independent, separately-
+// locked snapshots, then the result is used for the WHOLE selectHealthy
+// call that follows — a concurrent ReportProbeResult landing inside that
+// window could make the chosen tier stale by the time admitTurn
+// re-checks a specific candidate's health. Unlike the bug admitTurn
+// fixes (which could admit an ACTIVELY UNHEALTHY deployment — a real
+// safety violation), the worst case here is purely a cost-preference
+// suboptimality: admitTurn's own fresh health check still correctly
+// rejects any candidate that became unhealthy in that window, and
+// selectHealthy's pre-existing fail-open path still returns a real,
+// merely more-expensive-than-ideal deployment — never an unsafe one.
+// Not worth the added complexity of re-deriving this per offered
+// candidate for a pure cost-optimization feature with no correctness
+// stake, per DECISIONS.md's [2026-09-12] entry.
+func (r *Router) activeCostTier(ms *modelState) (tier int, filterActive bool) {
+	minHealthyTier := 0
+	found := false
+	for _, d := range ms.deps {
+		t := r.costTiers[d.name]
+		if t <= 0 {
+			return 0, false
+		}
+		if !r.IsHealthy(d.name) {
+			continue
+		}
+		if !found || t < minHealthyTier {
+			minHealthyTier = t
+			found = true
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return minHealthyTier, true
+}
+
 // selectHealthy calls ms.next() up to ms.sumW times — the smooth-WRR
 // schedule's full cycle length, guaranteed to OFFER every distinct
 // deployment in the group at least once even under the most skewed
@@ -323,12 +379,17 @@ func (r *Router) admitTurn(name string) bool {
 // across calls, so a rejected offer only delays, never permanently
 // denies, that deployment's eventual admission.
 func (r *Router) selectHealthy(ms *modelState) (string, bool) {
+	tier, tierFilterActive := r.activeCostTier(ms)
+
 	var name string
 	var ok bool
 	for i := 0; i < ms.sumW; i++ {
 		name, ok = ms.next()
 		if !ok {
 			return "", false
+		}
+		if tierFilterActive && r.costTiers[name] != tier {
+			continue
 		}
 		if r.admitTurn(name) {
 			return name, true

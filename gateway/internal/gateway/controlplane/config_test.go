@@ -730,6 +730,60 @@ func TestLoadRejectsNegativeDeploymentWeight(t *testing.T) {
 	}
 }
 
+// TestLoadDeploymentCostTierUnsetDefaultsToZero proves a deployment with
+// no cost_tier key parses to CostTier: 0 — the "unset" sentinel
+// router.Router treats as "no tier configured," per DECISIONS.md's
+// [2026-09-12] entry, mirroring TestLoadDeploymentWeightUnsetDefaultsToZero's
+// own convention.
+func TestLoadDeploymentCostTierUnsetDefaultsToZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].CostTier; got != 0 {
+		t.Errorf("CostTier = %d, want 0 (unset)", got)
+	}
+}
+
+// TestLoadDeploymentCostTierParsesPositiveValue proves an explicit
+// cost_tier key parses through.
+func TestLoadDeploymentCostTierParsesPositiveValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    cost_tier: 2\n")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].CostTier; got != 2 {
+		t.Errorf("CostTier = %d, want 2", got)
+	}
+}
+
+// TestLoadRejectsNegativeDeploymentCostTier proves a negative cost_tier
+// is a real config error, never silently clamped — mirroring
+// TestLoadRejectsNegativeDeploymentWeight's own convention.
+func TestLoadRejectsNegativeDeploymentCostTier(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    cost_tier: -1\n")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a negative deployment cost_tier returned nil error")
+	}
+}
+
 // TestLoadDeploymentDisableCacheControlAutoPopulateUnsetDefaultsToFalse
 // proves a deployment with no disable_cache_control_auto_populate key
 // parses to false -- auto-populate stays ON, matching every deployment

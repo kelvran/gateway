@@ -78,6 +78,23 @@ type DeploymentConfig struct {
 	// existing looseness (getInt's silent-swallow-on-malformed-string
 	// behavior). A negative value is a config error.
 	Weight int
+	// CostTier is an optional, OPERATOR-CONFIGURED cost-preference band
+	// (lower = cheaper), per DECISIONS.md's [2026-09-12] entry — NOT a
+	// learned or usage-derived signal, and NOT read from PriceTable
+	// (which is keyed by canonical model, identical for every deployment
+	// sharing one Model value; this field is the genuinely new
+	// per-deployment signal PriceTable can't express). The real
+	// motivating case: one canonical model served by two differently-
+	// priced backends (e.g. the same model via Bedrock vs. a direct
+	// provider API, or two different negotiated contracts/regions).
+	// Zero (unset, the default, and every deployment configured before
+	// this field existed) means "no tier configured" — router.Router's
+	// tier-preference filtering activates for a model's whole deployment
+	// group ONLY when EVERY deployment in that group has an explicit
+	// tier set; a group with even one untiered deployment is
+	// byte-for-byte unaffected, matching Weight's own "zero means unset,
+	// resolve to today's behavior" convention immediately above.
+	CostTier int
 	// FallbackChains maps an error class (one of
 	// fallbackClassContentPolicy/fallbackClassContextWindowExceeded/
 	// fallbackClassGeneric below) to an ordered list of OTHER
@@ -577,6 +594,10 @@ func Load(path string) (*Config, error) {
 		dep.Weight, _ = getInt(depMap, "weight")
 		if dep.Weight < 0 {
 			return nil, fmt.Errorf("controlplane: deployment %q has a negative weight %d", name, dep.Weight)
+		}
+		dep.CostTier, _ = getInt(depMap, "cost_tier")
+		if dep.CostTier < 0 {
+			return nil, fmt.Errorf("controlplane: deployment %q has a negative cost_tier %d", name, dep.CostTier)
 		}
 		if fbRaw, ok := getMap(depMap, "fallback_chains"); ok {
 			chains, err := parseFallbackChains(name, fbRaw)
