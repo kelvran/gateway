@@ -2004,4 +2004,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** None new in shipped code this entry — three doc-staleness bugs (a security-relevant one in THREAT_MODEL.md's DoS row, understating what's actually mitigated; a corpus case's own note; an evals architecture doc line), all fixed.
 
-**Next steps / resume point:** Not yet committed. Next: commit this doc-only batch, then implement the 3 confirmed code-level findings (costaccounting clamp, mapping.py field-wiring, offline embedding-gate harness) as separate, independently-verified commits.
+**Next steps / resume point:** Committed (`31e1f5f`), pushed, CI confirmed green. Next: implement the 3 confirmed code-level findings (costaccounting clamp, mapping.py field-wiring, offline embedding-gate harness) as separate, independently-verified commits.
+
+## [2026-09-11] costaccounting cache-token invariant clamp
+
+**Files touched:** `gateway/internal/costaccounting/costaccounting.go`, `gateway/internal/costaccounting/costaccounting_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** First of the 3 confirmed backlog-audit findings. `Calculate` had no defense against `CacheReadTokens+CacheCreationTokens > PromptTokens`, an invariant every real producer this codebase builds honors, but `openaicompat`'s own doc comment discloses its cache-token field as unverified against a live self-hosted runtime.
+
+**Decisions made:** Chose "treat the entire PromptTokens as uncached" over "just clamp freshPromptTokens to 0" — the latter would leave the (untrustworthy) cache-token counts as-is when pricing them separately, potentially still billing more total tokens than PromptTokens actually reported; the chosen fix guarantees the total priced tokens never exceeds real usage and the direction of any error from a violated invariant is always toward MORE cost, never less, matching this package's own established "when in doubt, don't undercount" precedent (the existing cache-rate-unset-falls-back-to-prompt-rate design).
+
+**Verification performed:** New test reproduces the exact hostile shape from the audit's own worked example (`PromptTokens=100, CacheReadTokens=150, CompletionTokens=50`); sanity-checked-by-breaking (disabled the new guard, confirmed the test failed for the exact predicted reason, restored). Full gateway suite (build/vet/gofmt/test-race/golangci-lint/go-arch-lint/go-mod-tidy) clean except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** The invariant-violation gap itself (real, pre-existing since openaicompat's cache-token wiring shipped 2026-09-11, found by the backlog-audit workflow's gateway-security-cost agent, independently re-verified before trusting it).
+
+**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then the 2nd finding (evals/ingestion/mapping.py field-wiring).

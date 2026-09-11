@@ -121,6 +121,47 @@ func TestCalculateCacheReadPlusCreationNeverExceedsPromptTokensInvariant(t *test
 	}
 }
 
+// TestCalculateInvariantViolationTreatsEntirePromptAsUncachedRatherThanUndercounting
+// covers the HOSTILE case the boundary test above doesn't: a producer
+// (openaicompat's own doc comment discloses its CacheReadTokens as
+// unverified against a live runtime) reporting
+// CacheReadTokens+CacheCreationTokens > PromptTokens. Before the fix,
+// this drove freshPromptTokens negative, UNDERCOUNTING cost -- and a
+// negative cost is silently dropped entirely by budget.Tracker.Reconcile,
+// so this was a real $0-billed-request bug, not just a wrong number.
+func TestCalculateInvariantViolationTreatsEntirePromptAsUncachedRatherThanUndercounting(t *testing.T) {
+	cacheReadRate := decimal.RequireFromString("0.0000003")
+	c := NewCalculator(PriceTable{
+		"self-hosted-model": {
+			PromptPerToken:     decimal.RequireFromString("0.000015"),
+			CompletionPerToken: decimal.RequireFromString("0.000075"),
+			CacheReadPerToken:  &cacheReadRate,
+		},
+	})
+
+	// PromptTokens=100, but CacheReadTokens=150 -- a spurious value
+	// exceeding PromptTokens, exactly the shape an untrusted self-hosted
+	// backend could report.
+	got := c.Calculate("self-hosted-model", Usage{
+		PromptTokens:     100,
+		CacheReadTokens:  150,
+		CompletionTokens: 50,
+	})
+
+	// want: the entire 100 PromptTokens priced at the base (uncached)
+	// rate, plus 50 completion tokens -- never a reduced/negative figure
+	// from treating 150 tokens as "cached" out of only 100 real prompt
+	// tokens.
+	want := decimal.NewFromInt(100).Mul(decimal.RequireFromString("0.000015")).
+		Add(decimal.NewFromInt(50).Mul(decimal.RequireFromString("0.000075")))
+	if !got.Equal(want) {
+		t.Errorf("Calculate() = %v, want %v (entire PromptTokens priced as uncached, invariant violated)", got, want)
+	}
+	if got.IsNegative() {
+		t.Fatalf("Calculate() = %v, want non-negative -- an invariant violation must never produce a negative cost", got)
+	}
+}
+
 func TestCalculateZeroUsage(t *testing.T) {
 	c := NewCalculator(PriceTable{
 		"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.000002"), CompletionPerToken: decimal.RequireFromString("0.00001")},
