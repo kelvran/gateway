@@ -293,6 +293,81 @@ func TestLoadPriceTableParsesCacheTokenRates(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsPriceTableEntryMissingPromptPerToken proves a real,
+// live-discovered gap: prompt_per_token/completion_per_token are
+// REQUIRED fields (costaccounting.ModelPrice's own doc comment says so —
+// only the two cache-rate fields are optional/pointer-typed), but getDecimal
+// silently returns (decimal.Zero, false) for a missing key, and until this
+// fix Load() discarded that `false` and proceeded as if 0 were a real,
+// intentional rate. A typo'd key name (e.g. "prompt_per_tokn") must fail
+// config load loudly, never silently price every prompt token at $0.
+func TestLoadRejectsPriceTableEntryMissingPromptPerToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  gpt-4o:\n    completion_per_token: 0.00001\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a price_table entry missing prompt_per_token returned nil error, want a real config error")
+	}
+}
+
+// TestLoadRejectsPriceTableEntryMalformedCompletionPerToken proves the
+// same gap for a PRESENT but unparseable value (e.g. a quoted currency
+// symbol) — getDecimal returns the identical (decimal.Zero, false) for
+// this case as for a missing key, so it must be rejected the same way.
+func TestLoadRejectsPriceTableEntryMalformedCompletionPerToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  gpt-4o:\n    prompt_per_token: 0.0000025\n    completion_per_token: \"$0.00001\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a malformed completion_per_token returned nil error, want a real config error")
+	}
+}
+
+// TestLoadRejectsNegativePriceTableRate proves the second real gap:
+// no parsed price_table rate was ever checked for sign, so a fat-fingered
+// negative rate (e.g. a rebate figure copy-pasted without flipping its
+// sign) parsed successfully and would have silently driven
+// costaccounting.Calculate's returned cost negative -- which
+// budget.Tracker.Reconcile then treats as an entirely non-billable
+// request (Sign() >= 0 check), permanently distorting that key's
+// historical-average reservation sizing for every future request.
+// Covers one base-rate field and one cache-rate field, proving both of
+// the two separate code paths (unconditional assignment vs. the
+// ok-gated pointer assignment) are guarded.
+func TestLoadRejectsNegativePriceTableRate(t *testing.T) {
+	tests := []struct {
+		name       string
+		priceBlock string
+	}{
+		{"negative prompt_per_token", "    prompt_per_token: -0.0000025\n    completion_per_token: 0.00001\n"},
+		{"negative completion_per_token", "    prompt_per_token: 0.0000025\n    completion_per_token: -0.00001\n"},
+		{"negative cache_read_per_token", "    prompt_per_token: 0.0000025\n    completion_per_token: 0.00001\n    cache_read_per_token: -0.0000003\n"},
+		{"negative cache_creation_per_token", "    prompt_per_token: 0.0000025\n    completion_per_token: 0.00001\n    cache_creation_per_token: -0.00001\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  gpt-4o:\n" + tt.priceBlock + "deployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			if _, err := Load(path); err == nil {
+				t.Fatalf("Load with %s returned nil error, want a real config error", tt.name)
+			}
+		})
+	}
+}
+
 // TestLoadCacheSectionParsesJitterFraction proves the new
 // jitter_fraction key (L1, L2, and L3), per
 // docs/rfcs/2026-09-10-gateway-cache-ttl-jitter.md, is parsed correctly

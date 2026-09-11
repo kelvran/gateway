@@ -658,16 +658,34 @@ func Load(path string) (*Config, error) {
 			if !ok {
 				return nil, fmt.Errorf("controlplane: price_table entry %q must be a mapping", model)
 			}
-			promptPer, _ := getDecimal(priceMap, "prompt_per_token")
-			completionPer, _ := getDecimal(priceMap, "completion_per_token")
+			promptPer, ok := getDecimal(priceMap, "prompt_per_token")
+			if !ok {
+				return nil, fmt.Errorf("controlplane: price_table entry %q missing or malformed prompt_per_token", model)
+			}
+			completionPer, ok := getDecimal(priceMap, "completion_per_token")
+			if !ok {
+				return nil, fmt.Errorf("controlplane: price_table entry %q missing or malformed completion_per_token", model)
+			}
+			if promptPer.Sign() < 0 {
+				return nil, fmt.Errorf("controlplane: price_table entry %q has a negative prompt_per_token", model)
+			}
+			if completionPer.Sign() < 0 {
+				return nil, fmt.Errorf("controlplane: price_table entry %q has a negative completion_per_token", model)
+			}
 			entry := ModelPriceConfig{
 				PromptPerToken:     promptPer,
 				CompletionPerToken: completionPer,
 			}
 			if cacheReadPer, ok := getDecimal(priceMap, "cache_read_per_token"); ok {
+				if cacheReadPer.Sign() < 0 {
+					return nil, fmt.Errorf("controlplane: price_table entry %q has a negative cache_read_per_token", model)
+				}
 				entry.CacheReadPerToken = &cacheReadPer
 			}
 			if cacheCreationPer, ok := getDecimal(priceMap, "cache_creation_per_token"); ok {
+				if cacheCreationPer.Sign() < 0 {
+					return nil, fmt.Errorf("controlplane: price_table entry %q has a negative cache_creation_per_token", model)
+				}
 				entry.CacheCreationPerToken = &cacheCreationPer
 			}
 			cfg.PriceTable[model] = entry

@@ -2131,3 +2131,31 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None — a real coverage gap (already-computed trace/span IDs with no top-level surface), not a defect.
 
 **Next steps / resume point:** This closes all 4 round-2 gateway-observability findings, and with them all 11 findings from the round-2 backlog audit. Not yet committed. Next: commit, push, watch CI, then report a final summary to the user — the entire round-2 backlog is now shipped.
+
+## [2026-09-11] Round-3 backlog audit (4 fresh domains) kicked off
+
+**Files touched:** none yet — this entry records the audit itself; implementation entries follow separately per finding.
+
+**Intent/summary:** User asked to go ahead with the next ideal steps again, via dynamic workflows. Ran a third backlog-audit workflow, deliberately covering domains genuinely fresh (not a resweep of round-1/round-2's own territory): gateway admin API + identity/virtual-key subsystem (never had its own dedicated pass); a gateway cost/FinOps resweep (the original round-4 research predates cache-token accounting, prompt management, and structured-output normalization, all of which touch cost surfaces); an evals corpus/harness SCALING resweep (distinct angle from round-1/round-2's correctness-focused corpus governance); a fresh-eyes resweep of gateway's two newest features (structured-output normalization, prompt management) plus this session's own newest telemetry work.
+
+**Decisions made:** Each domain agent was explicitly briefed on everything round-1/round-2 already closed AND everything already-researched-and-deferred-with-a-named-trigger, to avoid rediscovery. Adversarial verification ran on every `build_now` finding, each verifier independently re-reading the cited evidence against live code rather than trusting the audit agent's claim.
+
+**Verification performed:** All 8 `build_now` findings survived verification with 0 refuted — the strongest result of any round so far (round-1 had 1 refuted; round-2 had 0 refuted across 11 total but a narrower set). 3 `not_yet` findings correctly named a real external trigger each (corpus-scale, audit-corpus concurrency safety, prompt.Store multi-instance proof) rather than proposing them as oversights.
+
+**Bugs found:** 8 real, confirmed gaps across gateway admin/identity (3), gateway cost/FinOps (2), evals corpus harness (1), and gateway's newest features (2) — see DECISIONS.md for the full list with citations.
+
+**Next steps / resume point:** Implement all 8 confirmed findings, smallest/lowest-risk first, each independently sanity-checked-by-breaking, verified, and committed before moving to the next — matching this project's established rhythm.
+
+## [2026-09-11] gateway: price_table config now rejects missing/malformed/negative rates (round-3 findings #4/#5)
+
+**Files touched:** `gateway/internal/gateway/controlplane/config.go`, `gateway/internal/gateway/controlplane/config_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** First 2 of round 3's 8 confirmed findings, combined into one commit since both are validation additions to the exact same ~20-line `price_table` parse block. (1) The two required base rates (`prompt_per_token`/`completion_per_token`) silently defaulted to `decimal.Zero` on a missing or malformed value — the code's own `ok`-checking convention, already used 2 lines below for the optional cache-rate fields, was simply never applied to the required ones. (2) No price_table rate had a non-negative check at all, so a sign-flip typo could drive `costaccounting.Calculate`'s returned cost negative, which `budget.Tracker.Reconcile`'s existing `Sign() >= 0` billable-check then silently treats as an entirely free request.
+
+**Decisions made:** Mirrored this same file's own existing precedent exactly rather than inventing a new validation style — the `ok`-check pattern already used for cache rates, and the negative-value rejection pattern already used for deployment weight (`TestLoadRejectsNegativeDeploymentWeight`).
+
+**Verification performed:** New tests: `TestLoadRejectsPriceTableEntryMissingPromptPerToken`, `TestLoadRejectsPriceTableEntryMalformedCompletionPerToken`, table-driven `TestLoadRejectsNegativePriceTableRate` (4 subtests covering both code paths — unconditional base-rate assignment and the `ok`-gated cache-rate pointer assignment). Sanity-checked-by-breaking: temporarily removed all 4 sign checks via a scripted edit, confirmed all 4 negative-rate subtests failed for the exact predicted reason. A `git checkout` used to revert that temporary break accidentally reverted the entire not-yet-committed fix — caught immediately by a failing test re-run, reapplied from scratch, re-verified clean. Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures. No existing fixture (including `config.example.yaml`) needed updating — all already used well-formed, non-negative values.
+
+**Bugs found:** Both are real, pre-existing gaps (missing-rate silent-$0 default; no sign validation) — the finding's own severity claim (silently distorted budget enforcement, not just a wrong number) was independently reconfirmed by tracing `Calculate`'s call sites.
+
+**Next steps / resume point:** Committed, push+CI pending. Next: admin/identity findings (rate-limit default resolution, then the CAS/concurrency fix, then read-route audit logging) — 3 more findings in that domain.
