@@ -118,6 +118,52 @@ func TestIntegrationAdminAPIAddsVirtualKeyUsableOnMainServer(t *testing.T) {
 	}
 }
 
+// TestIntegrationAdminAPIVirtualKeyWithoutRateLimitIsUsable is the
+// end-to-end regression proof for a round-3 backlog-audit finding: a
+// virtual key created via the Admin API with NO rate_limit section at
+// all (the common case for an operator who just wants budget/model
+// controls, no throttling) must resolve to ratelimit's own default
+// burst/refill, exactly like the static config file's own identical
+// case — never a permanent, never-refilling zero-capacity bucket that
+// denies every request forever. Before the fix this test would have
+// received a 429 on this very first request.
+func TestIntegrationAdminAPIVirtualKeyWithoutRateLimitIsUsable(t *testing.T) {
+	upstream, _ := newMockUpstream(t)
+	clientSrv, adminSrv, adminToken := newAdminIntegrationServers(t, upstream.URL, "OPENAI_API_KEY_ADMIN_TEST3")
+
+	newSecret := "brand-new-secret-no-rate-limit-section"
+	body := `{"key_hash":"` + testKeyHash(newSecret) + `"}`
+	req, err := http.NewRequest(http.MethodPost, adminSrv.URL+"/admin/virtual_keys/team-delta", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("building admin request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("admin POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("admin POST status = %d, want 204", resp.StatusCode)
+	}
+
+	clientReq, err := http.NewRequest(http.MethodPost, clientSrv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("building client request: %v", err)
+	}
+	clientReq.Header.Set("Authorization", "Bearer "+newSecret)
+	clientReq.Header.Set("Content-Type", "application/json")
+	clientResp, err := http.DefaultClient.Do(clientReq)
+	if err != nil {
+		t.Fatalf("client request with the rate-limit-less admin-added key: %v", err)
+	}
+	defer func() { _ = clientResp.Body.Close() }()
+	if clientResp.StatusCode != http.StatusOK {
+		t.Fatalf("client request status = %d, want 200 -- a key created with no rate_limit section must still be usable, resolved to the gateway's own default burst/refill", clientResp.StatusCode)
+	}
+}
+
 // TestIntegrationAdminAPIRejectsClientVirtualKeyCredential proves the
 // RFC's auth-separation claim over real HTTP, not just at the handler-
 // unit level: a genuine client-facing virtual key's own bearer secret

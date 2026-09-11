@@ -43,6 +43,47 @@ type KeyConfig struct {
 	PerModel map[string]ModelRateLimit
 }
 
+// DefaultKeyBurstCapacity/DefaultKeyRefillPerSecond are the fallback
+// rate-limit values applied to any virtual key whose config doesn't
+// specify its own burst/refill (both <= 0) -- exported from this package
+// specifically so cmd/gateway's static-config path and
+// internal/admin's live virtual-key-mutation path share exactly ONE
+// definition, per a round-3 backlog-audit finding: admin.go's own doc
+// comment already asserted this resolution happened on the admin path
+// ("omitting rate_limit entirely already resets burst/refill to zero,
+// which UpsertVirtualKey's caller then resolves to the gateway's own
+// default") -- a claim that was FALSE, since the only resolution that
+// ever existed was a private, unexported pair of constants inside
+// cmd/gateway/main.go's buildPipeline, invisible to and unreachable from
+// internal/admin (a separate package). A virtual key created via the
+// Admin API with no rate_limit section got Capacity=0/RefillPerSecond=0
+// forever -- a TokenBucket built with zero capacity never refills above
+// zero, so Allow() denies every request permanently (see HasLimit's own
+// doc comment for the same "zero-capacity bucket vs. never-registered"
+// distinction this exact case falls into).
+const (
+	DefaultKeyBurstCapacity   = 20
+	DefaultKeyRefillPerSecond = 10
+)
+
+// ResolveKeyRateLimit returns burst/refill unchanged unless BOTH are
+// <= 0 (this package's own "unset" convention for a virtual key,
+// distinct from a per-deployment/per-model rate limit's own "0 means no
+// ceiling" convention -- see KeyConfig's own field doc comments), in
+// which case it returns DefaultKeyBurstCapacity/DefaultKeyRefillPerSecond
+// instead. Every caller constructing a KeyConfig (or an
+// identity.VirtualKey's own RateLimitBurst/RateLimitRefill fields) for a
+// virtual key must call this exactly once, so "a key with no configured
+// rate limit" and "a key explicitly configured with a positive rate
+// limit" are the only two states any KeyConfig this package ever
+// receives can be in -- never a live, permanently-zero bucket.
+func ResolveKeyRateLimit(burst, refill float64) (float64, float64) {
+	if burst <= 0 && refill <= 0 {
+		return DefaultKeyBurstCapacity, DefaultKeyRefillPerSecond
+	}
+	return burst, refill
+}
+
 // ModelRateLimit is one virtual key's per-model RPM override — see
 // KeyConfig.PerModel's doc comment for the full design.
 //

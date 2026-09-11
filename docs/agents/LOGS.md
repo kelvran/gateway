@@ -2158,4 +2158,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** Both are real, pre-existing gaps (missing-rate silent-$0 default; no sign validation) — the finding's own severity claim (silently distorted budget enforcement, not just a wrong number) was independently reconfirmed by tracing `Calculate`'s call sites.
 
-**Next steps / resume point:** Committed, push+CI pending. Next: admin/identity findings (rate-limit default resolution, then the CAS/concurrency fix, then read-route audit logging) — 3 more findings in that domain.
+**Next steps / resume point:** Committed (`f865e15`), pushed, CI confirmed green. Next: admin/identity findings (rate-limit default resolution, then the CAS/concurrency fix, then read-route audit logging) — 3 more findings in that domain.
+
+## [2026-09-11] gateway: admin-created virtual keys with no rate_limit section are now usable (round-3 finding #1)
+
+**Files touched:** `gateway/internal/ratelimit/limiter.go`, `gateway/internal/ratelimit/limiter_test.go`, `gateway/internal/admin/admin.go`, `gateway/cmd/gateway/main.go`, `gateway/cmd/gateway/admin_integration_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** First of 3 gateway-admin-identity findings. An Admin-API-created virtual key with no `rate_limit` section got a permanent, never-refilling zero-capacity bucket — the exact resolution the static-config path already had was never reachable from `internal/admin`, a separate package, despite `admin.go`'s own doc comment falsely claiming it happened.
+
+**Decisions made:** Extracted the resolution into `internal/ratelimit` (a package both `cmd/gateway` and `internal/admin` already import) as `ResolveKeyRateLimit` + 2 exported constants, rather than duplicating the same `if burst<=0 && refill<=0` check a second time in admin.go — the whole point of the fix is one shared source of truth, not two independently-written copies that happen to agree today. Corrected the false doc comment in place.
+
+**Verification performed:** New unit test on `ResolveKeyRateLimit` directly (both-zero/both-negative → default; explicit pair passes through). New end-to-end integration test (`TestIntegrationAdminAPIVirtualKeyWithoutRateLimitIsUsable`) — admin-POST a key omitting `rate_limit`, then a real client request through it, asserting 200. Confirmed via grep that no pre-existing test exercised this exact scenario (every admin test either skipped the real-request step or always included a non-empty `rate_limit` body). Sanity-checked-by-breaking (removed the `ResolveKeyRateLimit` call, confirmed the integration test failed with a real 429, restored). Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** The rate-limit-default gap itself (real, previously undetected, contradicted by the code's own false doc comment) — found by the round-3 audit's gateway-admin-identity agent, independently re-verified line-for-line before trusting it.
+
+**Next steps / resume point:** Committed, push+CI pending. Next: the CAS/concurrency fix for UpsertVirtualKey/DeleteVirtualKey, then read-route audit logging.

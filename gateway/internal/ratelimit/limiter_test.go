@@ -559,3 +559,20 @@ func TestRegisterDisablingPerModelTPMRemovesTheStaleBucket(t *testing.T) {
 		t.Fatal("ReserveTPM(gpt-4o) = false after Register() disabled the override, want true — gpt-4o should now fall through to the fresh default TPM bucket, not a stale exhausted override")
 	}
 }
+
+// TestResolveKeyRateLimitAppliesDefaultOnlyWhenBothAreUnset is the unit-
+// level proof for a round-3 backlog-audit finding: this exact function
+// is the ONE shared source of truth cmd/gateway's static-config path and
+// internal/admin's live virtual-key-mutation path must both call, so
+// neither path can silently drift from the other again.
+func TestResolveKeyRateLimitAppliesDefaultOnlyWhenBothAreUnset(t *testing.T) {
+	if burst, refill := ResolveKeyRateLimit(0, 0); burst != DefaultKeyBurstCapacity || refill != DefaultKeyRefillPerSecond {
+		t.Errorf("ResolveKeyRateLimit(0, 0) = (%v, %v), want (%v, %v)", burst, refill, DefaultKeyBurstCapacity, DefaultKeyRefillPerSecond)
+	}
+	if burst, refill := ResolveKeyRateLimit(-1, -1); burst != DefaultKeyBurstCapacity || refill != DefaultKeyRefillPerSecond {
+		t.Errorf("ResolveKeyRateLimit(-1, -1) = (%v, %v), want (%v, %v)", burst, refill, DefaultKeyBurstCapacity, DefaultKeyRefillPerSecond)
+	}
+	if burst, refill := ResolveKeyRateLimit(50, 25); burst != 50 || refill != 25 {
+		t.Errorf("ResolveKeyRateLimit(50, 25) = (%v, %v), want (50, 25) — an explicitly configured pair must pass through unchanged", burst, refill)
+	}
+}

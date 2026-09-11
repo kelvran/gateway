@@ -81,8 +81,14 @@ type rateLimitRequest struct {
 	// never a partial merge — like every other field on this request
 	// struct — so omitting per_model on an update to an already-overridden
 	// key clears its overrides, exactly as omitting rate_limit entirely
-	// already resets burst/refill to zero (which UpsertVirtualKey's
-	// caller then resolves to the gateway's own default).
+	// resets burst/refill to zero before upsertVirtualKeyHandler's own
+	// ratelimit.ResolveKeyRateLimit call resolves that zero pair to
+	// ratelimit.DefaultKeyBurstCapacity/DefaultKeyRefillPerSecond — a
+	// round-3 backlog audit found this comment's prior wording ("which
+	// UpsertVirtualKey's caller then resolves to the gateway's own
+	// default") was FALSE: no such resolution existed anywhere on this
+	// path, and a key created with no rate_limit section got a permanent,
+	// never-refilling zero-capacity bucket instead.
 	PerModel map[string]perModelRateLimitRequest `json:"per_model"`
 }
 
@@ -259,6 +265,14 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 				}
 			}
 		}
+		// A round-3 backlog-audit finding: without this call, a key
+		// created/updated with no rate_limit section (the common,
+		// no-throttling-needed case) got Capacity=0/RefillPerSecond=0 --
+		// a TokenBucket that never refills above zero, so Allow() denies
+		// every request against it forever. Shares the exact resolution
+		// cmd/gateway's static-config path already applies, per
+		// ResolveKeyRateLimit's own doc comment.
+		burst, refill = ratelimit.ResolveKeyRateLimit(burst, refill)
 
 		vk := identity.VirtualKey{
 			ID:                  name,

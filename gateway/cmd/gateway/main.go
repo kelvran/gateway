@@ -60,16 +60,6 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
-// Rate-limit defaults applied to any virtual key whose config doesn't
-// specify its own rate_limit section (RateLimitBurst/Refill both zero).
-// controlplane only parses what the config file says; applying a
-// fallback default is an operational concern that belongs here, not in
-// the parser.
-const (
-	defaultBurstCapacity   = 20
-	defaultRefillPerSecond = 10
-)
-
 // gracefulShutdownTimeout bounds how long an in-flight request (most
 // realistically a long streaming SSE/eventstream response) gets to
 // finish after a SIGTERM/SIGINT before the process force-exits
@@ -327,10 +317,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	// rather than a second pass over cfg.VirtualKeys.
 	concurrencyConfigs := make([]ratelimit.ConcurrencyConfig, 0, len(cfg.VirtualKeys))
 	for _, vk := range cfg.VirtualKeys {
-		burst, refill := vk.RateLimitBurst, vk.RateLimitRefill
-		if burst <= 0 && refill <= 0 {
-			burst, refill = defaultBurstCapacity, defaultRefillPerSecond
-		}
+		burst, refill := ratelimit.ResolveKeyRateLimit(vk.RateLimitBurst, vk.RateLimitRefill)
 		var allowedModels map[string]struct{}
 		if len(vk.AllowedModels) > 0 {
 			allowedModels = make(map[string]struct{}, len(vk.AllowedModels))
