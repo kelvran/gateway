@@ -2256,4 +2256,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** All 3 are doc-vs-code staleness, this project's own most-recurring gotcha class — none are code defects.
 
-**Next steps / resume point:** 8 findings remain: 2 gateway router/concurrency (selectHealthy TOCTOU), 2 gateway cache (L3 response_format + prompt-fingerprint gates, same fix shape), 2 evals rollout/sandbox (interruption safety, container-leak-on-cancel + missing resource limits), 2 gateway guardrail (SecretKeyDetector + IPAddressDetector ZWSP bypass, same fix shape). Not yet committed. Next: commit this doc batch, push, watch CI, then implement the 8 code fixes.
+**Next steps / resume point:** 8 findings remain: 2 gateway router/concurrency (selectHealthy TOCTOU), 2 gateway cache (L3 response_format + prompt-fingerprint gates, same fix shape), 2 evals rollout/sandbox (interruption safety, container-leak-on-cancel + missing resource limits), 2 gateway guardrail (SecretKeyDetector + IPAddressDetector ZWSP bypass, same fix shape). Committed (`3a3cd8e`), pushed, CI confirmed green. Next: implement the 8 code fixes, smallest first.
+
+## [2026-09-11] gateway: SecretKeyDetector + IPAddressDetector now strip hidden Unicode (round-4 findings #10/#11)
+
+**Files touched:** `gateway/internal/guardrail/secretkey.go`, `gateway/internal/guardrail/secretkey_test.go`, `gateway/internal/guardrail/ipaddress.go`, `gateway/internal/guardrail/ipaddress_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** First 2 of the 8 remaining round-4 findings, combined into one commit since both are the mechanically identical fix (mirror the already-shipped `stripHiddenUnicode`/`remapMatch` pattern 4 sibling detectors already use). `SecretKeyDetector` (Block tier) and `IPAddressDetector` (Warn tier) both matched their own regex patterns against raw text, letting a few interleaved zero-width characters fully evade detection.
+
+**Decisions made:** Mirrored `creditcard.go`'s exact precedent for a captured-value validation step (Luhn there, `shannonEntropy` here) computed on the stripped substring, not the original. No new abstraction — direct port of an already-proven pattern.
+
+**Verification performed:** New tests per detector (ZWSP-caught on each pattern branch, clean-baseline-unaffected, offset-indexes-original-text for IPAddressDetector). Sanity-checked-by-breaking BOTH detectors simultaneously — confirmed all 4 new tests failed for the exact predicted reason while every pre-existing sibling detector's own ZWSP test stayed green, proving the break was correctly scoped. Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** A real hard-block bypass for SecretKeyDetector specifically (Block tier, "masking isn't enough" — not merely a missed Warn) — live-reproduced through the full `guardrail.NewEngine` wiring before trusting the audit's claim.
+
+**Next steps / resume point:** Not yet committed. Next: the router/concurrency TOCTOU fix, then the L3 cache gates, then the evals rollout/sandbox findings.

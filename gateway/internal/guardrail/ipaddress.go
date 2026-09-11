@@ -22,12 +22,23 @@ type IPAddressDetector struct{}
 
 func (IPAddressDetector) Name() string       { return "ipaddress" }
 func (IPAddressDetector) Category() Category { return CategoryNetworkID }
+
+// Detect matches against stripHiddenUnicode(text)'s stripped copy, not
+// text directly — the identical evasion class already fixed for
+// phone.go/creditcard.go/ssn.go/iban.go/secretkey.go (regcorpus-
+// guardrail-23 and a round-4 backlog-audit finding): net.ParseIP requires
+// an exact, contiguous valid address, so a single injected zero-width
+// character mid-address means ipCandidatePattern's coarse pre-filter
+// never even reaches the ParseIP step. Every reported Finding.Start/End
+// is remapped back to the ORIGINAL text via remapMatch.
 func (IPAddressDetector) Detect(_ context.Context, text string) ([]Finding, error) {
+	stripped, origOffsets := stripHiddenUnicode(text)
 	var findings []Finding
-	for _, loc := range ipCandidatePattern.FindAllStringIndex(text, -1) {
-		candidate := text[loc[0]:loc[1]]
+	for _, loc := range ipCandidatePattern.FindAllStringIndex(stripped, -1) {
+		candidate := stripped[loc[0]:loc[1]]
 		if net.ParseIP(candidate) != nil {
-			findings = append(findings, Finding{Category: CategoryNetworkID, Detector: "ipaddress", Start: loc[0], End: loc[1]})
+			start, end := remapMatch(origOffsets, loc[0], loc[1])
+			findings = append(findings, Finding{Category: CategoryNetworkID, Detector: "ipaddress", Start: start, End: end})
 		}
 	}
 	return findings, nil

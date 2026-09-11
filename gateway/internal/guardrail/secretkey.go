@@ -60,19 +60,35 @@ type SecretKeyDetector struct{}
 
 func (SecretKeyDetector) Name() string       { return "secretkey" }
 func (SecretKeyDetector) Category() Category { return CategoryCredential }
+
+// Detect matches against stripHiddenUnicode(text)'s stripped copy, not
+// text directly — a round-4 backlog-audit finding: secretPrefixPattern's
+// and genericSecretAssignmentPattern's own {20,} unbounded-minimum runs
+// are the identical contiguous-character-class shape already fixed for
+// phone.go/creditcard.go/ssn.go/iban.go against the same evasion
+// (regcorpus-guardrail-23) — a single injected zero-width character every
+// few characters keeps every contiguous run under 20 chars, so neither
+// pattern ever matches at all, silently downgrading what should be a
+// hard Block into nothing. shannonEntropy is computed over the STRIPPED
+// substring (the value as actually captured, mirroring creditcard.go's
+// Luhn check on its own stripped substring); every reported
+// Finding.Start/End is remapped back to the ORIGINAL text via remapMatch.
 func (SecretKeyDetector) Detect(_ context.Context, text string) ([]Finding, error) {
+	stripped, origOffsets := stripHiddenUnicode(text)
 	var findings []Finding
-	for _, loc := range secretPrefixPattern.FindAllStringIndex(text, -1) {
-		findings = append(findings, Finding{Category: CategoryCredential, Detector: "secretkey", Start: loc[0], End: loc[1]})
+	for _, loc := range secretPrefixPattern.FindAllStringIndex(stripped, -1) {
+		start, end := remapMatch(origOffsets, loc[0], loc[1])
+		findings = append(findings, Finding{Category: CategoryCredential, Detector: "secretkey", Start: start, End: end})
 	}
-	for _, match := range genericSecretAssignmentPattern.FindAllStringSubmatchIndex(text, -1) {
+	for _, match := range genericSecretAssignmentPattern.FindAllStringSubmatchIndex(stripped, -1) {
 		valueStart, valueEnd := match[2], match[3]
 		if valueStart < 0 {
 			continue
 		}
-		value := text[valueStart:valueEnd]
+		value := stripped[valueStart:valueEnd]
 		if shannonEntropy(value) >= genericSecretEntropyThreshold {
-			findings = append(findings, Finding{Category: CategoryCredential, Detector: "secretkey", Start: match[0], End: match[1]})
+			start, end := remapMatch(origOffsets, match[0], match[1])
+			findings = append(findings, Finding{Category: CategoryCredential, Detector: "secretkey", Start: start, End: end})
 		}
 	}
 	return findings, nil
