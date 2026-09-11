@@ -2411,3 +2411,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None — purely additive, opt-in feature.
 
 **Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then start Phase 5 (gateway MCP/A2A outbound-credential RFC, design-only — the final phase).
+
+## [2026-09-12] Phase 5 of v2-upgrade plan: MCP/A2A outbound-credential RFC (design-only) — closes the plan entirely
+
+**Files touched:** `docs/rfcs/2026-09-11-gateway-mcp-outbound-credential-design.md` (new), `THREAT_MODEL.md`.
+
+**Intent/summary:** Fifth and final phase of the v2-upgrade-research plan. A design-only RFC sketching an `OutboundCredential` concept for the gateway→downstream-MCP-server credential leg, informed by the research finding that no real peer gateway reuses its own inbound credential as the outbound one. Zero code — `internal/mcp` remains genuinely unbuilt, matching every other MCP-related finding across this round's research (MCP's own spec is still mid-breaking-change).
+
+**Decisions made:** Mirrored the Redis-backed-cache RFC's exact "designed in full, deferred" structure. Sharpened THREAT_MODEL.md's existing LLM06 "moot today" citation rather than restating or contradicting it.
+
+**Verification performed:** Docs-only, per this phase's own scope — re-ran the full gateway build and full evals suite (456 passed, 15 skipped) to confirm no unintended impact.
+
+**Bugs found:** None.
+
+**Next steps / resume point:** All 5 phases of the v2-upgrade-research plan are now shipped. Commit, push, watch CI, then report the completed plan to the user.
