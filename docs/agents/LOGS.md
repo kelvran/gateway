@@ -2355,3 +2355,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None in code — the 3 corrections above are premise errors in the research itself, caught before implementation.
 
 **Next steps / resume point:** Plan approved by user. Implementing phase by phase, committing/pushing/watching CI green between each, per this project's established rhythm.
+
+## [2026-09-12] Phase 1 of v2-upgrade plan: cache cost-observability
+
+**Files touched:** `gateway/internal/telemetry/{telemetry,result,result_test}.go`, `gateway/internal/gateway/dataplane/dataplane.go`, `docs/operations/TELEMETRY.md`, `docs/operations/grafana-cache-dashboard.json` (new).
+
+**Intent/summary:** First phase of the v2-upgrade-research plan. Added `kelvran.cache.lookup` (hit/miss counter) and `kelvran.llm.spend_usd` (real billable spend counter) — closing the two real gaps the cost-observability research found (no queryable hit/miss aggregate; the research's own example dashboard panel referenced a spend metric that didn't exist). Confirmed `kelvran.cache.l3.gate_outcome` (the research's other build_now item) was already shipped from an earlier session — only needed a `docs/operations/TELEMETRY.md` table row, which was missing. Added 3 example Grafana panels — confirmed via exhaustive search that no dashboard file existed anywhere in the repo, matching the research's finding that no peer product (LiteLLM/Portkey/Langfuse/Helicone) ships a reference one either.
+
+**Decisions made:** New counters call sites live in `dataplane.finalize`, reusing the existing cache-savings capture point rather than adding a new one. `kelvran.llm.spend_usd` gated on `billable` (matching `RecordChatCompletionMetrics`'s existing double-counting-avoidance convention for a cache hit or coalesced singleflight follower).
+
+**Verification performed:** Extended (not duplicated) `TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome`, per that test's own documented "one delegation per test binary" constraint. Sanity-checked-by-breaking: swapped the hit/miss outcome-label assignment, confirmed the test failed for the exact predicted reason (including catching a miss incorrectly carrying a layer attribute), reverted. Full gateway suite clean (build/vet/`test -race`/golangci-lint/go-arch-lint/gofmt) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** None — this phase is additive instrumentation, no behavioral change to existing request handling.
+
+**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then start Phase 2 (evals continuous-monitoring alerting).

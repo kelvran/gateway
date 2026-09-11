@@ -2020,6 +2020,20 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		savingsUSD, _ := cost.Float64()
 		telemetry.RecordCacheSavings(ctx, cacheInfo.Layer, savingsUSD)
 	}
+	// kelvran.cache.lookup, per
+	// docs/upgrade-research/cache-cost-observability-2026-09-11.md
+	// Finding 1: unconditional, mirroring kelvran.cache.hit's own
+	// "false is a real value" span-attribute convention above.
+	telemetry.RecordCacheLookup(ctx, cacheInfo.Layer, cacheInfo.Hit())
+	// kelvran.llm.spend_usd, same Finding: unblocks a savings-as-%-of-spend
+	// dashboard panel. Gated on billable, matching
+	// RecordChatCompletionMetrics's own double-counting-avoidance
+	// convention -- a cache hit or coalesced singleflight follower never
+	// replays another call's already-recorded spend a second time.
+	if billable {
+		spendUSD, _ := cost.Float64()
+		telemetry.RecordLLMSpend(ctx, spendUSD)
+	}
 
 	event := &gatewayeventsv1.GatewayDecisionEvent{
 		TraceId:                span.SpanContext().TraceID().String(),

@@ -353,6 +353,66 @@ func RecordCacheSavings(ctx context.Context, layer string, savingsUSD float64) {
 	cacheSavingsCounter.Add(ctx, savingsUSD, metric.WithAttributes(attribute.String(AttrKelvranCacheLayer, layer)))
 }
 
+// cacheLookupCounter records every cache lookup outcome (hit/miss), per
+// docs/upgrade-research/cache-cost-observability-2026-09-11.md Finding 1:
+// kelvran.cache.hit was previously only a per-request span attribute,
+// with no queryable aggregate an operator's own Prometheus/Grafana could
+// sum a hit-rate from directly (every vendor surveyed by that research
+// queries a hit/miss ratio from raw counters at read time -- none ships
+// a pre-computed hit-rate% metric).
+var cacheLookupCounter = mustInt64Counter(
+	meter,
+	"kelvran.cache.lookup",
+	metric.WithDescription("Cache lookup outcomes (hit/miss), by layer for a hit."),
+	metric.WithUnit("{lookup}"),
+)
+
+// RecordCacheLookup increments cacheLookupCounter for every finalized
+// request, hit or miss -- unconditional, mirroring AttrKelvranCacheHit's
+// own "false is a real value, not unknown" span-attribute convention
+// (result.go). layer is only attributed when hit is true; a miss never
+// carries a fabricated empty-string layer, matching this package's
+// existing "skip the attribute rather than write a placeholder"
+// convention (e.g. RecordCacheSavings, CacheSimilarity).
+func RecordCacheLookup(ctx context.Context, layer string, hit bool) {
+	outcome := "miss"
+	if hit {
+		outcome = "hit"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrKelvranCacheLookupOutcome, outcome),
+		attribute.String(AttrKelvranInstanceID, InstanceID),
+	}
+	if hit {
+		attrs = append(attrs, attribute.String(AttrKelvranCacheLayer, layer))
+	}
+	cacheLookupCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// llmSpendCounter is the real USD cost of every genuine, unshared
+// upstream call this specific request itself paid for -- the
+// counterpart cost-observability research needs to compute a
+// savings-as-percent-of-spend dashboard ratio: kelvran.cache.savings_usd
+// already existed, but the research's own example panel referenced a
+// spend counter that did not (cost was only a per-request span attribute
+// string, kelvran.cost.usd, never an aggregatable counter).
+var llmSpendCounter = mustFloat64Counter(
+	meter,
+	"kelvran.llm.spend_usd",
+	metric.WithDescription("Real USD cost of billable upstream LLM calls."),
+	metric.WithUnit("{USD}"),
+)
+
+// RecordLLMSpend increments llmSpendCounter by spendUSD. Callers must
+// only call this when the request was genuinely billable (see
+// ChatCompletionResult.Billable's own doc comment) -- mirrors
+// RecordChatCompletionMetrics's own gen_ai.client.token.usage gating, so
+// a cache hit or coalesced singleflight follower never replays another
+// call's already-recorded spend a second time.
+func RecordLLMSpend(ctx context.Context, spendUSD float64) {
+	llmSpendCounter.Add(ctx, spendUSD)
+}
+
 // Config selects how spans are exported.
 type Config struct {
 	// Exporter is "stdout", "otlp", or "none". "" defaults to "stdout" —

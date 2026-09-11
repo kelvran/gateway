@@ -1,0 +1,43 @@
+{
+  "_comment_do_not_ship_verbatim": "Example panels only, per docs/upgrade-research/cache-cost-observability-2026-09-11.md Finding 3: no vendor surveyed (LiteLLM, Portkey, Langfuse, Helicone) ships a reference cache dashboard to copy from, and LiteLLM's own 3 maintained Grafana dashboards have zero cache panels despite LiteLLM itself supporting caching. PromQL below assumes the OTel-to-Prometheus exporter's default name translation (dot-namespaced instrument name -> underscored name, '_total' suffix on a Sum/monotonic counter) -- verify the exact translated names against your own configured collector/exporter before importing this dashboard; do not assume these strings are correct for every backend.",
+  "title": "Kelvran Cache Observability (example)",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Cache hit rate by layer",
+      "description": "kelvran.cache.lookup, dimensioned by kelvran.cache.lookup_outcome (hit/miss) and kelvran.cache.layer (hit only). See docs/operations/TELEMETRY.md's 'Cache lookup hit/miss (metric)' row.",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (kelvran_cache_layer) (rate(kelvran_cache_lookup_total{kelvran_cache_lookup_outcome=\"hit\"}[5m])) / ignoring(kelvran_cache_layer) group_left sum(rate(kelvran_cache_lookup_total[5m]))",
+          "legendFormat": "{{kelvran_cache_layer}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Cache savings as % of LLM spend",
+      "description": "kelvran.cache.savings_usd (notional cost avoided, real since docs/rfcs/2026-09-10-gateway-cache-savings-metric.md) over kelvran.llm.spend_usd (real cost paid, added 2026-09-11 specifically to unblock this ratio -- it did not exist before). See docs/operations/TELEMETRY.md's 'LLM spend (metric)' row.",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(rate(kelvran_cache_savings_usd_total[1h])) / sum(rate(kelvran_llm_spend_usd_total[1h]))",
+          "legendFormat": "savings / spend"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Cache L3-lite gate rejection rate by gate",
+      "description": "kelvran.cache.l3.gate_outcome -- a per-gate ablation signal (which gate is doing the safety work). Reuses an already-shipped metric; no new instrumentation needed for this panel. See docs/operations/TELEMETRY.md's 'Cache L3-lite gate outcomes (metric)' row.",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (kelvran_cache_l3_gate) (rate(kelvran_cache_l3_gate_outcome_total{kelvran_cache_l3_outcome=\"reject\"}[5m])) / ignoring(kelvran_cache_l3_gate) group_left sum(rate(kelvran_cache_l3_gate_outcome_total[5m]))",
+          "legendFormat": "{{kelvran_cache_l3_gate}}"
+        }
+      ]
+    }
+  ]
+}

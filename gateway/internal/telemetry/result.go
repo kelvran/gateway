@@ -131,6 +131,15 @@ const (
 	// one), never a second span or a fabricated success record.
 	AttrKelvranFallbackHopErrorClass = "kelvran.fallback.hop.error_class"
 	AttrKelvranFallbackHopDurationMs = "kelvran.fallback.hop.duration_ms"
+	// AttrKelvranCacheLookupOutcome is "hit" or "miss", per
+	// telemetry.RecordCacheLookup — the aggregate, queryable counterpart
+	// to AttrKelvranCacheHit (a per-request span attribute only), per
+	// docs/upgrade-research/cache-cost-observability-2026-09-11.md
+	// Finding 1: no vendor surveyed ships a pre-computed hit-rate% metric,
+	// but every one queries hit/miss ratios from raw counters at read
+	// time, and Kelvran had cache hit/miss as a span attribute only, with
+	// no counter to query that ratio from.
+	AttrKelvranCacheLookupOutcome = "kelvran.cache.lookup_outcome"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider

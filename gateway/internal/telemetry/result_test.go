@@ -400,6 +400,17 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	RecordCacheSavings(ctx, "L1", 0.001)
 	RecordCacheSavings(ctx, "L3", 0.0015)
 
+	// kelvran.cache.lookup and kelvran.llm.spend_usd, per
+	// docs/upgrade-research/cache-cost-observability-2026-09-11.md
+	// Finding 1 -- same "must share this function's one delegation"
+	// constraint as kelvran.cache.savings_usd above.
+	RecordCacheLookup(ctx, "L1", true)
+	RecordCacheLookup(ctx, "L3", true)
+	RecordCacheLookup(ctx, "", false)
+	RecordCacheLookup(ctx, "", false)
+	RecordLLMSpend(ctx, 0.01)
+	RecordLLMSpend(ctx, 0.02)
+
 	// Three RecordChatCompletionMetrics scenarios, each given a unique
 	// RequestModel so their attribute sets never collide into the same
 	// histogram data point: a genuine billable success (both histograms
@@ -443,9 +454,34 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 
 	counts := map[[2]string]int64{}
 	savingsByLayer := map[string]float64{}
+	// lookupCounts is keyed by (outcome, layer) -- layer is "" for every
+	// miss, matching RecordCacheLookup's own "never a fabricated
+	// empty-string layer on a miss" convention (it simply omits the
+	// attribute, which reads back as "" via dp.Attributes.Value's own
+	// not-present zero value).
+	lookupCounts := map[[2]string]int64{}
+	var totalSpendUSD float64
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			switch m.Name {
+			case "kelvran.cache.lookup":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.cache.lookup data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					outcome, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLookupOutcome))
+					layer, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLayer))
+					lookupCounts[[2]string{outcome.AsString(), layer.AsString()}] += dp.Value
+				}
+			case "kelvran.llm.spend_usd":
+				sum, ok := m.Data.(metricdata.Sum[float64])
+				if !ok {
+					t.Fatalf("kelvran.llm.spend_usd data type = %T, want metricdata.Sum[float64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					totalSpendUSD += dp.Value
+				}
 			case "kelvran.cache.l3.gate_outcome":
 				sum, ok := m.Data.(metricdata.Sum[int64])
 				if !ok {
@@ -478,6 +514,28 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	}
 	if got := savingsByLayer["L2"]; got != 0 {
 		t.Errorf("kelvran.cache.savings_usd[L2] = %v, want 0 (never recorded)", got)
+	}
+
+	wantLookups := map[[2]string]int64{
+		{"hit", "L1"}: 1,
+		{"hit", "L3"}: 1,
+		{"miss", ""}:  2,
+	}
+	for key, wantCount := range wantLookups {
+		if got := lookupCounts[key]; got != wantCount {
+			t.Errorf("lookupCounts[%v] = %d, want %d", key, got, wantCount)
+		}
+	}
+	// A miss must never carry a layer attribute value -- confirms
+	// RecordCacheLookup's own "omit the attribute, don't fabricate an
+	// empty string" claim actually holds, not just that the counts add up.
+	if got := lookupCounts[[2]string{"miss", "L1"}]; got != 0 {
+		t.Errorf(`lookupCounts[{"miss","L1"}] = %d, want 0 (a miss never carries a layer)`, got)
+	}
+
+	const spendEpsilon = 1e-9
+	if got, want := totalSpendUSD, 0.01+0.02; got < want-spendEpsilon || got > want+spendEpsilon {
+		t.Errorf("kelvran.llm.spend_usd total = %v, want %v", got, want)
 	}
 
 	want := map[[2]string]int64{
