@@ -353,6 +353,7 @@ TrendSeriesName = Literal[
     "judge_accuracy_kappa",
     "quote_grounding_rate",
     "audit_corpus_defect_rate",
+    "judge_panel_tie_rate",
     "cost_usd",
 ]
 
@@ -397,10 +398,12 @@ class TrendSnapshot(BaseModel):
 
     `scorer_type` is `None` for `audit_corpus_defect_rate` (audited per
     suite file, not per scorer) and real (`"deterministic"`/
-    `"llm_judge"`/`"llm_judge_panel"`) for the other three series, all
+    `"llm_judge"`/`"llm_judge_panel"`) for the other series, all
     computed inside `report_cmd`'s own per-`scorer_type` grouping loop --
     never blended across scorer types, the same discipline `report_cmd`'s
-    own pass_rate/CI lines already enforce.
+    own pass_rate/CI lines already enforce. `judge_panel_tie_rate` is
+    additionally scoped to `scorer_type == "llm_judge_panel"` only -- a
+    single-judge score has no quorum/tie concept at all.
     """
 
     model_config = ConfigDict(frozen=True)

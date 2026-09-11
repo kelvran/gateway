@@ -2074,4 +2074,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The missing-`max_tokens` gap itself (real, pre-existing, already disclosed in `make_bedrock_call_model`'s own doc comment as unfixed) — found by the round-2 backlog-audit workflow's evals-judge-harness agent, independently re-verified (with one severity correction) before trusting it.
 
-**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then the panel-disagreement TrendSnapshot series, then the 4 gateway-observability fixes.
+**Next steps / resume point:** Committed (`eaf304d`), pushed, CI confirmed green. Next: the panel-disagreement TrendSnapshot series, then the 4 gateway-observability fixes.
+
+## [2026-09-11] evals: judge-panel tie rate persisted as a TrendSnapshot series
+
+**Files touched:** `evals/evals/models.py`, `evals/evals/cli.py`, `evals/tests/test_trend_integration.py`, `DECISIONS.md`.
+
+**Intent/summary:** Second of the round-2 evals-judge-harness findings. `report_cmd` already computed the panel's quorum-tie count but never persisted it via `--record-trend`, unlike its two sibling signals in the same loop.
+
+**Decisions made:** Placed the new `TrendSnapshot` append directly next to the existing tie-count computation (not a new, separate loop pass) — the exact same code-locality pattern `quote_grounding_rate` already uses one loop iteration below it. Scoped strictly to `scorer_type == "llm_judge_panel"` since neither a deterministic nor a single-judge score has a quorum concept at all; the existing `TrendSnapshot` validator needed no changes since it's already generic over any non-`cost_usd` series.
+
+**Verification performed:** 3 new tests (a real snapshot with a hand-computed 0.5 tie rate; a proof no snapshot is produced for non-panel scorers; a `trend show --series judge_panel_tie_rate` CLI acceptance proof, confirming the `TrendSeriesName` Literal and the `--series` Choice list stayed in sync). Sanity-checked-by-breaking (removed the new `TrendSnapshot` append, confirmed both real-value tests failed for the exact predicted reason, restored). Full evals suite (436 passed, up from 433, 13 skipped), ruff clean, 3/3 import-linter contracts kept.
+
+**Bugs found:** None in shipped code — a real coverage gap (an already-computed signal never persisted), not a defect.
+
+**Next steps / resume point:** This closes both round-2 evals-judge-harness code findings. Not yet committed. Next: commit, push, watch CI, then the 4 gateway-observability findings — the last remaining work from round 2.

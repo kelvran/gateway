@@ -2154,6 +2154,24 @@ def report_cmd(
                 ties = sum(1 for s in group if s.quorum_reached is False)
                 if ties:
                     tie_note = f" ({ties} quorum-tie, fail-closed)"
+                # Round-4 backlog audit: this rate was previously only a
+                # one-off prose callout in a research doc (DECISIONS.md's
+                # 2026-09-08/09 entries), never a queryable trend series
+                # -- despite the sibling quote_grounding_rate series
+                # immediately below being persisted the exact same way.
+                # scorer_type == "llm_judge_panel" is already the loop's
+                # own condition here, so n is always this whole group.
+                if record_trend_path is not None:
+                    trend_snapshots.append(
+                        TrendSnapshot(
+                            series="judge_panel_tie_rate",
+                            recorded_at=recorded_at,
+                            n=len(group),
+                            rate_value=ties / len(group) if group else None,
+                            scorer_type=scorer_type,
+                            source_command="report",
+                        )
+                    )
             # Non-gating, measurement-only signal per docs/rfcs/2026-09-09-
             # evals-quote-grounded-verdict.md -- printed for either judge
             # scorer_type, never for deterministic (which has no QUOTE
@@ -2570,6 +2588,7 @@ def trend_group() -> None:
             "judge_accuracy_kappa",
             "quote_grounding_rate",
             "audit_corpus_defect_rate",
+            "judge_panel_tie_rate",
             "cost_usd",
         ]
     ),

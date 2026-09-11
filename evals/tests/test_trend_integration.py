@@ -299,6 +299,98 @@ def test_report_record_trend_produces_no_quote_grounding_snapshot_for_determinis
     assert result.exit_code == 0, result.output
     snapshots = load_trend_snapshots(trend_path)
     assert not [s for s in snapshots if s.series == "quote_grounding_rate"]
+
+
+# -- report --record-trend: judge_panel_tie_rate ------------------------------
+
+
+def test_report_record_trend_produces_a_tie_rate_snapshot_for_llm_judge_panel(
+    tmp_path,
+):
+    scores_path = tmp_path / "scores.jsonl"
+    append_scores(
+        [
+            _make_score(
+                eval_case_id="p1",
+                scorer_type="llm_judge_panel",
+                value=True,
+                quorum_reached=True,
+            ),
+            _make_score(
+                eval_case_id="p2",
+                scorer_type="llm_judge_panel",
+                value=False,
+                quorum_reached=False,
+            ),
+            _make_score(
+                eval_case_id="p3",
+                scorer_type="llm_judge_panel",
+                value=True,
+                quorum_reached=True,
+            ),
+            _make_score(
+                eval_case_id="p4",
+                scorer_type="llm_judge_panel",
+                value=False,
+                quorum_reached=False,
+            ),
+        ],
+        scores_path,
+    )
+    trend_path = tmp_path / "trend.jsonl"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "report",
+            "--scores",
+            str(scores_path),
+            "--record-trend",
+            str(trend_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    snapshots = load_trend_snapshots(trend_path)
+    ties = [s for s in snapshots if s.series == "judge_panel_tie_rate"]
+    assert len(ties) == 1
+    assert ties[0].n == 4
+    assert ties[0].rate_value == 0.5  # 2 of 4 quorum ties
+    assert ties[0].scorer_type == "llm_judge_panel"
+
+
+def test_report_record_trend_produces_no_tie_rate_snapshot_for_non_panel_scorers(
+    tmp_path,
+):
+    # judge_panel_tie_rate is scoped to llm_judge_panel only -- neither a
+    # single-judge score nor a deterministic score has a quorum/tie
+    # concept at all.
+    scores_path = tmp_path / "scores.jsonl"
+    append_scores(
+        [
+            _make_score(eval_case_id="c1", scorer_type="deterministic", value=True),
+            _make_score(eval_case_id="j1", scorer_type="llm_judge", value=True),
+        ],
+        scores_path,
+    )
+    trend_path = tmp_path / "trend.jsonl"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "report",
+            "--scores",
+            str(scores_path),
+            "--record-trend",
+            str(trend_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    snapshots = load_trend_snapshots(trend_path)
+    assert not [s for s in snapshots if s.series == "judge_panel_tie_rate"]
     # Still gets a cost_usd snapshot -- only quote_grounding is scorer-
     # type-gated to llm_judge/llm_judge_panel.
     assert [s for s in snapshots if s.series == "cost_usd"]
@@ -734,6 +826,45 @@ def test_trend_show_series_filter_prints_only_that_series(tmp_path):
     assert "cost_usd:" in result.output
     assert "quote_grounding_rate" not in result.output
     assert "judge_accuracy_kappa" not in result.output
+
+
+def test_trend_show_series_filter_accepts_judge_panel_tie_rate(tmp_path):
+    # judge_panel_tie_rate is a real --series choice, not just a real
+    # TrendSnapshot series -- proves the two lists stayed in sync.
+    scores_path = tmp_path / "scores.jsonl"
+    append_scores(
+        [
+            _make_score(
+                eval_case_id="p1",
+                scorer_type="llm_judge_panel",
+                value=True,
+                quorum_reached=False,
+            )
+        ],
+        scores_path,
+    )
+    trend_path = tmp_path / "trend.jsonl"
+
+    runner = CliRunner()
+    runner.invoke(
+        main,
+        ["report", "--scores", str(scores_path), "--record-trend", str(trend_path)],
+    )
+
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "show",
+            "--path",
+            str(trend_path),
+            "--series",
+            "judge_panel_tie_rate",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "judge_panel_tie_rate:" in result.output
 
 
 def test_trend_show_unknown_path_raises_click_exception(tmp_path):
