@@ -312,7 +312,7 @@ Pre-call and post-call middleware hooks — **real**, per `docs/rfcs/2026-09-03-
 
 | Concern | Choice |
 |---|---|
-| Language/runtime | Go 1.25+ |
+| Language/runtime | Go 1.26+ |
 | HTTP | `net/http` + `httputil.ReverseProxy`-derived streaming |
 | Distributed rate limiting | `github.com/redis/go-redis/v9` + a Lua token-bucket script — **real**, per `docs/rfcs/2026-09-03-distributed-rate-limiting.md` (the fourth external Go dependency; opt-in, isolated to `internal/ratelimit/redislimiter`; unset = in-memory, unchanged) |
 | Cache L1/L2/L3 storage | In-process (`internal/cache/inprocess`), LRU-bounded — **real** for all three layers, per `docs/rfcs/2026-09-03-cache-l2-normalized-match.md` and `docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md`. L3 uses pure Go stdlib (`hash/fnv`) for MinHash — zero new `go.mod` entries. Redis remains the target for a future distributed cache backend (a real embedding-based L3's vector index, or L1/L2/L3 shared across gateway instances) — not yet built |

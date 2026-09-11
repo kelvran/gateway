@@ -11,7 +11,7 @@ Two independently deployable units — `gateway` (Go) and `evals` (Python) — j
 
 ## Prerequisites
 
-- Go 1.25+ runtime for `gateway`, Python 3.12+ for `evals` (per `gateway/ARCHITECTURE.md`/`evals/ARCHITECTURE.md`'s tech-stack tables).
+- Go 1.26+ runtime for `gateway`, Python 3.12+ for `evals` (per `gateway/ARCHITECTURE.md`/`evals/ARCHITECTURE.md`'s tech-stack tables).
 - Provider credentials for whichever upstream LLM providers are configured — see `docs/operations/PROVIDERS.md` for exactly which providers exist and what each needs.
 - Redis for `gateway`, **only if** `config.yaml`'s `rate_limit.redis_addr` is set (distributed rate limiting across multiple gateway instances, per `docs/rfcs/2026-09-03-distributed-rate-limiting.md`) — omit it entirely for the default, in-memory-only rate limiter. **Postgres is not used by any shipped code today** — it's a `gateway/ARCHITECTURE.md` Tech Stack *future target* for a control-plane config store, not real yet (config is static YAML, loaded once at startup — see that doc's `/internal/admin` entry).
 - Fail-fast on missing required environment variables at startup — never start in a half-configured state, per this project's own security conventions (`SECURITY.md`).

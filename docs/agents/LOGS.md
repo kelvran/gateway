@@ -1907,3 +1907,31 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None new — this pass only froze an already-fixed, already-verified change into a release.
 
 **Next steps / resume point:** `gateway/v0.8.0` tagged, pushed, and released on GitHub. No further Kelvran work is currently queued beyond the still-open PyPI trademark clearance blocker.
+
+## [2026-09-11] Round-4 upgrade research (11 parallel deep-research passes) + phased plan
+
+**Files touched:** `docs/upgrade-research/*-round4-2026-09-11.md` (11 new files), `/Users/sairamugge/.claude/plans/snuggly-exploring-finch.md` (plan file, not part of the repo).
+
+**Intent/summary:** After `gateway/v0.8.0`, the user asked for 10+ parallel `/deep-research` passes from different disciplines covering evals, cache, and gateway end-to-end, to scope the next upgrade round. Launched 11 in one message (reliability/resilience, security/threat-modeling, cost/FinOps, observability/SRE for gateway; semantic-embedding readiness, distributed coherence, cross-provider native-caching audit for cache; judge science, drift monitoring, corpus governance, harness scaling for evals). The user then asked for the findings turned into a phased, priority-ordered plan via `/plan` mode.
+
+**Decisions made:** One corrupted research pass (`gateway-cost-finops`, literal placeholder JSON in its findings) was re-run fresh rather than resumed, reasoning a resume would likely replay the same cached broken synthesis step. 5 of 11 passes claimed a successful file write that never landed on disk — recovered by reading each completed task's raw output JSON directly (legitimate since those tasks had already finished, unlike the "don't peek" rule for in-flight ones) and manually reconstructing the markdown files to match the other 6's structure. During plan-mode grounding, independently re-verified the research's own top finding (Guardrails don't scan tool-call results) against the actual code and found it false — changed Phase 1's top item from "build a scanner" to "add a regression test." Plan ordered security → caching → evals governance → resilience design, reasoning security is cheapest/highest-value, caching continues the just-shipped adapter work while it's still warm, evals governance is cheap and prevents a repeat of the guardrail-13/18 transposition bug class, resilience is last since both its items are design/scaffolding, not production wiring.
+
+**Verification performed:** N/A — research and planning only, no code changed this entry.
+
+**Bugs found:** N/A.
+
+**Next steps / resume point:** Plan approved by the user. Phase 1 (gateway security hardening) is next.
+
+## [2026-09-11] Round-4 Phase 1 — gateway security hardening
+
+**Files touched:** `gateway/internal/gateway/dataplane/guardrail_test.go`, `THREAT_MODEL.md`, `.github/workflows/ci.yml`, `gateway/go.mod`, `gateway/go.sum`, `gateway/Dockerfile`, `gateway/ARCHITECTURE.md`, `docs/operations/DEPLOY.md`, `docs/rfcs/2026-09-11-gateway-security-hardening-round4-phase1.md` (new), `DECISIONS.md`.
+
+**Intent/summary:** First phase of the approved round-4 plan. Four items: (1) prove tool-result content is already scanned pre-call, (2) wire `govulncheck` into gateway CI, (3) wire `pip-audit` into evals CI, (4) add a NIST AI 600-1 crosswalk to `THREAT_MODEL.md`.
+
+**Decisions made:** Item 1 became a test-only change once direct code verification showed `serializeMessages`'s role-agnostic full-marshal already covers `role:"tool"` messages — no production code change. Item 3 used `uv run --with pip-audit==2.9.0 pip-audit` instead of the `ruff`/`import-linter` steps' `uvx` pattern, self-caught before ever running the broken version: a bare `uvx pip-audit` runs in an isolated ephemeral environment with nothing installed, which would silently audit zero real dependencies. Item 2 surfaced a much larger finding than expected: `govulncheck` run locally found 6 real reachable stdlib CVEs, root-caused to `go.mod`'s `go 1.25.0` being past Go's 2-major-version support window (confirmed live against `https://go.dev/doc/devel/release`: Go 1.27.0 shipped 2026-08-19). Fixed by bumping to 1.26.8 everywhere the version is pinned or documented, reasoned as a low-risk, easily-reversible, well-precedented patch-level toolchain bump not requiring a stop-and-ask. Item 4 named two real gaps (Dangerous/Violent/Hateful Content, Obscene/Degrading/Abusive Content) with zero existing mitigation and no equivalent OWASP category, explicitly not building content-moderation detectors this phase — that capability already exists upstream and duplicating it is a separately-scoped effort. Wrote a new dated RFC for this phase (unlike some prior docs-only THREAT_MODEL.md passes) given the real CI-scanning additions and the EOL-toolchain security-review closure, matching the plan's own "likely yes" guidance.
+
+**Verification performed:** New guardrail test passes; sanity-checked-by-breaking (temporarily made `serializeMessages` skip `role:"tool"` messages, confirmed the predicted failure, reverted). `govulncheck` clean post-bump ("No vulnerabilities found"). `pip-audit` exit code 0 against evals' real venv (confirmed real, not empty, via genuine `cachecontrol` warnings in the output). Full gateway suite (build/vet/gofmt/test-race/golangci-lint/go-arch-lint/go-mod-tidy) clean except the two pre-existing rootless-Docker failures. Full evals suite: 399 passed, 11 skipped, ruff clean, 3/3 import-linter contracts kept. New Docker base image tag verified real via a live `docker pull golang:1.26.8-alpine`.
+
+**Bugs found:** The Go 1.25 EOL toolchain gap itself (6 real reachable stdlib CVEs, all pre-existing, not introduced by this pass) — found only because `govulncheck` was being wired into CI for the first time.
+
+**Next steps / resume point:** Not yet committed/pushed. Next: commit all of Phase 1's changes, push, watch CI green, then start Phase 2 (cross-provider caching fixes).

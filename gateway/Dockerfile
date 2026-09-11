@@ -3,7 +3,7 @@
 # ("Single static binary, scratch/alpine Docker image").
 
 # --- builder stage ---
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26.8-alpine AS builder
 
 WORKDIR /src
 

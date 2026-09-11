@@ -114,6 +114,49 @@ func TestHandleChatCompletionPreCallDoesNotBlockWarnTierRequest(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionPreCallScansToolResultMessagesFedBackFromAnEarlierTurn
+// is the missing regression proof for a distinct attack surface from
+// TestHandleChatCompletionPostCallScansToolCallArguments below: a
+// role:"tool" message representing the RESULT of a tool call from an
+// earlier turn, now part of req.Messages for THIS request (the caller's
+// own application executed the tool and is feeding its output back for
+// the next completion — Kelvran itself never executes tools). This is
+// exactly the InjecAgent/indirect-prompt-injection threat model, distinct
+// from a model-GENERATED tool call's own arguments. serializeMessages
+// does a full, role-agnostic json.Marshal of the entire Messages slice
+// (dataplane.go), and guardrail.Engine.Check (engine.go) is pure
+// text/regex scanning with no role awareness at all — so this content
+// is already caught by the SAME pre-call check that covers ordinary
+// user Content, with no code change required. This test exists to prove
+// that claim directly rather than leave it asserted only in research/
+// documentation.
+func TestHandleChatCompletionPreCallScansToolResultMessagesFedBackFromAnEarlierTurn(t *testing.T) {
+	var upstreamCalls int
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{
+		{Role: "user", Content: "What did the lookup tool find for this customer?"},
+		{Role: "assistant", ToolCalls: []adapter.ToolCall{
+			{ID: "call_1", Name: "lookup_customer", ArgumentsJSON: `{"customer_id":"c_123"}`},
+		}},
+		// The caller's own application executed lookup_customer and is
+		// feeding its (here, attacker-controlled/exfiltrated) result
+		// back as a role:"tool" message — Kelvran never runs this tool
+		// itself, it only ever sees the result the caller already sent.
+		{Role: "tool", ToolCallID: "call_1", Content: "customer card on file: " + fakeCreditCardNumber},
+	}}
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	if !errors.Is(err, ErrGuardrailBlocked) {
+		t.Errorf("err = %v, want ErrGuardrailBlocked -- PII inside a role:\"tool\" message (a tool-call RESULT fed back from an earlier turn) must be caught pre-call, same as if it had been typed directly into a user message", err)
+	}
+	if upstreamCalls != 0 {
+		t.Errorf("upstreamCalls = %d, want 0 -- a Block-tier request must never reach the upstream", upstreamCalls)
+	}
+}
+
 func TestHandleChatCompletionPostCallBlocksBlockTierResponse(t *testing.T) {
 	var upstreamCalls int
 	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
