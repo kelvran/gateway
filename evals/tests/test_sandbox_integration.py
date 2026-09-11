@@ -18,7 +18,12 @@ import time
 
 import pytest
 
-from evals.rollout.sandbox import run_in_sandbox
+from evals.rollout.sandbox import (
+    DEFAULT_SANDBOX_CPUS,
+    DEFAULT_SANDBOX_MEMORY_MB,
+    DEFAULT_SANDBOX_PIDS_LIMIT,
+    run_in_sandbox,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -150,6 +155,76 @@ def test_run_in_sandbox_stops_the_container_on_task_cancellation():
         "cancelled -- cancellation must stop the real container, not just "
         "abandon the local docker run CLI process"
     )
+
+
+def test_run_in_sandbox_applies_configured_resource_limits():
+    """A round-4 backlog-audit finding: run_in_sandbox's own `docker run`
+    invocation previously set no CPU/memory/process-count bound at all --
+    a single sandboxed command with an unbounded memory allocation or a
+    fork bomb was a real, unmitigated host-level DoS against the machine
+    running `evals rollout` itself. Proves the configured limits reach
+    the real container's own HostConfig (via `docker inspect`), not just
+    that the flags exist in the constructed argument list -- inspects a
+    genuinely still-running container (not a fabricated/hypothetical
+    one), the same "prove it against real Docker state" discipline
+    test_run_in_sandbox_timeout_actually_stops_the_container already
+    established for the timeout fix.
+
+    Deliberately does not attempt to trigger a real OOM or fork-bomb
+    condition -- that would add real flakiness risk (host/platform-
+    dependent OOM-killer timing) for marginal extra confidence beyond
+    directly confirming Docker itself accepted and applied the exact
+    values this module configures.
+    """
+
+    async def _inspect_while_running() -> None:
+        task = asyncio.ensure_future(
+            run_in_sandbox(image=_IMAGE, command=["sleep", "3"], timeout_s=15)
+        )
+        await asyncio.sleep(1)
+        running = _running_container_ids_for_image(_IMAGE)
+        assert running, "expected a running container to inspect"
+        container_id = next(iter(running))
+
+        inspect = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|"
+                "{{.HostConfig.NanoCpus}}|{{.HostConfig.PidsLimit}}",
+                container_id,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert inspect.returncode == 0, inspect.stderr
+        memory, memory_swap, nano_cpus, pids_limit = inspect.stdout.strip().split("|")
+
+        expected_bytes = DEFAULT_SANDBOX_MEMORY_MB * 1024 * 1024
+        assert int(memory) == expected_bytes, (
+            f"HostConfig.Memory = {memory}, want {expected_bytes}"
+        )
+        # memory-swap == memory means Docker allows zero ADDITIONAL swap
+        # beyond the memory limit itself -- confirms swap isn't a
+        # loophole letting the container exceed the intended ceiling.
+        assert int(memory_swap) == expected_bytes, (
+            f"HostConfig.MemorySwap = {memory_swap}, want {expected_bytes} "
+            "(swap disabled)"
+        )
+        assert int(nano_cpus) == DEFAULT_SANDBOX_CPUS * 1_000_000_000, (
+            f"HostConfig.NanoCpus = {nano_cpus}"
+        )
+        assert int(pids_limit) == DEFAULT_SANDBOX_PIDS_LIMIT, (
+            f"HostConfig.PidsLimit = {pids_limit}, want {DEFAULT_SANDBOX_PIDS_LIMIT}"
+        )
+
+        result = await task  # let the sandboxed command finish naturally
+        assert result.exit_code == 0
+        assert result.timed_out is False
+
+    asyncio.run(_inspect_while_running())
 
 
 def test_run_in_sandbox_root_filesystem_is_read_only():

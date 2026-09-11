@@ -31,6 +31,21 @@ exfiltration via some other channel). Every run now also passes
 `--read-only` (the container's root filesystem is immutable) plus a
 `--tmpfs=/tmp` mount (ordinary scratch-file usage — the common case for
 real commands — still works, just never persists past the container).
+
+Real gap closed 2026-09-11 (a round-4 backlog-audit finding): this
+module's own `docker run` invocation had `--network=none`/`--read-only`/
+`--tmpfs` hardening but no CPU/memory/process-count bound at all — the
+scheduler is deliberately sequential (`evals.rollout.scheduler.run_suite`'s
+own module docstring: "one `EvalCase` maps to exactly one
+`run_in_sandbox()` call, executed one at a time"), so a single sandboxed
+command with an unbounded memory allocation or a fork bomb was a real,
+completely unmitigated host-level DoS against the machine running `evals
+rollout` itself — not merely a slow test. `EvalCase.task_spec`'s v1
+contract (`image`/`command`/`timeout_s` only, per `Run.harness_config`'s
+own doc comment) has no field to opt out of these limits either, matching
+`--network=none`'s own "no allowlist, no opt-out" posture rather than
+`timeout_s`'s per-case-configurable one — these are hard resource ceilings,
+not a tunable knob a case author is expected to reach for.
 """
 
 from __future__ import annotations
@@ -39,6 +54,18 @@ import asyncio
 import os
 import tempfile
 from dataclasses import dataclass
+
+# Hard resource ceilings for every real sandbox run -- see this module's
+# own "Real gap closed 2026-09-11" docstring section for why these exist
+# and why they are NOT case-configurable (unlike DEFAULT_SANDBOX_TIMEOUT_S
+# in evals.rollout.scheduler, which a case's own task_spec CAN override).
+# 512 MiB / 1 CPU / 128 processes is generous enough for the ordinary
+# shell/script commands this harness targets while still bounding a
+# memory allocation or fork bomb to a fraction of a typical host's real
+# capacity.
+DEFAULT_SANDBOX_MEMORY_MB = 512
+DEFAULT_SANDBOX_CPUS = 1
+DEFAULT_SANDBOX_PIDS_LIMIT = 128
 
 
 @dataclass(frozen=True)
@@ -124,6 +151,10 @@ async def run_in_sandbox(
         "--network=none",
         "--read-only",
         "--tmpfs=/tmp:rw,exec,nosuid,size=64m",
+        f"--memory={DEFAULT_SANDBOX_MEMORY_MB}m",
+        f"--memory-swap={DEFAULT_SANDBOX_MEMORY_MB}m",
+        f"--cpus={DEFAULT_SANDBOX_CPUS}",
+        f"--pids-limit={DEFAULT_SANDBOX_PIDS_LIMIT}",
         f"--cidfile={cid_path}",
         image,
         *command,

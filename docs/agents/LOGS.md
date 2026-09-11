@@ -2326,4 +2326,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** A real container leak, live-reproduced against a real Docker daemon rather than assumed from the finding's own claim.
 
-**Next steps / resume point:** Not yet committed. Next: the last round-4 finding — `run_in_sandbox`'s `docker run` invocation sets no CPU/memory/pids-limit.
+**Next steps / resume point:** Committed (`a2c16eb`), pushed, CI confirmed green. Next: the last round-4 finding — `run_in_sandbox`'s `docker run` invocation sets no CPU/memory/pids-limit.
+
+## [2026-09-11] evals: run_in_sandbox now sets hard CPU/memory/pids-limit ceilings (round-4 finding #8 — closes round 4 entirely)
+
+**Files touched:** `evals/evals/rollout/sandbox.py`, `evals/tests/test_sandbox_integration.py`, `DECISIONS.md`.
+
+**Intent/summary:** Last finding of round 4. `docker_args` had network/filesystem hardening but zero CPU/memory/process-count bound — a single sandboxed command could exhaust host resources with no cap at all, made worse by the scheduler's own deliberately-sequential design (no isolation between a bad command and the host running it).
+
+**Decisions made:** 3 new named constants mirroring `scheduler.py`'s `DEFAULT_SANDBOX_TIMEOUT_S` naming convention, deliberately NOT case-configurable unlike timeout_s — these are hard ceilings, not a tunable. `--memory-swap` set equal to `--memory` (Docker's own documented convention) to close the swap loophole a memory-only cap would otherwise leave open.
+
+**Verification performed:** New test inspects a genuinely running real container's `HostConfig` via `docker inspect`, confirming Docker itself accepted and applied the exact configured values — not just that the flags exist in the arg list. Deliberately did not attempt a live OOM/fork-bomb trigger (flakiness risk for marginal extra confidence), disclosed honestly in the test's own docstring. Sanity-checked-by-breaking against a real Docker daemon — removing the flags produced `HostConfig.Memory = 0`, Docker's own real unbounded default. Full evals suite clean (438 passed, 15 skipped — up from 14), ruff clean, 3/3 import-linter contracts kept.
+
+**Bugs found:** The missing resource-limit gap itself — real, previously undetected, closing the entire round-4 backlog audit.
+
+**Next steps / resume point:** This closes round 4 entirely — all 11 confirmed findings shipped, 0 refuted, 0 not_yet, across all 4 domains (gateway-router-health-probing, gateway-cache-resweep, evals-rollout-sandbox, gateway-identity-guardrail). Not yet committed. Next: commit, push, watch CI, then report a final summary to the user.
