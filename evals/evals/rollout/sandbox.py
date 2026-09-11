@@ -153,6 +153,25 @@ async def run_in_sandbox(
                 timed_out=True,
                 container_id=container_id,
             )
+        except BaseException:
+            # A round-4 backlog-audit finding: asyncio.CancelledError (a
+            # real, ordinary trigger since Python 3.11's asyncio.run
+            # installs a SIGINT handler that cancels the running task on
+            # Ctrl-C -- landing exactly here if that's the current
+            # suspension point) is a BaseException, not an Exception, so
+            # only catching TimeoutError above left the real container
+            # (already created before this point, per this function's
+            # own docstring) running unbounded on ANY other interruption
+            # -- not just a genuine timeout. Mirrors the TimeoutError
+            # branch's own real docker-kill cleanup, then re-raises
+            # unchanged (never swallowed) so the caller still sees the
+            # real interruption/error.
+            container_id = _read_cidfile(cid_path)
+            if container_id is not None:
+                await _docker_kill(container_id)
+            process.kill()
+            await process.wait()
+            raise
 
         exit_code = process.returncode if process.returncode is not None else -1
         return SandboxResult(

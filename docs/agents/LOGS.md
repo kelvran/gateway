@@ -2313,3 +2313,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** The interruption-safety gap itself, plus a real architectural nuance (default-path vs. early-stop-path scoring timing) discovered while proving the fix, not assumed going in.
 
 **Next steps / resume point:** Not yet committed. Next: the 2 remaining evals-rollout-sandbox findings, both in `sandbox.py` (container-leak-on-cancel, missing resource limits) — the last domain left in round 4.
+
+## [2026-09-11] evals: run_in_sandbox no longer leaks containers on cancellation (round-4 finding #7)
+
+**Files touched:** `evals/evals/rollout/sandbox.py`, `evals/tests/test_sandbox_integration.py`, `DECISIONS.md`.
+
+**Intent/summary:** Second of the 3 remaining evals-rollout-sandbox findings. Only `except TimeoutError` killed the real container — `asyncio.CancelledError` (a `BaseException`, delivered by `asyncio.run`'s own SIGINT handler on Ctrl-C since Python 3.11) propagated straight through, leaving an already-created container running unbounded.
+
+**Decisions made:** Added a broader `except BaseException` clause after the existing `TimeoutError` one (ordering preserves the more specific timeout handling), mirroring its cleanup exactly, then re-raises rather than swallowing. Broader than strictly needed for just `CancelledError` — deliberately, since ANY exception between container creation and normal completion had this identical leak, not just cancellation specifically.
+
+**Verification performed:** New Docker-gated test cancelling a real running sandbox task and asserting via `docker ps` that no container for that image survives. Sanity-checked-by-breaking against a REAL Docker daemon (not simulated) — removing the fix produced a genuinely leaked, still-running container with a real ID, manually cleaned up before restoring the fix. Full evals suite clean (438 passed, 14 skipped — up from 13), ruff clean, 3/3 import-linter contracts kept.
+
+**Bugs found:** A real container leak, live-reproduced against a real Docker daemon rather than assumed from the finding's own claim.
+
+**Next steps / resume point:** Not yet committed. Next: the last round-4 finding — `run_in_sandbox`'s `docker run` invocation sets no CPU/memory/pids-limit.

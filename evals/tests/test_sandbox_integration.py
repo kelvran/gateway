@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -89,6 +90,65 @@ def test_run_in_sandbox_timeout_actually_stops_the_container():
     assert not _container_is_running(result.container_id), (
         "container is still running after a reported timeout -- "
         "the timeout did not actually bound resource usage"
+    )
+
+
+def _running_container_ids_for_image(image: str) -> set[str]:
+    """The set of currently-running container IDs whose image is `image`
+    -- used (rather than a single known container_id, unavailable here
+    since the call this test cancels never returns one) to detect ANY
+    leaked container from the cancelled run_in_sandbox call.
+    """
+    result = subprocess.run(
+        ["docker", "ps", "-q", "--filter", f"ancestor={image}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return set(result.stdout.split())
+
+
+def test_run_in_sandbox_stops_the_container_on_task_cancellation():
+    """A round-4 backlog-audit finding: run_in_sandbox's own cleanup only
+    ever caught `TimeoutError` -- `asyncio.CancelledError` (a real,
+    ordinary trigger: asyncio.run's own SIGINT handler cancels the
+    running task on Ctrl-C since Python 3.11) is a BaseException, not an
+    Exception, and previously propagated straight through with the
+    already-created container left running unbounded. Proves the real
+    container is genuinely gone after the awaiting task is cancelled --
+    not via timeout_s elapsing (already covered by
+    test_run_in_sandbox_timeout_actually_stops_the_container above), but
+    via an external task.cancel() landing while the container is
+    genuinely running.
+    """
+    before = _running_container_ids_for_image(_IMAGE)
+
+    async def _start_then_cancel() -> None:
+        task = asyncio.ensure_future(
+            run_in_sandbox(image=_IMAGE, command=["sleep", "30"], timeout_s=30)
+        )
+        # alpine's `sleep` starts almost instantly -- this is real
+        # margin for the container to genuinely be running before
+        # cancellation lands, not a race against container creation
+        # itself.
+        await asyncio.sleep(1.5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_start_then_cancel())
+
+    # A brief real margin for `docker kill` (issued inside
+    # run_in_sandbox's own cancellation cleanup) to actually take effect
+    # before this test's own assertion reads Docker's live state.
+    time.sleep(1)
+    leaked = _running_container_ids_for_image(_IMAGE) - before
+    assert not leaked, (
+        f"container(s) {leaked} still running after the awaiting task was "
+        "cancelled -- cancellation must stop the real container, not just "
+        "abandon the local docker run CLI process"
     )
 
 
