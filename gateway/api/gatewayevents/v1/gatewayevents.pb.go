@@ -134,10 +134,17 @@ type GatewayDecisionEvent struct {
 	// distinguished; cross-reference Outcome for that.
 	RateLimitFailOpen bool `protobuf:"varint,7,opt,name=rate_limit_fail_open,json=rateLimitFailOpen,proto3" json:"rate_limit_fail_open,omitempty"`
 	// fallback_happened, fallback_from_deployment, and fallback_reason
-	// together describe whether this request fell back to a second
-	// deployment. Kelvran's fallback logic attempts at most ONE fallback per
-	// request, never a chain (gateway/ARCHITECTURE.md's router step) — a
-	// fixed 3-field record, not a repeated/list shape.
+	// together describe whether this request fell back away from its
+	// originally-selected deployment. Corrected 2026-09-11 (comment-only,
+	// no wire/field change): Kelvran's fallback logic can now walk a
+	// multi-hop, error-classified chain (Deployment.FallbackChains,
+	// gateway/internal/gateway/dataplane/fallback.go's attemptFallbackChain)
+	// -- this is deliberately STILL a fixed 3-field record, not a
+	// repeated/list shape, on purpose: from/reason always capture the
+	// FIRST (originally abandoned) deployment/error, never an intermediate
+	// hop in a longer chain. The deployment that ULTIMATELY served the
+	// request is not repeated here either way -- it's already derivable
+	// from the OTel span's DeploymentName/Provider attributes.
 	FallbackHappened bool `protobuf:"varint,8,opt,name=fallback_happened,json=fallbackHappened,proto3" json:"fallback_happened,omitempty"`
 	// Name of the deployment first tried and abandoned. "" when
 	// fallback_happened is false. The deployment ULTIMATELY used is not

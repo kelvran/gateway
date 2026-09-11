@@ -25,7 +25,7 @@ To bring `gateway` up locally:
 2. `cp .env.example .env` and set the real API key(s) your `config.yaml`'s deployments reference.
 3. `docker compose up gateway` (add `--profile redis` first if `config.yaml` sets `rate_limit.redis_addr: redis:6379`).
 
-Readiness for v1 is "the container is listening on `:8080`" — there is no `/healthz` endpoint yet (only `/v1/chat/completions` is registered, per `cmd/gateway/main.go`); a real health-check endpoint is future work, not assumed here.
+**Corrected 2026-09-11** — this section was stale since 2026-09-07: a real `/healthz` endpoint now exists (`mux.HandleFunc("/healthz", healthzHandler)`, `cmd/gateway/main.go`) — a shallow liveness probe, no auth, returning `200 {"status":"ok"}`, covered by an integration test. Readiness is `GET /healthz` returning `200`, not merely "the container is listening on `:8080`."
 
 ## Kubernetes / Production
 
@@ -57,7 +57,10 @@ The one thing genuinely specific to a two-deployable system: `gateway` and `eval
 
 | gateway version | evals version | api/ contract version | Compatible? |
 |---|---|---|---|
-| v0.1.0 | v0.1.0 | `api/gatewayevents/v1` (initial) | ✅ — the only released pair so far |
+| v0.1.0 | v0.1.0 | `api/gatewayevents/v1` (initial) | ✅ |
+| v0.9.0 | v0.8.0 | `api/gatewayevents/v1` (unchanged since v0.1.0 — additive-only field/enum additions, no breaking version bump yet) | ✅ — current, as of 2026-09-11 |
+
+**Corrected 2026-09-11**: this table previously stopped at `v0.1.0`/`v0.1.0`, calling it "the only released pair so far" — stale since the second release. Both deployables have since versioned independently at least once (`gateway/v0.8.0` shipped alone, `evals` staying at `v0.7.0`, per `DECISIONS.md`) — see `gateway/changelog/`/`evals/changelog/` for the full per-version history; this table only needs to track the `api/` contract compatibility boundary, not every release.
 
 Rollout order for a coordinated upgrade: bump the `api/` contract first (both sides regenerate bindings, per `RELEASE.md`'s bump-and-validate procedure), then `gateway` and `evals` can each roll out independently afterward, in either order, since both are already speaking the new contract version.
 

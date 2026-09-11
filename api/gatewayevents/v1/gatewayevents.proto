@@ -61,10 +61,17 @@ message GatewayDecisionEvent {
   bool rate_limit_fail_open = 7;
 
   // fallback_happened, fallback_from_deployment, and fallback_reason
-  // together describe whether this request fell back to a second
-  // deployment. Kelvran's fallback logic attempts at most ONE fallback per
-  // request, never a chain (gateway/ARCHITECTURE.md's router step) — a
-  // fixed 3-field record, not a repeated/list shape.
+  // together describe whether this request fell back away from its
+  // originally-selected deployment. Corrected 2026-09-11 (comment-only,
+  // no wire/field change): Kelvran's fallback logic can now walk a
+  // multi-hop, error-classified chain (Deployment.FallbackChains,
+  // gateway/internal/gateway/dataplane/fallback.go's attemptFallbackChain)
+  // -- this is deliberately STILL a fixed 3-field record, not a
+  // repeated/list shape, on purpose: from/reason always capture the
+  // FIRST (originally abandoned) deployment/error, never an intermediate
+  // hop in a longer chain. The deployment that ULTIMATELY served the
+  // request is not repeated here either way -- it's already derivable
+  // from the OTel span's DeploymentName/Provider attributes.
   bool fallback_happened = 8;
   // Name of the deployment first tried and abandoned. "" when
   // fallback_happened is false. The deployment ULTIMATELY used is not
