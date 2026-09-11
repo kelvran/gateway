@@ -22,6 +22,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -119,7 +120,7 @@ type perModelRateLimitRequest struct {
 // docs/rfcs/2026-09-09-gateway-admin-viewer-role.md.
 func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Credentials, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg)))
+	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg, logger)))
 	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, logger)))
 	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, logger)))
 	// Prompt/template management, per this feature's own design: prompts
@@ -127,9 +128,9 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	// price_table/deployments/guardrails config above) -- reads are
 	// viewer-or-admin, like GET /admin/config; writes are admin-only,
 	// like the virtual-key routes above.
-	mux.Handle("GET /admin/prompts", requireEitherBearerToken(creds, listPromptsHandler(pipeline)))
-	mux.Handle("GET /admin/prompts/{id}", requireEitherBearerToken(creds, getPromptHandler(pipeline)))
-	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline)))
+	mux.Handle("GET /admin/prompts", requireEitherBearerToken(creds, listPromptsHandler(pipeline, logger)))
+	mux.Handle("GET /admin/prompts/{id}", requireEitherBearerToken(creds, getPromptHandler(pipeline, logger)))
+	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline, logger)))
 	mux.Handle("POST /admin/prompts/{id}", requireBearerToken(creds.Admin, upsertPromptHandler(pipeline, logger)))
 	mux.Handle("DELETE /admin/prompts/{id}", requireBearerToken(creds.Admin, deletePromptHandler(pipeline, logger)))
 	return mux
@@ -157,10 +158,16 @@ func requireBearerToken(token string, next http.Handler) http.Handler {
 
 // requireEitherBearerToken wraps next so a request authenticates with
 // EITHER creds.Admin OR, when configured (non-empty), creds.Viewer — used
-// only for the read-only GET /admin/config route. Write routes
-// (POST/DELETE /admin/virtual_keys/{name}) always use requireBearerToken
-// with creds.Admin specifically, never this function, per
-// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md.
+// for every read-only route (GET /admin/config, GET /admin/prompts and
+// its two sibling routes). Write routes (POST/DELETE
+// /admin/virtual_keys/{name}, POST/DELETE /admin/prompts/{id}) always use
+// requireBearerToken with creds.Admin specifically, never this function,
+// per docs/rfcs/2026-09-09-gateway-admin-viewer-role.md.
+//
+// Stashes WHICH tier authenticated into the request's context (never the
+// credential value itself) via contextWithCredentialTier, so a read
+// handler's own audit-log line can record "admin" vs. "viewer" without
+// re-deriving it or re-comparing the token a second time.
 func requireEitherBearerToken(creds Credentials, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		presented, ok := bearerToken(r)
@@ -170,15 +177,37 @@ func requireEitherBearerToken(creds Credentials, next http.Handler) http.Handler
 		}
 		presentedBytes := []byte(presented)
 		if subtle.ConstantTimeCompare(presentedBytes, []byte(creds.Admin)) == 1 {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(contextWithCredentialTier(r.Context(), "admin")))
 			return
 		}
 		if creds.Viewer != "" && subtle.ConstantTimeCompare(presentedBytes, []byte(creds.Viewer)) == 1 {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(contextWithCredentialTier(r.Context(), "viewer")))
 			return
 		}
 		http.Error(w, "invalid admin token", http.StatusUnauthorized)
 	})
+}
+
+// credentialTierContextKey is a private type so no other package can
+// collide with or forge this context value — the same "unexported key
+// type" idiom the Go standard library's own context doc comment
+// recommends.
+type credentialTierContextKey struct{}
+
+// contextWithCredentialTier/credentialTierFromContext stash and retrieve
+// which credential tier ("admin"/"viewer") authenticated the current
+// request — set only by requireEitherBearerToken, read only by the 4
+// read-route audit-log call sites below. credentialTierFromContext
+// returns "" (never a fabricated default) if the context has no such
+// value at all, e.g. a direct unit-test call to a handler that bypasses
+// the middleware entirely.
+func contextWithCredentialTier(ctx context.Context, tier string) context.Context {
+	return context.WithValue(ctx, credentialTierContextKey{}, tier)
+}
+
+func credentialTierFromContext(ctx context.Context) string {
+	tier, _ := ctx.Value(credentialTierContextKey{}).(string)
+	return tier
 }
 
 // bearerToken extracts the raw token from a well-formed
@@ -199,12 +228,23 @@ func bearerToken(r *http.Request) (string, bool) {
 // "why Config is safe to return wholesale" section for why nothing in it
 // needs redaction: it holds environment-variable *names* and key
 // *hashes*, never a raw secret.
-func getConfigHandler(cfg *controlplane.Config) http.HandlerFunc {
+//
+// logger records this read (route + which credential tier authenticated,
+// never the credential value or the response body) — a round-3 backlog-
+// audit finding: every admin WRITE was already audit-logged, but reading
+// the full deployment topology/price table/every virtual key's budget-
+// and-model shape via this route left zero trace an operator could ever
+// detect after the fact, exactly the recon signal THREAT_MODEL.md's own
+// "a compromised admin credential IS a full privilege escalation" row
+// names as the accepted residual risk this closes visibility into.
+func getConfigHandler(cfg *controlplane.Config, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(cfg); err != nil {
 			http.Error(w, "encoding config", http.StatusInternalServerError)
+			return
 		}
+		logger.Info("admin_config_read", "authorized_by", credentialTierFromContext(r.Context()))
 	}
 }
 
@@ -364,8 +404,11 @@ func writeJSONResponse(w http.ResponseWriter, v any) {
 }
 
 // listPromptsHandler serves the latest version of every stored prompt,
-// per pipeline.ListPrompts (already sorted by ID).
-func listPromptsHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
+// per pipeline.ListPrompts (already sorted by ID). logger records this
+// read (route + credential tier, never any prompt content) — see
+// getConfigHandler's own doc comment for why every prompt-read route was
+// a real, previously-silent audit-logging gap.
+func listPromptsHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		prompts := pipeline.ListPrompts()
 		responses := make([]promptResponse, 0, len(prompts))
@@ -373,11 +416,12 @@ func listPromptsHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 			responses = append(responses, promptToResponse(p))
 		}
 		writeJSONResponse(w, responses)
+		logger.Info("admin_prompts_read", "authorized_by", credentialTierFromContext(r.Context()))
 	}
 }
 
 // getPromptHandler serves id's latest version, or 404 if id is unknown.
-func getPromptHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
+func getPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		p, ok := pipeline.GetPrompt(id, 0)
@@ -386,13 +430,14 @@ func getPromptHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 		writeJSONResponse(w, promptToResponse(p))
+		logger.Info("admin_prompts_read", "id", id, "authorized_by", credentialTierFromContext(r.Context()))
 	}
 }
 
 // getPromptVersionHandler serves one specific historical version of id,
 // or 404 if id or that version is unknown, or 400 if version isn't a
 // positive integer.
-func getPromptVersionHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
+func getPromptVersionHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		versionStr := r.PathValue("version")
@@ -407,6 +452,7 @@ func getPromptVersionHandler(pipeline *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 		writeJSONResponse(w, promptToResponse(p))
+		logger.Info("admin_prompts_read", "id", id, "version", version, "authorized_by", credentialTierFromContext(r.Context()))
 	}
 }
 

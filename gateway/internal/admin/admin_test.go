@@ -641,3 +641,75 @@ func TestDeletePromptLogsAnAuditEntry(t *testing.T) {
 		t.Errorf("expected an admin_prompt_deleted audit-log entry naming greeting; got: %s", logOutput)
 	}
 }
+
+// TestGetConfigLogsAnAuditEntryNamingTheCredentialTier is a round-3
+// backlog-audit finding: GET /admin/config previously logged nothing at
+// all, even though every WRITE route already did — a leaked/misused
+// admin OR viewer credential could read the full deployment topology,
+// price table, and every virtual key's budget/rate-limit/allowed-models
+// shape with zero trace an operator could ever detect afterward. Proves
+// both the admin and viewer tiers each produce a distinguishable
+// authorized_by value, per requireEitherBearerToken's own
+// contextWithCredentialTier plumbing.
+func TestGetConfigLogsAnAuditEntryNamingTheCredentialTier(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, logger)
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/config", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/config with the admin credential: status = %d, want 200", rec.Code)
+	}
+	if logOutput := buf.String(); !strings.Contains(logOutput, "admin_config_read") || !strings.Contains(logOutput, "authorized_by=admin") {
+		t.Errorf("expected an admin_config_read entry with authorized_by=admin; got: %s", logOutput)
+	}
+
+	buf.Reset()
+	rec = doRequest(t, h, http.MethodGet, "/admin/config", fakeViewerCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/config with the viewer credential: status = %d, want 200", rec.Code)
+	}
+	if logOutput := buf.String(); !strings.Contains(logOutput, "admin_config_read") || !strings.Contains(logOutput, "authorized_by=viewer") {
+		t.Errorf("expected an admin_config_read entry with authorized_by=viewer; got: %s", logOutput)
+	}
+}
+
+// TestPromptReadRoutesLogAnAuditEntryWithoutLeakingContent covers all 3
+// prompt-read routes (list/get-latest/get-version) — the same real gap
+// as GET /admin/config, for the prompt-management surface.
+func TestPromptReadRoutesLogAnAuditEntryWithoutLeakingContent(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+
+	const secretLookingContent = "the-eagle-has-landed-42"
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"system","content":"`+secretLookingContent+`"}]}`)
+	buf.Reset()
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/prompts", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/prompts: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if logOutput := buf.String(); !strings.Contains(logOutput, "admin_prompts_read") || !strings.Contains(logOutput, "authorized_by=admin") {
+		t.Errorf("expected an admin_prompts_read entry with authorized_by=admin after GET /admin/prompts; got: %s", logOutput)
+	}
+
+	buf.Reset()
+	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/greeting", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/prompts/greeting: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if logOutput := buf.String(); !strings.Contains(logOutput, "admin_prompts_read") || !strings.Contains(logOutput, "id=greeting") {
+		t.Errorf("expected an admin_prompts_read entry naming greeting after GET /admin/prompts/greeting; got: %s", logOutput)
+	}
+
+	buf.Reset()
+	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/greeting/versions/1", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/prompts/greeting/versions/1: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if logOutput := buf.String(); !strings.Contains(logOutput, "admin_prompts_read") || !strings.Contains(logOutput, "id=greeting") || !strings.Contains(logOutput, "version=1") {
+		t.Errorf("expected an admin_prompts_read entry naming greeting/version 1; got: %s", logOutput)
+	}
+	if strings.Contains(buf.String(), secretLookingContent) {
+		t.Errorf("audit log must never contain prompt message content; got: %s", buf.String())
+	}
+}

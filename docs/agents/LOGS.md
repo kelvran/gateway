@@ -2186,4 +2186,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The concurrency race itself — real, previously untested (grepped: zero existing test exercised concurrent admin writes to virtual keys), and independently reproduced (not just theorized) via the sanity-check-by-breaking step above.
 
-**Next steps / resume point:** Committed, push+CI pending. Next: the last gateway-admin-identity finding — Admin API read routes emit zero audit-log entry. Then the 2 gateway-newer-features-resweep findings, then the evals audit-corpus interruption-safety finding.
+**Next steps / resume point:** Committed (`ba77316`), pushed, CI confirmed green. Next: the last gateway-admin-identity finding — Admin API read routes emit zero audit-log entry. Then the 2 gateway-newer-features-resweep findings, then the evals audit-corpus interruption-safety finding.
+
+## [2026-09-11] gateway: Admin API read routes now audit-logged (round-3 finding #3 — closes gateway-admin-identity domain)
+
+**Files touched:** `gateway/internal/admin/admin.go`, `gateway/internal/admin/admin_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** Third and final gateway-admin-identity finding. `GET /admin/config` and the 3 prompt-read routes emitted zero audit-log entry at all — only writes were logged, leaving a leaked/misused credential's recon activity completely invisible.
+
+**Decisions made:** Added a private context-key type to plumb "which credential tier authenticated" from `requireEitherBearerToken` (the shared middleware) to each read handler — the verify agent's own review had flagged this as a real, needed implementation step, not just an oversight to route around. Kept the log lines minimal (route/id/version/tier only), matching the write handlers' own established discipline.
+
+**Verification performed:** New tests proving both the admin and viewer tiers each log distinguishably, and that prompt content never leaks. Sanity-checked-by-breaking TWICE: removed the log call itself (empty buffer); separately removed only the context-stashing (log line present but `authorized_by=""`) — proving both halves of the fix are independently load-bearing, not just one covering for the other. Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** The audit-logging gap itself — real, previously undetected (every existing test only checked response codes, never log output, for these 4 routes).
+
+**Next steps / resume point:** This closes all 3 gateway-admin-identity findings — 5 of round 3's 8 findings now shipped. Committed, push+CI pending. Next: the 2 gateway-newer-features-resweep findings (prompt-version telemetry bug, then the MIME-validation gap), then the evals audit-corpus interruption-safety finding — the last 3 remaining from round 3.
