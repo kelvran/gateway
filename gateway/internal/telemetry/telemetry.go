@@ -292,6 +292,13 @@ const (
 	CacheL3GateVolatileBypass     = "volatile_bypass"
 	CacheL3GateEntityMismatch     = "entity_mismatch"
 	CacheL3GateFreshnessRiskModel = "freshness_risk_model"
+	// CacheL3GateNegationMismatch is per DECISIONS.md's [2026-09-12]
+	// entry — a narrow, additive gate closing a syntactic-negation-
+	// particle-insertion failure mode distinct from the antonym-flip
+	// case the [2026-09-08] entry already investigated and rejected
+	// fixing here. Not one of Finding 1's original three named gates
+	// (per checkLexicalCache's own doc comment on that distinction).
+	CacheL3GateNegationMismatch = "negation_mismatch"
 )
 
 // RecordCacheL3GateOutcome increments the counter for gate with outcome

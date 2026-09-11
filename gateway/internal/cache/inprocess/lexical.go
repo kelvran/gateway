@@ -21,6 +21,7 @@ type lexicalEntry struct {
 	guardrailPolicyVersion    string
 	responseFormatFingerprint string
 	promptFingerprint         string
+	negationFingerprint       map[string]struct{}
 	expiresAt                 time.Time
 }
 
@@ -132,6 +133,11 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 			fpCopy[k] = struct{}{}
 		}
 
+		negationFPCopy := make(map[string]struct{}, len(sc.entry.negationFingerprint))
+		for k := range sc.entry.negationFingerprint {
+			negationFPCopy[k] = struct{}{}
+		}
+
 		result = append(result, cache.LexicalCandidate{
 			Resp:                      respCopy,
 			Similarity:                sc.sim,
@@ -141,6 +147,7 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 			GuardrailPolicyVersion:    sc.entry.guardrailPolicyVersion,
 			ResponseFormatFingerprint: sc.entry.responseFormatFingerprint,
 			PromptFingerprint:         sc.entry.promptFingerprint,
+			NegationFingerprint:       negationFPCopy,
 		})
 	}
 	return result, nil
@@ -149,7 +156,7 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 // Put implements cache.LexicalCache. Creates tenantID's bucket on first
 // write; inserting past maxEntries evicts that tenant's own
 // least-recently-used entry — never another tenant's.
-func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, ttl time.Duration) error {
+func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -167,6 +174,10 @@ func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint6
 	for k := range fingerprint {
 		fpCopy[k] = struct{}{}
 	}
+	negationFPCopy := make(map[string]struct{}, len(negationFingerprint))
+	for k := range negationFingerprint {
+		negationFPCopy[k] = struct{}{}
+	}
 
 	now := c.now()
 	jitter := time.Duration(c.rand() * c.jitterFraction * float64(ttl))
@@ -179,6 +190,7 @@ func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint6
 		guardrailPolicyVersion:    guardrailPolicyVersion,
 		responseFormatFingerprint: responseFormatFingerprint,
 		promptFingerprint:         promptFingerprint,
+		negationFingerprint:       negationFPCopy,
 		expiresAt:                 now.Add(ttl + jitter),
 	})
 	if bucket.entries.Len() > c.maxEntries {

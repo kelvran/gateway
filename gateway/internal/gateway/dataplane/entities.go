@@ -39,6 +39,61 @@ func Fingerprint(messages []adapter.Message) map[string]struct{} {
 	return fingerprint
 }
 
+// NegationFingerprint extracts the set of negation particles present in
+// a query, per DECISIONS.md's [2026-09-12] entry — a narrow, additive
+// gate DISTINCT from Fingerprint above, closing a different failure
+// mode than the one DECISIONS.md's [2026-09-08] entry already
+// investigated and rejected for this exact hard gate.
+//
+// That earlier entry tested and rejected three designs specifically for
+// the "withhold" vs. "administer" antonym-verb-flip case: a negation-cue
+// gate alone doesn't fire (neither string contains a negation particle
+// at all), a curated antonym-pair list is unbounded/"security theater"
+// for a general-purpose gateway, and broadening Fingerprint to all
+// content words breaks TestFingerprintEmptyOnEntitylessParaphrase. This
+// function does NOT reopen that decision and does NOT close the
+// antonym-flip case — see TestHandleChatCompletionL3StillDoesNotCloseTheAntonymPolarityFlipCase,
+// which regression-proves that boundary stays honest.
+//
+// What this DOES close: a syntactic negation particle inserted or
+// removed between an otherwise near-duplicate query and a cached
+// candidate — e.g. "take ibuprofen for this?" vs. "NOT take ibuprofen
+// for this?" — where the entity/number/date fingerprint above is
+// identical (same drug, same context) but the negation particle
+// genuinely reverses the answer. See
+// TestHandleChatCompletionL3NegationParticleInsertionIsNotAnL3Hit.
+//
+// The particle list is the exact closed set already evaluated (and
+// found insufficient ALONE for the antonym case) in
+// evals/tests/fixtures/regression_corpus_cache_adversarial.json's own
+// "REASSESSED, 2026-09-08" rationale — reused here, not re-derived,
+// since a fixed, small, auditable list is the same "deliberately blunt
+// rather than clever" hard-gate philosophy Fingerprint's own doc
+// comment already commits to. Case-insensitive: a negation particle at
+// the start of a sentence ("Don't take...") is just as real a signal as
+// mid-sentence.
+func NegationFingerprint(messages []adapter.Message) map[string]struct{} {
+	fingerprint := map[string]struct{}{}
+	for _, m := range messages {
+		for _, match := range negationParticlePattern.FindAllString(m.Content, -1) {
+			fingerprint[strings.ToLower(match)] = struct{}{}
+		}
+	}
+	return fingerprint
+}
+
+// negationParticlePattern matches a small, fixed, closed-set list of
+// negation particles/cues, including the common contracted "n't" forms
+// (matched as whole contractions, e.g. "don't"/"can't" — not a bare
+// "n't" fragment, which would never satisfy a \b word boundary against
+// the preceding letter). See NegationFingerprint's own doc comment for
+// what this can and cannot catch.
+var negationParticlePattern = regexp.MustCompile(
+	`(?i)\b(?:not|never|without|no|cannot|neither|nor|` +
+		`don't|doesn't|didn't|can't|won't|wouldn't|shouldn't|couldn't|` +
+		`isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't)\b`,
+)
+
 // numberPattern matches integers, decimals, currency-prefixed, and
 // percentage-suffixed numbers — e.g. "92", "92.50", "$92.50", "15%".
 var numberPattern = regexp.MustCompile(`\$?\d+(?:\.\d+)?%?`)

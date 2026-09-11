@@ -1074,10 +1074,10 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, encoded []byte) {
 	_ = p.cache.Put(ctx, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -1191,11 +1191,21 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		return nil, 0, 0, false // fail-closed: a search error skips L3, never bypasses the gate
 	}
 	queryFingerprint := Fingerprint(req.Messages)
+	queryNegationFP := NegationFingerprint(req.Messages)
 	responseFormatFP := responseFormatFingerprint(req.ResponseFormat)
 	for _, c := range candidates {
 		entityMismatch := !fingerprintsEqual(queryFingerprint, c.Fingerprint)
 		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateEntityMismatch, entityMismatch)
 		if entityMismatch {
+			continue
+		}
+		// A new, additive gate per DECISIONS.md's [2026-09-12] entry —
+		// distinct from entityMismatch above (which already existed);
+		// see NegationFingerprint's own doc comment for what this does
+		// and does not close.
+		negationMismatch := !fingerprintsEqual(queryNegationFP, c.NegationFingerprint)
+		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateNegationMismatch, negationMismatch)
+		if negationMismatch {
 			continue
 		}
 		freshnessRejected := !freshnessRiskModel(c.WrittenAt, c.ModelID, req.Model, c.Similarity)
@@ -1486,7 +1496,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		}
 
 		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, encoded)
+			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), encoded)
 		}
 
 		return cacheMissOutcome{resp: resp, dep: dep, fallback: fallback}, nil

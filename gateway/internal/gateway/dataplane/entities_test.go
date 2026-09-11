@@ -73,3 +73,56 @@ func TestFingerprintCapturesPercentage(t *testing.T) {
 		t.Errorf("fingerprint = %v, want it to contain %q", fp, "200")
 	}
 }
+
+func negationFingerprintOf(content string) map[string]struct{} {
+	return NegationFingerprint([]adapter.Message{{Role: "user", Content: content}})
+}
+
+// TestNegationFingerprintDiffersOnInsertedNegationParticle is this new
+// gate's own load-bearing safety test — proving it catches the failure
+// mode it exists for: a negation particle inserted into an otherwise
+// identical query must produce a different fingerprint.
+func TestNegationFingerprintDiffersOnInsertedNegationParticle(t *testing.T) {
+	a := negationFingerprintOf("Should I take ibuprofen for this?")
+	b := negationFingerprintOf("Should I not take ibuprofen for this?")
+	if fingerprintsEqual(a, b) {
+		t.Fatalf("negation fingerprints for %q and %q are equal (%v) — the gate would incorrectly allow a negation-reversed cache hit", "Should I take ibuprofen for this?", "Should I not take ibuprofen for this?", a)
+	}
+}
+
+func TestNegationFingerprintCatchesContractedForm(t *testing.T) {
+	a := negationFingerprintOf("Can I take ibuprofen for this?")
+	b := negationFingerprintOf("Can't I take ibuprofen for this?")
+	if fingerprintsEqual(a, b) {
+		t.Fatalf("negation fingerprints for the contracted form are equal (%v) — %q must be detected", a, "can't")
+	}
+}
+
+// TestNegationFingerprintEmptyOnEntitylessParaphrase mirrors
+// TestFingerprintEmptyOnEntitylessParaphrase's own "doesn't over-block"
+// proof: two genuinely safe paraphrases carrying no negation particles
+// at all must produce EMPTY, therefore EQUAL, negation fingerprints.
+func TestNegationFingerprintEmptyOnEntitylessParaphrase(t *testing.T) {
+	a := negationFingerprintOf("How do I reverse a list")
+	b := negationFingerprintOf("What's the way to reverse a list")
+	if len(a) != 0 || len(b) != 0 {
+		t.Errorf("negation fingerprints = %v / %v, want both empty", a, b)
+	}
+	if !fingerprintsEqual(a, b) {
+		t.Errorf("negation fingerprints for two negation-less paraphrases are not equal: %v != %v", a, b)
+	}
+}
+
+// TestNegationFingerprintDoesNotCatchAntonymVerbFlip is the explicit,
+// documented non-goal proof: this gate deliberately does NOT close the
+// antonym-verb-flip case DECISIONS.md's [2026-09-08] entry already
+// investigated and rejected fixing here — "withhold" and "administer"
+// contain zero negation particles, so this fingerprint alone is
+// identical (empty) for both. See NegationFingerprint's own doc comment.
+func TestNegationFingerprintDoesNotCatchAntonymVerbFlip(t *testing.T) {
+	withhold := negationFingerprintOf("Should the nurse withhold the study drug from the patient?")
+	administer := negationFingerprintOf("Should the nurse administer the study drug to the patient?")
+	if !fingerprintsEqual(withhold, administer) {
+		t.Fatalf("negation fingerprints for the antonym-flip case differ (%v vs %v) — this test exists to prove the documented boundary stays honest; if this now fails, NegationFingerprint's scope has silently grown beyond what DECISIONS.md's [2026-09-12] entry describes", withhold, administer)
+	}
+}

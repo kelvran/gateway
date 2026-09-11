@@ -199,7 +199,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	billable = true
 
 	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, encoded)
+		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), encoded)
 	}
 	return
 }

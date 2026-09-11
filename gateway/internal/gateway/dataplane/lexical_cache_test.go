@@ -10,6 +10,7 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -126,6 +127,53 @@ func TestHandleChatCompletionEntityMismatchIsNotAnL3Hit(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionNegationParticleInsertionIsNotAnL3Hit is the
+// new, narrow gate's own full-pipeline proof, per DECISIONS.md's
+// [2026-09-12] entry -- a negation particle swapped into an otherwise
+// near-duplicate query (identical entities, no numbers/dates) must
+// never be served from the un-negated version's cached entry. Distinct
+// from, and does NOT reopen, the antonym-verb-flip case DECISIONS.md's
+// [2026-09-08] entry already investigated and rejected fixing here --
+// see NegationFingerprint's own doc comment and
+// TestNegationFingerprintDoesNotCatchAntonymVerbFlip (entities_test.go)
+// for that documented non-goal.
+//
+// This deliberately long fixture pair (a single "can"->"cannot" word
+// swap inside an otherwise byte-identical ~70-word passage) is NOT
+// arbitrary padding: a single-word swap corrupts a small, roughly-fixed
+// number of 3-word shingles regardless of sentence length, so a SHORT
+// near-duplicate pair (e.g. the entity-mismatch test's own short
+// sentences) would fall well below l3MinSimilarity=0.9 on this swap
+// alone and never even reach the freshness-risk-model's similarity
+// check this test needs to isolate the new gate from — confirmed
+// empirically (not assumed) against this exact pair via a throwaway
+// scratch computation using cache.MinHashSignature/JaccardEstimate
+// directly: similarity=0.90625, comfortably clearing the floor, with
+// both entity fingerprints empty (matching) and negation fingerprints
+// genuinely differing (map[] vs map["cannot"]) -- isolating the new
+// gate as the ONLY thing that can reject this candidate.
+func TestHandleChatCompletionNegationParticleInsertionIsNotAnL3Hit(t *testing.T) {
+	var upstreamCalls int
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	const passageTemplate = "The attending physician reviewed the patient's full chart and medication history carefully before making any final decision about the ongoing clinical trial protocol for this particular case, and after consulting at length with the pharmacy team and the patient's own family members regarding all of the risks and benefits involved, ultimately decided that the nursing staff %s administer the study drug to the patient during the scheduled evening medication round as documented in the approved protocol"
+	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: fmt.Sprintf(passageTemplate, "can")}}}
+	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: fmt.Sprintf(passageTemplate, "cannot")}}}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first); err != nil {
+		t.Fatalf("first HandleChatCompletion: %v", err)
+	}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second); err != nil {
+		t.Fatalf("second HandleChatCompletion: %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls = %d, want 2 — a negation particle swapped into an otherwise near-duplicate (similarity=0.90625, well above the L3 floor) query must never be served from a cached entry for the un-negated version, per the new negation-mismatch hard gate", upstreamCalls)
+	}
+}
+
 // TestHandleChatCompletionVolatileQueryNeverHitsL3 proves the volatility
 // bypass takes priority over an otherwise-valid L3 hit: the second request
 // here is a byte-for-byte lexical near-duplicate of the first (same
@@ -194,7 +242,7 @@ func (failingLexicalCache) Search(_ context.Context, _ string, _ []uint64, _ int
 	return nil, errors.New("simulated L3 backend failure")
 }
 
-func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ time.Duration) error {
+func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ map[string]struct{}, _ time.Duration) error {
 	return nil
 }
 

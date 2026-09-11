@@ -139,6 +139,15 @@ type LexicalCandidate struct {
 	// above.
 	ResponseFormatFingerprint string
 	PromptFingerprint         string
+	// NegationFingerprint is dataplane.NegationFingerprint's own output
+	// at write time, per DECISIONS.md's [2026-09-12] entry — a narrow,
+	// additive gate closing a syntactic-negation-particle-insertion
+	// failure mode DISTINCT from the antonym-verb-flip case
+	// DECISIONS.md's [2026-09-08] entry already investigated and
+	// rejected fixing here. Exact-set-equality gate, same convention as
+	// Fingerprint above (checked via the caller's own fingerprintsEqual,
+	// never inside this package).
+	NegationFingerprint map[string]struct{}
 }
 
 // LexicalCache is Cache L3-lite's own interface — deliberately not Cache,
@@ -151,5 +160,5 @@ type LexicalCandidate struct {
 // partition itself, not a post-hoc filter").
 type LexicalCache interface {
 	Search(ctx context.Context, tenantID string, signature []uint64, k int) ([]LexicalCandidate, error)
-	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, ttl time.Duration) error
+	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, ttl time.Duration) error
 }

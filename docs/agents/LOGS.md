@@ -2383,3 +2383,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** The nightly workflow's missing `--record-trend`/`--judge-accuracy` wiring — real, previously undetected, would have made the entire alerting feature silently inert against this specific workflow's own real data.
 
 **Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then start Phase 3 (cache negation-gate correctness fix).
+
+## [2026-09-12] Phase 3 of v2-upgrade plan: cache negation-particle gate (narrow, additive)
+
+**Files touched:** `gateway/internal/gateway/dataplane/{entities,entities_test,dataplane,lexical_cache_test,cache_l2_test}.go`, `gateway/internal/cache/lexical.go`, `gateway/internal/cache/inprocess/{lexical,lexical_test}.go`, `gateway/internal/telemetry/telemetry.go`, `gateway/ARCHITECTURE.md`.
+
+**Intent/summary:** Third phase of the v2-upgrade-research plan. Added a new `NegationFingerprint`-based hard gate to Cache L3-lite, closing a narrow, real gap (a negation particle inserted/removed between an otherwise near-duplicate query and a cached candidate) — deliberately scoped to NOT reopen or contradict the 2026-09-08 decision that already rejected fixing the broader antonym-verb-flip case here.
+
+**Decisions made:** New field threaded through `LexicalCandidate`/`LexicalCache.Put`'s interface — mechanical fallout across ~13 test call sites, same widened-signature pattern this session has hit repeatedly. Did not add a new evals adversarial-corpus fixture case (scope adjustment from the approved plan) — that corpus belongs to a different, Python-side offline-embedding-validation mechanism, not to anything that exercises this Go-level gate.
+
+**Verification performed:** A real methodology correction found while writing the test: the first short-sentence fixture attempt never cleared L3-lite's real similarity floor after a word swap, so it "passed" for the wrong reason (masked by the pre-existing freshness-risk-model check). Confirmed empirically via a throwaway scratch computation using the real `cache.MinHashSignature`/`JaccardEstimate` functions, then built a properly-isolated ~70-word fixture (similarity=0.90625). Sanity-checked-by-breaking: removed the new gate, confirmed the properly-isolated test failed for the exact predicted reason (`upstreamCalls=1, want 2`) — the original short-sentence version had stayed green even with the gate removed, caught before trusting it. Full gateway suite clean (build/vet/`test -race`/golangci-lint/go-arch-lint/gofmt/go mod tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** None in shipped code — the methodology issue above was caught in my own test-writing process before it ever reached a committed test.
+
+**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then start Phase 4 (gateway cost-tier deployment routing).
