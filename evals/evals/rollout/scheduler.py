@@ -97,21 +97,33 @@ async def run_suite(
     cached_runs: dict[str, Run] | None = None,
     early_stop: EarlyStopConfig | None = None,
     span_sink: list[Span] | None = None,
+    run_sink: list[Run] | None = None,
 ) -> list[Run]:
     """Execute every case in `cases` sequentially, returning one `Run` each.
 
-    `cached_runs`/`early_stop`/`span_sink` are all keyword-only and all
-    default to `None` — omitting all three reproduces the exact behavior
-    this function had before docs/rfcs/2026-09-04-evals-rollout-cost-
-    mitigation.md.
+    `cached_runs`/`early_stop`/`span_sink`/`run_sink` are all keyword-only
+    and all default to `None` — omitting all four reproduces the exact
+    behavior this function had before docs/rfcs/2026-09-04-evals-rollout-
+    cost-mitigation.md.
 
     `span_sink`, per docs/rfcs/2026-09-04-evals-trace-span-model.md: when
     given, exactly one `Span` is appended for every real
     `run_in_sandbox()` attempt (success or exception) -- never for a cache
     hit or an early-stop skip, neither of which represents a real
     execution to trace.
+
+    `run_sink`, per a round-4 backlog-audit finding: when given, the
+    returned list itself IS the caller's own `run_sink` (aliased, not
+    copied) -- every existing `runs.append(...)` call below transparently
+    populates it in place, with zero changes to those 4 call sites. This
+    lets a caller (rollout_cmd) read back whatever Runs were produced so
+    far even if this function is interrupted (KeyboardInterrupt/
+    SystemExit) partway through the `for case in cases:` loop, mirroring
+    `span_sink`'s own already-established "populated incrementally, not
+    just returned at the end" pattern -- `runs` itself was a purely local
+    variable before this, discarded entirely on interruption.
     """
-    runs: list[Run] = []
+    runs: list[Run] = run_sink if run_sink is not None else []
     group_tallies: dict[tuple[str, int], tuple[int, int]] = {}
     stopped_groups: set[tuple[str, int]] = set()
 

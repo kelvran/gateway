@@ -2298,4 +2298,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** Two real correctness-breaking collision classes, both already implicitly acknowledged (not fixed) by this codebase's own existing L1/L2 fingerprint tests, which deliberately dodge L3 via a volatility keyword rather than exercise it.
 
-**Next steps / resume point:** This closes both gateway-cache-resweep findings. Not yet committed. Next: the 3 remaining evals-rollout-sandbox findings (interruption safety, container-leak-on-cancel, missing resource limits) — the last domain left in round 4.
+**Next steps / resume point:** This closes both gateway-cache-resweep findings. Committed (`e503de3`), pushed, CI confirmed green. Next: the 3 remaining evals-rollout-sandbox findings (interruption safety, container-leak-on-cancel, missing resource limits) — the last domain left in round 4.
+
+## [2026-09-11] evals: rollout_cmd now persists partial results on interruption (round-4 finding #6)
+
+**Files touched:** `evals/evals/rollout/scheduler.py`, `evals/evals/cli.py`, `evals/tests/test_cli_integration.py`, `DECISIONS.md`.
+
+**Intent/summary:** First of the 3 remaining evals-rollout-sandbox findings. The identical bug class round-3 finding #6 already fixed for `audit_corpus_cmd` (try/finally around the per-case loop) was never ported to `rollout_cmd` — an interruption mid-suite discarded every already-computed Run/Score/Span, including already-billed judge calls.
+
+**Decisions made:** Widened `run_suite` with a `run_sink` parameter mirroring `span_sink`'s shape, implemented via aliasing (`runs = run_sink if run_sink is not None else []`) rather than duplicating append calls at all 4 existing call sites — zero changes to the append logic itself. Discovered while writing the test that Scores behave differently depending on early-stop: the default path scores in a separate loop AFTER `run_suite` returns (so an interruption there loses everything, not just the interrupted case), while the early-stop path scores synchronously inside `run_suite`'s own loop — the test uses early-stop specifically to prove both Runs AND Scores survive.
+
+**Verification performed:** New test with 3 cases (completed, then interrupt, then never-reached) under `--early-stop-max-trials`/`--early-stop-baseline-pass-rate`. Sanity-checked-by-breaking both halves independently (the try/finally, and the run_sink aliasing) — each produced the identical predicted failure, proving neither covers for the other. Full evals suite clean (438 passed, up from 437, 13 skipped), ruff clean, 3/3 import-linter contracts kept.
+
+**Bugs found:** The interruption-safety gap itself, plus a real architectural nuance (default-path vs. early-stop-path scoring timing) discovered while proving the fix, not assumed going in.
+
+**Next steps / resume point:** Not yet committed. Next: the 2 remaining evals-rollout-sandbox findings, both in `sandbox.py` (container-leak-on-cancel, missing resource limits) — the last domain left in round 4.

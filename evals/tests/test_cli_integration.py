@@ -1825,6 +1825,123 @@ def test_rollout_against_fixture_scores_and_persists_runs(tmp_path, monkeypatch)
     assert persisted_spans[1].status == "OK"
 
 
+def test_rollout_keyboard_interrupt_mid_suite_persists_partial_runs(
+    tmp_path, monkeypatch
+):
+    """A round-4 backlog-audit finding: the identical bug class round-3
+    finding #6 already fixed for audit_corpus_cmd (try/finally around the
+    per-case loop) was never ported to rollout_cmd. run_suite's own
+    per-case `except Exception` guard (scheduler.py) cannot catch
+    KeyboardInterrupt/SystemExit -- an operator's Ctrl-C mid-suite
+    previously propagated straight out of asyncio.run(...), skipping
+    append_runs/append_scores/append_spans entirely and discarding every
+    already-computed Run/Score/Span for every OTHER case in the suite,
+    even a case whose real (Docker-executed, potentially billed) trial
+    had already completed successfully.
+
+    Uses --early-stop-max-trials/--early-stop-baseline-pass-rate
+    (deliberately, not the default path) specifically because scoring in
+    that mode happens via score_fn INSIDE run_suite's own per-case loop
+    (tally_and_maybe_stop), so a Score for an already-completed case is
+    genuinely available at the moment a LATER case's sandbox call raises
+    -- unlike the default (non-early-stop) path, where scoring happens in
+    a wholly separate loop AFTER run_suite fully returns, so an
+    interruption during run_suite itself means no Score was ever
+    computed for anything yet, partial or otherwise.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "flagged-case",
+                    "revision": 1,
+                    "task_spec": {
+                        "image": "alpine:3.20",
+                        "command": ["echo", "hello-rollout"],
+                        "timeout_s": 30,
+                        "match": "exact",
+                    },
+                    "reference": "hello-rollout",
+                    "tier": "golden",
+                },
+                {
+                    "id": "interrupted-case",
+                    "revision": 1,
+                    "task_spec": {
+                        "image": "alpine:3.20",
+                        "command": ["echo", "interrupt-me"],
+                        "timeout_s": 30,
+                        "match": "exact",
+                    },
+                    "reference": "interrupt-me",
+                    "tier": "golden",
+                },
+                {
+                    "id": "never-reached-case",
+                    "revision": 1,
+                    "task_spec": {
+                        "image": "alpine:3.20",
+                        "command": ["echo", "never-reached"],
+                        "timeout_s": 30,
+                        "match": "exact",
+                    },
+                    "reference": "never-reached",
+                    "tier": "golden",
+                },
+            ]
+        )
+    )
+
+    async def _fake_run_in_sandbox(image, command, timeout_s):
+        if command[1] == "interrupt-me":
+            raise KeyboardInterrupt
+        return SandboxResult(
+            exit_code=0, stdout=f"{command[1]}\n", stderr="", timed_out=False
+        )
+
+    monkeypatch.setattr(scheduler_module, "run_in_sandbox", _fake_run_in_sandbox)
+
+    results_path = tmp_path / "results.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    traces_path = tmp_path / "traces.jsonl"
+    runner = CliRunner()
+    # Click's own top-level main() converts a real KeyboardInterrupt into
+    # a plain SystemExit(1) (per the identical, already-confirmed
+    # behavior in test_audit_corpus_keyboard_interrupt_mid_batch_persists
+    # _partial_findings) -- the load-bearing assertion here is what's on
+    # disk afterward, not the exact exception type.
+    result = runner.invoke(
+        main,
+        [
+            "rollout",
+            "--suite",
+            str(suite_path),
+            "--results",
+            str(results_path),
+            "--scores",
+            str(scores_path),
+            "--traces",
+            str(traces_path),
+            "--early-stop-max-trials",
+            "10",
+            "--early-stop-baseline-pass-rate",
+            "0.5",
+        ],
+    )
+    assert result.exit_code != 0, result.output
+
+    persisted_runs = load_runs(results_path)
+    assert len(persisted_runs) == 1
+    assert persisted_runs[0].eval_case_id == "flagged-case"
+    assert persisted_runs[0].status == "completed"
+
+    persisted_scores = load_scores(scores_path)
+    assert len(persisted_scores) == 1
+    assert persisted_scores[0].eval_case_id == "flagged-case"
+    assert persisted_scores[0].value is True
+
+
 def test_rollout_use_cache_second_invocations_cache_hits_produce_no_new_spans(
     tmp_path, monkeypatch
 ):

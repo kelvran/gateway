@@ -1788,6 +1788,7 @@ def rollout_cmd(
     total = 0
     scores: list[Score] = []
     span_sink: list[Span] = []
+    runs: list[Run] = []
 
     async def _score_and_record(case: EvalCase, run: Run) -> bool:
         """Grade one real trial exactly once, whether awaited from inside
@@ -1895,31 +1896,54 @@ def rollout_cmd(
                 confidence=confidence,
                 relative_mixing_variance=early_stop_relative_mixing_variance,
             )
-            runs = await run_suite(
+            completed_runs = await run_suite(
                 cases,
                 cached_runs=cached_runs,
                 early_stop=early_stop,
                 span_sink=span_sink,
+                run_sink=runs,
             )
             # Scoring already happened inside run_suite via score_fn above
             # — this loop is purely for operator visibility into skipped
             # trials, and deliberately never touches successes/total (a
             # "skipped" Run was never attempted, so it must never affect
             # either).
-            for case, run in zip(cases, runs, strict=True):
+            for case, run in zip(cases, completed_runs, strict=True):
                 if run.status == "skipped":
                     click.echo(f"{case.id}: SKIPPED")
         else:
-            runs = await run_suite(cases, cached_runs=cached_runs, span_sink=span_sink)
-            for case, run in zip(cases, runs, strict=True):
+            completed_runs = await run_suite(
+                cases, cached_runs=cached_runs, span_sink=span_sink, run_sink=runs
+            )
+            for case, run in zip(cases, completed_runs, strict=True):
                 await _score_and_record(case, run)
-        return runs
+        return completed_runs
 
-    runs = asyncio.run(_run_and_score())
-    append_runs(runs, results_path)
+    # try/finally mirrors audit_corpus_cmd's own identical fix (a round-3
+    # backlog-audit finding): the per-case error handling inside
+    # run_suite/`_score_and_record` (an `except Exception`, e.g.
+    # `_judge_all_axes`'s own try/except) cannot catch KeyboardInterrupt/
+    # SystemExit -- both are BaseException. An operator's Ctrl-C mid-suite
+    # previously propagated straight out of asyncio.run(...), skipping
+    # append_runs/append_scores/append_spans entirely and discarding
+    # every already-computed (and, for a real live rollout with
+    # --llm-judge/--llm-judge-panel, already real-money-billed) Run/
+    # Score/Span for every OTHER case in the suite. `runs`/`scores`/
+    # `span_sink` are all populated incrementally as the suite runs (via
+    # run_sink/direct appends), so whatever's accumulated so far is
+    # always available to persist here regardless of how the loop exits.
+    # The final format_report echo is deliberately left OUTSIDE the
+    # try/finally: Python only reaches it on normal completion -- on an
+    # uncaught interruption, the finally runs and the exception then
+    # continues propagating, automatically skipping a summary that would
+    # otherwise misrepresent a partial run as a complete one.
+    try:
+        asyncio.run(_run_and_score())
+    finally:
+        append_runs(runs, results_path)
+        append_scores(scores, scores_path)
+        append_spans(span_sink, traces_path)
 
-    append_scores(scores, scores_path)
-    append_spans(span_sink, traces_path)
     click.echo(format_report(successes, total, confidence=confidence))
 
 
