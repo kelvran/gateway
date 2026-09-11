@@ -377,3 +377,45 @@ func TestUnpinnedPromptVersionTelemetryReportsTheRealResolvedVersionNotZero(t *t
 		t.Errorf("%s = %v, ok=%v, want %q", telemetry.AttrKelvranPromptID, v, ok, "greeting")
 	}
 }
+
+// TestHandleChatCompletionL3NeverServesAcrossDifferentPromptFingerprint
+// is a round-4 backlog-audit finding: before this fix, L3-lite had no
+// gate on prompt identity at all -- two DIFFERENT prompt_ids resolving to
+// byte-identical content would collide on the exact same L3 entry, the
+// same real gap TestPromptFingerprintBustsACacheHitEvenWithByteIdentical
+// ResolvedContent already proves for L1/L2, but that test's own content
+// ("what's today's weather") is a deliberate volatility keyword forcing
+// an L3 bypass specifically because L3 had no fingerprint concept of its
+// own -- this test reuses clean, non-volatile, entity-free content
+// instead, so it actually exercises L3 rather than dodging it.
+func TestHandleChatCompletionL3NeverServesAcrossDifferentPromptFingerprint(t *testing.T) {
+	var upstreamCalls int
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, deployments)
+
+	const content = "Explain how binary search works in a sorted array"
+	if _, err := p.UpsertPrompt("prompt-a", []adapter.Message{{Role: "user", Content: content}}); err != nil {
+		t.Fatalf("UpsertPrompt prompt-a: %v", err)
+	}
+	if _, err := p.UpsertPrompt("prompt-b", []adapter.Message{{Role: "user", Content: content}}); err != nil {
+		t.Fatalf("UpsertPrompt prompt-b: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "prompt-a"}); err != nil {
+		t.Fatalf("first HandleChatCompletion (prompt-a): %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("after first request: upstreamCalls = %d, want 1", upstreamCalls)
+	}
+
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "prompt-b"}); err != nil {
+		t.Fatalf("second HandleChatCompletion (prompt-b): %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Errorf("after a different prompt_id resolving to byte-identical, non-volatile content: upstreamCalls = %d, want 2 (L3 must never serve a hit written under a different prompt identity)", upstreamCalls)
+	}
+}

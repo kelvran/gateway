@@ -57,6 +57,50 @@ func TestHandleChatCompletionLexicalNearDuplicateHitsL3(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionL3NeverServesAcrossDifferentResponseFormat is a
+// round-4 backlog-audit finding: before this fix, L3-lite had no gate on
+// ResponseFormat at all -- two byte-identical-messages requests differing
+// ONLY in whether one demands schema-conforming JSON would collide on
+// the exact same L3 entry, serving a plain-text-intent cached response to
+// a caller that explicitly asked for structured output (or vice versa).
+// Reuses TestHandleChatCompletionLexicalNearDuplicateHitsL3's own clean,
+// non-volatile, entity-free content -- deliberately NOT the
+// "today's weather"-style volatile text prompt_test.go's own fingerprint
+// tests use to dodge L3 entirely, since this test's whole point is to
+// exercise L3, not bypass it.
+func TestHandleChatCompletionL3NeverServesAcrossDifferentResponseFormat(t *testing.T) {
+	var upstreamCalls int
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	const content = "Explain how binary search works in a sorted array"
+	plain := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: content}}}
+	structured := adapter.ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []adapter.Message{{Role: "user", Content: content}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type:       "json_schema",
+			JSONSchema: &adapter.JSONSchema{Name: "answer", Schema: []byte(`{"type":"object"}`)},
+		},
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", plain); err != nil {
+		t.Fatalf("first HandleChatCompletion (plain): %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("after first request: upstreamCalls = %d, want 1", upstreamCalls)
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", structured); err != nil {
+		t.Fatalf("second HandleChatCompletion (structured): %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Errorf("after a byte-identical-messages request that ALSO sets ResponseFormat: upstreamCalls = %d, want 2 (L3 must never serve a plain-text-cached entry to a request demanding structured output)", upstreamCalls)
+	}
+}
+
 // TestHandleChatCompletionEntityMismatchIsNotAnL3Hit proves the hard gate's
 // whole reason for existing actually holds end-to-end: a query about $92
 // must never be served from an entry cached for a query about $93, even
@@ -150,7 +194,7 @@ func (failingLexicalCache) Search(_ context.Context, _ string, _ []uint64, _ int
 	return nil, errors.New("simulated L3 backend failure")
 }
 
-func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ time.Duration) error {
+func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ time.Duration) error {
 	return nil
 }
 

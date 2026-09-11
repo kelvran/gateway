@@ -122,6 +122,23 @@ type LexicalCandidate struct {
 	// freshnessRiskModel, which stays scoped to Cache L3-lite's own
 	// checklist.
 	GuardrailPolicyVersion string
+	// ResponseFormatFingerprint/PromptFingerprint mirror the identical
+	// conditional folds Key/NormalizedKey (L1/L2) already apply — a
+	// round-4 backlog-audit finding: L3-lite had NO gate on either at
+	// all, so a request differing only in ResponseFormat (or a
+	// prompt_id/version bump whose new content happens to be lexically
+	// near-duplicate to the old one) could be served a cached entry that
+	// was never checked for that difference — exactly the kind of
+	// correctness-breaking collision this cache's whole "gated on
+	// correctness, not just similarity" design exists to prevent (see
+	// key.go's own doc comment on the identical L1/L2 invariant). Both
+	// are "" (never a fabricated value) whenever the request that wrote
+	// this entry didn't use the corresponding feature at all — an exact
+	// string-equality gate, both-empty counting as a match, mirroring
+	// GuardrailPolicyVersion's own exact-match convention immediately
+	// above.
+	ResponseFormatFingerprint string
+	PromptFingerprint         string
 }
 
 // LexicalCache is Cache L3-lite's own interface — deliberately not Cache,
@@ -134,5 +151,5 @@ type LexicalCandidate struct {
 // partition itself, not a post-hoc filter").
 type LexicalCache interface {
 	Search(ctx context.Context, tenantID string, signature []uint64, k int) ([]LexicalCandidate, error)
-	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, ttl time.Duration) error
+	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, ttl time.Duration) error
 }

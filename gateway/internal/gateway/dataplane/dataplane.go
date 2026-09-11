@@ -1074,10 +1074,10 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, encoded []byte) {
 	_ = p.cache.Put(ctx, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -1175,7 +1175,7 @@ func freshnessRiskModel(writtenAt time.Time, storedModelID, currentModelID strin
 // resource on this instance," not "l1Key is a real L3 storage key" — the
 // same question checkCache's own L1/L2 events already answer for their
 // own layers, extended here to L3's different mechanism.
-func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key string, signature []uint64) (cached []byte, similarity float64, ageMs float64, hit bool) {
+func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key string, signature []uint64, promptFP string) (cached []byte, similarity float64, ageMs float64, hit bool) {
 	// Per-gate outcome counters, per docs/upgrade-research/cache-2026-09-06.md
 	// Finding 1 — GroundedCache's own per-gate ablation methodology
 	// applied to L3-lite's three existing gates. No new gate logic: every
@@ -1191,6 +1191,7 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		return nil, 0, 0, false // fail-closed: a search error skips L3, never bypasses the gate
 	}
 	queryFingerprint := Fingerprint(req.Messages)
+	responseFormatFP := responseFormatFingerprint(req.ResponseFormat)
 	for _, c := range candidates {
 		entityMismatch := !fingerprintsEqual(queryFingerprint, c.Fingerprint)
 		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateEntityMismatch, entityMismatch)
@@ -1210,6 +1211,22 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		// a silent, unchecked serve. Not one of Finding 1's three named
 		// gates, so deliberately not counted alongside them.
 		if c.GuardrailPolicyVersion != p.guardrails.Version() {
+			continue
+		}
+		// A round-4 backlog-audit finding: mirrors the identical
+		// conditional folds Key/NormalizedKey (L1/L2) already apply for
+		// ResponseFormat and prompt_id/version — before this, L3 had no
+		// gate on either at all, so a request differing only in
+		// ResponseFormat (or a prompt version bump whose new content
+		// happens to be lexically near-duplicate to the old one) could
+		// be served an entry that was never checked for that
+		// difference. Exact string equality, both-empty counting as a
+		// match, same convention as the GuardrailPolicyVersion gate
+		// immediately above.
+		if c.ResponseFormatFingerprint != responseFormatFP {
+			continue
+		}
+		if c.PromptFingerprint != promptFP {
 			continue
 		}
 		p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", true, p.cacheL3TTL)
@@ -1341,7 +1358,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
-	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l1Key, l3Signature); ok {
+	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l1Key, l3Signature, promptFP); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -1352,7 +1369,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
-	resp, dep, fallback, billable, err = p.runMissPath(ctx, vk, req, l1Key, l2Key, l3Signature)
+	resp, dep, fallback, billable, err = p.runMissPath(ctx, vk, req, l1Key, l2Key, l3Signature, promptFP)
 	return
 }
 
@@ -1405,7 +1422,7 @@ type cacheMissOutcome struct {
 // closure, never shared across goroutines — singleflight.Group.Do simply
 // never invokes a follower's closure at all, so a follower's billable
 // stays false with no synchronization needed.
-func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key, l2Key string, l3Signature []uint64) (resp adapter.ChatResponse, dep Deployment, fallback fallbackInfo, billable bool, err error) {
+func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key, l2Key string, l3Signature []uint64, promptFP string) (resp adapter.ChatResponse, dep Deployment, fallback fallbackInfo, billable bool, err error) {
 	result, doErr, _ := p.missGroup.Do(l1Key, func() (any, error) {
 		billable = true
 
@@ -1469,7 +1486,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		}
 
 		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, encoded)
+			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, encoded)
 		}
 
 		return cacheMissOutcome{resp: resp, dep: dep, fallback: fallback}, nil

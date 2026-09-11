@@ -2284,4 +2284,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** A real, previously-untested logical race — not caught by `go test -race` since each individual lock/unlock pair was already correctly synchronized; only the multi-step operation across them wasn't atomic.
 
-**Next steps / resume point:** This closes all 3 gateway-router-health-probing findings. Not yet committed. Next: the L3 cache response_format + prompt-fingerprint gates, then the 3 evals rollout/sandbox findings.
+**Next steps / resume point:** This closes all 3 gateway-router-health-probing findings. Committed (`5ca07fd`), pushed, CI confirmed green. Next: the L3 cache response_format + prompt-fingerprint gates, then the 3 evals rollout/sandbox findings.
+
+## [2026-09-11] gateway: L3-lite cache now gates on ResponseFormat + prompt identity (round-4 findings #4/#5 — closes gateway-cache-resweep domain)
+
+**Files touched:** `gateway/internal/cache/lexical.go`, `gateway/internal/cache/inprocess/lexical.go`, `gateway/internal/cache/inprocess/lexical_test.go`, `gateway/internal/gateway/dataplane/dataplane.go`, `gateway/internal/gateway/dataplane/streaming.go`, `gateway/internal/gateway/dataplane/lexical_cache_test.go`, `gateway/internal/gateway/dataplane/cache_l2_test.go`, `gateway/internal/gateway/dataplane/prompt_test.go`, `DECISIONS.md`.
+
+**Intent/summary:** Both gateway-cache-resweep findings, combined since they're the identical fix shape on the same struct/functions. L1/L2 already fold ResponseFormat/prompt fingerprints into their cache keys; L3-lite had no equivalent gate on either, so two requests differing only in one of those dimensions could collide on the same L3 entry.
+
+**Decisions made:** Threaded `promptFP` (previously only computed for the L1/L2 key fold) through `checkLexicalCache`/`runMissPath` as an explicit new parameter — the same value L1/L2 already use, guaranteeing consistency by construction rather than a second independent derivation. Mirrored `GuardrailPolicyVersion`'s exact-string-match, both-empty-is-a-match convention exactly for both new gates.
+
+**Verification performed:** New tests deliberately reuse clean, non-volatile content (not the existing volatility-keyword workaround the L1/L2 tests use to dodge L3) since the point is to exercise L3, not bypass it. Sanity-checked-by-breaking both gates independently — each broke only its own test, proving neither covers for the other. Mechanical signature-fallout fix across ~14 test call sites (2 new trailing args) plus one mock implementation. Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures.
+
+**Bugs found:** Two real correctness-breaking collision classes, both already implicitly acknowledged (not fixed) by this codebase's own existing L1/L2 fingerprint tests, which deliberately dodge L3 via a volatility keyword rather than exercise it.
+
+**Next steps / resume point:** This closes both gateway-cache-resweep findings. Not yet committed. Next: the 3 remaining evals-rollout-sandbox findings (interruption safety, container-leak-on-cancel, missing resource limits) — the last domain left in round 4.
