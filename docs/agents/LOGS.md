@@ -2018,4 +2018,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The invariant-violation gap itself (real, pre-existing since openaicompat's cache-token wiring shipped 2026-09-11, found by the backlog-audit workflow's gateway-security-cost agent, independently re-verified before trusting it).
 
-**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then the 2nd finding (evals/ingestion/mapping.py field-wiring).
+**Next steps / resume point:** Committed (`8ee187a`), pushed, CI confirmed green. Next: the 2nd finding (evals/ingestion/mapping.py field-wiring).
+
+## [2026-09-11] evals/ingestion/mapping.py field-wiring
+
+**Files touched:** `evals/evals/ingestion/mapping.py`, `evals/evals/auto_flag.py`, `evals/tests/test_ingestion_mapping.py` (new), `DECISIONS.md`.
+
+**Intent/summary:** Second of the 3 confirmed backlog-audit findings. 5 real, already-decoded `GatewayDecisionEvent` fields (occurred_at, rate_limit_fail_open, fallback_happened, fallback_from_deployment, budget_spent_usd) were being silently thrown away by the ingestion mapping, exactly matching `auto_flag.py`'s own docstring's description of this gap.
+
+**Decisions made:** Scoped strictly to the plumbing fix — persist all 5 fields — and deliberately did NOT build the DDM drift detector or a new fallback-keyed rule the round-4 evals-drift-monitoring research separately proposed on top of this data, since that research's own confidence ratings mark the fallback-rule idea as weakly evidenced. `occurred_at` uses `.ToJsonString()` rather than the raw protobuf `Timestamp`, since `task_spec` is a plain dict that must stay JSON-serializable through `results_store.py`'s JSONL persistence — verified this choice directly rather than assuming. Corrected `auto_flag.py`'s own docstring, which explicitly claimed these 5 fields were still discarded, in the same pass.
+
+**Verification performed:** New `test_ingestion_mapping.py` — no dedicated unit test existed for this function before (only indirect coverage via the ingest→promote CLI integration test). 3 new tests: real non-zero values propagate individually; protobuf zero-value defaults persist correctly (never omitted); the resulting `task_spec` round-trips through `json.dumps` cleanly. Sanity-checked-by-breaking (removed 4 of 5 new lines, confirmed both real-value-asserting tests failed with a `KeyError`, restored). Full evals suite (416 passed, up from 413, 11 skipped), ruff clean, 3/3 import-linter contracts kept.
+
+**Bugs found:** The discarded-fields gap itself (real, pre-existing, no stated reason for the omission — found by the backlog-audit workflow's evals agent, independently re-verified before trusting it).
+
+**Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then the final finding (the offline embedding-gate validation harness).

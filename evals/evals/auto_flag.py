@@ -15,11 +15,20 @@ WHICH outcome fired. Only `task_spec["outcome"]` (the enum name, e.g.
 data -- this module exists specifically to read it instead of the lossier
 `Run.status`.
 
-v1 scope is outcome-based rules only. `GatewayDecisionEvent` fields decoded
-during ingestion but currently discarded before persistence (`occurred_at`,
+v1 scope is outcome-based rules only. **Corrected 2026-09-11**: the 5
+`GatewayDecisionEvent` fields this docstring named as "decoded during
+ingestion but currently discarded before persistence" (`occurred_at`,
 `rate_limit_fail_open`, `fallback_happened`, `fallback_from_deployment`,
-`budget_spent_usd`) are not available on already-ingested `EvalCase`/`Run`
-data today, so no rule here can use latency, cost, or fallback signals.
+`budget_spent_usd`) are now persisted into `EvalCase.task_spec` by
+`evals.ingestion.mapping.gateway_decision_event_to_eval_case_and_run` --
+found by a post-round-4 backlog audit as a real, low-risk completeness gap
+with no stated reason for the omission. This module's own rule set is
+still outcome-based only, unchanged by that fix -- a latency/cost/
+fallback-aware rule (e.g. the DDM sequential drift detector
+`docs/upgrade-research/evals-drift-monitoring-round4-2026-09-11.md`
+scoped against `occurred_at` specifically) remains separately scoped
+future work, not built here; only the underlying data these fields
+enable is no longer being thrown away for cases ingested from now on.
 
 Deliberately a flat, third-layer module (per .importlinter's `layers`
 contract), sibling to `evals.audit_corpus` on that same `|`-joined layer

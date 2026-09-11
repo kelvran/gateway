@@ -66,6 +66,25 @@ def gateway_decision_event_to_eval_case_and_run(
             "virtual_key_id": event.virtual_key_id,
             "requested_model": event.requested_model,
             "outcome": outcome_name,
+            # occurred_at/rate_limit_fail_open/fallback_happened/
+            # fallback_from_deployment/budget_spent_usd were previously
+            # decoded from the wire and then silently discarded here --
+            # `evals.auto_flag`'s own module docstring names this exact
+            # gap as the reason a future rule can't use latency/cost/
+            # fallback signals against already-ingested data.
+            # occurred_at via ToJsonString(), not the raw Timestamp
+            # message, since task_spec is a plain dict that must stay
+            # JSON-serializable end to end (results_store.py's append-
+            # only JSONL persistence).
+            "occurred_at": event.occurred_at.ToJsonString(),
+            "rate_limit_fail_open": event.rate_limit_fail_open,
+            "fallback_happened": event.fallback_happened,
+            "fallback_from_deployment": event.fallback_from_deployment,
+            # budget_spent_usd is already a decimal-as-string on the wire
+            # (this project's own established convention for exact
+            # decimal values crossing a serialization boundary) -- passed
+            # through verbatim, never parsed into a float here.
+            "budget_spent_usd": event.budget_spent_usd,
         },
         reference=None,
         tier="drift_sample",
