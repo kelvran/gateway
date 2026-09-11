@@ -169,7 +169,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// regardless of streaming/buffered, so there is no half-formed-
 	// content problem on the input side.
 	if verdict := p.guardrails.Check(ctx, serializeMessages(req.Messages)); verdict.Blocked {
-		p.logger.Warn("guardrail_blocked_precall", "key_id", vk.ID, "finding_count", len(verdict.Findings))
+		p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings))...)
 		err = ErrGuardrailBlocked
 		return
 	}
@@ -429,14 +429,14 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		// chunks, never classified as an upstream failure.
 		accumulatedChars := acc.totalContentLen()
 		if accumulatedChars > runawayCeiling {
-			p.logger.Warn("streaming_runaway_guard_triggered",
+			p.logger.Warn("streaming_runaway_guard_triggered", append(traceLogFields(ctx),
 				"key_id", keyID,
 				"deployment", dep.Name,
 				"provider", dep.Provider,
 				"model", req.Model,
 				"accumulated_chars", accumulatedChars,
 				"ceiling_chars", runawayCeiling,
-			)
+			)...)
 			cancelUpstream()
 			break
 		}
@@ -450,13 +450,13 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		// otherwise never see. Same non-error, graceful-truncation
 		// treatment on trip.
 		if !p.checkMidStreamReservationTopup(dep, req, accumulatedChars, msr) {
-			p.logger.Warn("streaming_midstream_reservation_topup_exhausted",
+			p.logger.Warn("streaming_midstream_reservation_topup_exhausted", append(traceLogFields(ctx),
 				"key_id", keyID,
 				"deployment", dep.Name,
 				"provider", dep.Provider,
 				"model", req.Model,
 				"accumulated_chars", accumulatedChars,
-			)
+			)...)
 			cancelUpstream()
 			break
 		}
@@ -548,27 +548,27 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 		// See streamDeployment's identical runaway-guard comment/rationale.
 		accumulatedChars := acc.totalContentLen()
 		if accumulatedChars > runawayCeiling {
-			p.logger.Warn("streaming_runaway_guard_triggered",
+			p.logger.Warn("streaming_runaway_guard_triggered", append(traceLogFields(ctx),
 				"key_id", keyID,
 				"deployment", dep.Name,
 				"provider", dep.Provider,
 				"model", req.Model,
 				"accumulated_chars", accumulatedChars,
 				"ceiling_chars", runawayCeiling,
-			)
+			)...)
 			cancelUpstream()
 			break
 		}
 		// See streamDeployment's identical mid-stream reservation
 		// top-up guard comment/rationale.
 		if !p.checkMidStreamReservationTopup(dep, req, accumulatedChars, msr) {
-			p.logger.Warn("streaming_midstream_reservation_topup_exhausted",
+			p.logger.Warn("streaming_midstream_reservation_topup_exhausted", append(traceLogFields(ctx),
 				"key_id", keyID,
 				"deployment", dep.Name,
 				"provider", dep.Provider,
 				"model", req.Model,
 				"accumulated_chars", accumulatedChars,
-			)
+			)...)
 			cancelUpstream()
 			break
 		}
@@ -593,11 +593,11 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 		// never sends usage does not fail the request, but must not be
 		// silently unmetered either — a zero-usage entry is recorded and
 		// flagged loudly here so it's visible in logs, not just absent.
-		p.logger.Warn("stream_missing_usage",
+		p.logger.Warn("stream_missing_usage", append(traceLogFields(ctx),
 			"deployment", dep.Name,
 			"provider", dep.Provider,
 			"model", req.Model,
-		)
+		)...)
 	}
 
 	resp := acc.build(usage)
@@ -615,7 +615,7 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	// elevated severity, never withhold what's already been delivered.
 	if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
 		p.logger.Warn("guardrail_blocked_postcall_streaming_audit_only",
-			"deployment", dep.Name, "finding_count", len(postVerdict.Findings))
+			append(traceLogFields(ctx), "deployment", dep.Name, "finding_count", len(postVerdict.Findings))...)
 	}
 
 	if err := sw.WriteDone(); err != nil {

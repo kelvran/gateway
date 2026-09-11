@@ -703,7 +703,7 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) (ok bool, failedOpen bool, tpmReserved bool, tpmReservedTokens float64) {
 	allowed, err := p.limiter.AllowForModel(ctx, vk.ID, model)
 	if err != nil {
-		p.logger.Warn("ratelimit_backend_unavailable", "key_id", vk.ID, "error", err.Error())
+		p.logger.Warn("ratelimit_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", err.Error())...)
 		// A real, aggregate-friendly metric alongside the log line above,
 		// per docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md
 		// — the structured log/GatewayDecisionEvent field already
@@ -757,7 +757,7 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 func (p *Pipeline) checkFallbackTargetRateLimit(ctx context.Context, keyID, model string) bool {
 	allowed, err := p.limiter.AllowForModel(ctx, keyID, model)
 	if err != nil {
-		p.logger.Warn("ratelimit_backend_unavailable_fallback_hop", "key_id", keyID, "model", model, "error", err.Error())
+		p.logger.Warn("ratelimit_backend_unavailable_fallback_hop", append(traceLogFields(ctx), "key_id", keyID, "model", model, "error", err.Error())...)
 		return true
 	}
 	return allowed
@@ -845,7 +845,7 @@ func (p *Pipeline) checkDeploymentRateLimit(ctx context.Context, depName string)
 	}
 	allowed, err := p.deploymentLimiter.Allow(ctx, depName)
 	if err != nil {
-		p.logger.Warn("deployment_ratelimit_backend_unavailable", "deployment", depName, "error", err.Error())
+		p.logger.Warn("deployment_ratelimit_backend_unavailable", append(traceLogFields(ctx), "deployment", depName, "error", err.Error())...)
 		return true
 	}
 	return allowed
@@ -943,7 +943,7 @@ func (c cacheProvenance) Hit() bool { return c.Layer != "" }
 func (p *Pipeline) checkCache(ctx context.Context, tenantID, l1Key, l2Key string) (cached []byte, layer string, writtenAt time.Time, hit bool) {
 	l1Cached, l1WrittenAt, l1OK, l1Err := p.cache.Get(ctx, l1Key)
 	if l1Err == nil {
-		p.logCacheCrossInstanceCheck(tenantID, l1Key, "L1", l1OK, p.cacheTTL)
+		p.logCacheCrossInstanceCheck(ctx, tenantID, l1Key, "L1", l1OK, p.cacheTTL)
 	}
 	if l1Err == nil && l1OK {
 		return l1Cached, "L1", l1WrittenAt, true
@@ -951,7 +951,7 @@ func (p *Pipeline) checkCache(ctx context.Context, tenantID, l1Key, l2Key string
 
 	l2Cached, l2WrittenAt, l2OK, l2Err := p.cacheL2.Get(ctx, l2Key)
 	if l2Err == nil {
-		p.logCacheCrossInstanceCheck(tenantID, l2Key, "L2", l2OK, p.cacheL2TTL)
+		p.logCacheCrossInstanceCheck(ctx, tenantID, l2Key, "L2", l2OK, p.cacheL2TTL)
 	}
 	if l2Err == nil && l2OK {
 		_ = p.cache.Put(ctx, l1Key, l2Cached, p.cacheTTL)
@@ -979,15 +979,15 @@ func (p *Pipeline) checkCache(ctx context.Context, tenantID, l1Key, l2Key string
 // cardinality-explosion anti-pattern — unlike the small, fixed
 // vocabularies (gate name, pass/reject, instance ID) telemetry's other
 // counters in this codebase use as attributes.
-func (p *Pipeline) logCacheCrossInstanceCheck(tenantID, key, layer string, hit bool, ttl time.Duration) {
-	p.logger.Info("cache_cross_instance_check",
+func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key, layer string, hit bool, ttl time.Duration) {
+	p.logger.Info("cache_cross_instance_check", append(traceLogFields(ctx),
 		"tenant_id", tenantID,
 		"cache_key", key,
 		"cache_layer", layer,
 		"instance_id", telemetry.InstanceID,
 		"hit", hit,
 		"ttl_ms", ttl.Milliseconds(),
-	)
+	)...)
 }
 
 // writeCache writes encoded to all three cache layers, eagerly and
@@ -1107,7 +1107,7 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 	}
 	candidates, err := p.cacheL3.Search(ctx, vk.ID, signature, l3SearchK)
 	if err != nil {
-		p.logger.Warn("lexical_cache_search_failed", "key_id", vk.ID, "error", err.Error())
+		p.logger.Warn("lexical_cache_search_failed", append(traceLogFields(ctx), "key_id", vk.ID, "error", err.Error())...)
 		return nil, 0, 0, false // fail-closed: a search error skips L3, never bypasses the gate
 	}
 	queryFingerprint := Fingerprint(req.Messages)
@@ -1132,10 +1132,10 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		if c.GuardrailPolicyVersion != p.guardrails.Version() {
 			continue
 		}
-		p.logCacheCrossInstanceCheck(vk.ID, l1Key, "L3", true, p.cacheL3TTL)
+		p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", true, p.cacheL3TTL)
 		return c.Resp, c.Similarity, float64(time.Since(c.WrittenAt).Milliseconds()), true
 	}
-	p.logCacheCrossInstanceCheck(vk.ID, l1Key, "L3", false, p.cacheL3TTL)
+	p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", false, p.cacheL3TTL)
 	return nil, 0, 0, false
 }
 
@@ -1336,7 +1336,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// checked under the current policy at write time, per this same RFC's
 		// cache-key/GuardrailPolicyVersion mechanism.
 		if verdict := p.guardrails.Check(ctx, serializeMessages(req.Messages)); verdict.Blocked {
-			p.logger.Warn("guardrail_blocked_precall", "key_id", vk.ID, "finding_count", len(verdict.Findings))
+			p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings))...)
 			return nil, ErrGuardrailBlocked
 		}
 
@@ -1384,7 +1384,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// populated here and nothing downstream (cache write, return to
 		// client) has happened yet — a Block verdict can still refuse both.
 		if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
-			p.logger.Warn("guardrail_blocked_postcall", "key_id", vk.ID, "finding_count", len(postVerdict.Findings))
+			p.logger.Warn("guardrail_blocked_postcall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(postVerdict.Findings))...)
 			return nil, ErrGuardrailBlocked
 		}
 
@@ -1817,7 +1817,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			p.budget.Reconcile(vk.ID, budgetReservedUSD, realCost, vk.BudgetResetInterval)
 		}
 		if realCost != nil {
-			p.checkBudgetWarnThreshold(vk)
+			p.checkBudgetWarnThreshold(ctx, vk)
 		}
 
 		var realTokens *float64
@@ -1939,7 +1939,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	}
 	span.End()
 
-	p.logRequest(vk, req, resp, cacheInfo, cost, err, event)
+	p.logRequest(ctx, vk, req, resp, cacheInfo, cost, err, event)
 }
 
 // checkBudgetWarnThreshold logs a budget_warn_threshold_crossed warning
@@ -1951,19 +1951,19 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 // "already warned this period" state — matches this codebase's existing
 // ratelimit_backend_unavailable precedent of logging every occurrence
 // rather than only the first.
-func (p *Pipeline) checkBudgetWarnThreshold(vk *identity.VirtualKey) {
+func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.VirtualKey) {
 	if vk.BudgetWarnPercent <= 0 || !vk.BudgetUSD.IsPositive() {
 		return
 	}
 	spent := p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
 	warnAt := vk.BudgetUSD.Mul(decimal.NewFromFloat(vk.BudgetWarnPercent))
 	if spent.GreaterThanOrEqual(warnAt) {
-		p.logger.Warn("budget_warn_threshold_crossed",
+		p.logger.Warn("budget_warn_threshold_crossed", append(traceLogFields(ctx),
 			"key_id", vk.ID,
 			"spent_usd", spent.String(),
 			"budget_usd", vk.BudgetUSD.String(),
 			"warn_percent", vk.BudgetWarnPercent,
-		)
+		)...)
 	}
 }
 
@@ -2031,11 +2031,39 @@ func finishReasons(resp adapter.ChatResponse) []string {
 	return reasons
 }
 
+// traceLogFields returns "trace_id"/"span_id" key-value pairs for ctx's
+// active span, or nil when ctx carries no valid span context at all
+// (e.g. a background health-probe pass, or a direct unit-test call with
+// no span ever started) — never a misleading pair of all-zero IDs. Per
+// the round-2 backlog audit's gateway-observability finding: logRequest
+// already computes both values (event.TraceId/SpanId, from
+// finalize's own span.SpanContext()) but only ever surfaced them nested
+// inside the gatewayevents_v1 JSON string — an operator filtering/
+// grepping logs by trace_id had to parse that nested JSON first, rather
+// than matching a top-level field the way every other structured field
+// on this same log line works. Reused at every OTHER mid-pipeline
+// Warn/Info call site below that already has ctx (and therefore the
+// request's real, live span) in scope, for the identical reason: those
+// lines had zero trace correlation at all, not even nested.
+//
+// Deliberately excludes probeOneDeployment's own Warn/Info calls
+// (health_probe_deployment_unhealthy/_recovered): that function's ctx is
+// the background health-probe loop's own lifecycle context, never a
+// per-request span — attaching a trace_id/span_id there would imply a
+// distributed-trace correlation that doesn't exist, not close a real gap.
+func traceLogFields(ctx context.Context) []any {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return nil
+	}
+	return []any{"trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String()}
+}
+
 // logRequest emits the structured JSON log line for one request. cost is
 // precomputed by finalize (decimal.Zero when err != nil) so it's never
 // calculated twice.
-func (p *Pipeline) logRequest(vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
-	fields := []any{"model", req.Model, "cache_hit", cacheInfo.Hit()}
+func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
+	fields := append(traceLogFields(ctx), "model", req.Model, "cache_hit", cacheInfo.Hit())
 	if cacheInfo.Hit() {
 		fields = append(fields, "cache_layer", cacheInfo.Layer, "cache_age_ms", cacheInfo.AgeMs)
 		if cacheInfo.Layer == "L3" {

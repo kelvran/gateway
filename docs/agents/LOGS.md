@@ -2117,3 +2117,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None — a real coverage gap (already-computed per-hop data with zero telemetry surface), not a defect.
 
 **Next steps / resume point:** Not yet committed. Next: commit, push, watch CI, then the final round-2 gateway-observability finding — trace_id/span_id correlation missing from ~31 structured log calls.
+
+## [2026-09-11] gateway: trace_id/span_id promoted to top-level log fields (4th and final gateway-observability finding — round 2 fully closed)
+
+**Files touched:** `gateway/internal/gateway/dataplane/dataplane.go`, `gateway/internal/gateway/dataplane/streaming.go`, `gateway/internal/gateway/dataplane/trace_log_correlation_test.go` (new), `docs/operations/TELEMETRY.md`, `DECISIONS.md`.
+
+**Intent/summary:** Final of the 4 round-2 gateway-observability findings. `trace_id`/`span_id` were only ever visible nested inside `gatewayevents_v1`'s JSON string on the `chat_completion` line, never as top-level fields, and ~8 other mid-pipeline `Warn`/`Info` calls had zero trace correlation at all.
+
+**Decisions made:** Re-counted the real call-site scope directly against the live code rather than trusting the original finding's own "~31" estimate — found 8 additional real call sites in `dataplane.go`/`streaming.go` with `ctx` already in scope, not 31 (the estimate likely counted a broader, cross-package sweep that never actually matched this codebase's real structure). Deliberately excluded `guardrail/engine.go` and `budget/budget.go`'s own internal Warn calls — both are dependency-free leaf packages by design, and giving them an OTel `trace` import would be a new architectural dependency edge for a telemetry nice-to-have, not a fix worth that cost. Deliberately excluded `probeOneDeployment`'s two health-probe Warn/Info calls — verified its `ctx` is the background probe loop's own lifecycle context, never a per-request span; attaching a trace ID there would fabricate a correlation that doesn't exist.
+
+**Verification performed:** New `trace_log_correlation_test.go`: 2 unit tests directly on the new `traceLogFields` helper (nil without a span; real IDs matching a real span's `SpanContext()`); a full-pipeline test proving `chat_completion`'s new top-level `trace_id`/`span_id` exactly match the pre-existing nested `gatewayevents_v1` values (needed a second helper, `extractEscapedJSONStringField`, since the nested field's quotes are backslash-escaped one level deeper); a second full-pipeline test on an independent call site (`budget_warn_threshold_crossed`), reusing `budget_warn_threshold_test.go`'s existing harness. Sanity-checked-by-breaking (forced `traceLogFields` to always return `nil`; all 3 real-value tests failed for the exact predicted reason, reverted). Full gateway suite clean (build/vet/test-race/lint/arch-lint/gofmt/mod-tidy) except the two pre-existing rootless-Docker failures — whose own log output now visibly shows the new top-level fields on real log lines, an unplanned live confirmation.
+
+**Bugs found:** None — a real coverage gap (already-computed trace/span IDs with no top-level surface), not a defect.
+
+**Next steps / resume point:** This closes all 4 round-2 gateway-observability findings, and with them all 11 findings from the round-2 backlog audit. Not yet committed. Next: commit, push, watch CI, then report a final summary to the user — the entire round-2 backlog is now shipped.
