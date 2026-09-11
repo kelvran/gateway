@@ -43,6 +43,7 @@ from google.protobuf.json_format import MessageToJson
 
 from evals.audit_corpus import AuditFinding, audit_case
 from evals.auto_flag import FlagCandidate, flag_candidates
+from evals.corpus_staleness import StalenessFinding, check_case_staleness
 from evals.ingestion.decode import decode_gateway_decision_event
 from evals.ingestion.mapping import gateway_decision_event_to_eval_case_and_run
 from evals.ingestion.object_store import (
@@ -2441,6 +2442,74 @@ def audit_corpus_cmd(
     out_path.write_text(
         json.dumps([asdict(f) for f in findings], indent=2, default=str)
     )
+
+
+@main.command("check-corpus-staleness")
+@click.option(
+    "--suite",
+    "suite_paths",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "A regression-corpus suite file to check. Repeatable -- pass "
+        "--suite once per file."
+    ),
+)
+@click.option(
+    "--repo-root",
+    "repo_root",
+    default=Path(__file__).resolve().parents[2],
+    show_default=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help=(
+        "Root of the git repo both --suite and every cited file are "
+        "relative to. Defaults to this checkout's own repo root."
+    ),
+)
+@click.option(
+    "--out",
+    "out_path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Optional JSON file the flagged findings are written to.",
+)
+def check_corpus_staleness_cmd(
+    suite_paths: tuple[Path, ...],
+    repo_root: Path,
+    out_path: Path | None,
+) -> None:
+    """Report-only: flag `task_spec["verified_against"]` citations whose
+    cited file has been touched more recently than the corpus case citing
+    it -- a real signal the citation may be stale, never a confirmed
+    defect. Deliberately never a `--fail-under`-style gate: a bulk-edit
+    commit bumps every touched case's own blame timestamp too, and a
+    cited file can change for a reason unrelated to the specific claim a
+    case cites it for -- both are real false-positive risks a human
+    reviewer can dismiss at a glance but a hard gate cannot. See
+    evals.corpus_staleness's own module docstring for the citation
+    grammar this command parses.
+    """
+    findings: list[StalenessFinding] = []
+    case_count = 0
+    for suite_path in suite_paths:
+        for case in _load_cases(suite_path):
+            case_count += 1
+            findings.extend(check_case_staleness(case, suite_path, repo_root))
+
+    for f in findings:
+        click.echo(
+            f"{f.eval_case_id}: {f.citation.file}:{f.citation.start_line}-"
+            f"{f.citation.end_line} touched {f.cited_file_touched}, after "
+            f"this case's own {f.fixture_touched}"
+        )
+
+    click.echo(
+        f"{len(findings)} possibly-stale citations (of {case_count} cases checked)"
+    )
+
+    if out_path is not None:
+        out_path.write_text(json.dumps([asdict(f) for f in findings], indent=2) + "\n")
 
 
 @main.group("trend")
