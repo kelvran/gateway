@@ -114,7 +114,24 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              statistical circuit breaker (Envoy-style outlier detection, LiteLLM-style
                              `allowed_fails` cooldown), which genuinely needs a request-volume floor
                              Kelvran has no production traffic yet to calibrate against. None of these are
-                             named in PRD.md's v1 allowlist
+                             named in PRD.md's v1 allowlist. **Updated 2026-09-08**: the production probe
+                             LOOP (`dataplane.RunHealthProbeLoop`) no longer drives `ProbeDeployments`
+                             unconditionally on a flat ticker — `probeDueDeployments`/`rescheduleDeployment`
+                             (per docs/rfcs/2026-09-08-gateway-health-probe-backoff.md) skip any deployment
+                             whose own per-deployment schedule entry isn't due yet: a deployment
+                             `router.IsHealthy` currently reports as unhealthy has its own probe interval
+                             backed off by 2x per consecutive unhealthy reschedule (capped at 8x the
+                             configured interval), resetting to the plain cadence the instant it reports
+                             healthy again — reducing probe load against an already-struggling dependency,
+                             mirroring AWS's 2015 DynamoDB postmortem. Separately, `router.Router`'s own `HealthConfig` gained a
+                             post-recovery weight ramp (`RecoveryRampSteps`/`RecoveryRampInitialPercent`,
+                             `health.go`'s `admitRampedTurn`): a just-recovered deployment starts admitted
+                             at only a small percentage of its configured `Weight` and ramps linearly to
+                             100% over further consecutive successful probes, rather than immediately
+                             receiving its full weighted share the instant it crosses the recovery
+                             threshold — closing a thundering-herd-on-recovery gap the plain N-of-M
+                             threshold model left open. `ProbeDeployments` itself and `router.go`'s own
+                             `Select`/`ReportProbeResult` surface are unchanged by either feature.
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,

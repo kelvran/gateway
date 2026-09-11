@@ -2242,4 +2242,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** The interruption-safety gap itself — real, previously undetected, and matching a scenario the feature's own RFC already documented happening once during its first live sanity pass.
 
-**Next steps / resume point:** This closes the entire round-3 backlog audit — all 8 confirmed findings shipped, 0 refuted. Committed, push+CI pending. Report a final summary to the user.
+**Next steps / resume point:** This closes the entire round-3 backlog audit — all 8 confirmed findings shipped, 0 refuted. Committed (`38a396c`), pushed, CI confirmed green. Reported a final summary to the user, who then asked to go ahead with the next round via dynamic workflows again.
+
+## [2026-09-11] Round-4 backlog audit (4 fresh domains) kicked off + 3 doc-only fixes
+
+**Files touched:** `evals/tests/fixtures/regression_corpus_routing_chaos.json`, `gateway/ARCHITECTURE.md`, `docs/rfcs/2026-09-04-evals-trace-span-model.md`, `DECISIONS.md`.
+
+**Intent/summary:** User asked to go ahead with the next ideal steps again, via dynamic workflows. Ran a fourth backlog-audit workflow, covering domains genuinely fresh relative to rounds 1-3: gateway router/health-probing (never audited), a gateway cache resweep (a lot shipped since round 1's original cache pass), evals' rollout/sandbox-execution surface (never audited despite real Docker resource consumption), and gateway identity/guardrail CORE logic (distinct from round 3's admin-mutation-API focus).
+
+**Decisions made:** All 11 build_now findings survived verification with 0 refuted, 0 not_yet — the strongest/most-confident result of any round. Started execution with the 3 doc-only fixes (zero code risk), matching every prior round's smallest-first ordering: a stale routing_chaos corpus case whose documented gap actually shipped 2026-09-09 (bumped to revision 2, mirroring how its own sibling cases in the same file were already updated); gateway/ARCHITECTURE.md's router section extended with the shipped 2026-09-08 health-probe-backoff and post-recovery weight-ramp features (zero mentions before this fix); a trace-span-model RFC's Unresolved Questions section corrected (container_id was resolved the same day it was flagged as open, 47 minutes later per git history) using the exact strikethrough convention the same file already established for a different item.
+
+**Verification performed:** Full evals suite (437 passed, 13 skipped) unaffected by the fixture edit. JSON validity confirmed directly.
+
+**Bugs found:** All 3 are doc-vs-code staleness, this project's own most-recurring gotcha class — none are code defects.
+
+**Next steps / resume point:** 8 findings remain: 2 gateway router/concurrency (selectHealthy TOCTOU), 2 gateway cache (L3 response_format + prompt-fingerprint gates, same fix shape), 2 evals rollout/sandbox (interruption safety, container-leak-on-cancel + missing resource limits), 2 gateway guardrail (SecretKeyDetector + IPAddressDetector ZWSP bypass, same fix shape). Not yet committed. Next: commit this doc batch, push, watch CI, then implement the 8 code fixes.
