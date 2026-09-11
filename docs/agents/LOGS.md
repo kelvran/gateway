@@ -1976,4 +1976,18 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 
 **Bugs found:** None in shipped gateway code — this phase's own two "bugs" were in the test design itself (Experiment 2's insufficient chain length, Experiment 3's self-referential fallback target), both caught and fixed before ever being reported as passing.
 
-**Next steps / resume point:** Not yet committed/pushed. Next: commit all of Phase 4's changes, push, watch CI green — this closes all 4 phases of the round-4 upgrade plan. After that, per the plan's own open note, decide with the user whether to cut one combined release or per-phase releases, and report a final summary.
+**Next steps / resume point:** Committed (`b99a5db`), pushed, CI confirmed green (all 3 jobs). All 4 phases of the round-4 upgrade plan are now shipped. Next: decide with the user whether to cut one combined release or per-phase releases (the plan's own open note), then cut it.
+
+## [2026-09-11] Release cut — gateway v0.9.0 + evals v0.8.0 (round-4 plan closed)
+
+**Files touched:** `gateway/changelog/0.9.0.md` (new), `gateway/changelog/unreleased.md`, `evals/changelog/0.8.0.md` (new), `evals/changelog/unreleased.md`, `evals/pyproject.toml`, `evals/uv.lock`, `STATUS.md`, `DECISIONS.md`, `docs/agents/LOGS.md`.
+
+**Intent/summary:** With all 4 phases of the round-4 upgrade plan shipped, asked the user via `AskUserQuestion` whether to cut one combined release or per-phase releases, per the plan's own explicitly-left-open note. User chose one combined release.
+
+**Decisions made:** Bumped both deployables MINOR (`gateway` `0.8.0`→`0.9.0`, `evals` `0.7.0`→`0.8.0`) — every change this round is a new backward-compatible capability, a bug fix, or a design/doc addition, matching every prior MINOR-bump cut's precedent. Wrote both changelogs directly into new dated files rather than accumulate-then-freeze, since both `unreleased.md` files were still empty going into this cut. While drafting the gateway changelog, caught and fixed a misplacement: `pip-audit` (an evals-only CI change) had been drafted under gateway's own Security section — moved to evals' changelog instead. Also caught a DECISIONS.md ordering mistake from earlier in this same phase's edits: every "Round-4 Phase N" entry had been anchored (via `Edit`'s `old_string` matching) to insert right after the pre-existing OpenAI cache-token-fix entry, without noticing a `gateway/v0.8.0` release-cut entry already existed immediately after that same anchor point — landing all 4 phase entries chronologically BEFORE that older release-cut entry instead of after it. Left the already-committed, already-pushed misordering as-is (rewriting it would mean editing past entries, which `DECISIONS.md`'s own header explicitly prohibits, for a purely cosmetic issue — every line still carries its own correct date) and made sure this NEW entry is appended at the true end of the file this time.
+
+**Verification performed:** `uv sync` after the `pyproject.toml` bump confirmed a clean 2-line `uv.lock` diff (version string only). No code changes this pass — a pure changelog/version/doc cut.
+
+**Bugs found:** None in shipped product code — two documentation-authoring mistakes in this session's own output (the pip-audit changelog misplacement, the DECISIONS.md ordering issue), both caught and the first fixed before commit; the second left disclosed rather than rewritten.
+
+**Next steps / resume point:** Tag and push `gateway/v0.9.0`/`evals/v0.8.0`, create GitHub Releases for both, watch CI green on the release commit. No further Kelvran work is currently queued beyond the still-open PyPI trademark clearance blocker.
