@@ -1991,3 +1991,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None in shipped product code — two documentation-authoring mistakes in this session's own output (the pip-audit changelog misplacement, the DECISIONS.md ordering issue), both caught and the first fixed before commit; the second left disclosed rather than rewritten.
 
 **Next steps / resume point:** Tag and push `gateway/v0.9.0`/`evals/v0.8.0`, create GitHub Releases for both, watch CI green on the release commit. No further Kelvran work is currently queued beyond the still-open PyPI trademark clearance blocker.
+
+## [2026-09-11] Post-round-4 backlog audit via dynamic workflow + 3 doc-staleness fixes
+
+**Files touched:** `THREAT_MODEL.md`, `evals/ARCHITECTURE.md`, `evals/tests/fixtures/regression_corpus_cost_abuse.json`, `DECISIONS.md`.
+
+**Intent/summary:** With the release cut, the user asked for the next ideal steps using dynamic workflows explicitly. Ran a 4-agent parallel backlog audit (one per domain: gateway-reliability, gateway-security-cost, cache, evals), each briefed to ground every claim directly in the current code and round-4 research docs rather than assume from prose, followed by a skeptical adversarial re-verification pass on every `build_now` finding before trusting it.
+
+**Decisions made:** Of 6 raw findings, kept 3 as confirmed real (costaccounting clamp gap, the missed embedding-gate harness, mapping.py's discarded fields), correctly excluded 1 refuted claim (corpus_staleness CI wiring — its own real precedent is unwired by design), and correctly left 1 already-blocked item alone (per-tenant concurrency reservation, same trigger class as other deferred tenancy decisions). Started with the 3 stale doc claims first (trivial, zero code risk) before the 3 code fixes, matching this project's own established smallest-first ordering.
+
+**Verification performed:** Full evals suite (413 passed, 11 skipped) after the corpus JSON edit — confirmed the fixture is still valid and no test depends on the old, now-corrected prose. THREAT_MODEL.md/evals/ARCHITECTURE.md changes are docs-only.
+
+**Bugs found:** None new in shipped code this entry — three doc-staleness bugs (a security-relevant one in THREAT_MODEL.md's DoS row, understating what's actually mitigated; a corpus case's own note; an evals architecture doc line), all fixed.
+
+**Next steps / resume point:** Not yet committed. Next: commit this doc-only batch, then implement the 3 confirmed code-level findings (costaccounting clamp, mapping.py field-wiring, offline embedding-gate harness) as separate, independently-verified commits.
