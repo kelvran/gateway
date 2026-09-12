@@ -396,6 +396,17 @@ class TrendSnapshot(BaseModel):
     tag-scoping) -- no real call site in `evals.cli` populates it yet;
     always `None` today.
 
+    `scorer_id` mirrors `Score.scorer_id` (the judge/panel identity,
+    e.g. a model id string or a panel's `"panel:" + "+".join(ids)`
+    composition) -- per PRD.md's Success Metrics line ("every judged
+    result carries a disclosed harness configuration... never a bare
+    percentage"), a trend series is otherwise silent about WHICH judge
+    produced it. Populated only when uniform across the group of
+    `Score`s a snapshot was computed from; `None` when the group is
+    mixed (a real possibility once scores from different runs are
+    combined) rather than fabricate a value, or for series that have no
+    scorer_id concept at all (`audit_corpus_defect_rate`).
+
     `scorer_type` is `None` for `audit_corpus_defect_rate` (audited per
     suite file, not per scorer) and real (`"deterministic"`/
     `"llm_judge"`/`"llm_judge_panel"`) for the other series, all
@@ -414,6 +425,7 @@ class TrendSnapshot(BaseModel):
     rate_value: float | None = None
     cost_usd_value: Decimal | None = None
     scorer_type: ScorerType | None = None
+    scorer_id: str | None = None
     category_tag: str | None = None
     source_command: Literal["report", "audit-corpus"]
 

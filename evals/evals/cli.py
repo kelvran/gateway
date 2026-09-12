@@ -933,6 +933,40 @@ def _format_group_cost(scores: list[Score]) -> str:
     return f"total_cost_usd={total_cost}"
 
 
+def _axis_subgroups(group: list[Score]) -> list[tuple[str, list[Score]]]:
+    """Split `group` by `rubric_axis` when more than one distinct
+    non-None value is present -- per docs/rfcs/2026-09-05-evals-multi-
+    axis-judging.md's one-Score-per-axis design (`run_cmd` emits one
+    Score per case per configured axis, all sharing the same
+    scorer_type/scorer_id -- only rubric_axis varies). Blending distinct
+    rubric dimensions (e.g. "correctness" and "safety") into report_cmd's
+    single blended pass-rate line is a real statistical/interpretation
+    defect, not just a missing label -- a reader can't tell "70% overall"
+    apart from "100% correctness, 40% safety" from one blended number.
+    Returns [] for the common (single-axis or no-axis) case -- callers
+    print the existing blended line regardless; this is additive
+    disclosure, never a replacement.
+    """
+    axes = {s.rubric_axis for s in group if s.rubric_axis is not None}
+    if len(axes) <= 1:
+        return []
+    return [
+        (axis, [s for s in group if s.rubric_axis == axis]) for axis in sorted(axes)
+    ]
+
+
+def _uniform_scorer_id(group: list[Score]) -> str | None:
+    """`group`'s own `scorer_id` (judge/panel identity) when every Score
+    in it agrees, else `None` -- never a fabricated value for a mixed
+    group (a real possibility once Scores from different runs/panel
+    compositions are combined in one `--scores` file). Per PRD.md's
+    Success Metrics line: a judged result's harness configuration must
+    be disclosed, not silently omitted.
+    """
+    ids = {s.scorer_id for s in group}
+    return next(iter(ids)) if len(ids) == 1 else None
+
+
 def _format_span_report(spans: list[Span], confidence: float) -> str:
     """Format a `report --traces` line: a Wilson-CI-bearing OK rate (per
     PRD.md's "never a bare percentage" convention, applied here too) plus
@@ -2167,6 +2201,13 @@ def report_cmd(
         for scorer_type in sorted({s.scorer_type for s in scores}):
             group = [s for s in scores if s.scorer_type == scorer_type]
             group_successes = sum(1 for s in group if s.value)
+            # Per PRD.md's Success Metrics line ("every judged result
+            # carries a disclosed harness configuration"): the judge/
+            # panel identity that produced this group, when uniform --
+            # never fabricated for a mixed group. Computed once up front
+            # so every TrendSnapshot below (and the printed line) shares
+            # one consistent value.
+            group_scorer_id = _uniform_scorer_id(group)
             eligible = _gate_eligible(group)
             excluded = len(group) - len(eligible)
             note = f" ({excluded} flaky excluded from gate)" if excluded else ""
@@ -2195,6 +2236,7 @@ def report_cmd(
                             n=len(group),
                             rate_value=ties / len(group) if group else None,
                             scorer_type=scorer_type,
+                            scorer_id=group_scorer_id,
                             source_command="report",
                         )
                     )
@@ -2220,9 +2262,27 @@ def report_cmd(
                                 else None
                             ),
                             scorer_type=scorer_type,
+                            scorer_id=group_scorer_id,
                             source_command="report",
                         )
                     )
+            # Per docs/rfcs/2026-09-05-evals-multi-axis-judging.md: when
+            # --judge-axes produced more than one distinct rubric_axis
+            # within this scorer_type, print one line per axis BEFORE the
+            # blended line below -- additive disclosure, since the
+            # blended figure alone silently hides which axis (if any) is
+            # actually failing. See _axis_subgroups' own doc comment.
+            for axis, axis_group in _axis_subgroups(group):
+                axis_successes = sum(1 for s in axis_group if s.value)
+                click.echo(
+                    f"{scorer_type} [axis:{axis}]: "
+                    + format_report(
+                        axis_successes, len(axis_group), confidence=confidence
+                    )
+                )
+            scorer_id_note = ""
+            if group_scorer_id is not None:
+                scorer_id_note = f" scorer_id={group_scorer_id}"
             click.echo(
                 f"{scorer_type}: "
                 + format_report(group_successes, len(group), confidence=confidence)
@@ -2230,6 +2290,7 @@ def report_cmd(
                 + note
                 + tie_note
                 + quote_note
+                + scorer_id_note
             )
             if record_trend_path is not None:
                 group_total_cost, group_unknown_cost_count = _sum_known_costs(group)
@@ -2240,6 +2301,7 @@ def report_cmd(
                         n=len(group) - group_unknown_cost_count,
                         cost_usd_value=group_total_cost,
                         scorer_type=scorer_type,
+                        scorer_id=group_scorer_id,
                         source_command="report",
                     )
                 )
@@ -2281,6 +2343,7 @@ def report_cmd(
                                 n=len(judge_verdicts),
                                 rate_value=kappa,
                                 scorer_type=scorer_type,
+                                scorer_id=group_scorer_id,
                                 source_command="report",
                             )
                         )
@@ -2673,9 +2736,10 @@ def trend_show_cmd(trend_path: Path, series: str | None) -> None:
                 snap.cost_usd_value if series_name == "cost_usd" else snap.rate_value
             )
             scorer_note = f" scorer_type={snap.scorer_type}" if snap.scorer_type else ""
+            scorer_id_note = f" scorer_id={snap.scorer_id}" if snap.scorer_id else ""
             click.echo(
                 f"  {snap.recorded_at.isoformat()} n={snap.n} value={value}"
-                f"{scorer_note} source={snap.source_command}"
+                f"{scorer_note}{scorer_id_note} source={snap.source_command}"
             )
 
 
@@ -2799,6 +2863,7 @@ def trend_alert_cmd(
 
     for a in alerts:
         scorer_note = f" scorer_type={a.scorer_type}" if a.scorer_type else ""
+        scorer_id_note = f" scorer_id={a.scorer_id}" if a.scorer_id else ""
         # Per PRD.md's Success Metrics line ("every judged result carries
         # a disclosed harness configuration and a confidence interval —
         # never a bare percentage"): a pooled Wilson interval when the
@@ -2810,7 +2875,7 @@ def trend_alert_cmd(
             else ""
         )
         click.echo(
-            f"[{a.severity}] {a.series}{scorer_note}: "
+            f"[{a.severity}] {a.series}{scorer_note}{scorer_id_note}: "
             f"window_mean={a.window_mean:.4f} (n={a.window_n}){ci_note} "
             f"{a.direction} {a.threshold} threshold"
         )

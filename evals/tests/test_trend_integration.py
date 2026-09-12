@@ -1245,3 +1245,136 @@ def test_trend_alert_never_calls_webhook_when_no_alerts_triggered(
     )
 
     assert result.exit_code == 0, result.output
+
+
+# -- report: multi-axis harness-configuration disclosure ---------------------
+
+
+def test_report_judge_axes_prints_one_line_per_axis_not_one_blended_line(tmp_path):
+    """Per docs/rfcs/2026-09-05-evals-multi-axis-judging.md: two Scores
+    sharing scorer_type/scorer_id but with different rubric_axis values
+    (the --judge-axes shape) must each get their own printed line, not
+    be silently blended into one pass-rate figure.
+    """
+    scores_path = tmp_path / "scores.jsonl"
+    append_scores(
+        [
+            _make_score(
+                eval_case_id="c1",
+                scorer_type="llm_judge",
+                scorer_id="panel:sonnet+haiku",
+                rubric_axis="correctness",
+                value=True,
+            ),
+            _make_score(
+                eval_case_id="c1",
+                scorer_type="llm_judge",
+                scorer_id="panel:sonnet+haiku",
+                rubric_axis="safety",
+                value=False,
+            ),
+        ],
+        scores_path,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "llm_judge [axis:correctness]:" in result.output
+    assert "llm_judge [axis:safety]:" in result.output
+    # The correctness axis is 1/1 (100%), safety is 0/1 (0%) -- neither
+    # figure may appear only as one blended 50% line with no per-axis
+    # breakdown.
+    assert "pass_rate=1.0000 (1/1)" in result.output
+    assert "pass_rate=0.0000 (0/1)" in result.output
+    # scorer_id (panel composition) must also be disclosed on the
+    # blended summary line.
+    assert "scorer_id=panel:sonnet+haiku" in result.output
+
+
+def test_report_single_axis_scores_print_no_per_axis_line(tmp_path):
+    """The common (no --judge-axes) case must be byte-identical to
+    before this fix -- no [axis:...] line at all when every Score in
+    the group shares the same (or no) rubric_axis.
+    """
+    scores_path = tmp_path / "scores.jsonl"
+    append_scores(
+        [_make_score(eval_case_id="c1", scorer_type="llm_judge", value=True)],
+        scores_path,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--scores", str(scores_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "[axis:" not in result.output
+
+
+def test_report_record_trend_snapshot_carries_scorer_id_when_uniform(tmp_path):
+    scores_path = tmp_path / "scores.jsonl"
+    append_scores(
+        [
+            _make_score(
+                eval_case_id="c1",
+                scorer_type="llm_judge",
+                scorer_id="claude-sonnet-5",
+                value=True,
+                cost_usd=Decimal("0.01"),
+            ),
+        ],
+        scores_path,
+    )
+    trend_path = tmp_path / "trend.jsonl"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["report", "--scores", str(scores_path), "--record-trend", str(trend_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    snapshots = load_trend_snapshots(trend_path)
+    cost_snapshots = [s for s in snapshots if s.series == "cost_usd"]
+    assert len(cost_snapshots) == 1
+    assert cost_snapshots[0].scorer_id == "claude-sonnet-5"
+
+
+def test_report_record_trend_snapshot_scorer_id_is_none_when_group_is_mixed(tmp_path):
+    """A group mixing two different scorer_ids under one scorer_type
+    (a real possibility once Scores from different runs are combined)
+    must record scorer_id=None -- never a fabricated value.
+    """
+    scores_path = tmp_path / "scores.jsonl"
+    append_scores(
+        [
+            _make_score(
+                eval_case_id="c1",
+                scorer_type="llm_judge",
+                scorer_id="claude-sonnet-5",
+                value=True,
+                cost_usd=Decimal("0.01"),
+            ),
+            _make_score(
+                eval_case_id="c2",
+                scorer_type="llm_judge",
+                scorer_id="claude-haiku-4-5",
+                value=True,
+                cost_usd=Decimal("0.01"),
+            ),
+        ],
+        scores_path,
+    )
+    trend_path = tmp_path / "trend.jsonl"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["report", "--scores", str(scores_path), "--record-trend", str(trend_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    snapshots = load_trend_snapshots(trend_path)
+    cost_snapshots = [s for s in snapshots if s.series == "cost_usd"]
+    assert len(cost_snapshots) == 1
+    assert cost_snapshots[0].scorer_id is None

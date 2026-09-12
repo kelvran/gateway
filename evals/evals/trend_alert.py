@@ -91,6 +91,11 @@ class TrendAlert:
     window_n: int
     wilson_lower: float | None = None
     wilson_upper: float | None = None
+    # The window's own judge/panel identity, when uniform across every
+    # snapshot in it -- `None` when the window mixes scorer_ids (e.g. a
+    # panel composition changed mid-window) rather than fabricate a
+    # value, mirroring TrendSnapshot.scorer_id's own convention.
+    scorer_id: str | None = None
 
 
 def _series_value(snap: TrendSnapshot) -> float | None:
@@ -147,6 +152,12 @@ def check_trend_alerts(
                 wilson_lower, wilson_upper = _pooled_wilson_interval(
                     rule.series, window_snapshots
                 )
+                window_scorer_ids = {s.scorer_id for s in window_snapshots}
+                window_scorer_id = (
+                    next(iter(window_scorer_ids))
+                    if len(window_scorer_ids) == 1
+                    else None
+                )
                 alerts.append(
                     TrendAlert(
                         series=rule.series,
@@ -158,6 +169,7 @@ def check_trend_alerts(
                         window_n=len(window_values),
                         wilson_lower=wilson_lower,
                         wilson_upper=wilson_upper,
+                        scorer_id=window_scorer_id,
                     )
                 )
     return alerts
