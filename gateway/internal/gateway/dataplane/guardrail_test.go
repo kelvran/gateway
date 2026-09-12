@@ -387,6 +387,47 @@ func TestHandleChatCompletionStreamPostCallBlockTierIsAuditOnlyNeverWithheld(t *
 	}
 }
 
+// TestHandleChatCompletionStreamPostCallBlockedResponseNeverCached is the
+// streaming counterpart to TestHandleChatCompletionPostCallBlockedResponseNeverCached
+// (the buffered-path proof) and closes a real gap the audit-only design
+// above never covered: client DELIVERY is correctly audit-only (proven by
+// TestHandleChatCompletionStreamPostCallBlockTierIsAuditOnlyNeverWithheld),
+// but the CACHE WRITE decision is a separate question. Before this fix, a
+// Block-tier response was written to L1/L2/L3 unconditionally, so a
+// second, identical request would be served straight from cache without
+// the guardrail engine ever running again — this test proves that no
+// longer happens by asserting the upstream is called twice, not once.
+func TestHandleChatCompletionStreamPostCallBlockedResponseNeverCached(t *testing.T) {
+	var upstreamCalls int
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		upstreamCalls++
+		stream := sseStreamWithContent("sure, here it is: " + fakeCreditCardNumber)
+		return nopCloserReader{strings.NewReader(stream)}, nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, adapter.Registry{"openai": openai.New()})
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "give me a test card number"}}}
+
+	rec1 := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec1); err != nil {
+		t.Fatalf("first HandleChatCompletionStream: %v", err)
+	}
+	if !strings.Contains(rec1.Body.String(), fakeCreditCardNumber) {
+		t.Fatalf("first response body does not contain the full content — audit-only delivery must be unaffected: %s", rec1.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec2); err != nil {
+		t.Fatalf("second HandleChatCompletionStream: %v", err)
+	}
+	if !strings.Contains(rec2.Body.String(), fakeCreditCardNumber) {
+		t.Fatalf("second response body does not contain the full content — audit-only delivery must be unaffected: %s", rec2.Body.String())
+	}
+
+	if upstreamCalls != 2 {
+		t.Errorf("upstreamCalls = %d, want 2 — a Block-tier streamed response must never populate the cache, so the second identical request must still call upstream", upstreamCalls)
+	}
+}
+
 // sseStreamWithToolCallArguments builds a minimal, genuine OpenAI SSE
 // stream whose only content lives inside a tool call's arguments (no
 // content delta at all) — the streaming-path counterpart to

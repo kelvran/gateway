@@ -192,7 +192,8 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 
 	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens}
-	resp, dep, fallback, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
+	var blocked bool
+	resp, dep, fallback, blocked, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
 	if err != nil {
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
 		return
@@ -203,8 +204,19 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// docs/rfcs/2026-09-05-gateway-cost-double-counting.md.
 	billable = true
 
-	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
+	// A Block-tier post-call verdict is audit-only for CLIENT delivery
+	// (already flushed, per finishStreamedResponse's own doc comment) but
+	// must NEVER durably populate the cache — mirroring runMissPath's
+	// identical rule on the buffered path
+	// (TestHandleChatCompletionPostCallBlockedResponseNeverCached).
+	// Without this guard, a Block-tier response (credit card, SSN,
+	// secret) could be replayed to this same tenant on any future
+	// identical-or-near-duplicate request without the guardrail engine
+	// ever running again, for the life of the cache TTL.
+	if !blocked {
+		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
+			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
+		}
 	}
 	return
 }
@@ -288,13 +300,21 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 // reservation made against the client's originally-requested model stays
 // that same reservation regardless of which deployment ultimately serves
 // the response.
-func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, error) {
+func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, bool, error) {
 	var firstChunkSent bool
 	var fallback fallbackInfo
+	// blocked is set by finishStreamedResponse (via streamDeployment/
+	// streamDeploymentBedrock) when the post-call guardrail check fires —
+	// see that function's own doc comment. Reused across every hop below
+	// exactly like firstChunkSent already is: finishStreamedResponse is
+	// only ever reached once, at the tail of whichever single hop
+	// actually completes a stream, so there is no risk of one hop's
+	// blocked=true bleeding into a later, unrelated hop's result.
+	var blocked bool
 
-	resp, err := p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr)
+	resp, err := p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
 	if err == nil || firstChunkSent {
-		return resp, dep, fallback, err
+		return resp, dep, fallback, blocked, err
 	}
 
 	originalDep, originalErr := dep, err
@@ -303,7 +323,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 			func(d Deployment) (adapter.ChatResponse, error) {
 				defer p.releaseDeploymentConcurrency(d.Name)
-				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID, msr)
+				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID, msr, &blocked)
 			},
 			func() bool { return firstChunkSent },
 			func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, keyID, model) },
@@ -317,16 +337,16 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
 		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 		dep = fallbackDep
-		resp, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr)
+		resp, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
 	}
-	return resp, dep, fallback, err
+	return resp, dep, fallback, blocked, err
 }
 
 // streamDeploymentWithCapacityCheck wraps streamDeployment with dep's
 // own checkDeploymentCapacity gate and guaranteed release — the
 // streaming sibling of callDeploymentWithCapacityCheck (dataplane.go),
 // used for EVERY call to a deployment, hop 1 included.
-func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, error) {
 	if !p.checkDeploymentRateLimit(ctx, dep.Name) {
 		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "rate_limit"}
 	}
@@ -334,7 +354,7 @@ func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep De
 		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "concurrency"}
 	}
 	defer p.releaseDeploymentConcurrency(dep.Name)
-	return p.streamDeployment(ctx, dep, req, sw, firstChunkSent, keyID, msr)
+	return p.streamDeployment(ctx, dep, req, sw, firstChunkSent, keyID, msr, blocked)
 }
 
 // streamDeployment runs the streaming-specific adapter+upstream-call steps
@@ -350,9 +370,9 @@ func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep De
 // see streamrunaway.go. msr is that same guard's sibling: this request's
 // own outstanding budget/TPM reservations, topped up in place as real
 // accumulated output grows past them — see checkMidStreamReservationTopup.
-func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, error) {
 	if dep.Provider == "bedrock" {
-		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent, keyID, msr)
+		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent, keyID, msr, blocked)
 	}
 
 	a, ok := p.adapters[dep.Provider]
@@ -470,7 +490,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		}
 	}
 
-	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage)
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, blocked)
 }
 
 // streamDeploymentBedrock is streamDeployment's Bedrock-specific sibling:
@@ -483,7 +503,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 // binary-framed implementor. Everything after decoding (accumulation,
 // client tee, final-response assembly) is identical, via the shared
 // finishStreamedResponse.
-func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, error) {
 	a, ok := p.adapters[dep.Provider]
 	if !ok {
 		return adapter.ChatResponse{}, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
@@ -579,7 +599,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 		}
 	}
 
-	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage)
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, blocked)
 }
 
 // finishStreamedResponse builds the final ChatResponse from an
@@ -589,7 +609,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 // streamDeploymentBedrock (binary-framed) per
 // docs/rfcs/2026-09-04-bedrock-converse-stream.md: none of this logic
 // depends on how chunks actually arrived.
-func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage) (adapter.ChatResponse, error) {
+func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage, blocked *bool) (adapter.ChatResponse, error) {
 	var usage adapter.Usage
 	if finalUsage != nil {
 		usage = *finalUsage
@@ -610,17 +630,28 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	// callDeployment's convention for the buffered path.
 	resp.Model = req.Model
 
-	// Guardrail post-call, streaming path — audit-only, per
-	// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md's named,
-	// accepted residual risk: every chunk has already been flushed to the
-	// client (sw.WriteChunk, above) strictly before resp is known here —
-	// there is no point in this function where a post-call check can run
-	// before content reaches the client without a buffering layer this
-	// RFC deliberately does not add. This check can only log, at
+	// Guardrail post-call, streaming path — audit-only for CLIENT DELIVERY
+	// ONLY, per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md's
+	// named, accepted residual risk: every chunk has already been flushed
+	// to the client (sw.WriteChunk, above) strictly before resp is known
+	// here — there is no point in this function where a post-call check
+	// can run before content reaches the client without a buffering layer
+	// this RFC deliberately does not add. This check can only log, at
 	// elevated severity, never withhold what's already been delivered.
+	//
+	// *blocked is a SEPARATE question that RFC never discussed: whether a
+	// Block-tier response should be durably WRITTEN TO CACHE for replay to
+	// this (or, via L3, a near-duplicate) future request without the
+	// guardrail engine ever running again. It must not — the buffered
+	// path's runMissPath already gets this right and
+	// TestHandleChatCompletionPostCallBlockedResponseNeverCached proves it
+	// — so *blocked signals the caller (HandleChatCompletionStream) to
+	// skip writeCache, even though the client-delivery decision above
+	// stays audit-only.
 	if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
 		p.logger.Warn("guardrail_blocked_postcall_streaming_audit_only",
 			append(traceLogFields(ctx), "deployment", dep.Name, "finding_count", len(postVerdict.Findings))...)
+		*blocked = true
 	}
 
 	if err := sw.WriteDone(); err != nil {
