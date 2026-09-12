@@ -364,7 +364,24 @@ func (r *Router) activeCostTier(ms *modelState) (tier int, filterActive bool) {
 // weight configuration (see wrr.go's sumW doc comment) — returning the
 // first offered candidate Router currently considers both healthy and
 // (if it's within its post-recovery weight ramp, see admitTurn) admitted
-// for this particular turn.
+// for this particular turn, AND matching the currently-preferred cost
+// tier (see activeCostTier).
+//
+// admitTurn is called on EVERY offered candidate, regardless of tier —
+// never skipped for a tier-mismatched candidate before admission is
+// even checked. This is deliberate, closing a real gap the cost-tier
+// feature's own first version had: skipping admitTurn on a tier
+// mismatch meant the loop's exhaustion fallback could return the literal
+// last-examined candidate without EVER having health-checked it this
+// call, even when a different, genuinely admitTurn-passing candidate
+// was examined earlier in the exact same cycle — worse than this
+// function's own long-standing fail-open contract (see below), which
+// has always meant "the last candidate a real health check was actually
+// run against," not "the last candidate offered by the cursor." An
+// admitted-but-wrong-tier candidate is remembered as fallbackName/
+// fallbackOK; on loop exhaustion, that remembered admission is preferred
+// over the raw last-examined name/ok — see
+// TestSelectPrefersARealAdmittedFallbackOverAnUnhealthyLastExaminedCandidate.
 //
 // If every deployment in the group is currently unhealthy, or every
 // offer within this bounded search happens to be ramp-rejected despite
@@ -383,17 +400,25 @@ func (r *Router) selectHealthy(ms *modelState) (string, bool) {
 
 	var name string
 	var ok bool
+	var fallbackName string
+	var fallbackOK bool
 	for i := 0; i < ms.sumW; i++ {
 		name, ok = ms.next()
 		if !ok {
 			return "", false
 		}
-		if tierFilterActive && r.costTiers[name] != tier {
+		if !r.admitTurn(name) {
 			continue
 		}
-		if r.admitTurn(name) {
+		if !tierFilterActive || r.costTiers[name] == tier {
 			return name, true
 		}
+		if !fallbackOK {
+			fallbackName, fallbackOK = name, true
+		}
+	}
+	if fallbackOK {
+		return fallbackName, true
 	}
 	return name, ok
 }

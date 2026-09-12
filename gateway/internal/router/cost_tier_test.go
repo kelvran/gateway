@@ -96,3 +96,48 @@ func TestSelectProportionalWeightingHoldsWithinAPreferredCostTier(t *testing.T) 
 		t.Errorf("counts[b] = %d, want %d (weight 1 of tier 1's total weight 3)", counts["b"], want)
 	}
 }
+
+// TestSelectPrefersARealAdmittedFallbackOverAnUnhealthyLastExaminedCandidate
+// is the load-bearing safety proof for selectHealthy's tier-filtering
+// fallback path. A tier-mismatched candidate must still be admitTurn-
+// checked (never skipped via a bare tier-mismatch continue BEFORE
+// admission is checked) -- otherwise the loop's exhaustion fallback can
+// return the literal last-examined candidate without ever having been
+// health-checked this call, even when a genuinely admitTurn-passing
+// candidate was examined earlier in the exact same cycle.
+//
+// Scenario, matching real WRR cursor order for 3 equal-weight
+// deployments (cheap, expensiveHealthy, expensiveDown, visited in that
+// exact order within one Select call, per
+// TestSelectDegradesToRoundRobinForEqualWeights's own proof):
+//   - "cheap" (tier 1, the preferred tier since it's genuinely healthy)
+//     is mid-ramp immediately after recovering -- its one offer this
+//     cycle is admitTurn-rejected (rampCredit starts at 0, +20% < 100%).
+//   - "expensiveHealthy" (tier 2, wrong tier) is genuinely healthy --
+//     admitTurn passes, but the tier mismatch means it can't be
+//     returned immediately.
+//   - "expensiveDown" (tier 2, wrong tier) is genuinely UNHEALTHY --
+//     admitTurn correctly rejects it.
+//
+// The only safe return value here is "expensiveHealthy" -- the one
+// candidate this cycle that actually passed a real health check.
+func TestSelectPrefersARealAdmittedFallbackOverAnUnhealthyLastExaminedCandidate(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "cheap", Model: "gpt-4o", CostTier: 1},
+		{Name: "expensiveHealthy", Model: "gpt-4o", CostTier: 2},
+		{Name: "expensiveDown", Model: "gpt-4o", CostTier: 2},
+	}, HealthConfig{UnhealthyThreshold: 1, HealthyThreshold: 1, RecoveryRampSteps: 4, RecoveryRampInitialPercent: 20})
+
+	r.ReportProbeResult("cheap", false) // ejects (UnhealthyThreshold=1)
+	r.ReportProbeResult("cheap", true)  // 1 of 1 required success -> recovers, ramp starts at 20%
+
+	r.ReportProbeResult("expensiveDown", false) // genuinely unhealthy (UnhealthyThreshold=1)
+
+	got, ok := r.Select("gpt-4o")
+	if !ok {
+		t.Fatalf("Select returned ok=false, want true")
+	}
+	if got != "expensiveHealthy" {
+		t.Fatalf("Select = %q, want %q — a real, admitTurn-passing candidate examined this same cycle must be preferred over the raw last-examined (unhealthy) candidate", got, "expensiveHealthy")
+	}
+}
