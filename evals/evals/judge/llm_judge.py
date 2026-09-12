@@ -56,10 +56,26 @@ BIAS_MITIGATIONS_APPLIED = ["cot_forcing", "reference_guided_grading"]
 
 # Additive to BIAS_MITIGATIONS_APPLIED for a panel score specifically —
 # every panelist's own call already applies the two mitigations above;
-# these two describe properties of the PANEL itself, not any one call.
+# this describes a property of the PANEL itself, not any one call.
+#
+# Deliberately does NOT include "disjoint_model_family_panel": the one
+# real, shipped panel (--llm-judge-panel, cli.py) is two same-vendor
+# Bedrock Claude models (Sonnet 5 + Haiku 4.5) -- an explicit, accepted
+# tradeoff (see providers.py's own module docstring and
+# evals/ARCHITECTURE.md), not a disjoint-model-family composition. A
+# prior version of this constant unconditionally claimed
+# "disjoint_model_family_panel" here -- a stale artifact from before
+# 2026-09-08's same-vendor pivot that was never corrected, so every real
+# panel Score persisted a false audit claim. reduce_panel_votes' own
+# input (PanelVote.scorer_id) has no reliable model-identity signal in
+# the common (non-debias) path -- judge()'s internal panel branch builds
+# each vote's scorer_id as an opaque "panelist_N" placeholder by design
+# (it has no way to know which real model id each opaque call_model
+# wraps) -- so this is corrected by removal rather than by an attempted
+# dynamic disjoint-vendor check, which would require a bigger change to
+# an interface that's deliberately kept opaque.
 _PANEL_BIAS_MITIGATIONS_ADDED = [
     "independent_refutation",
-    "disjoint_model_family_panel",
 ]
 
 _JUDGE_PROMPT_TEMPLATE = """\

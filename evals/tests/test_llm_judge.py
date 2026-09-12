@@ -465,4 +465,16 @@ def test_reduce_panel_votes_bias_mitigations_include_panel_level_mitigations():
     assert "cot_forcing" in verdict.bias_mitigations_applied
     assert "reference_guided_grading" in verdict.bias_mitigations_applied
     assert "independent_refutation" in verdict.bias_mitigations_applied
-    assert "disjoint_model_family_panel" in verdict.bias_mitigations_applied
+
+
+def test_reduce_panel_votes_never_claims_disjoint_model_family():
+    """The one real, shipped panel is two same-vendor Bedrock Claude
+    models (Sonnet 5 + Haiku 4.5) -- reduce_panel_votes must never claim
+    "disjoint_model_family_panel" for it, regardless of the arbitrary
+    scorer_id strings a caller passes (the common, non-debias path never
+    has real model-identity signal here at all). A prior version of this
+    function unconditionally claimed this for every panel verdict -- a
+    stale, false artifact from before the same-vendor pivot.
+    """
+    verdict = reduce_panel_votes([_vote("a", True), _vote("b", True)])
+    assert "disjoint_model_family_panel" not in verdict.bias_mitigations_applied
