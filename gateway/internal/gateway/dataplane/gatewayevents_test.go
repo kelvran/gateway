@@ -569,6 +569,75 @@ func TestGatewayEventCarriesAgentRunIDAndCostUSD(t *testing.T) {
 	}
 }
 
+// TestGatewayEventCarriesSavingsUSD proves
+// docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md's fix:
+// GatewayDecisionEvent must carry the real notional cache-savings figure
+// on a genuine cache hit, and "" (never a fabricated "0") on a miss —
+// closing the SAVINGS half of PRD.md:41's agent-run cost-attribution
+// success metric (Round 6 already closed the SPEND half via
+// AgentRunId/CostUsd, proven by the sibling test above).
+func TestGatewayEventCarriesSavingsUSD(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	keys := defaultTestVirtualKeys()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	priceTable := costaccounting.PriceTable{
+		"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.0001"), CompletionPerToken: decimal.RequireFromString("0.0001")},
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(priceTable),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			return fakeOpenAIResponse("gpt-4o"), nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "savings-usd-test"}}}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+		t.Fatalf("first (real-miss) call: %v", err)
+	}
+	missEvent := decodeLoggedGatewayEvent(t, &logBuf)
+	if missEvent.GetSavingsUsd() != "" {
+		t.Errorf("SavingsUsd on a cache MISS = %q, want \"\" (never a fabricated cost for a request that was never a cache hit)", missEvent.GetSavingsUsd())
+	}
+
+	logBuf.Reset()
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+		t.Fatalf("second (cache-hit) call: %v", err)
+	}
+	hitEvent := decodeLoggedGatewayEvent(t, &logBuf)
+	gotSavings, parseErr := decimal.NewFromString(hitEvent.GetSavingsUsd())
+	if parseErr != nil {
+		t.Fatalf("parsing SavingsUsd %q: %v", hitEvent.GetSavingsUsd(), parseErr)
+	}
+	// fakeOpenAIResponse: 5 prompt + 3 completion tokens, both priced at
+	// 0.0001/token = 0.0008 — the same notional would-have-cost the miss
+	// call's own CostUsd already carried, now also on SavingsUsd since
+	// resp.Usage survives the cache round-trip intact.
+	if want := decimal.RequireFromString("0.0008"); !gotSavings.Equal(want) {
+		t.Errorf("SavingsUsd on a cache hit = %s, want %s", gotSavings, want)
+	}
+}
+
 // TestGatewayEventStreamingFallbackFalseAfterFirstChunkSent is the
 // streaming-specific proof of the exact failure mode
 // docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md names

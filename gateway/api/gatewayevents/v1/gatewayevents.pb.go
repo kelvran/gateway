@@ -184,8 +184,40 @@ type GatewayDecisionEvent struct {
 	// primitive (agent_run_id co-occurring with cost) previously existed
 	// only on the ephemeral per-request OTel span, never on the one
 	// contract built for offline/cross-request analysis.
-	AgentRunId    string `protobuf:"bytes,12,opt,name=agent_run_id,json=agentRunId,proto3" json:"agent_run_id,omitempty"`
-	CostUsd       string `protobuf:"bytes,13,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
+	//
+	// Corrected 2026-09-12 (comment-only, no wire/field change): the "0"
+	// for cost_usd example above ("e.g. a cache hit that was never
+	// billed") is inaccurate — a cache hit's resp.Usage survives the
+	// cache round-trip intact, so cost_usd on a hit is the nonzero
+	// notional would-have-cost, never "0". See savings_usd below, which
+	// is the field that actually carries that notional-savings figure.
+	AgentRunId string `protobuf:"bytes,12,opt,name=agent_run_id,json=agentRunId,proto3" json:"agent_run_id,omitempty"`
+	CostUsd    string `protobuf:"bytes,13,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
+	// Added 2026-09-12, per docs/rfcs/2026-09-12-gateway-cache-savings-
+	// agent-attribution.md: the notional USD amount THIS request saved by
+	// being served from cache instead of a real upstream call -- the exact
+	// same value dataplane.finalize already computes and hands to
+	// telemetry.RecordCacheSavings (kelvran.cache.savings_usd) on every
+	// real hit, now also named on the one contract built for durable,
+	// offline analysis, per this message's own "never re-encodes anything
+	// already real on that span" rule (that OTel counter is aggregate-only
+	// -- dimensioned by cache layer, never by agent_run_id, for the same
+	// cardinality reason cost_usd's own sibling RFC rejected an
+	// agent_run_id metric dimension -- so this field is the first place
+	// the per-agent-run savings figure exists at all). Decimal-as-string,
+	// same convention as cost_usd/budget_spent_usd above. "" (the proto3
+	// default) on every non-hit row -- deliberately NOT "0" the way
+	// cost_usd's own convention reads, because a request that was never a
+	// cache hit has no savings figure to report at all, real or zero; a
+	// future consumer must not read "" as "zero savings confirmed" the way
+	// it may read cost_usd's own "0" that way. Additive field, non-breaking
+	// per `buf breaking` -- this message's own package/directory version
+	// (v1) stays frozen, same precedent as agent_run_id/cost_usd above.
+	// Closes the SAVINGS half of PRD.md's Success Metrics: "Cost savings
+	// attributable and explainable down to the individual agent run, not
+	// just an aggregate dashboard total" (PRD.md:41) -- the SPEND half was
+	// already closed by agent_run_id/cost_usd above.
+	SavingsUsd    string `protobuf:"bytes,14,opt,name=savings_usd,json=savingsUsd,proto3" json:"savings_usd,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -311,11 +343,18 @@ func (x *GatewayDecisionEvent) GetCostUsd() string {
 	return ""
 }
 
+func (x *GatewayDecisionEvent) GetSavingsUsd() string {
+	if x != nil {
+		return x.SavingsUsd
+	}
+	return ""
+}
+
 var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe3\x06\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x84\a\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -332,7 +371,9 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\x10budget_spent_usd\x18\v \x01(\tR\x0ebudgetSpentUsd\x12 \n" +
 	"\fagent_run_id\x18\f \x01(\tR\n" +
 	"agentRunId\x12\x19\n" +
-	"\bcost_usd\x18\r \x01(\tR\acostUsd\"\x98\x02\n" +
+	"\bcost_usd\x18\r \x01(\tR\acostUsd\x12\x1f\n" +
+	"\vsavings_usd\x18\x0e \x01(\tR\n" +
+	"savingsUsd\"\x98\x02\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +

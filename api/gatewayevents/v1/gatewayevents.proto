@@ -113,6 +113,39 @@ message GatewayDecisionEvent {
   // primitive (agent_run_id co-occurring with cost) previously existed
   // only on the ephemeral per-request OTel span, never on the one
   // contract built for offline/cross-request analysis.
+  //
+  // Corrected 2026-09-12 (comment-only, no wire/field change): the "0"
+  // for cost_usd example above ("e.g. a cache hit that was never
+  // billed") is inaccurate — a cache hit's resp.Usage survives the
+  // cache round-trip intact, so cost_usd on a hit is the nonzero
+  // notional would-have-cost, never "0". See savings_usd below, which
+  // is the field that actually carries that notional-savings figure.
   string agent_run_id = 12;
   string cost_usd = 13;
+
+  // Added 2026-09-12, per docs/rfcs/2026-09-12-gateway-cache-savings-
+  // agent-attribution.md: the notional USD amount THIS request saved by
+  // being served from cache instead of a real upstream call -- the exact
+  // same value dataplane.finalize already computes and hands to
+  // telemetry.RecordCacheSavings (kelvran.cache.savings_usd) on every
+  // real hit, now also named on the one contract built for durable,
+  // offline analysis, per this message's own "never re-encodes anything
+  // already real on that span" rule (that OTel counter is aggregate-only
+  // -- dimensioned by cache layer, never by agent_run_id, for the same
+  // cardinality reason cost_usd's own sibling RFC rejected an
+  // agent_run_id metric dimension -- so this field is the first place
+  // the per-agent-run savings figure exists at all). Decimal-as-string,
+  // same convention as cost_usd/budget_spent_usd above. "" (the proto3
+  // default) on every non-hit row -- deliberately NOT "0" the way
+  // cost_usd's own convention reads, because a request that was never a
+  // cache hit has no savings figure to report at all, real or zero; a
+  // future consumer must not read "" as "zero savings confirmed" the way
+  // it may read cost_usd's own "0" that way. Additive field, non-breaking
+  // per `buf breaking` -- this message's own package/directory version
+  // (v1) stays frozen, same precedent as agent_run_id/cost_usd above.
+  // Closes the SAVINGS half of PRD.md's Success Metrics: "Cost savings
+  // attributable and explainable down to the individual agent run, not
+  // just an aggregate dashboard total" (PRD.md:41) -- the SPEND half was
+  // already closed by agent_run_id/cost_usd above.
+  string savings_usd = 14;
 }

@@ -1613,12 +1613,13 @@ def ingest_cmd(
     "agent_run_id",
     required=True,
     help=(
-        "Sum cost_usd only over GatewayDecisionEvents whose agent_run_id "
-        "equals this value."
+        "Sum cost_usd and savings_usd only over GatewayDecisionEvents "
+        "whose agent_run_id equals this value."
     ),
 )
 def cost_report_cmd(source: str, agent_run_id: str) -> None:
-    """Sum cost_usd for one agent_run_id across ingested gatewayevents_v1 objects.
+    """Sum cost_usd and savings_usd for one agent_run_id across ingested
+    gatewayevents_v1 objects.
 
     The minimum viable "why did this agent run cost $X" answer per
     docs/rfcs/2026-09-12-gateway-cost-attribution-aggregation.md — reuses
@@ -1628,6 +1629,16 @@ def cost_report_cmd(source: str, agent_run_id: str) -> None:
     codebase's own cost-accounting convention). A line that fails to
     decode is counted as an error and skipped, mirroring `ingest`'s own
     "one bad line never aborts the run" behavior.
+
+    Also sums savings_usd, per
+    docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md: the
+    SAVINGS half of PRD.md:41's "attributable and explainable down to
+    the individual agent run" success metric, reported in this same
+    command rather than a separate flag, mirroring PRD.md's own "the two
+    numbers must be reported together" framing (hit rate and correctness
+    there; spend and savings here) — a savings figure with no
+    accompanying spend figure for the same run is exactly the kind of
+    half-a-picture number that framing warns against.
     """
     try:
         scheme, bucket, prefix = parse_object_storage_uri(source)
@@ -1640,6 +1651,7 @@ def cost_report_cmd(source: str, agent_run_id: str) -> None:
     matched_count = 0
     error_count = 0
     total_cost = Decimal("0")
+    total_savings = Decimal("0")
     for key in keys:
         for line in iter_object_lines(scheme, bucket, key):
             try:
@@ -1651,9 +1663,11 @@ def cost_report_cmd(source: str, agent_run_id: str) -> None:
                 continue
             matched_count += 1
             total_cost += Decimal(event.cost_usd or "0")
+            total_savings += Decimal(event.savings_usd or "0")
 
     click.echo(
         f"agent_run_id={agent_run_id}: cost_usd={total_cost} "
+        f"savings_usd={total_savings} "
         f"({matched_count} matching event(s), {error_count} failed to decode)"
     )
 

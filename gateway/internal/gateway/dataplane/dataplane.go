@@ -2081,6 +2081,20 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		telemetry.RecordLLMSpend(ctx, spendUSD)
 	}
 
+	// Per docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md:
+	// the exact same cacheInfo.Hit() gate and exact same result.CostUSD
+	// value RecordCacheSavings already used a few lines up to increment
+	// kelvran.cache.savings_usd -- no new computation, just also naming
+	// it on the one contract built for durable, offline per-agent-run
+	// analysis. "" (proto3 empty-string default) on every non-hit row,
+	// mirroring FallbackFromDeployment/FallbackReason's own "absent means
+	// not applicable" convention -- never a fabricated "0" for a request
+	// that was never a cache hit at all.
+	var savingsUsd string
+	if cacheInfo.Hit() {
+		savingsUsd = result.CostUSD
+	}
+
 	event := &gatewayeventsv1.GatewayDecisionEvent{
 		TraceId:                span.SpanContext().TraceID().String(),
 		SpanId:                 span.SpanContext().SpanID().String(),
@@ -2102,6 +2116,12 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// way to answer "why did this agent run cost $X" at all.
 		AgentRunId: result.AgentRunID,
 		CostUsd:    result.CostUSD,
+		// Per docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md:
+		// closes the SAVINGS half of PRD.md:41's success metric ("Cost
+		// savings attributable and explainable down to the individual
+		// agent run") -- the SPEND half was already closed by
+		// AgentRunId/CostUsd above.
+		SavingsUsd: savingsUsd,
 	}
 	span.End()
 
