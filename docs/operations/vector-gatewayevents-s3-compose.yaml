@@ -1,0 +1,174 @@
+# Vector shipper config: gateway's gatewayevents_v1 structured-log field ->
+# S3, adapted for this repo's real local/dev deployment shape (Docker
+# Compose), not the Kubernetes DaemonSet shape.
+#
+# See docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md for the
+# full design (bucket/object layout, sampling rate, retention policy, why
+# Vector and why S3) -- unchanged by this file. This is a sibling of
+# docs/operations/vector-gatewayevents-s3.yaml: the remap transform and
+# aws_s3 sink below are byte-for-byte identical to that file's own (per
+# this project's "don't re-derive what's already correct" discipline) --
+# ONLY the source block differs, and the sample transform's rate differs
+# for a deliberate, disclosed pilot-phase reason (see below). Nothing
+# here changes because docker-compose.yml runs `gateway` as a single
+# Docker Compose container, not a Kubernetes pod, so Vector's
+# `kubernetes_logs` source has no cluster to talk to here. `docker_logs`
+# is Vector's real, current source for tailing container stdout via the
+# Docker Engine API in exactly this shape -- verified directly against
+# Vector's own current source-reference docs
+# (vector.dev/docs/reference/configuration/sources/docker_logs/), not
+# assumed from memory.
+#
+# Deployment shape: a Vector container added to docker-compose.yml (see
+# the accompanying compose-addition), reading container logs via the
+# Docker Engine API over a read-only bind-mount of the host's Docker
+# socket -- never gateway's own request-serving code path, matching the
+# same off-hot-path requirement docs/upgrade-research/evals-trace-
+# transport-2026-09-07.md already established for the Kubernetes shape.
+#
+# Scoping to just the gateway service: `include_labels` matches on
+# `com.docker.compose.service=gateway` -- a real, reserved label Compose
+# itself applies to every container it creates ("com.docker.compose.
+# service set on service containers with service name as defined in the
+# Compose file" -- Compose Specification), not a label this repo's
+# docker-compose.yml has to declare by hand. This is deliberately more
+# robust than name-prefix matching via `include_containers`: the label is
+# stable regardless of COMPOSE_PROJECT_NAME (which defaults to the
+# checkout directory name and can differ per machine/CI run), where a
+# container-name prefix would not be.
+#
+# gateway really does write one JSON object per line to its own stdout
+# (gateway/cmd/gateway/main.go's `slog.New(slog.NewJSONHandler(os.Stdout,
+# nil))`), and the gatewayevents_v1 field is added to that same line's
+# fields on both the success and error paths
+# (gateway/internal/gateway/dataplane/dataplane.go's `logRequest`,
+# protojson-marshaled) -- so `docker_logs`'s own `.message` field
+# (Vector's own docs: "the raw log message") carries the exact same JSON
+# gateway wrote, unwrapped by Vector itself before this file's remap
+# transform ever sees it. This is the same assumption
+# vector-gatewayevents-s3.yaml's own header comment already made for
+# kubernetes_logs's equivalent unwrapping -- re-verified true for
+# docker_logs here, not re-derived differently. Line numbers inside
+# dataplane.go shift as the file grows (per AGENTS.md's own "line
+# numbers shift" Gotchas caveat) -- re-verify against the live file
+# rather than trusting any specific line cited elsewhere.
+#
+# NOT wired into docker-compose.yml automatically by this file alone --
+# see the accompanying compose-addition draft for the `vector` service
+# block that bind-mounts this file to /etc/vector/vector.yaml.
+#
+# PILOT-PHASE DEVIATION FROM THE RFC, DISCLOSED HERE, NOT SILENT: the
+# `gatewayevents_sample` transform's `rate:` below is set to `1` (ship
+# 100% of OUTCOME_OK, not the RFC-committed 10%) for this project's
+# genuinely low real traffic volume today (its only real traffic so far
+# is the single low-volume 2026-09-13 pilot dry-run, per DECISIONS.md).
+# Per the RFC's own explicit escape hatch ("revisit this rate once real
+# traffic exists to calibrate against, and record the revision in
+# DECISIONS.md rather than silently editing this RFC"), flip this back to
+# `rate: 10` and add a DECISIONS.md entry once real production-scale
+# volume exists -- do not leave `rate: 1` in place indefinitely, and do
+# not edit the RFC's own text to match; this file's deviation from it is
+# the honest, disclosed record.
+
+data_dir: /var/lib/vector
+
+sources:
+  gateway_container_logs:
+    type: docker_logs
+    # Explicit, not left to fall back on the DOCKER_HOST env var / default
+    # socket path -- matches exactly the socket path bind-mounted by the
+    # accompanying `vector` Compose service block (read-only).
+    docker_host: "unix:///var/run/docker.sock"
+    # Scopes collection to just the gateway service's container(s) -- see
+    # header comment above for why this label, not a name prefix.
+    include_labels:
+      - "com.docker.compose.service=gateway"
+
+transforms:
+  # Identical to vector-gatewayevents-s3.yaml's own gatewayevents_extract
+  # -- this step only parses/normalizes the already-decoded
+  # GatewayDecisionEvent JSON and is source-agnostic (it reads Vector's
+  # own `.message` field, which both kubernetes_logs and docker_logs
+  # populate with the exact same raw-log-line semantics -- see header
+  # comment). Not re-derived, per this project's "reuse, don't duplicate"
+  # discipline.
+  gatewayevents_extract:
+    type: remap
+    inputs: ["gateway_container_logs"]
+    source: |-
+      parsed, err = parse_json(.message)
+      if err != null {
+        abort
+      }
+
+      raw_event = parsed.gatewayevents_v1
+      if raw_event == null {
+        # Not every log line carries one (e.g. startup/non-request logs).
+        abort
+      }
+
+      decision, decode_err = parse_json(raw_event)
+      if decode_err != null {
+        abort
+      }
+
+      if decision.virtualKeyId == "" {
+        # Auth itself failed -- see GatewayDecisionEvent.virtual_key_id's
+        # own proto comment ("" if auth itself failed). An empty path
+        # segment in the S3 key below would be ambiguous, so this gets a
+        # real, greppable sentinel instead.
+        decision.virtualKeyId = "_unauthenticated"
+      }
+
+      # Partition by the request's own time (occurred_at), not shipper
+      # ingestion time -- a tailing agent can lag, and %Y-%m-%d/%H in the
+      # aws_s3 sink's key_prefix below reads Vector's event timestamp.
+      occurred_at, ts_err = parse_timestamp(decision.occurredAt, "%+")
+      if ts_err != null {
+        occurred_at = now()
+      }
+
+      . = decision
+      .timestamp = occurred_at
+
+  # Sampling rule, per docs/rfcs/2026-09-07-evals-trace-ingestion-object-
+  # storage.md Section 3: every non-OK outcome (rate-limited, budget-
+  # exceeded, upstream error, auth failed, ...) is always kept. PILOT-
+  # PHASE DEVIATION (see header comment): `rate: 1` ships every
+  # OUTCOME_OK event too, not the RFC-committed 1-in-10 -- flip to `10`
+  # once real production-scale volume exists. key_field is kept in place
+  # unchanged so reverting to `rate: 10` later needs no other edit.
+  gatewayevents_sample:
+    type: sample
+    inputs: ["gatewayevents_extract"]
+    rate: 1
+    exclude: '.outcome != "OUTCOME_OK"'
+    key_field: "traceId"
+
+sinks:
+  # Identical to vector-gatewayevents-s3.yaml's own gatewayevents_s3 sink
+  # -- bucket/object layout, batching, and compression are all deployment-
+  # shape-agnostic (Section 2 of the RFC), so nothing here changes for
+  # Compose vs Kubernetes. Same two required env vars
+  # (KELVRAN_GATEWAYEVENTS_BUCKET, AWS_REGION); see the accompanying
+  # compose-addition for exactly how they reach this container. No
+  # `auth:` block, matching that file's own posture: Vector's real
+  # default AWS credential-provider chain (env vars first, per Vector's
+  # own "AWS authentication" docs) resolves credentials from the
+  # container's environment -- see the compose addition's `.env.vector`.
+  gatewayevents_s3:
+    type: aws_s3
+    inputs: ["gatewayevents_sample"]
+    bucket: "${KELVRAN_GATEWAYEVENTS_BUCKET}"
+    region: "${AWS_REGION}"
+    key_prefix: "gatewayevents/v1/dt=%Y-%m-%d/hr=%H/vk={{ virtualKeyId }}/"
+    compression: gzip
+    framing:
+      method: newline_delimited
+    encoding:
+      codec: json
+    batch:
+      max_bytes: 10000000
+      timeout_secs: 300
+    healthcheck:
+      enabled: true

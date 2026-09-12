@@ -49,3 +49,62 @@ services:
     # — per docs/rfcs/2026-09-03-distributed-rate-limiting.md. Started only
     # with `docker compose --profile redis up`, never by a bare `up`.
     profiles: ["redis"]
+
+  # Optional: ships gatewayevents_v1 to S3 for evals' `ingest` command, per
+  # docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md and
+  # docs/operations/vector-gatewayevents-s3-compose.yaml (the actual
+  # shipper config this mounts). Gated behind a profile for the same
+  # reason `redis` above is: most local dev doesn't need this, and unlike
+  # redis, this one genuinely cannot function without external setup
+  # that doesn't exist yet -- a real S3 bucket and a real, minimally-
+  # scoped IAM credential (see that RFC / docs/operations/ for exactly
+  # what's missing). Never started by a bare `docker compose up`; only
+  # via `docker compose --profile vector-s3 up`. Profile deliberately
+  # named `vector-s3`, not just `vector`, so a future GCS-sibling Compose
+  # service (mirroring docs/operations/vector-gatewayevents-gcs.yaml) can
+  # get its own `vector-gcs` profile without risk of both ever being
+  # enabled together -- that GCS file's own header already warns running
+  # both shippers at once would double-ship every event.
+  vector:
+    image: timberio/vector:0.58.0-debian
+    volumes:
+      - ./docs/operations/vector-gatewayevents-s3-compose.yaml:/etc/vector/vector.yaml:ro
+      # Read-only bind-mount of the host's Docker socket -- required by
+      # the docker_logs source to list/tail other containers' logs via
+      # the Docker Engine API (never gateway's own request-serving code
+      # path). The official image's own Dockerfile sets no USER, so it
+      # runs as root and needs no extra `group_add`/`user:` override to
+      # read this socket. The socket path can differ per host setup --
+      # verify /var/run/docker.sock actually resolves on your own machine
+      # before relying on this mount.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Named volume for Vector's own on-disk state (buffers/checkpoints)
+      # -- not strictly required by docker_logs the way it is for a
+      # file-tailing source, but kept so a container restart doesn't
+      # silently drop in-flight buffered data.
+      - vector-data:/var/lib/vector
+    env_file:
+      # Deliberately its own file, not the same .env gateway reads from
+      # (env_file: - .env, above) -- a blast-radius reduction, per
+      # DECISIONS.md's 2026-09-13 entry recording a real secret
+      # (the pilot's AWS access key) accidentally exposed into this
+      # session's own transcript via an unredacted `docker compose
+      # config` dump. Create .env.vector yourself; it is already covered
+      # by .gitignore's `.env.*` pattern, same as .env itself -- never
+      # commit it. Must define:
+      #   KELVRAN_GATEWAYEVENTS_BUCKET=<real bucket name -- does not
+      #     exist yet, see docs/operations/vector-gatewayevents-s3-compose.yaml>
+      #   AWS_REGION=<region the bucket lives in>
+      #   AWS_ACCESS_KEY_ID=<Vector's own write-only credential -- do
+      #     NOT reuse evals' Bedrock-judge credential or this session's
+      #     Bedrock-invoke-only credential; neither has S3 permissions
+      #     and neither should be widened just to get them>
+      #   AWS_SECRET_ACCESS_KEY=<matching secret>
+      #   # AWS_SESSION_TOKEN=   # optional, only for temporary/STS creds
+      - .env.vector
+    depends_on:
+      - gateway
+    profiles: ["vector-s3"]
+
+volumes:
+  vector-data:
