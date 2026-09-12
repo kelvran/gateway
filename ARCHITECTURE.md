@@ -6,7 +6,7 @@ This is a thin, current-state index. It does not duplicate the substantive desig
 
 | Component | Purpose | Deployable | Path |
 |---|---|---|---|
-| Gateway | Unified LLM API proxy/router: schema normalization, routing/failover, quota, streaming, guardrails, cost attribution, MCP/A2A brokering | `gateway` (Go) | `gateway/` |
+| Gateway | Unified LLM API proxy/router: schema normalization, routing/failover, quota, streaming, guardrails, cost attribution | `gateway` (Go) | `gateway/` |
 | Cache | Multi-layer response caching (exact/normalized/risk-gated semantic), embedded — not a network hop | `gateway` (Go) | `gateway/internal/cache/` |
 | Evals | Sandboxed agent-rollout execution, LLM-judge scoring, statistics, harness-transparent reporting | `evals` (Python) | `evals/` |
 | Shared contract | Versioned OTel + cost/usage event schema — the only surface either deployable is allowed to depend on across the language boundary | both | `api/` |
