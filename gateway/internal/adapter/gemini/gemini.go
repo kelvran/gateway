@@ -165,10 +165,27 @@ type UsageMetadata struct {
 // frames reuse this exact same type — there is no separate stream-chunk
 // shape, unlike OpenAI's chat.completion.chunk.
 type Response struct {
-	ResponseID    string        `json:"responseId,omitempty"`
-	ModelVersion  string        `json:"modelVersion,omitempty"`
-	Candidates    []Candidate   `json:"candidates"`
-	UsageMetadata UsageMetadata `json:"usageMetadata"`
+	ResponseID     string         `json:"responseId,omitempty"`
+	ModelVersion   string         `json:"modelVersion,omitempty"`
+	Candidates     []Candidate    `json:"candidates"`
+	UsageMetadata  UsageMetadata  `json:"usageMetadata"`
+	PromptFeedback PromptFeedback `json:"promptFeedback,omitempty"`
+}
+
+// PromptFeedback is Gemini's native prompt-level moderation-feedback
+// shape. Confirmed against Google's live generateContent API reference:
+// the API "[r]eturns no candidates at all only if there was something
+// wrong with the prompt (check promptFeedback)" — i.e. BlockReason is
+// set, and Candidates is empty, exactly when the PROMPT itself (not the
+// model's output) was rejected before generation ever happened. This is
+// a genuinely distinct condition from a candidate carrying
+// FinishReason "SAFETY"/"PROHIBITED_CONTENT"/etc. (see
+// finishReasonFromGemini) — that case means the model generated a
+// candidate that was then filtered; this one means no candidate was
+// ever generated at all. Zero value (empty string) on every ordinary,
+// non-blocked response.
+type PromptFeedback struct {
+	BlockReason string `json:"blockReason,omitempty"`
 }
 
 // Adapter implements adapter.Adapter for Gemini.
@@ -340,7 +357,10 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		return adapter.ChatResponse{}, fmt.Errorf("gemini: FromProvider expected *Response, got %T", resp)
 	}
 	if len(native.Candidates) == 0 {
-		return adapter.ChatResponse{}, fmt.Errorf("gemini: response contains no candidates (possibly blocked by safety filtering; promptFeedback is not surfaced this pass)")
+		if native.PromptFeedback.BlockReason != "" {
+			return adapter.ChatResponse{}, fmt.Errorf("gemini: prompt blocked by upstream safety filtering (promptFeedback.blockReason=%q): %w", native.PromptFeedback.BlockReason, adapter.ErrProviderContentPolicyBlocked)
+		}
+		return adapter.ChatResponse{}, fmt.Errorf("gemini: response contains no candidates and promptFeedback carries no blockReason (unexpected upstream shape)")
 	}
 
 	candidate := native.Candidates[0]

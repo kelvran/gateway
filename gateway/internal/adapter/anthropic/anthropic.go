@@ -445,7 +445,17 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		ToolCalls: toolCalls,
 	}
 
-	finishReason := native.StopReason
+	// Map Anthropic's native stop_reason onto the canonical
+	// (OpenAI-shaped) finish_reason vocabulary -- the same mapping the
+	// streaming path (stream.go's decodeMessageDelta) already applies.
+	// Without this, a client would see raw Anthropic-specific values
+	// ("end_turn", "tool_use", ...) on the buffered endpoint while seeing
+	// the canonical vocabulary ("stop", "tool_calls", ...) on the
+	// streaming endpoint for the exact same deployment -- violating
+	// gateway/ARCHITECTURE.md's own stated invariant that a client
+	// reading finish_reason should never need to know which upstream
+	// provider served the request.
+	finishReason := finishReasonFromStopReason(native.StopReason)
 
 	return adapter.ChatResponse{
 		ID:    native.ID,

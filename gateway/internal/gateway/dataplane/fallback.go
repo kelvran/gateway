@@ -126,6 +126,20 @@ func classifyFallbackError(err error) string {
 		return FallbackClassGeneric
 	}
 
+	// A Round-5 backlog-audit finding: Gemini's prompt-level safety block
+	// (a 200 OK response with an empty candidates array and
+	// promptFeedback.blockReason set — see adapter.ErrProviderContentPolicyBlocked's
+	// own doc comment) is a real, local FromProvider error, never an
+	// UpstreamHTTPError — the call succeeded with a 2xx status. Checked
+	// via errors.Is BEFORE the UpstreamHTTPError branch below, which can
+	// never fire for this condition at all, so a Gemini deployment's own
+	// configured content_policy fallback chain can finally route around
+	// this exactly the way any other provider's 4xx content-policy
+	// rejection already does.
+	if errors.Is(err, adapter.ErrProviderContentPolicyBlocked) {
+		return FallbackClassContentPolicy
+	}
+
 	var httpErr *UpstreamHTTPError
 	if !errors.As(err, &httpErr) {
 		return FallbackClassGeneric

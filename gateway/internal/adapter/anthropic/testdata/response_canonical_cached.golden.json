@@ -8,7 +8,7 @@
         "role": "assistant",
         "content": "It's 72°F and sunny in Boston."
       },
-      "finish_reason": "end_turn"
+      "finish_reason": "stop"
     }
   ],
   "usage": {

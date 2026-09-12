@@ -151,6 +151,40 @@ func TestFromProviderExtractsRealCachedTokens(t *testing.T) {
 	}
 }
 
+// TestFromProviderSurfacesRefusalMessage mirrors
+// internal/adapter/openai's identically named test -- see that copy's
+// doc comment for the real, confirmed OpenAI field shape this near-
+// verbatim adapter targets. Whether a given self-hosted runtime actually
+// populates this field is runtime-dependent (same disclosed caveat as
+// the cache-token tests above), but this proves the wire-shape
+// acceptance at least: when a runtime DOES send one, it must not be
+// silently discarded.
+func TestFromProviderSurfacesRefusalMessage(t *testing.T) {
+	raw := []byte(`{
+		"id": "cmpl-test",
+		"model": "llama-3-70b",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": null, "refusal": "I cannot help with that request."}, "finish_reason": "stop"}],
+		"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+	}`)
+	var nativeResp Response
+	if err := json.Unmarshal(raw, &nativeResp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	a := New()
+	got, err := a.FromProvider(&nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+
+	if len(got.Choices) != 1 {
+		t.Fatalf("Choices len = %d, want 1", len(got.Choices))
+	}
+	if got.Choices[0].Message.Refusal != "I cannot help with that request." {
+		t.Errorf("Message.Refusal = %q, want the real refusal text (currently silently dropped)", got.Choices[0].Message.Refusal)
+	}
+}
+
 // TestFromProviderMissingPromptTokensDetailsDefaultsToZeroCacheRead proves
 // the overwhelming-majority case (a runtime that never sends
 // prompt_tokens_details at all) stays exactly as it behaved before this

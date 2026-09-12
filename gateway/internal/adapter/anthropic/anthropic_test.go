@@ -150,6 +150,53 @@ func TestFromProviderIncludesCacheTokensInPromptAndTotal(t *testing.T) {
 	}
 }
 
+// TestFromProviderMapsStopReasonToCanonicalFinishReason proves the
+// buffered (non-streaming) path maps Anthropic's native stop_reason
+// vocabulary onto the canonical (OpenAI-shaped) finish_reason vocabulary
+// via finishReasonFromStopReason -- the same mapping stream.go's
+// decodeMessageDelta already applies on the streaming path. A client
+// must see the same finish_reason vocabulary regardless of whether it
+// called the buffered or streaming endpoint against the same Anthropic
+// deployment, per gateway/ARCHITECTURE.md's "Canonical Schema & Provider
+// Adapters" section ("a client reading finish_reason should never need
+// to know which upstream provider actually served the request") and
+// finishReasonFromStopReason's own doc comment, which states that
+// invariant explicitly.
+func TestFromProviderMapsStopReasonToCanonicalFinishReason(t *testing.T) {
+	cases := []struct {
+		stopReason string
+		want       string
+	}{
+		{"end_turn", "stop"},
+		{"stop_sequence", "stop"},
+		{"pause_turn", "stop"},
+		{"max_tokens", "length"},
+		{"tool_use", "tool_calls"},
+		{"refusal", "content_filter"},
+	}
+
+	a := New()
+	for _, tc := range cases {
+		nativeResp := &Response{
+			ID:         "msg_test",
+			Model:      "claude-opus-4",
+			Role:       "assistant",
+			Content:    []ContentBlock{{Type: "text", Text: "hello"}},
+			StopReason: tc.stopReason,
+		}
+		got, err := a.FromProvider(nativeResp)
+		if err != nil {
+			t.Fatalf("FromProvider(stop_reason=%q): %v", tc.stopReason, err)
+		}
+		if len(got.Choices) != 1 {
+			t.Fatalf("Choices len = %d, want 1", len(got.Choices))
+		}
+		if got.Choices[0].FinishReason != tc.want {
+			t.Errorf("stop_reason %q: FinishReason = %q, want canonical %q (raw Anthropic vocabulary leaking to the client)", tc.stopReason, got.Choices[0].FinishReason, tc.want)
+		}
+	}
+}
+
 // TestToProviderToolResultMessage covers the canonical role:"tool" ->
 // native role:"user"/tool_result-block translation this adapter also
 // performs, since Anthropic has no native "tool" role.

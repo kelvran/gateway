@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -209,6 +210,39 @@ func TestFromProviderNoCandidatesReturnsError(t *testing.T) {
 	_, err := New().FromProvider(resp)
 	if err == nil {
 		t.Fatal("FromProvider: want error for zero candidates, got nil")
+	}
+	if errors.Is(err, adapter.ErrProviderContentPolicyBlocked) {
+		t.Errorf("FromProvider: err = %v, should NOT wrap ErrProviderContentPolicyBlocked when promptFeedback carries no blockReason", err)
+	}
+}
+
+// TestFromProviderPromptBlockedBySafetyFilteringWrapsContentPolicySentinel
+// proves the real Gemini behavior confirmed against Google's live
+// generateContent API reference: a prompt-level safety block returns
+// zero candidates PLUS a populated promptFeedback.blockReason, a
+// genuinely distinct condition from a candidate carrying FinishReason
+// "SAFETY" (see TestFromProviderSafetyMapsToContentFilter below). This
+// must be classifiable by
+// gateway/internal/gateway/dataplane/fallback.go's classifyFallbackError
+// (via errors.Is against adapter.ErrProviderContentPolicyBlocked) the
+// same way every other provider's ordinary 4xx content-policy rejection
+// already is, or a deployment's configured content_policy fallback
+// chain silently never fires for this real Gemini condition.
+func TestFromProviderPromptBlockedBySafetyFilteringWrapsContentPolicySentinel(t *testing.T) {
+	resp := &Response{
+		Candidates:     []Candidate{},
+		PromptFeedback: PromptFeedback{BlockReason: "SAFETY"},
+	}
+
+	_, err := New().FromProvider(resp)
+	if err == nil {
+		t.Fatal("FromProvider: want error for a prompt-blocked response, got nil")
+	}
+	if !errors.Is(err, adapter.ErrProviderContentPolicyBlocked) {
+		t.Errorf("FromProvider: err = %v, want it to wrap adapter.ErrProviderContentPolicyBlocked", err)
+	}
+	if !strings.Contains(err.Error(), "SAFETY") {
+		t.Errorf("FromProvider: err = %v, want it to name the real blockReason (SAFETY)", err)
 	}
 }
 

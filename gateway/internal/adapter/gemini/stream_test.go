@@ -197,3 +197,48 @@ func TestDecodeFinalUsageChunkExtractsRealCachedTokens(t *testing.T) {
 		t.Errorf("finalUsage = %+v, want %+v", *finalUsage, want)
 	}
 }
+
+// TestDecodePromptBlockedBySafetyFilteringReturnsError proves the mid-
+// stream counterpart of
+// gemini_test.go's TestFromProviderPromptBlockedBySafetyFilteringWrapsContentPolicySentinel:
+// a chunk carrying zero candidates PLUS a populated
+// promptFeedback.blockReason must be a real, classifiable error, never
+// silently treated as an ordinary empty keep-alive/usage-only frame.
+// Sanity-checked-by-breaking: before this fix, this exact input produced
+// (nil, false, nil, nil) — a silent no-op — which would have let the
+// dataplane's streaming loop finish the request as an empty, successful
+// response with no error and no chance for attemptFallbackChain to ever
+// run.
+func TestDecodePromptBlockedBySafetyFilteringReturnsError(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, done, usage, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"promptFeedback":{"blockReason":"SAFETY"}}`,
+	})
+	if err == nil {
+		t.Fatal("Decode: want error for a prompt-blocked chunk, got nil")
+	}
+	if !errors.Is(err, adapter.ErrProviderContentPolicyBlocked) {
+		t.Errorf("Decode: err = %v, want it to wrap adapter.ErrProviderContentPolicyBlocked", err)
+	}
+	if chunks != nil || done || usage != nil {
+		t.Errorf("Decode: got (chunks=%v, done=%v, usage=%v) alongside a real error, want all zero-valued", chunks, done, usage)
+	}
+}
+
+// TestDecodeEmptyCandidatesWithoutBlockReasonIsStillABenignKeepAlive
+// proves the fix is narrowly scoped: an ordinary chunk with zero
+// candidates and NO blockReason (a genuine keep-alive, or a
+// usage-metadata-only chunk) must remain a silent no-op, exactly as
+// before this fix.
+func TestDecodeEmptyCandidatesWithoutBlockReasonIsStillABenignKeepAlive(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, done, usage, err := dec.Decode(streaming.SSEEvent{Data: `{}`})
+	if err != nil {
+		t.Fatalf("Decode: %v, want nil for a benign empty chunk", err)
+	}
+	if chunks != nil || done || usage != nil {
+		t.Errorf("Decode: got (chunks=%v, done=%v, usage=%v), want all zero-valued for a benign empty chunk", chunks, done, usage)
+	}
+}

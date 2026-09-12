@@ -53,9 +53,26 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 	}
 
 	if len(native.Candidates) == 0 {
+		if native.PromptFeedback.BlockReason != "" {
+			// The prompt itself was rejected by upstream safety filtering
+			// mid-stream -- see gemini.go's FromProvider/PromptFeedback doc
+			// comment for the full rationale. Without this check, the
+			// stream would silently end with zero content and zero error:
+			// the dataplane's own streaming loop (streaming.go) treats a
+			// nil error / no chunks / no "done" signal as an ordinary,
+			// legitimate keep-alive frame and simply keeps reading until
+			// the transport closes, finishing the request as if it had
+			// succeeded with an empty response -- never surfacing the
+			// block to the client, and never giving attemptFallbackChain
+			// a chance to route around it via a configured content_policy
+			// fallback chain the way an ordinary 4xx content-policy
+			// rejection from another provider already can.
+			return nil, false, nil, fmt.Errorf("gemini: prompt blocked by upstream safety filtering mid-stream (promptFeedback.blockReason=%q): %w", native.PromptFeedback.BlockReason, adapter.ErrProviderContentPolicyBlocked)
+		}
 		// A chunk carrying only usageMetadata (or an empty keep-alive
-		// frame) with no candidate content at all — nothing client-visible
-		// to emit, but still a legitimate part of the stream.
+		// frame) with no candidate content and no block signal at all —
+		// nothing client-visible to emit, but still a legitimate part of
+		// the stream.
 		return nil, false, usageFromNative(native), nil
 	}
 

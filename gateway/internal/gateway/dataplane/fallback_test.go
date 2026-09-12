@@ -67,6 +67,11 @@ func TestClassifyFallbackError(t *testing.T) {
 			err:  fmt.Errorf("callDeploymentWithCapacityCheck: %w", &DeploymentCapacityError{Deployment: "shared", Reason: "rate_limit"}),
 			want: FallbackClassGeneric,
 		},
+		{
+			name: "ErrProviderContentPolicyBlocked (Gemini's local, non-HTTP prompt-block error) is ContentPolicy",
+			err:  fmt.Errorf("gemini: prompt blocked by upstream safety filtering (promptFeedback.blockReason=%q): %w", "SAFETY", adapter.ErrProviderContentPolicyBlocked),
+			want: FallbackClassContentPolicy,
+		},
 	}
 
 	for _, tt := range tests {

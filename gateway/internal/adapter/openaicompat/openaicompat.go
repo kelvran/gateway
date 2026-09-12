@@ -88,6 +88,15 @@ type Message struct {
 	Content    json.RawMessage `json:"content,omitempty"`
 	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
 	ToolCallID string          `json:"tool_call_id,omitempty"`
+	// Refusal mirrors internal/adapter/openai.Message.Refusal exactly --
+	// see that copy's doc comment for the real, confirmed OpenAI field
+	// shape this near-verbatim copy targets. Whether a given self-hosted
+	// runtime's own structured-outputs implementation actually populates
+	// this field is runtime-dependent and not independently verified
+	// against a live runtime by this codebase (the same disclosed caveat
+	// Usage.PromptTokensDetails' own doc comment already carries) -- it
+	// stays empty, harmlessly, for any runtime that never sends it.
+	Refusal string `json:"refusal,omitempty"`
 }
 
 // nativeContentPart is one element of the native multi-modal content
@@ -316,6 +325,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 				Content:    content,
 				ToolCalls:  toolCalls,
 				ToolCallID: c.Message.ToolCallID,
+				Refusal:    c.Message.Refusal,
 			},
 			FinishReason: c.FinishReason,
 		})
