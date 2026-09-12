@@ -38,6 +38,23 @@ type blockKind int
 const (
 	blockKindText blockKind = iota
 	blockKindToolUse
+	// blockKindThinking is a plaintext "thinking" block -- its content
+	// streams incrementally via thinking_delta events, then a single
+	// signature_delta just before content_block_stop, per
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md
+	// and Anthropic's own documented streaming event sequence
+	// (platform.claude.com/docs/en/build-with-claude/streaming's
+	// "Thinking delta" section).
+	blockKindThinking
+	// blockKindRedactedThinking is a "redacted_thinking" block. Unlike
+	// every other block kind, its entire opaque payload arrives already
+	// complete on content_block_start (Anthropic's RawContentBlockDelta
+	// union has no delta type for it at all -- confirmed against the
+	// anthropic-sdk-typescript source), so this kind exists purely so
+	// decodeContentBlockDelta can recognize and safely no-op on any
+	// (unexpected) delta event for its index rather than misclassifying it
+	// as text.
+	blockKindRedactedThinking
 )
 
 // streamDecoder implements streaming.StreamDecoder for one in-flight
@@ -96,6 +113,13 @@ type rawContentBlockStart struct {
 		Type string `json:"type"`
 		ID   string `json:"id,omitempty"`
 		Name string `json:"name,omitempty"`
+		// Data carries a redacted_thinking block's complete opaque
+		// ciphertext payload -- unlike "thinking" (whose thinking/
+		// signature fields start empty and stream in via deltas, per
+		// Anthropic's own documented example), "redacted_thinking" has no
+		// delta type of its own at all, so its Data arrives whole, right
+		// here on content_block_start.
+		Data string `json:"data,omitempty"`
 	} `json:"content_block"`
 }
 
@@ -109,6 +133,16 @@ type rawContentBlockDelta struct {
 		// Anthropic's own field name for a raw JSON-string chunk of a
 		// tool call's arguments, still assembling.
 		PartialJSON string `json:"partial_json,omitempty"`
+		// Thinking carries the fragment for a thinking_delta -- the
+		// incremental plaintext chain-of-thought text for a "thinking"
+		// block, per platform.claude.com/docs/en/build-with-claude/
+		// streaming's "Thinking delta" section.
+		Thinking string `json:"thinking,omitempty"`
+		// Signature carries a signature_delta's complete, un-fragmented
+		// cryptographic signature, sent exactly once per thinking block,
+		// immediately before its content_block_stop, per the same doc
+		// section.
+		Signature string `json:"signature,omitempty"`
 	} `json:"delta"`
 }
 
@@ -227,6 +261,22 @@ func (d *streamDecoder) decodeContentBlockStart(data string) ([]streaming.ChatCo
 		delta.ToolCalls = []streaming.ToolCallDelta{
 			{Index: b.Index, ID: b.ContentBlock.ID, Name: b.ContentBlock.Name},
 		}
+	case "thinking":
+		d.blockKinds[b.Index] = blockKindThinking
+		// Content stays empty: per Anthropic's own documented example
+		// (content_block:{"type":"thinking","thinking":"","signature":""}),
+		// content_block_start for a thinking block carries no thinking
+		// text of its own -- fragments arrive on the following
+		// content_block_delta thinking_delta/signature_delta events.
+	case "redacted_thinking":
+		d.blockKinds[b.Index] = blockKindRedactedThinking
+		// Unlike "thinking", the entire opaque payload is already present
+		// here -- see rawContentBlockStart.ContentBlock.Data's doc comment
+		// -- so this is the one content_block_start case that itself
+		// carries a client-visible ReasoningBlocks fragment.
+		delta.ReasoningBlocks = []streaming.ReasoningDelta{
+			{Index: b.Index, Redacted: true, Data: b.ContentBlock.Data},
+		}
 	default:
 		// An unrecognized content-block type: remember it as a plain text
 		// block (the safest default for later deltas) but otherwise stay
@@ -254,6 +304,30 @@ func (d *streamDecoder) decodeContentBlockDelta(data string) ([]streaming.ChatCo
 		delta.ToolCalls = []streaming.ToolCallDelta{
 			{Index: b.Index, ArgumentsJSON: b.Delta.PartialJSON},
 		}
+	case blockKindThinking:
+		// A thinking block receives two distinct delta event types at the
+		// SAME index -- thinking_delta (text, arrives repeatedly) then
+		// signature_delta (signature, arrives exactly once, just before
+		// content_block_stop) -- so, unlike every other kind, this case
+		// must also switch on the delta's own type string to tell them
+		// apart, per platform.claude.com/docs/en/build-with-claude/
+		// streaming's "Thinking delta" section.
+		if b.Delta.Type == "signature_delta" {
+			delta.ReasoningBlocks = []streaming.ReasoningDelta{
+				{Index: b.Index, Signature: b.Delta.Signature},
+			}
+		} else {
+			delta.ReasoningBlocks = []streaming.ReasoningDelta{
+				{Index: b.Index, Text: b.Delta.Thinking},
+			}
+		}
+	case blockKindRedactedThinking:
+		// No-op by design: a redacted_thinking block's entire payload was
+		// already emitted on content_block_start (see that case's doc
+		// comment) -- Anthropic's real event sequence sends no delta for
+		// this kind at all. Handled explicitly here, rather than falling
+		// into the text default below, so an unexpected event for this
+		// index is never misrepresented as plaintext content.
 	default: // blockKindText, or an unknown index defaulting to it
 		delta.Content = b.Delta.Text
 	}

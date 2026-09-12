@@ -548,3 +548,187 @@ func TestStreamDecoder_ErrorEvent(t *testing.T) {
 		t.Fatal("Decode on an error event returned nil error, want non-nil")
 	}
 }
+
+// TestStreamDecoder_ThinkingBlockCapturesTextAndSignature proves Phase 2 of
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md: before
+// this fix, a "thinking" content_block_start was misclassified as
+// blockKindText (no thinking kind existed), so its thinking_delta/
+// signature_delta events emitted empty-content chunks and the reasoning
+// text/signature were silently dropped. A real thinking block (two
+// thinking_delta fragments, then one signature_delta, per Anthropic's own
+// documented event sequence) followed by an ordinary tool_use block must
+// now surface as ReasoningBlocks deltas at the thinking block's own index,
+// with the tool_use block captured exactly as before -- proving thinking
+// support doesn't disturb tool-call capture.
+func TestStreamDecoder_ThinkingBlockCapturesTextAndSignature(t *testing.T) {
+	chunks, done, usage, _ := decodeFixture(t, "testdata/stream_thinking_and_tool_call.txt")
+
+	if !done {
+		t.Fatal("done = false, want true after message_stop")
+	}
+
+	var (
+		thinkingText string
+		signature    string
+		redacted     bool
+		toolID       string
+		toolName     string
+		toolArgs     string
+	)
+	for i, c := range chunks {
+		delta := c.Choices[0].Delta
+		if delta.Content != "" {
+			t.Errorf("chunks[%d].Delta.Content = %q, want empty -- a thinking block must never leak into ordinary Content", i, delta.Content)
+		}
+		for _, rb := range delta.ReasoningBlocks {
+			if rb.Index != 0 {
+				t.Errorf("chunks[%d] carries a ReasoningBlocks fragment at Index %d, want 0 (the only thinking block in this fixture)", i, rb.Index)
+			}
+			thinkingText += rb.Text
+			if rb.Signature != "" {
+				signature = rb.Signature
+			}
+			if rb.Redacted {
+				redacted = true
+			}
+		}
+		for _, tc := range delta.ToolCalls {
+			if tc.ID != "" {
+				toolID = tc.ID
+			}
+			if tc.Name != "" {
+				toolName = tc.Name
+			}
+			toolArgs += tc.ArgumentsJSON
+		}
+	}
+
+	const wantThinking = "Let me check the weather API first. I'll call get_weather."
+	if thinkingText != wantThinking {
+		t.Errorf("accumulated thinking text = %q, want %q", thinkingText, wantThinking)
+	}
+	if signature != "sig_abc123" {
+		t.Errorf("signature = %q, want %q", signature, "sig_abc123")
+	}
+	if redacted {
+		t.Error("redacted = true, want false -- this is a plaintext thinking block")
+	}
+
+	if toolID != "toolu_01WeatherThink000000" {
+		t.Errorf("tool call ID = %q, want the id from content_block_start -- thinking support must not disturb tool-call capture", toolID)
+	}
+	if toolName != "get_weather" {
+		t.Errorf("tool call Name = %q, want %q", toolName, "get_weather")
+	}
+	var parsedArgs map[string]any
+	if err := json.Unmarshal([]byte(toolArgs), &parsedArgs); err != nil {
+		t.Fatalf("accumulated tool call args %q did not parse as JSON: %v", toolArgs, err)
+	}
+	if parsedArgs["city"] != "Boston" {
+		t.Errorf("parsed tool call args = %v, want city=Boston", parsedArgs)
+	}
+
+	if usage == nil {
+		t.Fatal("finalUsage = nil, want non-nil")
+	}
+	want := adapter.Usage{PromptTokens: 30, CompletionTokens: 12, TotalTokens: 42}
+	if *usage != want {
+		t.Errorf("finalUsage = %+v, want %+v", *usage, want)
+	}
+
+	last := chunks[len(chunks)-1]
+	if fr := last.Choices[0].FinishReason; fr == nil || *fr != "tool_calls" {
+		t.Errorf("final chunk FinishReason = %v, want %q (mapped from stop_reason=tool_use)", fr, "tool_calls")
+	}
+}
+
+// TestStreamDecoder_RedactedThinkingBlockCapturesDataOnBlockStart proves the
+// other half of Phase 2: a "redacted_thinking" content_block_start (unlike
+// "thinking") carries its entire opaque payload already complete -- no
+// delta type exists for it, confirmed against the anthropic-sdk-typescript
+// source's RawContentBlockDelta union -- so decodeContentBlockStart itself,
+// not decodeContentBlockDelta, must be the one place this block's content
+// is captured. Also proves an ordinary text block immediately afterward is
+// unaffected.
+func TestStreamDecoder_RedactedThinkingBlockCapturesDataOnBlockStart(t *testing.T) {
+	chunks, done, usage, _ := decodeFixture(t, "testdata/stream_redacted_thinking_and_text.txt")
+
+	if !done {
+		t.Fatal("done = false, want true after message_stop")
+	}
+
+	first := chunks[0]
+	if first.Choices[0].Delta.Role != "assistant" {
+		t.Errorf("chunks[0].Delta.Role = %q, want %q", first.Choices[0].Delta.Role, "assistant")
+	}
+	rbs := first.Choices[0].Delta.ReasoningBlocks
+	if len(rbs) != 1 {
+		t.Fatalf("chunks[0].Delta.ReasoningBlocks = %+v, want exactly one entry, captured on content_block_start itself", rbs)
+	}
+	if !rbs[0].Redacted || rbs[0].Data != "opaque_ciphertext_xyz" || rbs[0].Text != "" || rbs[0].Signature != "" {
+		t.Errorf("chunks[0].Delta.ReasoningBlocks[0] = %+v, want a redacted block carrying only Data=%q", rbs[0], "opaque_ciphertext_xyz")
+	}
+	if rbs[0].Index != 0 {
+		t.Errorf("chunks[0].Delta.ReasoningBlocks[0].Index = %d, want 0", rbs[0].Index)
+	}
+
+	// No later chunk may carry another fragment for this same block --
+	// Anthropic sends no delta event for redacted_thinking at all, per the
+	// SDK source; a decoder that (incorrectly) waited for one would simply
+	// never see it, but a decoder that (incorrectly) fell through to the
+	// text default on some other stray event would corrupt Content
+	// instead, which the loop below also guards against.
+	var text string
+	for i, c := range chunks[1:] {
+		delta := c.Choices[0].Delta
+		for _, rb := range delta.ReasoningBlocks {
+			t.Errorf("chunks[%d] carries an unexpected additional ReasoningBlocks fragment %+v -- redacted_thinking's payload must arrive exactly once, on content_block_start", i+1, rb)
+		}
+		text += delta.Content
+	}
+	const wantText = "The answer is 42."
+	if text != wantText {
+		t.Errorf("accumulated text (index 1) = %q, want %q -- an ordinary text block after a redacted_thinking block must decode unaffected", text, wantText)
+	}
+
+	if usage == nil {
+		t.Fatal("finalUsage = nil, want non-nil")
+	}
+	want := adapter.Usage{PromptTokens: 40, CompletionTokens: 8, TotalTokens: 48}
+	if *usage != want {
+		t.Errorf("finalUsage = %+v, want %+v", *usage, want)
+	}
+
+	last := chunks[len(chunks)-1]
+	if fr := last.Choices[0].FinishReason; fr == nil || *fr != "stop" {
+		t.Errorf("final chunk FinishReason = %v, want %q (mapped from stop_reason=end_turn)", fr, "stop")
+	}
+}
+
+// TestStreamDecoder_OrdinaryStreamsNeverEmitReasoningBlocks is a regression
+// guard for this change specifically (not merely a re-run of pre-existing
+// assertions): every fixture that predates thinking-block support must
+// still decode with a completely nil/empty ReasoningBlocks on every single
+// chunk -- proving the new blockKindThinking/blockKindRedactedThinking
+// cases in decodeContentBlockStart/decodeContentBlockDelta don't somehow
+// fire, or leak an empty-but-present entry, for ordinary text/tool_use
+// content that was never touched by this change.
+func TestStreamDecoder_OrdinaryStreamsNeverEmitReasoningBlocks(t *testing.T) {
+	fixtures := []string{
+		"testdata/stream_text_only.txt",
+		"testdata/stream_single_tool_call.txt",
+		"testdata/stream_two_tool_calls_interleaved.txt",
+		"testdata/stream_usage_and_stop.txt",
+		"testdata/stream_usage_with_cache_tokens.txt",
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture, func(t *testing.T) {
+			chunks, _, _, _ := decodeFixture(t, fixture)
+			for i, c := range chunks {
+				if len(c.Choices[0].Delta.ReasoningBlocks) != 0 {
+					t.Errorf("chunks[%d].Delta.ReasoningBlocks = %+v, want empty for a stream with no thinking content", i, c.Choices[0].Delta.ReasoningBlocks)
+				}
+			}
+		})
+	}
+}

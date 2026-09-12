@@ -53,6 +53,14 @@ type MessageDelta struct {
 	// ToolCalls holds incremental tool-call fragments, keyed by Index so a
 	// caller can accumulate a single logical tool call across many chunks.
 	ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
+	// ReasoningBlocks holds incremental reasoning/thinking-block fragments,
+	// keyed by Index exactly like ToolCalls above, per
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+	// Phase 2 (streaming). Additive/omitempty, matching this type's own
+	// convention: a provider adapter that never streams reasoning content
+	// leaves every chunk's ReasoningBlocks nil, byte-identical to before
+	// this field existed.
+	ReasoningBlocks []ReasoningDelta `json:"reasoning_blocks,omitempty"`
 }
 
 // ToolCallDelta is one incremental fragment of a single tool call within a
@@ -65,6 +73,34 @@ type ToolCallDelta struct {
 	ID            string `json:"id,omitempty"`
 	Name          string `json:"name,omitempty"`
 	ArgumentsJSON string `json:"arguments_json,omitempty"`
+}
+
+// ReasoningDelta is one incremental fragment of a single reasoning/thinking
+// block within a MessageDelta, keyed by Index exactly like ToolCallDelta so
+// a caller can accumulate multiple (possibly interleaved) reasoning blocks
+// correctly across many chunks, per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md. Text
+// fragments concatenate in arrival order to reconstruct a plaintext block's
+// full content; Signature and Data each arrive whole, never fragmented,
+// on the single delta (or content-block-start event) that carries them.
+type ReasoningDelta struct {
+	Index int `json:"index"`
+	// Text carries an incremental plaintext thinking fragment (Anthropic's
+	// thinking_delta.thinking), concatenated in order to reconstruct the
+	// block's full text.
+	Text string `json:"text,omitempty"`
+	// Signature carries a plaintext thinking block's complete cryptographic
+	// signature (Anthropic's signature_delta.signature) -- delivered whole
+	// on a single delta event just before the block's content_block_stop,
+	// never fragmented across multiple deltas.
+	Signature string `json:"signature,omitempty"`
+	// Redacted marks this reasoning block as provider-encrypted/opaque,
+	// mirroring adapter.ReasoningBlock.Redacted.
+	Redacted bool `json:"redacted,omitempty"`
+	// Data carries a redacted block's complete opaque ciphertext payload --
+	// delivered whole (Anthropic sends it already-complete on the block's
+	// content_block_start event; no delta type exists for it).
+	Data string `json:"data,omitempty"`
 }
 
 // StreamDecoder incrementally translates one upstream provider's raw SSE
