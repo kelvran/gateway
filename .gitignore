@@ -27,6 +27,8 @@ evals/.ci-regression-corpus-scores.jsonl
 *.local.yaml
 config.yaml
 !config.example.yaml
+.local-secrets/
+docker-compose.override.yml
 .gstack/
 
 # Personal, per-session agent daily logs — never shared repo state.
