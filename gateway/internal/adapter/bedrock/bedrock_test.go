@@ -1123,6 +1123,85 @@ func TestToProviderJSONObjectResponseFormatOmitsAdditionalModelRequestFields(t *
 	}
 }
 
+// TestToProviderJSONSchemaInjectsAdditionalPropertiesFalseOnObjectNodes is
+// the live-verified-2026-09-13 proof (found via a real, unmodified
+// third-party client's ordinary, non-strict OpenAI-shaped schema): an
+// object-type schema node with no explicit additionalProperties must
+// get "additionalProperties": false injected, recursively, into every
+// nested object node too (top-level and inside "properties"), or
+// Bedrock rejects the whole request with a real ValidationException.
+func TestToProviderJSONSchemaInjectsAdditionalPropertiesFalseOnObjectNodes(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name: "nested_response",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"country": {"type": "string"},
+						"address": {
+							"type": "object",
+							"properties": {"city": {"type": "string"}}
+						}
+					},
+					"required": ["country"]
+				}`),
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	format := native.AdditionalModelRequestFields["output_config"].(map[string]any)["format"].(map[string]any)
+	schema := format["schema"].(map[string]any)
+
+	if schema["additionalProperties"] != false {
+		t.Errorf("top-level schema.additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	address := schema["properties"].(map[string]any)["address"].(map[string]any)
+	if address["additionalProperties"] != false {
+		t.Errorf("nested address.additionalProperties = %v, want false", address["additionalProperties"])
+	}
+}
+
+// TestToProviderJSONSchemaNeverOverridesExplicitAdditionalProperties
+// proves an explicit caller-set value (including true, which Bedrock
+// will itself reject) is never silently overridden -- this adapter's
+// job is filling in an omission, never second-guessing a deliberate
+// choice.
+func TestToProviderJSONSchemaNeverOverridesExplicitAdditionalProperties(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name:   "explicit_response",
+				Schema: json.RawMessage(`{"type": "object", "properties": {"x": {"type": "string"}}, "additionalProperties": true}`),
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	format := native.AdditionalModelRequestFields["output_config"].(map[string]any)["format"].(map[string]any)
+	schema := format["schema"].(map[string]any)
+	if schema["additionalProperties"] != true {
+		t.Errorf("schema.additionalProperties = %v, want true (explicit caller value must survive unmodified)", schema["additionalProperties"])
+	}
+}
+
 // TestToProviderNilResponseFormatOmitsAdditionalModelRequestFields proves
 // the unset (nil, the default) case never emits
 // additionalModelRequestFields at all -- byte-identical to every

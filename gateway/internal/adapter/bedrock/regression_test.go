@@ -169,6 +169,11 @@ func TestRegressionToProviderResponseFormatMatchesBedrockWireFormat(t *testing.T
 					"type":       "object",
 					"properties": map[string]any{"temp_f": map[string]any{"type": "number"}},
 					"required":   []any{"temp_f"},
+					// additionalProperties: false is injected by
+					// bedrockEnsureAdditionalPropertiesFalse -- live-
+					// verified 2026-09-13, Bedrock unconditionally
+					// rejects an object-type schema node that omits it.
+					"additionalProperties": false,
 				},
 			},
 		},

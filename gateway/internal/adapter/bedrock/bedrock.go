@@ -542,9 +542,47 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (
 		if err := json.Unmarshal(rf.JSONSchema.Schema, &schema); err != nil {
 			return nil, fmt.Errorf("bedrock: response_format has invalid JSONSchema.Schema: %w", err)
 		}
+		bedrockEnsureAdditionalPropertiesFalse(schema)
 		format["schema"] = schema
 	}
 	return map[string]any{"output_config": map[string]any{"format": format}}, nil
+}
+
+// bedrockEnsureAdditionalPropertiesFalse live-verified 2026-09-13 against
+// a real Converse call, via a real, unmodified third-party client
+// (Deep-Research's own model-gateway SDK) sending an ordinary,
+// non-strict OpenAI-shaped json_schema: Bedrock unconditionally rejects
+// EVERY object-type schema node that omits additionalProperties, with a
+// real ValidationException ("For 'object' type, 'additionalProperties'
+// must be explicitly set to false") -- unlike OpenAI, which only
+// requires this under response_format.json_schema.strict == true.
+// Recursively injects "additionalProperties": false into every
+// object-type node (top-level schema, and every nested "properties"/
+// "items" schema) that doesn't already set the key -- but NEVER
+// overrides an explicit value the caller already set (including an
+// explicit true, which Bedrock will itself then reject with its own
+// real error rather than this adapter silently overriding a caller's
+// deliberate choice). Without this, Bedrock's json_schema mode is
+// effectively unusable for ordinary, non-strict OpenAI SDK callers, who
+// have no reason to set this field for any other provider.
+func bedrockEnsureAdditionalPropertiesFalse(node any) {
+	obj, ok := node.(map[string]any)
+	if !ok {
+		return
+	}
+	if t, _ := obj["type"].(string); t == "object" {
+		if _, set := obj["additionalProperties"]; !set {
+			obj["additionalProperties"] = false
+		}
+	}
+	if props, ok := obj["properties"].(map[string]any); ok {
+		for _, v := range props {
+			bedrockEnsureAdditionalPropertiesFalse(v)
+		}
+	}
+	if items, ok := obj["items"]; ok {
+		bedrockEnsureAdditionalPropertiesFalse(items)
+	}
 }
 
 // contentPartToBlock converts one canonical adapter.ContentPart into
