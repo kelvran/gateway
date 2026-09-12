@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
@@ -111,6 +112,129 @@ func TestHandleChatCompletionPreCallDoesNotBlockWarnTierRequest(t *testing.T) {
 	}
 	if upstreamCalls != 1 {
 		t.Errorf("upstreamCalls = %d, want 1 — a Warn-tier-only finding must not block", upstreamCalls)
+	}
+}
+
+// TestPreCallGuardrailExcludesRedactedReasoningData proves the pre-call
+// check no longer scans a Redacted ReasoningBlock's opaque Data payload,
+// per docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md
+// and adapter.ReasoningBlock.Redacted's own doc comment ("Kelvran MUST
+// NOT attempt to interpret, scan, log, or fingerprint its contents when
+// true"). Before this fix, the pre-call check used serializeMessages
+// directly — a full JSON marshal including every field — so a
+// Block-tier-looking string sitting inside Data (ciphertext, in reality,
+// but any bytes to this regex-based detector) would have wrongly blocked
+// the request. A request whose ONLY Block-tier-looking content is inside
+// a Redacted block's Data must proceed to the upstream call.
+func TestPreCallGuardrailExcludesRedactedReasoningData(t *testing.T) {
+	var upstreamCalls int
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{
+		{Role: "user", Content: "what should I do next?"},
+		{
+			Role: "assistant",
+			ReasoningBlocks: []adapter.ReasoningBlock{
+				{Sequence: 0, Redacted: true, Data: "opaque ciphertext containing " + fakeCreditCardNumber},
+			},
+		},
+	}}
+
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	if err != nil {
+		t.Fatalf("HandleChatCompletion: %v — a Redacted ReasoningBlock's opaque Data must never be scanned by the guardrail engine", err)
+	}
+	if upstreamCalls != 1 {
+		t.Errorf("upstreamCalls = %d, want 1", upstreamCalls)
+	}
+}
+
+// TestPreCallGuardrailScansPlaintextReasoningBlocks is
+// TestPreCallGuardrailExcludesRedactedReasoningData's necessary
+// companion: proves the Redacted exclusion is specific to Redacted
+// blocks, not a blanket "ReasoningBlocks are never scanned" regression.
+// The identical trigger, in a PLAINTEXT block this time, must still
+// block.
+func TestPreCallGuardrailScansPlaintextReasoningBlocks(t *testing.T) {
+	var upstreamCalls int
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{
+		{Role: "user", Content: "what should I do next?"},
+		{
+			Role: "assistant",
+			ReasoningBlocks: []adapter.ReasoningBlock{
+				{Sequence: 0, Text: "the card number to check is " + fakeCreditCardNumber},
+			},
+		},
+	}}
+
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	if !errors.Is(err, ErrGuardrailBlocked) {
+		t.Errorf("err = %v, want ErrGuardrailBlocked — a plaintext ReasoningBlock must be scanned identically to visible text", err)
+	}
+	if upstreamCalls != 0 {
+		t.Errorf("upstreamCalls = %d, want 0 — a Block-tier request must never reach the upstream", upstreamCalls)
+	}
+}
+
+// TestPostCallGuardrailScansPlaintextReasoningBlocks proves the other
+// half of the same fix: a Block-tier trigger hidden ONLY inside a
+// plaintext ReasoningBlock in the RESPONSE (visible Content is clean)
+// must still be caught by the post-call check — the exact gap
+// serializeResponse's pre-fix scope (Content + ToolCalls only) left
+// open. Uses the Anthropic adapter, unlike this file's other tests,
+// since OpenAI's adapter doesn't surface ReasoningBlocks at all
+// (deferred Phase 5 per docs/rfcs/2026-09-12-gateway-reasoning-content-
+// canonical-schema.md).
+func TestPostCallGuardrailScansPlaintextReasoningBlocks(t *testing.T) {
+	keys := defaultTestVirtualKeys()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "claude-opus-4", Provider: "anthropic", UpstreamModel: "claude-opus-4", BaseURL: "http://unused"}}
+
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"anthropic": anthropic.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+			return &anthropic.Response{
+				ID:    "msg_thinking_leak",
+				Model: dep.UpstreamModel,
+				Role:  "assistant",
+				Content: []anthropic.ContentBlock{
+					{Type: "thinking", Thinking: "the customer's card number is " + fakeCreditCardNumber, Signature: "sig"},
+					{Type: "text", Text: "I can help with that."},
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "claude-opus-4", Messages: []adapter.Message{{Role: "user", Content: "how do I process this refund?"}}}
+	_, err = p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	if !errors.Is(err, ErrGuardrailBlocked) {
+		t.Errorf("err = %v, want ErrGuardrailBlocked — a Block-tier trigger hidden only inside a plaintext ReasoningBlock (visible Content is clean) must still be caught post-call", err)
 	}
 }
 

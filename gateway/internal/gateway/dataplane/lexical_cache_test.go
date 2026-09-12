@@ -102,6 +102,66 @@ func TestHandleChatCompletionL3NeverServesAcrossDifferentResponseFormat(t *testi
 	}
 }
 
+// TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint
+// closes docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+// own cache-key decision: two requests differing ONLY in accumulated
+// ReasoningBlocks history must never collide on an L3 similarity hit,
+// since replayed reasoning content is causally read by the model and can
+// change output, per AGENTS.md's "never weaken the cache hard-gate" rule.
+//
+// A direct unit test of checkLexicalCache — rather than a full
+// HandleChatCompletion round trip, unlike this file's other gate tests —
+// is necessary here specifically because, unlike ResponseFormat/
+// PromptFingerprint (separate ChatRequest fields entirely outside
+// Messages), ReasoningBlocks lives ON adapter.Message itself: varying it
+// also perturbs normalizeMessages' own JSON marshal and therefore the
+// real MinHash signature a full pipeline call would compute, entangling
+// this gate's effect with the pre-existing similarity gate. Passing an
+// identical, hand-fixed signature to both the write and the query
+// isolates the ReasoningBlocksFingerprint gate as the ONLY variable.
+func TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint(t *testing.T) {
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	ctx := context.Background()
+	vk := &identity.VirtualKey{ID: "test-key"}
+	fixedSignature := []uint64{1, 2, 3, 4}
+
+	writtenMessages := []adapter.Message{
+		{Role: "assistant", ReasoningBlocks: []adapter.ReasoningBlock{{Sequence: 0, Text: "original reasoning"}}},
+	}
+	writtenResp := []byte(`{"id":"cached-resp"}`)
+	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), time.Hour); err != nil {
+		t.Fatalf("cacheL3.Put: %v", err)
+	}
+
+	// Byte-identical role/everything-else via the forced-identical
+	// signature above, but genuinely different ReasoningBlocks history —
+	// exactly the scenario this gate exists to close.
+	mismatched := adapter.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []adapter.Message{
+			{Role: "assistant", ReasoningBlocks: []adapter.ReasoningBlock{{Sequence: 0, Text: "a completely different chain of thought"}}},
+		},
+	}
+	if _, _, _, hit := p.checkLexicalCache(ctx, vk, mismatched, "irrelevant-l1-key", fixedSignature, ""); hit {
+		t.Error("checkLexicalCache returned a hit for a query whose ReasoningBlocks differ from the written entry's fingerprint — the hard gate must reject this")
+	}
+
+	// Sanity check: the SAME setup but with ReasoningBlocks matching what
+	// was written IS a real hit — proving the gate rejects on a genuine
+	// mismatch, not unconditionally.
+	matching := adapter.ChatRequest{Model: "gpt-4o", Messages: writtenMessages}
+	cached, _, _, hit := p.checkLexicalCache(ctx, vk, matching, "irrelevant-l1-key", fixedSignature, "")
+	if !hit {
+		t.Fatal("checkLexicalCache returned a miss for a query whose ReasoningBlocks exactly match the written entry — the gate must not reject a genuine match")
+	}
+	if string(cached) != string(writtenResp) {
+		t.Errorf("cached = %q, want %q", cached, writtenResp)
+	}
+}
+
 // TestHandleChatCompletionEntityMismatchIsNotAnL3Hit proves the hard gate's
 // whole reason for existing actually holds end-to-end: a query about $92
 // must never be served from an entry cached for a query about $93, even
@@ -242,7 +302,7 @@ func (failingLexicalCache) Search(_ context.Context, _ string, _ []uint64, _ int
 	return nil, errors.New("simulated L3 backend failure")
 }
 
-func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ map[string]struct{}, _ time.Duration) error {
+func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ map[string]struct{}, _ string, _ time.Duration) error {
 	return nil
 }
 

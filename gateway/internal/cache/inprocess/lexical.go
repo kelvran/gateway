@@ -13,16 +13,17 @@ import (
 
 // lexicalEntry is one stored Cache L3-lite candidate.
 type lexicalEntry struct {
-	signature                 []uint64
-	resp                      []byte
-	fingerprint               map[string]struct{}
-	writtenAt                 time.Time
-	modelID                   string
-	guardrailPolicyVersion    string
-	responseFormatFingerprint string
-	promptFingerprint         string
-	negationFingerprint       map[string]struct{}
-	expiresAt                 time.Time
+	signature                  []uint64
+	resp                       []byte
+	fingerprint                map[string]struct{}
+	writtenAt                  time.Time
+	modelID                    string
+	guardrailPolicyVersion     string
+	responseFormatFingerprint  string
+	promptFingerprint          string
+	negationFingerprint        map[string]struct{}
+	reasoningBlocksFingerprint string
+	expiresAt                  time.Time
 }
 
 // tenantBucket holds one tenant's own candidate set, independently
@@ -139,15 +140,16 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 		}
 
 		result = append(result, cache.LexicalCandidate{
-			Resp:                      respCopy,
-			Similarity:                sc.sim,
-			Fingerprint:               fpCopy,
-			WrittenAt:                 sc.entry.writtenAt,
-			ModelID:                   sc.entry.modelID,
-			GuardrailPolicyVersion:    sc.entry.guardrailPolicyVersion,
-			ResponseFormatFingerprint: sc.entry.responseFormatFingerprint,
-			PromptFingerprint:         sc.entry.promptFingerprint,
-			NegationFingerprint:       negationFPCopy,
+			Resp:                       respCopy,
+			Similarity:                 sc.sim,
+			Fingerprint:                fpCopy,
+			WrittenAt:                  sc.entry.writtenAt,
+			ModelID:                    sc.entry.modelID,
+			GuardrailPolicyVersion:     sc.entry.guardrailPolicyVersion,
+			ResponseFormatFingerprint:  sc.entry.responseFormatFingerprint,
+			PromptFingerprint:          sc.entry.promptFingerprint,
+			NegationFingerprint:        negationFPCopy,
+			ReasoningBlocksFingerprint: sc.entry.reasoningBlocksFingerprint,
 		})
 	}
 	return result, nil
@@ -156,7 +158,7 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 // Put implements cache.LexicalCache. Creates tenantID's bucket on first
 // write; inserting past maxEntries evicts that tenant's own
 // least-recently-used entry — never another tenant's.
-func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, ttl time.Duration) error {
+func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -182,16 +184,17 @@ func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint6
 	now := c.now()
 	jitter := time.Duration(c.rand() * c.jitterFraction * float64(ttl))
 	bucket.entries.PushFront(&lexicalEntry{
-		signature:                 sigCopy,
-		resp:                      respCopy,
-		fingerprint:               fpCopy,
-		writtenAt:                 now,
-		modelID:                   modelID,
-		guardrailPolicyVersion:    guardrailPolicyVersion,
-		responseFormatFingerprint: responseFormatFingerprint,
-		promptFingerprint:         promptFingerprint,
-		negationFingerprint:       negationFPCopy,
-		expiresAt:                 now.Add(ttl + jitter),
+		signature:                  sigCopy,
+		resp:                       respCopy,
+		fingerprint:                fpCopy,
+		writtenAt:                  now,
+		modelID:                    modelID,
+		guardrailPolicyVersion:     guardrailPolicyVersion,
+		responseFormatFingerprint:  responseFormatFingerprint,
+		promptFingerprint:          promptFingerprint,
+		negationFingerprint:        negationFPCopy,
+		reasoningBlocksFingerprint: reasoningBlocksFingerprint,
+		expiresAt:                  now.Add(ttl + jitter),
 	})
 	if bucket.entries.Len() > c.maxEntries {
 		bucket.entries.Remove(bucket.entries.Back())

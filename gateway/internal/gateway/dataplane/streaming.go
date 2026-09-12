@@ -173,7 +173,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// all miss, before the router. The request text is fully known here
 	// regardless of streaming/buffered, so there is no half-formed-
 	// content problem on the input side.
-	if verdict := p.guardrails.Check(ctx, serializeMessages(req.Messages)); verdict.Blocked {
+	if verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages)); verdict.Blocked {
 		p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings))...)
 		err = ErrGuardrailBlocked
 		return
@@ -204,7 +204,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	billable = true
 
 	if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), encoded)
+		p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
 	}
 	return
 }

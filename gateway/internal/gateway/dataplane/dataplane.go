@@ -1074,10 +1074,10 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, encoded []byte) {
 	_ = p.cache.Put(ctx, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -1193,6 +1193,7 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 	queryFingerprint := Fingerprint(req.Messages)
 	queryNegationFP := NegationFingerprint(req.Messages)
 	responseFormatFP := responseFormatFingerprint(req.ResponseFormat)
+	queryReasoningFP := reasoningBlocksFingerprint(req.Messages)
 	for _, c := range candidates {
 		entityMismatch := !fingerprintsEqual(queryFingerprint, c.Fingerprint)
 		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateEntityMismatch, entityMismatch)
@@ -1237,6 +1238,19 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 			continue
 		}
 		if c.PromptFingerprint != promptFP {
+			continue
+		}
+		// A gate closing docs/rfcs/2026-09-12-gateway-reasoning-content-
+		// canonical-schema.md's own cache-key decision: two requests
+		// differing only in accumulated ReasoningBlocks history (replayed
+		// reasoning content the model causally reads) must never collide
+		// on an L3 similarity hit, per AGENTS.md's "never weaken the
+		// cache hard-gate" rule. Exact string equality, both-empty
+		// counting as a match, same convention as the three gates
+		// immediately above — deliberately not one of Finding 1's three
+		// named gates either, so not counted via
+		// telemetry.RecordCacheL3GateOutcome.
+		if c.ReasoningBlocksFingerprint != queryReasoningFP {
 			continue
 		}
 		p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", true, p.cacheL3TTL)
@@ -1452,7 +1466,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// above never reaches this check at all — its provenance was already
 		// checked under the current policy at write time, per this same RFC's
 		// cache-key/GuardrailPolicyVersion mechanism.
-		if verdict := p.guardrails.Check(ctx, serializeMessages(req.Messages)); verdict.Blocked {
+		if verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages)); verdict.Blocked {
 			p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings))...)
 			return nil, ErrGuardrailBlocked
 		}
@@ -1506,7 +1520,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		}
 
 		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), encoded)
+			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
 		}
 
 		return cacheMissOutcome{resp: resp, dep: dep, fallback: fallback}, nil
@@ -2259,6 +2273,94 @@ func serializeMessages(messages []adapter.Message) string {
 	return string(b)
 }
 
+// reasoningBlocksFingerprint computes Cache L3-lite's exact-match gate
+// value for a request's accumulated ReasoningBlocks history, per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+// cache-key decision: two requests differing only in ReasoningBlocks
+// must never collide on an L3 similarity hit, since replayed reasoning
+// content is causally read by the model and can change output. ""
+// (both request-side and stored) means no message in the conversation
+// carries any ReasoningBlocks at all — the common, current-traffic
+// case — keeping this byte-identical to before this field existed,
+// mirroring responseFormatFingerprint's own empty-means-unused
+// convention.
+func reasoningBlocksFingerprint(messages []adapter.Message) string {
+	blocks := make([][]adapter.ReasoningBlock, len(messages))
+	hasAny := false
+	for i, m := range messages {
+		blocks[i] = m.ReasoningBlocks
+		if len(m.ReasoningBlocks) > 0 {
+			hasAny = true
+		}
+	}
+	if !hasAny {
+		return ""
+	}
+	b, err := json.Marshal(blocks)
+	if err != nil {
+		panic(fmt.Sprintf("dataplane: marshaling ReasoningBlocks for cache key: %v", err))
+	}
+	return string(b)
+}
+
+// messageHasRedactedReasoning reports whether m carries at least one
+// Redacted ReasoningBlock — guardrailScanMessages' own cheap pre-check
+// so the common case (no reasoning content at all, or only plaintext
+// blocks) never allocates a sanitized copy.
+func messageHasRedactedReasoning(m adapter.Message) bool {
+	for _, rb := range m.ReasoningBlocks {
+		if rb.Redacted {
+			return true
+		}
+	}
+	return false
+}
+
+// guardrailScanMessages returns the exact string handed to the
+// guardrail engine for the pre-call check, per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+// guardrail-scanning decision: a plaintext ReasoningBlock (Redacted ==
+// false) is scanned identically to visible text, since it's already
+// covered by serializeMessages' own full-message marshal below — but a
+// Redacted block's Data is ciphertext by definition (the provider
+// explicitly withholds the plaintext it encrypts), so scanning it can
+// only waste compute or produce a meaningless false positive, never
+// protect anything. This is the ONLY difference from serializeMessages:
+// every other field (Content, Parts, ToolCalls, plaintext
+// ReasoningBlocks.Text) is scanned exactly as serializeMessages would
+// already include it — this function exists solely to strip Data
+// before that shared marshal, never to narrow scanning coverage
+// further.
+func guardrailScanMessages(messages []adapter.Message) string {
+	needsSanitizing := false
+	for _, m := range messages {
+		if messageHasRedactedReasoning(m) {
+			needsSanitizing = true
+			break
+		}
+	}
+	if !needsSanitizing {
+		return serializeMessages(messages)
+	}
+
+	sanitized := make([]adapter.Message, len(messages))
+	copy(sanitized, messages)
+	for i, m := range messages {
+		if !messageHasRedactedReasoning(m) {
+			continue
+		}
+		blocks := make([]adapter.ReasoningBlock, len(m.ReasoningBlocks))
+		copy(blocks, m.ReasoningBlocks)
+		for j := range blocks {
+			if blocks[j].Redacted {
+				blocks[j].Data = ""
+			}
+		}
+		sanitized[i].ReasoningBlocks = blocks
+	}
+	return serializeMessages(sanitized)
+}
+
 // responseFormatFingerprint computes the cache-key fold value for
 // req.ResponseFormat, per internal/cache.Key/NormalizedKey's own
 // responseFormatFingerprint parameter doc comment: the raw JSON marshal
@@ -2292,12 +2394,28 @@ func responseFormatFingerprint(rf *adapter.ResponseFormat) string {
 // ArgumentsJSON invisible to the post-call check even though
 // serializeMessages' full JSON marshal already covers tool_calls on the
 // pre-call side — a real asymmetry, not an intentional scope narrowing.
+//
+// Plaintext ReasoningBlocks (Redacted == false) are included per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+// guardrail-scanning decision: a model's reasoning trace can carry
+// PII/secrets/policy-violating content that never surfaces in the
+// visible Content, so it must be scanned identically to visible text —
+// this was a real, previously-unaddressed gap (ReasoningBlocks didn't
+// exist when this function's own Content-only scope was first
+// narrowed). Redacted blocks are deliberately excluded — their Data is
+// ciphertext by definition, mirroring guardrailScanMessages' identical
+// pre-call exclusion.
 func serializeResponse(resp adapter.ChatResponse) string {
 	contents := make([]string, 0, len(resp.Choices))
 	for _, c := range resp.Choices {
 		contents = append(contents, c.Message.Content)
 		for _, tc := range c.Message.ToolCalls {
 			contents = append(contents, tc.ArgumentsJSON)
+		}
+		for _, rb := range c.Message.ReasoningBlocks {
+			if !rb.Redacted {
+				contents = append(contents, rb.Text)
+			}
 		}
 	}
 	return strings.Join(contents, "\n")

@@ -148,6 +148,17 @@ type LexicalCandidate struct {
 	// Fingerprint above (checked via the caller's own fingerprintsEqual,
 	// never inside this package).
 	NegationFingerprint map[string]struct{}
+	// ReasoningBlocksFingerprint is dataplane.reasoningBlocksFingerprint's
+	// own output at write time, per
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+	// cache-key decision: two requests differing only in accumulated
+	// ReasoningBlocks history (replayed reasoning content the model
+	// causally reads, per AGENTS.md's "never weaken the cache hard-gate"
+	// rule) must never collide on an L3 similarity hit. Exact
+	// string-equality gate, both-empty counting as a match, mirroring
+	// GuardrailPolicyVersion/ResponseFormatFingerprint/PromptFingerprint's
+	// own convention above — never a fabricated value.
+	ReasoningBlocksFingerprint string
 }
 
 // LexicalCache is Cache L3-lite's own interface — deliberately not Cache,
@@ -160,5 +171,5 @@ type LexicalCandidate struct {
 // partition itself, not a post-hoc filter").
 type LexicalCache interface {
 	Search(ctx context.Context, tenantID string, signature []uint64, k int) ([]LexicalCandidate, error)
-	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, ttl time.Duration) error
+	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, ttl time.Duration) error
 }
