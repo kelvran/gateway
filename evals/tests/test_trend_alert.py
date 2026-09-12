@@ -155,3 +155,53 @@ def test_negative_window_is_rejected():
         TrendAlertRule(
             series="judge_accuracy_kappa", direction="below", threshold=0.4, window=-1
         )
+
+
+def test_triggered_alert_carries_a_pooled_wilson_interval_not_a_bare_percentage():
+    """Per PRD.md's Success Metrics line ("every judged result carries a
+    disclosed harness configuration and a confidence interval — never a
+    bare percentage"): a triggered alert for a rate-valued series must
+    carry a real Wilson interval, pooled across the window's own
+    successes/n, not just window_mean.
+    """
+    snapshots = [
+        TrendSnapshot(
+            series="judge_accuracy_kappa",
+            recorded_at=datetime(2026, 9, 1, d, tzinfo=UTC),
+            n=n,
+            rate_value=rate,
+            source_command="report",
+        )
+        for d, (n, rate) in enumerate([(10, 0.2), (10, 0.3), (10, 0.4)], start=1)
+    ]
+    rule = TrendAlertRule(
+        series="judge_accuracy_kappa", direction="below", threshold=0.4
+    )
+
+    alerts = check_trend_alerts(snapshots, [rule])
+
+    assert len(alerts) == 1
+    a = alerts[0]
+    # Pooled: successes = round(2.0)+round(3.0)+round(4.0) = 9, total = 30.
+    from evals.stats import wilson_interval
+
+    want_lower, want_upper = wilson_interval(9, 30)
+    assert a.wilson_lower == pytest.approx(want_lower)
+    assert a.wilson_upper == pytest.approx(want_upper)
+    assert a.wilson_lower < a.window_mean < a.wilson_upper
+
+
+def test_cost_usd_series_alert_has_no_wilson_interval():
+    """cost_usd has no success/total concept (a Decimal sum, not a
+    proportion) -- its alerts must never carry a fabricated interval.
+    """
+    snapshots = [
+        _snap("cost_usd", (1, d), cost_usd_value=Decimal("999")) for d in (1, 2, 3)
+    ]
+    rule = TrendAlertRule(series="cost_usd", direction="above", threshold=100.0)
+
+    alerts = check_trend_alerts(snapshots, [rule])
+
+    assert len(alerts) == 1
+    assert alerts[0].wilson_lower is None
+    assert alerts[0].wilson_upper is None

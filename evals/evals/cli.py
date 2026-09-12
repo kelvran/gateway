@@ -2799,9 +2799,19 @@ def trend_alert_cmd(
 
     for a in alerts:
         scorer_note = f" scorer_type={a.scorer_type}" if a.scorer_type else ""
+        # Per PRD.md's Success Metrics line ("every judged result carries
+        # a disclosed harness configuration and a confidence interval —
+        # never a bare percentage"): a pooled Wilson interval when the
+        # series is rate-valued (cost_usd has none, per TrendAlert's own
+        # doc comment).
+        ci_note = (
+            f" 95% CI=[{a.wilson_lower:.4f}, {a.wilson_upper:.4f}]"
+            if a.wilson_lower is not None and a.wilson_upper is not None
+            else ""
+        )
         click.echo(
             f"[{a.severity}] {a.series}{scorer_note}: "
-            f"window_mean={a.window_mean:.4f} (n={a.window_n}) "
+            f"window_mean={a.window_mean:.4f} (n={a.window_n}){ci_note} "
             f"{a.direction} {a.threshold} threshold"
         )
 

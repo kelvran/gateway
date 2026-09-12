@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from evals.models import TrendSnapshot
+from evals.stats import wilson_interval
 
 AlertDirection = Literal["below", "above"]
 
@@ -71,6 +72,14 @@ class TrendAlert:
     fired for. `scorer_type` is `None` for series that aren't scoped by
     scorer (e.g. `audit_corpus_defect_rate`), mirroring
     `TrendSnapshot.scorer_type`'s own convention.
+
+    `wilson_lower`/`wilson_upper` are a pooled Wilson interval
+    (`successes = sum(snap.rate_value * snap.n)`, `total = sum(snap.n)`
+    across the window) for a rate-valued series, per PRD.md's Success
+    Metrics line: "every judged result carries a disclosed harness
+    configuration and a confidence interval — never a bare percentage."
+    Both `None` for the `cost_usd` series, which has no success/total
+    concept (it's a Decimal sum, not a proportion).
     """
 
     series: str
@@ -80,6 +89,8 @@ class TrendAlert:
     threshold: float
     window_mean: float
     window_n: int
+    wilson_lower: float | None = None
+    wilson_upper: float | None = None
 
 
 def _series_value(snap: TrendSnapshot) -> float | None:
@@ -117,12 +128,15 @@ def check_trend_alerts(
 
         for scorer_type, group in by_scorer.items():
             group_sorted = sorted(group, key=lambda s: s.recorded_at, reverse=True)
-            values = [
-                v for v in (_series_value(s) for s in group_sorted) if v is not None
-            ]
-            window_values = values[: rule.window]
-            if not window_values:
+            # Keep the full TrendSnapshot in the window, not just its bare
+            # float value -- a pooled Wilson interval needs each
+            # snapshot's own `n`, which a bare-float reduction would lose.
+            window_snapshots = [
+                s for s in group_sorted if _series_value(s) is not None
+            ][: rule.window]
+            if not window_snapshots:
                 continue
+            window_values = [_series_value(s) for s in window_snapshots]
             window_mean = sum(window_values) / len(window_values)
             triggered = (
                 window_mean < rule.threshold
@@ -130,6 +144,9 @@ def check_trend_alerts(
                 else window_mean > rule.threshold
             )
             if triggered:
+                wilson_lower, wilson_upper = _pooled_wilson_interval(
+                    rule.series, window_snapshots
+                )
                 alerts.append(
                     TrendAlert(
                         series=rule.series,
@@ -139,6 +156,27 @@ def check_trend_alerts(
                         threshold=rule.threshold,
                         window_mean=window_mean,
                         window_n=len(window_values),
+                        wilson_lower=wilson_lower,
+                        wilson_upper=wilson_upper,
                     )
                 )
     return alerts
+
+
+def _pooled_wilson_interval(
+    series: str, window_snapshots: list[TrendSnapshot]
+) -> tuple[float | None, float | None]:
+    """A pooled Wilson interval across window_snapshots' own
+    successes/n, for a rate-valued series only. `cost_usd` has no
+    success/total concept (it's a Decimal sum, not a proportion), so
+    this always returns (None, None) for it -- never a fabricated
+    interval over a quantity that isn't a proportion.
+    """
+    if series == "cost_usd":
+        return None, None
+    total = sum(s.n for s in window_snapshots)
+    if total <= 0:
+        return None, None
+    successes = sum(round((s.rate_value or 0.0) * s.n) for s in window_snapshots)
+    successes = min(max(successes, 0), total)
+    return wilson_interval(successes, total)
