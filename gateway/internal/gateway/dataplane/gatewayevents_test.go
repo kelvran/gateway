@@ -272,31 +272,58 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 		t.Fatalf("HandleChatCompletion with a failing Redis backend: %v", err)
 	}
 
+	// A Round-5 backlog-audit finding, verified in this same shared-meter
+	// test function (this package's own one-delegation-per-test-binary
+	// constraint — see telemetry/result_test.go's identical rationale):
+	// a request that returns BEFORE ever reaching the cache-check stage
+	// must never be recorded as a kelvran.cache.lookup "miss." The call
+	// above legitimately reaches the cache-check stage (rate-limit
+	// fail-open still falls through to cache checks normally) and
+	// records exactly one real miss (an empty cache). This second call
+	// uses a bearer token for a key that was never registered at all —
+	// an auth failure returning long before any cache check — and must
+	// add ZERO further kelvran.cache.lookup data points.
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer no-such-key", adapter.ChatRequest{Model: "gpt-4o"}); err == nil {
+		t.Fatal("HandleChatCompletion with an unregistered bearer token returned nil error, want an auth failure")
+	}
+
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatalf("reader.Collect: %v", err)
 	}
 
 	var found bool
+	var cacheLookupTotal int64
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != "kelvran.ratelimit.fail_open" {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("kelvran.ratelimit.fail_open data type = %T, want metricdata.Sum[int64]", m.Data)
-			}
-			for _, dp := range sum.DataPoints {
-				keyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
-				if dp.Value == 1 && hasAttr && keyID.AsString() == testKeyID {
-					found = true
+			switch m.Name {
+			case "kelvran.ratelimit.fail_open":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.ratelimit.fail_open data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					keyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
+					if dp.Value == 1 && hasAttr && keyID.AsString() == testKeyID {
+						found = true
+					}
+				}
+			case "kelvran.cache.lookup":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.cache.lookup data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					cacheLookupTotal += dp.Value
 				}
 			}
 		}
 	}
 	if !found {
 		t.Error("kelvran.ratelimit.fail_open counter did not record a value of 1 for the expected key_id")
+	}
+	if cacheLookupTotal != 1 {
+		t.Errorf("kelvran.cache.lookup total = %d, want 1 — the auth-failure call never reached the cache-check stage and must not be counted as a miss", cacheLookupTotal)
 	}
 }
 

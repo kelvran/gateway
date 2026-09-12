@@ -141,12 +141,12 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 	// $0.01/token) establishes billedCount=1, so the TARGET request's own
 	// Reserve call below sizes off that small historical average ($0.05)
 	// rather than grabbing the full $100 cap outright.
-	_, reserved, primingReservation := tracker.Reserve("topup-key", capUSD, 0)
+	_, reserved, primingReservation, primingEpoch := tracker.Reserve("topup-key", capUSD, 0)
 	if !reserved {
 		t.Fatal("setup: priming Reserve did not reserve anything")
 	}
 	primingRealCost := decimal.NewFromFloat(0.05)
-	tracker.Reconcile("topup-key", primingReservation, &primingRealCost, 0)
+	tracker.Reconcile("topup-key", primingReservation, primingEpoch, &primingRealCost, 0)
 	if spent := tracker.SpentUSD("topup-key", 0); !spent.Equal(decimal.NewFromFloat(0.05)) {
 		t.Fatalf("setup: SpentUSD after priming = %s, want 0.05", spent)
 	}
@@ -220,12 +220,12 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 func TestHandleChatCompletionStreamMidStreamTopupExhaustionGracefullyTruncatesStream(t *testing.T) {
 	tracker := budget.NewTracker()
 	capUSD := decimal.NewFromFloat(1.00) // deliberately tight — this test proves the REJECTION boundary
-	_, reserved, primingReservation := tracker.Reserve("topup-key", capUSD, 0)
+	_, reserved, primingReservation, primingEpoch := tracker.Reserve("topup-key", capUSD, 0)
 	if !reserved {
 		t.Fatal("setup: priming Reserve did not reserve anything")
 	}
 	primingRealCost := decimal.NewFromFloat(0.05)
-	tracker.Reconcile("topup-key", primingReservation, &primingRealCost, 0)
+	tracker.Reconcile("topup-key", primingReservation, primingEpoch, &primingRealCost, 0)
 
 	const chunkChars = 40 // 10 estimated tokens/frame -> $0.10 estimated cost/frame
 	// An upstream willing to stream far more than the budget allows —

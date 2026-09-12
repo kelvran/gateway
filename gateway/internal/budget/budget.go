@@ -59,6 +59,22 @@ type Tracker struct {
 	mu          sync.Mutex
 	spent       map[string]decimal.Decimal
 	periodStart map[string]time.Time // rolling-window reset bookkeeping; see maybeResetLocked
+	// periodEpoch is keyID's rolling-window generation counter, incremented
+	// by resetIfNeeded every time it actually performs a reset (by
+	// whichever caller's Allow/SpentUSD/Reserve/Record/Reconcile call
+	// happens to observe the elapsed boundary first — see resetIfNeeded's
+	// own doc comment). Reserve captures the current epoch alongside
+	// reservedUSD; Reconcile compares its caller-supplied epoch against
+	// the CURRENT epoch to detect whether a reset happened anywhere in
+	// between — not just whether Reconcile's OWN resetIfNeeded call
+	// happens to be the one that triggers it. Without this, a reservation
+	// whose window rolled over via a DIFFERENT concurrent caller before
+	// Reconcile ran would have its (now nonexistent) reservedUSD
+	// subtracted from the freshly-reset ledger anyway, silently
+	// undercounting real spend in the new window by exactly the leaked
+	// reservation amount — a real, reproducible money-leak, see
+	// TestReconcileDoesNotUndercountAcrossAConcurrentlyTriggeredReset.
+	periodEpoch map[string]int64
 	// billedCount is keyID's count of real (non-reservation) costs applied
 	// via Reconcile — the denominator of Reserve's own historical-average
 	// reservation estimate, per
@@ -75,7 +91,7 @@ type Tracker struct {
 
 // NewTracker constructs an empty, pure in-memory Tracker.
 func NewTracker() *Tracker {
-	return &Tracker{spent: make(map[string]decimal.Decimal), periodStart: make(map[string]time.Time), billedCount: make(map[string]int64), now: time.Now}
+	return &Tracker{spent: make(map[string]decimal.Decimal), periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), now: time.Now}
 }
 
 // NewTrackerWithStore constructs a Tracker backed by store: existing
@@ -105,7 +121,7 @@ func NewTrackerWithStore(ctx context.Context, store Store, logger *slog.Logger) 
 	if spent == nil {
 		spent = make(map[string]decimal.Decimal)
 	}
-	return &Tracker{spent: spent, periodStart: make(map[string]time.Time), billedCount: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
+	return &Tracker{spent: spent, periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
 }
 
 // resetIfNeeded resets keyID's spend to zero and starts a fresh window,
@@ -137,6 +153,13 @@ func (t *Tracker) resetIfNeeded(keyID string, resetInterval time.Duration) bool 
 		// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
 		t.billedCount[keyID] = 0
 		t.periodStart[keyID] = now
+		// periodEpoch bumps alongside spend/billedCount: any outstanding
+		// reservation captured against the OLD window (by whichever
+		// caller's Reserve happened before this reset, whether or not
+		// it's the same caller doing the reset) must be recognizable as
+		// stale by a later Reconcile call -- see periodEpoch's own field
+		// comment.
+		t.periodEpoch[keyID]++
 		return true
 	}
 	return false
@@ -259,25 +282,30 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 // nothing was mutated, so there is nothing for a caller to release.
 //
 // Every true `reserved` return MUST be paired with exactly one Reconcile
-// call for the same keyID/reservedUSD, even on an error/timeout path —
-// see Reconcile's own doc comment for why a leaked, never-reconciled
-// reservation permanently shrinks a key's remaining headroom.
-func (t *Tracker) Reserve(keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal) {
+// call for the same keyID/reservedUSD/reservationEpoch, even on an
+// error/timeout path — see Reconcile's own doc comment for why a
+// leaked, never-reconciled reservation permanently shrinks a key's
+// remaining headroom. reservationEpoch (see the Tracker.periodEpoch
+// field comment) must be threaded through to that same Reconcile call
+// unchanged — never re-derived or refreshed by the caller — so Reconcile
+// can detect whether a rolling-window reset happened for this key, by
+// ANY caller, between this Reserve call and that Reconcile call.
+func (t *Tracker) Reserve(keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal, reservationEpoch int64) {
 	if t.resetIfNeeded(keyID, resetInterval) {
 		t.persistZeroIfStoreConfigured(keyID)
 	}
 	if capUSD.Sign() <= 0 {
-		return true, false, decimal.Zero
+		return true, false, decimal.Zero, 0
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.spent[keyID].LessThan(capUSD) {
-		return false, false, decimal.Zero
+		return false, false, decimal.Zero, 0
 	}
 	reservedUSD = t.reservationAmountLocked(keyID, capUSD)
 	t.spent[keyID] = t.spent[keyID].Add(reservedUSD)
-	return true, true, reservedUSD
+	return true, true, reservedUSD, t.periodEpoch[keyID]
 }
 
 // reservationAmountLocked computes keyID's Reserve reservation amount:
@@ -332,22 +360,33 @@ func (t *Tracker) reservationAmountLocked(keyID string, capUSD decimal.Decimal) 
 // reservation it undoes was never itself persisted), so it would be a
 // wasted write to skip.
 //
-// If a rolling-window reset happened between the original Reserve call
-// and this Reconcile call (resetIfNeeded reports true here), the stale
-// reservation from the OLD window no longer exists anywhere to undo —
-// spend was already zeroed along with it — so this skips the
-// subtraction entirely rather than incorrectly pushing the fresh
-// window's spend negative, and applies realCost (if any) fresh into the
-// new window instead.
-func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, realCost *decimal.Decimal, resetInterval time.Duration) {
-	reset := t.resetIfNeeded(keyID, resetInterval)
-	if reset {
+// reservationEpoch MUST be the exact value Reserve returned alongside
+// reservedUSD (see Tracker.periodEpoch's own field comment and Reserve's
+// doc comment) — it is how Reconcile detects a rolling-window reset that
+// happened between the original Reserve call and this Reconcile call,
+// including one triggered by a completely different concurrent caller
+// (Allow/SpentUSD/Reserve/Record/Reconcile against the same key), not
+// just one this specific Reconcile call's own resetIfNeeded happens to
+// trigger. When t.periodEpoch[keyID] no longer matches reservationEpoch,
+// the reservation being reconciled is against a window that no longer
+// exists — its reservedUSD was already zeroed along with everything else
+// in that window — so this skips the subtraction entirely (rather than
+// incorrectly driving the fresh window's spend negative by exactly the
+// leaked reservation amount, silently undercounting real cost) and
+// applies realCost (if any) fresh into the new window instead. Before
+// this epoch check existed, only the narrower "did MY OWN resetIfNeeded
+// call just trigger the reset" case was handled, missing the
+// cross-caller case entirely — see
+// TestReconcileDoesNotUndercountAcrossAConcurrentlyTriggeredReset for a
+// concrete, 100%-reproducible demonstration of the resulting money-leak.
+func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, reservationEpoch int64, realCost *decimal.Decimal, resetInterval time.Duration) {
+	if t.resetIfNeeded(keyID, resetInterval) {
 		t.persistZeroIfStoreConfigured(keyID)
 	}
 
 	t.mu.Lock()
 	newTotal := t.spent[keyID]
-	if !reset {
+	if t.periodEpoch[keyID] == reservationEpoch {
 		newTotal = newTotal.Sub(reservedUSD)
 	}
 	billed := realCost != nil && realCost.Sign() >= 0
@@ -405,22 +444,53 @@ func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, realCost 
 // reservedUSD argument to its EVENTUAL Reconcile call — never the
 // ORIGINAL pre-topup amount blindly, or Reconcile's own exact-inverse
 // arithmetic (see its own doc comment) would undo the wrong amount.
-func (t *Tracker) IncreaseReservation(keyID string, capUSD, currentReservedUSD, newReservedUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, appliedUSD decimal.Decimal) {
+//
+// reservationEpoch/newReservationEpoch mirror Reserve/Reconcile's own
+// epoch contract (see Tracker.periodEpoch's field comment): a long-
+// running stream's original Reserve call and its later, possibly-
+// repeated IncreaseReservation top-ups can straddle a rolling-window
+// reset triggered by any OTHER concurrent caller. Without this, a
+// top-up computed against a currentReservedUSD that no longer exists in
+// the (already-reset) ledger would apply its delta on top of the
+// freshly-zeroed spend — a phantom addition unrelated to any real spend
+// in the new window, which can spuriously reject sibling requests
+// against the same key until this stream's own eventual Reconcile call
+// self-heals it. When the epoch has rolled over, this reserves
+// newReservedUSD fresh against the new window's own remaining headroom
+// instead of computing a delta at all. The caller MUST thread whichever
+// epoch this returns into its eventual Reconcile call, mirroring
+// Reserve's own contract — never the original pre-stream epoch.
+func (t *Tracker) IncreaseReservation(keyID string, capUSD, currentReservedUSD, newReservedUSD decimal.Decimal, reservationEpoch int64, resetInterval time.Duration) (allowed bool, appliedUSD decimal.Decimal, newReservationEpoch int64) {
 	if t.resetIfNeeded(keyID, resetInterval) {
 		t.persistZeroIfStoreConfigured(keyID)
 	}
 	if capUSD.Sign() <= 0 || !newReservedUSD.GreaterThan(currentReservedUSD) {
-		return true, currentReservedUSD
+		return true, currentReservedUSD, reservationEpoch
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	currentEpoch := t.periodEpoch[keyID]
+	if currentEpoch != reservationEpoch {
+		if t.spent[keyID].Add(newReservedUSD).GreaterThan(capUSD) {
+			// Nothing was reserved under the new epoch by this call —
+			// the true outstanding reservation for Reconcile's purposes
+			// is genuinely zero, never the stale currentReservedUSD
+			// (which would otherwise make Reconcile subtract a phantom
+			// amount a second time in this new window).
+			return false, decimal.Zero, currentEpoch
+		}
+		t.spent[keyID] = t.spent[keyID].Add(newReservedUSD)
+		return true, newReservedUSD, currentEpoch
+	}
+
 	delta := newReservedUSD.Sub(currentReservedUSD)
 	if t.spent[keyID].Add(delta).GreaterThan(capUSD) {
-		return false, currentReservedUSD
+		return false, currentReservedUSD, currentEpoch
 	}
 	t.spent[keyID] = t.spent[keyID].Add(delta)
-	return true, newReservedUSD
+	return true, newReservedUSD, currentEpoch
 }
 
 // Close releases the underlying store, if any. Safe to call even on a

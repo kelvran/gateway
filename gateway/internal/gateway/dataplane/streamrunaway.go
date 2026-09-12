@@ -126,7 +126,15 @@ func streamRunawayCharsCeiling(maxTokens *int) int {
 type midStreamReservation struct {
 	vk                *identity.VirtualKey
 	budgetReservedUSD *decimal.Decimal
-	tpmReservedTokens *float64
+	// budgetReservationEpoch is a pointer into HandleChatCompletionStream's
+	// own budgetReservationEpoch local, mirroring budgetReservedUSD's
+	// identical closed-over-pointer shape — updated on every successful
+	// top-up (see budget.Tracker.IncreaseReservation's own epoch-contract
+	// doc comment) so the eventual finalize/Reconcile call at stream end
+	// uses whichever epoch the LAST top-up actually observed, never the
+	// stale pre-stream one.
+	budgetReservationEpoch *int64
+	tpmReservedTokens      *float64
 }
 
 // checkMidStreamReservationTopup is the mid-stream reservation top-up
@@ -183,8 +191,9 @@ func (p *Pipeline) checkMidStreamReservationTopup(dep Deployment, req adapter.Ch
 		CompletionTokens: int(estimatedTokens),
 	})
 	if estimatedCostUSD.GreaterThan(*msr.budgetReservedUSD) {
-		allowed, applied := p.budget.IncreaseReservation(msr.vk.ID, msr.vk.BudgetUSD, *msr.budgetReservedUSD, estimatedCostUSD, msr.vk.BudgetResetInterval)
+		allowed, applied, newEpoch := p.budget.IncreaseReservation(msr.vk.ID, msr.vk.BudgetUSD, *msr.budgetReservedUSD, estimatedCostUSD, *msr.budgetReservationEpoch, msr.vk.BudgetResetInterval)
 		*msr.budgetReservedUSD = applied
+		*msr.budgetReservationEpoch = newEpoch
 		if !allowed {
 			return false
 		}

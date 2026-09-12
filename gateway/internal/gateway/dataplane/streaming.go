@@ -72,10 +72,14 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// budget.Reserve's own return values, threaded through to
 		// finalize's ReconcileTPM/Reconcile calls on every return path,
 		// per docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
-		tpmReserved       bool
-		tpmReservedTokens float64
-		budgetReserved    bool
-		budgetReservedUSD decimal.Decimal
+		tpmReserved            bool
+		tpmReservedTokens      float64
+		budgetReserved         bool
+		budgetReservedUSD      decimal.Decimal
+		budgetReservationEpoch int64
+		// cacheAttempted mirrors HandleChatCompletion's identical field —
+		// see finalize's own doc comment.
+		cacheAttempted bool
 	)
 	start := time.Now()
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
@@ -85,7 +89,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
 		// (a).
 		err = p.attachRetryAfter(vk, err)
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, tpmReserved, tpmReservedTokens, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -123,7 +127,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 
 	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
 	var budgetOK bool
-	budgetOK, budgetReserved, budgetReservedUSD = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
 	if !budgetOK {
 		err = ErrBudgetExceeded
 		return
@@ -139,6 +143,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
+	cacheAttempted = true
 	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
@@ -186,7 +191,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, tpmReservedTokens: &tpmReservedTokens}
+	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens}
 	resp, dep, fallback, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
 	if err != nil {
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)

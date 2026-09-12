@@ -41,7 +41,7 @@ func TestConcurrentReserveReconcileBoundsAdmissionAgainstNearExhaustedCap(t *tes
 		go func() {
 			defer wg.Done()
 
-			allowed, reserved, reservedUSD := tr.Reserve("team-race", capUSD, 0)
+			allowed, reserved, reservedUSD, _ := tr.Reserve("team-race", capUSD, 0)
 			reserveDone.Done()
 
 			// The real upstream-call gap: nothing reconciles until every
@@ -52,7 +52,7 @@ func TestConcurrentReserveReconcileBoundsAdmissionAgainstNearExhaustedCap(t *tes
 				allowedCount.Add(1)
 			}
 			if reserved {
-				tr.Reconcile("team-race", reservedUSD, &cost, 0)
+				tr.Reconcile("team-race", reservedUSD, 0, &cost, 0)
 			}
 		}()
 	}
@@ -92,14 +92,14 @@ func TestConcurrentReserveReconcileReproducibleAcrossManyRuns(t *testing.T) {
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				defer wg.Done()
-				allowed, reserved, reservedUSD := tr.Reserve("team-race", capUSD, 0)
+				allowed, reserved, reservedUSD, _ := tr.Reserve("team-race", capUSD, 0)
 				reserveDone.Done()
 				proceedToReconcile.Wait()
 				if allowed {
 					allowedCount.Add(1)
 				}
 				if reserved {
-					tr.Reconcile("team-race", reservedUSD, &cost, 0)
+					tr.Reconcile("team-race", reservedUSD, 0, &cost, 0)
 				}
 			}()
 		}

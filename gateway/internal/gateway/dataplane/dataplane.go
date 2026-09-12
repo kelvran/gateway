@@ -1288,10 +1288,19 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// return values, threaded through to finalize's ReconcileTPM/
 		// Reconcile calls on every return path — including error — per
 		// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
-		tpmReserved       bool
-		tpmReservedTokens float64
-		budgetReserved    bool
-		budgetReservedUSD decimal.Decimal
+		tpmReserved            bool
+		tpmReservedTokens      float64
+		budgetReserved         bool
+		budgetReservedUSD      decimal.Decimal
+		budgetReservationEpoch int64
+		// cacheAttempted is true only once this request actually reached
+		// the cache-check stage (immediately before the first
+		// p.checkCache call below) — see finalize's own doc comment on
+		// why this gates telemetry.RecordCacheLookup: a request that
+		// returns early (auth failure, rate limit, budget exceeded, etc.)
+		// never attempted a cache lookup at all and must not be counted
+		// as a "miss."
+		cacheAttempted bool
 	)
 
 	start := time.Now()
@@ -1304,7 +1313,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
 		// (a).
 		err = p.attachRetryAfter(vk, err)
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, tpmReserved, tpmReservedTokens, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -1347,7 +1356,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
 	var budgetOK bool
-	budgetOK, budgetReserved, budgetReservedUSD = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
 	if !budgetOK {
 		err = ErrBudgetExceeded
 		return
@@ -1357,6 +1366,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
+	cacheAttempted = true
 	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
@@ -1864,7 +1874,8 @@ func realServingModel(dep Deployment, fallbackModel string) string {
 // back its own start time) — the gateway's full request boundary, fed to
 // the same RecordChatCompletionMetrics call.
 //
-// budgetReserved/budgetReservedUSD and tpmReserved/tpmReservedTokens are
+// budgetReserved/budgetReservedUSD/budgetReservationEpoch and
+// tpmReserved/tpmReservedTokens are
 // budget.Tracker.Reserve's/KeyLimiter.ReserveTPM's own return values,
 // captured by the caller at the point each check ran, per
 // docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md — finalize
@@ -1875,7 +1886,7 @@ func realServingModel(dep Deployment, fallbackModel string) string {
 // ever made (the corresponding Reserve/ReserveTPM call was never
 // reached, or ran and was rejected) — see budget.Tracker.Reconcile's own
 // doc comment for why calling it with a zero reservedUSD is always safe.
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, tpmReserved bool, tpmReservedTokens float64, err error, duration time.Duration) {
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, cacheAttempted bool, err error, duration time.Duration) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too.
@@ -1921,7 +1932,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			realCost = &cost
 		}
 		if budgetReserved || realCost != nil {
-			p.budget.Reconcile(vk.ID, budgetReservedUSD, realCost, vk.BudgetResetInterval)
+			p.budget.Reconcile(vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
 		}
 		if realCost != nil {
 			p.checkBudgetWarnThreshold(ctx, vk)
@@ -2032,9 +2043,20 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	}
 	// kelvran.cache.lookup, per
 	// docs/upgrade-research/cache-cost-observability-2026-09-11.md
-	// Finding 1: unconditional, mirroring kelvran.cache.hit's own
-	// "false is a real value" span-attribute convention above.
-	telemetry.RecordCacheLookup(ctx, cacheInfo.Layer, cacheInfo.Hit())
+	// Finding 1, gated on cacheAttempted (a Round-5 backlog-audit
+	// finding): a request that returns before ever reaching the
+	// cache-check stage (auth failure, model-not-allowed, rate-limit
+	// rejection, concurrency-cap rejection, budget-exceeded, prompt-
+	// resolve failure) has cacheInfo at its zero value (Hit()==false),
+	// and recording that as an ordinary "miss" would silently deflate
+	// the computed hit-rate with zero real cache activity behind it —
+	// exactly the metric's own documented purpose this call site exists
+	// to serve. cacheAttempted is set true only immediately before the
+	// first real p.checkCache call in HandleChatCompletion/
+	// HandleChatCompletionStream.
+	if cacheAttempted {
+		telemetry.RecordCacheLookup(ctx, cacheInfo.Layer, cacheInfo.Hit())
+	}
 	// kelvran.llm.spend_usd, same Finding: unblocks a savings-as-%-of-spend
 	// dashboard panel. Gated on billable, matching
 	// RecordChatCompletionMetrics's own double-counting-avoidance
