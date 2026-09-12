@@ -446,6 +446,31 @@ class ParsedJudgeResponse:
     quote: str
 
 
+# A judge LLM very commonly wraps its "verbatim quote" in a matching pair
+# of quote marks even when the prompt only asks for the span itself, with
+# no formatting instruction either way — a real, observed model habit,
+# not a hypothetical. Straight and curly variants both covered; the
+# underlying span these wrap is still genuinely verbatim, only the added
+# marks make a naive substring check miss it (a real false negative
+# `quote_is_grounded`'s own design didn't anticipate).
+_MATCHING_QUOTE_MARKS: dict[str, str] = {
+    '"': '"',
+    "'": "'",
+    "“": "”",  # “ ”
+    "‘": "’",  # ‘ ’
+}
+
+
+def _strip_one_matching_quote_mark_pair(text: str) -> str:
+    """Strip a single leading/trailing matching quote-mark pair, if
+    present — `'"Paris"'` -> `'Paris'`, but `'Paris'` (no marks) and
+    mismatched marks (`'"Paris’'`) pass through unchanged.
+    """
+    if len(text) >= 2 and _MATCHING_QUOTE_MARKS.get(text[0]) == text[-1]:
+        return text[1:-1]
+    return text
+
+
 def quote_is_grounded(quote: str, output: str, reference: str) -> bool:
     """Whether `quote` is a verbatim substring of `output` or
     `reference` — the measurement-only grounding check per
@@ -453,10 +478,23 @@ def quote_is_grounded(quote: str, output: str, reference: str) -> bool:
     (the judge omitted the QUOTE line, or emitted a blank one) is never
     grounded — a vacuous "True" for an empty string would defeat the
     whole point of the check.
+
+    Falls back to checking the quote with one wrapping pair of quote
+    marks stripped (see `_strip_one_matching_quote_mark_pair`) — ONLY
+    when that strip actually changes the string AND leaves something
+    non-empty, so a degenerate `'""'`/`"''"` quote (an empty pair of
+    quote marks, itself never a real grounding) can never collapse to
+    the vacuously-true `"" in output` check the leading empty-quote guard
+    above exists to prevent.
     """
     if not quote:
         return False
-    return quote in output or quote in reference
+    if quote in output or quote in reference:
+        return True
+    unwrapped = _strip_one_matching_quote_mark_pair(quote)
+    if unwrapped and unwrapped != quote:
+        return unwrapped in output or unwrapped in reference
+    return False
 
 
 def parse_judge_response(raw_response: str) -> ParsedJudgeResponse:

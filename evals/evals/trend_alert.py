@@ -50,6 +50,20 @@ class TrendAlertRule:
     window: int = 5
     severity: str = "warning"
 
+    def __post_init__(self) -> None:
+        """Defense-in-depth for any programmatic caller of this class
+        directly (not just the `evals trend alert` CLI, which has its
+        own earlier, user-facing check) -- see check_trend_alerts' own
+        `values[: rule.window]` slice. `window <= 0` is not merely a
+        no-op: Python's own negative-slice semantics reinterpret a
+        negative window as "drop the |window| MOST RECENT values,"
+        silently diluting a real regression signal with older, unaffected
+        history instead of raising a usage error -- the exact opposite of
+        this field's own documented intent.
+        """
+        if self.window < 1:
+            raise ValueError(f"TrendAlertRule.window must be >= 1, got {self.window}")
+
 
 @dataclass(frozen=True)
 class TrendAlert:

@@ -366,6 +366,45 @@ def test_bedrock_call_model_raises_on_no_text_content_block():
         asyncio.run(call_model("prompt"))
 
 
+def test_bedrock_call_model_raises_when_truncated_by_max_tokens_with_partial_text():
+    # A second, distinct failure mode from the empty-content-block case
+    # above: Converse DID return visible text, but its own stopReason
+    # says generation was cut off before completion -- silently returning
+    # the partial text would otherwise surface only as a confusing,
+    # root-cause-obscured "missing VERDICT" error deep inside
+    # parse_judge_response(), with no hint the real cause was truncation.
+    fake_client = _FakeBedrockRuntimeClient(None)
+    fake_client.converse = lambda **kwargs: {
+        "output": {
+            "message": {
+                "content": [{"text": "REASONING: partial reasoning that got cut off"}]
+            }
+        },
+        "usage": {"inputTokens": 100, "outputTokens": 500},
+        "stopReason": "max_tokens",
+    }
+    call_model = make_bedrock_call_model(
+        BEDROCK_SONNET_5_MODEL_ID, client=fake_client, max_tokens=1024
+    )
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        asyncio.run(call_model("prompt"))
+
+
+def test_bedrock_call_model_does_not_raise_on_max_tokens_when_stop_reason_is_normal():
+    # A real, non-truncated response must be unaffected by the new check
+    # above -- the fake client's own responses never set stopReason at
+    # all (matching a plain dict.get() default of None), so this is
+    # already covered by every other passing test in this file; this
+    # test names the invariant explicitly rather than leaving it implicit.
+    fake_client = _FakeBedrockRuntimeClient("REASONING: fine.\nVERDICT: PASS\n")
+    call_model = make_bedrock_call_model(BEDROCK_SONNET_5_MODEL_ID, client=fake_client)
+
+    result = asyncio.run(call_model("prompt"))
+
+    assert result == "REASONING: fine.\nVERDICT: PASS\n"
+
+
 def test_bedrock_call_model_records_last_call_cost_as_none_when_unpriced():
     # Neither BEDROCK_SONNET_5_MODEL_ID nor BEDROCK_HAIKU_4_5_MODEL_ID has
     # a real price-table entry yet (see providers.py's own honest

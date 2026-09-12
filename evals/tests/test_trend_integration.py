@@ -1125,6 +1125,56 @@ def test_trend_alert_empty_trend_file_raises_click_exception(tmp_path):
     assert "no TrendSnapshots found" in result.output
 
 
+def test_trend_alert_negative_window_raises_click_exception(tmp_path):
+    # A Round-5 backlog-audit finding: window=-1 previously reinterpreted
+    # via Python's own negative-slice semantics as "drop the most-recent
+    # values," silently missing a real regression instead of raising a
+    # usage error.
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4",
+            "--window",
+            "-1",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "must be a positive integer" in result.output
+
+
+def test_trend_alert_zero_window_raises_click_exception(tmp_path):
+    trend_path = tmp_path / "trend.jsonl"
+    _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "trend",
+            "alert",
+            "--path",
+            str(trend_path),
+            "--threshold",
+            "judge_accuracy_kappa:below:0.4",
+            "--window",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "must be a positive integer" in result.output
+
+
 def test_trend_alert_posts_to_webhook_only_when_alerts_triggered(tmp_path, monkeypatch):
     calls = []
 

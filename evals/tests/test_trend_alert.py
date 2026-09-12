@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from evals.models import TrendSnapshot
 from evals.trend_alert import TrendAlertRule, check_trend_alerts
 
@@ -134,3 +136,22 @@ def test_severity_and_threshold_are_carried_through_from_the_rule():
     assert alerts[0].severity == "critical"
     assert alerts[0].threshold == 0.4
     assert alerts[0].direction == "below"
+
+
+def test_zero_window_is_rejected():
+    with pytest.raises(ValueError, match="window must be >= 1"):
+        TrendAlertRule(
+            series="judge_accuracy_kappa", direction="below", threshold=0.4, window=0
+        )
+
+
+def test_negative_window_is_rejected():
+    # Python's own negative-slice semantics would otherwise reinterpret a
+    # negative window as "drop the |window| most-recent values" -- the
+    # exact opposite of "the number of most-recent snapshots averaged
+    # over" -- silently diluting a real regression signal instead of
+    # raising a usage error.
+    with pytest.raises(ValueError, match="window must be >= 1"):
+        TrendAlertRule(
+            series="judge_accuracy_kappa", direction="below", threshold=0.4, window=-1
+        )

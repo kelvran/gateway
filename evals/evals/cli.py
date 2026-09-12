@@ -2759,7 +2759,8 @@ def trend_alert_cmd(
     snapshots = load_trend_snapshots(trend_path)
     if not snapshots:
         raise click.ClickException(f"{trend_path}: no TrendSnapshots found")
-
+    if window < 1:
+        raise click.ClickException(f"--window {window}: must be a positive integer")
     rules: list[TrendAlertRule] = []
     for spec in threshold_specs:
         parts = spec.split(":")

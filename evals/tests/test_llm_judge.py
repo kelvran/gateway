@@ -2,7 +2,12 @@ import asyncio
 
 import pytest
 
-from evals.judge.llm_judge import build_judge_prompt, judge, reduce_panel_votes
+from evals.judge.llm_judge import (
+    build_judge_prompt,
+    judge,
+    quote_is_grounded,
+    reduce_panel_votes,
+)
 from evals.models import PanelVote
 
 
@@ -108,6 +113,42 @@ def test_judge_missing_quote_line_is_not_grounded_and_still_parses_reasoning():
     assert result.passed is True
     assert "capital correctly" in result.rationale
     assert result.quote_grounded is False
+
+
+def test_judge_a_quote_the_model_wrapped_in_straight_quote_marks_is_still_grounded():
+    # A real, common LLM habit: wrapping a "verbatim quote" in its own
+    # quote marks even though nothing in the prompt asked for them. The
+    # underlying span is still genuinely verbatim -- only the marks the
+    # model itself added should not be enough to mark it ungrounded.
+    fake_response = 'REASONING: matches.\nQUOTE: "Paris"\nVERDICT: PASS\n'
+    result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=_make_fake_call_model(fake_response),
+        )
+    )
+
+    assert result.quote_grounded is True
+
+
+def test_quote_is_grounded_strips_a_wrapping_quote_mark_pair_llms_commonly_add():
+    assert quote_is_grounded('"Paris"', "Paris", "Paris") is True
+    assert quote_is_grounded("'Paris'", "Paris", "Paris") is True
+    assert quote_is_grounded("“Paris”", "Paris", "Paris") is True
+
+
+def test_quote_is_grounded_a_fabricated_quote_wrapped_in_quote_marks_stays_ungrounded():
+    assert quote_is_grounded('"nonexistent text"', "Paris", "Paris") is False
+
+
+def test_quote_is_grounded_an_empty_quoted_pair_never_becomes_trivially_grounded():
+    # Guards against the quote-mark-stripping fallback degenerating into
+    # "" in output, which is vacuously always True -- a quote of just
+    # `""`/`''` (an empty pair of quote marks) must stay ungrounded,
+    # exactly like a genuinely empty quote.
+    assert quote_is_grounded('""', "Paris", "Paris") is False
+    assert quote_is_grounded("''", "Paris", "Paris") is False
 
 
 def test_judge_panel_populates_trigger_quote_and_quote_grounded_per_vote():

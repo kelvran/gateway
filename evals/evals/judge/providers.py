@@ -436,6 +436,33 @@ class _BedrockCallModel:
                 "content block (a real refusal or a tool-only response) — judge() "
                 "cannot score an empty verdict"
             )
+        # A second, distinct flavor of the same underlying max_tokens-
+        # exhaustion gotcha the empty-text-blocks check above already
+        # covers (see this class's own docstring and
+        # make_bedrock_call_model's doc comment for that first,
+        # zero-text flavor): here `text_blocks` is non-empty, but
+        # Converse's own `stopReason` says generation was cut off before
+        # completion, not that the judge finished normally. Real, live-
+        # verified wire field -- this repo's own
+        # gateway/internal/adapter/bedrock/bedrock.go decodes the
+        # identical `stopReason` and maps `"max_tokens"` to a dedicated
+        # "length" finish reason, confirming it's always present, not an
+        # optional/rare field this module can keep ignoring. Left
+        # unchecked, a partial REASONING/QUOTE with no VERDICT line
+        # would silently reach parse_judge_response() and fail there with
+        # a generic "missing a VERDICT: PASS|FAIL line" ValueError that
+        # gives no hint the real cause was truncation, not a malformed or
+        # instruction-ignoring judge response.
+        if response.get("stopReason") == "max_tokens":
+            raise ValueError(
+                f"Bedrock Converse call for model {self._model!r} was truncated "
+                f"before completion (stopReason='max_tokens', max_tokens="
+                f"{self._max_tokens!r}) — the returned text is a partial "
+                "response, not a complete judge verdict; raise max_tokens rather "
+                "than let judge()/parse_judge_response() fail on it downstream "
+                "with a confusing 'missing VERDICT' error that obscures the real "
+                "cause"
+            )
         return "".join(text_blocks)
 
 
