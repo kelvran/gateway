@@ -489,3 +489,42 @@ func TestHandleChatCompletionStreamNoFallbackAfterFirstByte(t *testing.T) {
 		t.Errorf("body should still contain the chunk written before the failure: %s", rec.Body.String())
 	}
 }
+
+// TestHandleChatCompletionStreamTruncatedResponseNeverCached is the
+// streaming-path counterpart to TestHandleChatCompletionTruncatedResponseNeverCached
+// (dataplane_test.go) -- live-verified 2026-09-13: unlike L1/L2's own
+// cache.Key/NormalizedKey (which already fold in req.MaxTokens),
+// L3-lite's MinHashSignature has no MaxTokens dimension at all, so a
+// stream that finished with finish_reason:"length" must never populate
+// the cache at any layer, mirroring the existing Block-tier-response
+// guard a few lines above this one in guardrail_test.go.
+func TestHandleChatCompletionStreamTruncatedResponseNeverCached(t *testing.T) {
+	var upstreamCalls int
+	truncatedStream := "" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		upstreamCalls++
+		return nopCloserReader{strings.NewReader(truncatedStream)}, nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, adapter.Registry{"openai": openai.New()})
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "give me a truncated answer"}}}
+
+	rec1 := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec1); err != nil {
+		t.Fatalf("first HandleChatCompletionStream: %v", err)
+	}
+
+	rec2 := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec2); err != nil {
+		t.Fatalf("second HandleChatCompletionStream: %v", err)
+	}
+
+	if upstreamCalls != 2 {
+		t.Errorf("upstreamCalls = %d, want 2 — a truncated (finish_reason:\"length\") streamed response must never populate the cache", upstreamCalls)
+	}
+}

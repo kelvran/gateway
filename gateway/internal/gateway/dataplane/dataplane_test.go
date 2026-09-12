@@ -200,6 +200,46 @@ func TestHandleChatCompletionMissThenCacheHit(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionTruncatedResponseNeverCached is the
+// live-verified-2026-09-13 proof (found via a real production dry-run):
+// unlike L1/L2's own cache.Key/NormalizedKey (which already fold in
+// req.MaxTokens), L3-lite's MinHashSignature has no MaxTokens dimension
+// at all, so a truncated response could otherwise be replayed via an L3
+// hit to a LATER, lexically near-duplicate request with a higher
+// max_tokens that could genuinely have produced more content. Gating
+// the WRITE uniformly (rather than only widening L3-lite's own
+// signature) means a truncated response is never cached at any layer,
+// which this test proves at the simplest level: two byte-identical
+// requests must both go to upstream when the first one was truncated.
+func TestHandleChatCompletionTruncatedResponseNeverCached(t *testing.T) {
+	var upstreamCalls int
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		resp := fakeOpenAIResponse(dep.UpstreamModel)
+		resp.Choices[0].FinishReason = "length"
+		return resp, nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	req := adapter.ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstreamCalls after first call = %d, want 1", upstreamCalls)
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Fatalf("upstreamCalls after second call = %d, want 2 -- a truncated response must never be served from cache", upstreamCalls)
+	}
+}
+
 func TestHandleChatCompletionFallsBackOnUpstreamError(t *testing.T) {
 	var calls []string
 	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {

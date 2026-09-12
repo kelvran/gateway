@@ -213,7 +213,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// secret) could be replayed to this same tenant on any future
 	// identical-or-near-duplicate request without the guardrail engine
 	// ever running again, for the life of the cache TTL.
-	if !blocked {
+	if !blocked && !responseWasTruncated(resp) {
 		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
 			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
 		}

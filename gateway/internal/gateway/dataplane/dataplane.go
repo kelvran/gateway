@@ -1519,8 +1519,10 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			return nil, ErrGuardrailBlocked
 		}
 
-		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
+		if !responseWasTruncated(resp) {
+			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
+				p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
+			}
 		}
 
 		return cacheMissOutcome{resp: resp, dep: dep, fallback: fallback}, nil
@@ -2215,6 +2217,36 @@ func finishReasons(resp adapter.ChatResponse) []string {
 		}
 	}
 	return reasons
+}
+
+// responseWasTruncated reports whether any choice in resp stopped early
+// because it hit the request's own max_tokens cap ("length", the
+// cross-provider canonical value every adapter maps onto -- see
+// adapter/bedrock/bedrock.go, adapter/anthropic/stream.go,
+// adapter/gemini/gemini.go). Found via a real production dry-run
+// (2026-09-13): L1/L2's own cache.Key/NormalizedKey already fold in
+// req.MaxTokens (see their call sites a few lines below in this same
+// file), so two requests differing only in MaxTokens correctly never
+// collide at those layers -- but L3-lite's MinHashSignature is derived
+// purely from normalizeMessages(req.Messages), with no MaxTokens
+// dimension at all. A response truncated under one caller's max_tokens
+// could therefore be replayed via an L3 hit to a LATER, lexically
+// near-duplicate request that specified a higher max_tokens and could
+// genuinely have produced more content -- a real correctness gap, not
+// merely a missed optimization. Gating the cache WRITE on this (rather
+// than adding max_tokens to L3-lite's own signature) is the narrower
+// fix: a complete (finish_reason != "length") response is valid
+// regardless of what max_tokens was requested, since the model itself
+// chose to stop before hitting any cap, so the common case stays fully
+// cacheable at every layer and L3-lite's signature is never fragmented
+// by max_tokens.
+func responseWasTruncated(resp adapter.ChatResponse) bool {
+	for _, c := range resp.Choices {
+		if c.FinishReason == "length" {
+			return true
+		}
+	}
+	return false
 }
 
 // traceLogFields returns "trace_id"/"span_id" key-value pairs for ctx's
