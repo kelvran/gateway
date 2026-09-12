@@ -15,6 +15,7 @@ import (
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -488,6 +489,83 @@ func TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend(t *testing.T) {
 	}
 	if !gotSpent.Equal(wantSpent) {
 		t.Errorf("BudgetSpentUsd = %s, want %s (the real prior spend at decision time)", gotSpent, wantSpent)
+	}
+}
+
+// TestGatewayEventCarriesAgentRunIDAndCostUSD proves
+// docs/rfcs/2026-09-12-gateway-cost-attribution-aggregation.md's fix:
+// GatewayDecisionEvent (the one contract built for durable, offline
+// analysis) must carry this request's own agent_run_id and real cost —
+// previously the two only ever co-occurred on the ephemeral per-request
+// OTel span, never on this event, closing the real gap
+// THREAT_MODEL.md's Gateway Repudiation row was corrected to name.
+func TestGatewayEventCarriesAgentRunIDAndCostUSD(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	keys := []identity.VirtualKey{
+		{ID: "team-agentrun", KeyHash: testHashOf("team-agentrun"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	// A real, nonzero price table entry so CostUsd is a genuine,
+	// nonzero fact to assert on, not just "0" (which the fix must also
+	// get right, per BudgetSpentUsd's own "0 is real, not absent"
+	// convention — covered by every OTHER test in this file that
+	// doesn't set a price table).
+	priceTable := costaccounting.PriceTable{
+		"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.0001"), CompletionPerToken: decimal.RequireFromString("0.0001")},
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(priceTable),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			return fakeOpenAIResponse("gpt-4o"), nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	member, err := baggage.NewMember("agent_run_id", "run-cost-attrib-1")
+	if err != nil {
+		t.Fatalf("baggage.NewMember: %v", err)
+	}
+	bag, err := baggage.New(member)
+	if err != nil {
+		t.Fatalf("baggage.New: %v", err)
+	}
+	ctx := baggage.ContextWithBaggage(context.Background(), bag)
+
+	if _, err := p.HandleChatCompletion(ctx, "Bearer team-agentrun", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+
+	event := decodeLoggedGatewayEvent(t, &logBuf)
+	if event.GetAgentRunId() != "run-cost-attrib-1" {
+		t.Errorf("AgentRunId = %q, want %q", event.GetAgentRunId(), "run-cost-attrib-1")
+	}
+	gotCost, parseErr := decimal.NewFromString(event.GetCostUsd())
+	if parseErr != nil {
+		t.Fatalf("parsing CostUsd %q: %v", event.GetCostUsd(), parseErr)
+	}
+	// fakeOpenAIResponse: 5 prompt + 3 completion tokens, both priced at
+	// 0.0001/token = 0.0008.
+	if want := decimal.RequireFromString("0.0008"); !gotCost.Equal(want) {
+		t.Errorf("CostUsd = %s, want %s", gotCost, want)
 	}
 }
 

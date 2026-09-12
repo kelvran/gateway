@@ -2093,6 +2093,15 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		FallbackFromDeployment: fallback.from,
 		FallbackReason:         fallback.reason,
 		BudgetSpentUsd:         budgetSpentAtDecision.String(),
+		// Per docs/rfcs/2026-09-12-gateway-cost-attribution-aggregation.md:
+		// the same values already flowing into the OTel span a few lines
+		// above (result.AgentRunID/result.CostUSD) -- no new capture
+		// point. Closes the real gap THREAT_MODEL.md's Gateway
+		// Repudiation row was corrected to name: this is the one contract
+		// built for durable, offline analysis, and it previously had no
+		// way to answer "why did this agent run cost $X" at all.
+		AgentRunId: result.AgentRunID,
+		CostUsd:    result.CostUSD,
 	}
 	span.End()
 

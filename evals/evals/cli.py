@@ -1597,6 +1597,67 @@ def ingest_cmd(
         )
 
 
+@main.command("cost-report")
+@click.option(
+    "--source",
+    "source",
+    required=True,
+    help=(
+        "Object-storage source to list, e.g. s3://bucket/gatewayevents/v1/ "
+        "or gs://bucket/gatewayevents/v1/ — same scheme support and "
+        "argument shape as `ingest --source`."
+    ),
+)
+@click.option(
+    "--agent-run-id",
+    "agent_run_id",
+    required=True,
+    help=(
+        "Sum cost_usd only over GatewayDecisionEvents whose agent_run_id "
+        "equals this value."
+    ),
+)
+def cost_report_cmd(source: str, agent_run_id: str) -> None:
+    """Sum cost_usd for one agent_run_id across ingested gatewayevents_v1 objects.
+
+    The minimum viable "why did this agent run cost $X" answer per
+    docs/rfcs/2026-09-12-gateway-cost-attribution-aggregation.md — reuses
+    the same list/read/decode primitives as `ingest` rather than building
+    new fetch logic, filters decoded events to the requested
+    agent_run_id, and sums cost_usd (parsed as Decimal, matching this
+    codebase's own cost-accounting convention). A line that fails to
+    decode is counted as an error and skipped, mirroring `ingest`'s own
+    "one bad line never aborts the run" behavior.
+    """
+    try:
+        scheme, bucket, prefix = parse_object_storage_uri(source)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    keys = list_object_keys(scheme, bucket, prefix)
+    if not keys:
+        raise click.ClickException(f"no objects found under {source}")
+
+    matched_count = 0
+    error_count = 0
+    total_cost = Decimal("0")
+    for key in keys:
+        for line in iter_object_lines(scheme, bucket, key):
+            try:
+                event = decode_gateway_decision_event(line)
+            except Exception:
+                error_count += 1
+                continue
+            if event.agent_run_id != agent_run_id:
+                continue
+            matched_count += 1
+            total_cost += Decimal(event.cost_usd or "0")
+
+    click.echo(
+        f"agent_run_id={agent_run_id}: cost_usd={total_cost} "
+        f"({matched_count} matching event(s), {error_count} failed to decode)"
+    )
+
+
 @main.command("rollout")
 @click.option(
     "--suite",

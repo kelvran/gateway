@@ -167,8 +167,27 @@ type GatewayDecisionEvent struct {
 	// OUTCOME_MODEL_NOT_ALLOWED/OUTCOME_RATE_LIMITED all precede the budget
 	// check and never populate this field).
 	BudgetSpentUsd string `protobuf:"bytes,11,opt,name=budget_spent_usd,json=budgetSpentUsd,proto3" json:"budget_spent_usd,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Added 2026-09-12, per docs/rfcs/2026-09-12-gateway-cost-attribution-
+	// aggregation.md: THIS request's own agent_run_id (from
+	// telemetry.AgentRunIDFromContext, the same W3C-Baggage-propagated
+	// value already on the OTel span's kelvran.agent_run_id attribute) and
+	// real cost (Decimal-as-string, same convention as budget_spent_usd
+	// above — the same value telemetry.ChatCompletionResult.CostUSD
+	// already carries). Both additive fields, non-breaking per `buf
+	// breaking` — this message's own package/directory version (v1)
+	// stays frozen. "" for agent_run_id means no baggage value was
+	// propagated for this request (the common case until a caller
+	// actually sets one); "0" for cost_usd is a real, meaningful value
+	// (e.g. a cache hit that was never billed), never a "field absent"
+	// sentinel, mirroring budget_spent_usd's own convention. Closes the
+	// real gap named in THREAT_MODEL.md's Gateway Repudiation row: the
+	// primitive (agent_run_id co-occurring with cost) previously existed
+	// only on the ephemeral per-request OTel span, never on the one
+	// contract built for offline/cross-request analysis.
+	AgentRunId    string `protobuf:"bytes,12,opt,name=agent_run_id,json=agentRunId,proto3" json:"agent_run_id,omitempty"`
+	CostUsd       string `protobuf:"bytes,13,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GatewayDecisionEvent) Reset() {
@@ -278,11 +297,25 @@ func (x *GatewayDecisionEvent) GetBudgetSpentUsd() string {
 	return ""
 }
 
+func (x *GatewayDecisionEvent) GetAgentRunId() string {
+	if x != nil {
+		return x.AgentRunId
+	}
+	return ""
+}
+
+func (x *GatewayDecisionEvent) GetCostUsd() string {
+	if x != nil {
+		return x.CostUsd
+	}
+	return ""
+}
+
 var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa6\x06\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe3\x06\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -296,7 +329,10 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\x18fallback_from_deployment\x18\t \x01(\tR\x16fallbackFromDeployment\x12'\n" +
 	"\x0ffallback_reason\x18\n" +
 	" \x01(\tR\x0efallbackReason\x12(\n" +
-	"\x10budget_spent_usd\x18\v \x01(\tR\x0ebudgetSpentUsd\"\x98\x02\n" +
+	"\x10budget_spent_usd\x18\v \x01(\tR\x0ebudgetSpentUsd\x12 \n" +
+	"\fagent_run_id\x18\f \x01(\tR\n" +
+	"agentRunId\x12\x19\n" +
+	"\bcost_usd\x18\r \x01(\tR\acostUsd\"\x98\x02\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
