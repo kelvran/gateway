@@ -14,9 +14,11 @@ Kelvran is one system built around agent-run-level accountability at every layer
 
 | Component | What it does | Deployable |
 |---|---|---|
-| **Gateway** | Unified API across OpenAI/Anthropic/Gemini/Bedrock/self-hosted models — routing, failover, streaming, virtual keys/budgets, MCP/A2A tool brokering, OTel observability with agent-run-level cost attribution | `gateway/` (Go) |
+| **Gateway** | Unified API across OpenAI/Anthropic/Gemini/Bedrock/self-hosted models — routing, failover, streaming, virtual keys/budgets, OTel observability with agent-run-level cost attribution (MCP/A2A tool brokering designed, not yet built — see caveat below) | `gateway/` (Go) |
 | **Cache** | Multi-layer response caching (exact → normalized → risk-gated semantic) — embedded inside Gateway, not a network hop; hardened against cross-tenant leakage and semantic-cache hijacking | `gateway/` (Go, internal module) |
 | **Evals** | Sandboxed agent-rollout execution, LLM-as-judge scoring with statistical rigor (confidence intervals, harness-transparency), a real opt-in multi-judge skeptic panel (`--llm-judge-panel`, independent refutation, same-vendor Bedrock Claude judges — see caveat below) | `evals/` (Python) |
+
+**Caveat on the Gateway row above**: MCP/A2A tool brokering is designed, not shipped — `gateway/internal/mcp` has zero code (confirmed: no such directory exists under `gateway/internal/`), explicitly out of scope for v1 per `PRD.md`. The intended inbound (expose Kelvran's own APIs as MCP tools) and outbound (broker agent tool calls to model providers) design is sketched in `gateway/ARCHITECTURE.md`'s Package Layout and MCP/A2A Subsystem sections, with one design-only RFC against the outbound credential leg specifically (`docs/rfcs/2026-09-11-gateway-mcp-outbound-credential-design.md`). "Designed, not yet built" in the row above means exactly that: a real design exists, zero code does.
 
 ## How It Compares
 
