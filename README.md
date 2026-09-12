@@ -16,7 +16,7 @@ Kelvran is one system built around agent-run-level accountability at every layer
 |---|---|---|
 | **Gateway** | Unified API across OpenAI/Anthropic/Gemini/Bedrock/self-hosted models — routing, failover, streaming, virtual keys/budgets, MCP/A2A tool brokering, OTel observability with agent-run-level cost attribution | `gateway/` (Go) |
 | **Cache** | Multi-layer response caching (exact → normalized → risk-gated semantic) — embedded inside Gateway, not a network hop; hardened against cross-tenant leakage and semantic-cache hijacking | `gateway/` (Go, internal module) |
-| **Evals** | Sandboxed agent-rollout execution, LLM-as-judge scoring with statistical rigor (confidence intervals, harness-transparency), designed for a future adversarial skeptic-panel upgrade | `evals/` (Python) |
+| **Evals** | Sandboxed agent-rollout execution, LLM-as-judge scoring with statistical rigor (confidence intervals, harness-transparency), a real opt-in multi-judge skeptic panel (`--llm-judge-panel`, independent refutation, same-vendor Bedrock Claude judges — see caveat below) | `evals/` (Python) |
 
 ## How It Compares
 
@@ -25,11 +25,13 @@ Kelvran is one system built around agent-run-level accountability at every layer
 | Language | Go + Python | Python→Rust (migrating) | TypeScript | Rust | Go | Lua/OpenResty + Go | Python/TS | Python/TS/Go/... |
 | Agent-run-level cost attribution | **Yes, foundational** | No (call-level only) | No | No | No | No | Partial (tracing only) | Partial |
 | Cache reuse gated on correctness, not just similarity | **Yes** | No | No (threshold only) | N/A | No (threshold only) | No (threshold only) | N/A | N/A |
-| Adversarial multi-judge eval verification | **Designed in, v2** | N/A | N/A | Single judge | N/A | N/A | Single judge | Single judge |
+| Adversarial multi-judge eval verification | **Yes, shipped v1** | N/A | N/A | Single judge | N/A | N/A | Single judge | Single judge |
 | Self-hostable | Yes | Yes | Yes (core) | Yes | Yes | Core only | Yes | No (SaaS-primary) |
 | Open source | Yes (Apache-2.0) | Yes + paid Enterprise | OSS core + paid | Yes, no paid tier | Yes | OSS core, AI plugins gated | Yes | No |
 
 Full per-competitor detail and citations: `Not-Humans-World/ai-infra-research/gateway.md`, `cache.md`, `evals.md` (parent workspace — the research this project is built from).
+
+**Caveat on the multi-judge panel row above**: Kelvran's shipped panel is two same-vendor judges (Claude Sonnet 5 + Haiku 4.5, both via AWS Bedrock) — an explicit, accepted tradeoff for AWS-only operational simplicity, not the disjoint-model-family composition that most directly defends against correlated judge bias (see `evals/ARCHITECTURE.md` and `docs/rfcs/2026-09-08-evals-judge-panel-reducer.md` for the full accounting). "Yes, shipped v1" means the independent-refutation panel mechanism is real and opt-in (`--llm-judge-panel`), not that it achieves cross-vendor diversity.
 
 ## Quickstart
 
