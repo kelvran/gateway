@@ -143,7 +143,7 @@ type Message struct {
 // ContentBlock is one block of Anthropic's typed content-block union.
 // Only the fields relevant to the block's Type are populated.
 type ContentBlock struct {
-	Type string `json:"type"` // "text", "tool_use", or "tool_result"
+	Type string `json:"type"` // "text", "tool_use", "tool_result", "image", "document", "thinking", or "redacted_thinking"
 
 	// "text" block
 	Text string `json:"text,omitempty"`
@@ -162,6 +162,18 @@ type ContentBlock struct {
 	// "image"/"document" block, per
 	// docs/rfcs/2026-09-06-gateway-multimodal-content.md.
 	Source *ContentSource `json:"source,omitempty"`
+
+	// "thinking" block — Thinking is the plaintext chain-of-thought
+	// content, Signature is Anthropic's opaque cryptographic signature
+	// authenticating it. Both are must-replay-verbatim per
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+
+	// "redacted_thinking" block — Data is Anthropic's opaque,
+	// provider-encrypted ciphertext payload (no plaintext exists for
+	// this block).
+	Data string `json:"data,omitempty"`
 
 	// CacheControl, when set, marks this specific block as a caching
 	// breakpoint, per docs/rfcs/2026-09-07-gateway-provider-prompt-
@@ -274,6 +286,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 
 		var blocks []ContentBlock
+		if len(m.ToolCalls) == 0 {
+			blocks = append(blocks, reasoningBlocksToProvider(m.ReasoningBlocks, 0, true)...)
+		} else {
+			blocks = append(blocks, reasoningBlocksToProvider(m.ReasoningBlocks, 0, false)...)
+		}
 		if m.Content != "" {
 			blocks = append(blocks, ContentBlock{Type: "text", Text: m.Content})
 		}
@@ -284,7 +301,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			}
 			blocks = append(blocks, block)
 		}
-		for _, tc := range m.ToolCalls {
+		for i, tc := range m.ToolCalls {
 			input := map[string]any{}
 			if tc.ArgumentsJSON != "" {
 				if err := json.Unmarshal([]byte(tc.ArgumentsJSON), &input); err != nil {
@@ -297,6 +314,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 				Name:  tc.Name,
 				Input: input,
 			})
+			if i+1 < len(m.ToolCalls) {
+				blocks = append(blocks, reasoningBlocksToProvider(m.ReasoningBlocks, i+1, false)...)
+			} else {
+				blocks = append(blocks, reasoningBlocksToProvider(m.ReasoningBlocks, i+1, true)...)
+			}
 		}
 		// A message-level CacheControl marks "cache everything through
 		// this message" by attaching to its own last block -- Anthropic's
@@ -410,10 +432,38 @@ func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
 	}
 }
 
+// reasoningBlocksToProvider returns the ContentBlocks for every canonical
+// ReasoningBlock in rbs whose Sequence matches seq exactly (or, when
+// trailing is true, every remaining block with Sequence >= seq) --
+// reconstructing exact original block order relative to ToolCalls, per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+func reasoningBlocksToProvider(rbs []adapter.ReasoningBlock, seq int, trailing bool) []ContentBlock {
+	var out []ContentBlock
+	for _, rb := range rbs {
+		if (trailing && rb.Sequence >= seq) || (!trailing && rb.Sequence == seq) {
+			out = append(out, reasoningBlockToProvider(rb))
+		}
+	}
+	return out
+}
+
+// reasoningBlockToProvider converts one canonical adapter.ReasoningBlock
+// into Anthropic's native "thinking"/"redacted_thinking" block shape.
+func reasoningBlockToProvider(rb adapter.ReasoningBlock) ContentBlock {
+	if rb.Redacted {
+		return ContentBlock{Type: "redacted_thinking", Data: rb.Data}
+	}
+	return ContentBlock{Type: "thinking", Thinking: rb.Text, Signature: rb.Signature}
+}
+
 // FromProvider implements adapter.Adapter, converting an Anthropic native
 // Response back into the canonical ChatResponse shape. Text blocks are
 // concatenated into Message.Content; tool_use blocks become canonical
-// ToolCalls with Input re-marshaled back into ArgumentsJSON strings.
+// ToolCalls with Input re-marshaled back into ArgumentsJSON strings;
+// thinking/redacted_thinking blocks become canonical ReasoningBlocks, per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md --
+// previously silently dropped entirely, since ContentBlock had no field
+// for either type.
 func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	native, ok := resp.(*Response)
 	if !ok {
@@ -422,6 +472,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 
 	var textParts []string
 	var toolCalls []adapter.ToolCall
+	var reasoningBlocks []adapter.ReasoningBlock
 	for _, block := range native.Content {
 		switch block.Type {
 		case "text":
@@ -436,13 +487,29 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 				Name:          block.Name,
 				ArgumentsJSON: string(argsJSON),
 			})
+		case "thinking":
+			// Sequence == len(toolCalls) so far records "immediately
+			// before the next tool_use block" -- exactly mirroring
+			// reasoningBlocksToProvider's replay logic in ToProvider.
+			reasoningBlocks = append(reasoningBlocks, adapter.ReasoningBlock{
+				Sequence:  len(toolCalls),
+				Text:      block.Thinking,
+				Signature: block.Signature,
+			})
+		case "redacted_thinking":
+			reasoningBlocks = append(reasoningBlocks, adapter.ReasoningBlock{
+				Sequence: len(toolCalls),
+				Redacted: true,
+				Data:     block.Data,
+			})
 		}
 	}
 
 	message := adapter.Message{
-		Role:      native.Role,
-		Content:   strings.Join(textParts, ""),
-		ToolCalls: toolCalls,
+		Role:            native.Role,
+		Content:         strings.Join(textParts, ""),
+		ToolCalls:       toolCalls,
+		ReasoningBlocks: reasoningBlocks,
 	}
 
 	// Map Anthropic's native stop_reason onto the canonical

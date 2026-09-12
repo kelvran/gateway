@@ -62,6 +62,49 @@ type Message struct {
 	// occurred, or the serving adapter has no native equivalent to
 	// surface.
 	Refusal string `json:"refusal,omitempty"`
+	// ReasoningBlocks holds this assistant turn's ordered chain-of-thought/
+	// extended-thinking blocks, per
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+	// Each block is OPAQUE -- Kelvran never interprets, restructures, or
+	// generates its content -- and callers MUST echo the exact slice
+	// (unmodified, in order) back on any subsequent ChatRequest.Messages
+	// entry carrying this same assistant turn, or Anthropic/Bedrock's
+	// Claude Messages API returns a hard 400. Position relative to
+	// ToolCalls is preserved via each block's own Sequence field, since
+	// Claude 4's interleaved-thinking mode can place multiple reasoning
+	// blocks between multiple tool calls within one turn. Empty (the
+	// default, and every Message built before this field existed) is a
+	// silent no-op for every adapter, matching Parts/CacheControl's own
+	// convention.
+	ReasoningBlocks []ReasoningBlock `json:"reasoning_blocks,omitempty"`
+}
+
+// ReasoningBlock is one opaque reasoning/thinking block, per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+type ReasoningBlock struct {
+	// Sequence is this block's position within the turn, using the same
+	// index space as Message.ToolCalls: a value of N means "immediately
+	// before ToolCalls[N]" (N >= len(ToolCalls) means "after all tool
+	// calls"). Required to reconstruct exact original block order for
+	// Claude 4's interleaved-thinking mode.
+	Sequence int `json:"sequence"`
+	// Redacted marks this block as provider-encrypted/opaque ciphertext
+	// (Anthropic redacted_thinking, Bedrock redactedContent) -- Kelvran
+	// MUST NOT attempt to interpret, scan, log, or fingerprint its
+	// contents when true; treat Data as an inert byte string.
+	Redacted bool `json:"redacted,omitempty"`
+	// Text is the plaintext reasoning content when Redacted is false
+	// (Anthropic thinking.thinking, Bedrock reasoningText.text). Empty
+	// when Redacted is true.
+	Text string `json:"text,omitempty"`
+	// Data is the opaque ciphertext payload when Redacted is true
+	// (Anthropic redacted_thinking.data, Bedrock redactedContent).
+	Data string `json:"data,omitempty"`
+	// Signature is the provider-issued cryptographic signature
+	// authenticating Text's plaintext (Anthropic thinking.signature,
+	// Bedrock reasoningText.signature) -- opaque, must be replayed
+	// verbatim alongside Text.
+	Signature string `json:"signature,omitempty"`
 }
 
 // ContentPart is one piece of a multi-modal message's content, per

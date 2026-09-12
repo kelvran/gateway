@@ -898,3 +898,170 @@ func TestToProviderToolStrictMapsToWireStrictTrueOnly(t *testing.T) {
 		t.Errorf("marshaled request is missing the expected \"strict\":true: %s", b)
 	}
 }
+
+// TestFromProviderCapturesThinkingAndRedactedThinkingBlocks proves the
+// live-breaking bug fixed by
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md:
+// before this fix, ContentBlock had no field for "thinking"/
+// "redacted_thinking" blocks, so FromProvider's switch matched neither
+// case and silently dropped the entire block. A response with a
+// thinking block followed by a tool_use block, followed by a second
+// (redacted) thinking block, must now surface all of it as
+// ReasoningBlocks with Sequence values that correctly record each
+// block's position relative to ToolCalls.
+func TestFromProviderCapturesThinkingAndRedactedThinkingBlocks(t *testing.T) {
+	a := New()
+	nativeResp := &Response{
+		ID:    "msg_thinking",
+		Model: "claude-opus-4-6",
+		Role:  "assistant",
+		Content: []ContentBlock{
+			{Type: "thinking", Thinking: "Let me check the weather API first.", Signature: "sig_abc123"},
+			{Type: "tool_use", ID: "toolu_1", Name: "get_weather", Input: map[string]any{"city": "Boston"}},
+			{Type: "redacted_thinking", Data: "opaque_ciphertext_xyz"},
+		},
+		StopReason: "tool_use",
+		Usage:      Usage{InputTokens: 30, OutputTokens: 12},
+	}
+
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if len(got.Choices) != 1 {
+		t.Fatalf("Choices len = %d, want 1", len(got.Choices))
+	}
+	msg := got.Choices[0].Message
+
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1 (thinking blocks must not disturb tool-call capture)", len(msg.ToolCalls))
+	}
+	if len(msg.ReasoningBlocks) != 2 {
+		t.Fatalf("ReasoningBlocks len = %d, want 2 -- the block(s) were silently dropped", len(msg.ReasoningBlocks))
+	}
+
+	first, second := msg.ReasoningBlocks[0], msg.ReasoningBlocks[1]
+	if first.Redacted || first.Text != "Let me check the weather API first." || first.Signature != "sig_abc123" {
+		t.Errorf("ReasoningBlocks[0] = %+v, want plaintext thinking block with the original text+signature", first)
+	}
+	if first.Sequence != 0 {
+		t.Errorf("ReasoningBlocks[0].Sequence = %d, want 0 (appears before ToolCalls[0])", first.Sequence)
+	}
+	if !second.Redacted || second.Data != "opaque_ciphertext_xyz" || second.Text != "" {
+		t.Errorf("ReasoningBlocks[1] = %+v, want a redacted block carrying only the opaque Data payload", second)
+	}
+	if second.Sequence != 1 {
+		t.Errorf("ReasoningBlocks[1].Sequence = %d, want 1 (appears after ToolCalls[0], the only tool call)", second.Sequence)
+	}
+}
+
+// TestToProviderReplaysReasoningBlocksInOriginalInterleavedOrder proves
+// the request-side half of the fix: a canonical Message carrying
+// ReasoningBlocks (as a caller would echo back from a prior
+// FromProvider response, per the RFC's replay contract) must be
+// serialized with the reasoning blocks placed back at their exact
+// original position relative to ToolCalls -- not bunched before or
+// after every tool call -- since Claude 4's interleaved-thinking mode
+// depends on exact original ordering and Anthropic returns a hard 400
+// on any rearrangement.
+func TestToProviderReplaysReasoningBlocksInOriginalInterleavedOrder(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4-6",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "What's the weather in Boston and Tokyo?"},
+			{
+				Role: "assistant",
+				ReasoningBlocks: []adapter.ReasoningBlock{
+					{Sequence: 0, Text: "First I'll check Boston.", Signature: "sig_1"},
+					{Sequence: 1, Redacted: true, Data: "opaque_between_calls"},
+					{Sequence: 2, Text: "Both results are in, I can answer now.", Signature: "sig_3"},
+				},
+				ToolCalls: []adapter.ToolCall{
+					{ID: "toolu_1", Name: "get_weather", ArgumentsJSON: `{"city":"Boston"}`},
+					{ID: "toolu_2", Name: "get_weather", ArgumentsJSON: `{"city":"Tokyo"}`},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if len(native.Messages) != 2 {
+		t.Fatalf("native.Messages len = %d, want 2", len(native.Messages))
+	}
+
+	gotTypes := make([]string, len(native.Messages[1].Content))
+	for i, b := range native.Messages[1].Content {
+		gotTypes[i] = b.Type
+	}
+	wantTypes := []string{"thinking", "tool_use", "redacted_thinking", "tool_use", "thinking"}
+	if len(gotTypes) != len(wantTypes) {
+		t.Fatalf("assistant message block types = %v, want %v", gotTypes, wantTypes)
+	}
+	for i, want := range wantTypes {
+		if gotTypes[i] != want {
+			t.Errorf("block[%d].Type = %q, want %q (full sequence: %v)", i, gotTypes[i], want, gotTypes)
+		}
+	}
+
+	blocks := native.Messages[1].Content
+	if blocks[0].Thinking != "First I'll check Boston." || blocks[0].Signature != "sig_1" {
+		t.Errorf("blocks[0] = %+v, want the first plaintext thinking block replayed verbatim", blocks[0])
+	}
+	if blocks[2].Data != "opaque_between_calls" {
+		t.Errorf("blocks[2] = %+v, want the redacted block's opaque Data replayed verbatim", blocks[2])
+	}
+	if blocks[4].Thinking != "Both results are in, I can answer now." || blocks[4].Signature != "sig_3" {
+		t.Errorf("blocks[4] = %+v, want the trailing thinking block replayed verbatim after the last tool call", blocks[4])
+	}
+}
+
+// TestReasoningBlockRoundTripPreservesExactOriginalOrder is an
+// end-to-end proof: capture an interleaved thinking+tool_use response
+// via FromProvider, then feed the resulting canonical Message straight
+// back through ToProvider as conversation history (exactly what a real
+// caller does on the next turn) and assert the re-serialized block
+// order is byte-for-byte identical to what Anthropic originally sent --
+// the exact property Anthropic's hard-400 replay contract requires.
+func TestReasoningBlockRoundTripPreservesExactOriginalOrder(t *testing.T) {
+	a := New()
+	originalContent := []ContentBlock{
+		{Type: "thinking", Thinking: "Step one.", Signature: "sig_a"},
+		{Type: "tool_use", ID: "toolu_1", Name: "step_one", Input: map[string]any{}},
+		{Type: "thinking", Thinking: "Step two.", Signature: "sig_b"},
+		{Type: "tool_use", ID: "toolu_2", Name: "step_two", Input: map[string]any{}},
+	}
+	nativeResp := &Response{
+		ID: "msg_roundtrip", Model: "claude-opus-4-6", Role: "assistant",
+		Content: originalContent, StopReason: "tool_use",
+	}
+
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	assistantMsg := got.Choices[0].Message
+	assistantMsg.Role = "assistant" // FromProvider already sets this; explicit for clarity
+
+	replayed, err := a.ToProvider(adapter.ChatRequest{
+		Model:    "claude-opus-4-6",
+		Messages: []adapter.Message{{Role: "user", Content: "go"}, assistantMsg},
+	})
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := replayed.(*Request)
+	replayedContent := native.Messages[1].Content
+
+	if len(replayedContent) != len(originalContent) {
+		t.Fatalf("replayed block count = %d, want %d", len(replayedContent), len(originalContent))
+	}
+	for i := range originalContent {
+		if replayedContent[i].Type != originalContent[i].Type {
+			t.Errorf("block[%d].Type = %q, want %q -- reasoning/tool_use order was not preserved through a full FromProvider->ToProvider round trip", i, replayedContent[i].Type, originalContent[i].Type)
+		}
+	}
+}
