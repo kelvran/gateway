@@ -376,3 +376,180 @@ func TestToProviderNilResponseFormatOmitsField(t *testing.T) {
 		t.Errorf("marshaled request contains response_format despite ResponseFormat being nil: %s", b)
 	}
 }
+
+// TestFromProviderCapturesReasoningContentField proves a native response
+// using llama.cpp's wire name ("reasoning_content") round-trips into a
+// canonical ReasoningBlock.
+func TestFromProviderCapturesReasoningContentField(t *testing.T) {
+	raw := []byte(`{
+		"id": "cmpl-test",
+		"model": "llama-3-70b",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi", "reasoning_content": "thinking it through"}, "finish_reason": "stop"}],
+		"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+	}`)
+	var nativeResp Response
+	if err := json.Unmarshal(raw, &nativeResp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	got, err := New().FromProvider(&nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	want := []adapter.ReasoningBlock{{Sequence: 0, Text: "thinking it through"}}
+	if diff := cmpReasoningBlocks(got.Choices[0].Message.ReasoningBlocks, want); diff != "" {
+		t.Errorf("ReasoningBlocks mismatch: %s", diff)
+	}
+}
+
+// TestFromProviderCapturesReasoningField proves a native response using
+// vLLM/Ollama's wire name ("reasoning") round-trips identically to
+// TestFromProviderCapturesReasoningContentField's llama.cpp shape.
+func TestFromProviderCapturesReasoningField(t *testing.T) {
+	raw := []byte(`{
+		"id": "cmpl-test",
+		"model": "llama-3-70b",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi", "reasoning": "thinking it through"}, "finish_reason": "stop"}],
+		"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+	}`)
+	var nativeResp Response
+	if err := json.Unmarshal(raw, &nativeResp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	got, err := New().FromProvider(&nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	want := []adapter.ReasoningBlock{{Sequence: 0, Text: "thinking it through"}}
+	if diff := cmpReasoningBlocks(got.Choices[0].Message.ReasoningBlocks, want); diff != "" {
+		t.Errorf("ReasoningBlocks mismatch: %s", diff)
+	}
+}
+
+// TestFromProviderPrefersReasoningOverReasoningContentWhenBothPresent
+// proves the documented preference order: "reasoning" (the name every
+// runtime except llama.cpp has migrated to) wins when a response
+// somehow carries both.
+func TestFromProviderPrefersReasoningOverReasoningContentWhenBothPresent(t *testing.T) {
+	nativeResp := &Response{
+		ID:    "cmpl-test",
+		Model: "llama-3-70b",
+		Choices: []Choice{{
+			Index:        0,
+			Message:      Message{Role: "assistant", Content: json.RawMessage(`"hi"`), Reasoning: "new-name", ReasoningContent: "old-name"},
+			FinishReason: "stop",
+		}},
+	}
+
+	got, err := New().FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	want := []adapter.ReasoningBlock{{Sequence: 0, Text: "new-name"}}
+	if diff := cmpReasoningBlocks(got.Choices[0].Message.ReasoningBlocks, want); diff != "" {
+		t.Errorf("ReasoningBlocks mismatch: %s", diff)
+	}
+}
+
+// TestFromProviderMissingReasoningFieldsProducesNilReasoningBlocks proves
+// the overwhelming-majority case (a runtime that never sends reasoning at
+// all, e.g. TGI) stays exactly as it behaved before this field existed.
+func TestFromProviderMissingReasoningFieldsProducesNilReasoningBlocks(t *testing.T) {
+	nativeResp := &Response{
+		ID:      "cmpl-test",
+		Model:   "llama-3-70b",
+		Choices: []Choice{{Index: 0, Message: Message{Role: "assistant", Content: json.RawMessage(`"hi"`)}, FinishReason: "stop"}},
+	}
+
+	got, err := New().FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Choices[0].Message.ReasoningBlocks != nil {
+		t.Errorf("ReasoningBlocks = %+v, want nil when neither wire field is present", got.Choices[0].Message.ReasoningBlocks)
+	}
+}
+
+// TestToProviderEmitsReasoningUnderBothWireFieldNames proves a canonical
+// ReasoningBlocks slice is written under BOTH "reasoning" and
+// "reasoning_content" on the outgoing native request, so this adapter
+// works regardless of which name the target runtime actually reads.
+func TestToProviderEmitsReasoningUnderBothWireFieldNames(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "llama-3-70b",
+		Messages: []adapter.Message{
+			{Role: "assistant", Content: "the answer", ReasoningBlocks: []adapter.ReasoningBlock{{Sequence: 0, Text: "step one"}}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	b, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	if !strings.Contains(string(b), `"reasoning":"step one"`) {
+		t.Errorf("marshaled request = %s, want a \"reasoning\" field", b)
+	}
+	if !strings.Contains(string(b), `"reasoning_content":"step one"`) {
+		t.Errorf("marshaled request = %s, want a \"reasoning_content\" field", b)
+	}
+}
+
+// TestToProviderSkipsRedactedReasoningBlocks proves a Redacted block's
+// (opaque, provider-encrypted) Text is never surfaced onto the wire — no
+// self-hosted runtime this package targets produces or accepts ciphertext
+// reasoning, so a Redacted block simply contributes nothing.
+func TestToProviderSkipsRedactedReasoningBlocks(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "llama-3-70b",
+		Messages: []adapter.Message{
+			{
+				Role:    "assistant",
+				Content: "the answer",
+				ReasoningBlocks: []adapter.ReasoningBlock{
+					{Sequence: 0, Redacted: true, Data: "opaque-ciphertext"},
+					{Sequence: 1, Text: "visible step"},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.Messages[0].Reasoning != "visible step" {
+		t.Errorf("Reasoning = %q, want only the non-redacted block's text", native.Messages[0].Reasoning)
+	}
+	if strings.Contains(native.Messages[0].Reasoning, "opaque-ciphertext") {
+		t.Errorf("Reasoning = %q, must never surface a Redacted block's Data", native.Messages[0].Reasoning)
+	}
+}
+
+// cmpReasoningBlocks reports a human-readable diff, or "" if equal --
+// avoids pulling in a third-party diff dependency for this small struct.
+func cmpReasoningBlocks(got, want []adapter.ReasoningBlock) string {
+	if len(got) != len(want) {
+		return fmtReasoningBlocks(got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return fmtReasoningBlocks(got, want)
+		}
+	}
+	return ""
+}
+
+func fmtReasoningBlocks(got, want []adapter.ReasoningBlock) string {
+	return "got=" + fmtBlockSlice(got) + " want=" + fmtBlockSlice(want)
+}
+
+func fmtBlockSlice(bs []adapter.ReasoningBlock) string {
+	b, _ := json.Marshal(bs)
+	return string(b)
+}

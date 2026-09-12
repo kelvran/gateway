@@ -48,9 +48,23 @@ type nativeStreamChoice struct {
 
 // nativeStreamDelta is the native incremental message fragment.
 type nativeStreamDelta struct {
-	Role      string                `json:"role,omitempty"`
-	Content   string                `json:"content,omitempty"`
-	ToolCalls []nativeToolCallDelta `json:"tool_calls,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningContent mirrors Reasoning under llama.cpp's wire name -- see
+	// Message's doc comment in openaicompat.go for why both fields exist.
+	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	ToolCalls        []nativeToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// reasoningDeltaText returns whichever of Reasoning/ReasoningContent this
+// delta populated, preferring Reasoning (see nativeStreamDelta's doc
+// comment for the same preference order used non-streaming).
+func reasoningDeltaText(d nativeStreamDelta) string {
+	if d.Reasoning != "" {
+		return d.Reasoning
+	}
+	return d.ReasoningContent
 }
 
 // nativeToolCallDelta is the native incremental tool-call fragment. Only
@@ -165,6 +179,12 @@ func toCanonicalDelta(d nativeStreamDelta) streaming.MessageDelta {
 	delta := streaming.MessageDelta{
 		Role:    d.Role,
 		Content: d.Content,
+	}
+	// Reasoning deltas arrive in chunks that carry no tool calls, so this
+	// must run before the early return below -- otherwise a reasoning-only
+	// chunk would silently lose its ReasoningBlocks fragment.
+	if text := reasoningDeltaText(d); text != "" {
+		delta.ReasoningBlocks = []streaming.ReasoningDelta{{Index: 0, Text: text}}
 	}
 	if len(d.ToolCalls) == 0 {
 		return delta

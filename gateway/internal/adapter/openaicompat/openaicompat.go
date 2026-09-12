@@ -19,15 +19,28 @@
 // string (not a closed Go enum), so runtime-specific values (vLLM's
 // "abort"/"repetition", TGI's "stop_sequence") pass through unmodified;
 // Go's encoding/json already ignores unrecognized response fields by
-// default (vLLM's stop_reason/token_ids/kv_transfer_params, llama.cpp's
-// timings/reasoning_content). The one thing that IS a real, documented
-// caveat: TGI never emits finish_reason="tool_calls", even for a genuine
-// tool-call response — see Choice's own doc comment.
+// default (vLLM's stop_reason/token_ids/kv_transfer_params). The one thing
+// that IS a real, documented caveat: TGI never emits
+// finish_reason="tool_calls", even for a genuine tool-call response — see
+// Choice's own doc comment.
+//
+// Reasoning-content field name is genuinely fragmented across this
+// package's target runtimes, confirmed against each runtime's actual
+// source (not docs) on 2026-09-13: llama.cpp emits "reasoning_content";
+// vLLM renamed its own field away from "reasoning_content" to "reasoning"
+// (accepting the old name only as a request-side backward-compat alias,
+// never emitting it); Ollama's OpenAI-compat layer uses "reasoning"; TGI
+// has no reasoning field at all. Message.Reasoning/Message.ReasoningContent
+// below carry both wire names so this adapter round-trips whichever one a
+// given runtime actually uses, per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+// Phase 5.
 package openaicompat
 
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
@@ -97,6 +110,16 @@ type Message struct {
 	// Usage.PromptTokensDetails' own doc comment already carries) -- it
 	// stays empty, harmlessly, for any runtime that never sends it.
 	Refusal string `json:"refusal,omitempty"`
+	// Reasoning and ReasoningContent carry the same canonical reasoning text
+	// under the two real, currently-live wire field names this package's
+	// target runtimes use -- see the package doc comment. Both are written
+	// on ToProvider (harmless for a runtime that only recognizes one name,
+	// mirroring vLLM's own precedent of populating both keys from one value
+	// when replaying reasoning history back into its chat template) and
+	// read on FromProvider (Reasoning preferred, since every runtime except
+	// llama.cpp has migrated to that name).
+	Reasoning        string `json:"reasoning,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // nativeContentPart is one element of the native multi-modal content
@@ -236,11 +259,14 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("openaicompat: converting message content: %w", err)
 		}
+		reasoning, reasoningContent := reasoningWireFromCanonical(m.ReasoningBlocks)
 		messages = append(messages, Message{
-			Role:       m.Role,
-			Content:    content,
-			ToolCalls:  toolCalls,
-			ToolCallID: m.ToolCallID,
+			Role:             m.Role,
+			Content:          content,
+			ToolCalls:        toolCalls,
+			ToolCallID:       m.ToolCallID,
+			Reasoning:        reasoning,
+			ReasoningContent: reasoningContent,
 		})
 	}
 
@@ -318,14 +344,16 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		if err != nil {
 			return adapter.ChatResponse{}, fmt.Errorf("openaicompat: converting choice content: %w", err)
 		}
+		reasoningBlocks := reasoningBlocksFromNative(c.Message)
 		choices = append(choices, adapter.Choice{
 			Index: c.Index,
 			Message: adapter.Message{
-				Role:       c.Message.Role,
-				Content:    content,
-				ToolCalls:  toolCalls,
-				ToolCallID: c.Message.ToolCallID,
-				Refusal:    c.Message.Refusal,
+				Role:            c.Message.Role,
+				Content:         content,
+				ToolCalls:       toolCalls,
+				ToolCallID:      c.Message.ToolCallID,
+				Refusal:         c.Message.Refusal,
+				ReasoningBlocks: reasoningBlocks,
 			},
 			FinishReason: c.FinishReason,
 		})
@@ -398,6 +426,44 @@ func contentFromNative(native json.RawMessage) (string, error) {
 		return "", fmt.Errorf("openaicompat: response content is not a plain string (multi-modal response content is not supported): %w", err)
 	}
 	return text, nil
+}
+
+// reasoningWireFromCanonical concatenates every plaintext (non-Redacted)
+// ReasoningBlock's Text and returns it under BOTH real, currently-live
+// wire field names this package's target runtimes use: "reasoning"
+// (vLLM, Ollama) and "reasoning_content" (llama.cpp) -- see Message's
+// doc comment. Mirrors vLLM's own precedent for the reverse direction
+// (chat_utils.py populates both keys from one value); harmless for any
+// runtime that only recognizes one name. Redacted blocks are skipped --
+// no self-hosted runtime here produces or accepts ciphertext reasoning.
+func reasoningWireFromCanonical(rbs []adapter.ReasoningBlock) (reasoning, reasoningContent string) {
+	var sb strings.Builder
+	for _, rb := range rbs {
+		if rb.Redacted {
+			continue
+		}
+		sb.WriteString(rb.Text)
+	}
+	text := sb.String()
+	return text, text
+}
+
+// reasoningBlocksFromNative reads whichever of Reasoning/ReasoningContent
+// the runtime populated (Reasoning preferred, since every runtime except
+// llama.cpp has migrated to that name) and, when non-empty, returns a
+// single canonical ReasoningBlock at Sequence 0 -- the only ordering this
+// flat wire shape can represent (no interleaving signal exists, unlike
+// Anthropic/Bedrock/Gemini's typed block arrays). Neither field set
+// returns nil, byte-identical to today's behavior.
+func reasoningBlocksFromNative(m Message) []adapter.ReasoningBlock {
+	text := m.Reasoning
+	if text == "" {
+		text = m.ReasoningContent
+	}
+	if text == "" {
+		return nil
+	}
+	return []adapter.ReasoningBlock{{Sequence: 0, Text: text}}
 }
 
 // toolCallsToProvider converts canonical tool calls to the native shape.

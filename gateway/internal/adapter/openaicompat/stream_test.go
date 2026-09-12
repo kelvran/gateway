@@ -295,6 +295,87 @@ func TestDecodeDoneSentinel(t *testing.T) {
 	}
 }
 
+// TestDecodeReasoningContentDeltaAccumulates is the direct regression test
+// for stream.go's toCanonicalDelta early-return hazard: a reasoning-only
+// chunk (llama.cpp's "reasoning_content" wire name) carries no tool calls,
+// so this proves the ReasoningBlocks fragment survives rather than being
+// silently dropped by the early return that guards the tool-call loop.
+func TestDecodeReasoningContentDeltaAccumulates(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, done, _, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"id":"x","model":"m","choices":[{"index":0,"delta":{"reasoning_content":"step one"},"finish_reason":null}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if done {
+		t.Error("done = true, want false")
+	}
+	if len(chunks) != 1 || len(chunks[0].Choices) != 1 {
+		t.Fatalf("chunks = %+v, want exactly one chunk with one choice", chunks)
+	}
+	got := chunks[0].Choices[0].Delta.ReasoningBlocks
+	want := []streaming.ReasoningDelta{{Index: 0, Text: "step one"}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("Delta.ReasoningBlocks = %+v, want %+v", got, want)
+	}
+	if chunks[0].Choices[0].Delta.Content != "" {
+		t.Errorf("Delta.Content = %q, want empty (reasoning must not leak into Content)", chunks[0].Choices[0].Delta.Content)
+	}
+}
+
+// TestDecodeReasoningFieldDeltaAccumulates is the same shape as
+// TestDecodeReasoningContentDeltaAccumulates using vLLM/Ollama's wire name
+// ("reasoning") instead of llama.cpp's ("reasoning_content").
+func TestDecodeReasoningFieldDeltaAccumulates(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, _, _, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"id":"x","model":"m","choices":[{"index":0,"delta":{"reasoning":"step one"},"finish_reason":null}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	got := chunks[0].Choices[0].Delta.ReasoningBlocks
+	want := []streaming.ReasoningDelta{{Index: 0, Text: "step one"}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("Delta.ReasoningBlocks = %+v, want %+v", got, want)
+	}
+}
+
+// TestDecodeReasoningContentDeltaThenToolCallChunk proves a reasoning-only
+// chunk followed by a later tool-call-only chunk both survive in sequence
+// — the early-return fix in toCanonicalDelta must not disturb the existing
+// tool-call path for a chunk that has no reasoning at all.
+func TestDecodeReasoningContentDeltaThenToolCallChunk(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	reasoningChunks, _, _, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"id":"x","model":"m","choices":[{"index":0,"delta":{"reasoning_content":"step one"},"finish_reason":null}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode (reasoning): %v", err)
+	}
+	if len(reasoningChunks[0].Choices[0].Delta.ReasoningBlocks) != 1 {
+		t.Fatalf("reasoning chunk: Delta.ReasoningBlocks = %+v, want 1 entry", reasoningChunks[0].Choices[0].Delta.ReasoningBlocks)
+	}
+
+	toolChunks, _, _, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"id":"x","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode (tool call): %v", err)
+	}
+	toolDelta := toolChunks[0].Choices[0].Delta
+	if len(toolDelta.ToolCalls) != 1 || toolDelta.ToolCalls[0].ID != "call_1" {
+		t.Errorf("tool-call chunk: Delta.ToolCalls = %+v, want the real tool call", toolDelta.ToolCalls)
+	}
+	if len(toolDelta.ReasoningBlocks) != 0 {
+		t.Errorf("tool-call chunk: Delta.ReasoningBlocks = %+v, want empty (this chunk carries no reasoning)", toolDelta.ReasoningBlocks)
+	}
+}
+
 // TestDecodeAfterDoneReturnsError proves the decoder's cross-call done
 // state is enforced: calling Decode again after it has already reported
 // done=true must fail loudly rather than silently mis-parsing.
