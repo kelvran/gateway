@@ -219,6 +219,21 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              per-request decision outcomes, not span data) — is real: `finalize` (see
                              /internal/gateway/dataplane below) is its producer, per
                              docs/rfcs/2026-09-03-api-gatewayevents-contract.md
+    /cachecorrelation/       — **Corrected 2026-09-12**: also missing from a prior pass of this tree.
+                             telemetry/cachecorrelation, per
+                             docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md: a pure,
+                             standalone Event{TenantID, Key, InstanceID, Hit, Timestamp, TTL}
+                             correlation unit; Analyze([]Event) groups by (tenant, key) and flags a
+                             miss as cross-instance-avoidable when a different instance had an open
+                             TTL window for the same key. Registered in gateway/.go-arch-lint.yml as
+                             its own cache-correlation component — a pure leaf like telemetry itself
+                             (stdlib-only, zero project-internal imports). **Standalone analysis
+                             unit, NOT wired into the live request pipeline**: dataplane's
+                             checkCache/checkLexicalCache already emit the raw
+                             cache_cross_instance_check log lines this package's Analyze would
+                             consume, but the log-parsing glue that would actually call Analyze
+                             against real data is itself deliberately deferred until a genuine
+                             multi-instance deployment exists to measure.
 /internal/mcp                — **NOT BUILT.** Zero code exists (confirmed: no such directory under
                              gateway/internal/), explicitly out of scope for v1 per PRD.md. Intended
                              design: inbound (expose Kelvran's own APIs as MCP tools) + outbound (broker
@@ -245,13 +260,32 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              (lost on restart, reverting to config.yaml); every other config section
                              (guardrails, budgets' shape, rate limits, routing, cache, price table,
                              telemetry) stays static-YAML-only, named explicitly as later follow-on work
+/internal/prompt             — **Corrected 2026-09-12**: missing from a prior pass of this tree, a
+                             doc-vs-code staleness instance per AGENTS.md's catalogued pattern.
+                             Real, ACTIVE, per docs/rfcs/2026-09-13-gateway-prompt-management.md:
+                             operator-managed, versioned prompt templates (prompt_id +
+                             prompt_version + prompt_variables), CRUD'd only via five new Admin API
+                             routes (GET/POST/DELETE /admin/prompts...) and resolved into real
+                             adapter.Message content by dataplane's resolvePromptIfSet, which runs
+                             immediately after the model-allowlist check and before rate-limiting
+                             (see Request Lifecycle below). Global, not tenant-scoped — a resolved
+                             design fork, the same category as price_table/deployments/guardrails
+                             config, never per-tenant computed state like cache/rate-limit/budget.
+                             Substitution is a minimal {{name}} allowlist swap, deliberately not
+                             Go's text/template (a real template-injection surface over
+                             operator-supplied content otherwise); an unresolved placeholder stays
+                             literal, never an error or a silent drop. Version history is
+                             append-only; Persister (Load/Save) is an unimplemented seam mirroring
+                             internal/budget's own boltstore separation — prompts are
+                             in-memory-only, lost on restart, the same disclosed v1 limitation
+                             virtual keys already have.
 ```
 
-**Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose:
+**Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose. **Corrected 2026-09-12**: `dataplane`'s and `admin`'s own lists below were each missing a real edge that `internal/prompt`'s own shipping introduced (per `docs/rfcs/2026-09-13-gateway-prompt-management.md`) and this doc never picked up — `dataplane → prompt`, and `admin → adapter, prompt` (the same commit that added `admin`'s new prompt-CRUD routes also added its first-ever `adapter` import, for those routes' own `[]adapter.Message` request/response bodies) — both re-verified against the real import graph and `gateway/.go-arch-lint.yml`'s own `mayDependOn` entries for `dataplane`/`admin`/`prompt`, not assumed:
 
 ```
 dataplane → cache, adapter, adapter/{anthropic,bedrock,gemini,openai,openaicompat}, streaming,
-            budget, ratelimit, router, costaccounting, telemetry, guardrail, identity,
+            budget, ratelimit, router, costaccounting, telemetry, guardrail, identity, prompt,
             api/gatewayevents/v1
 adapter/{anthropic,bedrock,gemini,openai,openaicompat} → adapter, streaming
 streaming → adapter                (canonical ChatCompletionChunk/StreamDecoder types live in adapter)
@@ -277,9 +311,12 @@ ratelimit/redislimiter ✗→ ratelimit   (the interface (RedisBackend) lives in
                                   Redis-specific implementation never imports it back — the same pattern
                                   budget/boltstore already established, so go-redis stays out of
                                   ratelimit's own dependency graph in the default, in-memory-only case)
-admin → controlplane, dataplane, identity, ratelimit   (the HTTP handler layer for GET /admin/config and
-                                  POST/DELETE /admin/virtual_keys/{name}; never imported BY any of those
-                                  four — admin is a top-level consumer, not a shared-kernel package)
+admin → adapter, controlplane, dataplane, identity, prompt, ratelimit   (the HTTP handler layer for GET
+                                  /admin/config, POST/DELETE /admin/virtual_keys/{name}, and the new
+                                  prompt-CRUD routes; adapter is pulled in only for those routes' own
+                                  []adapter.Message request/response bodies, never for any provider-calling
+                                  behavior; never imported BY any of those six — admin is a top-level
+                                  consumer, not a shared-kernel package)
 ```
 
 ## Request Lifecycle
@@ -289,6 +326,12 @@ Every capability is a stage in one linear pipeline against a single canonical sc
 ```
 [client/agent request, carrying session/agent_run_id if present]
   → auth (resolve virtual key → team/workspace → budget+rpm/tpm+allowed_models record)
+  → prompt resolution (dataplane.resolvePromptIfSet), immediately after auth's own model-allowlist
+    check (isModelAllowed) and before rate-limiting: if req.PromptID is set, resolves the stored,
+    versioned template into real adapter.Message content via a minimal {{name}} allowlist
+    substitution, never Go's text/template; PromptID and inline Messages both set is a 400
+    (ErrPromptAndMessagesBothSet), never a silent merge — see
+    docs/rfcs/2026-09-13-gateway-prompt-management.md and /internal/prompt above
   → rate-limit check (hierarchical: org → team → user → key → session)
   → cache lookup, L1 exact hash match → hit → log, return
   → cache lookup, L2 normalized match → hit → log, return
