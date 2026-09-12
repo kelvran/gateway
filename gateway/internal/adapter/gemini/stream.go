@@ -86,8 +86,48 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 
 	var textParts []string
 	var toolCallDeltas []streaming.ToolCallDelta
+	var reasoningDeltas []streaming.ReasoningDelta
 	for i, part := range candidate.Content.Parts {
+		if part.ThoughtSignature != "" && !part.Thought {
+			// Streaming counterpart of gemini.go's FromProvider fix for
+			// the same gap: per Google's own docs
+			// (ai.google.dev/gemini-api/docs/thinking#signatures),
+			// a signature can be fused directly onto a functionCall or
+			// plain-answer part instead of riding on its own dedicated
+			// part.Thought==true part. Without this branch it would be
+			// silently dropped. Index matches the part's own position,
+			// same convention as the functionCall/text deltas below.
+			reasoningDeltas = append(reasoningDeltas, streaming.ReasoningDelta{
+				Index:     i,
+				Signature: part.ThoughtSignature,
+			})
+		}
 		switch {
+		case part.Thought:
+			// This case MUST be checked before the part.Text != "" case
+			// below -- a thought part's own summary rides on this exact
+			// same Text field, since streamGenerateContent reuses the
+			// identical Part shape as the buffered generateContent path
+			// (see gemini.go's Part doc comment and this file's own
+			// package doc). Without this case, a thought part's content
+			// would be silently merged into the client-visible answer
+			// text, indistinguishable from a real answer, per
+			// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+			//
+			// Unlike Anthropic's genuinely split thinking_delta/
+			// signature_delta streaming events, Gemini's thought Text and
+			// ThoughtSignature both arrive already-complete on this one
+			// part -- the same "whole value in a single chunk" contract
+			// this decoder already documents for functionCall.args above
+			// -- so exactly one ReasoningDelta per thought part, with
+			// both fields already fully populated, is correct; callers
+			// must not expect a later delta at this same Index to
+			// contribute more of either field.
+			reasoningDeltas = append(reasoningDeltas, streaming.ReasoningDelta{
+				Index:     i,
+				Text:      part.Text,
+				Signature: part.ThoughtSignature,
+			})
 		case part.FunctionCall != nil:
 			argsJSON, err := json.Marshal(part.FunctionCall.Args)
 			if err != nil {
@@ -104,6 +144,7 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 		}
 	}
 	delta.Content = strings.Join(textParts, "")
+	delta.ReasoningBlocks = reasoningDeltas
 	delta.ToolCalls = toolCallDeltas
 
 	var finishReason *string

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -195,6 +196,96 @@ func TestDecodeFinalUsageChunkExtractsRealCachedTokens(t *testing.T) {
 	want := adapter.Usage{PromptTokens: 1024, CompletionTokens: 10, TotalTokens: 1034, CacheReadTokens: 896}
 	if *finalUsage != want {
 		t.Errorf("finalUsage = %+v, want %+v", *finalUsage, want)
+	}
+}
+
+// TestDecodeThoughtPartRoutesToReasoningBlocksDeltaInsteadOfMerging is the
+// streaming-path counterpart of
+// gemini_test.go's TestFromProviderSeparatesThoughtPartsFromAnswerTextInsteadOfMerging:
+// before this fix, Decode's part-dispatch switch had no case for
+// part.Thought, so a thought part's Text fell into the ordinary
+// `case part.Text != ""` branch and was silently concatenated into
+// Delta.Content alongside the real answer, indistinguishable from it,
+// per docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+// Delta.Content must contain ONLY the real answer, and Delta.ReasoningBlocks
+// must contain ONLY the thought's own Text/Signature.
+func TestDecodeThoughtPartRoutesToReasoningBlocksDeltaInsteadOfMerging(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, _, _, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"Let me think about this carefully.","thoughtSignature":"sig_thought_1"},{"text":"The answer is 42."}]},"finishReason":"STOP"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+
+	gotContent := chunks[0].Choices[0].Delta.Content
+	if gotContent != "The answer is 42." {
+		t.Errorf("Delta.Content = %q, want %q -- the thought part's text must NOT be merged into the visible answer delta", gotContent, "The answer is 42.")
+	}
+	if strings.Contains(gotContent, "think about this") {
+		t.Errorf("Delta.Content = %q, contains thought text -- the merge bug is still present in the streaming path", gotContent)
+	}
+
+	gotReasoning := chunks[0].Choices[0].Delta.ReasoningBlocks
+	if len(gotReasoning) != 1 {
+		t.Fatalf("Delta.ReasoningBlocks len = %d, want 1", len(gotReasoning))
+	}
+	rb := gotReasoning[0]
+	if rb.Text != "Let me think about this carefully." {
+		t.Errorf("Delta.ReasoningBlocks[0].Text = %q, want the thought part's own text", rb.Text)
+	}
+	if rb.Signature != "sig_thought_1" {
+		t.Errorf("Delta.ReasoningBlocks[0].Signature = %q, want %q", rb.Signature, "sig_thought_1")
+	}
+	if rb.Redacted || rb.Data != "" {
+		t.Errorf("Delta.ReasoningBlocks[0] = %+v, want Redacted=false and empty Data -- Gemini's schema carries no redacted-thought concept", rb)
+	}
+	if rb.Index != 0 {
+		t.Errorf("Delta.ReasoningBlocks[0].Index = %d, want 0 (the thought part's own position in this chunk's Parts array)", rb.Index)
+	}
+}
+
+// TestDecodeCapturesSignatureFusedOntoFunctionCallPart is the streaming
+// counterpart of gemini_test.go's
+// TestFromProviderCapturesSignatureFusedOntoFunctionCallPart: per
+// ai.google.dev/gemini-api/docs/thinking#signatures, "signatures are
+// metadata that can be attached to any part, such as living inside
+// functionCall parts" -- a functionCall part carrying its own
+// thoughtSignature (no separate thought:true part) must still surface
+// that signature via Delta.ReasoningBlocks, not silently drop it.
+func TestDecodeCapturesSignatureFusedOntoFunctionCallPart(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, _, _, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"Boston"}},"thoughtSignature":"sig_fused_on_call"}]}}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+
+	delta := chunks[0].Choices[0].Delta
+	if len(delta.ToolCalls) != 1 || delta.ToolCalls[0].Name != "get_weather" {
+		t.Fatalf("Delta.ToolCalls = %+v, want the functionCall captured normally", delta.ToolCalls)
+	}
+	if len(delta.ReasoningBlocks) != 1 {
+		t.Fatalf("Delta.ReasoningBlocks len = %d, want 1 -- the functionCall-fused signature must not be silently dropped", len(delta.ReasoningBlocks))
+	}
+	rb := delta.ReasoningBlocks[0]
+	if rb.Signature != "sig_fused_on_call" {
+		t.Errorf("Delta.ReasoningBlocks[0].Signature = %q, want %q", rb.Signature, "sig_fused_on_call")
+	}
+	if rb.Text != "" {
+		t.Errorf("Delta.ReasoningBlocks[0].Text = %q, want empty", rb.Text)
+	}
+	if rb.Index != 0 {
+		t.Errorf("Delta.ReasoningBlocks[0].Index = %d, want 0 (this part's own position)", rb.Index)
 	}
 }
 

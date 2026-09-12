@@ -344,6 +344,364 @@ func TestFromProviderMissingCachedContentTokenCountDefaultsToZeroCacheRead(t *te
 	}
 }
 
+// preFixTextPartsOnly reproduces, verbatim, the part-dispatch switch
+// FromProvider used BEFORE this fix (no part.Thought case at all --
+// see docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md).
+// It exists only so TestFromProviderSeparatesThoughtPartsFromAnswerTextInsteadOfMerging
+// can prove the bug was real, not just assert the fixed behavior in
+// isolation: fed the exact same input as the fixed FromProvider, this
+// reproduces the historical silent merge.
+func preFixTextPartsOnly(parts []Part) string {
+	var textParts []string
+	for _, part := range parts {
+		switch {
+		case part.FunctionCall != nil:
+			// irrelevant to this proof; the bug never touched tool calls.
+		case part.Text != "":
+			textParts = append(textParts, part.Text)
+		}
+	}
+	return strings.Join(textParts, "")
+}
+
+// TestFromProviderSeparatesThoughtPartsFromAnswerTextInsteadOfMerging is
+// the load-bearing proof for
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+// Phase 4 fix: a real Gemini "thought" part's content rides on the same
+// Text field an ordinary answer part uses (Gemini's schema has no
+// dedicated thought block type, unlike Anthropic's "thinking" block) --
+// confirmed real per generativelanguage.googleapis.com/$discovery/rest
+// (v1beta, schema "Part"): Thought is "Optional. Indicates if the part
+// is thought from the model." Before this fix, FromProvider's part
+// switch had no case for Thought, so a thought part fell straight into
+// the ordinary `case part.Text != ""` branch and was silently
+// concatenated into the same Content string as the real answer --
+// indistinguishable from it. preFixTextPartsOnly above reproduces that
+// exact historical switch to prove the merge really happened for this
+// exact input, before asserting the fixed adapter correctly separates
+// the two.
+func TestFromProviderSeparatesThoughtPartsFromAnswerTextInsteadOfMerging(t *testing.T) {
+	parts := []Part{
+		{Thought: true, Text: "Let me think about this carefully.", ThoughtSignature: "sig_thought_1"},
+		{Text: "The answer is 42."},
+	}
+
+	// Step 1: prove the bug existed -- the OLD dispatch logic merges
+	// the thought's text into the same string as the real answer, with
+	// no way for a caller to tell them apart afterward.
+	preFixMerged := preFixTextPartsOnly(parts)
+	wantMerged := "Let me think about this carefully.The answer is 42."
+	if preFixMerged != wantMerged {
+		t.Fatalf("preFixTextPartsOnly(parts) = %q, want %q -- this proof's premise (the old code merges thought+answer text) doesn't hold for this input", preFixMerged, wantMerged)
+	}
+
+	// Step 2: prove the fix. Same input, run through the real, current
+	// FromProvider.
+	resp := &Response{
+		Candidates: []Candidate{
+			{
+				Content:      Content{Role: "model", Parts: parts},
+				FinishReason: "STOP",
+			},
+		},
+	}
+
+	got, err := New().FromProvider(resp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	msg := got.Choices[0].Message
+
+	if msg.Content != "The answer is 42." {
+		t.Errorf("Content = %q, want %q -- the thought part's text must NOT be merged into the visible answer", msg.Content, "The answer is 42.")
+	}
+	if strings.Contains(msg.Content, "think about this") {
+		t.Errorf("Content = %q, contains thought text -- the merge bug is still present", msg.Content)
+	}
+
+	if len(msg.ReasoningBlocks) != 1 {
+		t.Fatalf("ReasoningBlocks len = %d, want 1", len(msg.ReasoningBlocks))
+	}
+	rb := msg.ReasoningBlocks[0]
+	if rb.Text != "Let me think about this carefully." {
+		t.Errorf("ReasoningBlocks[0].Text = %q, want the thought part's own text", rb.Text)
+	}
+	if rb.Signature != "sig_thought_1" {
+		t.Errorf("ReasoningBlocks[0].Signature = %q, want %q", rb.Signature, "sig_thought_1")
+	}
+	if rb.Redacted {
+		t.Error("ReasoningBlocks[0].Redacted = true, want false -- Gemini's schema carries no redacted-thought concept")
+	}
+	if rb.Sequence != 0 {
+		t.Errorf("ReasoningBlocks[0].Sequence = %d, want 0 (no tool calls in this response)", rb.Sequence)
+	}
+	if len(msg.ToolCalls) != 0 {
+		t.Errorf("ToolCalls len = %d, want 0", len(msg.ToolCalls))
+	}
+}
+
+// TestFromProviderThoughtPartBetweenFunctionCallsGetsCorrectSequence
+// proves the Sequence bookkeeping introduced alongside the merge fix:
+// a thought part appearing after the first functionCall part (but
+// before a second) must record Sequence=1 ("immediately before
+// ToolCalls[1]"), exactly mirroring anthropic.go's identical
+// len(toolCalls)-so-far convention.
+func TestFromProviderThoughtPartBetweenFunctionCallsGetsCorrectSequence(t *testing.T) {
+	resp := &Response{
+		Candidates: []Candidate{
+			{
+				Content: Content{
+					Role: "model",
+					Parts: []Part{
+						{Thought: true, Text: "First I'll check Boston."},
+						{FunctionCall: &FunctionCall{ID: "call_1", Name: "get_weather", Args: map[string]any{"city": "Boston"}}},
+						{Thought: true, ThoughtSignature: "sig_between"},
+						{FunctionCall: &FunctionCall{ID: "call_2", Name: "get_weather", Args: map[string]any{"city": "Tokyo"}}},
+						{Thought: true, Text: "Both results are in."},
+						{Text: "It's sunny in both cities."},
+					},
+				},
+				FinishReason: "STOP",
+			},
+		},
+	}
+
+	got, err := New().FromProvider(resp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	msg := got.Choices[0].Message
+
+	if len(msg.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls len = %d, want 2", len(msg.ToolCalls))
+	}
+	if len(msg.ReasoningBlocks) != 3 {
+		t.Fatalf("ReasoningBlocks len = %d, want 3", len(msg.ReasoningBlocks))
+	}
+	wantSeqs := []int{0, 1, 2}
+	for i, want := range wantSeqs {
+		if msg.ReasoningBlocks[i].Sequence != want {
+			t.Errorf("ReasoningBlocks[%d].Sequence = %d, want %d", i, msg.ReasoningBlocks[i].Sequence, want)
+		}
+	}
+	// The signature-only thought part (no Text) must still be captured
+	// -- a real Gemini shape per ai.google.dev/gemini-api/docs/thinking's
+	// "may contain only a signature with no summary" caveat.
+	if msg.ReasoningBlocks[1].Text != "" || msg.ReasoningBlocks[1].Signature != "sig_between" {
+		t.Errorf("ReasoningBlocks[1] = %+v, want an empty-Text, signature-only block", msg.ReasoningBlocks[1])
+	}
+	if msg.Content != "It's sunny in both cities." {
+		t.Errorf("Content = %q, want only the real answer", msg.Content)
+	}
+}
+
+// TestFromProviderCapturesSignatureFusedOntoFunctionCallPart proves the
+// second, narrower silent-drop bug documented at
+// ai.google.dev/gemini-api/docs/thinking#signatures: "In the
+// generateContent API, there are no dedicated thought blocks. Because of
+// this, signatures are metadata that can be attached to any part, such as
+// living inside functionCall parts or the final part of a response." A
+// functionCall part carrying its own non-empty ThoughtSignature (no
+// separate part.Thought==true part at all) must still have that signature
+// captured -- not silently dropped -- even though the tool call itself is
+// captured normally.
+func TestFromProviderCapturesSignatureFusedOntoFunctionCallPart(t *testing.T) {
+	resp := &Response{
+		Candidates: []Candidate{
+			{
+				Content: Content{
+					Role: "model",
+					Parts: []Part{
+						{
+							FunctionCall:     &FunctionCall{ID: "call_1", Name: "get_weather", Args: map[string]any{"city": "Boston"}},
+							ThoughtSignature: "sig_fused_on_call",
+						},
+						{Text: "It's sunny in Boston."},
+					},
+				},
+				FinishReason: "STOP",
+			},
+		},
+	}
+
+	got, err := New().FromProvider(resp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	msg := got.Choices[0].Message
+
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].ID != "call_1" {
+		t.Fatalf("ToolCalls = %+v, want exactly call_1 captured normally", msg.ToolCalls)
+	}
+	if len(msg.ReasoningBlocks) != 1 {
+		t.Fatalf("ReasoningBlocks len = %d, want 1 -- the functionCall-fused signature must not be silently dropped", len(msg.ReasoningBlocks))
+	}
+	rb := msg.ReasoningBlocks[0]
+	if rb.Signature != "sig_fused_on_call" {
+		t.Errorf("ReasoningBlocks[0].Signature = %q, want %q", rb.Signature, "sig_fused_on_call")
+	}
+	if rb.Text != "" {
+		t.Errorf("ReasoningBlocks[0].Text = %q, want empty -- this signature rode on a functionCall part, not a dedicated thought part", rb.Text)
+	}
+	if rb.Sequence != 0 {
+		t.Errorf("ReasoningBlocks[0].Sequence = %d, want 0 (immediately before ToolCalls[0])", rb.Sequence)
+	}
+}
+
+// TestToProviderReplaysReasoningBlocksInOriginalInterleavedOrder mirrors
+// anthropic_test.go's identically-named test: a canonical Message
+// carrying ReasoningBlocks (as a caller would echo back from a prior
+// FromProvider response) must be serialized with the reasoning blocks
+// placed back at their exact original position relative to the
+// functionCall parts -- not bunched before or after every tool call.
+func TestToProviderReplaysReasoningBlocksInOriginalInterleavedOrder(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gemini-3-pro",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "What's the weather in Boston and Tokyo?"},
+			{
+				Role: "assistant",
+				ReasoningBlocks: []adapter.ReasoningBlock{
+					{Sequence: 0, Text: "First I'll check Boston.", Signature: "sig_1"},
+					{Sequence: 1, Signature: "sig_between"},
+					{Sequence: 2, Text: "Both results are in, I can answer now.", Signature: "sig_3"},
+				},
+				ToolCalls: []adapter.ToolCall{
+					{ID: "call_1", Name: "get_weather", ArgumentsJSON: `{"city":"Boston"}`},
+					{ID: "call_2", Name: "get_weather", ArgumentsJSON: `{"city":"Tokyo"}`},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if len(native.Contents) != 2 {
+		t.Fatalf("native.Contents len = %d, want 2", len(native.Contents))
+	}
+
+	parts := native.Contents[1].Parts
+	wantKinds := []string{"thought", "functionCall", "thought", "functionCall", "thought"}
+	if len(parts) != len(wantKinds) {
+		t.Fatalf("assistant content Parts len = %d, want %d (%v)", len(parts), len(wantKinds), wantKinds)
+	}
+	for i, want := range wantKinds {
+		var got string
+		switch {
+		case parts[i].Thought:
+			got = "thought"
+		case parts[i].FunctionCall != nil:
+			got = "functionCall"
+		default:
+			got = "other"
+		}
+		if got != want {
+			t.Errorf("parts[%d] kind = %q, want %q", i, got, want)
+		}
+	}
+
+	if parts[0].Text != "First I'll check Boston." || parts[0].ThoughtSignature != "sig_1" {
+		t.Errorf("parts[0] = %+v, want the first thought block replayed verbatim", parts[0])
+	}
+	if parts[2].ThoughtSignature != "sig_between" || parts[2].Text != "" {
+		t.Errorf("parts[2] = %+v, want the signature-only block replayed verbatim", parts[2])
+	}
+	if parts[4].Text != "Both results are in, I can answer now." || parts[4].ThoughtSignature != "sig_3" {
+		t.Errorf("parts[4] = %+v, want the trailing thought block replayed after the last functionCall", parts[4])
+	}
+}
+
+// TestReasoningBlockRoundTripPreservesExactOriginalOrder mirrors
+// anthropic_test.go's identically-named end-to-end proof: capture an
+// interleaved thought+functionCall response via FromProvider, then feed
+// the resulting canonical Message straight back through ToProvider as
+// conversation history, and assert the re-serialized part-kind order is
+// identical to the original native response.
+func TestReasoningBlockRoundTripPreservesExactOriginalOrder(t *testing.T) {
+	a := New()
+	originalParts := []Part{
+		{Thought: true, Text: "Step one.", ThoughtSignature: "sig_a"},
+		{FunctionCall: &FunctionCall{ID: "call_1", Name: "step_one", Args: map[string]any{}}},
+		{Thought: true, Text: "Step two.", ThoughtSignature: "sig_b"},
+		{FunctionCall: &FunctionCall{ID: "call_2", Name: "step_two", Args: map[string]any{}}},
+	}
+	nativeResp := &Response{
+		Candidates: []Candidate{
+			{Content: Content{Role: "model", Parts: originalParts}, FinishReason: "STOP"},
+		},
+	}
+
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	assistantMsg := got.Choices[0].Message
+	assistantMsg.Role = "assistant"
+
+	replayed, err := a.ToProvider(adapter.ChatRequest{
+		Model:    "gemini-3-pro",
+		Messages: []adapter.Message{{Role: "user", Content: "go"}, assistantMsg},
+	})
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := replayed.(*Request)
+	replayedParts := native.Contents[1].Parts
+
+	if len(replayedParts) != len(originalParts) {
+		t.Fatalf("replayed part count = %d, want %d", len(replayedParts), len(originalParts))
+	}
+	for i := range originalParts {
+		wantThought := originalParts[i].Thought
+		gotThought := replayedParts[i].Thought
+		wantCall := originalParts[i].FunctionCall != nil
+		gotCall := replayedParts[i].FunctionCall != nil
+		if gotThought != wantThought || gotCall != wantCall {
+			t.Errorf("part[%d] kind mismatch: got (thought=%v call=%v), want (thought=%v call=%v) -- reasoning/functionCall order was not preserved through a full FromProvider->ToProvider round trip", i, gotThought, gotCall, wantThought, wantCall)
+		}
+	}
+}
+
+// TestToProviderDropsRedactedReasoningBlockRatherThanFabricatingThought
+// proves reasoningBlockToProvider's documented limitation: Gemini's
+// schema has no encrypted-thought concept, so a Redacted canonical
+// ReasoningBlock (only ever produced by Anthropic/Bedrock) must be
+// dropped, not mismapped into a fabricated plaintext Gemini thought
+// part.
+func TestToProviderDropsRedactedReasoningBlockRatherThanFabricatingThought(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gemini-3-pro",
+		Messages: []adapter.Message{
+			{
+				Role: "assistant",
+				ReasoningBlocks: []adapter.ReasoningBlock{
+					{Sequence: 0, Redacted: true, Data: "opaque_ciphertext_from_another_provider"},
+				},
+				Content: "hello",
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	parts := native.Contents[0].Parts
+
+	for _, p := range parts {
+		if p.Thought {
+			t.Errorf("parts contains a fabricated thought Part for a Redacted block: %+v", p)
+		}
+	}
+	if len(parts) != 1 || parts[0].Text != "hello" {
+		t.Errorf("parts = %+v, want exactly the ordinary text part (Redacted block silently dropped)", parts)
+	}
+}
+
 func TestName(t *testing.T) {
 	if got := New().Name(); got != "gemini" {
 		t.Errorf("Name() = %q, want %q", got, "gemini")

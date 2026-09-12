@@ -60,6 +60,30 @@ type Part struct {
 	// same shape, just with a document MediaType.
 	InlineData *InlineData `json:"inlineData,omitempty"`
 	FileData   *FileData   `json:"fileData,omitempty"`
+
+	// Thought and ThoughtSignature capture Gemini's chain-of-thought/
+	// reasoning content, per
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+	// Confirmed real (generativelanguage.googleapis.com/$discovery/rest,
+	// version v1beta, schema "Part"): Thought is "Optional. Indicates if
+	// the part is thought from the model." -- a thought part's own
+	// summary still rides on this same struct's Text field; Thought is
+	// the ONLY discriminator distinguishing it from ordinary answer
+	// text, which is exactly the bug this RFC closes (Text alone is
+	// ambiguous). ThoughtSignature is "Optional. An opaque signature for
+	// the thought so it can be reused in subsequent requests" --
+	// format:byte (base64), the same convention already used by
+	// InlineData.Data above -- and, per Google's own docs
+	// (ai.google.dev/gemini-api/docs/thinking, ai.google.dev/gemini-api/
+	// docs/function-calling), is genuinely replayed by callers managing
+	// their own multi-turn history against the raw generateContent API
+	// (the officially-maintained SDKs do this automatically; this
+	// adapter talks to the raw API directly, so it must do so itself) --
+	// NOT a purely output-only, decorative field, despite the
+	// generateContent API never dedicating a distinct block type to it
+	// the way Anthropic's "thinking" block does.
+	Thought          bool   `json:"thought,omitempty"`
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 }
 
 // InlineData is Gemini's native inline-base64 media shape.
@@ -248,6 +272,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 
 		var parts []Part
+		if len(m.ToolCalls) == 0 {
+			parts = append(parts, reasoningBlocksToProvider(m.ReasoningBlocks, 0, true)...)
+		} else {
+			parts = append(parts, reasoningBlocksToProvider(m.ReasoningBlocks, 0, false)...)
+		}
 		if m.Content != "" {
 			parts = append(parts, Part{Text: m.Content})
 		}
@@ -258,7 +287,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			}
 			parts = append(parts, p)
 		}
-		for _, tc := range m.ToolCalls {
+		for i, tc := range m.ToolCalls {
 			args := map[string]any{}
 			if tc.ArgumentsJSON != "" {
 				if err := json.Unmarshal([]byte(tc.ArgumentsJSON), &args); err != nil {
@@ -268,6 +297,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			parts = append(parts, Part{
 				FunctionCall: &FunctionCall{ID: tc.ID, Name: tc.Name, Args: args},
 			})
+			if i+1 < len(m.ToolCalls) {
+				parts = append(parts, reasoningBlocksToProvider(m.ReasoningBlocks, i+1, false)...)
+			} else {
+				parts = append(parts, reasoningBlocksToProvider(m.ReasoningBlocks, i+1, true)...)
+			}
 		}
 		contents = append(contents, Content{Role: role, Parts: parts})
 	}
@@ -347,6 +381,40 @@ func contentPartToPart(p adapter.ContentPart) (Part, error) {
 	}
 }
 
+// reasoningBlocksToProvider returns the Parts for every canonical
+// ReasoningBlock in rbs whose Sequence matches seq exactly (or, when
+// trailing is true, every remaining block with Sequence >= seq) --
+// reconstructing exact original block order relative to ToolCalls
+// (Gemini's functionCall parts), mirroring anthropic.go's identically-
+// named helper, per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+func reasoningBlocksToProvider(rbs []adapter.ReasoningBlock, seq int, trailing bool) []Part {
+	var out []Part
+	for _, rb := range rbs {
+		if (trailing && rb.Sequence >= seq) || (!trailing && rb.Sequence == seq) {
+			if p, ok := reasoningBlockToProvider(rb); ok {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// reasoningBlockToProvider converts one canonical adapter.ReasoningBlock
+// into Gemini's native thought Part shape. A Redacted block (Anthropic
+// redacted_thinking / Bedrock redactedContent ciphertext) has no
+// Gemini-native representation -- Gemini's own schema carries no
+// encrypted-thought concept, only a plaintext Text summary plus an
+// opaque ThoughtSignature -- so it is dropped (ok=false) rather than
+// mismapped into a fabricated plaintext thought, matching this
+// codebase's "never fabricate a value" convention.
+func reasoningBlockToProvider(rb adapter.ReasoningBlock) (Part, bool) {
+	if rb.Redacted {
+		return Part{}, false
+	}
+	return Part{Thought: true, Text: rb.Text, ThoughtSignature: rb.Signature}, true
+}
+
 // FromProvider implements adapter.Adapter, converting a Gemini native
 // Response back into the canonical ChatResponse shape. Only the first
 // candidate is translated — candidateCount > 1 is out of scope this pass
@@ -367,8 +435,49 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 
 	var textParts []string
 	var toolCalls []adapter.ToolCall
+	var reasoningBlocks []adapter.ReasoningBlock
 	for _, part := range candidate.Content.Parts {
+		if part.ThoughtSignature != "" && !part.Thought {
+			// Per Google's own docs (ai.google.dev/gemini-api/docs/thinking#signatures,
+			// confirmed live): "In the generateContent API, there are no
+			// dedicated thought blocks. Because of this, signatures are
+			// metadata that can be attached to any part, such as living
+			// inside functionCall parts or the final part of a
+			// response." Without this branch, a signature fused directly
+			// onto a functionCall or plain-answer part (rather than
+			// riding on its own dedicated part.Thought==true part) would
+			// be silently dropped on the floor -- exactly the class of
+			// bug this RFC exists to close, just on a different part
+			// shape than the historical Text-merge bug. Captured as a
+			// signature-only ReasoningBlock (empty Text) at the same
+			// Sequence a preceding dedicated thought part would use, so
+			// ToProvider's existing reasoningBlocksToProvider replay
+			// logic reconstructs it as a signature-only Part immediately
+			// adjacent to the part that originally carried it.
+			reasoningBlocks = append(reasoningBlocks, adapter.ReasoningBlock{
+				Sequence:  len(toolCalls),
+				Signature: part.ThoughtSignature,
+			})
+		}
 		switch {
+		case part.Thought:
+			// This case MUST be checked before the part.Text != "" case
+			// below -- a thought part's own summary rides on this exact
+			// same Text field (Gemini's real schema has no dedicated
+			// thought block type, per gemini.go's Part doc comment), so
+			// without this case ordering it would silently fall into
+			// the ordinary-answer-text branch and be indistinguishable
+			// from real output, per
+			// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+			// Sequence == len(toolCalls) so far records "immediately
+			// before the next functionCall part" -- mirroring
+			// anthropic.go's identical convention for its own
+			// thinking/redacted_thinking capture.
+			reasoningBlocks = append(reasoningBlocks, adapter.ReasoningBlock{
+				Sequence:  len(toolCalls),
+				Text:      part.Text,
+				Signature: part.ThoughtSignature,
+			})
 		case part.FunctionCall != nil:
 			argsJSON, err := json.Marshal(part.FunctionCall.Args)
 			if err != nil {
@@ -390,9 +499,10 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	}
 
 	message := adapter.Message{
-		Role:      "assistant",
-		Content:   strings.Join(textParts, ""),
-		ToolCalls: toolCalls,
+		Role:            "assistant",
+		Content:         strings.Join(textParts, ""),
+		ToolCalls:       toolCalls,
+		ReasoningBlocks: reasoningBlocks,
 	}
 
 	return adapter.ChatResponse{
