@@ -75,12 +75,33 @@ func Fingerprint(messages []adapter.Message) map[string]struct{} {
 func NegationFingerprint(messages []adapter.Message) map[string]struct{} {
 	fingerprint := map[string]struct{}{}
 	for _, m := range messages {
-		for _, match := range negationParticlePattern.FindAllString(m.Content, -1) {
+		normalized := apostropheVariantsReplacer.Replace(m.Content)
+		for _, match := range negationParticlePattern.FindAllString(normalized, -1) {
 			fingerprint[strings.ToLower(match)] = struct{}{}
 		}
 	}
 	return fingerprint
 }
+
+// apostropheVariantsReplacer normalizes the common typographic
+// ("smart quote") apostrophe variants real user- or LLM-generated text
+// very commonly uses — most editors/keyboards auto-substitute U+2019
+// for the ASCII apostrophe — down to ASCII U+0027 before
+// negationParticlePattern ever runs. Without this, "Can’t I take
+// ibuprofen" produces an EMPTY negation fingerprint, byte-identical to
+// the genuinely negation-free "Can I take ibuprofen" — since
+// checkLexicalCache's gate rejects only on fingerprintsEqual returning
+// false, two empty fingerprints are, by definition, equal, so a real
+// negation flip using a typographic apostrophe sails through this hard
+// gate completely undetected. A small, fixed, auditable replacer, not
+// open-ended Unicode NFKC normalization — matching this file's own
+// "deliberately blunt rather than clever" philosophy.
+var apostropheVariantsReplacer = strings.NewReplacer(
+	"’", "'", // RIGHT SINGLE QUOTATION MARK
+	"‘", "'", // LEFT SINGLE QUOTATION MARK
+	"ʼ", "'", // MODIFIER LETTER APOSTROPHE
+	"＇", "'", // FULLWIDTH APOSTROPHE
+)
 
 // negationParticlePattern matches a small, fixed, closed-set list of
 // negation particles/cues, including the common contracted "n't" forms

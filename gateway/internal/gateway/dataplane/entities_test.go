@@ -98,6 +98,25 @@ func TestNegationFingerprintCatchesContractedForm(t *testing.T) {
 	}
 }
 
+// TestNegationFingerprintCatchesContractedFormWithTypographicApostrophe
+// is the same proof as TestNegationFingerprintCatchesContractedForm
+// above, but using the typographic ("smart quote") apostrophe U+2019
+// real user- or LLM-generated text very commonly uses instead of ASCII
+// U+0027. Before apostropheVariantsReplacer existed, this produced an
+// EMPTY negation fingerprint — byte-identical to the genuinely
+// negation-free query — silently defeating the hard gate for this
+// entire, common input class.
+func TestNegationFingerprintCatchesContractedFormWithTypographicApostrophe(t *testing.T) {
+	a := negationFingerprintOf("Can I take ibuprofen for this?")
+	b := negationFingerprintOf("Can’t I take ibuprofen for this?")
+	if fingerprintsEqual(a, b) {
+		t.Fatalf("negation fingerprints using a typographic apostrophe are equal (%v) — %q must still be detected", a, "can’t")
+	}
+	if len(b) == 0 {
+		t.Fatalf("negation fingerprint for the typographic-apostrophe contraction is empty, want it to contain a normalized negation particle")
+	}
+}
+
 // TestNegationFingerprintEmptyOnEntitylessParaphrase mirrors
 // TestFingerprintEmptyOnEntitylessParaphrase's own "doesn't over-block"
 // proof: two genuinely safe paraphrases carrying no negation particles
