@@ -92,6 +92,18 @@ type contentBlockStartEvent struct {
 // own string-type assertion, to be an accumulating JSON-string FRAGMENT --
 // the same contract as OpenAI's/openaicompat's tool-call arguments, never
 // a complete object per chunk the way Gemini's is.
+//
+// ReasoningContent carries a Bedrock reasoningContent delta fragment --
+// confirmed against docs.aws.amazon.com/bedrock/latest/APIReference/
+// API_runtime_ReasoningContentBlockDelta.html: "This data type is a
+// UNION, so only one of the following members can be specified when
+// used or returned" (text/signature/redactedContent), mirroring
+// Anthropic's separate thinking_delta/signature_delta SSE event types
+// but flattened under one wire key here, since Bedrock's
+// contentBlockDelta payload is itself self-describing by field
+// presence, not a repeated "type" discriminator (see this decoder's own
+// package doc). Per docs/rfcs/2026-09-12-gateway-reasoning-content-
+// canonical-schema.md.
 type contentBlockDeltaEvent struct {
 	ContentBlockIndex int `json:"contentBlockIndex"`
 	Delta             struct {
@@ -99,6 +111,11 @@ type contentBlockDeltaEvent struct {
 		ToolUse *struct {
 			Input string `json:"input"`
 		} `json:"toolUse,omitempty"`
+		ReasoningContent *struct {
+			Text            string `json:"text,omitempty"`
+			Signature       string `json:"signature,omitempty"`
+			RedactedContent string `json:"redactedContent,omitempty"`
+		} `json:"reasoningContent,omitempty"`
 	} `json:"delta"`
 }
 
@@ -208,11 +225,25 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 			return nil, nil, fmt.Errorf("bedrock: decoding contentBlockDelta: %w", err)
 		}
 		var delta streaming.MessageDelta
-		if ev.Delta.ToolUse != nil {
+		switch {
+		case ev.Delta.ToolUse != nil:
 			delta.ToolCalls = []streaming.ToolCallDelta{
 				{Index: ev.ContentBlockIndex, ArgumentsJSON: ev.Delta.ToolUse.Input},
 			}
-		} else {
+		case ev.Delta.ReasoningContent != nil:
+			// Exactly one of Text/Signature/RedactedContent is ever
+			// populated per event -- see contentBlockDeltaEvent's own doc
+			// comment -- so setting all three unconditionally onto one
+			// ReasoningDelta is safe: the unpopulated two stay their zero
+			// value.
+			rc := ev.Delta.ReasoningContent
+			rd := streaming.ReasoningDelta{Index: ev.ContentBlockIndex, Text: rc.Text, Signature: rc.Signature}
+			if rc.RedactedContent != "" {
+				rd.Redacted = true
+				rd.Data = rc.RedactedContent
+			}
+			delta.ReasoningBlocks = []streaming.ReasoningDelta{rd}
+		default:
 			delta.Content = ev.Delta.Text
 		}
 		chunk := streaming.ChatCompletionChunk{

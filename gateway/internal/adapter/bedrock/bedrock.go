@@ -66,6 +66,39 @@ type ContentBlock struct {
 	// field on the same block; it always appears as its own block,
 	// immediately after the content it caches.
 	CachePoint *CachePoint `json:"cachePoint,omitempty"`
+	// ReasoningContent, when set, is Converse's real reasoningContent
+	// block -- confirmed against docs.aws.amazon.com/bedrock/latest/
+	// APIReference/API_runtime_ContentBlock.html: a sibling union member
+	// of Text/ToolUse/ToolResult/Image/Document/CachePoint on the real
+	// ContentBlock union ("This data type is a UNION, so only one of the
+	// following members can be specified when used or returned"). Per
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+	ReasoningContent *ReasoningContentBlock `json:"reasoningContent,omitempty"`
+}
+
+// ReasoningContentBlock is Converse's real reasoningContent shape,
+// confirmed against API_runtime_ReasoningContentBlock.html: "This data
+// type is a UNION, so only one of the following members can be
+// specified when used or returned." ReasoningText carries the plaintext
+// case; RedactedContent carries the provider-encrypted-ciphertext case
+// (Base64-encoded binary data, per that same doc page) -- mutually
+// exclusive, mirroring Anthropic's "thinking" vs. "redacted_thinking"
+// block-type split but as one union struct rather than two block types.
+type ReasoningContentBlock struct {
+	ReasoningText   *ReasoningTextBlock `json:"reasoningText,omitempty"`
+	RedactedContent string              `json:"redactedContent,omitempty"`
+}
+
+// ReasoningTextBlock is Converse's real reasoningText shape, confirmed
+// against API_runtime_ReasoningTextBlock.html: Text is documented
+// Required; Signature is documented optional but, per that same page,
+// "If you pass a reasoning block back to the API in a multi-turn
+// conversation, include the text and its signature unmodified" -- the
+// same must-replay-verbatim contract as Anthropic's thinking.signature,
+// per docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+type ReasoningTextBlock struct {
+	Text      string `json:"text"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // CachePoint is Converse's real cache-checkpoint marker shape —
@@ -371,6 +404,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 
 		var blocks []ContentBlock
+		if len(m.ToolCalls) == 0 {
+			blocks = append(blocks, reasoningBlocksToProvider(m.ReasoningBlocks, 0, true)...)
+		} else {
+			blocks = append(blocks, reasoningBlocksToProvider(m.ReasoningBlocks, 0, false)...)
+		}
 		if m.Content != "" {
 			blocks = append(blocks, ContentBlock{Text: m.Content})
 		}
@@ -382,7 +420,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			blocks = append(blocks, block)
 			blocks = appendCachePointIfNeeded(blocks, part.CacheControl)
 		}
-		for _, tc := range m.ToolCalls {
+		for i, tc := range m.ToolCalls {
 			input := map[string]any{}
 			if tc.ArgumentsJSON != "" {
 				if err := json.Unmarshal([]byte(tc.ArgumentsJSON), &input); err != nil {
@@ -392,6 +430,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			blocks = append(blocks, ContentBlock{
 				ToolUse: &ToolUse{ToolUseID: tc.ID, Name: tc.Name, Input: input},
 			})
+			if i+1 < len(m.ToolCalls) {
+				blocks = append(blocks, reasoningBlocksToProvider(m.ReasoningBlocks, i+1, false)...)
+			} else {
+				blocks = append(blocks, reasoningBlocksToProvider(m.ReasoningBlocks, i+1, true)...)
+			}
 		}
 		// A message-level CacheControl marks "cache everything through
 		// this message" via a trailing checkpoint, per
@@ -541,6 +584,52 @@ func mediaTypeToFormat(mediaType string) string {
 	return mediaType
 }
 
+// reasoningBlocksToProvider mirrors anthropic.go's identical-purpose
+// helper (reasoningBlocksToProvider) -- returns the ContentBlocks for
+// every canonical ReasoningBlock in rbs whose Sequence matches seq
+// exactly (or, when trailing is true, every remaining block with
+// Sequence >= seq), reconstructing exact original block order relative
+// to ToolCalls, per docs/rfcs/2026-09-12-gateway-reasoning-content-
+// canonical-schema.md.
+func reasoningBlocksToProvider(rbs []adapter.ReasoningBlock, seq int, trailing bool) []ContentBlock {
+	var out []ContentBlock
+	for _, rb := range rbs {
+		if (trailing && rb.Sequence >= seq) || (!trailing && rb.Sequence == seq) {
+			out = append(out, reasoningBlockToProvider(rb))
+		}
+	}
+	return out
+}
+
+// reasoningBlockToProvider converts one canonical adapter.ReasoningBlock
+// into Converse's native reasoningContent block shape.
+func reasoningBlockToProvider(rb adapter.ReasoningBlock) ContentBlock {
+	if rb.Redacted {
+		return ContentBlock{ReasoningContent: &ReasoningContentBlock{RedactedContent: rb.Data}}
+	}
+	return ContentBlock{ReasoningContent: &ReasoningContentBlock{
+		ReasoningText: &ReasoningTextBlock{Text: rb.Text, Signature: rb.Signature},
+	}}
+}
+
+// reasoningBlockFromProvider converts one Converse-native
+// ReasoningContentBlock into a canonical adapter.ReasoningBlock.
+// Sequence is passed in by the caller as len(toolCalls) captured so far
+// -- exactly mirroring reasoningBlocksToProvider's replay logic above,
+// and anthropic.go's identical-purpose FromProvider capture -- per
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+func reasoningBlockFromProvider(rc *ReasoningContentBlock, sequence int) adapter.ReasoningBlock {
+	if rc.RedactedContent != "" {
+		return adapter.ReasoningBlock{Sequence: sequence, Redacted: true, Data: rc.RedactedContent}
+	}
+	var text, signature string
+	if rc.ReasoningText != nil {
+		text = rc.ReasoningText.Text
+		signature = rc.ReasoningText.Signature
+	}
+	return adapter.ReasoningBlock{Sequence: sequence, Text: text, Signature: signature}
+}
+
 // FromProvider implements adapter.Adapter, converting a Bedrock native
 // Response back into the canonical ChatResponse shape. ID is left empty —
 // Converse has no native response-ID field, per hazard #4.
@@ -552,6 +641,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 
 	var textParts []string
 	var toolCalls []adapter.ToolCall
+	var reasoningBlocks []adapter.ReasoningBlock
 	for _, block := range native.Output.Message.Content {
 		switch {
 		case block.ToolUse != nil:
@@ -564,6 +654,11 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 				Name:          block.ToolUse.Name,
 				ArgumentsJSON: string(argsJSON),
 			})
+		case block.ReasoningContent != nil:
+			// Sequence == len(toolCalls) so far records "immediately
+			// before the next toolUse block" -- see
+			// reasoningBlockFromProvider's own doc comment.
+			reasoningBlocks = append(reasoningBlocks, reasoningBlockFromProvider(block.ReasoningContent, len(toolCalls)))
 		case block.Text != "":
 			textParts = append(textParts, block.Text)
 		}
@@ -575,9 +670,10 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	}
 
 	message := adapter.Message{
-		Role:      "assistant",
-		Content:   strings.Join(textParts, ""),
-		ToolCalls: toolCalls,
+		Role:            "assistant",
+		Content:         strings.Join(textParts, ""),
+		ToolCalls:       toolCalls,
+		ReasoningBlocks: reasoningBlocks,
 	}
 
 	return adapter.ChatResponse{

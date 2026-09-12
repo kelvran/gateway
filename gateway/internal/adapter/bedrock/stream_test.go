@@ -135,6 +135,74 @@ func quoteJSON(s string) string {
 	return b.String()
 }
 
+// TestDecodeContentBlockDeltaReasoningTextProducesReasoningBlockDelta
+// proves the live-breaking bug fixed by docs/rfcs/2026-09-12-gateway-
+// reasoning-content-canonical-schema.md's Phase 3: before this fix,
+// contentBlockDeltaEvent.Delta had no field for a reasoningContent
+// fragment, so a reasoning delta fell through to the text branch and
+// produced a spurious Content fragment instead of a ReasoningDelta.
+func TestDecodeContentBlockDeltaReasoningTextProducesReasoningBlockDelta(t *testing.T) {
+	msg := newEventMessage("contentBlockDelta", `{"contentBlockIndex":0,"delta":{"reasoningContent":{"text":"Let me think..."}}}`)
+
+	chunks, _, err := NewStreamDecoder().Decode(msg)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+	delta := chunks[0].Choices[0].Delta
+	if delta.Content != "" {
+		t.Errorf("Delta.Content = %q, want empty -- a reasoningContent fragment must not leak into Content", delta.Content)
+	}
+	if len(delta.ReasoningBlocks) != 1 {
+		t.Fatalf("len(ReasoningBlocks) = %d, want 1", len(delta.ReasoningBlocks))
+	}
+	rb := delta.ReasoningBlocks[0]
+	if rb.Index != 0 || rb.Text != "Let me think..." || rb.Redacted || rb.Signature != "" || rb.Data != "" {
+		t.Errorf("ReasoningBlocks[0] = %+v, want only Index/Text set", rb)
+	}
+}
+
+// TestDecodeContentBlockDeltaReasoningSignatureProducesReasoningBlockDelta
+// proves the signature-only delta case, per
+// API_runtime_ReasoningContentBlockDelta.html's documented union
+// contract (only one of text/signature/redactedContent per event).
+func TestDecodeContentBlockDeltaReasoningSignatureProducesReasoningBlockDelta(t *testing.T) {
+	msg := newEventMessage("contentBlockDelta", `{"contentBlockIndex":0,"delta":{"reasoningContent":{"signature":"sig_abc"}}}`)
+
+	chunks, _, err := NewStreamDecoder().Decode(msg)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(chunks) != 1 || len(chunks[0].Choices[0].Delta.ReasoningBlocks) != 1 {
+		t.Fatalf("chunks = %+v, want one ReasoningDelta", chunks)
+	}
+	rb := chunks[0].Choices[0].Delta.ReasoningBlocks[0]
+	if rb.Signature != "sig_abc" || rb.Text != "" || rb.Redacted {
+		t.Errorf("ReasoningBlocks[0] = %+v, want only Signature set", rb)
+	}
+}
+
+// TestDecodeContentBlockDeltaRedactedReasoningProducesRedactedReasoningBlockDelta
+// proves the redactedContent (provider-encrypted) delta case maps onto a
+// Redacted=true ReasoningDelta carrying the opaque payload in Data.
+func TestDecodeContentBlockDeltaRedactedReasoningProducesRedactedReasoningBlockDelta(t *testing.T) {
+	msg := newEventMessage("contentBlockDelta", `{"contentBlockIndex":1,"delta":{"reasoningContent":{"redactedContent":"b3BhcXVl"}}}`)
+
+	chunks, _, err := NewStreamDecoder().Decode(msg)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(chunks) != 1 || len(chunks[0].Choices[0].Delta.ReasoningBlocks) != 1 {
+		t.Fatalf("chunks = %+v, want one ReasoningDelta", chunks)
+	}
+	rb := chunks[0].Choices[0].Delta.ReasoningBlocks[0]
+	if rb.Index != 1 || !rb.Redacted || rb.Data != "b3BhcXVl" || rb.Text != "" {
+		t.Errorf("ReasoningBlocks[0] = %+v, want Index=1, Redacted=true and Data set from redactedContent", rb)
+	}
+}
+
 func TestDecodeContentBlockStopProducesNoChunk(t *testing.T) {
 	msg := newEventMessage("contentBlockStop", `{"contentBlockIndex":0}`)
 

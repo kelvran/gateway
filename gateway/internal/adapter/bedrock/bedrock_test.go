@@ -294,6 +294,194 @@ func TestName(t *testing.T) {
 	}
 }
 
+// TestFromProviderCapturesReasoningAndRedactedReasoningBlocks proves the
+// live-breaking bug fixed by docs/rfcs/2026-09-12-gateway-reasoning-
+// content-canonical-schema.md's Phase 3: before this fix, ContentBlock
+// had no field for a reasoningContent block, so FromProvider's switch
+// matched neither the ToolUse nor Text case and silently dropped the
+// entire block. A response with a reasoning block followed by a toolUse
+// block, followed by a second (redacted) reasoning block, must now
+// surface all of it as ReasoningBlocks with Sequence values that
+// correctly record each block's position relative to ToolCalls.
+func TestFromProviderCapturesReasoningAndRedactedReasoningBlocks(t *testing.T) {
+	a := New()
+	nativeResp := &Response{
+		Output: Output{
+			Message: Message{
+				Role: "assistant",
+				Content: []ContentBlock{
+					{ReasoningContent: &ReasoningContentBlock{ReasoningText: &ReasoningTextBlock{
+						Text: "Let me check the weather API first.", Signature: "sig_abc123",
+					}}},
+					{ToolUse: &ToolUse{ToolUseID: "tooluse_1", Name: "get_weather", Input: map[string]any{"city": "Boston"}}},
+					{ReasoningContent: &ReasoningContentBlock{RedactedContent: "opaque_ciphertext_xyz"}},
+				},
+			},
+		},
+		StopReason: "tool_use",
+		Usage:      Usage{InputTokens: 30, OutputTokens: 12, TotalTokens: 42},
+	}
+
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if len(got.Choices) != 1 {
+		t.Fatalf("Choices len = %d, want 1", len(got.Choices))
+	}
+	msg := got.Choices[0].Message
+
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1 (reasoning blocks must not disturb tool-call capture)", len(msg.ToolCalls))
+	}
+	if len(msg.ReasoningBlocks) != 2 {
+		t.Fatalf("ReasoningBlocks len = %d, want 2 -- the block(s) were silently dropped", len(msg.ReasoningBlocks))
+	}
+
+	first, second := msg.ReasoningBlocks[0], msg.ReasoningBlocks[1]
+	if first.Redacted || first.Text != "Let me check the weather API first." || first.Signature != "sig_abc123" {
+		t.Errorf("ReasoningBlocks[0] = %+v, want plaintext reasoning block with the original text+signature", first)
+	}
+	if first.Sequence != 0 {
+		t.Errorf("ReasoningBlocks[0].Sequence = %d, want 0 (appears before ToolCalls[0])", first.Sequence)
+	}
+	if !second.Redacted || second.Data != "opaque_ciphertext_xyz" || second.Text != "" {
+		t.Errorf("ReasoningBlocks[1] = %+v, want a redacted block carrying only the opaque Data payload", second)
+	}
+	if second.Sequence != 1 {
+		t.Errorf("ReasoningBlocks[1].Sequence = %d, want 1 (appears after ToolCalls[0], the only tool call)", second.Sequence)
+	}
+}
+
+// blockKindOf classifies one native Bedrock ContentBlock for the
+// interleave-order assertions below, since Converse's ContentBlock is a
+// union with no repeated "type" discriminator field of its own.
+func blockKindOf(b ContentBlock) string {
+	switch {
+	case b.ReasoningContent != nil:
+		return "reasoningContent"
+	case b.ToolUse != nil:
+		return "toolUse"
+	case b.Text != "":
+		return "text"
+	default:
+		return "other"
+	}
+}
+
+// TestToProviderReplaysReasoningBlocksInOriginalInterleavedOrder proves
+// the request-side half of the Phase 3 fix: a canonical Message
+// carrying ReasoningBlocks (as a caller would echo back from a prior
+// FromProvider response, per the RFC's replay contract) must be
+// serialized with the reasoning blocks placed back at their exact
+// original position relative to ToolCalls -- not bunched before or
+// after every tool call.
+func TestToProviderReplaysReasoningBlocksInOriginalInterleavedOrder(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-opus-4-6",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "What's the weather in Boston and Tokyo?"},
+			{
+				Role: "assistant",
+				ReasoningBlocks: []adapter.ReasoningBlock{
+					{Sequence: 0, Text: "First I'll check Boston.", Signature: "sig_1"},
+					{Sequence: 1, Redacted: true, Data: "opaque_between_calls"},
+					{Sequence: 2, Text: "Both results are in, I can answer now.", Signature: "sig_3"},
+				},
+				ToolCalls: []adapter.ToolCall{
+					{ID: "tooluse_1", Name: "get_weather", ArgumentsJSON: `{"city":"Boston"}`},
+					{ID: "tooluse_2", Name: "get_weather", ArgumentsJSON: `{"city":"Tokyo"}`},
+				},
+			},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if len(native.Messages) != 2 {
+		t.Fatalf("native.Messages len = %d, want 2", len(native.Messages))
+	}
+
+	blocks := native.Messages[1].Content
+	gotKinds := make([]string, len(blocks))
+	for i, b := range blocks {
+		gotKinds[i] = blockKindOf(b)
+	}
+	wantKinds := []string{"reasoningContent", "toolUse", "reasoningContent", "toolUse", "reasoningContent"}
+	if len(gotKinds) != len(wantKinds) {
+		t.Fatalf("assistant message block kinds = %v, want %v", gotKinds, wantKinds)
+	}
+	for i, want := range wantKinds {
+		if gotKinds[i] != want {
+			t.Errorf("block[%d] kind = %q, want %q (full sequence: %v)", i, gotKinds[i], want, gotKinds)
+		}
+	}
+
+	if blocks[0].ReasoningContent.ReasoningText == nil ||
+		blocks[0].ReasoningContent.ReasoningText.Text != "First I'll check Boston." ||
+		blocks[0].ReasoningContent.ReasoningText.Signature != "sig_1" {
+		t.Errorf("blocks[0] = %+v, want the first plaintext reasoning block replayed verbatim", blocks[0])
+	}
+	if blocks[2].ReasoningContent.RedactedContent != "opaque_between_calls" {
+		t.Errorf("blocks[2] = %+v, want the redacted block's opaque content replayed verbatim", blocks[2])
+	}
+	if blocks[4].ReasoningContent.ReasoningText == nil ||
+		blocks[4].ReasoningContent.ReasoningText.Text != "Both results are in, I can answer now." ||
+		blocks[4].ReasoningContent.ReasoningText.Signature != "sig_3" {
+		t.Errorf("blocks[4] = %+v, want the trailing reasoning block replayed verbatim after the last tool call", blocks[4])
+	}
+}
+
+// TestReasoningBlockRoundTripPreservesExactOriginalOrder is an
+// end-to-end proof: capture an interleaved reasoning+toolUse response
+// via FromProvider, then feed the resulting canonical Message straight
+// back through ToProvider as conversation history (exactly what a real
+// caller does on the next turn) and assert the re-serialized block
+// order is byte-for-byte identical in kind to what Converse originally
+// sent.
+func TestReasoningBlockRoundTripPreservesExactOriginalOrder(t *testing.T) {
+	a := New()
+	originalContent := []ContentBlock{
+		{ReasoningContent: &ReasoningContentBlock{ReasoningText: &ReasoningTextBlock{Text: "Step one.", Signature: "sig_a"}}},
+		{ToolUse: &ToolUse{ToolUseID: "tooluse_1", Name: "step_one", Input: map[string]any{}}},
+		{ReasoningContent: &ReasoningContentBlock{ReasoningText: &ReasoningTextBlock{Text: "Step two.", Signature: "sig_b"}}},
+		{ToolUse: &ToolUse{ToolUseID: "tooluse_2", Name: "step_two", Input: map[string]any{}}},
+	}
+	nativeResp := &Response{
+		Output:     Output{Message: Message{Role: "assistant", Content: originalContent}},
+		StopReason: "tool_use",
+	}
+
+	got, err := a.FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	assistantMsg := got.Choices[0].Message
+	assistantMsg.Role = "assistant" // FromProvider already sets this; explicit for clarity
+
+	replayed, err := a.ToProvider(adapter.ChatRequest{
+		Model:    "anthropic.claude-opus-4-6",
+		Messages: []adapter.Message{{Role: "user", Content: "go"}, assistantMsg},
+	})
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := replayed.(*Request)
+	replayedContent := native.Messages[1].Content
+
+	if len(replayedContent) != len(originalContent) {
+		t.Fatalf("replayed block count = %d, want %d", len(replayedContent), len(originalContent))
+	}
+	for i := range originalContent {
+		if blockKindOf(replayedContent[i]) != blockKindOf(originalContent[i]) {
+			t.Errorf("block[%d] kind = %q, want %q -- reasoning/toolUse order was not preserved through a full FromProvider->ToProvider round trip", i, blockKindOf(replayedContent[i]), blockKindOf(originalContent[i]))
+		}
+	}
+}
+
 // TestToProviderMultiModalContentPartsMapToImageAndDocumentBlocks is
 // the load-bearing proof for docs/rfcs/2026-09-06-gateway-multimodal-
 // content.md: an inline-base64 image part must map to Converse's real
