@@ -24,12 +24,18 @@ import (
 var errNotImplemented = errors.New("not implemented — dormant extraction seam, see docs/decisions/0002-cache-embedded-in-gateway.md")
 
 // Server is the gRPC-facing wrapper around a cache.Cache implementation.
-// It is not wired to any real gRPC transport this pass — the
-// cache.proto contract referenced in gateway/ARCHITECTURE.md is defined
-// but unused until/unless Cache is ever extracted. Server itself
+// It is not wired to any real gRPC transport this pass. Corrected
+// 2026-09-12: no cache.proto contract has ever actually been written for
+// this seam — gateway/ARCHITECTURE.md's own package-layout entry for it
+// carried the same false claim and is corrected alongside this comment
+// (confirmed via a repo-wide `find . -iname '*.proto'`: the only .proto
+// in the repo is api/gatewayevents/v1/gatewayevents.proto, unrelated to
+// Cache; docs/rfcs/2026-09-03-api-gatewayevents-contract.md independently
+// found the same absence one day after docs/decisions/0002-cache-
+// embedded-in-gateway.md first made this claim). Server itself
 // implements cache.Cache's shape (rather than only some ad hoc RPC-handler
 // signature) so it's a direct, typed stand-in for the interface once real
-// gRPC wiring is added.
+// gRPC wiring — and the .proto contract itself — are eventually added.
 type Server struct{}
 
 // compile-time check that Server satisfies cache.Cache, proving the seam's

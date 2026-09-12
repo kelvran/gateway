@@ -182,7 +182,16 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 /internal/cache            — Cache's public interface — see "Cache Subsystem" below; this is the ONLY
                              package Gateway's request pipeline is allowed to import from Cache
     /port.go                — type Cache interface { Get, Put } — the sole import surface
-    /grpc/cache.proto        — contract defined now, unused until/unless Cache is ever extracted
+    /grpc/cache.proto        — **NOT BUILT.** No `.proto` contract exists for this seam —
+                               confirmed via a repo-wide `find . -iname '*.proto'` (the only
+                               one present is `api/gatewayevents/v1/gatewayevents.proto`,
+                               unrelated to Cache). **Corrected 2026-09-12**, correcting this
+                               line's own prior "contract defined now, unused" claim — see
+                               docs/decisions/0002-cache-embedded-in-gateway.md's own
+                               Corrected 2026-09-12 note for the full confirmation trail.
+                               `grpcserver`/`grpcclient` below are real, typed Go code only;
+                               the wire-format contract itself remains a genuine, disclosed
+                               gap until/unless Cache is ever extracted
     /inprocess/              — adapter #1 — ACTIVE
     /grpcserver/             — adapter #2 — DORMANT
     /grpcclient/             — adapter #3 — DORMANT
