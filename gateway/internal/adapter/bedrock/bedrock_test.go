@@ -1096,6 +1096,33 @@ func TestToProviderResponseFormatOmitsAdditionalModelRequestFieldsOnUnsupportedM
 	}
 }
 
+// TestToProviderJSONObjectResponseFormatOmitsAdditionalModelRequestFields
+// is the live-verified-2026-09-13 proof: Bedrock's Converse API rejects
+// output_config.format.type set to anything other than "json_schema"
+// (a real ValidationException, "Input should be 'json_schema'",
+// reproduced against real Bedrock via an unmodified third-party
+// client's ResponseFormat{Type: "json_object"} request), so a
+// json_object (no-schema) ResponseFormat must never populate
+// AdditionalModelRequestFields at all -- even on an otherwise-
+// whitelisted model.
+func TestToProviderJSONObjectResponseFormatOmitsAdditionalModelRequestFields(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:          "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+		Messages:       []adapter.Message{{Role: "user", Content: "give me JSON, no schema needed"}},
+		ResponseFormat: &adapter.ResponseFormat{Type: "json_object"},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.AdditionalModelRequestFields != nil {
+		t.Errorf("native.AdditionalModelRequestFields = %v, want nil for json_object (Bedrock has no equivalent of OpenAI's schema-less JSON mode via output_config)", native.AdditionalModelRequestFields)
+	}
+}
+
 // TestToProviderNilResponseFormatOmitsAdditionalModelRequestFields proves
 // the unset (nil, the default) case never emits
 // additionalModelRequestFields at all -- byte-identical to every

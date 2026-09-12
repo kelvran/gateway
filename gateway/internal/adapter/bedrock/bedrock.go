@@ -524,6 +524,18 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (
 	if !adapter.SupportsStructuredOutput("bedrock", model) {
 		return nil, nil
 	}
+	// Live-verified 2026-09-13 against a real Converse call: Bedrock's
+	// output_config.format.type accepts only the literal "json_schema"
+	// -- a real ValidationException ("Input should be 'json_schema'")
+	// otherwise. OpenAI's "json_object" mode (valid, unconstrained JSON,
+	// no schema) has no Bedrock equivalent via this field at all, so
+	// there is nothing correct to send here -- mirrors this function's
+	// own existing unsupported-model precedent (silently omit rather
+	// than send a value AWS will reject) rather than erroring the whole
+	// request over a mode Bedrock can't represent.
+	if rf.Type != "json_schema" {
+		return nil, nil
+	}
 	format := map[string]any{"type": rf.Type}
 	if rf.JSONSchema != nil && len(rf.JSONSchema.Schema) > 0 {
 		var schema map[string]any
