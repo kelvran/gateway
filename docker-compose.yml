@@ -26,6 +26,14 @@ services:
       - "127.0.0.1:8080:8080"
     env_file:
       - .env
+    environment:
+      # Only takes effect once config.yaml's telemetry.exporter: "otlp"
+      # points at the observability service (profile-gated below) --
+      # otlptracehttp/otlpmetrichttp default to HTTPS otherwise and every
+      # export to that plain-HTTP OTLP receiver would fail. Harmless
+      # no-op under the "stdout"/"none" exporters this repo still
+      # defaults to.
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
     volumes:
       # Copy gateway/config.example.yaml -> gateway/config.yaml and fill
       # in real values first — config.yaml is gitignored on purpose (see
@@ -70,6 +78,11 @@ services:
       - "127.0.0.1:8091:8080"
     env_file:
       - .env
+    environment:
+      # See gateway's own identical env var above -- same OTLP-over-HTTP
+      # TLS-default gotcha applies to this instance too, since it mounts
+      # the same config.yaml.
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
     volumes:
       - ./gateway/config.yaml:/config.yaml:ro
     profiles: ["multi-instance"]
@@ -129,6 +142,57 @@ services:
     depends_on:
       - gateway
     profiles: ["vector-s3"]
+
+  # Optional: a real OTLP observability backend for the pilot, per
+  # docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md's own exporter
+  # design -- gateway/internal/telemetry/telemetry.go's "otlp" exporter
+  # path (otlptracehttp + otlpmetrichttp) has been real, working code
+  # since that RFC shipped; the only reason it stayed inactive is that no
+  # collector existed to point it at (config.yaml's own telemetry.exporter
+  # comment said exactly that). grafana/otel-lgtm bundles the OTel
+  # Collector, Prometheus, Tempo, Loki, and Grafana in one image -- the
+  # lowest-friction real backend for this pilot's actual current scale
+  # (single-tenant, low volume); its own README scopes it to dev/demo/
+  # test, which is a genuine match for that stage, not a mismatch. Ports:
+  # 4317 (OTLP gRPC, unused by gateway today -- both otlptracehttp and
+  # otlpmetrichttp are HTTP exporters), 4318 (OTLP HTTP -- the real
+  # endpoint gateway's exporters send to), 3000 (Grafana UI, for local
+  # verification only), 9090 (Prometheus, queried directly to confirm
+  # real data arrived, e.g. `curl localhost:9090/api/v1/query?query=...`),
+  # 3200 (Tempo, for a real-trace API check the same way). All bound to
+  # loopback only, same posture as `gateway` above. Gated behind its own
+  # profile, same pattern as `redis`/`vector` -- never started by a bare
+  # `docker compose up`; only via `docker compose --profile observability
+  # up`.
+  #
+  # gateway/gateway2 need config.yaml's telemetry.exporter: "otlp" and
+  # otlp_endpoint: "observability:4318" (only reachable once this
+  # container is up) PLUS an OTEL_EXPORTER_OTLP_INSECURE=true env var --
+  # a real, verified gotcha: otlptracehttp/otlpmetrichttp default to
+  # HTTPS (getScheme() returns "https" unless Insecure is set, confirmed
+  # directly against go.opentelemetry.io/otel/exporters/otlp/otlptrace/
+  # otlptracehttp@v1.46.0's client.go/otlpconfig), and this collector's
+  # OTLP HTTP receiver is plain HTTP, no TLS -- without this env var every
+  # export silently fails with a TLS handshake error.
+  observability:
+    image: grafana/otel-lgtm:0.33.0
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:3200:3200"
+    volumes:
+      # Real Grafana file-based dashboard provisioning, per
+      # docs/operations/grafana/provisioning/dashboards.yaml's own header
+      # -- adds one more provider alongside otel-lgtm's own pre-shipped
+      # RED/JVM example dashboards (grafana-dashboards.yaml in the same
+      # container directory) rather than replacing that file, since
+      # Grafana's dashboard provisioner loads every *.yaml in this
+      # directory, not just one.
+      - ./docs/operations/grafana/provisioning/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/kelvran-dashboards.yaml:ro
+      - ./docs/operations/grafana/dashboards/kelvran-overview.json:/otel-lgtm/kelvran-overview.json:ro
+    profiles: ["observability"]
 
 volumes:
   vector-data:

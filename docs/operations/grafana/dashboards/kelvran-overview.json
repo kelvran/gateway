@@ -1,0 +1,70 @@
+{
+  "_comment": "Real, provisioned Kelvran pilot dashboard -- wired via docs/operations/grafana/provisioning/dashboards.yaml, not an example-only file (unlike docs/operations/grafana-cache-dashboard.json). Three panels, each backed by a real, already-shipped gateway/internal/telemetry/telemetry.go metric (kelvran.cache.lookup, kelvran.llm.spend_usd, gen_ai.client.operation.duration's error.type=\"guardrail_blocked\" dimension -- see dataplane.go's outcomeFor/errorTypeFor for that last one, OUTCOME_GUARDRAIL_BLOCKED lowercased). PromQL uses the OTel-to-Prometheus-native-OTLP-ingestion name translation confirmed live against this pilot's own grafana/otel-lgtm backend (dot -> underscore, '_total' suffix on a monotonic Sum, '_seconds_bucket'/'_sum'/'_count' suffixes on a Histogram) -- verify against your own collector before reusing elsewhere, per grafana-cache-dashboard.json's own identical caveat.",
+  "title": "Kelvran Gateway Overview",
+  "uid": "kelvran-gateway-overview",
+  "schemaVersion": 39,
+  "editable": true,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Cache hit rate by layer",
+      "description": "kelvran.cache.lookup, dimensioned by kelvran.cache.lookup_outcome (hit/miss) and kelvran.cache.layer (hit only). See docs/operations/TELEMETRY.md's 'Cache lookup hit/miss (metric)' row.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (kelvran_cache_layer) (rate(kelvran_cache_lookup_total{kelvran_cache_lookup_outcome=\"hit\"}[5m])) / ignoring(kelvran_cache_layer) group_left sum(rate(kelvran_cache_lookup_total[5m]))",
+          "legendFormat": "{{kelvran_cache_layer}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Budget burn (real LLM spend, USD/hour)",
+      "description": "kelvran.llm.spend_usd -- real USD cost of every billable (genuine, unshared) upstream call, per virtual key's real Bedrock spend against its budget_usd cap. See docs/operations/TELEMETRY.md's 'LLM spend (metric)' row.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(kelvran_llm_spend_usd_total[5m])) * 3600",
+          "legendFormat": "spend/hour"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Guardrail verdict rate (blocked vs allowed)",
+      "description": "gen_ai.client.operation.duration, filtered on error.type=\"guardrail_blocked\" -- the low-cardinality error.type value dataplane.go's errorTypeFor emits for GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED (a pre-call or post-call guardrail Block-tier verdict). No dedicated guardrail counter exists yet; this is the real signal available today via the shared GenAI operation-duration histogram's error.type dimension. See docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(gen_ai_client_operation_duration_seconds_count{error_type=\"guardrail_blocked\"}[5m])) / sum(rate(gen_ai_client_operation_duration_seconds_count[5m]))",
+          "legendFormat": "blocked / total"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+# Real Grafana file-based dashboard provisioning config, per
+# https://grafana.com/docs/grafana/latest/administration/provisioning/#dashboards.
+#
+# Mounted (docker-compose.yml, `observability` service) into
+# grafana/otel-lgtm's own dashboard-provisioning directory
+# (/otel-lgtm/grafana/conf/provisioning/dashboards/) ALONGSIDE that
+# image's own pre-shipped grafana-dashboards.yaml (RED/JVM example
+# dashboards) -- Grafana's dashboard provisioner loads every *.yaml file
+# in this directory, so adding a second file here is additive, not a
+# replacement of the image's own defaults.
+#
+# Points at kelvran-overview.json (mounted into the same container at
+# /otel-lgtm/kelvran-overview.json, matching that image's own convention
+# of storing provisioned dashboard JSON directly under /otel-lgtm/) --
+# see that file for the actual panels.
+apiVersion: 1
+
+providers:
+  - name: "Kelvran Gateway Overview"
+    type: file
+    updateIntervalSeconds: 30
+    options:
+      path: /otel-lgtm/kelvran-overview.json
+      foldersFromFilesStructure: false
