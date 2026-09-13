@@ -2621,3 +2621,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None. This was pure addition (new CI capability) plus doc corrections, no existing behavior changed for the already-proven `:latest`/`:sha-*` path.
 
 **Next steps / resume point:** All 3 items shipped and pushed (`ef24a13`). The one real, load-bearing follow-up for whoever cuts the next `gateway/v<version>` release: watch that specific CI run to confirm the semver-tag branch behaves as designed, since this round could only prove the no-tag branch live.
+
+## [2026-09-13] Fixed a real GitHub Actions injection in the new `Compute image tags` step, caught by a background security review
+
+**Files touched:** `.github/workflows/ci.yml`.
+
+**Intent/summary:** A background automated security review fired on the commit that added the `Compute image tags` step (this same session's prior entry) and flagged a real, valid finding: `${{ github.ref_name }}` (and `github.ref_type`/`github.sha`) were interpolated directly into the step's `run:` shell script — GitHub Actions text-substitutes those expressions into the script source before the shell parses it, so a maliciously-crafted ref name could inject arbitrary shell syntax into a job holding `packages:write`/`id-token:write`/`attestations:write`. Fixed immediately, not dismissed on "requires push access to exploit" grounds.
+
+**Decisions made:** Applied the suggested fix exactly (bind the three values via an `env:` block, reference them as plain `${VAR}` shell variables instead of `${{ }}` expressions) rather than inventing an alternative. Checked whether the pattern recurred anywhere else in the file before considering it closed — grepped for every `${{ github.* }}` occurrence; the only other one (`github.actor` on the `docker/login-action` step) is a `with:` action input, not a `run:` interpolation, a structurally different and unaffected class, so no further changes were needed.
+
+**Verification performed:** `python3 -c "import yaml; yaml.safe_load(...)"` before pushing. Pushed and watched the real CI run to completion (`gh run watch`) — all jobs green, including the fixed step and every downstream sign/SBOM/attest step, confirming the `env:`-bound rewrite is behaviorally identical to the vulnerable version for legitimate ref names.
+
+**Bugs found:** One real, valid HIGH-severity finding in Kelvran's own CI configuration (not application code) — introduced by this same session's immediately-prior commit, caught and fixed within the same session rather than lingering.
+
+**Next steps / resume point:** None open. This closes out the last loose end from the semver-tagging work — the feature itself, and its own security posture, are both now in the state they should have shipped in originally.
