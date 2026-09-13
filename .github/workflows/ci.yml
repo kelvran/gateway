@@ -206,3 +206,41 @@ jobs:
             --category-fail-under "category:telemetry:0.56" \
             --category-fail-under "category:harness:0.60" \
             --category-fail-under "category:judge:0.47"
+
+  # Kelvran's first real artifact-publishing pipeline -- per
+  # docs/upgrade-research/supply-chain-security-2026-09-13.md, SBOM
+  # generation/cosign signing/SLSA provenance were all correctly deferred
+  # specifically because no such pipeline existed to attach them to
+  # (DECISIONS.md's same-dated correction entry). This job is that
+  # prerequisite: builds gateway/Dockerfile and pushes it to GHCR, using
+  # only the repo's own built-in GITHUB_TOKEN -- no new secret, no new
+  # external account, since GHCR is already tied to this GitHub org/repo.
+  # evals/ has no Dockerfile (it's a CLI, not a service -- confirmed in
+  # docker-compose.yml's own comment) so there is nothing to publish for
+  # it. push-only (never on a pull_request): a fork PR wouldn't have
+  # packages: write, and even a same-repo PR shouldn't publish an image
+  # for an unmerged change.
+  publish-image:
+    name: publish gateway image to GHCR
+    runs-on: ubuntu-latest
+    needs: gateway
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./gateway
+          push: true
+          tags: |
+            ghcr.io/kelvran/gateway:latest
+            ghcr.io/kelvran/gateway:sha-${{ github.sha }}
