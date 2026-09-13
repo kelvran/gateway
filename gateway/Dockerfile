@@ -33,5 +33,13 @@ COPY --from=builder /out/gateway /gateway
 #   docker run -v $(pwd)/config.yaml:/config.yaml ... /gateway -config /config.yaml
 EXPOSE 8080
 
+# Run as a real non-root numeric UID -- FROM scratch has no /etc/passwd
+# for name resolution, so USER takes the raw UID directly (the kernel
+# only ever sees the number). 65532 matches distroless's own
+# established "nonroot" convention rather than an arbitrary value.
+# ListenAddr's default port (8080) is well above 1024, so no root
+# privilege is needed to bind it either way.
+USER 65532:65532
+
 ENTRYPOINT ["/gateway"]
 CMD ["-config", "/config.yaml"]
