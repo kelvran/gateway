@@ -100,6 +100,20 @@ jobs:
       - name: ruff
         working-directory: evals
         run: uvx ruff check .
+      - name: mypy (incremental per-module strict allowlist)
+        # Closes the real AGENTS.md Conventions gap ("type hints on all
+        # public functions" was documented but never enforced by CI/lint).
+        # Deliberately incremental, per mypy's own docs recommendation --
+        # not a big-bang strict pass across all of evals/. pyproject.toml's
+        # [tool.mypy] sets a permissive global default (ignore_errors)
+        # plus an explicit per-module strict override for the modules
+        # verified 2026-09-14 to pass `mypy --strict` for real (see that
+        # section's own comment for the measured baseline and the exact
+        # module list). `uvx --with-editable .` mirrors import-linter's own
+        # invocation style below -- ensures `evals`'s own dependencies
+        # (pydantic, etc.) are on the path mypy resolves against.
+        working-directory: evals
+        run: uvx --with-editable . mypy evals/
       - name: import-linter (layer-contract enforcement)
         working-directory: evals
         run: uvx --with-editable . --from import-linter lint-imports

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 
 
-def compute_run_cache_key(task_spec: dict, harness_config: dict) -> str:
+def compute_run_cache_key(
+    task_spec: dict[str, Any], harness_config: dict[str, Any]
+) -> str:
     """SHA-256 hex digest over the canonical JSON of `{task_spec, harness_config}`.
 
     Canonicalization (`sort_keys`, no whitespace, ASCII-only, NaN/Infinity

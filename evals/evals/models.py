@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -51,7 +51,7 @@ class EvalCase(BaseModel):
 
     id: str
     revision: int
-    task_spec: dict
+    task_spec: dict[str, Any]
     reference: str | None = None
     tier: EvalTier
     tags: list[str] = Field(default_factory=list)
@@ -109,7 +109,7 @@ class Run(BaseModel):
     id: str
     eval_case_id: str
     eval_case_revision: int
-    harness_config: dict
+    harness_config: dict[str, Any]
     status: RunStatus
     exit_code: int | None = None
     stdout: str = ""
