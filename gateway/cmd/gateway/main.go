@@ -53,6 +53,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
+	"github.com/kelvran/gateway/gateway/internal/guardrail/bedrockguard"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit/redislimiter"
@@ -651,7 +652,31 @@ func newGuardrailEngine(cfg controlplane.GuardrailsConfig, logger *slog.Logger) 
 		policy.ErrorActions[category] = action
 	}
 
-	return guardrail.NewEngine(guardrail.DefaultDetectors(), policy, version, logger)
+	detectors := guardrail.DefaultDetectors()
+	if bg := cfg.BedrockGuardrails; bg != nil {
+		detectors = append(detectors, bedrockguard.New(bedrockguard.Config{
+			Region:           bg.Region,
+			AccessKeyID:      os.Getenv(bg.AccessKeyIDEnv),
+			SecretAccessKey:  os.Getenv(bg.SecretAccessKeyEnv),
+			SessionToken:     envOrEmpty(bg.SessionTokenEnv),
+			GuardrailID:      bg.GuardrailID,
+			GuardrailVersion: bg.GuardrailVersion,
+		}, nil))
+		logger.Info("guardrail_bedrock_guardrails_enabled", "guardrail_id", bg.GuardrailID, "guardrail_version", bg.GuardrailVersion)
+	}
+
+	return guardrail.NewEngine(detectors, policy, version, logger)
+}
+
+// envOrEmpty returns os.Getenv(name), or "" if name itself is empty --
+// SessionTokenEnv is optional (only set for temporary/STS credentials),
+// unlike AccessKeyIDEnv/SecretAccessKeyEnv which config.go's own parser
+// already requires non-empty before BedrockGuardrails is ever non-nil.
+func envOrEmpty(name string) string {
+	if name == "" {
+		return ""
+	}
+	return os.Getenv(name)
 }
 
 // chatCompletionsHandler adapts dataplane.Pipeline.HandleChatCompletion to

@@ -402,6 +402,26 @@ type GuardrailsConfig struct {
 	// default policy for that category. Empty means every category uses
 	// the RFC's own default (see guardrail.DefaultPolicy).
 	CategoryOverrides map[string]string
+	// BedrockGuardrails, when non-nil, opts this deployment into the AWS
+	// Bedrock Guardrails PROMPT_ATTACK detector as an additional (never a
+	// replacement for the regex promptinjection detector) backend, per
+	// docs/rfcs/2026-09-13-gateway-bedrock-guardrails-ml-detector-design.md.
+	// nil (the default) reproduces today's regex-only behavior exactly.
+	BedrockGuardrails *BedrockGuardrailsConfig
+}
+
+// BedrockGuardrailsConfig configures the optional AWS Bedrock Guardrails
+// detector. Every field is required once this section is present at all
+// -- there is no partial/zero-value-safe shape, unlike GuardrailsConfig
+// itself, since a Detector with an empty GuardrailID/Region can never
+// make a real call.
+type BedrockGuardrailsConfig struct {
+	Region             string
+	AccessKeyIDEnv     string
+	SecretAccessKeyEnv string
+	SessionTokenEnv    string
+	GuardrailID        string
+	GuardrailVersion   string
 }
 
 // AdminConfig configures the optional admin HTTP surface (read-only
@@ -656,6 +676,19 @@ func Load(path string) (*Config, error) {
 					cfg.Guardrails.CategoryOverrides[category] = action
 				}
 			}
+		}
+		if bgRaw, ok := getMap(guardrailsRaw, "bedrock_guardrails"); ok {
+			bg := &BedrockGuardrailsConfig{}
+			bg.Region, _ = getString(bgRaw, "region")
+			bg.AccessKeyIDEnv, _ = getString(bgRaw, "access_key_id_env")
+			bg.SecretAccessKeyEnv, _ = getString(bgRaw, "secret_access_key_env")
+			bg.SessionTokenEnv, _ = getString(bgRaw, "session_token_env")
+			bg.GuardrailID, _ = getString(bgRaw, "guardrail_id")
+			bg.GuardrailVersion, _ = getString(bgRaw, "guardrail_version")
+			if bg.Region == "" || bg.AccessKeyIDEnv == "" || bg.SecretAccessKeyEnv == "" || bg.GuardrailID == "" || bg.GuardrailVersion == "" {
+				return nil, fmt.Errorf("controlplane: guardrails.bedrock_guardrails is missing one of region/access_key_id_env/secret_access_key_env/guardrail_id/guardrail_version")
+			}
+			cfg.Guardrails.BedrockGuardrails = bg
 		}
 	}
 

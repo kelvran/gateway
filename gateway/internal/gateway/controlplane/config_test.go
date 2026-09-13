@@ -464,6 +464,70 @@ func TestLoadWithoutGuardrailsSectionDefaultsToZeroValue(t *testing.T) {
 	}
 }
 
+// TestLoadGuardrailsBedrockGuardrailsSectionParsesAllFields proves the
+// optional guardrails.bedrock_guardrails: sub-section, when present, is
+// parsed correctly, per
+// docs/rfcs/2026-09-13-gateway-bedrock-guardrails-ml-detector-design.md.
+func TestLoadGuardrailsBedrockGuardrailsSectionParsesAllFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  bedrock_guardrails:\n    region: \"us-east-1\"\n    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\n    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n    guardrail_id: \"gr-abc123\"\n    guardrail_version: \"1\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a guardrails.bedrock_guardrails section: %v", err)
+	}
+	bg := cfg.Guardrails.BedrockGuardrails
+	if bg == nil {
+		t.Fatal("Guardrails.BedrockGuardrails = nil, want a populated *BedrockGuardrailsConfig")
+	}
+	if bg.Region != "us-east-1" || bg.AccessKeyIDEnv != "AWS_ACCESS_KEY_ID" || bg.SecretAccessKeyEnv != "AWS_SECRET_ACCESS_KEY" || bg.GuardrailID != "gr-abc123" || bg.GuardrailVersion != "1" {
+		t.Errorf("BedrockGuardrails = %+v, want all 5 fields populated from YAML", bg)
+	}
+}
+
+// TestLoadWithoutBedrockGuardrailsSubsectionLeavesItNil proves the
+// "genuinely optional" half: a guardrails: section present but without
+// its own bedrock_guardrails: sub-key leaves BedrockGuardrails nil,
+// reproducing today's regex-only detector set exactly.
+func TestLoadWithoutBedrockGuardrailsSubsectionLeavesItNil(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  policy_version: \"v2\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load without a bedrock_guardrails sub-section: %v", err)
+	}
+	if cfg.Guardrails.BedrockGuardrails != nil {
+		t.Errorf("Guardrails.BedrockGuardrails = %+v, want nil", cfg.Guardrails.BedrockGuardrails)
+	}
+}
+
+// TestLoadBedrockGuardrailsMissingRequiredFieldErrors proves a partially-
+// specified bedrock_guardrails: section fails loudly at load time, never
+// silently constructing a Detector that can only ever error on every real
+// call.
+func TestLoadBedrockGuardrailsMissingRequiredFieldErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// Missing guardrail_version.
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  bedrock_guardrails:\n    region: \"us-east-1\"\n    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\n    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n    guardrail_id: \"gr-abc123\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a missing guardrail_version returned nil error, want an error")
+	}
+}
+
 // TestLoadRateLimitSectionParsesRedisAddr proves the rate_limit: section,
 // when present, is parsed correctly — the mirror-image proof to
 // TestLoadWithoutTelemetrySectionDefaultsToZeroValue's "genuinely

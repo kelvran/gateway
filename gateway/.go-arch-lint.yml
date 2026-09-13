@@ -14,6 +14,7 @@ components:
   router:            { in: router }
   costaccounting:    { in: costaccounting }
   guardrail:         { in: guardrail }
+  bedrockguard:      { in: guardrail/bedrockguard }
   telemetry:         { in: telemetry }
   cache-correlation: { in: telemetry/cachecorrelation }
   cache:             { in: cache }
@@ -60,6 +61,9 @@ deps:
   cache-grpcclient:
     mayDependOn:
       - cache
+  bedrockguard:
+    mayDependOn:
+      - guardrail
   streaming:
     mayDependOn:
       - adapter
