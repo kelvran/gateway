@@ -1,0 +1,46 @@
+# go-test-coverage config -- real, same-runner coverage gate (no
+# third-party upload service). Chosen over Codecov/Coveralls per
+# docs/upgrade-research/cicd-process-automation-2026-09-13.md item 10:
+# uploading a coverage profile to a third-party SaaS enumerates the full
+# source-tree structure to that third party, an unnecessary exposure for
+# a project with real Bedrock spend. This tool computes and gates
+# entirely from the local coverage profile generated inside the runner.
+#
+# `profile:` is overridden by the `profile:` action input in
+# .github/workflows/ci.yml, but is kept here too so
+# `go run github.com/vladopajic/go-test-coverage/v2@... --config=./gateway/.testcoverage.yml`
+# also works standalone from the `gateway/` directory.
+profile: coverage.out
+
+threshold:
+  # Real measured baseline (2026-09-14): `go test ./... -race
+  # -covermode=atomic -coverpkg=./... -coverprofile=coverage.out` from
+  # `gateway/`, then `go tool cover -func=coverage.out`, with the
+  # excludes below already applied -- 88.44% (3444/3894 statements).
+  # Measured excluding the two pre-existing, disclosed, environment-only
+  # rootless-Docker test failures (TestIntegrationTwoGatewayInstances
+  # ShareOneRedisRateLimit, redislimiter.TestMain) that this specific
+  # local sandbox can't run but the real GitHub Actions ubuntu-latest
+  # runner does run and pass -- confirmed via 30+ consecutive green CI
+  # runs including that package. Set at a small, disclosed margin below
+  # the real number (never a guessed round number, never chasing 100%),
+  # matching this repo's own regression-corpus gate philosophy in
+  # ci.yml -- the goal is catching a NEW regression, not perfection.
+  total: 86
+
+exclude:
+  paths:
+    # Generated protobuf code -- machine-written by protoc, never
+    # hand-edited. Mirrors evals/pyproject.toml's own
+    # `[tool.ruff] extend-exclude = ["evals/contracts"]` treatment of the
+    # equivalent generated Python code, and this same file's
+    # `[tool.coverage.run] omit` entry for it.
+    - \.pb\.go$
+    # Dormant, deliberately-unimplemented gRPC extraction seam for Cache
+    # (see internal/cache/grpcserver/grpcserver.go's own header comment
+    # and docs/decisions/0002-cache-embedded-in-gateway.md) -- every
+    # method on both sides returns a fixed "not implemented" sentinel;
+    # there is nothing real to exercise until Cache is ever actually
+    # extracted into its own service.
+    - /internal/cache/grpcclient/
+    - /internal/cache/grpcserver/

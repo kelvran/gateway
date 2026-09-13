@@ -14,6 +14,9 @@ dist/
 build/
 evals/.ci-smoke-scores.jsonl
 evals/.ci-regression-corpus-scores.jsonl
+evals/.coverage
+evals/.coverage.*
+evals/htmlcov/
 
 # Editors / OS
 .DS_Store

@@ -24,6 +24,7 @@ dev = [
     "hypothesis>=6.167.1",
     "mypy>=2.3.1",
     "pytest>=8.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [build-system]
@@ -143,3 +144,15 @@ module = [
 ]
 ignore_errors = false
 strict = true
+
+[tool.coverage.run]
+source = ["evals"]
+# Required by python-coverage-comment-action's own Setup docs so the
+# paths recorded in `.coverage` are portable across the CI runner (and
+# any other checkout), not tied to one machine's absolute path.
+relative_files = true
+# Generated protobuf code -- machine-written by protoc, never
+# hand-edited. Mirrors this same file's own
+# `[tool.ruff] extend-exclude = ["evals/contracts"]` treatment of the
+# identical generated code.
+omit = ["evals/contracts/*"]
