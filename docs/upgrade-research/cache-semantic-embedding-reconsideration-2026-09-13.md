@@ -1,0 +1,90 @@
+# Cache: Semantic (Embedding-Based) Similarity Reconsideration — Research (2026-09-13)
+
+**Scope:** `gateway/internal/cache/lexical.go` implements Kelvran's L3-lite cache via MinHash/Jaccard similarity over 3-word shingles — deliberately lexical, never embedding-based, per that file's own package doc and `docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md`'s "honestly scoped as lexical near-duplicate matching, not semantic paraphrase understanding." A real 2026-09-13 production dry-run measured this precisely: a genuine paraphrase of a ~70-word explanation (different wording, same meaning) scored only ~0.0078 Jaccard against the original — a clean MISS, meaning Kelvran's cache currently provides **zero** benefit for actual semantic near-duplicate queries, only for near-verbatim typo-level variation (a single-synonym-swap scored ~0.9143, correctly HIT). Kelvran's own `THREAT_MODEL.md` already documents why a bare similarity threshold is dangerous without hard gating: "CacheAttack" (2026) demonstrated an 86% semantic-cache hijack rate via similarity-based key collision — Kelvran's mitigation is an entity/number/date hard-gate plus a freshness/risk model layered BEFORE any similarity check, not similarity alone. This research covers current (2026) production semantic-caching practice (GPTCache, Redis LangCache, AISIX, TrueFoundry) and how they combine hard-gating with embedding similarity to stay safe against CacheAttack-style hijacking. 18 of 25 claims survived 3-vote adversarial verification across 6 search angles (primary/architecture, security/adversarial, practitioner/case-study, cost/infra, contrarian/limitations, recent/vendor-updates) and 25 fetched sources.
+
+**Already shipped (not re-litigated):** the existing entity/number/date hard-gate + freshness/risk model on L3-lite, justified by the same CacheAttack 86% figure this research independently corroborates.
+
+---
+
+> **Corrected 2026-09-13 (post-write reconciliation, see `DECISIONS.md`'s same-dated entry for the full account):** this report's own findings below were written without cross-referencing `docs/upgrade-research/cache-semantic-embedding-readiness-round4-2026-09-11.md`, written two days earlier, which already (a) confirmed a real Go-native embedding-generation dependency blocker (no zero-CGo path exists) that keeps production embedding-L3 at `not_yet` regardless of this report's architecture/security findings, and (b) named an offline validation harness as `BUILD NOW` — which had, by the time this report was written, **already been built and run for real** against live AWS Bedrock Titan-v2 embeddings (`evals/scripts/validate_embedding_gate.py`, `DECISIONS.md`'s `[2026-09-11]` entry). Read this report's Finding 1/4/5 "build_now" verdicts as scoped narrowly to *architecture/security shape*, not as a green light to start building a live embedding-cache feature — the two triggers that actually gate the production feature (production miss-telemetry; a viable Go-native embedding path) still have not fired. This report's real, standing contribution is sharpening the safe-target-design case (TrueFoundry's 5-field hard-gate-before-embed pattern) for whenever those triggers do fire.
+
+## Executive Summary
+
+Embedding-based semantic caching is a mature, well-precedented pattern (GPTCache, Redis LangCache, AISIX, TrueFoundry) that would close Kelvran's confirmed lexical paraphrase-miss gap. However, 2026 academic literature is unusually clear that bare or lightly-defended embedding similarity is a real, exploitable attack surface — CacheAttack achieves an 86% LLM-response-hijack rate (independently corroborating Kelvran's own `THREAT_MODEL.md` figure), a 2026 NDSS paper demonstrates practical cache-poisoning across Azure/AWS/Alibaba production deployments with "ineffective" existing defenses, and even the best published defense-in-depth variant (SAFE-CACHE's cluster-centroid embeddings) only cuts attack success from 52.77% to 14.27% — never to zero. The one vendor whose shipped architecture most closely mirrors Kelvran's own philosophy, TrueFoundry, validates the right shape: hard-gate exact-match on structural fields first, embed only the volatile free-text content, and layer entity/keyword guards on top of similarity — i.e., **augment** the hard gate with embeddings, never **replace** it with a bare threshold. FreshCache (2026) is the strongest direct blueprint: its own adversarial test shows raw cosine similarity alone would approve 20/20 crafted false-entity pairs, while adding an NER-style entity hard gate blocks 15/20 — leaving a nontrivial 25% residual even with gating, which should set realistic expectations for Kelvran. Net: building an embedding-based L3/L3.5 tier *alongside* (not instead of) Kelvran's existing entity/number/date hard gate is well-supported by current evidence; verified infra-cost data (latency per lookup, vector-index cost at Kelvran's actual per-tenant scale) was **not found** in this research pass and remains an open gap.
+
+---
+
+## Findings
+
+### Finding 1 — Embedding-based semantic caching is mature, well-precedented, and would close the confirmed paraphrase-miss gap
+**Confidence: high** (5 merged claims, all 3-0 votes)
+
+GPTCache's multiple embedding backends (OpenAI API, ONNX, Hugging Face, Cohere, fastText), Redis LangCache's embedding-driven matching, AISIX Gateway's cosine-similarity feature, and TrueFoundry's shipped gateway all confirm this is a real, production architecture pattern, not a speculative one. 3-word-shingle Jaccard cannot capture "different wording, same meaning" the way embeddings can — one practitioner source measured genuine paraphrase pairs at 0.81–0.91 cosine similarity using `text-embedding-3-small`, squarely inside a typical hit threshold, versus Kelvran's own confirmed ~0.0078 Jaccard clean miss on the same class of input.
+
+**Verdict: build_now** — trigger: if the confirmed clean-miss rate on real paraphrases is judged unacceptable against Kelvran's target cache-hit-rate SLA, build an embedding-based L3 (candidate models: OpenAI `text-embedding-3-small` per TrueFoundry's SaaS default, or a self-hosted ONNX/BAAI-bge-m3-class model per GPTCache/FreshCache precedent) as an **additional** tier alongside — not replacing — the existing lexical MinHash/Jaccard L3-lite, since lexical still correctly catches near-verbatim/typo-level variation that a loosely-thresholded embedding match could over-generalize past.
+
+### Finding 2 — Every default/reference semantic-cache implementation gates on a bare similarity threshold, framing risk as accuracy, never security
+**Confidence: high** (5 merged claims, mostly 3-0)
+
+GPTCache's original 2023 design, a Nov-2024 production-oriented RAG-caching paper, and Redis LangCache's own official skill guide all gate cache hits with nothing more than a numeric similarity threshold plus TTL — and frame the associated risk purely as answer-relevance/accuracy (false positives/negatives), never as an adversarial security concern. None mention cache poisoning, hijacking, or CacheAttack-style key-collision defenses.
+
+**Verdict: not_yet (do not adopt as-shipped)** — trigger: none of these reference designs should be adopted verbatim; doing so would silently drop Kelvran's existing entity/number/date hard-gate and revert Kelvran to the exact bare-threshold posture its own `THREAT_MODEL.md` already rejected as insufficient given the CacheAttack precedent.
+
+### Finding 3 — Embedding-similarity semantic caches are a demonstrated, real 2026 attack surface, with no published defense reaching zero residual risk
+**Confidence: high** (4 merged claims, votes 3-0, 3-0, 3-0, 2-1)
+
+CacheAttack reports an 86% LLM-response-hijack rate via key-collision (independently corroborating Kelvran's own `THREAT_MODEL.md` citation). A separate NDSS 2026 paper is the first to demonstrate practical semantic-cache poisoning across Azure/AWS/Alibaba production LLM-serving deployments, finding existing defenses "ineffective," and even its own newly proposed mitigation achieves only partial, not complete, protection. SAFE-CACHE's cluster-centroid embedding architecture cuts adversarial attack success from 52.77% to 14.27% (~72% relative reduction) versus GPTCache's single-query embedding method — but never reaches zero (best case 8.0% even at an optimized threshold).
+
+**Verdict: not_yet for any bare/naive embedding L3** — never ship a plain nearest-neighbor embedding similarity check without a preceding hard gate; even the best published defense (cluster-centroid SAFE-CACHE) leaves double-digit residual hijack risk. **build_now for the gated variant** — once Kelvran's existing entity/number/date + freshness/risk hard gate (already justified by this same 86% CacheAttack figure) is confirmed to run strictly BEFORE any similarity check, layering an embedding step behind it is supported; similarity-threshold tuning alone must never be treated as a substitute for that hard gate.
+
+### Finding 4 — FreshCache (2026) is the strongest direct blueprint, and its own adversarial test sets realistic residual-risk expectations
+**Confidence: high** (2 merged claims, both 3-0, concrete primary-source numbers)
+
+FreshCache — the academic paper structurally closest to Kelvran's own layered design — formally requires embedding similarity AND an independent staleness/risk gate as a conjunction (never similarity alone): `sim(q,q′) ≥ θ ∧ P(stale) ≤ ε`. Its own adversarial evaluation shows raw cosine similarity alone would approve all 20 of 20 crafted false-entity-match pairs (cosine up to 0.950), while an NER-based entity hard gate blocks 15 of those 20 — leaving 5/20 (25%) still unresolved by entity-gating alone.
+
+**Verdict: build_now** — this is the strongest available blueprint for Kelvran's augmentation: implement embedding similarity as a candidate-generation step, then require Kelvran's existing entity/number/date hard gate (or an NER-equivalent) as an AND-condition before serving. Trigger: as soon as an embedding-L3 prototype exists, replicate this 20-adversarial-pair test methodology to size Kelvran's own residual-miss rate (expect a nontrivial double-digit-percent residual even after gating, per FreshCache's own 5/20 result) before calling it production-safe.
+
+### Finding 5 — TrueFoundry's shipped architecture is the closest validated precedent to Kelvran's own design philosophy
+**Confidence: medium** (AISIX claims high/primary vendor docs; TrueFoundry claims medium — vendor blog with a self-serving angle)
+
+AISIX Gateway defaults to per-API-key caller-scope isolation (not shared) plus a tunable similarity threshold, explicitly warning that values below 0.9 "noticeably increase wrong-answer risk." TrueFoundry implements the structurally closest analog to Kelvran's own design: an exact-match hard gate on structural request fields (system prompt, model, temperature, conversation history, tenant ID) that must pass BEFORE any embedding comparison, embedding only the final/volatile user message, plus an explicit argument that entity/keyword guards are additionally required because "embeddings capture topical similarity, not logical equivalence."
+
+**Verdict: build_now** — adopt TrueFoundry's structural pattern as the closest validated precedent: hash-exact-match rigid fields (tenant, model, params, prior turns — already partially mirrored by Kelvran's tenant partitioning) as a gate ahead of similarity, embed only the free-text portion, and keep Kelvran's entity/number/date guard as the analog to TrueFoundry's entity/keyword guard. Trigger: use this five-field hard-gate checklist when scoping the embedding-L3 design doc.
+
+### Finding 6 — Real infra-cost data (latency, vector-index cost) at Kelvran's actual scale was not found
+**Confidence: low** (single vendor source, narrow scope, no independently verified benchmark)
+
+TrueFoundry's SaaS offering defaults to a fixed, non-configurable OpenAI `text-embedding-3-small` model, while self-hosted deployments allow swapping the embedding model gateway-wide via a settings panel — but no confirmed claim in this research batch quantified per-lookup latency or vector-index cost at Kelvran's actual per-tenant cache scale. (Separately-sourced, non-adversarially-verified practitioner blogs suggested embedding-based lookups run ~40–100x slower than a direct hash lookup — e.g. ~18ms local ONNX / ~57ms cloud OpenAI-embedding vs ~0.5ms hash lookup, against a ~2300ms baseline uncached LLM call — but these figures come from single blog sources outside this pass's adversarial-verification set and should be treated as directional, not confirmed.)
+
+**Verdict: not_yet** — trigger: run a dedicated latency/cost benchmark (embedding-model call latency + vector-index build/query cost at Kelvran's real per-tenant volume) as its own spike before committing to embedding infra; `text-embedding-3-small` (managed) vs. a self-hosted ONNX/bge-m3-class model (per GPTCache/FreshCache precedent) are the two default candidates to benchmark against each other and against the current zero-latency lexical L3-lite.
+
+---
+
+## Synthesis: build_now vs not_yet
+
+| Item | Verdict | Effort | Why |
+|---|---|---|---|
+| Embedding-based L3.5, additional tier alongside lexical L3 | **build_now** | Medium — new subsystem | Closes confirmed real paraphrase-miss gap; lexical L3 stays for typo/near-verbatim tolerance |
+| Adopting a reference implementation's bare similarity-threshold gate as-is | **not_yet (avoid)** | N/A | Would silently drop Kelvran's own entity/freshness hard-gate, reverting to a posture `THREAT_MODEL.md` already rejected |
+| Gated embedding similarity (hard-gate BEFORE similarity, never instead of) | **build_now** | Medium | Only safe shape supported by current evidence; matches TrueFoundry's own precedent |
+| Bare/naive embedding similarity with no preceding hard gate | **not_yet (avoid)** | N/A | Real, demonstrated attack surface (CacheAttack, NDSS 2026); no published defense reaches zero |
+| TrueFoundry's 5-field structural hard-gate-before-embed pattern | **build_now** | Small-medium — design checklist | Closest validated precedent; reuses Kelvran's existing tenant partitioning |
+| Real latency/vector-index cost benchmark at Kelvran's scale | **not_yet** | Small — a spike | No confirmed data found this pass; needed before committing to embedding infra |
+
+---
+
+## Caveats
+
+- A refuted claim (0-3 vote) had argued CacheAttack's core thesis implies swapping lexical for embedding similarity would import the exact same vulnerability class as a mathematical inevitability (avalanche/collision-resistance tension) — that specific framing was **not** supported. The findings above stop at "embedding similarity is a demonstrated attack surface needing hard-gating," not "embedding is categorically worse than lexical."
+- There is an unresolved internal inconsistency in the Redis evidence: one claim ("Redis's official skill-guide workflow has no entity/freshness gate") was confirmed 3-0, while a very similarly-worded claim ("Redis's documented, user-facing safety knob... is a bare similarity threshold... no entity/freshness gate") was refuted 0-3 — the scope distinction between "skill-guide workflow" and "user-facing safety knob" needs re-verification before citing Redis as a clean "no hard gate" example in any downstream document.
+- SAFE-CACHE's and several TrueFoundry claims were split votes (2-1), reflecting either a vendor self-serving angle (TrueFoundry blogs about a feature it sells) or single-model dissent on interpretation — weight these as directionally reliable but not unanimous.
+- All four core adversarial/security papers (CacheAttack, NDSS semantic-cache-poisoning, SAFE-CACHE, FreshCache) are from January–August 2026 — this is a fast-moving research area and best-practice mitigations may shift within months.
+- GPTCache is reportedly in limited-maintenance mode ("no longer add support for new API or models" per its own repo) — relevant if Kelvran considered adopting the library directly rather than building custom logic informed by its design.
+- A related, separately-run research pass (`docs/upgrade-research/cache-production-semantic-caching-2026-09-11.md` and `docs/upgrade-research/cache-semantic-embedding-readiness-round4-2026-09-11.md`, both from two days earlier) already exists on adjacent ground — cross-check against those before scoping an implementation RFC, to avoid duplicating settled findings.
+
+## Open Questions
+
+1. What is the actual latency and vector-index cost of adding embedding-based similarity search at Kelvran's real per-tenant cache scale? No claim in this batch quantified this — it needs a dedicated benchmarking spike.
+2. Would Kelvran's existing entity/number/date hard gate, kept in front of an embedding L3, achieve a better residual-risk profile than FreshCache's NER gate (which still misses 5/20 adversarial pairs), or does Kelvran need to add numeric/date-normalization matching too, as GPTCache's own paper flags as an unimplemented "future challenge"?
+3. Which embedding model should Kelvran standardize on — a managed API (OpenAI `text-embedding-3-small`, per TrueFoundry's SaaS default) versus a self-hosted model (ONNX/ALBERT per GPTCache, or BAAI/bge-m3 per FreshCache) — and does Kelvran have a data-residency/PII policy that would rule out sending tenant prompt text to a third-party embedding API?
+4. Why did the two near-identical Redis LangCache claims about "no entity/freshness hard gate" diverge in vote outcome (3-0 confirmed vs. 0-3 refuted) — is there a genuine scope distinction in Redis's own documentation that a follow-up verification pass should resolve before Redis is cited as a comparison point?
