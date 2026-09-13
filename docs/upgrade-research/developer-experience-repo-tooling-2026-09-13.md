@@ -1,0 +1,41 @@
+# Developer Experience & Local Repo Tooling — Research (2026-09-13)
+
+> **Recovery note:** the synthesizing subagent explicitly declined to write this file itself ("report/findings files are explicitly out of scope for me to write"), returning the full structured result for the parent session to persist instead. Written here from that returned data. One of the underlying verification agents in this pass failed on a schema-validation retry cap (disclosed by the workflow itself) — its vote is simply absent from the tally below, not silently substituted.
+
+**Scope:** Local dev workflow/scripts/docs generation — explicitly excluding GitHub Actions CI/CD process automation and security scanning (separate parallel passes own those).
+
+**Already shipped (not re-litigated):** root `Makefile` (`make lint`/`test`/`verify`/`build`), `scripts/README.md`, `docs/testing/TESTING.md`, `.gitignore`-based secrets discipline, the two-tier `AGENTS.md`/`CLAUDE.md` agent-instruction system, `docs/agents/LOGS.md`/`DECISIONS.md`/`MEMORY.md` session-continuity files.
+
+## Findings
+
+1. **A devcontainer or Nix flake is not a justified investment at this stage.** If Nix is ever adopted, `devenv`'s own docs recommend the dedicated CLI over the Flakes integration this repo would default to (Flakes usage specifically loses container support, GC protection, and pure evaluation). A separate, real argument: Nix should only be adopted once more than one person will maintain it — a lone Nix expert is a single point of failure. **`not_yet`** — trigger: a second committed maintainer joins. *(Medium confidence — this rests on the Nix-specific single-point-of-failure argument alone; two adjacent "just use a Makefile"/"mise for small teams" claims that would have broadened this case were explicitly refuted on adversarial verification.)*
+
+2. **Local pre-commit hooks are mechanically well-suited here, but the usual "faster feedback than CI" case doesn't hold up.** `pre-commit` genuinely provisions each hook's own isolated toolchain (a Go repo can run a Python-ecosystem hook without adding that ecosystem to the project) — directly applicable to `gateway/`+`evals/`. But three claims that would have made the strongest case for *local* hooks specifically were refuted under verification, and direct inspection confirms Kelvran's CI already runs the identical checks (`golangci-lint`, `go vet`, `go test -race`, `ruff check`, `buf lint/breaking`) on every push via `make verify`. Net: adding local hooks would occasionally save a "push, CI fails on a stray import order, fix, push again" cycle — a modest win, not the dramatic DX improvement sometimes claimed. **`build_now`-with-caveat** (the hooks themselves, low effort) — explicitly **not** `pre-commit.ci` (a third-party GitHub App with PR write access, which sits at a boundary this pass deliberately left to the security/CI-automation passes to decide).
+
+3. **The gateway's real 10-route HTTP surface has zero OpenAPI/Swagger spec anywhere — a genuine, live-verified gap, but not yet worth closing.** Direct grep confirms exactly 10 real routes (`/v1/chat/completions`, `/healthz`, plus 8 `/admin/...` routes for config/virtual-key/prompt CRUD) on a bare `http.NewServeMux()` — no chi/gin/echo dependency. Zero `*openapi*`/`*swagger*` files exist anywhere (`api/`'s buf-managed protobuf contract is a different, internal cross-language surface). **Huma** or **Fuego** (both code-first, generating OpenAPI 3.1 directly from existing stdlib handlers — Huma explicitly supports a bring-your-own-router integration matching Kelvran's actual code) are the concrete tools whenever the trigger arrives — not `swag` (stuck on Swagger 2.0, manual UI-wiring) or `oapi-codegen` (wrong direction — spec-to-code, and Kelvran has no spec to start from). Retrofitting either framework onto the 10 existing handlers is bounded but real migration work, not zero-effort. `gateway/ARCHITECTURE.md`'s existing prose documentation is sufficient for the current single-maintainer audience. **`not_yet`** — trigger: a documented external API consumer beyond the pilot.
+
+4. **pkg.go.dev is live-verified stale — the strongest finding in this pass, a real bug not a hypothesis.** Fetching `pkg.go.dev/github.com/kelvran/gateway/gateway` directly (2026-09-14) shows exactly ONE indexed version — `v0.1.0`, dated Sep 3, 2026 — with a "not in the latest version of its module" warning, despite real tags existing through `gateway/v0.10.1`. pkg.go.dev/proxy.golang.org indexing is **not** automatic from a git tag+push alone; it requires an explicit trigger (`GOPROXY=proxy.golang.org go list -m github.com/kelvran/gateway/gateway@v0.10.1`, or the site's own "Request" button). A related claim that pkg.go.dev can get permanently stuck was explicitly refuted — this is a one-time, low-risk fix. **`build_now`.**
+
+5. **No `.editorconfig` exists, and the repo has a substantial non-Go/non-Python surface `gofmt`/`ruff` cannot touch.** Direct check confirms no `.editorconfig` file. Beyond the two primary languages (already normalized), the repo has real weight in YAML (`.github/workflows/*.yml`), proto (`api/*.proto`, `buf.yaml`), and large Markdown files (`DECISIONS.md`, `STATUS.md`, `THREAT_MODEL.md`, `AGENTS.md`, etc.) with no cross-editor baseline (charset, final-newline, trailing-whitespace, indent-style). **`build_now`** *(low confidence — this finding came from direct observation during synthesis, not the adversarially-verified claim batch; research question 5 was otherwise left unanswered by the verification swarm).*
+
+## Caveats
+
+The single-maintainer premise behind Findings 1-2 is drawn from prior session memory, not independently re-confirmed via `CODEOWNERS` contents or `git log` authorship in this pass. The pkg.go.dev finding (4) is a live spot-check at 2026-09-14 and will correctly change the moment the fix command is run — re-check before citing as still-stale afterward. Several intuitive best-practice claims the swarm tested were explicitly refuted (Makefile-as-default-stopping-point, mise-for-small-teams, "pkg.go.dev auto-indexes in minutes," "kin-openapi generates specs from code," "pre-commit.ci needs no extra config," "local hooks give faster feedback than CI") — excluded from the findings above, but their rejection is itself informative given the research brief's own instruction to avoid generic best-practices assumptions. `DECISIONS.md`/`docs/agents/LOGS.md` were not checked for any prior explicit rejection of a devcontainer/pre-commit/OpenAPI proposal — worth a quick check before actually proposing any of these, per this repo's own "check DECISIONS.md before re-deciding something already settled" convention.
+
+## Open Questions
+
+- Does Kelvran have (or plan) any external API consumer beyond the current pilot that would justify a formal OpenAPI 3.1 spec via Huma/Fuego — the exact trigger Finding 3 is gated on, unresolved here.
+- Is Kelvran genuinely single-maintainer today, or are there already co-maintainers (`CODEOWNERS` exists but its contents weren't read in this pass) — this would flip the Nix/devcontainer calculus from `not_yet` toward worth-it.
+- Would a hosted `pre-commit.ci`-style autofix bot (third-party GitHub App with PR write access) be acceptable on a repo that maintains its own `THREAT_MODEL.md`/`SECURITY.md` and SHA-pins its Actions — sits at a boundary this pass deliberately left to the security/CI-automation passes.
+- Should the pkg.go.dev re-index be a manual one-off now, or wired into the (currently deliberately manual) `RELEASE.md` runbook so every future tagged release stays indexed automatically?
+
+## Synthesis: build_now vs not_yet
+
+| Item | Verdict | Why |
+|---|---|---|
+| pkg.go.dev re-index | **build_now** | Live-verified stale; one command fixes it |
+| `.editorconfig` | **build_now** | Zero-cost; closes a real gap for the non-Go/Python surface |
+| Local pre-commit hooks (gofmt/golangci-lint/ruff) | **build_now-with-caveat** | Modest, real win; CI already gates identically |
+| `pre-commit.ci` hosted autofix | **deferred** | Boundary question for the security/CI-automation passes, not this one |
+| Devcontainer / Nix flake | **not_yet** | Trigger: a second committed maintainer |
+| OpenAPI spec (Huma/Fuego) | **not_yet** | Trigger: a documented external API consumer beyond the pilot |
