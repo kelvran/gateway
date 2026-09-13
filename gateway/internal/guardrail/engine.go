@@ -61,8 +61,20 @@ func (e *Engine) Check(ctx context.Context, text string) Verdict {
 			}
 		}
 	}
+	// A Warn-tier category's own findings (prompt_injection, contact_info,
+	// network_id) never set Blocked, but they still deserve a log line --
+	// "fail-open-with-logging" (gateway/ARCHITECTURE.md's Guardrails
+	// Subsystem section) is only true if the "with-logging" half is real.
+	// Before this, a non-blocking finding was recorded on Verdict.Findings
+	// but every one of this Engine's 4 call sites (dataplane.go/
+	// streaming.go, pre-call and post-call) only ever inspects
+	// verdict.Blocked -- so a Warn-tier detection had zero log output,
+	// zero metric, zero audit trail anywhere, indistinguishable from the
+	// detector never firing at all.
 	if verdict.Blocked {
 		e.logger.Warn("guardrail_verdict_blocked", "finding_count", len(verdict.Findings))
+	} else if len(verdict.Findings) > 0 {
+		e.logger.Warn("guardrail_verdict_warn", "finding_count", len(verdict.Findings))
 	}
 	return verdict
 }
