@@ -220,6 +220,24 @@ jobs:
   # it. push-only (never on a pull_request): a fork PR wouldn't have
   # packages: write, and even a same-repo PR shouldn't publish an image
   # for an unmerged change.
+  #
+  # SBOM + cosign signing + SLSA provenance (added once this job's own
+  # existence closed the prerequisite gap): per that same research's own
+  # Findings 1-3, this reaches SLSA Build Level 2 "by default" on
+  # GitHub-hosted runners with zero long-lived key management -- cosign's
+  # keyless signing exchanges this job's own OIDC token for a short-lived
+  # Fulcio cert (Finding 1); Syft-class SBOM generation is a one-step CI
+  # operation, CycloneDX format per that research's own tooling-momentum
+  # note (Finding 2); `actions/attest-sbom`/`attest-build-provenance` are
+  # GitHub's own native, currently-maintained path -- deliberately NOT
+  # the deprecated `slsa-github-generator` project (Finding 5's own
+  # "avoid this" verdict). All attestations are signed and pushed to the
+  # SAME image digest `docker/build-push-action` just produced, not a
+  # mutable tag, so they stay bound to the exact artifact built. SLSA
+  # Build Level 3 (a reusable-workflow isolation boundary) stays
+  # correctly out of scope per that research's own Finding 4 -- no named
+  # trigger (external consumer demand, or outside contributors with
+  # workflow-file write access) has fired.
   publish-image:
     name: publish gateway image to GHCR
     runs-on: ubuntu-latest
@@ -228,6 +246,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Log in to GHCR
@@ -237,6 +257,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push gateway image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: ./gateway
@@ -244,3 +265,30 @@ jobs:
           tags: |
             ghcr.io/kelvran/gateway:latest
             ghcr.io/kelvran/gateway:sha-${{ github.sha }}
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+      - name: Sign the published image (keyless, via GitHub OIDC)
+        # Keyless signing has been cosign's stable, default mode since
+        # v2.0 -- no COSIGN_EXPERIMENTAL flag needed, matching the real
+        # current example workflows this session's own research verified
+        # (tracelane/tracelane, j-dahl7/container-sbom-signing-attestation).
+        run: cosign sign --yes "ghcr.io/kelvran/gateway@${{ steps.build.outputs.digest }}"
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: "ghcr.io/kelvran/gateway@${{ steps.build.outputs.digest }}"
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+      - name: Attest SBOM
+        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2.4.0
+        with:
+          subject-name: ghcr.io/kelvran/gateway
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: sbom.cdx.json
+          push-to-registry: true
+      - name: Attest build provenance (SLSA Build Level 2)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/kelvran/gateway
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
