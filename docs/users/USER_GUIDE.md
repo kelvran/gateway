@@ -39,7 +39,51 @@ Clients authenticate with `Authorization: Bearer <the raw secret>` — never the
 
 **Not implemented yet:** the "teams" hierarchy (a key inheriting a team's budget/rate-limit ceiling) and live, no-restart key provisioning — both remain flat, single-level, static-YAML-only for now, per that RFC's explicit scope boundary.
 
-## 4. Routing & Failover Configuration
+## 4. Calling Kelvran (Client Integration)
+
+Kelvran has no first-party client SDK, and none is currently planned absent validated demand
+(`docs/upgrade-research/client-sdk-strategy-2026-09-13.md`) — this is a deliberate choice, not a
+gap. Kelvran's wire format is OpenAI's Chat Completions API shape (`gateway/internal/adapter/
+openai/`), both buffered and SSE-streaming, so the fastest and most durable integration path is
+pointing an existing OpenAI SDK at Kelvran instead of calling it with raw HTTP yourself — the same
+pattern peer gateways (LiteLLM Proxy, Vercel AI Gateway) document as their own primary integration
+path, not a fallback:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://your-kelvran-host/v1",
+    api_key="<the raw virtual-key secret from Section 3, never the hash>",
+)
+resp = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "hi"}])
+```
+
+```javascript
+import OpenAI from "openai";
+const client = new OpenAI({ baseURL: "https://your-kelvran-host/v1", apiKey: "<the raw secret>" });
+const resp = await client.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] });
+```
+
+This already proves out end-to-end: a separate project's own unmodified client SDK code (no
+Kelvran-specific patch of any kind) has successfully called a live Kelvran deployment this way.
+
+**Extension fields, not standard OpenAI ones.** Responses may carry a `reasoning_blocks` array
+(`adapter.Message.ReasoningBlocks`, per `docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-
+schema.md`) on assistant messages from providers that support extended thinking (Anthropic,
+Bedrock, Gemini). This is additive JSON, not part of OpenAI's own wire format — an OpenAI SDK
+simply ignores fields it doesn't recognize, so no client code breaks by default; if you need to
+read reasoning content, echo the exact `reasoning_blocks` value back unmodified on any later turn
+in the same conversation that includes a tool result, or Anthropic/Bedrock's own Claude Messages
+API returns a hard 400 further upstream.
+
+**Retry/backoff for raw HTTP callers** (if you're not using an SDK with its own retry logic): back
+off on `408`/`409`/`429`/`5xx`, exponential with jitter, mirroring the defaults official OpenAI/
+Anthropic SDKs already ship — a `429` from Kelvran means either a virtual key's own rate limit or
+its budget was exceeded (Section 3), distinguishable only by the response body's error message,
+not the status code alone.
+
+## 5. Routing & Failover Configuration
 
 Real for static + weighted routing and a single same-model fallback attempt, per `docs/rfcs/2026-09-04-weighted-routing.md`. Multiple `deployments:` entries sharing one `model` value form that model's routing pool; each gets an optional `weight` (integer, omit or `0` for equal-weight round-robin — today's default):
 
@@ -63,7 +107,7 @@ deployments:
 
 Selection is weighted round-robin (`gateway/internal/router`); on an upstream error, exactly one fallback attempt is made to another deployment in the same model's pool — never a retry loop, never a second fallback. **Not implemented yet:** named model *groups* (falling back to a different canonical model, not just a different deployment of the same one), an explicit fallback-chain list, and usage/latency/cost-based selection signals — none of these are in `PRD.md`'s v1 scope.
 
-## 5. Cache Configuration
+## 6. Cache Configuration
 
 Real for all three layers. L1 (exact-match) and L2 (normalized-match — outer whitespace trim, Unicode NFC, trailing terminal punctuation strip; deliberately not internal-whitespace collapsing or case-folding, since agent traffic can include pasted code) per `docs/rfcs/2026-09-03-cache-l2-normalized-match.md`; L3-lite (MinHash/shingling lexical near-duplicate matching, entity/number/date hard-gated, never real embedding-based semantic similarity) per `docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md`. The whole `cache:` section is optional — omit it for L1's 5-minute/L2's 75-second/L3's 5-minute TTL defaults, each capacity-bounded (LRU, 10,000 entries):
 
@@ -81,11 +125,11 @@ cache:
 
 **Never disable the entity/freshness hard-gate to chase a higher hit rate.** This isn't a suggestion: `AGENTS.md`'s Boundaries section lists this as a hard "Never," specifically because of the CacheAttack finding in `THREAT_MODEL.md` (an 86-90% response-hijack rate against exactly this kind of unguarded semantic cache) — and there is no config knob that weakens it; the hard-gate is unconditional in code, not a setting.
 
-## 6. MCP/A2A Tool Brokering
+## 7. MCP/A2A Tool Brokering
 
 *(Not implemented yet — v2 per `PRD.md`'s scope.)* Registering an MCP server or A2A agent will go through the same identity/budget objects as outbound LLM routing, per `gateway/ARCHITECTURE.md`'s MCP/A2A Subsystem section. Auth-passthrough is intentionally limited — see `THREAT_MODEL.md`'s Cross-Component MCP/A2A row for why.
 
-## 7. Observability
+## 8. Observability
 
 Real OTel spans on every request (buffered and streaming), per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md`: GenAI semantic-convention attributes, `agent_run_id` propagated via W3C Baggage from the first line of the pipeline through to span close, queryable end to end. Optional `telemetry:` config section — omit for the "stdout" default (spans printed locally, nothing shipped anywhere):
 
@@ -97,7 +141,7 @@ telemetry:
 
 See `docs/operations/TELEMETRY.md` for the full SLI/dashboard/alerting picture (that operator-facing layer — dashboards, alerting rules — is not part of `gateway` itself and is tracked separately from this real, shipped span-emission mechanism).
 
-## 8. Running Your First Eval Suite
+## 9. Running Your First Eval Suite
 
 Real end to end: a `Run` model, JSONL Results Store, `Score` model + persistence, and real Anthropic-backed LLM-judge wiring are all shipped, per `docs/rfcs/2026-09-04-evals-rollout-scheduler.md`/`2026-09-04-evals-llm-judge-provider-wiring.md`/`2026-09-04-evals-score-model.md`.
 
@@ -120,10 +164,10 @@ evals report --scores out/scores.jsonl
 
 Never a bare pass rate — every `report` output carries a Wilson confidence interval, per `evals/ARCHITECTURE.md`'s harness-transparency design. v1 scoring is a single LLM-judge with bias mitigations (CoT-forcing, reference-guided grading, judge model always ≠ policy model); the adversarial skeptic-panel upgrade is v2 — don't expect panel-level rigor from the first working version, and this guide won't overclaim it once it exists either.
 
-## 9. Upgrading
+## 10. Upgrading
 
 See `UPGRADE.md` for the actual migration steps once a breaking change ships in a release (currently empty — none has, though a breaking `evals` CLI change is already on `main` ahead of its next release).
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 Common misconfigurations will be documented here once there's a real system to misconfigure. For anything not covered, see `SUPPORT.md`.
