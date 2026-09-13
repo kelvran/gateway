@@ -2966,13 +2966,13 @@ def trend_alert_cmd(
     # exception, not a case to silently swallow.
     if webhook_url is not None and alerts:
         body = json.dumps({"alerts": [asdict(a) for a in alerts]}).encode("utf-8")
-        request = urllib.request.Request(
+        request = urllib.request.Request(  # noqa: S310 -- webhook_url is an operator-supplied CLI flag, never external/untrusted input
             webhook_url,
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        urllib.request.urlopen(request, timeout=10)
+        urllib.request.urlopen(request, timeout=10)  # noqa: S310 -- same operator-supplied webhook_url, never external/untrusted input
 
 
 if __name__ == "__main__":

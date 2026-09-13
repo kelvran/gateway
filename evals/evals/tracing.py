@@ -96,9 +96,9 @@ def finish_sandbox_span(
     otel_span.end()
 
     finished = _processor.last_span
-    assert finished is not None, "on_end fires synchronously inside span.end()"
+    assert finished is not None, "on_end fires synchronously inside span.end()"  # noqa: S101 -- internal OTel SDK invariant check, not user-facing validation
     ctx = finished.get_span_context()
-    assert ctx is not None
+    assert ctx is not None  # noqa: S101 -- same internal invariant, not user-facing validation
 
     return Span(
         span_id=format(ctx.span_id, "016x"),

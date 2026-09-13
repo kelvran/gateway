@@ -59,7 +59,10 @@ extend-exclude = ["evals/contracts"]
 #     matters here specifically because `EvalCase` is documented as
 #     immutable-by-convention and `judge()`/`run_in_sandbox()` are
 #     asyncio-orchestrated per AGENTS.md's Python conventions.
-select = ["E", "F", "I", "UP", "B"]
+# S: ruff's native re-implementation of flake8-bandit (no separate
+#    `bandit` dependency needed) — code-level security-pattern checks
+#    distinct from pip-audit's known-CVE-only dependency scanning.
+select = ["E", "F", "I", "UP", "B", "S"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["evals"]
@@ -73,3 +76,19 @@ known-first-party = ["evals"]
 # analogous to the hand-rolled-parser exemption pattern, not a blanket
 # E501 disable.
 "tests/test_llm_judge_prompt_golden.py" = ["E501"]
+# Test-only false-positive classes, all confirmed by direct triage
+# rather than blanket-disabled on assumption:
+# S101 (assert) — pytest's own idiom for every assertion in the suite;
+#   asserts are stripped under `python -O` in production code, never in
+#   test files run directly by pytest.
+# S603/S607 (subprocess call / partial executable path) — real calls to
+#   `git`/`docker` in test code that exercises corpus_staleness.py's and
+#   the sandbox integration test's own subprocess-calling behavior;
+#   fixed, literal executable names, never external/attacker input.
+# S311 (weak PRNG) — `random.Random(seed)` used for deterministic
+#   Monte Carlo simulation of a statistical test's false-positive/power
+#   rate (test_stats_properties.py), never cryptographic material.
+# S105 (hardcoded password) — fires on `pass_response = "...VERDICT:
+#   PASS..."`, a judge-verdict test fixture whose variable name merely
+#   starts with "pass"; not a credential.
+"tests/*" = ["S101", "S603", "S607", "S311", "S105"]

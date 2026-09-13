@@ -145,8 +145,8 @@ def _git_date(repo_root: Path, args: list[str]) -> str | None:
     corpus-wide scan over one bad citation.
     """
     try:
-        result = subprocess.run(
-            ["git", *args],
+        result = subprocess.run(  # noqa: S603 -- args are internally-constructed git subcommand flags, never external input
+            ["git", *args],  # noqa: S607 -- "git" is a fixed literal, not a partial/attacker-controlled path
             cwd=repo_root,
             capture_output=True,
             text=True,
