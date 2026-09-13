@@ -1,0 +1,68 @@
+name: CodeQL
+
+# Real source-code SAST for this polyglot repo -- distinct from govulncheck
+# (gateway) and pip-audit (evals) in ci.yml, which are dependency-CVE
+# scanners, not source-code scanners. No CodeQL default setup is configured
+# for this repo (verified via `gh api repos/kelvran/gateway/code-scanning/
+# default-setup` -> state: "not-configured"), so this advanced-setup
+# workflow does not conflict with it. Public repo, so GitHub Advanced
+# Security / CodeQL is free.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, offset from evals-judge-nightly.yml's own 07:00 UTC slot to
+    # avoid runner contention.
+    - cron: "0 3 * * 1"
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      # Minimum set CodeQL's own docs specify for an advanced-setup workflow
+      # in a public repo.
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # gateway/go.mod is one directory below repo root (module path
+          # github.com/kelvran/gateway/gateway) -- verified for real
+          # (github/codeql/go/extractor/autobuilder's Autobuild() source,
+          # and go-autobuilder.go's per-workspace extract()) that the Go
+          # autobuilder discovers go.mod files anywhere under the checkout
+          # and extracts each discovered workspace from its own BaseDir, so
+          # autobuild handles this subdirectory layout correctly despite
+          # this repo's own root-level Makefile (whose default target is
+          # just `help`, not a real build) being picked up as a candidate
+          # build script first.
+          - language: go
+            build-mode: autobuild
+          # Python is an interpreted language -- build-mode is always none.
+          - language: python
+            build-mode: none
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: setup-go (Go autobuild needs a real toolchain on PATH)
+        if: matrix.language == 'go'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26.8"
+          cache-dependency-path: gateway/go.sum
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Autobuild
+        if: matrix.build-mode == 'autobuild'
+        uses: github/codeql-action/autobuild@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          category: "/language:${{ matrix.language }}"
