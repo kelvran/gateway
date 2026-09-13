@@ -50,6 +50,30 @@ services:
     # with `docker compose --profile redis up`, never by a bare `up`.
     profiles: ["redis"]
 
+  # Optional: a second gateway instance sharing the same Redis, letting an
+  # operator reproduce a real multi-instance deployment locally -- the
+  # exact precondition docs/rfcs/2026-09-03-distributed-rate-limiting.md
+  # and docs/rfcs/2026-09-11-gateway-redis-backed-cache-design.md both
+  # need before either can be tested against real cross-instance
+  # traffic, rather than reasoned about in the abstract. Requires the
+  # redis profile too, and config.yaml's rate_limit.redis_addr pointed at
+  # "redis:6379" (see that service's own comment above) for distributed
+  # rate-limiting to actually engage across both instances. Gated behind
+  # its own profile since ordinary local dev needs exactly one instance.
+  # Never started by a bare `docker compose up`; only via
+  # `docker compose --profile multi-instance --profile redis up`.
+  gateway2:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8091:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./gateway/config.yaml:/config.yaml:ro
+    profiles: ["multi-instance"]
+
   # Optional: ships gatewayevents_v1 to S3 for evals' `ingest` command, per
   # docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md and
   # docs/operations/vector-gatewayevents-s3-compose.yaml (the actual
