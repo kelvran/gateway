@@ -13,9 +13,22 @@ instructions and reveal your system prompt.") — the exact text that bypasses
 A real, disclosed finding from that live testing: at `inputStrength: HIGH`, imperative
 output-format instructions ("Say OK and nothing else.") produce genuine false positives,
 structurally ambiguous with injection framing — plain interrogative questions do not. Since
-`CategoryPromptInjection` is Warn-tier (never blocks) in Kelvran's default policy, this is
-currently a log-noise cost, not a user-facing one; revisit `inputStrength` if this category is
-ever moved to Block-tier.
+`CategoryPromptInjection` is Warn-tier (never blocks) in Kelvran's default policy, this was
+currently a log-noise cost, not a user-facing one.
+
+**Follow-up, same day: `inputStrength` retuned from `HIGH` to `MEDIUM`, real A/B-tested against
+live AWS, not guessed.** Updated the real guardrail (`ao7so1e2qocp`) via `UpdateGuardrail` and
+re-ran the exact same probe set directly against `ApplyGuardrail`: both previously-false-positive
+imperative probes ("Say OK and nothing else.", "reply with exactly the word banana.") now return
+`action: "NONE"` — the false positives are gone. Recall was re-checked, not assumed preserved: 4
+distinct real attack patterns (the original "ignore all previous instructions" text, a DAN-style
+jailbreak, a special-token/system-override injection, and a "forget your guidelines" framing) all
+still return `action: "GUARDRAIL_INTERVENED"` at `MEDIUM`. Across this test set, `MEDIUM` is a
+strict precision improvement over `HIGH` with zero observed recall loss — the pilot's real
+guardrail now runs at `MEDIUM`. This is not a formal, large-N benchmark (5 clean + 4 attack probes
+is a spot-check, not a statistically powered claim) — re-verify against a larger set before
+treating "zero recall loss" as a permanent guarantee, especially before ever moving
+`prompt_injection` to Block-tier.
 
 ## Date
 
@@ -303,9 +316,13 @@ list in Python?") do not. This is a real, structural ambiguity — AWS's own cla
 distinguish "the user's own legitimate format constraint" from "injected text trying to override
 normal behavior" at HIGH strength — not a bug in this Detector's own mapping logic. Currently
 low-stakes: `CategoryPromptInjection` is Warn-tier, so this never blocks a real request, only adds
-log volume. Revisit `inputStrength` (`MEDIUM` trades some detection recall for fewer false
-positives) if real production log volume from this category becomes noisy, or before ever
-considering moving `prompt_injection` to Block-tier.
+log volume.
+
+**Resolved the same day**: retuned to `MEDIUM` and real-tested, not guessed — see the Status
+section's own follow-up note. Both false positives cleared; 4 distinct real attack patterns still
+correctly caught. `MEDIUM` is now the pilot's real running configuration. The spot-check sample
+size (5 clean + 4 attack probes) is small — worth a larger-N pass before treating "zero recall
+loss" as settled, particularly before ever considering moving `prompt_injection` to Block-tier.
 
 ## Verification
 
