@@ -267,11 +267,21 @@ jobs:
         # publishes). A plain push to main (ref_type != tag) never adds
         # a semver tag -- only a real, deliberate release tag does.
         id: tags
+        env:
+          # Bound via env:, never interpolated directly into the script
+          # below -- github.ref_name is attacker-influenceable text (a
+          # ref name), and a bare ${{ github.ref_name }} inside `run:`
+          # would text-substitute it into the shell source before
+          # parsing, a real GitHub Actions script-injection vector. An
+          # env var reference is data, never re-parsed as shell syntax.
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
           TAGS="ghcr.io/kelvran/gateway:latest
-          ghcr.io/kelvran/gateway:sha-${{ github.sha }}"
-          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == gateway/v* ]]; then
-            VERSION="${{ github.ref_name }}"
+          ghcr.io/kelvran/gateway:sha-${SHA}"
+          if [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == gateway/v* ]]; then
+            VERSION="${REF_NAME}"
             VERSION="${VERSION#gateway/}"
             TAGS="$TAGS
           ghcr.io/kelvran/gateway:${VERSION}"
