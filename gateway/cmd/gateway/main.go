@@ -171,6 +171,10 @@ func run(configPath string, logger *slog.Logger) error {
 	server := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: wrapHTTPServerSpan(mux),
+		// ReadHeaderTimeout: an unset value leaves this server open to a
+		// real Slowloris attack (a client trickling request headers in
+		// to hold a connection slot open indefinitely), caught by gosec.
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// adminServer is nil unless cfg.Admin.TokenEnv is set — the whole
@@ -197,8 +201,9 @@ func run(configPath string, logger *slog.Logger) error {
 			adminListenAddr = defaultAdminListenAddr
 		}
 		adminServer = &http.Server{
-			Addr:    adminListenAddr,
-			Handler: admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken}, logger),
+			Addr:              adminListenAddr,
+			Handler:           admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken}, logger),
+			ReadHeaderTimeout: 10 * time.Second,
 		}
 	}
 

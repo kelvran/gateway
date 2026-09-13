@@ -186,7 +186,7 @@ func TestLoadWithoutTelemetrySectionDefaultsToZeroValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestLoadCacheSectionParsesL1AndNestedL2(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncache:\n  ttl_seconds: 300\n  max_entries: 5000\n  l2:\n    ttl_seconds: 75\n    max_entries: 2000\n  l3:\n    ttl_seconds: 300\n    max_entries: 1000\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -255,7 +255,7 @@ func TestLoadPriceTableParsesCacheTokenRates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  claude-opus-4:\n    prompt_per_token: 0.000015\n    completion_per_token: 0.000075\n    cache_read_per_token: 0.0000003\n    cache_creation_per_token: 0.00001\n  gpt-4o:\n    prompt_per_token: 0.0000025\n    completion_per_token: 0.00001\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -305,7 +305,7 @@ func TestLoadRejectsPriceTableEntryMissingPromptPerToken(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  gpt-4o:\n    completion_per_token: 0.00001\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -322,7 +322,7 @@ func TestLoadRejectsPriceTableEntryMalformedCompletionPerToken(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  gpt-4o:\n    prompt_per_token: 0.0000025\n    completion_per_token: \"$0.00001\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -357,7 +357,7 @@ func TestLoadRejectsNegativePriceTableRate(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "config.yaml")
 			content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  gpt-4o:\n" + tt.priceBlock + "deployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 				t.Fatalf("WriteFile: %v", err)
 			}
 
@@ -376,7 +376,7 @@ func TestLoadCacheSectionParsesJitterFraction(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncache:\n  ttl_seconds: 300\n  jitter_fraction: 0.15\n  l2:\n    ttl_seconds: 75\n    jitter_fraction: 0.2\n  l3:\n    ttl_seconds: 300\n    jitter_fraction: 0.05\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -405,7 +405,7 @@ func TestLoadCacheSectionWithoutJitterFractionDefaultsToZero(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncache:\n  ttl_seconds: 300\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -425,7 +425,7 @@ func TestLoadGuardrailsSectionParsesPolicyVersionAndOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  policy_version: \"v2\"\n  category_overrides:\n    contact_info: \"block\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -448,7 +448,7 @@ func TestLoadWithoutGuardrailsSectionDefaultsToZeroValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -472,7 +472,7 @@ func TestLoadGuardrailsBedrockGuardrailsSectionParsesAllFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  bedrock_guardrails:\n    region: \"us-east-1\"\n    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\n    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n    guardrail_id: \"gr-abc123\"\n    guardrail_version: \"1\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -497,7 +497,7 @@ func TestLoadWithoutBedrockGuardrailsSubsectionLeavesItNil(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  policy_version: \"v2\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -519,7 +519,7 @@ func TestLoadBedrockGuardrailsMissingRequiredFieldErrors(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	// Missing guardrail_version.
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  bedrock_guardrails:\n    region: \"us-east-1\"\n    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\n    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n    guardrail_id: \"gr-abc123\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -536,7 +536,7 @@ func TestLoadRateLimitSectionParsesRedisAddr(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nrate_limit:\n  redis_addr: \"localhost:6379\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -557,7 +557,7 @@ func TestLoadBudgetSectionParsesPersistPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nbudget:\n  persist_path: \"kelvran-budget.db\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -575,7 +575,7 @@ func TestLoadMissingRequiredField(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	// Missing virtual_keys entirely.
 	content := "listen_addr: \":8080\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -588,7 +588,7 @@ func TestLoadRejectsVirtualKeyMissingHash(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    budget_usd: 10.0\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -610,7 +610,7 @@ func TestLoadBudgetUSDBareDigitIsNotMisreadAsBool(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: 1\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -636,7 +636,7 @@ func TestLoadBudgetResetIntervalSecondsUnsetDefaultsToZero(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: 10\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -656,7 +656,7 @@ func TestLoadBudgetResetIntervalSecondsParsesPositiveValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: 10\n    budget_reset_interval_seconds: 2592000\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -694,7 +694,7 @@ func TestLoadNumericBooleanLiteralsStillParseCorrectly(t *testing.T) {
 		"    upstream_model: \"m\"\n" +
 		"    base_url: \"https://x\"\n" +
 		"    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -715,7 +715,7 @@ func TestLoadRejectsDeploymentMissingFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -746,7 +746,7 @@ func minimalDeploymentConfig(extraDeploymentLines string) string {
 func TestLoadDeploymentWeightUnsetDefaultsToZero(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -767,7 +767,7 @@ func TestLoadDeploymentWeightUnsetDefaultsToZero(t *testing.T) {
 func TestLoadDeploymentWeightParsesPositiveValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    weight: 3\n")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    weight: 3\n")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -785,7 +785,7 @@ func TestLoadDeploymentWeightParsesPositiveValue(t *testing.T) {
 func TestLoadRejectsNegativeDeploymentWeight(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    weight: -1\n")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    weight: -1\n")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -802,7 +802,7 @@ func TestLoadRejectsNegativeDeploymentWeight(t *testing.T) {
 func TestLoadDeploymentCostTierUnsetDefaultsToZero(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -820,7 +820,7 @@ func TestLoadDeploymentCostTierUnsetDefaultsToZero(t *testing.T) {
 func TestLoadDeploymentCostTierParsesPositiveValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    cost_tier: 2\n")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    cost_tier: 2\n")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -839,7 +839,7 @@ func TestLoadDeploymentCostTierParsesPositiveValue(t *testing.T) {
 func TestLoadRejectsNegativeDeploymentCostTier(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    cost_tier: -1\n")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    cost_tier: -1\n")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -856,7 +856,7 @@ func TestLoadRejectsNegativeDeploymentCostTier(t *testing.T) {
 func TestLoadDeploymentDisableCacheControlAutoPopulateUnsetDefaultsToFalse(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -877,7 +877,7 @@ func TestLoadDeploymentDisableCacheControlAutoPopulateParsesTrue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := minimalDeploymentConfig("    disable_cache_control_auto_populate: true\n")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -897,7 +897,7 @@ func TestLoadDeploymentDisableCacheControlAutoPopulateParsesTrue(t *testing.T) {
 func TestLoadDeploymentSharedAcrossTenantsUnsetDefaultsToFalse(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -917,7 +917,7 @@ func TestLoadDeploymentSharedAcrossTenantsParsesTrue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := minimalDeploymentConfig("    shared_across_tenants: true\n")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -942,7 +942,7 @@ func TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists(t *testing
 		"      content_policy: \"safety-alt\"\n" +
 		"      context_window_exceeded: \"large-context-alt\"\n" +
 		"      generic: \"hop-1, hop-2 , hop-3\"\n"
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -978,7 +978,7 @@ func TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists(t *testing
 func TestLoadDeploymentWithoutFallbackChainsLeavesFieldNil(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1000,7 +1000,7 @@ func TestLoadRejectsUnknownFallbackChainClass(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	extra := "    fallback_chains:\n" +
 		"      contentpolicy_typo: \"safety-alt\"\n"
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1037,7 +1037,7 @@ func TestLoadRejectsNonPositivePerModelRateLimit(t *testing.T) {
 		"    upstream_model: \"m\"\n" +
 		"    base_url: \"https://x\"\n" +
 		"    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1074,7 +1074,7 @@ func TestLoadPerModelRateLimitParsesOptionalTPMFields(t *testing.T) {
 		"    upstream_model: \"m\"\n" +
 		"    base_url: \"https://x\"\n" +
 		"    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1117,7 +1117,7 @@ func TestLoadPerModelRateLimitWithoutTPMFieldsLeavesThemZero(t *testing.T) {
 		"    upstream_model: \"m\"\n" +
 		"    base_url: \"https://x\"\n" +
 		"    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1158,7 +1158,7 @@ func TestLoadRejectsPerModelRateLimitTPMCapacityWithoutRefill(t *testing.T) {
 		"    upstream_model: \"m\"\n" +
 		"    base_url: \"https://x\"\n" +
 		"    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1181,7 +1181,7 @@ func TestLoadDeploymentRateLimitParsesAllFields(t *testing.T) {
 		"      tpm_capacity: 100000\n" +
 		"      tpm_refill_per_second: 1000\n" +
 		"      max_concurrent_requests: 50\n"
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1210,7 +1210,7 @@ func TestLoadDeploymentRateLimitParsesAllFields(t *testing.T) {
 func TestLoadDeploymentWithoutRateLimitLeavesFieldsZero(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1235,7 +1235,7 @@ func TestLoadRejectsDeploymentRateLimitBurstWithoutRefill(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	extra := "    rate_limit:\n      burst: 500\n"
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1248,7 +1248,7 @@ func TestLoadRejectsDeploymentRateLimitTPMCapacityWithoutRefill(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	extra := "    rate_limit:\n      tpm_capacity: 100000\n"
-	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1278,7 +1278,7 @@ func TestLoadWithoutPerModelRateLimitsLeavesFieldNil(t *testing.T) {
 		"    upstream_model: \"m\"\n" +
 		"    base_url: \"https://x\"\n" +
 		"    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1317,7 +1317,7 @@ func minimalBedrockDeploymentConfig(extraDeploymentLines string) string {
 func TestLoadBedrockDeploymentDoesNotRequireAPIKeyEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(minimalBedrockDeploymentConfig("")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalBedrockDeploymentConfig("")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1356,7 +1356,7 @@ func TestLoadBedrockDeploymentMissingAccessKeyIDEnvFails(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1387,7 +1387,7 @@ func TestLoadBedrockDeploymentMissingRegionFails(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1413,7 +1413,7 @@ func TestLoadNonBedrockDeploymentStillRequiresAPIKeyEnv(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1432,7 +1432,7 @@ func TestLoadBedrockDeploymentWithSessionTokenEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := minimalBedrockDeploymentConfig("    session_token_env: \"AWS_SESSION_TOKEN\"\n")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1454,7 +1454,7 @@ func TestLoadWithoutAdminSectionDefaultsToZeroValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1474,7 +1474,7 @@ func TestLoadAdminSectionParsesListenAddrAndTokenEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  listen_addr: \"127.0.0.1:8081\"\n  token_env: \"KELVRAN_ADMIN_TOKEN\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1499,7 +1499,7 @@ func TestLoadWithoutHealthProbeSectionDefaultsToZeroValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1519,7 +1519,7 @@ func TestLoadHealthProbeSectionParsesFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nhealth_probe:\n  interval_seconds: 60\n  unhealthy_threshold: 5\n  healthy_threshold: 4\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1547,7 +1547,7 @@ func TestLoadHealthProbeSectionParsesRecoveryRampFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nhealth_probe:\n  interval_seconds: 60\n  unhealthy_threshold: 5\n  healthy_threshold: 4\n  recovery_ramp_steps: 6\n  recovery_ramp_initial_percent: 10\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 

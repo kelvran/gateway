@@ -23,6 +23,14 @@ version: "2"
 run:
   timeout: 5m
 
+# Real gotcha, hit live while adding gosec/bodyclose: golangci-lint's
+# default max-same-issues (3) silently truncates repeated findings of
+# the same rule+message, so fixing the first 3 shown just reveals the
+# next 3 on the following run rather than surfacing the true total.
+# Uncapped here so every real occurrence is visible in one pass.
+issues:
+  max-same-issues: 0
+
 linters:
   # errcheck, govet, staticcheck, ineffassign, and unused are
   # golangci-lint v2's own default-enabled set — this section makes that
@@ -46,6 +54,17 @@ linters:
     # %v/%s when wrapping an error, and comparisons/switches on error
     # values that would break errors.Is/errors.As.
     - errorlint
+    # gosec: code-level static+taint security analysis (SQL/command
+    # injection, SSRF, hardcoded credentials, weak crypto/TLS) -- a
+    # different mechanism from govulncheck, which only flags known-CVE
+    # dependency functions and can never catch a pattern in gateway's
+    # own source. Bundled in golangci-lint already, no new dependency.
+    - gosec
+    # bodyclose: gateway's literal job is proxying HTTP calls to model
+    # providers (cmd/gateway/main.go, internal/guardrail/bedrockguard,
+    # internal/gateway/dataplane) -- an unclosed response body here is a
+    # real connection-pool-exhaustion risk, not a theoretical one.
+    - bodyclose
   settings:
     staticcheck:
       checks:
@@ -65,6 +84,74 @@ linters:
         linters:
           - errcheck
         text: "Error return value of `.*\\.getString|.*\\.getFloat|.*\\.getMap` is not checked"
+      # config.go's Load reads the operator-supplied `-config` flag path
+      # (a local file this process's own operator controls, never
+      # attacker-reachable input) -- gosec's G304 can't distinguish that
+      # from a genuinely tainted path.
+      - path: internal/gateway/controlplane/config.go
+        linters:
+          - gosec
+        text: "G304"
+      # Test-fixture loaders reading a hardcoded "testdata/" prefix plus
+      # a test-controlled fixture name -- never external/attacker input.
+      # Every provider adapter package (anthropic/bedrock/gemini/openai/
+      # openaicompat) has this identical pattern in its own
+      # regression_test.go/stream_test.go, per docs/testing/TESTING.md
+      # §4's fixture-based testing convention.
+      - path: internal/adapter/.*_test\.go
+        linters:
+          - gosec
+        text: "G304"
+      # Both loops' own bounds already prove the index is safe (an
+      # equal-length check immediately before the loop in one case, a
+      # `stage > 0` guard derived from ranging over the same slice in
+      # the other) -- gosec's G602 can't trace either invariant.
+      - path: internal/adapter/openaicompat/openaicompat_test\.go
+        linters:
+          - gosec
+        text: "G602"
+      - path: internal/router/recovery_ramp_test\.go
+        linters:
+          - gosec
+        text: "G602"
+      # OTel GenAI semantic-convention attribute *names* (string
+      # constants like "gen_ai.usage.input_tokens") -- not credential
+      # values. gosec's G101 heuristic matches on the surrounding
+      # "Attr... = ..." shape, not the actual string content.
+      - path: internal/telemetry/result\.go
+        linters:
+          - gosec
+        text: "G101"
+      # G101 in _test.go files, repo-wide: this is a gateway whose own
+      # job is authenticating callers via virtual keys/bearer
+      # tokens/API secrets, so its test suite necessarily assigns many
+      # obviously-fake secret-shaped literals ("test-secret-a",
+      # "per-model-test-value", etc.) to identifiers gosec's naming
+      # heuristic flags regardless of content. The real risk G101
+      # exists to catch -- an actual credential hardcoded into SHIPPED
+      # code -- doesn't apply to test fixtures; narrowly scoped to
+      # _test.go rather than disabling G101 package-wide, so a real
+      # hardcoded-credential mistake in production code would still be
+      # caught.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G101"
+      # math/rand for retry-backoff jitter timing is intentional --
+      # this is scheduling randomness, not security-sensitive material
+      # (a token, key, or nonce), so crypto/rand would be the wrong
+      # choice here, not a hardening improvement.
+      - path: internal/gateway/dataplane/fallback\.go
+        linters:
+          - gosec
+        text: "G404"
+      # The response is genuinely closed via defer once received off
+      # respCh a few lines later in the same test -- bodyclose's
+      # flow analysis doesn't follow a *http.Response handed across a
+      # channel into a different scope.
+      - path: cmd/gateway/graceful_shutdown_integration_test\.go
+        linters:
+          - bodyclose
 
 formatters:
   enable:
