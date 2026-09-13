@@ -7,6 +7,25 @@ upgrade plan. Mirrors the exact "designed in full, deferred" precedent already e
 the distributed `ConcurrencyLimiter` (`docs/upgrade-research/gateway-distributed-concurrency-limiter-2026-09-09.md`):
 de-risk the "how" now, without committing to the "when."
 
+**Trigger re-checked 2026-09-13, still not fired.** Prompted by real progress elsewhere this
+session (a second gateway instance + shared Redis stood up for the distributed-rate-limiting
+RFC, giving `cachecorrelation.Analyze` — previously exercised only in unit tests — its first-ever
+real data to run against), two real measurements were taken: an n=1 organic-ish duplicate-content
+probe (`EffectiveHitRateLoss=0.5`) and a deliberately-designed 24-query/40-request batch mixing
+single-shot, same-instance-repeat, and cross-instance categories (`EffectiveHitRateLoss=0.25`,
+exactly matching the batch's own designed 1-in-4 cross-instance-avoidable ratio). Both prove the
+*instrumentation* — real `cache_cross_instance_check` log lines, parsed into `cachecorrelation.Event`,
+run through the real `Analyze` function — works correctly at scale, which is new and worth keeping
+in mind for whoever revisits this. **Neither constitutes the trigger this RFC actually names**: both
+came from a single pilot virtual key and synthetic content against a local Docker Compose rig
+stood up purely for testing, not organic multi-tenant production traffic. `docs/operations/DEPLOY.md`
+still discloses Kubernetes/production as "(Intended shape.)" — no real multi-replica deployment
+exists. Also reconfirmed, independent of the trigger itself: this RFC's own text already correctly
+disclaims needing any of `docs/decisions/0002-cache-embedded-in-gateway.md`'s four extraction
+triggers — those gate a materially different question (Cache as a standalone service) that a
+storage-backend swap behind the same `cache.Cache` interface never touches. Verdict stands:
+design-only, `not_yet`.
+
 ## Context
 
 Kelvran's `cache.Cache` interface (`gateway/internal/cache/port.go`) is deliberately narrow —
