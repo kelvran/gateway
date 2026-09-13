@@ -9,7 +9,7 @@ require (
 	github.com/shopspring/decimal v1.4.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	go.etcd.io/bbolt v1.5.0
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
