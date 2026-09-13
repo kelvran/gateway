@@ -18,6 +18,20 @@ jobs:
           # not just the pushed/PR commit — a shallow clone can leave
           # "main" unresolvable or pointed at the wrong commit.
           fetch-depth: 0
+      - name: ensure a local main ref exists (buf breaking needs refs/heads/main, not just refs/remotes/origin/main)
+        # Real gap, found live: on a branch push to main, checkout's own
+        # checked-out ref already IS refs/heads/main, so this is a no-op.
+        # On a tag push (e.g. a real gateway/vX.Y.Z release tag), checkout
+        # leaves HEAD detached at the tag and only refs/remotes/origin/main
+        # exists -- buf's `.git#branch=main` resolver treats this checkout
+        # as a git remote and fetches the literal ref name "main", which
+        # only refs/heads/* advertises. Idempotent either way.
+        # --update-head-ok is required for the branch-push case: without
+        # it, git fetch refuses to update refs/heads/main when main is
+        # ALSO the currently checked-out branch ("refusing to fetch into
+        # current branch"). Safe here -- this only moves the ref pointer,
+        # it never touches the working tree, and this job never commits.
+        run: git fetch --update-head-ok origin main:refs/heads/main
       - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
