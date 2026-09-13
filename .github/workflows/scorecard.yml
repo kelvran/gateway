@@ -1,0 +1,74 @@
+name: OpenSSF Scorecard
+
+# Real, live OSSF/OpenSSF Scorecard supply-chain-security scoring for this
+# public repo -- ossf/scorecard-action is free for public repositories.
+# Sequenced deliberately AFTER codeql.yml (this repo's own preceding commit,
+# 32b787fb): Scorecard's own SAST check specifically rewards a repo that has
+# CodeQL (or SonarCloud) wired in via its own subcheck
+# (https://github.com/ossf/scorecard/blob/main/docs/checks.md#sast) -- that
+# check now has something real to detect.
+#
+# Trigger set matches the union of ossf/scorecard-action's own README
+# ("The following GitHub triggers are supported: push, schedule (default
+# branch only)") and GitHub's own official starter-workflow template
+# (actions/starter-workflows/code-scanning/scorecard.yml), which adds
+# branch_protection_rule specifically so the Branch-Protection check
+# (https://github.com/ossf/scorecard/blob/main/docs/checks.md#branch-protection)
+# reflects real, current rule changes instead of only re-scoring on the next
+# push/schedule tick. pull_request and workflow_dispatch are deliberately
+# left out -- the README calls both "experimental".
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, Monday 05:00 UTC -- offset from codeql.yml's own Monday 03:00
+    # UTC slot and evals-judge-nightly.yml's daily 07:00 UTC slot to avoid
+    # runner contention.
+    - cron: "0 5 * * 1"
+  branch_protection_rule: {}
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    # publish_results: true only works when the run is against the default
+    # branch -- guards the branch_protection_rule trigger, which (unlike
+    # push, scoped to branches: [main] above) fires for a protection-rule
+    # change on any branch, not just the default one.
+    if: github.event.repository.default_branch == github.ref_name
+    permissions:
+      # Required to upload SARIF results to the code-scanning dashboard.
+      security-events: write
+      # Required for publish_results: true -- exchanges this job's own
+      # GitHub OIDC token for a verified result on the public OpenSSF API,
+      # per ossf/scorecard-action's own v2 breaking-change notes.
+      id-token: write
+      contents: read
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: "Run analysis"
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Public repo: publish real results to the public OpenSSF
+          # Scorecard REST API (https://api.scorecard.dev) and enable the
+          # public scorecard.dev badge for this repo -- both require
+          # id-token: write above.
+          publish_results: true
+
+      - name: "Upload artifact"
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: "Upload to code-scanning"
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: results.sarif
