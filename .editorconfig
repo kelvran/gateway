@@ -1,0 +1,29 @@
+# EditorConfig: https://editorconfig.org
+#
+# Go and Python are already normalized mechanically (gofmt, ruff format)
+# and are untouched here. This exists for the repo's real non-Go/Python
+# surface those tools never touch: GitHub Actions YAML, the buf-managed
+# protobuf contract, and the many substantial Markdown docs this project
+# maintains (DECISIONS.md, STATUS.md, THREAT_MODEL.md, AGENTS.md, etc.).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.go]
+indent_style = tab
+
+[*.{yml,yaml,proto,json}]
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.md]
+indent_style = space
+trim_trailing_whitespace = false

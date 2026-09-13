@@ -1,0 +1,43 @@
+# Dependabot config, per docs/upgrade-research/cicd-process-automation-2026-09-13.md
+# Finding 6 -- modeled directly on envoyproxy/ai-gateway's own real config
+# (the closest structural analog: a Go-based "gateway" project), not a
+# generic template. Renovate was considered and deferred (not_yet, same
+# research) -- Dependabot's zero-install footprint is the more
+# proportionate starting point for a single-maintainer repo.
+#
+# Every ecosystem is grouped into a single wildcard-pattern PR (not one
+# PR per dependency) and delayed by a 14-day cooldown, so a newly-
+# released dependency doesn't trigger a same-day, Bedrock-spend-incurring
+# CI run before the wider community has had a chance to flag problems
+# with it -- this repo's CI runs real AWS Bedrock calls, not free.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/gateway"
+    schedule:
+      interval: "weekly"
+    groups:
+      gomod-deps:
+        patterns: ["*"]
+    cooldown:
+      default-days: 14
+
+  - package-ecosystem: "pip"
+    directory: "/evals"
+    schedule:
+      interval: "weekly"
+    groups:
+      pip-deps:
+        patterns: ["*"]
+    cooldown:
+      default-days: 14
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions-deps:
+        patterns: ["*"]
+    cooldown:
+      default-days: 14
