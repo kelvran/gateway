@@ -1,0 +1,43 @@
+# Evals Optimization Beyond Settled Items — Research (2026-09-14)
+
+> **Recovery note:** the synthesizing subagent's own file-write step failed silently (a known recurring class); recovered by reading the workflow's own returned JSON result and reconstructing this report by hand.
+
+**Scope:** Real optimization opportunities in `evals/` beyond what's already researched and settled — the Sandbox Pool (Ray vs. asyncio) question, judge cross-vendor diversity, the correctness-feedback loop, and agentic-benchmark integration are all settled/deferred elsewhere and **not** re-litigated here.
+
+**Already shipped (not re-litigated):** asyncio-bounded rollout orchestration; a real 2-judge Bedrock panel with majority-vote/fail-closed-on-tie; Wilson-interval + mixture-SPRT statistical rigor; a real 113+24-case regression corpus with CI gates; real S3/GCS trace ingestion; real mypy (incremental) and same-runner coverage gating.
+
+## Findings
+
+1. **Judge-prompt versioning is a real, low-effort gap worth closing.** Add an explicit version tag (e.g. `JUDGE_PROMPT_VERSION = "v3"`) stamped on every judge verdict at scoring time, kept separate from git history — directly mirroring the existing `EvalCase.revision` pattern for dataset entries. Bump it whenever `llm_judge.py`'s `_JUDGE_PROMPT_TEMPLATE` changes (the existing golden-fixture regression test failing is the natural trigger). Closes a real, demonstrated problem: without it, a judge-prompt change silently invalidates comparability of historical scores while dashboards keep rendering old and new scores identically — the exact failure mode a real practitioner writeup (Ademar Tutor, cross-corroborated by a second independent source) documents happening in production. **`build_now`.** *(Medium confidence — the supporting sources are practitioner blog posts, not primary vendor docs, despite unanimous verification.)*
+
+2. **Streaming/live progress for long eval runs has real 2026 precedent, but Kelvran hasn't hit the trigger — and the cheapest possible win here was never actually checked.** Inspect AI ships a real control-channel socket (`inspect ctl`, an AF_UNIX endpoint enabled by default, supporting task list/cancel/pause) plus a `--log-shared` flag syncing sample-level events to the log directory in real time. This is a genuine, shipped pattern, not a niche proposal. But applying it to Kelvran's Click-CLI + JSONL architecture needs a cheap first step this research pass did **not** verify: whether `evals/rollout/scheduler.py` already appends JSONL incrementally per completed case, or batches until process exit. **Check that directly before treating any part of this as `build_now`.** The fuller control-socket feature stays **`not_yet`** — trigger: rollout suites becoming long enough (multi-hour) that operators actually want mid-run peek/abort, which the current 113+24-case corpus likely doesn't hit yet.
+
+3. **A more rigorous statistical method for judge-vs-system drift attribution exists, but needs infrastructure Kelvran doesn't have.** A real published method ("Who Drifted: the System or the Judge?") uses a fixed human-labeled anchor set re-scored on a steady interleave, a betting e-process on the judge-vs-human gap, and an anytime-valid rule producing a none/system/judge verdict — genuinely more rigorous than simple static judge-pinning. **`not_yet`** — needs (a) a maintained, periodically-rescored human-labeled anchor set distinct from the existing 113+24 corpus, and (b) enough live production judge-scoring volume to justify anytime-valid machinery over simpler batch anchor-reruns. Trigger: production judge volume high enough that manual drift investigations become a recurring, costly task.
+
+4. **Judge-level cost-aware cascading (a cheap first-pass judge escalating to the panel on disagreement) is an active research area, but the evidence for adopting it is mixed-to-negative, not a validated pattern to build speculatively.** Five separate papers were checked, and they genuinely disagree: one formally-guaranteed cascade method needs calibration machinery Kelvran hasn't built; a direct empirical ablation found variance-routed escalation is a *weak* routing signal (r=-0.13, AUC=0.60) and every cascade variant tested was dominated by simpler criteria-injection + ensembling at comparable cost; a panel-composition paper treats confidence cascades purely as a baseline to beat with a cost-adjusted greedy panel-stopping rule, with no clean universal win either way. **`not_yet`** — stay with the fixed 2-judge panel. If this is ever revisited, the more promising, more directly transferable idea is a **panel-size stopping rule** ("is 2 judges even cost-optimal") rather than a confidence cascade — and only once judge-panel Bedrock cost is empirically *proven* a real bottleneck, not hypothetical. *(This is explicitly distinct from the separate gateway-side model-cascading research pass and doesn't duplicate it.)*
+
+5. **Regression-corpus diversity/coverage tooling is a genuine, unresearched gap — not a considered negative.** No claim addressing this (a report showing which real failure modes the 113+24 cases do vs. don't exercise) survived this research pass at all, confirmed or refuted. This should be read as "not investigated to a verifiable conclusion here," not as evidence the idea is low-value. *(Low confidence — genuine gap.)*
+
+6. **Braintrust and promptfoo's 2026 feature sets were not actually covered by this pass** — only Inspect AI-related findings survived (folded into Finding 2 above). No distinct Braintrust/promptfoo-specific gap was identified or ruled out. *(Low confidence — genuine gap.)*
+
+## Open Questions
+
+- Does `evals/rollout/scheduler.py` write JSONL results incrementally per-completed-case, or batch until the run finishes? Determines whether Finding 2's cheapest streaming win is already achieved or still open — needs a direct code check not performed in this synthesis.
+- Has anyone run a Kelvran-specific ablation comparing a cheap-first-pass judge + escalation against the current fixed 2-judge panel, on Kelvran's own 113+24-case corpus, to see whether the negative literature finding (Finding 4) also holds here?
+- What would a regression-corpus diversity/coverage report concretely look like for Kelvran's real cases, and is it worth building now, independent of whether the corpus has crossed `field_swap_lint`'s or `audit_corpus`'s own already-disclosed trigger thresholds?
+- Did Braintrust or promptfoo ship anything in 2026 specifically relevant to judge-prompt versioning or cost-aware cascading that would corroborate, contradict, or nuance the arXiv-literature-driven findings above?
+
+## Caveats
+
+The two highest-confidence findings (streaming precedent, drift-attribution paper) rest on primary vendor docs / arXiv preprints verified via multiple independent fetches; the judge-prompt-versioning `build_now` finding rests on a single practitioner blog (medium confidence despite unanimous verification). The cascading synthesis (Finding 4) aggregates five arXiv papers whose own conclusions genuinely disagree — "medium" confidence there reflects genuinely unsettled literature, not weak sourcing of any individual fact. All sources are within ~5 months of this research date; Inspect AI's own CLI surface moved through several versions in that window, so specific flag names could change again. This synthesis did **not** re-open or re-verify `evals/ARCHITECTURE.md` or `evals/rollout/scheduler.py` directly — Finding 2's "check whether JSONL writes are already incremental" step is explicitly unverified. None of the six findings duplicate the four already-settled items (Sandbox Pool, cross-vendor judge diversity, correctness-feedback loop, agentic-benchmark integration) — confirmed fresh territory.
+
+## Synthesis: build_now vs not_yet
+
+| Item | Verdict | Why |
+|---|---|---|
+| Judge-prompt version tag | **build_now** | Low effort, real demonstrated failure mode, mirrors existing `EvalCase.revision` pattern |
+| Streaming/live progress (control-socket) | **not_yet** | No multi-hour-runs trigger yet; cheapest sub-step (incremental JSONL) unverified |
+| Statistical drift-attribution (anchor-set + e-process) | **not_yet** | Needs a maintained human-labeled anchor set + real production judge volume |
+| Judge-level cost-aware cascading | **not_yet** | Literature is mixed-to-negative on the exact pattern; panel-stopping-rule is the more promising alternative, still gated on judge cost being a proven bottleneck |
+| Corpus diversity/coverage tooling | **unresolved** | Genuine research gap, not investigated to a conclusion |
+| Braintrust/promptfoo 2026 feature check | **unresolved** | Genuine research gap, not covered by this pass |
