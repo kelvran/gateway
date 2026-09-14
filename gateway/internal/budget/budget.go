@@ -84,14 +84,26 @@ type Tracker struct {
 	// rolling-window boundary, since a fresh window has no billing history
 	// of its own yet either.
 	billedCount map[string]int64
-	store       Store // nil = pure in-memory, unchanged from before this RFC
-	logger      *slog.Logger
-	now         func() time.Time // real clock in production; overridden directly by white-box tests
+	// highestAlertedBucket/highestAlertedEpoch back
+	// CheckAndMarkBudgetAlertBucket's dedup, per
+	// docs/upgrade-research/cost-intelligence-finops-2026-09-14.md: a
+	// fixed percent-of-cap threshold ladder needs to fire an alertable
+	// event once per newly-crossed bucket, not on every request past it
+	// the way checkBudgetWarnThreshold's own log line deliberately does.
+	// Keyed by periodEpoch (see that field's own comment), not just
+	// keyID, so a key correctly re-alerts every bucket again after its
+	// rolling window resets, rather than staying permanently
+	// "already alerted" against a window that no longer exists.
+	highestAlertedBucket map[string]float64
+	highestAlertedEpoch  map[string]int64
+	store                Store // nil = pure in-memory, unchanged from before this RFC
+	logger               *slog.Logger
+	now                  func() time.Time // real clock in production; overridden directly by white-box tests
 }
 
 // NewTracker constructs an empty, pure in-memory Tracker.
 func NewTracker() *Tracker {
-	return &Tracker{spent: make(map[string]decimal.Decimal), periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), now: time.Now}
+	return &Tracker{spent: make(map[string]decimal.Decimal), periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), now: time.Now}
 }
 
 // NewTrackerWithStore constructs a Tracker backed by store: existing
@@ -121,7 +133,7 @@ func NewTrackerWithStore(ctx context.Context, store Store, logger *slog.Logger) 
 	if spent == nil {
 		spent = make(map[string]decimal.Decimal)
 	}
-	return &Tracker{spent: spent, periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
+	return &Tracker{spent: spent, periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
 }
 
 // resetIfNeeded resets keyID's spend to zero and starts a fresh window,
@@ -491,6 +503,54 @@ func (t *Tracker) IncreaseReservation(keyID string, capUSD, currentReservedUSD, 
 	}
 	t.spent[keyID] = t.spent[keyID].Add(delta)
 	return true, newReservedUSD, currentEpoch
+}
+
+// BudgetAlertBuckets is the fixed percent-of-cap ladder
+// CheckAndMarkBudgetAlertBucket checks against, per
+// docs/upgrade-research/cost-intelligence-finops-2026-09-14.md's own
+// finding that a static threshold ladder — not per-tenant-configurable,
+// unlike VirtualKey.BudgetWarnPercent — is the only verified 2026
+// production pattern for this; no evidence found that per-tenant
+// customization is needed yet. Exported so a test (or a future admin-API
+// read endpoint reporting "next bucket") can reference the same values
+// this package checks against, rather than duplicating the literal slice.
+var BudgetAlertBuckets = []float64{0.5, 0.75, 0.9, 1.0}
+
+// CheckAndMarkBudgetAlertBucket reports the highest bucket in
+// BudgetAlertBuckets that percentUsed has newly crossed for keyID, given
+// whatever bucket (if any) was already alerted for keyID's CURRENT
+// rolling-window epoch (see the periodEpoch field comment) — and records
+// that new high-water mark so a later call in the same window with the
+// same or a lower percentUsed does not re-report it. crossed is false,
+// and bucket is meaningless, when percentUsed hasn't newly crossed any
+// bucket beyond what's already been alerted this window.
+//
+// Deliberately reports only the single highest newly-crossed bucket, not
+// every bucket skipped over by one large jump in spend — this is a
+// "how close are we now" signal, not an audit trail of every threshold a
+// request happened to leap past.
+func (t *Tracker) CheckAndMarkBudgetAlertBucket(keyID string, percentUsed float64) (bucket float64, crossed bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	currentEpoch := t.periodEpoch[keyID]
+	alreadyAlerted := 0.0
+	if t.highestAlertedEpoch[keyID] == currentEpoch {
+		alreadyAlerted = t.highestAlertedBucket[keyID]
+	}
+
+	newHighest := alreadyAlerted
+	for _, b := range BudgetAlertBuckets {
+		if percentUsed >= b && b > newHighest {
+			newHighest = b
+		}
+	}
+	if newHighest <= alreadyAlerted {
+		return 0, false
+	}
+	t.highestAlertedBucket[keyID] = newHighest
+	t.highestAlertedEpoch[keyID] = currentEpoch
+	return newHighest, true
 }
 
 // Close releases the underlying store, if any. Safe to call even on a

@@ -2018,6 +2018,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		}
 		if realCost != nil {
 			p.checkBudgetWarnThreshold(ctx, vk)
+			p.checkBudgetAlertLadder(ctx, vk)
 		}
 
 		var realTokens *float64
@@ -2222,6 +2223,35 @@ func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.Vi
 			"warn_percent", vk.BudgetWarnPercent,
 		)...)
 	}
+}
+
+// checkBudgetAlertLadder emits a kelvran.budget.threshold_crossed OTel
+// counter increment + structured log line the first time vk's spend
+// (after the real charge finalize just recorded) newly crosses one of
+// budget.BudgetAlertBuckets' fixed 50/75/90/100%-of-cap thresholds, once
+// per rolling-window epoch per bucket — a NEW, separate mechanism
+// alongside checkBudgetWarnThreshold's existing single, per-tenant-
+// configurable, re-logs-every-request warning (unchanged by this), per
+// docs/upgrade-research/cost-intelligence-finops-2026-09-14.md's own
+// finding that a fixed percent-of-cap ladder is the only verified 2026
+// production pattern for aggregate-queryable budget alerting.
+func (p *Pipeline) checkBudgetAlertLadder(ctx context.Context, vk *identity.VirtualKey) {
+	if !vk.BudgetUSD.IsPositive() {
+		return
+	}
+	spent := p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
+	percentUsed, _ := spent.Div(vk.BudgetUSD).Float64()
+	bucket, crossed := p.budget.CheckAndMarkBudgetAlertBucket(vk.ID, percentUsed)
+	if !crossed {
+		return
+	}
+	telemetry.RecordBudgetThresholdCrossed(ctx, vk.ID, bucket)
+	p.logger.Warn("budget_threshold_crossed", append(traceLogFields(ctx),
+		"key_id", vk.ID,
+		"spent_usd", spent.String(),
+		"budget_usd", vk.BudgetUSD.String(),
+		"percent_bucket", bucket,
+	)...)
 }
 
 // outcomeFor derives a GatewayDecisionEvent's structured Outcome from

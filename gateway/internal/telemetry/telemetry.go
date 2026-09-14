@@ -420,6 +420,35 @@ func RecordLLMSpend(ctx context.Context, spendUSD float64) {
 	llmSpendCounter.Add(ctx, spendUSD)
 }
 
+// budgetThresholdCrossedCounter counts each NEW crossing of
+// dataplane.checkBudgetAlertLadder's fixed 50/75/90/100%-of-cap ladder,
+// per docs/upgrade-research/cost-intelligence-finops-2026-09-14.md:
+// checkBudgetWarnThreshold's existing single, per-tenant-configurable
+// warn percent is a log line only, re-logging on every request past
+// threshold by design — this is a separate, aggregate-queryable "how
+// close to its cap is this key" signal, mirroring
+// rateLimitFailOpenCounter's own "make a discrete event alertable in
+// aggregate, not just visible in logs" precedent.
+var budgetThresholdCrossedCounter = mustInt64Counter(
+	meter,
+	"kelvran.budget.threshold_crossed",
+	metric.WithDescription("Count of newly-crossed budget-cap threshold-ladder buckets (50/75/90/100%), once per key per rolling-window epoch per bucket."),
+	metric.WithUnit("{crossing}"),
+)
+
+// RecordBudgetThresholdCrossed increments the counter for keyID at
+// percentBucket (one of budget.BudgetAlertBuckets). Callers must only call
+// this on a genuinely NEW crossing — dataplane.checkBudgetAlertLadder's
+// own dedup, via budget.Tracker.CheckAndMarkBudgetAlertBucket, already
+// guarantees this — never on every request past an already-alerted
+// threshold, unlike checkBudgetWarnThreshold's own log line.
+func RecordBudgetThresholdCrossed(ctx context.Context, keyID string, percentBucket float64) {
+	budgetThresholdCrossedCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(AttrKelvranVirtualKeyID, keyID),
+		attribute.Float64(AttrKelvranBudgetPercentBucket, percentBucket),
+	))
+}
+
 // Config selects how spans are exported.
 type Config struct {
 	// Exporter is "stdout", "otlp", or "none". "" defaults to "stdout" —

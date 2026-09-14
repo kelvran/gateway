@@ -144,6 +144,13 @@ const (
 	// time, and Kelvran had cache hit/miss as a span attribute only, with
 	// no counter to query that ratio from.
 	AttrKelvranCacheLookupOutcome = "kelvran.cache.lookup_outcome"
+	// AttrKelvranBudgetPercentBucket is per
+	// docs/upgrade-research/cost-intelligence-finops-2026-09-14.md — the
+	// bucket (0.5/0.75/0.9/1.0) telemetry.RecordBudgetThresholdCrossed
+	// reports, alongside AttrKelvranVirtualKeyID, on each newly-crossed
+	// budget-alert-ladder bucket. Distinct from checkBudgetWarnThreshold's
+	// own log-only, per-tenant-configurable BudgetWarnPercent.
+	AttrKelvranBudgetPercentBucket = "kelvran.budget.percent_bucket"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider
