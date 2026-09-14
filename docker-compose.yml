@@ -194,5 +194,39 @@ services:
       - ./docs/operations/grafana/dashboards/kelvran-overview.json:/otel-lgtm/kelvran-overview.json:ro
     profiles: ["observability"]
 
+  # Optional: real network fault injection between gateway and an
+  # upstream provider, per
+  # docs/upgrade-research/chaos-engineering-resilience-testing-2026-09-14.md
+  # Finding 3 -- Toxiproxy (Shopify) is a mature, actively-maintained,
+  # test/CI/dev-purpose-built TCP proxy controlled via a dynamic HTTP API
+  # (port 8474), no root access needed. Ships toxics directly relevant to
+  # this gateway's own fallback/circuit-breaker/WRR-routing behavior:
+  # latency+jitter, timeout, reset_peer (simulated TCP RST), bandwidth
+  # throttling, packet loss, slow close -- addable/removable mid-test
+  # without a proxy restart, via `toxiproxy-cli` or a raw HTTP call
+  # against 127.0.0.1:8474.
+  #
+  # Manual-use only this pass, deliberately NOT wired into CI: CI's own
+  # regression coverage for this exact bug class (a concurrent burst
+  # against a known-bad deployment) is the pure-Go, no-Docker-required
+  # TestIntegrationConcurrentBurstAgainstFailingDeploymentNeverExceedsCircuitBreakerBound
+  # (cmd/gateway) -- this service exists for a human operator to
+  # reproduce a specific real-world network fault locally (e.g. "what
+  # actually happens if the upstream TCP-RSTs mid-request") that no
+  # fake-upstream-closure unit test can exercise, not as an automated
+  # gate. To use: point one gateway.yaml deployment's base_url at
+  # "http://toxiproxy:<proxied-port>" instead of the real provider URL,
+  # then create a matching proxy via the control API (e.g. `curl -X POST
+  # http://127.0.0.1:8474/proxies -d '{"name":"openai","listen":
+  # "0.0.0.0:8666","upstream":"api.openai.com:443"}'`) and add/remove
+  # toxics against it while a real request is in flight. Never started
+  # by a bare `docker compose up`; only via `docker compose --profile
+  # chaos up`.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    ports:
+      - "127.0.0.1:8474:8474"
+    profiles: ["chaos"]
+
 volumes:
   vector-data:
