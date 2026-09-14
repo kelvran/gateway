@@ -106,6 +106,43 @@ const streamIdleTimeout = 60 * time.Second
 // than a bare "60 * time.Second" repeated with no link between the two.
 const upstreamHTTPTimeout = 60 * time.Second
 
+// upstreamMaxIdleConnsPerHost raises Go stdlib's default (2, see
+// http.DefaultMaxIdleConnsPerHost) for both upstream http.Clients below.
+// Go's own net/http.Transport doc comment instructs Transports/Clients
+// to be reused instead of created per request BECAUSE they cache
+// connections internally -- Kelvran already does that correctly (both
+// clients below are built once, here, and shared across every
+// concurrent request-handling goroutine, per docs/upgrade-research/
+// performance-latency-optimization-2026-09-14.md's own confirmation).
+// But once concurrently-open connections to one upstream host exceed
+// this cap, Go closes the excess immediately after each request
+// completes rather than keeping them warm for any grace period
+// (net/http/transport.go's tryPutIdleConn/putOrCloseIdleConn), which
+// under a concurrent burst to the same provider host causes real
+// connection churn and, at worst, ephemeral-port exhaustion
+// (golang/go#13801) -- a documented operational failure mode, not a
+// theoretical inefficiency. 100 is a deliberately generous, round
+// default given Kelvran has no production traffic yet to calibrate a
+// tighter number against; revisit once real per-host concurrency data
+// exists (e.g. via a future pprof-driven pass).
+const upstreamMaxIdleConnsPerHost = 100
+
+// newUpstreamTransport builds the http.Transport shared by both upstream
+// http.Clients below -- one *http.Transport instance, passed to both,
+// which is safe (Transport is safe for concurrent use by multiple
+// goroutines and multiple Clients) and lets a streaming and a
+// non-streaming call to the same upstream host reuse the same pooled
+// idle connections. Cloned from http.DefaultTransport, not a bare
+// &http.Transport{}, so every other stdlib default (dial timeouts, TLS
+// handshake timeout, HTTP/2 support) is preserved -- only the per-host
+// idle-connection cap is deliberately overridden, per
+// upstreamMaxIdleConnsPerHost's own doc comment.
+func newUpstreamTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = upstreamMaxIdleConnsPerHost
+	return t
+}
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the gateway's YAML config file")
 	flag.Parse()
@@ -489,6 +526,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		return nil, fmt.Errorf("constructing rate limiter: %w", err)
 	}
 
+	upstreamTransport := newUpstreamTransport()
+
 	guardrailEngine := newGuardrailEngine(cfg.Guardrails, logger)
 
 	return dataplane.NewPipeline(dataplane.Config{
@@ -524,7 +563,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Router:                depRouter,
 		Deployments:           deployments,
 		CostCalculator:        costaccounting.NewCalculator(priceTable),
-		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout}),
+		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
 		// Streaming upstream calls deliberately do NOT use client.Timeout
 		// (the field above) — that would kill a long-running-but-healthy
 		// stream mid-way, exactly as readily as a genuinely stalled one.
@@ -537,7 +576,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		// streaming upstream used to hang indefinitely, bounded only by
 		// the original inbound client disconnecting). See that function's
 		// own doc comment for the full design rationale.
-		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}, streamIdleTimeout),
+		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{Transport: upstreamTransport}, streamIdleTimeout),
 		Logger:         logger,
 		CacheTTL:       time.Duration(cfg.Cache.TTLSeconds) * time.Second,
 		CacheL2TTL:     time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
