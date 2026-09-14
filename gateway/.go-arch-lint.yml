@@ -9,6 +9,7 @@ excludeFiles:
 
 components:
   identity:          { in: identity }
+  identity-boltstore: { in: identity/boltstore }
   budget:            { in: [budget, budget/**] }
   ratelimit:         { in: [ratelimit, ratelimit/**] }
   router:            { in: router }
@@ -58,6 +59,9 @@ components:
 # each is a genuinely separate Go package that imports the base `cache`
 # package's interface types, and needs to say so explicitly.
 deps:
+  identity-boltstore:
+    mayDependOn:
+      - identity
   cache-inprocess:
     mayDependOn:
       - cache
