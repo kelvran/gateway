@@ -67,6 +67,18 @@ Dated, honest — updated as the system evolves rather than left as boilerplate:
 
 See `docs/operations/PROVIDERS.md` for exactly which upstream providers receive what data, under what auth mechanism.
 
+## Compliance Evidence for Operators
+
+**Added 2026-09-14**, per `docs/upgrade-research/ai-compliance-regulatory-readiness-2026-09-14.md` Finding 2. SOC 2 is an attestation an *operating organization* produces via an independent audit of its own controls over time — it is not a property that attaches to open-source software itself, and Kelvran the project has no such organization to certify. If your own organization needs to represent your Kelvran deployment's controls to an auditor or customer (for your own SOC 2, ISO 27001, or an equivalent framework), the artifacts already maintained in this repository are the evidence to point at, not a substitute for your own audit:
+
+- `THREAT_MODEL.md` — STRIDE/OWASP-LLM-Top-10/NIST-AI-600-1 crosswalk, actively reviewed
+- This document's own severity taxonomy and disclosure process (above)
+- `SECURITY-INSIGHTS.yml` — machine-readable OpenSSF Security Insights metadata
+- The published container image's cosign signature, CycloneDX SBOM, and SLSA Build Level 2 provenance (`RELEASE.md`'s verification section)
+- `docs/operations/PROVIDERS.md` — the provider/data-flow inventory, including the cross-border-transfer-safeguard disclosure added alongside this section
+
+None of these artifacts constitute a SOC 2 report, an ISO 42001 certification, or a formal AI-Policy governance document on their own — those require an operating organization with named leadership and a management-review cadence to certify against, which this OSS project structurally is not. Pursue them only once a real operator or customer requires that specific attestation, not speculatively ahead of one.
+
 ## Bug Bounty
 
 Not yet adopted. Tracked as a future decision, not a current commitment.
