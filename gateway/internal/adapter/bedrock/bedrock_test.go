@@ -1400,3 +1400,67 @@ func TestToProviderToolChoiceSetWithNoToolsErrors(t *testing.T) {
 		t.Fatal("ToProvider: want an error for tool_choice set with no tools, got nil")
 	}
 }
+
+// responseFormatChatRequest builds a whitelisted-model ChatRequest with
+// the given raw JSON schema, for the schema-linter tests below.
+func responseFormatChatRequest(schemaJSON string) adapter.ChatRequest {
+	return adapter.ChatRequest{
+		Model:    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+		Messages: []adapter.Message{{Role: "user", Content: "give me JSON"}},
+		ResponseFormat: &adapter.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &adapter.JSONSchema{
+				Name:   "weather_response",
+				Schema: json.RawMessage(schemaJSON),
+			},
+		},
+	}
+}
+
+// TestToProviderResponseFormatRejectsUnsupportedBedrockSchemaFeatures is
+// the schema-linter regression test: each of Bedrock's real, documented
+// unsupported JSON Schema features (recursion/external $ref, numeric
+// constraints, string-length constraints) must produce a clear,
+// Kelvran-side error BEFORE ever reaching AWS -- turning an opaque
+// upstream 400 into an actionable error naming exactly which feature is
+// unsupported. Per
+// docs/upgrade-research/advanced-tool-calling-structured-output-2026-09-14.md
+// Finding 5.
+func TestToProviderResponseFormatRejectsUnsupportedBedrockSchemaFeatures(t *testing.T) {
+	cases := []struct {
+		name       string
+		schemaJSON string
+	}{
+		{"ref", `{"type":"object","properties":{"a":{"$ref":"#/$defs/thing"}},"$defs":{"thing":{"type":"string"}}}`},
+		{"nested_ref_inside_properties", `{"type":"object","properties":{"a":{"type":"object","properties":{"b":{"$ref":"#/$defs/thing"}}}},"$defs":{"thing":{"type":"string"}}}`},
+		{"minimum", `{"type":"object","properties":{"age":{"type":"integer","minimum":0}}}`},
+		{"maximum", `{"type":"object","properties":{"age":{"type":"integer","maximum":120}}}`},
+		{"multipleOf", `{"type":"object","properties":{"qty":{"type":"integer","multipleOf":5}}}`},
+		{"minLength", `{"type":"object","properties":{"name":{"type":"string","minLength":1}}}`},
+		{"maxLength", `{"type":"object","properties":{"name":{"type":"string","maxLength":100}}}`},
+		{"nested_in_items", `{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string","minLength":1}}}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := New().ToProvider(responseFormatChatRequest(c.schemaJSON))
+			if err == nil {
+				t.Fatalf("ToProvider: want an error for schema %s, got nil", c.schemaJSON)
+			}
+		})
+	}
+}
+
+// TestToProviderResponseFormatAllowsOrdinarySupportedSchema proves the
+// linter is genuinely narrow -- an ordinary schema using none of the
+// unsupported features (the common case) must still succeed.
+func TestToProviderResponseFormatAllowsOrdinarySupportedSchema(t *testing.T) {
+	req := responseFormatChatRequest(`{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}}}`)
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v, want no error for an ordinary schema with none of the unsupported features", err)
+	}
+	native := nativeAny.(*Request)
+	if native.AdditionalModelRequestFields == nil {
+		t.Error("AdditionalModelRequestFields = nil, want a populated map")
+	}
+}

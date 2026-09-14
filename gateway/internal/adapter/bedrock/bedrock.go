@@ -685,10 +685,76 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (
 		if err := json.Unmarshal(rf.JSONSchema.Schema, &schema); err != nil {
 			return nil, fmt.Errorf("bedrock: response_format has invalid JSONSchema.Schema: %w", err)
 		}
+		if feature, found := bedrockUnsupportedSchemaFeature(schema); found {
+			return nil, fmt.Errorf("bedrock: response_format.json_schema.schema uses %s, which Bedrock's structured-output schema dialect does not support (a narrower subset of JSON Schema Draft 2020-12 than OpenAI's) -- see docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html", feature)
+		}
 		bedrockEnsureAdditionalPropertiesFalse(schema)
 		format["schema"] = schema
 	}
 	return map[string]any{"output_config": map[string]any{"format": format}}, nil
+}
+
+// bedrockUnsupportedSchemaKeys are the real JSON Schema keywords Bedrock
+// structured outputs (GA since Feb 2026, docs.aws.amazon.com/bedrock/
+// latest/userguide/structured-output.html) documents as NOT supported --
+// a real, checkable, narrower subset of Draft 2020-12 than OpenAI's own
+// dialect, distinct from the already-fixed additionalProperties issue
+// (bedrockEnsureAdditionalPropertiesFalse above). "$ref" covers both of
+// AWS's own named "recursive schemas" and "external $ref references"
+// restrictions -- Kelvran has no schema-graph-cycle detector to tell a
+// genuinely-recursive $ref apart from a merely-local one, so any $ref at
+// all is treated as unsupported, the same fail-safe-not-fail-open choice
+// bedrockEnsureAdditionalPropertiesFalse already makes for an explicit
+// caller value. Per docs/upgrade-research/advanced-tool-calling-
+// structured-output-2026-09-14.md Finding 5.
+var bedrockUnsupportedSchemaKeys = map[string]string{
+	"$ref":       "a $ref reference (recursive schemas and external $ref are both unsupported)",
+	"minimum":    "a numeric \"minimum\" constraint",
+	"maximum":    "a numeric \"maximum\" constraint",
+	"multipleOf": "a numeric \"multipleOf\" constraint",
+	"minLength":  "a string \"minLength\" constraint",
+	"maxLength":  "a string \"maxLength\" constraint",
+}
+
+// bedrockUnsupportedSchemaFeature walks node (a decoded JSON Schema tree)
+// looking for the first key in bedrockUnsupportedSchemaKeys anywhere in
+// the tree -- top-level, and every nested "properties"/"items"/"$defs"
+// schema, mirroring bedrockEnsureAdditionalPropertiesFalse's own
+// recursive-walk shape (extended to $defs, which that function has no
+// reason to visit since additionalProperties is never meaningful there
+// directly, but an unsupported keyword could still appear inside a
+// $defs entry's own schema). Returns the first human-readable feature
+// description found, and whether anything was found at all.
+func bedrockUnsupportedSchemaFeature(node any) (feature string, found bool) {
+	obj, ok := node.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	for key, description := range bedrockUnsupportedSchemaKeys {
+		if _, present := obj[key]; present {
+			return description, true
+		}
+	}
+	if props, ok := obj["properties"].(map[string]any); ok {
+		for _, v := range props {
+			if feature, found := bedrockUnsupportedSchemaFeature(v); found {
+				return feature, true
+			}
+		}
+	}
+	if items, ok := obj["items"]; ok {
+		if feature, found := bedrockUnsupportedSchemaFeature(items); found {
+			return feature, true
+		}
+	}
+	if defs, ok := obj["$defs"].(map[string]any); ok {
+		for _, v := range defs {
+			if feature, found := bedrockUnsupportedSchemaFeature(v); found {
+				return feature, true
+			}
+		}
+	}
+	return "", false
 }
 
 // bedrockEnsureAdditionalPropertiesFalse live-verified 2026-09-13 against
