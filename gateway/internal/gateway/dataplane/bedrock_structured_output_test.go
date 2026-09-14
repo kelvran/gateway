@@ -92,6 +92,63 @@ func newBedrockStructuredOutputPipeline(t *testing.T, upstreamModel string) *bed
 	return h
 }
 
+// newBedrockStructuredOutputPipelineTwoDeployments builds a
+// two-deployment Bedrock Pipeline for the same canonical model -- one
+// deployment on adapter.SupportsStructuredOutput's whitelist, one not --
+// to prove rerouteToCapableDeploymentIfNeeded's real effect: the first
+// attempt must reach the capable deployment whenever one exists in the
+// same pool. Deliberately order-independent: this test does not rely on
+// which of the two deployments WRR's own cursor happens to pick first.
+func newBedrockStructuredOutputPipelineTwoDeployments(t *testing.T) *bedrockStructuredOutputHarness {
+	t.Helper()
+
+	authCred := "structured-output-bedrock-two-dep-cred"
+	keys := []identity.VirtualKey{
+		{ID: "structured-output-bedrock-two-dep-key", KeyHash: testHashOf(authCred), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	deployments := []Deployment{
+		{Name: "unsupported", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: unsupportedBedrockStructuredOutputModel, BaseURL: "http://unused"},
+		{Name: "supported", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0", BaseURL: "http://unused"},
+	}
+
+	h := &bedrockStructuredOutputHarness{}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"bedrock": bedrock.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			h.captured = req.(*bedrock.Request)
+			return &bedrock.Response{
+				Output: bedrock.Output{Message: bedrock.Message{
+					Role:    "assistant",
+					Content: []bedrock.ContentBlock{{Text: "ok"}},
+				}},
+				StopReason: "end_turn",
+				Usage:      bedrock.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+			}, nil
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	h.pipeline = p
+	return h
+}
+
 func structuredOutputChatRequest() adapter.ChatRequest {
 	return adapter.ChatRequest{
 		Model:    "claude-bedrock",
@@ -209,5 +266,33 @@ func TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedOnAuthF
 	}
 	if _, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranResponseFormatRequestedNotEnforced); ok {
 		t.Error("attribute is set on an auth-failure span where no deployment was ever resolved")
+	}
+}
+
+// TestHandleChatCompletionReroutesFirstPickToCapableDeploymentWhenOneExists
+// proves rerouteToCapableDeploymentIfNeeded's real effect end to end: when
+// req.Model's own deployment pool contains at least one deployment that
+// can honor ResponseFormat, the FIRST attempt must reach it -- schema
+// enforcement must be genuinely applied -- even if WRR's own first pick
+// landed on the incapable deployment. Contrast with
+// TestHandleChatCompletionSilentlyOmitsStructuredOutputEnforcementForUnsupportedBedrockModelOnFirstAttempt
+// above, whose single-deployment pool has no capable alternative to
+// reroute to and must still omit enforcement.
+func TestHandleChatCompletionReroutesFirstPickToCapableDeploymentWhenOneExists(t *testing.T) {
+	h := newBedrockStructuredOutputPipelineTwoDeployments(t)
+
+	resp, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-two-dep-cred", structuredOutputChatRequest())
+	if err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+	if len(resp.Choices) == 0 {
+		t.Fatal("Choices is empty, want a normal response")
+	}
+
+	if h.captured == nil {
+		t.Fatal("Upstream was never called")
+	}
+	if h.captured.AdditionalModelRequestFields == nil {
+		t.Error("AdditionalModelRequestFields = nil, want schema enforcement applied -- a capable deployment exists in this model's own pool and the first pick should have been rerouted to it")
 	}
 }

@@ -190,6 +190,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		err = fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		return
 	}
+	dep = p.rerouteToCapableDeploymentIfNeeded(dep, req)
 
 	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens}
 	var blocked bool

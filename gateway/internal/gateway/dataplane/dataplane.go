@@ -248,6 +248,46 @@ func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
 	return adapter.SupportsStructuredOutput(dep.Provider, dep.UpstreamModel)
 }
 
+// rerouteToCapableDeploymentIfNeeded checks whether dep -- the
+// deployment nextDeployment(req.Model, nil) just picked as the first
+// attempt -- can satisfy req's own ResponseFormat, via
+// capabilityOKForRequest. If not, it walks the rest of req.Model's own
+// deployment pool (excluding dep and every other incapable candidate
+// already tried) looking for one that can, returning the first capable
+// deployment found. If every deployment in the pool is incapable -- or
+// req.ResponseFormat is nil, in which case capability is irrelevant --
+// dep is returned unchanged: never a hard error, only ever a
+// best-effort improvement before the first real upstream call happens.
+//
+// Closes the "first attempt" half of a real, deliberately-accepted v1
+// scope limit: capabilityOKForRequest already gates every FALLBACK hop
+// (attemptFallbackChain's own capabilityOK closure, fallback.go), but
+// nothing previously applied that same check to the very first pick --
+// a caller whose first-picked deployment could not honor ResponseFormat
+// got silent, unenforced output with zero chance of ever reaching a
+// capable deployment in the same pool, even when one existed. See
+// THREAT_MODEL.md's Gateway Elevation-of-Privilege row and
+// docs/upgrade-research/advanced-tool-calling-structured-output-2026-09-14.md
+// Finding 4. Called from both real first-pick call sites (runMissPath
+// here; the streaming path's HandleChatCompletionStream in
+// streaming.go).
+func (p *Pipeline) rerouteToCapableDeploymentIfNeeded(dep Deployment, req adapter.ChatRequest) Deployment {
+	if capabilityOKForRequest(dep, req) {
+		return dep
+	}
+	excluded := map[string]bool{dep.Name: true}
+	for {
+		candidate, hasCandidate := p.nextDeployment(req.Model, excluded)
+		if !hasCandidate {
+			return dep
+		}
+		if capabilityOKForRequest(candidate, req) {
+			return candidate
+		}
+		excluded[candidate.Name] = true
+	}
+}
+
 // UpstreamCaller performs the actual upstream HTTP call for one
 // deployment, given the provider-native request adapter.ToProvider
 // produced. It returns the provider-native response value
@@ -1475,6 +1515,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		if !found {
 			return nil, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		}
+		dep = p.rerouteToCapableDeploymentIfNeeded(dep, req)
 
 		resp, err := p.callDeploymentWithCapacityCheck(ctx, dep, req)
 		var fallback fallbackInfo
