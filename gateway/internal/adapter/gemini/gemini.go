@@ -152,6 +152,53 @@ type GenerationConfig struct {
 	ResponseSchema   map[string]any `json:"responseSchema,omitempty"`
 }
 
+// ToolConfigWire is Gemini's native top-level toolConfig field (a
+// sibling of tools, not nested inside GenerationConfig), per
+// docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md. Targets the
+// legacy, well-established functionCallingConfig surface
+// (mode/allowedFunctionNames) deliberately, not a newer Interactions-API
+// mode this adapter's own live wire-format target was not confirmed
+// against -- see that RFC's Unresolved Questions.
+type ToolConfigWire struct {
+	FunctionCallingConfig FunctionCallingConfig `json:"functionCallingConfig"`
+}
+
+// FunctionCallingConfig is Gemini's native mode/allow-list pair. Mode is
+// one of "AUTO" (default)/"ANY"/"NONE". AllowedFunctionNames restricts
+// which declared functions Gemini may call under AUTO/ANY -- populated
+// with exactly one name to express "force this one specific tool" (mode
+// "tool" -- Gemini's legacy surface has no distinct single-tool-forcing
+// mode the way Anthropic's/OpenAI's do; ANY + a one-element allow-list
+// is the closest real equivalent).
+type FunctionCallingConfig struct {
+	Mode                 string   `json:"mode"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
+}
+
+// toolChoiceToProvider converts a canonical adapter.ToolChoice into
+// Gemini's native ToolConfigWire. Nil in, nil out -- the established
+// "unset is a no-op" convention.
+func toolChoiceToProvider(tc *adapter.ToolChoice) (*ToolConfigWire, error) {
+	if tc == nil {
+		return nil, nil
+	}
+	switch tc.Mode {
+	case "auto":
+		return &ToolConfigWire{FunctionCallingConfig: FunctionCallingConfig{Mode: "AUTO"}}, nil
+	case "required":
+		return &ToolConfigWire{FunctionCallingConfig: FunctionCallingConfig{Mode: "ANY"}}, nil
+	case "none":
+		return &ToolConfigWire{FunctionCallingConfig: FunctionCallingConfig{Mode: "NONE"}}, nil
+	case "tool":
+		return &ToolConfigWire{FunctionCallingConfig: FunctionCallingConfig{
+			Mode:                 "ANY",
+			AllowedFunctionNames: []string{tc.ToolName},
+		}}, nil
+	default:
+		return nil, fmt.Errorf("gemini: unknown tool_choice mode %q", tc.Mode)
+	}
+}
+
 // Request is Gemini's native generateContent/streamGenerateContent request
 // shape.
 type Request struct {
@@ -159,6 +206,9 @@ type Request struct {
 	SystemInstruction *Content          `json:"systemInstruction,omitempty"`
 	GenerationConfig  *GenerationConfig `json:"generationConfig,omitempty"`
 	Tools             []Tool            `json:"tools,omitempty"`
+	// ToolConfig, when set, requests tool-calling forcing behavior --
+	// per docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
+	ToolConfig *ToolConfigWire `json:"toolConfig,omitempty"`
 }
 
 // Candidate is one native response candidate. FinishReason's real enum has
@@ -349,11 +399,17 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		systemInstruction = &Content{Parts: []Part{{Text: strings.Join(systemParts, "\n\n")}}}
 	}
 
+	toolConfig, err := toolChoiceToProvider(req.ToolChoice)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Request{
 		Contents:          contents,
 		SystemInstruction: systemInstruction,
 		GenerationConfig:  genConfig,
 		Tools:             tools,
+		ToolConfig:        toolConfig,
 	}, nil
 }
 

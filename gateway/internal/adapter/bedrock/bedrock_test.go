@@ -1287,3 +1287,116 @@ func TestToProviderNilResponseFormatOmitsAdditionalModelRequestFields(t *testing
 		t.Errorf("marshaled request contains additionalModelRequestFields despite ResponseFormat being nil: %s", b)
 	}
 }
+
+func toolChoiceChatRequest(model string, tc *adapter.ToolChoice) adapter.ChatRequest {
+	return adapter.ChatRequest{
+		Model:      model,
+		Messages:   []adapter.Message{{Role: "user", Content: "what is the weather"}},
+		Tools:      []adapter.ToolDef{{Name: "get_weather", Description: "get the weather"}},
+		ToolChoice: tc,
+	}
+}
+
+func TestToProviderNilToolChoiceIsNoOp(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest("anthropic.claude-3-5-sonnet-20241022-v2:0", nil))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.ToolConfig == nil || native.ToolConfig.ToolChoice != nil {
+		t.Errorf("ToolConfig.ToolChoice = %+v, want nil", native.ToolConfig)
+	}
+}
+
+func TestToProviderToolChoiceAutoAndRequired(t *testing.T) {
+	cases := []struct {
+		mode string
+		want string // "auto" or "any", whichever union member should be set
+	}{
+		{"auto", "auto"},
+		{"required", "any"},
+	}
+	for _, c := range cases {
+		t.Run(c.mode, func(t *testing.T) {
+			nativeAny, err := New().ToProvider(toolChoiceChatRequest("anthropic.claude-3-5-sonnet-20241022-v2:0", &adapter.ToolChoice{Mode: c.mode}))
+			if err != nil {
+				t.Fatalf("ToProvider: %v", err)
+			}
+			native := nativeAny.(*Request)
+			tc := native.ToolConfig.ToolChoice
+			switch c.want {
+			case "auto":
+				if tc == nil || tc.Auto == nil {
+					t.Errorf("ToolChoice = %+v, want Auto set", tc)
+				}
+			case "any":
+				if tc == nil || tc.Any == nil {
+					t.Errorf("ToolChoice = %+v, want Any set", tc)
+				}
+			}
+		})
+	}
+}
+
+func TestToProviderToolChoiceModeToolNamesTheToolForSupportedModel(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest("anthropic.claude-3-5-sonnet-20241022-v2:0", &adapter.ToolChoice{Mode: "tool", ToolName: "get_weather"}))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	tc := native.ToolConfig.ToolChoice
+	if tc == nil || tc.Tool == nil || tc.Tool.Name != "get_weather" {
+		t.Errorf("ToolChoice = %+v, want Tool.Name=get_weather", tc)
+	}
+}
+
+// TestToProviderToolChoiceModeToolRejectedForUnsupportedModel proves the
+// AWS-documented restriction: Converse's SpecificToolChoice ("tool"
+// mode) is restricted to Anthropic Claude 3 and Amazon Nova models --
+// ToProvider must error for any other model rather than send a request
+// that would fail upstream.
+func TestToProviderToolChoiceModeToolRejectedForUnsupportedModel(t *testing.T) {
+	_, err := New().ToProvider(toolChoiceChatRequest("meta.llama3-70b-instruct-v1:0", &adapter.ToolChoice{Mode: "tool", ToolName: "get_weather"}))
+	if err == nil {
+		t.Fatal("ToProvider: want an error for tool_choice mode \"tool\" against an unsupported model, got nil")
+	}
+}
+
+func TestToProviderToolChoiceModeToolAllowedForNovaModel(t *testing.T) {
+	_, err := New().ToProvider(toolChoiceChatRequest("amazon.nova-pro-v1:0", &adapter.ToolChoice{Mode: "tool", ToolName: "get_weather"}))
+	if err != nil {
+		t.Fatalf("ToProvider: %v, want no error for a Nova model", err)
+	}
+}
+
+// TestToProviderToolChoiceModeNoneHasNoConverseEquivalent proves mode
+// "none" errors rather than silently being dropped -- Converse's
+// toolChoice union has no "forbid tool use" member.
+func TestToProviderToolChoiceModeNoneHasNoConverseEquivalent(t *testing.T) {
+	_, err := New().ToProvider(toolChoiceChatRequest("anthropic.claude-3-5-sonnet-20241022-v2:0", &adapter.ToolChoice{Mode: "none"}))
+	if err == nil {
+		t.Fatal("ToProvider: want an error for tool_choice mode \"none\", got nil")
+	}
+}
+
+func TestToProviderToolChoiceRejectsUnknownMode(t *testing.T) {
+	_, err := New().ToProvider(toolChoiceChatRequest("anthropic.claude-3-5-sonnet-20241022-v2:0", &adapter.ToolChoice{Mode: "bogus"}))
+	if err == nil {
+		t.Fatal("ToProvider: want an error for an unknown tool_choice mode, got nil")
+	}
+}
+
+// TestToProviderToolChoiceSetWithNoToolsErrors proves ToProvider refuses
+// to send a toolChoice with no tools at all, rather than sending a
+// request that would fail upstream in a confusing way.
+func TestToProviderToolChoiceSetWithNoToolsErrors(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:      "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages:   []adapter.Message{{Role: "user", Content: "hi"}},
+		ToolChoice: &adapter.ToolChoice{Mode: "auto"},
+	}
+	_, err := New().ToProvider(req)
+	if err == nil {
+		t.Fatal("ToProvider: want an error for tool_choice set with no tools, got nil")
+	}
+}

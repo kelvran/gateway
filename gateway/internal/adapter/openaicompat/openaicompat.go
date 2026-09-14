@@ -71,6 +71,9 @@ type Request struct {
 	// matches, enforcement quality is the operator's own responsibility"
 	// stance this package's doc comment already takes for tool-calling.
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	// ToolChoice, when set, requests tool-calling forcing behavior --
+	// per docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
+	ToolChoice *ToolChoiceWire `json:"tool_choice,omitempty"`
 }
 
 // StreamOptions is the native streaming-configuration object.
@@ -164,6 +167,58 @@ type FunctionDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// ToolChoiceWire mirrors internal/adapter/openai.ToolChoiceWire's real
+// wire shape exactly (see that type's own doc comment for the full
+// rationale) -- a near-verbatim copy, per this package's own established
+// convention, since self-hosted OpenAI-compatible runtimes (vLLM, TGI,
+// Ollama, llama.cpp, LocalAI) implement the identical tool_choice
+// surface. Str carries the string-form value; FunctionName, when
+// non-empty, requests the object form instead.
+type ToolChoiceWire struct {
+	Str          string
+	FunctionName string
+}
+
+// MarshalJSON mirrors openai.ToolChoiceWire.MarshalJSON exactly.
+func (t ToolChoiceWire) MarshalJSON() ([]byte, error) {
+	if t.FunctionName == "" {
+		return json.Marshal(t.Str)
+	}
+	return json.Marshal(struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}{
+		Type: "function",
+		Function: struct {
+			Name string `json:"name"`
+		}{Name: t.FunctionName},
+	})
+}
+
+// toolChoiceToProvider mirrors openai's identically-named function. No
+// per-model/per-runtime restriction is modeled -- fidelity-caveat
+// territory, matching ResponseFormat's own "wire shape matches,
+// enforcement quality is the operator's own responsibility" stance.
+func toolChoiceToProvider(tc *adapter.ToolChoice) (*ToolChoiceWire, error) {
+	if tc == nil {
+		return nil, nil
+	}
+	switch tc.Mode {
+	case "auto":
+		return &ToolChoiceWire{Str: "auto"}, nil
+	case "required":
+		return &ToolChoiceWire{Str: "required"}, nil
+	case "none":
+		return &ToolChoiceWire{Str: "none"}, nil
+	case "tool":
+		return &ToolChoiceWire{FunctionName: tc.ToolName}, nil
+	default:
+		return nil, fmt.Errorf("openaicompat: unknown tool_choice mode %q", tc.Mode)
+	}
 }
 
 // Response is the native Chat Completions response shape.
@@ -297,6 +352,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		streamOpts = &StreamOptions{IncludeUsage: true}
 	}
 
+	toolChoice, err := toolChoiceToProvider(req.ToolChoice)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Request{
 		Model:          req.Model,
 		Messages:       messages,
@@ -306,6 +366,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		Stream:         req.Stream,
 		StreamOptions:  streamOpts,
 		ResponseFormat: responseFormatToProvider(req.ResponseFormat),
+		ToolChoice:     toolChoice,
 	}, nil
 }
 

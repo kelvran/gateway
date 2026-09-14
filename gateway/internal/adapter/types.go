@@ -372,6 +372,37 @@ type ChatRequest struct {
 	// internal/prompt.Store.Resolve applies to PromptID's stored
 	// content. Meaningless when PromptID == "".
 	PromptVariables map[string]string `json:"prompt_variables,omitempty"`
+	// ToolChoice, when set, requests tool-calling forcing behavior --
+	// per docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md. Nil
+	// (the default, and every ChatRequest built before this field
+	// existed) is a silent no-op for every adapter, matching
+	// ResponseFormat/CacheControl's own established "unset is a no-op"
+	// convention -- each provider's own default ("auto": the model
+	// decides) applies.
+	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
+}
+
+// ToolChoice requests forcing behavior for tool calling, per
+// docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
+type ToolChoice struct {
+	// Mode is one of "auto" (provider default, model decides), "required"
+	// (must call at least one tool, provider decides which), "none"
+	// (must not call a tool), or "tool" (must call the specific tool
+	// named by ToolName). Required whenever ToolChoice is non-nil.
+	Mode string `json:"mode"`
+	// ToolName names the specific tool to force -- read only when
+	// Mode == "tool"; ignored otherwise.
+	ToolName string `json:"tool_name,omitempty"`
+	// DisableParallelToolUse, when true, requests at most one tool call
+	// even under Mode "auto"/"required". Only Anthropic's own direct
+	// Messages API has a confirmed native equivalent
+	// (tool_choice.disable_parallel_tool_use) -- AWS's own Converse API
+	// reference documents no equivalent flag on ToolChoice's union type,
+	// so Bedrock (including Bedrock's Anthropic-family models) ignores
+	// this too. Every adapter besides direct Anthropic ignores this as a
+	// no-op, the same "provider/model family ignores as a no-op, never
+	// an error" convention CacheControl.TTL already established.
+	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
 }
 
 // Usage is token accounting for a single completion. PromptTokens is the

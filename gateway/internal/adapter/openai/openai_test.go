@@ -623,3 +623,84 @@ func TestToProviderNilResponseFormatOmitsField(t *testing.T) {
 		t.Errorf("marshaled request contains response_format despite ResponseFormat being nil: %s", b)
 	}
 }
+
+func toolChoiceChatRequest(tc *adapter.ToolChoice) adapter.ChatRequest {
+	return adapter.ChatRequest{
+		Model:      "gpt-4o",
+		Messages:   []adapter.Message{{Role: "user", Content: "what is the weather"}},
+		Tools:      []adapter.ToolDef{{Name: "get_weather", Description: "get the weather"}},
+		ToolChoice: tc,
+	}
+}
+
+func TestToProviderNilToolChoiceIsNoOp(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest(nil))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.ToolChoice != nil {
+		t.Errorf("ToolChoice = %+v, want nil", native.ToolChoice)
+	}
+	b, _ := json.Marshal(native)
+	if strings.Contains(string(b), "tool_choice") {
+		t.Errorf("marshaled request contains tool_choice despite ToolChoice being nil: %s", b)
+	}
+}
+
+func TestToProviderToolChoiceStringModesMarshalAsBareStrings(t *testing.T) {
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{"auto", `"auto"`},
+		{"required", `"required"`},
+		{"none", `"none"`},
+	}
+	for _, c := range cases {
+		t.Run(c.mode, func(t *testing.T) {
+			nativeAny, err := New().ToProvider(toolChoiceChatRequest(&adapter.ToolChoice{Mode: c.mode}))
+			if err != nil {
+				t.Fatalf("ToProvider: %v", err)
+			}
+			native := nativeAny.(*Request)
+			b, err := json.Marshal(native.ToolChoice)
+			if err != nil {
+				t.Fatalf("marshaling ToolChoice: %v", err)
+			}
+			if string(b) != c.want {
+				t.Errorf("marshaled ToolChoice = %s, want %s", b, c.want)
+			}
+		})
+	}
+}
+
+func TestToProviderToolChoiceModeToolMarshalsAsFunctionObject(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest(&adapter.ToolChoice{Mode: "tool", ToolName: "get_weather"}))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	b, err := json.Marshal(native.ToolChoice)
+	if err != nil {
+		t.Fatalf("marshaling ToolChoice: %v", err)
+	}
+	var wireTree map[string]any
+	if err := json.Unmarshal(b, &wireTree); err != nil {
+		t.Fatalf("unmarshaling marshaled tool_choice: %v", err)
+	}
+	if wireTree["type"] != "function" {
+		t.Errorf("tool_choice.type = %v, want function", wireTree["type"])
+	}
+	function, ok := wireTree["function"].(map[string]any)
+	if !ok || function["name"] != "get_weather" {
+		t.Errorf("tool_choice.function = %v, want {name: get_weather}", wireTree["function"])
+	}
+}
+
+func TestToProviderToolChoiceRejectsUnknownMode(t *testing.T) {
+	_, err := New().ToProvider(toolChoiceChatRequest(&adapter.ToolChoice{Mode: "bogus"}))
+	if err == nil {
+		t.Fatal("ToProvider: want an error for an unknown tool_choice mode, got nil")
+	}
+}

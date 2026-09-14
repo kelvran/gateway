@@ -61,3 +61,65 @@ func bedrockModelSupportsStructuredOutput(model string) bool {
 	}
 	return false
 }
+
+// bedrockForcedToolChoiceModelSubstrings is the exact set of Bedrock
+// model-family substrings AWS documents as supporting ToolChoice's
+// SpecificToolChoice ("tool" mode) -- per
+// docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html,
+// restricted to "Anthropic Claude 3 and Amazon Nova models" only. A
+// separately-tracked list from bedrockStructuredOutputModelSubstrings
+// (that whitelist gates a different capability, output_config.format;
+// AWS documents the two capability lists independently, and they are
+// not guaranteed to stay identical over time) -- per
+// docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
+var bedrockForcedToolChoiceModelSubstrings = []string{
+	"claude-3",
+	"nova",
+}
+
+// BedrockModelSupportsForcedToolChoice reports whether model (a Bedrock
+// model ID) matches one of bedrockForcedToolChoiceModelSubstrings.
+// Exported (unlike bedrockModelSupportsStructuredOutput) so
+// internal/adapter/bedrock can call it directly when mapping
+// ChatRequest.ToolChoice's "tool" mode -- adapter/bedrock imports
+// adapter already, for ChatRequest/ToolChoice itself, so this adds no
+// new dependency edge.
+func BedrockModelSupportsForcedToolChoice(model string) bool {
+	for _, substr := range bedrockForcedToolChoiceModelSubstrings {
+		if strings.Contains(model, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// anthropicForcedToolChoiceUnsupportedModelSubstrings is the exact set
+// of Claude model-family substrings that reject Anthropic's own
+// tool_choice "any"/"tool" forced modes with a 400, per
+// docs/upgrade-research/advanced-tool-calling-structured-output-2026-09-14.md
+// Finding 2 -- Anthropic's own documented workaround for these specific
+// model variants is "auto" + strict tool use or structured outputs
+// instead of forcing. Matched by substring, mirroring every other
+// per-model whitelist/blocklist in this file, for the same real-model-ID
+// reason (region/version prefixes and date/version suffixes around the
+// family name).
+var anthropicForcedToolChoiceUnsupportedModelSubstrings = []string{
+	"claude-fable-5-1",
+	"claude-mythos-5-1",
+}
+
+// AnthropicModelRejectsForcedToolChoice reports whether model (an
+// Anthropic model ID, direct API or Bedrock's Anthropic-family) matches
+// one of anthropicForcedToolChoiceUnsupportedModelSubstrings -- i.e.
+// whether tool_choice "any"/"tool" would be rejected for this model.
+// Exported so both internal/adapter/anthropic and internal/adapter/
+// bedrock (Bedrock's own Anthropic-family models share this same real
+// restriction) can call it directly.
+func AnthropicModelRejectsForcedToolChoice(model string) bool {
+	for _, substr := range anthropicForcedToolChoiceUnsupportedModelSubstrings {
+		if strings.Contains(model, substr) {
+			return true
+		}
+	}
+	return false
+}

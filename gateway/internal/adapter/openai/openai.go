@@ -46,6 +46,9 @@ type Request struct {
 	// Nil (the default) omits the field entirely, byte-identical to
 	// today's existing behavior.
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	// ToolChoice, when set, requests tool-calling forcing behavior --
+	// per docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
+	ToolChoice *ToolChoiceWire `json:"tool_choice,omitempty"`
 }
 
 // StreamOptions is OpenAI's native streaming-configuration object.
@@ -135,6 +138,66 @@ type FunctionDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// ToolChoiceWire is OpenAI's native tool_choice field, per
+// docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md -- a real
+// wire-level UNION: either a bare JSON string ("auto"/"none"/"required")
+// or an object forcing one named function
+// ({"type":"function","function":{"name":...}}). Str carries the
+// string-form value; FunctionName, when non-empty, requests the object
+// form instead -- MarshalJSON below picks whichever this pair encodes,
+// so callers never construct the object form's nested shape directly.
+type ToolChoiceWire struct {
+	Str          string
+	FunctionName string
+}
+
+// MarshalJSON implements the real union-type wire shape: a bare string
+// when FunctionName is empty, or {"type":"function","function":
+// {"name":...}} when it is set. Never both -- toolChoiceToProvider's own
+// construction guarantees exactly one is meaningful per value.
+func (t ToolChoiceWire) MarshalJSON() ([]byte, error) {
+	if t.FunctionName == "" {
+		return json.Marshal(t.Str)
+	}
+	return json.Marshal(struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}{
+		Type: "function",
+		Function: struct {
+			Name string `json:"name"`
+		}{Name: t.FunctionName},
+	})
+}
+
+// toolChoiceToProvider converts a canonical adapter.ToolChoice into
+// OpenAI's native ToolChoiceWire. Nil in, nil out -- the established
+// "unset is a no-op" convention. No per-model restriction is known/
+// confirmed for OpenAI (unlike Anthropic/Bedrock) -- see
+// docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md's own
+// Motivation section, which explicitly notes OpenAI's tool_choice
+// surface was not independently re-verified against current docs in
+// that research pass.
+func toolChoiceToProvider(tc *adapter.ToolChoice) (*ToolChoiceWire, error) {
+	if tc == nil {
+		return nil, nil
+	}
+	switch tc.Mode {
+	case "auto":
+		return &ToolChoiceWire{Str: "auto"}, nil
+	case "required":
+		return &ToolChoiceWire{Str: "required"}, nil
+	case "none":
+		return &ToolChoiceWire{Str: "none"}, nil
+	case "tool":
+		return &ToolChoiceWire{FunctionName: tc.ToolName}, nil
+	default:
+		return nil, fmt.Errorf("openai: unknown tool_choice mode %q", tc.Mode)
+	}
 }
 
 // Response is OpenAI's native Chat Completions response shape.
@@ -244,6 +307,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		streamOpts = &StreamOptions{IncludeUsage: true}
 	}
 
+	toolChoice, err := toolChoiceToProvider(req.ToolChoice)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Request{
 		Model:          req.Model,
 		Messages:       messages,
@@ -254,6 +322,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		StreamOptions:  streamOpts,
 		PromptCacheKey: findCacheKey(req.Messages),
 		ResponseFormat: responseFormatToProvider(req.ResponseFormat),
+		ToolChoice:     toolChoice,
 	}, nil
 }
 

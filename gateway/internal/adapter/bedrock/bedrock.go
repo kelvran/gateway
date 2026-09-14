@@ -364,7 +364,71 @@ type InputSchema struct {
 
 // ToolConfig is Converse's native tool-configuration container.
 type ToolConfig struct {
-	Tools []Tool `json:"tools"`
+	Tools      []Tool          `json:"tools"`
+	ToolChoice *ToolChoiceWire `json:"toolChoice,omitempty"`
+}
+
+// AutoToolChoice and AnyToolChoice are Converse's own empty-object union
+// members -- {"toolChoice":{"auto":{}}} / {"toolChoice":{"any":{}}}, per
+// docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+// ("This data type is a UNION, so only one of the following members can
+// be specified"). Named after AWS's own type names, matching this
+// adapter's existing convention of naming wire types after the real API
+// reference rather than inventing new ones.
+type AutoToolChoice struct{}
+type AnyToolChoice struct{}
+
+// SpecificToolChoice is Converse's own "tool" union member -- forces the
+// named tool. Restricted by AWS to Anthropic Claude 3 and Amazon Nova
+// models only, per adapter.BedrockModelSupportsForcedToolChoice's own
+// doc comment.
+type SpecificToolChoice struct {
+	Name string `json:"name"`
+}
+
+// ToolChoiceWire is Converse's native toolChoice union -- exactly one of
+// Auto/Any/Tool is ever set, per docs/rfcs/2026-09-14-gateway-tool-
+// choice-normalization.md.
+type ToolChoiceWire struct {
+	Auto *AutoToolChoice     `json:"auto,omitempty"`
+	Any  *AnyToolChoice      `json:"any,omitempty"`
+	Tool *SpecificToolChoice `json:"tool,omitempty"`
+}
+
+// toolChoiceToProvider converts a canonical adapter.ToolChoice into
+// Converse's native ToolChoiceWire. Nil in, nil out -- the established
+// "unset is a no-op" convention. Mode "none" has no Converse equivalent
+// at all (the union has no "forbid tool use" member) -- Bedrock's only
+// way to disallow tool use is omitting toolConfig.tools entirely, which
+// this function cannot safely do on the caller's behalf (the caller's
+// own req.Tools may be non-empty for a reason unrelated to this one
+// call), so it errors loudly rather than silently ignoring the request.
+// Mode "tool" errors when model is not on
+// adapter.BedrockModelSupportsForcedToolChoice's whitelist, or when
+// adapter.AnthropicModelRejectsForcedToolChoice's own real per-model
+// restriction also applies to this Bedrock-hosted Anthropic model.
+func toolChoiceToProvider(tc *adapter.ToolChoice, model string) (*ToolChoiceWire, error) {
+	if tc == nil {
+		return nil, nil
+	}
+	switch tc.Mode {
+	case "auto":
+		return &ToolChoiceWire{Auto: &AutoToolChoice{}}, nil
+	case "required":
+		return &ToolChoiceWire{Any: &AnyToolChoice{}}, nil
+	case "none":
+		return nil, fmt.Errorf("bedrock: tool_choice mode %q has no Converse equivalent -- omit req.Tools entirely instead of requesting %q", tc.Mode, tc.Mode)
+	case "tool":
+		if !adapter.BedrockModelSupportsForcedToolChoice(model) {
+			return nil, fmt.Errorf("bedrock: model %q does not support tool_choice mode %q (Converse's SpecificToolChoice is restricted to Anthropic Claude 3 and Amazon Nova models)", model, tc.Mode)
+		}
+		if adapter.AnthropicModelRejectsForcedToolChoice(model) {
+			return nil, fmt.Errorf("bedrock: model %q rejects forced tool_choice (mode %q)", model, tc.Mode)
+		}
+		return &ToolChoiceWire{Tool: &SpecificToolChoice{Name: tc.ToolName}}, nil
+	default:
+		return nil, fmt.Errorf("bedrock: unknown tool_choice mode %q", tc.Mode)
+	}
 }
 
 // InferenceConfig carries the subset of Converse's real inferenceConfig
@@ -540,6 +604,17 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			tools = appendToolCachePointIfNeeded(tools, t.CacheControl, req.Model)
 		}
 		toolConfig = &ToolConfig{Tools: tools}
+	}
+
+	toolChoice, err := toolChoiceToProvider(req.ToolChoice, req.Model)
+	if err != nil {
+		return nil, err
+	}
+	if toolChoice != nil {
+		if toolConfig == nil {
+			return nil, fmt.Errorf("bedrock: tool_choice is set but no tools were provided")
+		}
+		toolConfig.ToolChoice = toolChoice
 	}
 
 	var inferenceConfig *InferenceConfig

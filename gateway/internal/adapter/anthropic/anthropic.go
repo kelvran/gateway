@@ -50,6 +50,9 @@ type Request struct {
 	// deprecated/legacy-only). Nil (the default) omits the field
 	// entirely, byte-identical to today's existing behavior.
 	OutputConfig *OutputConfig `json:"output_config,omitempty"`
+	// ToolChoice, when set, requests tool-calling forcing behavior --
+	// per docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
+	ToolChoice *ToolChoiceWire `json:"tool_choice,omitempty"`
 }
 
 // OutputConfig is Anthropic's real top-level structured-output request
@@ -217,6 +220,64 @@ type Tool struct {
 	Strict *bool `json:"strict,omitempty"`
 }
 
+// ToolChoiceWire is Anthropic's native tool_choice object, per
+// docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md. Type is one
+// of "auto" (default when tools given)/"any"/"tool"/"none" (default when
+// no tools given). Name is set only for Type == "tool".
+// DisableParallelToolUse is Anthropic's own real nested field (never a
+// top-level ChatRequest field) -- valid alongside auto/any/tool, ignored
+// by none.
+type ToolChoiceWire struct {
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
+}
+
+// anthropicToolChoiceTypeFor maps adapter.ToolChoice.Mode to Anthropic's
+// own type value -- "required" (Kelvran's canonical name) is Anthropic's
+// "any"; every other mode name matches Anthropic's own vocabulary
+// directly.
+func anthropicToolChoiceTypeFor(mode string) (string, error) {
+	switch mode {
+	case "auto":
+		return "auto", nil
+	case "required":
+		return "any", nil
+	case "none":
+		return "none", nil
+	case "tool":
+		return "tool", nil
+	default:
+		return "", fmt.Errorf("anthropic: unknown tool_choice mode %q", mode)
+	}
+}
+
+// toolChoiceToProvider converts a canonical adapter.ToolChoice into
+// Anthropic's native ToolChoiceWire. Nil in, nil out -- the established
+// "unset is a no-op" convention. Errors (never silently downgrades to
+// "auto") when tc requests a forced mode ("any"/"tool" -- i.e. anything
+// but "auto"/"none") against a model
+// adapter.AnthropicModelRejectsForcedToolChoice names as rejecting
+// forced modes with a real 400, per
+// docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
+func toolChoiceToProvider(tc *adapter.ToolChoice, model string) (*ToolChoiceWire, error) {
+	if tc == nil {
+		return nil, nil
+	}
+	wireType, err := anthropicToolChoiceTypeFor(tc.Mode)
+	if err != nil {
+		return nil, err
+	}
+	if (wireType == "any" || wireType == "tool") && adapter.AnthropicModelRejectsForcedToolChoice(model) {
+		return nil, fmt.Errorf("anthropic: model %q rejects forced tool_choice (mode %q) -- use \"auto\" with strict tool use or structured outputs instead", model, tc.Mode)
+	}
+	return &ToolChoiceWire{
+		Type:                   wireType,
+		Name:                   tc.ToolName,
+		DisableParallelToolUse: tc.DisableParallelToolUse,
+	}, nil
+}
+
 // Response is Anthropic's native Messages API response shape.
 type Response struct {
 	ID         string         `json:"id"`
@@ -361,6 +422,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		return nil, err
 	}
 
+	toolChoice, err := toolChoiceToProvider(req.ToolChoice, req.Model)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Request{
 		Model:        req.Model,
 		System:       systemBlocks,
@@ -370,6 +436,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		Tools:        tools,
 		Stream:       req.Stream,
 		OutputConfig: outputConfig,
+		ToolChoice:   toolChoice,
 	}, nil
 }
 

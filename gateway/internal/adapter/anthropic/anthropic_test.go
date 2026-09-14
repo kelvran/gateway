@@ -1065,3 +1065,107 @@ func TestReasoningBlockRoundTripPreservesExactOriginalOrder(t *testing.T) {
 		}
 	}
 }
+
+func toolChoiceChatRequest(model string, tc *adapter.ToolChoice) adapter.ChatRequest {
+	return adapter.ChatRequest{
+		Model:      model,
+		Messages:   []adapter.Message{{Role: "user", Content: "what is the weather"}},
+		Tools:      []adapter.ToolDef{{Name: "get_weather", Description: "get the weather"}},
+		ToolChoice: tc,
+	}
+}
+
+func TestToProviderNilToolChoiceIsNoOp(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest("claude-opus-4-6", nil))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.ToolChoice != nil {
+		t.Errorf("ToolChoice = %+v, want nil", native.ToolChoice)
+	}
+	b, _ := json.Marshal(native)
+	if strings.Contains(string(b), "tool_choice") {
+		t.Errorf("marshaled request contains a tool_choice field despite ToolChoice being nil: %s", b)
+	}
+}
+
+func TestToProviderToolChoiceModeMapping(t *testing.T) {
+	cases := []struct {
+		mode     string
+		wantType string
+	}{
+		{"auto", "auto"},
+		{"required", "any"},
+		{"none", "none"},
+	}
+	for _, c := range cases {
+		t.Run(c.mode, func(t *testing.T) {
+			nativeAny, err := New().ToProvider(toolChoiceChatRequest("claude-opus-4-6", &adapter.ToolChoice{Mode: c.mode}))
+			if err != nil {
+				t.Fatalf("ToProvider: %v", err)
+			}
+			native := nativeAny.(*Request)
+			if native.ToolChoice == nil || native.ToolChoice.Type != c.wantType {
+				t.Errorf("ToolChoice = %+v, want Type=%q", native.ToolChoice, c.wantType)
+			}
+		})
+	}
+}
+
+func TestToProviderToolChoiceModeToolNamesTheTool(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest("claude-opus-4-6", &adapter.ToolChoice{Mode: "tool", ToolName: "get_weather"}))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.ToolChoice == nil || native.ToolChoice.Type != "tool" || native.ToolChoice.Name != "get_weather" {
+		t.Errorf("ToolChoice = %+v, want {Type:tool Name:get_weather}", native.ToolChoice)
+	}
+}
+
+func TestToProviderToolChoiceDisableParallelToolUse(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest("claude-opus-4-6", &adapter.ToolChoice{Mode: "auto", DisableParallelToolUse: true}))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.ToolChoice == nil || !native.ToolChoice.DisableParallelToolUse {
+		t.Errorf("ToolChoice = %+v, want DisableParallelToolUse=true", native.ToolChoice)
+	}
+}
+
+func TestToProviderToolChoiceRejectsUnknownMode(t *testing.T) {
+	_, err := New().ToProvider(toolChoiceChatRequest("claude-opus-4-6", &adapter.ToolChoice{Mode: "bogus"}))
+	if err == nil {
+		t.Fatal("ToProvider: want an error for an unknown tool_choice mode, got nil")
+	}
+}
+
+// TestToProviderToolChoiceForcedModeRejectedForUnsupportedModel proves
+// the model-restriction check: Claude Fable 5.1 and Claude Mythos 5.1
+// reject Anthropic's own "any"/"tool" forced modes with a real 400 --
+// ToProvider must error rather than send a request that would fail
+// upstream, per docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
+func TestToProviderToolChoiceForcedModeRejectedForUnsupportedModel(t *testing.T) {
+	for _, model := range []string{"claude-fable-5-1-20260101", "claude-mythos-5-1-20260101"} {
+		for _, mode := range []string{"required", "tool"} {
+			t.Run(model+"/"+mode, func(t *testing.T) {
+				_, err := New().ToProvider(toolChoiceChatRequest(model, &adapter.ToolChoice{Mode: mode, ToolName: "get_weather"}))
+				if err == nil {
+					t.Fatalf("ToProvider: want an error for mode %q against model %q, got nil", mode, model)
+				}
+			})
+		}
+	}
+}
+
+// TestToProviderToolChoiceForcedModeAllowedForOrdinaryModel proves the
+// restriction is genuinely model-specific, not a blanket rejection of
+// every forced mode.
+func TestToProviderToolChoiceForcedModeAllowedForOrdinaryModel(t *testing.T) {
+	_, err := New().ToProvider(toolChoiceChatRequest("claude-opus-4-6", &adapter.ToolChoice{Mode: "tool", ToolName: "get_weather"}))
+	if err != nil {
+		t.Fatalf("ToProvider: %v, want no error for an ordinary model", err)
+	}
+}

@@ -948,3 +948,76 @@ func TestToProviderNilResponseFormatOmitsResponseMimeType(t *testing.T) {
 		t.Errorf("marshaled request contains responseMimeType/responseSchema despite ResponseFormat being nil: %s", b)
 	}
 }
+
+func toolChoiceChatRequest(tc *adapter.ToolChoice) adapter.ChatRequest {
+	return adapter.ChatRequest{
+		Model:      "gemini-2.5-pro",
+		Messages:   []adapter.Message{{Role: "user", Content: "what is the weather"}},
+		Tools:      []adapter.ToolDef{{Name: "get_weather", Description: "get the weather"}},
+		ToolChoice: tc,
+	}
+}
+
+func TestToProviderNilToolChoiceIsNoOp(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest(nil))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.ToolConfig != nil {
+		t.Errorf("ToolConfig = %+v, want nil", native.ToolConfig)
+	}
+	b, _ := json.Marshal(native)
+	if strings.Contains(string(b), "toolConfig") {
+		t.Errorf("marshaled request contains toolConfig despite ToolChoice being nil: %s", b)
+	}
+}
+
+func TestToProviderToolChoiceModeMapping(t *testing.T) {
+	cases := []struct {
+		mode     string
+		wantMode string
+	}{
+		{"auto", "AUTO"},
+		{"required", "ANY"},
+		{"none", "NONE"},
+	}
+	for _, c := range cases {
+		t.Run(c.mode, func(t *testing.T) {
+			nativeAny, err := New().ToProvider(toolChoiceChatRequest(&adapter.ToolChoice{Mode: c.mode}))
+			if err != nil {
+				t.Fatalf("ToProvider: %v", err)
+			}
+			native := nativeAny.(*Request)
+			if native.ToolConfig == nil || native.ToolConfig.FunctionCallingConfig.Mode != c.wantMode {
+				t.Errorf("ToolConfig = %+v, want FunctionCallingConfig.Mode=%q", native.ToolConfig, c.wantMode)
+			}
+		})
+	}
+}
+
+// TestToProviderToolChoiceModeToolUsesAnyWithAllowList proves Gemini's
+// real workaround for single-tool forcing: mode "tool" maps to ANY plus
+// a one-element allowedFunctionNames list, since Gemini's legacy surface
+// has no distinct single-tool-forcing mode of its own.
+func TestToProviderToolChoiceModeToolUsesAnyWithAllowList(t *testing.T) {
+	nativeAny, err := New().ToProvider(toolChoiceChatRequest(&adapter.ToolChoice{Mode: "tool", ToolName: "get_weather"}))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	fcc := native.ToolConfig.FunctionCallingConfig
+	if fcc.Mode != "ANY" {
+		t.Errorf("Mode = %q, want ANY", fcc.Mode)
+	}
+	if len(fcc.AllowedFunctionNames) != 1 || fcc.AllowedFunctionNames[0] != "get_weather" {
+		t.Errorf("AllowedFunctionNames = %v, want [get_weather]", fcc.AllowedFunctionNames)
+	}
+}
+
+func TestToProviderToolChoiceRejectsUnknownMode(t *testing.T) {
+	_, err := New().ToProvider(toolChoiceChatRequest(&adapter.ToolChoice{Mode: "bogus"}))
+	if err == nil {
+		t.Fatal("ToProvider: want an error for an unknown tool_choice mode, got nil")
+	}
+}
