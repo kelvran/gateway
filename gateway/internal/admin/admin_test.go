@@ -732,3 +732,87 @@ func TestPromptReadRoutesLogAnAuditEntryWithoutLeakingContent(t *testing.T) {
 		t.Errorf("audit log must never contain prompt message content; got: %s", buf.String())
 	}
 }
+
+// pprofEnabledConfig returns testConfig() with Admin.EnablePprof set --
+// a small variant, not a second full config builder, since every other
+// field stays identical to testConfig()'s own baseline.
+func pprofEnabledConfig() *controlplane.Config {
+	cfg := testConfig()
+	cfg.Admin.EnablePprof = true
+	return cfg
+}
+
+// TestPprofDisabledByDefaultReturns404 proves the off-by-default
+// contract: testConfig() never sets EnablePprof, so no pprof route is
+// registered on the mux at all -- ServeMux returns a plain 404, not a
+// 401, since the route itself does not exist to be unauthorized against.
+func TestPprofDisabledByDefaultReturns404(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/debug/pprof/", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /admin/debug/pprof/ with pprof disabled: status = %d, want 404", rec.Code)
+	}
+}
+
+// TestPprofEnabledRequiresAdminCredential proves pprof, once enabled,
+// still goes through the same bearer-token gate as every other admin
+// route -- missing or wrong credential is rejected before pprof.Index
+// ever runs.
+func TestPprofEnabledRequiresAdminCredential(t *testing.T) {
+	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	cases := []struct {
+		name        string
+		bearerValue string
+	}{
+		{"missing header entirely", ""},
+		{"wrong value", "wrong-value-entirely"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := doRequest(t, h, http.MethodGet, "/admin/debug/pprof/", c.bearerValue, "")
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("GET /admin/debug/pprof/ with %s: status = %d, want 401", c.name, rec.Code)
+			}
+		})
+	}
+}
+
+// TestPprofEnabledViewerCredentialRejected proves the viewer tier can
+// never authenticate a pprof route -- profiling data is a stronger
+// information-disclosure/DoS-surface signal than anything the read-only
+// viewer tier exposes elsewhere on this mux, so pprof always requires
+// creds.Admin specifically, exactly like the write routes.
+func TestPprofEnabledViewerCredentialRejected(t *testing.T) {
+	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: "a-viewer-credential"}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/debug/pprof/", "a-viewer-credential", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET /admin/debug/pprof/ with the viewer credential: status = %d, want 401", rec.Code)
+	}
+}
+
+// TestPprofEnabledWithAdminCredentialServesRealProfilingData proves the
+// happy path end to end: once enabled and authenticated as admin, the
+// index route serves pprof's own real output, and a named profile route
+// (goroutine) serves a real profile, not a 404/501 stub.
+func TestPprofEnabledWithAdminCredentialServesRealProfilingData(t *testing.T) {
+	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/debug/pprof/", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/debug/pprof/: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Types of profiles available") {
+		t.Errorf("GET /admin/debug/pprof/ body does not look like pprof.Index's real output: %s", rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/admin/debug/pprof/goroutine", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/debug/pprof/goroutine: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("GET /admin/debug/pprof/goroutine returned an empty body, want a real goroutine profile")
+	}
+}

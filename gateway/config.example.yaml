@@ -306,11 +306,17 @@ telemetry:
 # credential can GET /admin/config but never mutate virtual keys; omit
 # it for the single-credential behavior every config had before this
 # field existed. Same "must resolve non-empty or refuse to start" rule
-# as token_env.
+# as token_env. enable_pprof (added 2026-09-14, default false) mounts
+# net/http/pprof's standard handler set under /admin/debug/pprof/, on
+# this same mux, gated behind token_env specifically -- never
+# viewer_token_env, since profiling data is a stronger information-
+# disclosure/DoS-surface signal than anything the viewer tier exposes
+# elsewhere. Mirrors Envoy Gateway's own shipped enablePprof field.
 # admin:
 #   listen_addr: "127.0.0.1:8081"
 #   token_env: "KELVRAN_ADMIN_TOKEN"
 #   viewer_token_env: "KELVRAN_ADMIN_VIEWER_TOKEN"
+#   enable_pprof: false
 
 # Active/synthetic health-probing: a background loop that issues a
 # lightweight, real chat-completion request to every configured

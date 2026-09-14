@@ -455,6 +455,16 @@ type AdminConfig struct {
 	// resolves empty, cmd/gateway fails startup, mirroring TokenEnv's
 	// own "never run with an unauthenticated surface" rule.
 	ViewerTokenEnv string
+	// EnablePprof mounts net/http/pprof's standard handler set on this
+	// same admin mux (under /admin/debug/pprof/), behind the same bearer
+	// -token middleware as every other admin route, when true. Default
+	// false, matching every other optional admin capability's convention
+	// — mirrors Envoy Gateway's own shipped `enablePprof` field under its
+	// admin config section, per
+	// docs/upgrade-research/performance-latency-optimization-2026-09-14.md
+	// Finding 3. Meaningless (never read) when TokenEnv is empty, since
+	// the whole admin server never starts in that case.
+	EnablePprof bool
 }
 
 // HealthProbeConfig configures the active/synthetic health-probing
@@ -696,6 +706,7 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.ListenAddr, _ = getString(adminRaw, "listen_addr")
 		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
 		cfg.Admin.ViewerTokenEnv, _ = getString(adminRaw, "viewer_token_env")
+		cfg.Admin.EnablePprof, _ = getBool(adminRaw, "enable_pprof")
 	}
 
 	if healthProbeRaw, ok := getMap(root, "health_probe"); ok {

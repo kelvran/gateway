@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"strconv"
 	"time"
 
@@ -133,6 +134,29 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline, logger)))
 	mux.Handle("POST /admin/prompts/{id}", requireBearerToken(creds.Admin, upsertPromptHandler(pipeline, logger)))
 	mux.Handle("DELETE /admin/prompts/{id}", requireBearerToken(creds.Admin, deletePromptHandler(pipeline, logger)))
+	// pprof, per cfg.Admin.EnablePprof's own doc comment — off by
+	// default, admin-credential-gated (never the viewer tier: profiling
+	// data is a stronger information-disclosure/DoS-surface signal than
+	// anything the read-only viewer tier exposes elsewhere on this mux),
+	// mounted only on this already off-by-default, loopback-default,
+	// bearer-token-protected mux -- never a second listener, never a
+	// second credential space.
+	if cfg.Admin.EnablePprof {
+		mux.Handle("GET /admin/debug/pprof/", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Index)))
+		mux.Handle("GET /admin/debug/pprof/cmdline", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Cmdline)))
+		mux.Handle("GET /admin/debug/pprof/profile", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Profile)))
+		mux.Handle("GET /admin/debug/pprof/symbol", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Symbol)))
+		mux.Handle("POST /admin/debug/pprof/symbol", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Symbol)))
+		mux.Handle("GET /admin/debug/pprof/trace", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Trace)))
+		// Named profiles registered against the DefaultServeMux by pprof's
+		// own package init() (goroutine, heap, threadcreate, block, mutex,
+		// allocs) -- Handler() looks them up by name via pprof.Handler,
+		// the same indirection net/http/pprof's own docs recommend for
+		// mounting under a custom prefix instead of DefaultServeMux.
+		for _, name := range []string{"goroutine", "heap", "threadcreate", "block", "mutex", "allocs"} {
+			mux.Handle("GET /admin/debug/pprof/"+name, requireBearerToken(creds.Admin, pprof.Handler(name)))
+		}
+	}
 	return mux
 }
 

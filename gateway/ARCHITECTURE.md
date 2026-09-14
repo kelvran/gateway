@@ -256,7 +256,12 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              (per-route middleware wrapping); omitting it reproduces the original
                              single-credential behavior exactly. Every successful virtual-key
                              create/delete now writes a structured audit-log entry (key name only, never
-                             the credential). Admin mutations are in-memory-only in v1
+                             the credential). **Added 2026-09-14**: an opt-in `admin.enable_pprof` flag
+                             (default false) mounts `net/http/pprof`'s standard handler set under
+                             `/admin/debug/pprof/`, on this same mux, gated behind the admin credential
+                             specifically — never the viewer tier — mirroring Envoy Gateway's own shipped
+                             `enablePprof` field, per docs/upgrade-research/performance-latency-optimization-2026-09-14.md
+                             Finding 3. Admin mutations are in-memory-only in v1
                              (lost on restart, reverting to config.yaml); every other config section
                              (guardrails, budgets' shape, rate limits, routing, cache, price table,
                              telemetry) stays static-YAML-only, named explicitly as later follow-on work
