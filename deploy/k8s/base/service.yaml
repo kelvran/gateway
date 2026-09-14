@@ -1,0 +1,20 @@
+# Exposes only the client-facing API port (8080) -- the admin surface
+# (default 127.0.0.1:8081, per cmd/gateway/main.go's defaultAdminListenAddr)
+# binds loopback-only inside the container and is never reachable via
+# this (or any) Service by construction, matching SECURITY.md's "never
+# internet-facing" rule for the admin API without any extra care needed
+# here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: kelvran-gateway
+spec:
+  selector:
+    app.kubernetes.io/name: kelvran-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  type: ClusterIP

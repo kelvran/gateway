@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - secret-placeholder.yaml
+
+# Generates the gateway-config ConfigMap deployment.yaml mounts, from a
+# LOCAL, gitignored config.yaml -- see ../README.md's Usage section
+# (`cp ../../gateway/config.example.yaml config.yaml`). This file is
+# expected to be absent in a fresh checkout; `kubectl apply -k base/`
+# will fail with a clear "no such file" error until you create it,
+# which is the correct behavior -- the same precondition
+# docker-compose.yml's own `./gateway/config.yaml:/config.yaml:ro`
+# volume mount already has.
+configMapGenerator:
+  - name: gateway-config
+    files:
+      - config.yaml

@@ -37,6 +37,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/KimMachineGun/automemlimit/memlimit"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -149,6 +150,27 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+
+	// Go has no native cgroup-memory-aware GOMEMLIMIT equivalent (unlike
+	// GOMAXPROCS, which Go 1.25+ already sets container-aware, but only
+	// when a real CPU *limit*, not just a request, is configured) --
+	// exceeding a Kubernetes memory *limit* triggers a hard OOM-kill,
+	// while exceeding a CPU limit only throttles, making memory
+	// misconfiguration the higher-severity risk for this streaming Go
+	// binary. Explicit call (not the package's own convenience blank-
+	// import, which would run in init(), before slog.SetDefault above,
+	// and log via the stdlib default handler instead of this process's
+	// real JSON one) so the ratio/logger are both deliberate, not
+	// implicit. A genuine no-cgroup-memory-limit environment (a bare
+	// `docker run`/local dev/CI) is handled internally by Set itself
+	// (sets GOMEMLIMIT to math.MaxInt64, returns a nil error) -- any
+	// error this call DOES return is a real failure (e.g. a malformed
+	// AUTOMEMLIMIT env var), worth a log line, never worth failing
+	// startup over. See docs/upgrade-research/kubernetes-production-
+	// deployment-2026-09-14.md Finding 5.
+	if _, err := memlimit.Set(memlimit.WithLogger(logger), memlimit.WithRatio(0.9)); err != nil {
+		logger.Warn("automemlimit: could not set GOMEMLIMIT from cgroup", "error", err)
+	}
 
 	if err := run(*configPath, logger); err != nil {
 		logger.Error("gateway exited", "error", err)
