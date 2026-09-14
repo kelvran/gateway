@@ -466,6 +466,13 @@ type AdminConfig struct {
 	// ViewerTokenEnv's own "never run with an unauthenticated surface"
 	// rule.
 	CostViewerTokenEnv string
+	// PersistPath is the file path for the bbolt-backed virtual-key store,
+	// per docs/upgrade-research/admin-operator-experience-2026-09-14.md
+	// Finding 2 — mirrors BudgetConfig.PersistPath's identical shape and
+	// optionality. Empty means no persistence: an admin-created/rotated
+	// virtual key reverts to whatever this config declares on the next
+	// restart, exactly as before this feature existed.
+	PersistPath string
 	// EnablePprof mounts net/http/pprof's standard handler set on this
 	// same admin mux (under /admin/debug/pprof/), behind the same bearer
 	// -token middleware as every other admin route, when true. Default
@@ -718,6 +725,7 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
 		cfg.Admin.ViewerTokenEnv, _ = getString(adminRaw, "viewer_token_env")
 		cfg.Admin.CostViewerTokenEnv, _ = getString(adminRaw, "cost_viewer_token_env")
+		cfg.Admin.PersistPath, _ = getString(adminRaw, "persist_path")
 		cfg.Admin.EnablePprof, _ = getBool(adminRaw, "enable_pprof")
 	}
 

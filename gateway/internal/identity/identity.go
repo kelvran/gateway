@@ -11,6 +11,7 @@
 package identity
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -104,6 +105,32 @@ type VirtualKey struct {
 	// comment.
 	PreviousKeyHash          string
 	PreviousKeyHashExpiresAt time.Time
+}
+
+// Store persists admin-API-mutated virtual keys durably across process
+// restarts, per docs/upgrade-research/admin-operator-experience-2026-09-14.md
+// Finding 2 — mirrors budget.Store's own shape and optionality. Without
+// one configured, an admin-created or -rotated virtual key reverts to
+// whatever config.yaml declares on the next restart, exactly as before
+// this feature existed. See internal/identity/boltstore for the real
+// implementation.
+//
+// Deliberately scoped to VirtualKey alone, not the paired
+// ratelimit.KeyConfig a live Upsert/Rotate call also carries — identity
+// stays a dependency-free leaf (no internal/ratelimit import), matching
+// gateway/ARCHITECTURE.md's dependency rules. A hydrated key's
+// RateLimitBurst/RateLimitRefill (both real VirtualKey fields) ARE
+// restored; any PerModel/TPM override the same key might have had via
+// config.yaml's own rate_limit.per_model section is NOT, since that shape
+// lives only in ratelimit.KeyConfig — a real, disclosed v1 scope limit,
+// not an oversight. An operator relying on per-model/TPM overrides for an
+// admin-mutated key must re-apply them via another Upsert after a
+// restart.
+type Store interface {
+	Load(ctx context.Context) (map[string]VirtualKey, error)
+	Save(ctx context.Context, vk VirtualKey) error
+	Delete(ctx context.Context, id string) error
+	Close() error
 }
 
 // Verifier resolves a presented bearer token against the set of configured

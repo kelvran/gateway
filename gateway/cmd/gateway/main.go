@@ -56,6 +56,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/guardrail/bedrockguard"
 	"github.com/kelvran/gateway/gateway/internal/identity"
+	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit/redislimiter"
 	"github.com/kelvran/gateway/gateway/internal/router"
@@ -450,6 +451,26 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			MaxInFlight: vk.MaxConcurrentRequests,
 		})
 	}
+	// identityStore is nil unless cfg.Admin.PersistPath is set — see
+	// dataplane.Config.IdentityStore's own doc comment. Opened here,
+	// before identity.NewVerifier, so a persisted virtual key's own
+	// overlay (mergePersistedVirtualKeys) is part of the FIRST Verifier
+	// this process ever constructs, not something that only takes effect
+	// after the first live admin mutation.
+	var identityStore identity.Store
+	if cfg.Admin.PersistPath != "" {
+		store, err := identityboltstore.Open(cfg.Admin.PersistPath)
+		if err != nil {
+			return nil, fmt.Errorf("opening virtual-key store at %q: %w", cfg.Admin.PersistPath, err)
+		}
+		identityStore = store
+		virtualKeys, keyConfigs, concurrencyConfigs, err = mergePersistedVirtualKeys(virtualKeys, keyConfigs, concurrencyConfigs, store)
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("hydrating virtual keys from %q: %w", cfg.Admin.PersistPath, err)
+		}
+	}
+
 	verifier, err := identity.NewVerifier(virtualKeys)
 	if err != nil {
 		return nil, fmt.Errorf("constructing identity verifier: %w", err)
@@ -573,8 +594,9 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	guardrailEngine := newGuardrailEngine(cfg.Guardrails, logger)
 
 	return dataplane.NewPipeline(dataplane.Config{
-		Verifier: verifier,
-		Limiter:  keyLimiter,
+		Verifier:      verifier,
+		IdentityStore: identityStore,
+		Limiter:       keyLimiter,
 		// Always constructed, never nil — a virtual key with
 		// MaxConcurrentRequests <= 0 (every config written before this
 		// feature existed) is simply absent from concurrencyConfigs'
@@ -649,6 +671,53 @@ func validateFallbackChainTargets(deployments []dataplane.Deployment) error {
 		}
 	}
 	return nil
+}
+
+// mergePersistedVirtualKeys overlays store's persisted virtual keys onto
+// the config-derived virtualKeys/keyConfigs/concurrencyConfigs (built by
+// the per-key loop above, all three in the same index order), per
+// docs/upgrade-research/admin-operator-experience-2026-09-14.md Finding 2:
+// a virtual key ever created or rotated via the live admin API is the
+// authoritative version for its ID from then on — config.yaml is only
+// ever the BOOTSTRAP/seed state before any admin mutation happens, never
+// something that should silently undo a live rotation on every restart.
+// A persisted key whose ID isn't in config at all (created purely via the
+// admin API) is appended as a net-new entry.
+//
+// See identity.Store's own doc comment for the real, disclosed scope
+// limit this merge inherits: a persisted key's rate limit is rebuilt from
+// ONLY its own RateLimitBurst/RateLimitRefill (via the same
+// ratelimit.ResolveKeyRateLimit fallback upsertVirtualKeyHandler already
+// applies) — any PerModel/TPM override the config version of that same ID
+// might have had does not survive, since that shape lives only in
+// ratelimit.KeyConfig, never in identity.VirtualKey.
+func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []ratelimit.KeyConfig, concurrencyConfigs []ratelimit.ConcurrencyConfig, store identity.Store) ([]identity.VirtualKey, []ratelimit.KeyConfig, []ratelimit.ConcurrencyConfig, error) {
+	persisted, err := store.Load(context.Background())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("loading persisted virtual keys: %w", err)
+	}
+
+	indexByID := make(map[string]int, len(virtualKeys))
+	for i, vk := range virtualKeys {
+		indexByID[vk.ID] = i
+	}
+
+	for id, vk := range persisted {
+		burst, refill := ratelimit.ResolveKeyRateLimit(vk.RateLimitBurst, vk.RateLimitRefill)
+		keyConfig := ratelimit.KeyConfig{ID: id, Capacity: burst, RefillPerSecond: refill}
+		concurrencyConfig := ratelimit.ConcurrencyConfig{ID: id, MaxInFlight: vk.MaxConcurrentRequests}
+
+		if i, exists := indexByID[id]; exists {
+			virtualKeys[i] = vk
+			keyConfigs[i] = keyConfig
+			concurrencyConfigs[i] = concurrencyConfig
+			continue
+		}
+		virtualKeys = append(virtualKeys, vk)
+		keyConfigs = append(keyConfigs, keyConfig)
+		concurrencyConfigs = append(concurrencyConfigs, concurrencyConfig)
+	}
+	return virtualKeys, keyConfigs, concurrencyConfigs, nil
 }
 
 // newBudgetTracker constructs a pure in-memory budget.Tracker when

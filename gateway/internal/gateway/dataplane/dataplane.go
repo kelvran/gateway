@@ -304,6 +304,18 @@ type UpstreamCaller func(ctx context.Context, dep Deployment, providerReq any) (
 // and 5 minutes respectively.
 type Config struct {
 	Verifier *identity.Verifier
+	// IdentityStore optionally persists admin-API-created/rotated virtual
+	// keys durably across restarts, per
+	// docs/upgrade-research/admin-operator-experience-2026-09-14.md
+	// Finding 2 — see identity.Store's own doc comment for the exact
+	// scope. Deliberately optional (nil-safe throughout), matching
+	// Concurrency/DeploymentLimiter's own "zero/nil means disabled"
+	// convention: cmd/gateway's own config-vs-persisted-state merge (not
+	// this package's concern) already resolves cfg.Verifier's initial
+	// key set BEFORE NewPipeline ever runs, so this field only needs to
+	// know where to Save/Delete future mutations, never how to hydrate
+	// the initial state.
+	IdentityStore identity.Store
 	// Limiter enforces each virtual key's own burst/refill rate limit —
 	// either in-memory (ratelimit.NewInMemoryKeyLimiter) or Redis-backed
 	// (ratelimit.NewRedisKeyLimiter), per
@@ -416,7 +428,13 @@ type Config struct {
 // sees the new one. No lock, no partial-update window within one request.
 type Pipeline struct {
 	verifier atomic.Pointer[identity.Verifier]
-	limiter  *ratelimit.KeyLimiter
+	// identityStore is nil unless Config.IdentityStore was set — see that
+	// field's own doc comment. Read only by Upsert/Delete/RotateVirtualKey,
+	// after their own CompareAndSwap has already committed the in-memory
+	// change, mirroring budget.Tracker's own "in-memory state is already
+	// correct; only persistence itself can lag/fail" posture.
+	identityStore identity.Store
+	limiter       *ratelimit.KeyLimiter
 	// concurrency is nil whenever Config.Concurrency was left unset — see
 	// that field's own doc comment; checkConcurrency/releaseConcurrency
 	// treat a nil concurrency as "no cap configured," never panicking.
@@ -545,6 +563,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}
 
 	p := &Pipeline{
+		identityStore:         cfg.IdentityStore,
 		limiter:               cfg.Limiter,
 		concurrency:           cfg.Concurrency,
 		deploymentConcurrency: cfg.DeploymentConcurrency,
@@ -586,7 +605,11 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 func (p *Pipeline) Close() error {
 	budgetErr := p.budget.Close()
 	limiterErr := p.limiter.Close()
-	return errors.Join(budgetErr, limiterErr)
+	var identityErr error
+	if p.identityStore != nil {
+		identityErr = p.identityStore.Close()
+	}
+	return errors.Join(budgetErr, limiterErr, identityErr)
 }
 
 // ErrCannotDeleteLastVirtualKey is returned by DeleteVirtualKey when name
@@ -658,9 +681,38 @@ func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.
 		}
 
 		if p.verifier.CompareAndSwap(old, newVerifier) {
+			p.persistVirtualKeyIfStoreConfigured(vk)
 			return nil
 		}
 		// Lost the race to a concurrent writer -- retry against fresh state.
+	}
+}
+
+// persistVirtualKeyIfStoreConfigured durably saves vk via p.identityStore,
+// if configured — a no-op otherwise. A save failure is logged, never
+// fatal, mirroring budget.Tracker.persistZeroIfStoreConfigured's identical
+// convention: the in-memory Verifier swap has ALREADY committed by the
+// time this runs, so a persistence failure only risks this one mutation's
+// own restart-durability, never the live request path's correctness.
+func (p *Pipeline) persistVirtualKeyIfStoreConfigured(vk identity.VirtualKey) {
+	if p.identityStore == nil {
+		return
+	}
+	if err := p.identityStore.Save(context.Background(), vk); err != nil {
+		p.logger.Warn("identity_persist_failed", "key_id", vk.ID, "error", err.Error())
+	}
+}
+
+// deletePersistedVirtualKeyIfStoreConfigured removes id's persisted entry
+// via p.identityStore, if configured — see
+// persistVirtualKeyIfStoreConfigured's own doc comment for the identical
+// failure-handling rationale.
+func (p *Pipeline) deletePersistedVirtualKeyIfStoreConfigured(id string) {
+	if p.identityStore == nil {
+		return
+	}
+	if err := p.identityStore.Delete(context.Background(), id); err != nil {
+		p.logger.Warn("identity_persist_failed", "key_id", id, "error", err.Error())
 	}
 }
 
@@ -707,6 +759,7 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 		}
 
 		if p.verifier.CompareAndSwap(old, newVerifier) {
+			p.deletePersistedVirtualKeyIfStoreConfigured(name)
 			return nil
 		}
 		// Lost the race to a concurrent writer -- retry against fresh state.
@@ -731,12 +784,14 @@ func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Du
 		current := old.Keys()
 		updated := make([]identity.VirtualKey, 0, len(current))
 		found := false
+		var rotated identity.VirtualKey
 		for _, k := range current {
 			if k.ID == name {
 				k.PreviousKeyHash = k.KeyHash
 				k.PreviousKeyHashExpiresAt = time.Now().Add(gracePeriod)
 				k.KeyHash = newKeyHash
 				found = true
+				rotated = k
 			}
 			updated = append(updated, k)
 		}
@@ -750,6 +805,7 @@ func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Du
 		}
 
 		if p.verifier.CompareAndSwap(old, newVerifier) {
+			p.persistVirtualKeyIfStoreConfigured(rotated)
 			return nil
 		}
 		// Lost the race to a concurrent writer -- retry against fresh state.
