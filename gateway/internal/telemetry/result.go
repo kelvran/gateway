@@ -67,10 +67,14 @@ const (
 
 	// Kelvran-custom attributes, under a kelvran.* namespace per
 	// docs/operations/TELEMETRY.md's existing framing.
-	AttrKelvranVirtualKeyID   = "kelvran.virtual_key.id"
-	AttrKelvranAgentRunID     = "kelvran.agent_run_id"
-	AttrKelvranCacheHit       = "kelvran.cache.hit"
-	AttrKelvranCostUSD        = "kelvran.cost.usd"
+	AttrKelvranVirtualKeyID = "kelvran.virtual_key.id"
+	AttrKelvranAgentRunID   = "kelvran.agent_run_id"
+	AttrKelvranCacheHit     = "kelvran.cache.hit"
+	AttrKelvranCostUSD      = "kelvran.cost.usd"
+	// AttrKelvranSavingsUSD, per ChatCompletionResult.SavingsUSD's own
+	// doc comment -- only ever set on a genuine cache hit, never a
+	// fabricated "0" for a miss.
+	AttrKelvranSavingsUSD     = "kelvran.savings.usd"
 	AttrKelvranDeploymentName = "kelvran.deployment.name"
 	// AttrKelvranCacheLayer/CacheSimilarity/CacheAgeMs are per
 	// docs/rfcs/2026-09-05-gateway-cache-hit-provenance.md and
@@ -249,6 +253,29 @@ type ChatCompletionResult struct {
 	AgentRunID string
 	Err        error
 
+	// SavingsUSD mirrors CostUSD's exact convention (a pre-formatted
+	// decimal string, never float64, for the same precision reason) but
+	// carries the notional would-have-cost of a genuine cache hit --
+	// GatewayDecisionEvent.savings_usd's own real value, per
+	// DECISIONS.md's Round 7 Phase 10 entry. Empty string (never "0")
+	// means "this request was never a cache hit" -- the same
+	// ""-is-the-sentinel convention that field's own proto doc comment
+	// establishes, deliberately diverging from CostUSD's "0 is real"
+	// convention: "never a cache hit" and "a cache hit worth exactly $0"
+	// are different facts. Added 2026-09-14 to close a real gap: before
+	// this, agent-run-level savings had no span attribute at all --
+	// kelvran.cache.savings_usd (telemetry.go) is aggregate-only,
+	// dimensioned by cache layer, never by agent_run_id, for the same
+	// unbounded-cardinality reason cost_usd's own metric dimension was
+	// rejected -- so no Grafana panel could ever break savings down by
+	// agent run without this attribute existing on the span itself,
+	// which -- unlike a Prometheus metric label -- carries no
+	// cardinality-explosion risk (each span is its own record; Tempo
+	// never pre-aggregates by label the way Prometheus does). See
+	// docs/upgrade-research/competitor-feature-parity-2026-09-14.md
+	// Finding 2.
+	SavingsUSD string
+
 	// RequestModel is req.Model at dataplane.finalize's call site — the
 	// client-requested canonical model name, distinct from ResponseModel
 	// (which is "" whenever no response was ever produced, e.g. an auth
@@ -346,6 +373,14 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 		attribute.Bool(AttrKelvranCacheHit, r.CacheHit),
 		attribute.String(AttrKelvranCostUSD, r.CostUSD),
 	)
+	// AttrKelvranSavingsUSD, unlike AttrKelvranCostUSD above, is only
+	// ever set on a genuine cache hit -- an empty SavingsUSD ("never a
+	// cache hit") and a real "0" ("a cache hit worth exactly $0") are
+	// different facts, per SavingsUSD's own doc comment; emitting an
+	// empty string here would conflate them.
+	if r.SavingsUSD != "" {
+		attrs = append(attrs, attribute.String(AttrKelvranSavingsUSD, r.SavingsUSD))
+	}
 	if r.CacheLayer != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranCacheLayer, r.CacheLayer))
 		// Age is real, write-time-captured data for every hit layer as of

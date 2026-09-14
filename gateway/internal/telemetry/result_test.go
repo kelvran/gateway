@@ -129,6 +129,7 @@ func TestRecordChatCompletionResultSkipsEmptyOptionalFields(t *testing.T) {
 		AttrKelvranPromptID,
 		AttrKelvranPromptVersion,
 		AttrKelvranResponseFormatRequestedNotEnforced,
+		AttrKelvranSavingsUSD,
 	} {
 		if _, ok := attrValue(t, attrs, attribute.Key(key)); ok {
 			t.Errorf("attribute %q is set on a result with no value for it — must be absent, not an empty placeholder", key)
@@ -142,6 +143,36 @@ func TestRecordChatCompletionResultSkipsEmptyOptionalFields(t *testing.T) {
 	}
 	if _, ok := attrValue(t, attrs, attribute.Key(AttrKelvranCostUSD)); !ok {
 		t.Errorf("%s not set even though it's always meaningful", AttrKelvranCostUSD)
+	}
+}
+
+// TestRecordChatCompletionResultEmitsSavingsUSDOnlyOnCacheHit proves
+// AttrKelvranSavingsUSD is set to the real notional value on a genuine
+// cache hit, closing a real gap this attribute didn't exist to close
+// before: kelvran.cache.savings_usd (an aggregate Prometheus counter,
+// dimensioned by cache layer only) has no per-agent-run breakdown, and
+// GatewayDecisionEvent.SavingsUsd (a durable log/proto field) carries
+// no cardinality-safe span-level signal either -- this is the one place
+// a Grafana panel querying Tempo by kelvran.agent_run_id could actually
+// break savings down per agent run. Per
+// docs/upgrade-research/competitor-feature-parity-2026-09-14.md Finding 2.
+func TestRecordChatCompletionResultEmitsSavingsUSDOnlyOnCacheHit(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
+	tracer := tp.Tracer("result_test")
+
+	_, span := tracer.Start(t.Context(), "test-span")
+	RecordChatCompletionResult(span, ChatCompletionResult{
+		CacheHit:   true,
+		CostUSD:    "0.0008",
+		SavingsUSD: "0.0008",
+	})
+	span.End()
+
+	attrs := sr.Ended()[0].Attributes()
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranSavingsUSD)); !ok || v.AsString() != "0.0008" {
+		t.Errorf("%s = %v, ok=%v, want %q", AttrKelvranSavingsUSD, v, ok, "0.0008")
 	}
 }
 

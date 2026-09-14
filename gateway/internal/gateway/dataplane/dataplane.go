@@ -2061,6 +2061,16 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// degradation" case this exists to surface.
 	responseFormatRequestedNotEnforced := dep.Name != "" &&
 		req.ResponseFormat != nil && !capabilityOKForRequest(dep, req)
+	// Computed here, before result, so both the span attribute
+	// (ChatCompletionResult.SavingsUSD below) and the durable
+	// GatewayDecisionEvent.SavingsUsd proto field (further down) share
+	// the exact same value and the exact same cacheInfo.Hit() gate --
+	// never a fabricated "0" for a request that was never a cache hit,
+	// per docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md.
+	var savingsUsd string
+	if cacheInfo.Hit() {
+		savingsUsd = cost.String()
+	}
 	result := telemetry.ChatCompletionResult{
 		VirtualKeyID:    virtualKeyID,
 		Provider:        dep.Provider,
@@ -2086,6 +2096,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// the exact decimal string is formatted here, at the boundary,
 		// per docs/rfcs/2026-09-02-decimal-cost-accounting.md.
 		CostUSD:                            cost.String(),
+		SavingsUSD:                         savingsUsd,
 		AgentRunID:                         telemetry.AgentRunIDFromContext(ctx),
 		Billable:                           billable,
 		Duration:                           duration,
@@ -2137,20 +2148,12 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		telemetry.RecordLLMSpend(ctx, spendUSD)
 	}
 
-	// Per docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md:
-	// the exact same cacheInfo.Hit() gate and exact same result.CostUSD
-	// value RecordCacheSavings already used a few lines up to increment
-	// kelvran.cache.savings_usd -- no new computation, just also naming
-	// it on the one contract built for durable, offline per-agent-run
-	// analysis. "" (proto3 empty-string default) on every non-hit row,
-	// mirroring FallbackFromDeployment/FallbackReason's own "absent means
-	// not applicable" convention -- never a fabricated "0" for a request
-	// that was never a cache hit at all.
-	var savingsUsd string
-	if cacheInfo.Hit() {
-		savingsUsd = result.CostUSD
-	}
-
+	// savingsUsd was already computed above (before result), shared by
+	// both the span attribute and this proto field -- "" (proto3
+	// empty-string default) on every non-hit row, mirroring
+	// FallbackFromDeployment/FallbackReason's own "absent means not
+	// applicable" convention, per
+	// docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md.
 	event := &gatewayeventsv1.GatewayDecisionEvent{
 		TraceId:                span.SpanContext().TraceID().String(),
 		SpanId:                 span.SpanContext().SpanID().String(),

@@ -1,0 +1,58 @@
+{
+  "_comment_do_not_ship_verbatim": "Example panel only, NOT provisioned (unlike docs/operations/grafana/dashboards/kelvran-overview.json's 3 real, live-verified Prometheus panels) and NOT live-verified against a real Tempo backend -- per docs/upgrade-research/competitor-feature-parity-2026-09-14.md Finding 2's own build_now companion. kelvran.cost.usd/kelvran.savings.usd are deliberately STORED AS STRINGS on the span (attribute.String, never attribute.Float64 -- see ChatCompletionResult.CostUSD's own doc comment: OTel's attribute value model has no decimal type, and converting to float64 would reintroduce the exact precision loss docs/rfcs/2026-09-02-decimal-cost-accounting.md exists to remove). Tempo's TraceQL metrics functions (sum_over_time, etc.) operate on NUMERIC span attributes only, so this panel deliberately uses a TraceQL SEARCH query (raw matching spans, not a metrics aggregation) plus Grafana's own client-side table transformations (convert field type string->number, then group-by kelvran.agent_run_id with a Sum aggregation) to get a per-agent-run breakdown -- verify the exact TraceQL search table column-naming convention against your own configured Tempo/Grafana version before importing this; do not assume these field names are correct for every backend/version.",
+  "title": "Kelvran Agent-Run Cost & Savings (example)",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Cost and savings by agent run",
+      "description": "kelvran.agent_run_id / kelvran.cost.usd / kelvran.savings.usd, all real span attributes (RecordChatCompletionResult, gateway/internal/telemetry/result.go). savings_usd is only ever non-empty on a genuine cache hit -- an agent run with zero cache hits shows a real, present, empty/zero savings figure alongside a real, non-zero cost, never a fabricated $0 for 'never measured'. This is the one place a per-agent-run breakdown is possible at all: kelvran.cache.savings_usd (telemetry.go) is an aggregate-only Prometheus counter dimensioned by cache layer, never by agent_run_id, for the same unbounded-cardinality reason a Prometheus metric label never carries agent_run_id -- Tempo's own per-span storage has no equivalent cardinality-explosion risk, since each span is its own record, never pre-aggregated by label the way Prometheus is.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"gateway\" && span.kelvran.agent_run_id != \"\" }",
+          "tableType": "spans",
+          "limit": 1000
+        }
+      ],
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              { "targetField": "kelvran.cost.usd", "destinationType": "number" },
+              { "targetField": "kelvran.savings.usd", "destinationType": "number" }
+            ]
+          }
+        },
+        {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "kelvran.agent_run_id": { "aggregations": [], "operation": "groupby" },
+              "kelvran.cost.usd": { "aggregations": ["sum"], "operation": "aggregate" },
+              "kelvran.savings.usd": { "aggregations": ["sum"], "operation": "aggregate" }
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "kelvran.cost.usd (sum)" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "kelvran.savings.usd (sum)" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }]
+          }
+        ]
+      }
+    }
+  ]
+}
