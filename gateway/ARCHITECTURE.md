@@ -234,6 +234,20 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              consume, but the log-parsing glue that would actually call Analyze
                              against real data is itself deliberately deferred until a genuine
                              multi-instance deployment exists to measure.
+    /spendvelocity/          — **Added 2026-09-14**: telemetry/spendvelocity, per
+                             docs/upgrade-research/llm-cost-optimization-finops-2026-09-14.md
+                             Finding 6: a pure, standalone two-sided CUSUM (cumulative sum)
+                             change-point Detector — Observe(x) folds one observation into a
+                             running cumulative sum and reports whether a sustained shift (either
+                             direction) crossed Target±ThresholdSigma·Sigma. Registered in
+                             gateway/.go-arch-lint.yml as its own spend-velocity component — a
+                             pure leaf like cache-correlation above (stdlib-only, zero
+                             project-internal imports). **Standalone analysis unit, NOT wired into
+                             the live request pipeline**: no periodic sampler feeds it from
+                             budget.Tracker's own per-key spend yet, and no alarm destination
+                             (log line, OTel span event, admin endpoint) has been chosen — both
+                             are deliberate product decisions the source research explicitly
+                             declined to make on its own, not an oversight.
 /internal/mcp                — **NOT BUILT.** Zero code exists (confirmed: no such directory under
                              gateway/internal/), explicitly out of scope for v1 per PRD.md. Intended
                              design: inbound (expose Kelvran's own APIs as MCP tools) + outbound (broker

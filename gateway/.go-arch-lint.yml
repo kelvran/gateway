@@ -17,6 +17,7 @@ components:
   bedrockguard:      { in: guardrail/bedrockguard }
   telemetry:         { in: telemetry }
   cache-correlation: { in: telemetry/cachecorrelation }
+  spend-velocity:    { in: telemetry/spendvelocity }
   cache:             { in: cache }
   cache-inprocess:   { in: cache/inprocess }
   cache-grpcserver:  { in: cache/grpcserver }
@@ -45,6 +46,11 @@ components:
 # for the same reason telemetry itself is: stdlib-only, no
 # project-internal imports, nothing in this project depends on it either
 # (it's a standalone analysis unit, not wired into the live pipeline).
+# spend-velocity (telemetry/spendvelocity, per docs/upgrade-research/
+# llm-cost-optimization-finops-2026-09-14.md Finding 6) is the identical
+# shape: stdlib-only CUSUM primitive, nothing in this project depends on
+# it yet -- also a standalone analysis unit, not wired into the live
+# pipeline this pass.
 #
 # cache's 3 real implementations (inprocess/grpcserver/grpcclient) are
 # each their own component, not lumped into `cache` itself, since
