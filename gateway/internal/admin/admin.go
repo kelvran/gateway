@@ -76,6 +76,17 @@ type virtualKeyRequest struct {
 	RateLimit                  *rateLimitRequest `json:"rate_limit"`
 }
 
+// rotateVirtualKeyRequest is the POST /admin/virtual_keys/{name}/rotate
+// request body, per docs/upgrade-research/admin-operator-experience-2026-09-14.md
+// Finding 1. GracePeriodSeconds <= 0 rotates with no grace period at all
+// -- the old secret stops working immediately, identical in effect to a
+// delete-then-recreate but atomic and without the intervening window
+// where the key doesn't exist at all.
+type rotateVirtualKeyRequest struct {
+	NewKeyHash         string `json:"new_key_hash"`
+	GracePeriodSeconds int    `json:"grace_period_seconds"`
+}
+
 type rateLimitRequest struct {
 	Burst              float64 `json:"burst"`
 	RefillPerSecond    float64 `json:"refill_per_second"`
@@ -129,6 +140,7 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg, logger)))
 	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, logger)))
 	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, logger)))
+	mux.Handle("POST /admin/virtual_keys/{name}/rotate", requireBearerToken(creds.Admin, rotateVirtualKeyHandler(pipeline, logger)))
 	// Deliberately its own middleware call, not requireEitherBearerToken:
 	// this is the one route CostViewer authenticates, alongside Admin and
 	// Viewer (both of which already see strictly more elsewhere on this
@@ -447,6 +459,45 @@ func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 			http.Error(w, err.Error(), http.StatusConflict)
 		default:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+}
+
+// rotateVirtualKeyHandler issues a new secret for name, live, keeping the
+// old one valid for the requested grace period -- see
+// dataplane.Pipeline.RotateVirtualKey's own doc comment for the exact
+// mechanism. 404 if name doesn't match any configured key. logger records
+// name and the grace period (never either key hash) on every successful
+// rotation, mirroring upsertVirtualKeyHandler's identical "log
+// identifiers, not secret material" discipline.
+func rotateVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if name == "" {
+			http.Error(w, "virtual key name is required", http.StatusBadRequest)
+			return
+		}
+
+		var req rotateVirtualKeyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.NewKeyHash == "" {
+			http.Error(w, "new_key_hash is required", http.StatusBadRequest)
+			return
+		}
+
+		gracePeriod := secondsToDuration(req.GracePeriodSeconds)
+		err := pipeline.RotateVirtualKey(name, req.NewKeyHash, gracePeriod)
+		switch {
+		case err == nil:
+			logger.Info("admin_virtual_key_rotated", "name", name, "grace_period_seconds", req.GracePeriodSeconds, "authorized_by", "admin")
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, dataplane.ErrVirtualKeyNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 	}
 }

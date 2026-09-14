@@ -713,6 +713,49 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 	}
 }
 
+// RotateVirtualKey issues a new secret for the virtual key identified by
+// name, live, while keeping the old secret valid for gracePeriod — closes
+// the "manual delete-then-recreate, no continuity" gap named in
+// docs/upgrade-research/admin-operator-experience-2026-09-14.md Finding 1.
+// Reuses the exact same rebuild-whole-then-CompareAndSwap retry loop
+// UpsertVirtualKey already has — no new concurrency primitive.
+//
+// A second rotation while one is already pending overwrites the single
+// PreviousKeyHash slot (the prior old hash is simply dropped, its own
+// remaining grace period abandoned) — a deliberate single-generation-back
+// limit, not a bug: supporting an unbounded chain of still-valid old
+// hashes has no real operational need this feature was built to serve.
+func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Duration) error {
+	for {
+		old := p.verifier.Load()
+		current := old.Keys()
+		updated := make([]identity.VirtualKey, 0, len(current))
+		found := false
+		for _, k := range current {
+			if k.ID == name {
+				k.PreviousKeyHash = k.KeyHash
+				k.PreviousKeyHashExpiresAt = time.Now().Add(gracePeriod)
+				k.KeyHash = newKeyHash
+				found = true
+			}
+			updated = append(updated, k)
+		}
+		if !found {
+			return fmt.Errorf("%w: %q", ErrVirtualKeyNotFound, name)
+		}
+
+		newVerifier, err := identity.NewVerifier(updated)
+		if err != nil {
+			return fmt.Errorf("dataplane: RotateVirtualKey: %w", err)
+		}
+
+		if p.verifier.CompareAndSwap(old, newVerifier) {
+			return nil
+		}
+		// Lost the race to a concurrent writer -- retry against fresh state.
+	}
+}
+
 // GetVirtualKey returns a copy of the virtual key identified by name,
 // live -- the read-only counterpart to UpsertVirtualKey/DeleteVirtualKey,
 // for the new admin GET /admin/virtual_keys/{name}/spend route

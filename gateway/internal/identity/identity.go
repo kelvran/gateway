@@ -88,6 +88,22 @@ type VirtualKey struct {
 	// ratelimit.ConcurrencyLimiter, exactly like checkRateLimit already
 	// does for RateLimitBurst/RateLimitRefill via ratelimit.KeyLimiter).
 	MaxConcurrentRequests int
+	// PreviousKeyHash and PreviousKeyHashExpiresAt back grace-period key
+	// rotation, per docs/upgrade-research/admin-operator-experience-2026-09-14.md
+	// Finding 1: rotation was previously a manual delete-then-recreate
+	// with no continuity, breaking any in-flight caller using the old
+	// secret. When PreviousKeyHash is non-empty, NewVerifier indexes it
+	// alongside KeyHash so BOTH hashes resolve to this same VirtualKey —
+	// Verify additionally requires time.Now().Before(PreviousKeyHashExpiresAt)
+	// for a match via PreviousKeyHash specifically, so an expired old
+	// hash simply fails closed once the grace period elapses, with no
+	// separate cleanup sweep needed. Only ONE generation back is ever
+	// tracked — a second rotation while one is already pending overwrites
+	// this pair, dropping the now-doubly-old hash — a deliberate limit,
+	// not a bug: see dataplane.Pipeline.RotateVirtualKey's own doc
+	// comment.
+	PreviousKeyHash          string
+	PreviousKeyHashExpiresAt time.Time
 }
 
 // Verifier resolves a presented bearer token against the set of configured
@@ -130,6 +146,24 @@ func NewVerifier(keys []VirtualKey) (*Verifier, error) {
 		if _, exists := byHash[normalizedHash]; exists {
 			return nil, fmt.Errorf("%w: virtual key %q", ErrDuplicateKeyHash, k.ID)
 		}
+
+		// PreviousKeyHash, when set, indexes to this SAME VirtualKey
+		// alongside KeyHash — see that field's own doc comment. Normalized
+		// and duplicate-checked identically to KeyHash, since it's a real,
+		// still-potentially-valid credential for the remainder of its
+		// grace period, not inert metadata.
+		if k.PreviousKeyHash != "" {
+			normalizedPrevHash, err := normalizeKeyHash(k.PreviousKeyHash)
+			if err != nil {
+				return nil, fmt.Errorf("identity: NewVerifier: virtual key %q: previous_key_hash: %w", k.ID, err)
+			}
+			k.PreviousKeyHash = normalizedPrevHash
+			if _, exists := byHash[normalizedPrevHash]; exists {
+				return nil, fmt.Errorf("%w: virtual key %q (previous_key_hash)", ErrDuplicateKeyHash, k.ID)
+			}
+			byHash[normalizedPrevHash] = &k
+		}
+
 		byHash[normalizedHash] = &k
 	}
 
@@ -173,6 +207,16 @@ func (v *Verifier) Verify(authorizationHeader string) (*VirtualKey, error) {
 	if !ok {
 		return nil, ErrInvalidKey
 	}
+	// A match via PreviousKeyHash specifically (never via the current
+	// KeyHash) is only valid for the remainder of its grace period — see
+	// VirtualKey.PreviousKeyHash's own doc comment. presentedHash equals
+	// exactly one of key.KeyHash/key.PreviousKeyHash here, since that's
+	// the only way v.keys[presentedHash] could have resolved to key at
+	// all (both are normalized identically to presentedHash's own
+	// hex.EncodeToString(sha256) shape by NewVerifier).
+	if presentedHash == key.PreviousKeyHash && !time.Now().Before(key.PreviousKeyHashExpiresAt) {
+		return nil, ErrInvalidKey
+	}
 	return key, nil
 }
 
@@ -183,8 +227,21 @@ func (v *Verifier) Verify(authorizationHeader string) (*VirtualKey, error) {
 // brand-new Verifier from a modified copy of this slice, per
 // docs/rfcs/2026-09-05-gateway-admin-api.md's live virtual-key mutation).
 func (v *Verifier) Keys() []VirtualKey {
+	// A key mid-rotation (PreviousKeyHash set) occupies TWO entries of
+	// v.keys — one for KeyHash, one for PreviousKeyHash — both pointing to
+	// the SAME *VirtualKey (see that field's own doc comment). Deduping
+	// by pointer identity here is required, not defensive: without it,
+	// every caller that rebuilds a fresh key list from Keys() (Upsert/
+	// Delete/RotateVirtualKey in dataplane.go) would silently double that
+	// key's entry, which identity.NewVerifier then rejects outright as a
+	// duplicate ID.
 	keys := make([]VirtualKey, 0, len(v.keys))
+	seen := make(map[*VirtualKey]bool, len(v.keys))
 	for _, k := range v.keys {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
 		keys = append(keys, *k)
 	}
 	return keys
