@@ -13,10 +13,15 @@
 profile: coverage.out
 
 threshold:
-  # Real measured baseline (2026-09-14): `go test ./... -race
-  # -covermode=atomic -coverpkg=./... -coverprofile=coverage.out` from
-  # `gateway/`, then `go tool cover -func=coverage.out`, with the
-  # excludes below already applied -- 88.44% (3444/3894 statements).
+  # Real measured baseline (2026-09-14, re-measured same day after an
+  # end-to-end audit's own re-check found the original 88.44% figure
+  # already stale by the time it was re-run -- coverage tooling
+  # naturally drifts by a statement or two as code changes, so treat
+  # this number as a snapshot, not a permanently exact figure):
+  # `go test ./... -race -covermode=atomic -coverpkg=./...
+  # -coverprofile=coverage.out` from `gateway/`, then
+  # `go-test-coverage --config=./.testcoverage.yml`, with the excludes
+  # below already applied -- 90.9% (3543/3897 statements).
   # Measured excluding the two pre-existing, disclosed, environment-only
   # rootless-Docker test failures (TestIntegrationTwoGatewayInstances
   # ShareOneRedisRateLimit, redislimiter.TestMain) that this specific
