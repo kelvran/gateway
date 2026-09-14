@@ -33,6 +33,64 @@ func TestGetMiss(t *testing.T) {
 	}
 }
 
+// TestDeleteRemovesEntry proves Delete makes a subsequent Get miss.
+// Regression test for
+// docs/upgrade-research/ai-compliance-regulatory-readiness-2026-09-14.md
+// Finding 4 (no way to service a GDPR erasure request against one
+// cached entry before this method existed).
+func TestDeleteRemovesEntry(t *testing.T) {
+	c := New(0)
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "key1", []byte("payload"), time.Minute); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := c.Delete(ctx, "key1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, _, ok, err := c.Get(ctx, "key1"); err != nil {
+		t.Fatalf("Get after Delete: %v", err)
+	} else if ok {
+		t.Fatal("Get after Delete returned ok=true, want a miss")
+	}
+}
+
+// TestDeleteNeverSetKeyIsNoOp proves deleting a key that was never
+// written is a no-op, not an error — the caller cares only that the key
+// is absent afterward.
+func TestDeleteNeverSetKeyIsNoOp(t *testing.T) {
+	c := New(0)
+	if err := c.Delete(context.Background(), "never-set"); err != nil {
+		t.Fatalf("Delete on never-set key returned error: %v", err)
+	}
+}
+
+// TestDeleteDoesNotAffectOtherEntries proves Delete removes only the
+// named key, leaving every other entry (and the recency list they live
+// in) intact.
+func TestDeleteDoesNotAffectOtherEntries(t *testing.T) {
+	c := New(0)
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "keep", []byte("keep-me"), time.Minute); err != nil {
+		t.Fatalf("Put keep: %v", err)
+	}
+	if err := c.Put(ctx, "remove", []byte("remove-me"), time.Minute); err != nil {
+		t.Fatalf("Put remove: %v", err)
+	}
+	if err := c.Delete(ctx, "remove"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	got, _, ok, err := c.Get(ctx, "keep")
+	if err != nil {
+		t.Fatalf("Get keep: %v", err)
+	}
+	if !ok || string(got) != "keep-me" {
+		t.Errorf("Get keep = (%q, ok=%v), want (%q, ok=true)", got, ok, "keep-me")
+	}
+}
+
 func TestPutThenGet(t *testing.T) {
 	c := New(0)
 	ctx := context.Background()

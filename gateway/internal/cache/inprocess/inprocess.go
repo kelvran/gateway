@@ -156,6 +156,21 @@ func (c *Cache) Put(_ context.Context, key string, resp []byte, ttl time.Duratio
 	return nil
 }
 
+// Delete implements cache.Cache. Removing a never-set key is a no-op,
+// not an error — a caller servicing an erasure request cares only that
+// key is absent afterward, not whether it was ever present.
+func (c *Cache) Delete(_ context.Context, key string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	elem, found := c.entries[key]
+	if !found {
+		return nil
+	}
+	c.removeLocked(elem)
+	return nil
+}
+
 // removeLocked deletes elem from both the map and the recency list.
 // Callers must hold c.mu.
 func (c *Cache) removeLocked(elem *list.Element) {

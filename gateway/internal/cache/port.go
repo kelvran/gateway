@@ -35,4 +35,19 @@ type Cache interface {
 	Get(ctx context.Context, key string) (resp []byte, writtenAt time.Time, ok bool, err error)
 	// Put stores resp under key with the given time-to-live.
 	Put(ctx context.Context, key string, resp []byte, ttl time.Duration) error
+	// Delete removes key immediately, if present — never-set is a no-op,
+	// not an error. Added 2026-09-14 to close a real, previously-open
+	// gap: without this, there was no way to service a GDPR Article 17
+	// erasure request against one specific cached entry short of
+	// flushing the entire cache or waiting out its TTL, even though the
+	// product's own design already accepts that a message which passes
+	// guardrail checks (or predates a guardrail rule) can still be
+	// cached. See
+	// docs/upgrade-research/ai-compliance-regulatory-readiness-2026-09-14.md
+	// Finding 4. Deliberately does NOT solve "find every cached entry
+	// that might belong to data subject X" — that needs a write-time
+	// PII-provenance index, a real design commitment named `not_yet` in
+	// that same finding, not a small addition. Delete only removes an
+	// exact key the caller already knows.
+	Delete(ctx context.Context, key string) error
 }

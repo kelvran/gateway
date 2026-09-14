@@ -44,3 +44,8 @@ func (c *Client) Get(_ context.Context, _ string) ([]byte, time.Time, bool, erro
 func (c *Client) Put(_ context.Context, _ string, _ []byte, _ time.Duration) error {
 	return errNotImplemented
 }
+
+// Delete implements cache.Cache. Not implemented.
+func (c *Client) Delete(_ context.Context, _ string) error {
+	return errNotImplemented
+}

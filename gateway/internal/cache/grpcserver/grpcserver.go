@@ -56,3 +56,8 @@ func (s *Server) Get(_ context.Context, _ string) ([]byte, time.Time, bool, erro
 func (s *Server) Put(_ context.Context, _ string, _ []byte, _ time.Duration) error {
 	return errNotImplemented
 }
+
+// Delete is the server-side handler for a Cache.Delete RPC. Not implemented.
+func (s *Server) Delete(_ context.Context, _ string) error {
+	return errNotImplemented
+}
