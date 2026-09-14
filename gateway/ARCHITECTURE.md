@@ -150,14 +150,34 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              ramp feature is, so a model group with no tier configured (every deployment
                              configured before this existed) is byte-for-byte unchanged. Strict opt-in: a
                              group with even one untiered deployment disables filtering for that whole
-                             group. Still explicitly NOT built: automatic price discovery, and any
-                             cross-model "virtual model" grouping (a single client-facing name spanning
-                             several genuinely different underlying models at different prices, the way
-                             OpenRouter's own cost-tier mechanism works) — `CostTier` is per-deployment
-                             within one canonical model's existing WRR pool, not a new grouping concept; see
-                             DECISIONS.md's `[2026-09-12]` entry for why `PriceTable` (keyed by canonical
-                             model, identical for every deployment sharing one `Model` value) couldn't
-                             already express this.
+                             group. Still explicitly NOT built: automatic price discovery. `CostTier` is
+                             per-deployment within one canonical model's existing WRR pool, not a new
+                             grouping concept; see DECISIONS.md's `[2026-09-12]` entry for why `PriceTable`
+                             (keyed by canonical model, identical for every deployment sharing one `Model`
+                             value) couldn't already express per-deployment price differentiation.
+                             **Corrected 2026-09-14**: this paragraph previously also named cross-model
+                             "virtual model" grouping itself (a single client-facing name spanning several
+                             genuinely different real providers/models, the way LiteLLM/Envoy AI Gateway/
+                             Kong/Portkey each ship) as NOT BUILT — false. `controlplane.DeploymentConfig`'s
+                             own doc comment already states "multiple deployments may share the same
+                             Model," with no homogeneity requirement anywhere in config parsing, router
+                             construction, or dataplane's routing path — an operator can build exactly this
+                             pattern TODAY with zero new code, simply by giving two or more deployments the
+                             same `Model` value and different `Provider`/`UpstreamModel`/`BaseURL`. Proven
+                             end to end (not just reasoned about) by
+                             `TestIntegrationVirtualModelAliasFansOutAcrossProviders`
+                             (`cmd/gateway/virtual_model_alias_integration_test.go`): a single alias name
+                             fanned out across a real OpenAI-shaped and a real Anthropic-shaped upstream,
+                             5/5 over 10 requests. The one real, still-unbuilt half is price
+                             differentiation across such an alias's own members, named above — every
+                             deployment sharing one alias `Model` is billed at that ONE canonical model's
+                             `PriceTable` entry regardless of which real provider actually served the
+                             request (`realServingModel` returns `dep.Model`, the shared alias name, never
+                             `dep.UpstreamModel`). An operator building a genuinely different-priced alias
+                             today must either price it conservatively at the more expensive member's rate
+                             (never undercounting) or avoid mixing different-priced models under one alias
+                             until per-deployment pricing exists. See
+                             docs/upgrade-research/competitor-feature-parity-2026-09-14.md Finding 1.
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
