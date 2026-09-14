@@ -641,6 +641,64 @@ func TestToProviderMessageCacheControlAppendsTrailingCachePoint(t *testing.T) {
 	}
 }
 
+// TestToProviderCacheControlTTLForwardedForWhitelistedModel proves a
+// caller-supplied CacheControl.TTL is forwarded onto the resulting
+// CachePoint.TTL when req.Model is on bedrockCacheTTLModelSubstrings's
+// whitelist. Regression test for
+// docs/upgrade-research/cross-provider-prompt-caching-optimization-2026-09-14.md
+// Finding 1: before this fix, TTL was silently dropped for every model,
+// whitelisted or not.
+func TestToProviderCacheControlTTLForwardedForWhitelistedModel(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "global.anthropic.claude-sonnet-4-6-20260115-v1:0",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "cache this for an hour", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	blocks := native.Messages[0].Content
+	if len(blocks) != 2 || blocks[1].CachePoint == nil {
+		t.Fatalf("blocks = %+v, want [text, cachePoint]", blocks)
+	}
+	if blocks[1].CachePoint.TTL != "1h" {
+		t.Errorf("CachePoint.TTL = %q, want %q for a whitelisted model", blocks[1].CachePoint.TTL, "1h")
+	}
+}
+
+// TestToProviderCacheControlTTLNotForwardedForUnsupportedModel proves a
+// caller-supplied CacheControl.TTL is NOT forwarded when req.Model is
+// not on bedrockCacheTTLModelSubstrings's whitelist — the field must
+// stay empty (Bedrock's own implicit 5-minute default) rather than risk
+// a hard AWS ValidationException for an unsupported model.
+func TestToProviderCacheControlTTLNotForwardedForUnsupportedModel(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "amazon.nova-pro-v1:0",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "cache this for an hour", CacheControl: &adapter.CacheControl{TTL: "1h"}},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	blocks := native.Messages[0].Content
+	if len(blocks) != 2 || blocks[1].CachePoint == nil {
+		t.Fatalf("blocks = %+v, want [text, cachePoint]", blocks)
+	}
+	if blocks[1].CachePoint.TTL != "" {
+		t.Errorf("CachePoint.TTL = %q, want empty for a non-whitelisted model", blocks[1].CachePoint.TTL)
+	}
+}
+
 // TestToProviderContentPartCacheControlAppendsCachePointAfterThatPartOnly
 // proves the part-level marker's independence from the message-level
 // marker: among a text lead-in and two parts, only the part that

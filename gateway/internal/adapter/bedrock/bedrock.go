@@ -102,15 +102,79 @@ type ReasoningTextBlock struct {
 }
 
 // CachePoint is Converse's real cache-checkpoint marker shape —
-// {"cachePoint":{"type":"default"}} — a standalone block placed after
-// the content to be cached (a checkpoint boundary), not a property of
-// that content's own block, unlike Anthropic's cache_control. Per
+// {"cachePoint":{"type":"default"}}, optionally {"type":"default",
+// "ttl":"1h"} — a standalone block placed after the content to be
+// cached (a checkpoint boundary), not a property of that content's own
+// block, unlike Anthropic's cache_control. Per
 // docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md and
 // docs/upgrade-research/gateway-provider-prompt-caching-2026-09-07.md's
 // fetched vendor documentation. "default" is the only Type value AWS
-// documents.
+// documents. TTL added 2026-09-14 — see this type's own doc comment on
+// the field for why.
 type CachePoint struct {
 	Type string `json:"type"`
+	// TTL is Converse's optional cachePoint.ttl field — "5m" (the
+	// implicit default when omitted) or "1h", per
+	// docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html
+	// and AWS's 2026-01-26 What's New announcement. Corrected
+	// 2026-09-14: this field did not exist before today, and every
+	// CachePoint construction below hardcoded {Type: "default"},
+	// silently dropping a caller's adapter.CacheControl.TTL instead of
+	// forwarding it — contradicting CacheControl.TTL's own doc comment
+	// ("Only Anthropic direct, and Bedrock's Anthropic-family
+	// cachePoint, reads this"). See
+	// docs/upgrade-research/cross-provider-prompt-caching-optimization-2026-09-14.md
+	// Finding 1. Only ever set by cachePointFor, and only when model is
+	// on bedrockCacheTTLModelSubstrings's whitelist — sending "ttl" to
+	// an unsupported model risks a hard AWS ValidationException for the
+	// whole request, per this adapter's own demonstrated
+	// unrecognized-field-rejection behavior, so this is gated the same
+	// way adapter.SupportsStructuredOutput gates output_config.format.
+	TTL string `json:"ttl,omitempty"`
+}
+
+// bedrockCacheTTLModelSubstrings is the set of Bedrock-hosted Claude
+// model-family substrings AWS documents as supporting cachePoint's
+// optional 1-hour ttl (docs.aws.amazon.com/bedrock/latest/userguide/
+// prompt-caching.html; AWS What's New, 2026-01-26) — a narrower,
+// separately-tracked list from bedrockStructuredOutputModelSubstrings
+// (that whitelist gates a different capability, output_config.format,
+// and AWS documents the two capability lists independently; they are
+// not guaranteed to stay identical over time).
+var bedrockCacheTTLModelSubstrings = []string{
+	"claude-opus-5",
+	"claude-opus-4-8",
+	"claude-opus-4-7",
+	"claude-opus-4-6",
+	"claude-opus-4-5",
+	"claude-sonnet-5",
+	"claude-sonnet-4-6",
+	"claude-sonnet-4-5",
+	"claude-haiku-4-5",
+}
+
+// bedrockModelSupportsCacheTTL reports whether model (a Bedrock model
+// ID, carrying its own region/version prefix and date/version suffix)
+// matches one of bedrockCacheTTLModelSubstrings.
+func bedrockModelSupportsCacheTTL(model string) bool {
+	for _, substr := range bedrockCacheTTLModelSubstrings {
+		if strings.Contains(model, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// cachePointFor builds the CachePoint block every append*CachePointIfNeeded
+// function below actually appends. cc must be non-nil (callers already
+// guard this). cc.TTL is forwarded only when model is on
+// bedrockCacheTTLModelSubstrings's whitelist; otherwise the field is left
+// empty, matching Bedrock's own implicit 5-minute default.
+func cachePointFor(cc *adapter.CacheControl, model string) *CachePoint {
+	if cc.TTL != "" && bedrockModelSupportsCacheTTL(model) {
+		return &CachePoint{Type: "default", TTL: cc.TTL}
+	}
+	return &CachePoint{Type: "default"}
 }
 
 // appendCachePointIfNeeded appends a CachePoint checkpoint block after
@@ -119,36 +183,40 @@ type CachePoint struct {
 // marker), which would otherwise produce a meaningless, empty-content
 // back-to-back checkpoint pair. nil cc or an empty blocks slice is a
 // no-op, per docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md.
-func appendCachePointIfNeeded(blocks []ContentBlock, cc *adapter.CacheControl) []ContentBlock {
+// model is the Bedrock model ID the request targets — see cachePointFor.
+func appendCachePointIfNeeded(blocks []ContentBlock, cc *adapter.CacheControl, model string) []ContentBlock {
 	if cc == nil || len(blocks) == 0 {
 		return blocks
 	}
 	if blocks[len(blocks)-1].CachePoint != nil {
 		return blocks
 	}
-	return append(blocks, ContentBlock{CachePoint: &CachePoint{Type: "default"}})
+	return append(blocks, ContentBlock{CachePoint: cachePointFor(cc, model)})
 }
 
 // appendSystemCachePointIfNeeded is appendCachePointIfNeeded's
 // SystemContentBlock counterpart, for Converse's top-level system[]
 // array.
-func appendSystemCachePointIfNeeded(blocks []SystemContentBlock, cc *adapter.CacheControl) []SystemContentBlock {
+func appendSystemCachePointIfNeeded(blocks []SystemContentBlock, cc *adapter.CacheControl, model string) []SystemContentBlock {
 	if cc == nil || len(blocks) == 0 {
 		return blocks
 	}
 	if blocks[len(blocks)-1].CachePoint != nil {
 		return blocks
 	}
-	return append(blocks, SystemContentBlock{CachePoint: &CachePoint{Type: "default"}})
+	return append(blocks, SystemContentBlock{CachePoint: cachePointFor(cc, model)})
 }
 
 // defaultSystemCacheControl is the marker Kelvran auto-populates on an
 // otherwise-unmarked system message, per
-// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md. Bedrock's
-// CachePoint has no TTL concept at all ({"type":"default"} is the only
-// shape AWS documents), so the zero-value adapter.CacheControl carries
-// nothing this adapter reads beyond its own non-nil-ness — the value
-// only ever flows into appendSystemCachePointIfNeeded's nil check.
+// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md. Its
+// zero-value TTL ("") means the auto-populated case always gets
+// Bedrock's plain 5-minute default — only an explicit, caller-supplied
+// CacheControl.TTL (see cachePointFor) ever requests the 1-hour tier.
+// Corrected 2026-09-14: this comment previously claimed "Bedrock's
+// CachePoint has no TTL concept at all," which was true only of this
+// adapter's own (buggy) implementation, not of the real Converse API —
+// see CachePoint's own doc comment.
 var defaultSystemCacheControl = &adapter.CacheControl{}
 
 // effectiveSystemCacheControl mirrors anthropic.go's identical-named
@@ -258,14 +326,14 @@ type Tool struct {
 // cachePoint is a standalone array element sibling to toolSpec elements,
 // never a property attached to a toolSpec object, per
 // docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's addendum.
-func appendToolCachePointIfNeeded(tools []Tool, cc *adapter.CacheControl) []Tool {
+func appendToolCachePointIfNeeded(tools []Tool, cc *adapter.CacheControl, model string) []Tool {
 	if cc == nil || len(tools) == 0 {
 		return tools
 	}
 	if tools[len(tools)-1].CachePoint != nil {
 		return tools
 	}
-	return append(tools, Tool{CachePoint: &CachePoint{Type: "default"}})
+	return append(tools, Tool{CachePoint: cachePointFor(cc, model)})
 }
 
 // ToolSpec describes one callable tool. InputSchema.JSON is a parsed JSON
@@ -386,7 +454,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		switch m.Role {
 		case "system":
 			systemBlocks = append(systemBlocks, SystemContentBlock{Text: m.Content})
-			systemBlocks = appendSystemCachePointIfNeeded(systemBlocks, effectiveSystemCacheControl(m.CacheControl, req.DisableCacheControlAutoPopulate))
+			systemBlocks = appendSystemCachePointIfNeeded(systemBlocks, effectiveSystemCacheControl(m.CacheControl, req.DisableCacheControlAutoPopulate), req.Model)
 			continue
 		case "tool":
 			blocks := []ContentBlock{
@@ -398,7 +466,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 					},
 				},
 			}
-			blocks = appendCachePointIfNeeded(blocks, m.CacheControl)
+			blocks = appendCachePointIfNeeded(blocks, m.CacheControl, req.Model)
 			messages = append(messages, Message{Role: "user", Content: blocks})
 			continue
 		}
@@ -418,7 +486,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 				return nil, err
 			}
 			blocks = append(blocks, block)
-			blocks = appendCachePointIfNeeded(blocks, part.CacheControl)
+			blocks = appendCachePointIfNeeded(blocks, part.CacheControl, req.Model)
 		}
 		for i, tc := range m.ToolCalls {
 			input := map[string]any{}
@@ -442,7 +510,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		// appendCachePointIfNeeded's own no-duplicate-checkpoint guard
 		// keeps this a no-op if a part-level marker already placed one
 		// on this exact last block.
-		blocks = appendCachePointIfNeeded(blocks, m.CacheControl)
+		blocks = appendCachePointIfNeeded(blocks, m.CacheControl, req.Model)
 		messages = append(messages, Message{Role: m.Role, Content: blocks})
 	}
 
@@ -469,7 +537,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			// caching.md's addendum -- the same "append right after the
 			// marked item" convention already used for content parts,
 			// not restricted to only the request's very last tool.
-			tools = appendToolCachePointIfNeeded(tools, t.CacheControl)
+			tools = appendToolCachePointIfNeeded(tools, t.CacheControl, req.Model)
 		}
 		toolConfig = &ToolConfig{Tools: tools}
 	}
