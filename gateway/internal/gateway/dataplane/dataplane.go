@@ -713,6 +713,29 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 	}
 }
 
+// GetVirtualKey returns a copy of the virtual key identified by name,
+// live -- the read-only counterpart to UpsertVirtualKey/DeleteVirtualKey,
+// for the new admin GET /admin/virtual_keys/{name}/spend route
+// (docs/upgrade-research/admin-operator-experience-2026-09-14.md
+// Finding 4). ok is false if no key with that ID exists.
+func (p *Pipeline) GetVirtualKey(name string) (identity.VirtualKey, bool) {
+	for _, k := range p.verifier.Load().Keys() {
+		if k.ID == name {
+			return k, true
+		}
+	}
+	return identity.VirtualKey{}, false
+}
+
+// SpentUSD returns keyID's cumulative recorded spend under resetInterval's
+// rolling window -- a thin, read-only wrapper around p.budget.SpentUSD,
+// exposed so admin.go (which has no access to Pipeline's private budget
+// field) can serve the new GET /admin/virtual_keys/{name}/spend route
+// without duplicating budget.Tracker's own logic.
+func (p *Pipeline) SpentUSD(keyID string, resetInterval time.Duration) decimal.Decimal {
+	return p.budget.SpentUSD(keyID, resetInterval)
+}
+
 // UpsertPrompt creates a NEW version of id from messages, live -- see
 // prompt.Store.Upsert's own doc comment for the exact version-bump rule.
 // Delegates straight through to p.prompts, mirroring

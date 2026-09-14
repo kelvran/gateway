@@ -455,6 +455,17 @@ type AdminConfig struct {
 	// resolves empty, cmd/gateway fails startup, mirroring TokenEnv's
 	// own "never run with an unauthenticated surface" rule.
 	ViewerTokenEnv string
+	// CostViewerTokenEnv is the name of the environment variable holding
+	// an optional, narrower-than-Viewer credential, per
+	// docs/upgrade-research/multi-tenancy-access-control-2026-09-14.md's
+	// narrow-third-tier recommendation. A cost-viewer token authenticates
+	// ONLY GET /admin/virtual_keys/{name}/spend — never config, prompts,
+	// or any write route, unlike Viewer which reads all of those. Empty
+	// means no cost-viewer tier is configured. If set but the named env
+	// var resolves empty, cmd/gateway fails startup, mirroring
+	// ViewerTokenEnv's own "never run with an unauthenticated surface"
+	// rule.
+	CostViewerTokenEnv string
 	// EnablePprof mounts net/http/pprof's standard handler set on this
 	// same admin mux (under /admin/debug/pprof/), behind the same bearer
 	// -token middleware as every other admin route, when true. Default
@@ -706,6 +717,7 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.ListenAddr, _ = getString(adminRaw, "listen_addr")
 		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
 		cfg.Admin.ViewerTokenEnv, _ = getString(adminRaw, "viewer_token_env")
+		cfg.Admin.CostViewerTokenEnv, _ = getString(adminRaw, "cost_viewer_token_env")
 		cfg.Admin.EnablePprof, _ = getBool(adminRaw, "enable_pprof")
 	}
 

@@ -268,13 +268,20 @@ func run(configPath string, logger *slog.Logger) error {
 				return fmt.Errorf("admin.viewer_token_env %q is set but resolves to an empty environment variable — refusing to start an unauthenticated viewer tier", cfg.Admin.ViewerTokenEnv)
 			}
 		}
+		var costViewerToken string
+		if cfg.Admin.CostViewerTokenEnv != "" {
+			costViewerToken = os.Getenv(cfg.Admin.CostViewerTokenEnv)
+			if costViewerToken == "" {
+				return fmt.Errorf("admin.cost_viewer_token_env %q is set but resolves to an empty environment variable — refusing to start an unauthenticated cost-viewer tier", cfg.Admin.CostViewerTokenEnv)
+			}
+		}
 		adminListenAddr := cfg.Admin.ListenAddr
 		if adminListenAddr == "" {
 			adminListenAddr = defaultAdminListenAddr
 		}
 		adminServer = &http.Server{
 			Addr:              adminListenAddr,
-			Handler:           admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken}, logger),
+			Handler:           admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken, CostViewer: costViewerToken}, logger),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 	}

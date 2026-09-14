@@ -43,17 +43,22 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
 
-// Credentials holds the admin surface's two credential tiers, per
-// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md. Admin is required
-// (callers must enforce this is non-empty before constructing a Handler
-// at all, same as the pre-existing single-token contract). Viewer is
-// optional — an empty Viewer means no viewer tier is configured, and
-// GET /admin/config then requires Admin exactly as it always has.
-// Viewer, when set, can never authenticate a write (POST/DELETE
-// /admin/virtual_keys/{name}) — those routes always require Admin.
+// Credentials holds the admin surface's three credential tiers. Admin is
+// required (callers must enforce this is non-empty before constructing a
+// Handler at all, same as the pre-existing single-token contract). Viewer
+// and CostViewer are both optional — an empty value means that tier isn't
+// configured. Viewer, per docs/rfcs/2026-09-09-gateway-admin-viewer-role.md,
+// is full read access (GET /admin/config, prompts) but never a write.
+// CostViewer, per docs/upgrade-research/multi-tenancy-access-control-2026-09-14.md's
+// narrow-third-tier recommendation, is narrower still: it authenticates
+// ONLY GET /admin/virtual_keys/{name}/spend, never config, prompts, or any
+// write route — a credential an operator can hand to a billing/finance
+// consumer without granting it any visibility into deployment topology,
+// prompt content, or model/rate-limit configuration.
 type Credentials struct {
-	Admin  string
-	Viewer string
+	Admin      string
+	Viewer     string
+	CostViewer string
 }
 
 // virtualKeyRequest is the POST /admin/virtual_keys/{name} request body.
@@ -124,6 +129,17 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg, logger)))
 	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, logger)))
 	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, logger)))
+	// Deliberately its own middleware call, not requireEitherBearerToken:
+	// this is the one route CostViewer authenticates, alongside Admin and
+	// Viewer (both of which already see strictly more elsewhere on this
+	// mux, so neither loses anything by also being able to read this
+	// narrower view) — see requireAnyBearerToken's own doc comment.
+	mux.Handle("GET /admin/virtual_keys/{name}/spend", requireAnyBearerToken(
+		getVirtualKeySpendHandler(pipeline, logger),
+		tokenTier{creds.Admin, "admin"},
+		tokenTier{creds.Viewer, "viewer"},
+		tokenTier{creds.CostViewer, "cost_viewer"},
+	))
 	// Prompt/template management, per this feature's own design: prompts
 	// are GLOBAL, operator-managed config (the same category as
 	// price_table/deployments/guardrails config above) -- reads are
@@ -207,6 +223,47 @@ func requireEitherBearerToken(creds Credentials, next http.Handler) http.Handler
 		if creds.Viewer != "" && subtle.ConstantTimeCompare(presentedBytes, []byte(creds.Viewer)) == 1 {
 			next.ServeHTTP(w, r.WithContext(contextWithCredentialTier(r.Context(), "viewer")))
 			return
+		}
+		http.Error(w, "invalid admin token", http.StatusUnauthorized)
+	})
+}
+
+// tokenTier pairs a credential token with the tier name it represents --
+// requireAnyBearerToken's own building block.
+type tokenTier struct {
+	token string
+	tier  string
+}
+
+// requireAnyBearerToken wraps next so a request authenticates with ANY of
+// pairs' non-empty tokens, stashing whichever tier matched into the
+// request's context exactly like requireEitherBearerToken does. Used only
+// for the new GET /admin/virtual_keys/{name}/spend route — every existing
+// route keeps using requireBearerToken/requireEitherBearerToken,
+// unchanged. A zero-value token in pairs (a tier that was never
+// configured, e.g. an unset CostViewer) never matches any presented
+// credential, mirroring requireEitherBearerToken's own "Viewer, when
+// empty, authenticates nothing" convention — skipped explicitly rather
+// than compared, since bearerToken already guarantees a non-empty
+// presented value whenever ok is true, so an empty pair.token could only
+// ever match a request bearerToken would have already rejected, making
+// the comparison itself pointless, not just redundant.
+func requireAnyBearerToken(next http.Handler, pairs ...tokenTier) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		presented, ok := bearerToken(r)
+		if !ok {
+			http.Error(w, "missing or malformed Authorization header", http.StatusUnauthorized)
+			return
+		}
+		presentedBytes := []byte(presented)
+		for _, pair := range pairs {
+			if pair.token == "" {
+				continue
+			}
+			if subtle.ConstantTimeCompare(presentedBytes, []byte(pair.token)) == 1 {
+				next.ServeHTTP(w, r.WithContext(contextWithCredentialTier(r.Context(), pair.tier)))
+				return
+			}
 		}
 		http.Error(w, "invalid admin token", http.StatusUnauthorized)
 	})
@@ -391,6 +448,53 @@ func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 		default:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
+	}
+}
+
+// virtualKeySpendResponse is what GET /admin/virtual_keys/{name}/spend
+// returns -- deliberately narrower than virtualKeyRequest or the config
+// route: no key hash, no rate-limit config, no allowed-models list, so a
+// CostViewer credential can't recon anything about a key beyond its
+// spend, per docs/upgrade-research/multi-tenancy-access-control-2026-09-14.md's
+// own "pair the narrow tier with an equally narrow route" design.
+// PercentUsed is 0 whenever BudgetUSD is zero/unlimited (nothing to
+// divide by) — never a fabricated 100% or a divide-by-zero.
+type virtualKeySpendResponse struct {
+	SpentUSD                   string  `json:"spent_usd"`
+	BudgetUSD                  string  `json:"budget_usd"`
+	BudgetResetIntervalSeconds int     `json:"budget_reset_interval_seconds"`
+	PercentUsed                float64 `json:"percent_used"`
+}
+
+// getVirtualKeySpendHandler serves name's current spend against its
+// budget cap -- closes the "no live cost/budget view" gap named in
+// docs/upgrade-research/admin-operator-experience-2026-09-14.md Finding 4:
+// today the only way to see this is a full GET /admin/config read, which
+// exposes every virtual key's budget/model/rate-limit shape at once, far
+// more than a cost-reporting consumer needs. 404 if name doesn't match
+// any configured key. logger records this read (name + credential tier,
+// never spend/budget figures) mirroring every other read route's audit
+// convention.
+func getVirtualKeySpendHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		vk, ok := pipeline.GetVirtualKey(name)
+		if !ok {
+			http.Error(w, fmt.Sprintf("virtual key %q not found", name), http.StatusNotFound)
+			return
+		}
+		spent := pipeline.SpentUSD(vk.ID, vk.BudgetResetInterval)
+		var percentUsed float64
+		if vk.BudgetUSD.IsPositive() {
+			percentUsed, _ = spent.Div(vk.BudgetUSD).Float64()
+		}
+		writeJSONResponse(w, virtualKeySpendResponse{
+			SpentUSD:                   spent.String(),
+			BudgetUSD:                  vk.BudgetUSD.String(),
+			BudgetResetIntervalSeconds: int(vk.BudgetResetInterval.Seconds()),
+			PercentUsed:                percentUsed,
+		})
+		logger.Info("admin_virtual_key_spend_read", "name", name, "authorized_by", credentialTierFromContext(r.Context()))
 	}
 }
 
