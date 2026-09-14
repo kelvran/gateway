@@ -7,7 +7,7 @@
 | evals/\_\_init\_\_.py            |        1 |        0 |    100% |           |
 | evals/audit\_corpus.py           |       32 |        0 |    100% |           |
 | evals/auto\_flag.py              |       30 |        0 |    100% |           |
-| evals/cli.py                     |      790 |       42 |     95% |175, 197, 201, 205, 211, 229, 279, 353, 463-464, 541, 582, 653-676, 698-699, 749-765, 770-771, 878, 1358, 1645-1646, 1649, 1845, 1924-1925, 1928, 1942-1943, 2907, 2979 |
+| evals/cli.py                     |      792 |       42 |     95% |176, 198, 202, 206, 212, 230, 280, 355, 470-471, 549, 592, 663-686, 709-710, 761-777, 782-783, 900, 1381, 1668-1669, 1672, 1868, 1947-1948, 1951, 1965-1966, 2931, 3003 |
 | evals/corpus\_staleness.py       |       72 |        8 |     89% |155-156, 173-174, 179, 211, 217, 223 |
 | evals/field\_swap\_lint.py       |       17 |        1 |     94% |        77 |
 | evals/ingestion/\_\_init\_\_.py  |        0 |        0 |    100% |           |
@@ -17,9 +17,9 @@
 | evals/judge/\_\_init\_\_.py      |        0 |        0 |    100% |           |
 | evals/judge/cache.py             |       11 |        0 |    100% |           |
 | evals/judge/deterministic.py     |        6 |        0 |    100% |           |
-| evals/judge/llm\_judge.py        |       98 |        3 |     97% |433, 443-448 |
+| evals/judge/llm\_judge.py        |      100 |        3 |     97% |464, 474-479 |
 | evals/judge/providers.py         |      100 |        2 |     98% |   370-371 |
-| evals/models.py                  |      103 |        0 |    100% |           |
+| evals/models.py                  |      104 |        0 |    100% |           |
 | evals/results\_store.py          |       29 |        0 |    100% |           |
 | evals/rollout/\_\_init\_\_.py    |        0 |        0 |    100% |           |
 | evals/rollout/cache.py           |        7 |        0 |    100% |           |
@@ -28,7 +28,7 @@
 | evals/stats.py                   |       73 |        0 |    100% |           |
 | evals/tracing.py                 |       32 |        0 |    100% |           |
 | evals/trend\_alert.py            |       63 |        1 |     98% |       191 |
-| **TOTAL**                        | **1648** |   **83** | **95%** |           |
+| **TOTAL**                        | **1653** |   **83** | **95%** |           |
 
 
 ## Setup coverage badge
