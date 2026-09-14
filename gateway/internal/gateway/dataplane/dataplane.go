@@ -1511,6 +1511,15 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			return nil, ErrGuardrailBlocked
 		}
 
+		// upstreamStart brackets the deployment-selection-through-fallback-
+		// resolution block below -- including any multi-hop fallback
+		// retry/backoff -- so a request that took multiple hops to reach a
+		// working deployment correctly counts that whole span as upstream
+		// time, not gateway overhead. Written into the context's own
+		// tracker pointer (if any) right before this closure returns, per
+		// docs/rfcs/2026-09-14-gateway-overhead-duration-header.md.
+		upstreamStart := time.Now()
+
 		dep, found := p.nextDeployment(req.Model, nil)
 		if !found {
 			return nil, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
@@ -1547,6 +1556,9 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 				dep = fallbackDep
 				resp, err = p.callDeploymentWithCapacityCheck(ctx, dep, req)
 			}
+		}
+		if upstreamDuration := upstreamDurationPointerFromContext(ctx); upstreamDuration != nil {
+			*upstreamDuration = time.Since(upstreamStart)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("dataplane: upstream call failed for model %q: %w", req.Model, err)

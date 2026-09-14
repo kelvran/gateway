@@ -128,6 +128,19 @@ const upstreamHTTPTimeout = 60 * time.Second
 // exists (e.g. via a future pprof-driven pass).
 const upstreamMaxIdleConnsPerHost = 100
 
+// overheadDurationHeader mirrors LiteLLM's own shipped
+// x-litellm-overhead-duration-ms header (confirmed real, standing
+// production convention, not a proposal) -- reports how much of a
+// buffered chat-completion request's total wall-clock time was
+// Kelvran's own added latency, isolated from the real upstream
+// provider round-trip. Buffered path only -- see this header's own
+// wiring at chatCompletionsHandler's call site, and
+// docs/rfcs/2026-09-14-gateway-overhead-duration-header.md for why the
+// streaming path cannot set it. Per
+// docs/upgrade-research/load-testing-capacity-planning-2026-09-14.md
+// Finding 4.
+const overheadDurationHeader = "X-Kelvran-Overhead-Duration-Ms"
+
 // newUpstreamTransport builds the http.Transport shared by both upstream
 // http.Clients below -- one *http.Transport instance, passed to both,
 // which is safe (Transport is safe for concurrent use by multiple
@@ -806,6 +819,15 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		}
 
 		ctx := telemetry.ExtractContext(r.Context(), r)
+		// Buffered path only -- see WithOverheadTracker's own doc comment
+		// and docs/rfcs/2026-09-14-gateway-overhead-duration-header.md's
+		// Detailed Design section for why the streaming path (below)
+		// cannot set this same header: its Content-Type/Cache-Control/
+		// Connection headers are already set before the pipeline even
+		// runs, and there is no later point at which a header could still
+		// be added to that same response.
+		ctx, upstreamDuration := dataplane.WithOverheadTracker(ctx)
+		requestStart := time.Now()
 		resp, err := p.HandleChatCompletion(ctx, r.Header.Get("Authorization"), req)
 		if err != nil {
 			writeErrorResponse(w, err)
@@ -813,6 +835,7 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(overheadDurationHeader, strconv.FormatInt((time.Since(requestStart)-*upstreamDuration).Milliseconds(), 10))
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			slog.Error("encoding chat completion response", "error", err)
 		}
