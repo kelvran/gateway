@@ -18,7 +18,9 @@ Two independently deployable units — `gateway` (Go) and `evals` (Python) — j
 
 ## Docker Compose (Local/Dev)
 
-Real: `docker-compose.yml` at the repo root defines a `gateway` service (built from `gateway/Dockerfile`, unmodified) and an *optional* `redis` service gated behind a Compose profile — `docker compose --profile redis up` — since Redis is only needed when `rate_limit.redis_addr` is configured. There is no `postgres` service (nothing uses it, see Prerequisites) and no `evals` service (see Deployment Models above).
+Real: `docker-compose.yml` at the repo root defines a `gateway` service (built from `gateway/Dockerfile`, unmodified) and an *optional* `redis` service gated behind a Compose profile — `docker compose --profile redis up` — since Redis is only needed when `rate_limit.redis_addr` is configured. There is no `postgres` service (nothing uses it, see Prerequisites) and no `evals` service (see Deployment Models above). **Corrected 2026-09-14** — this section previously named every non-`gateway`/`redis` service, which is no longer complete: three more profile-gated optional services now exist — `gateway2` (profile `multi-instance`, a second gateway instance sharing the same Redis, for real multi-instance/distributed-rate-limit testing), `vector` (profile `vector-s3`, a log-shipping sidecar for `GatewayDecisionEvent`→S3, currently blocked pending a real bucket/IAM credential), and `observability` (profile `observability`, `grafana/otel-lgtm` — a real OTel Collector+Prometheus+Tempo+Grafana bundle; see `gateway/ARCHITECTURE.md`'s Tech Stack table for how the gateway's own OTLP exporter connects to it). All three, like `redis`, are opt-in and never started by a bare `docker compose up gateway`.
+
+`gateway/Dockerfile`'s final image also runs as a real non-root user (`USER 65532:65532`, added 2026-09-14) — previously ran as root with a writable root filesystem.
 
 To bring `gateway` up locally:
 1. `cp gateway/config.example.yaml gateway/config.yaml` and fill in real values (both files are gitignored except the `.example` one — see `.gitignore`).

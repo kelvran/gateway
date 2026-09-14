@@ -37,11 +37,15 @@ Full per-competitor detail and citations: `Not-Humans-World/ai-infra-research/ga
 
 ## Quickstart
 
-*(Not runnable yet — this describes the intended v1 shape per `PRD.md`.)*
+**Corrected 2026-09-14**: this is real and runnable today, not aspirational — the exact binary below is the same one serving live Bedrock pilot traffic, and is also published as a signed, SBOM/SLSA-provenance-attested container image at `ghcr.io/kelvran/gateway` (see `RELEASE.md`'s "Verifying the published gateway image" section for how to check the signature yourself).
 
 ```
-# Gateway
+# Gateway — from source
 cd gateway && go build ./cmd/gateway && ./gateway --config config.yaml
+
+# Gateway — or the published image
+docker pull ghcr.io/kelvran/gateway:latest
+docker run -v $(pwd)/config.yaml:/config.yaml -p 8080:8080 ghcr.io/kelvran/gateway:latest
 
 # Evals
 cd evals && uv run evals run --suite golden

@@ -1,8 +1,8 @@
 header:
   schema-version: "2.0.0"
   expiration-date: "2027-09-02T00:00:00.000Z"
-  last-updated: "2026-09-02"
-  last-reviewed: "2026-09-02"
+  last-updated: "2026-09-14"
+  last-reviewed: "2026-09-14"
   commit-hash: null
   project-url: "https://github.com/kelvran/gateway"
   project-release: null
@@ -27,9 +27,14 @@ dependencies:
     - "https://github.com/kelvran/gateway/blob/main/go.sum"
     - "https://github.com/kelvran/evals/blob/main/uv.lock"
   sbom:
+    # Real since 2026-09-13: a CycloneDX SBOM is generated per image build
+    # and attested (in-toto, cosign-signed) to the exact published digest
+    # of ghcr.io/kelvran/gateway -- not a static downloadable file, so
+    # there is no single fixed sbom-url. Verify with:
+    #   cosign verify-attestation --type cyclonedx ghcr.io/kelvran/gateway:latest
     - sbom-file: null
-      sbom-format: "SPDX"
-      sbom-url: null
+      sbom-format: "CycloneDX"
+      sbom-url: "https://github.com/kelvran/gateway/blob/main/RELEASE.md#verifying-the-published-gateway-image"
 
 distribution-points:
   - "https://github.com/kelvran/gateway"
@@ -52,7 +57,38 @@ security-contacts:
     value: "security@kelvran.dev"
     primary: true
 
-security-testing: []
+security-testing:
+  - type: "sast"
+    tool-name: "CodeQL"
+    integration:
+      ad-hoc: false
+      ci: true
+      release: false
+  - type: "sast"
+    tool-name: "gosec"
+    tool-version: "bundled in golangci-lint v2.12.2"
+    integration:
+      ad-hoc: false
+      ci: true
+      release: false
+  - type: "sast"
+    tool-name: "ruff (flake8-bandit ruleset)"
+    integration:
+      ad-hoc: false
+      ci: true
+      release: false
+  - type: "sca"
+    tool-name: "govulncheck"
+    integration:
+      ad-hoc: false
+      ci: true
+      release: false
+  - type: "sca"
+    tool-name: "pip-audit"
+    integration:
+      ad-hoc: false
+      ci: true
+      release: false
 
 vulnerability-reporting:
   accepts-vulnerability-reports: true
