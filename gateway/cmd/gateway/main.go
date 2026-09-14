@@ -57,6 +57,8 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail/bedrockguard"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
+	"github.com/kelvran/gateway/gateway/internal/prompt"
+	promptboltstore "github.com/kelvran/gateway/gateway/internal/prompt/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit/redislimiter"
 	"github.com/kelvran/gateway/gateway/internal/router"
@@ -584,6 +586,11 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		return nil, fmt.Errorf("constructing budget tracker: %w", err)
 	}
 
+	promptStore, err := newPromptStore(cfg.Prompt)
+	if err != nil {
+		return nil, fmt.Errorf("constructing prompt store: %w", err)
+	}
+
 	keyLimiter, err := newKeyLimiter(cfg.RateLimit, keyConfigs)
 	if err != nil {
 		return nil, fmt.Errorf("constructing rate limiter: %w", err)
@@ -596,6 +603,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	return dataplane.NewPipeline(dataplane.Config{
 		Verifier:      verifier,
 		IdentityStore: identityStore,
+		Prompts:       promptStore,
 		Limiter:       keyLimiter,
 		// Always constructed, never nil — a virtual key with
 		// MaxConcurrentRequests <= 0 (every config written before this
@@ -740,6 +748,27 @@ func newBudgetTracker(cfg controlplane.BudgetConfig, logger *slog.Logger) (*budg
 		return nil, fmt.Errorf("hydrating budget tracker from %q: %w", cfg.PersistPath, err)
 	}
 	return tracker, nil
+}
+
+// newPromptStore constructs a pure in-memory prompt.Store when
+// cfg.PersistPath is empty (the default — identical to prompt.Persister's
+// own pre-implementation behavior), or one backed by a bbolt store at
+// cfg.PersistPath otherwise — hydrating any existing prompt templates
+// immediately, mirroring newBudgetTracker's identical shape.
+func newPromptStore(cfg controlplane.PromptConfig) (*prompt.Store, error) {
+	if cfg.PersistPath == "" {
+		return prompt.NewStore(), nil
+	}
+	store, err := promptboltstore.Open(cfg.PersistPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening prompt store at %q: %w", cfg.PersistPath, err)
+	}
+	promptStore, err := prompt.NewStoreWithPersister(context.Background(), store)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("hydrating prompt store from %q: %w", cfg.PersistPath, err)
+	}
+	return promptStore, nil
 }
 
 // newKeyLimiter constructs a pure in-memory ratelimit.KeyLimiter when

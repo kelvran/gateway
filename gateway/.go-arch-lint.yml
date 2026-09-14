@@ -30,6 +30,7 @@ components:
   dataplane:         { in: gateway/dataplane }
   admin:             { in: admin }
   prompt:            { in: prompt }
+  prompt-boltstore:  { in: prompt/boltstore }
   gatewayevents:     { in: ../api/gatewayevents/v1 }
 
 # Components deliberately absent from `deps:` below (identity, budget,
@@ -62,6 +63,9 @@ deps:
   identity-boltstore:
     mayDependOn:
       - identity
+  prompt-boltstore:
+    mayDependOn:
+      - prompt
   cache-inprocess:
     mayDependOn:
       - cache

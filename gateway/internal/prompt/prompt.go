@@ -56,6 +56,12 @@ type Prompt struct {
 type Persister interface {
 	Load(ctx context.Context) (map[string][]Prompt, error)
 	Save(ctx context.Context, id string, versions []Prompt) error
+	// Close releases the persister's own resources -- added when
+	// internal/prompt/boltstore became the first real implementation of
+	// this interface, matching budget.Store/identity.Store's identical
+	// Close() error method (both needed to release their own bbolt
+	// exclusive file lock on shutdown). Store.Close delegates here.
+	Close() error
 }
 
 // storeState is the whole-map, rebuild-then-swap unit Store.state holds --
@@ -136,6 +142,16 @@ func cloneMessages(messages []adapter.Message) []adapter.Message {
 	cloned := make([]adapter.Message, len(messages))
 	copy(cloned, messages)
 	return cloned
+}
+
+// Close releases the underlying persister, if any. Safe to call even on a
+// Store constructed via NewStore (no persister) -- mirrors
+// budget.Tracker.Close/identity Store's identical convention.
+func (s *Store) Close() error {
+	if s.persist == nil {
+		return nil
+	}
+	return s.persist.Close()
 }
 
 // Upsert creates a NEW version of id from messages -- version =

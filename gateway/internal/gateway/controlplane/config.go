@@ -327,6 +327,18 @@ type BudgetConfig struct {
 	PersistPath string
 }
 
+// PromptConfig configures restart-durable prompt-template persistence,
+// mirroring BudgetConfig's identical shape and optionality. A zero-valued
+// PromptConfig (PersistPath == "") means pure in-memory prompt storage,
+// exactly as before prompt.Persister had a real implementation: an
+// admin-created/edited prompt template reverts to whatever this process
+// last held in memory on the next restart.
+type PromptConfig struct {
+	// PersistPath is the file path for the bbolt-backed prompt store.
+	// Empty means no persistence.
+	PersistPath string
+}
+
 // RateLimitConfig configures distributed (Redis-backed) rate limiting,
 // per docs/rfcs/2026-09-03-distributed-rate-limiting.md. Optional — a
 // zero-valued RateLimitConfig (RedisAddr == "") means pure in-memory
@@ -535,6 +547,8 @@ type Config struct {
 	Telemetry TelemetryConfig
 	// Budget configures budget-spend persistence. Optional.
 	Budget BudgetConfig
+	// Prompt configures prompt-template persistence. Optional.
+	Prompt PromptConfig
 	// RateLimit configures distributed rate limiting. Optional.
 	RateLimit RateLimitConfig
 	// Cache configures the L1/L2 cache layers. Optional.
@@ -673,6 +687,10 @@ func Load(path string) (*Config, error) {
 
 	if budgetRaw, ok := getMap(root, "budget"); ok {
 		cfg.Budget.PersistPath, _ = getString(budgetRaw, "persist_path")
+	}
+
+	if promptRaw, ok := getMap(root, "prompt"); ok {
+		cfg.Prompt.PersistPath, _ = getString(promptRaw, "persist_path")
 	}
 
 	if rateLimitRaw, ok := getMap(root, "rate_limit"); ok {

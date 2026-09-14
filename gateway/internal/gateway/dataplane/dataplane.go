@@ -609,7 +609,8 @@ func (p *Pipeline) Close() error {
 	if p.identityStore != nil {
 		identityErr = p.identityStore.Close()
 	}
-	return errors.Join(budgetErr, limiterErr, identityErr)
+	promptErr := p.prompts.Close()
+	return errors.Join(budgetErr, limiterErr, identityErr, promptErr)
 }
 
 // ErrCannotDeleteLastVirtualKey is returned by DeleteVirtualKey when name

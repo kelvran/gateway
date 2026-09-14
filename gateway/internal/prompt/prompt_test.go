@@ -416,11 +416,12 @@ func TestUpsertAndDeletePersistThroughPersister(t *testing.T) {
 	}
 }
 
-// fakePersister is a minimal in-memory Persister for tests -- production
-// code has no real implementation of this interface yet (see Persister's
-// own doc comment).
+// fakePersister is a minimal in-memory Persister for tests -- exercises
+// Store's own Load/Save/Close call sites without a real bbolt file; see
+// internal/prompt/boltstore for the real implementation.
 type fakePersister struct {
 	mu      sync.Mutex
+	closed  bool
 	data    map[string][]Prompt
 	saved   map[string][]Prompt
 	loadErr error
@@ -441,4 +442,40 @@ func (f *fakePersister) Save(ctx context.Context, id string, versions []Prompt) 
 	}
 	f.saved[id] = versions
 	return nil
+}
+
+func (f *fakePersister) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
+
+// TestCloseIsANoOpWithoutAPersister proves Close mirrors
+// budget.Tracker.Close/identity's Store.Close convention: safe to call on
+// a pure in-memory Store (NewStore, no persister configured).
+func TestCloseIsANoOpWithoutAPersister(t *testing.T) {
+	s := NewStore()
+	if err := s.Close(); err != nil {
+		t.Errorf("Close on a pure in-memory Store: %v, want nil", err)
+	}
+}
+
+// TestCloseDelegatesToThePersister proves a configured persister's own
+// Close is actually called, not silently skipped.
+func TestCloseDelegatesToThePersister(t *testing.T) {
+	fp := &fakePersister{data: map[string][]Prompt{}}
+	s, err := NewStoreWithPersister(context.Background(), fp)
+	if err != nil {
+		t.Fatalf("NewStoreWithPersister: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fp.mu.Lock()
+	closed := fp.closed
+	fp.mu.Unlock()
+	if !closed {
+		t.Error("Store.Close did not call through to the persister's own Close")
+	}
 }
