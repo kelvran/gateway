@@ -39,7 +39,7 @@ func TestSelectGrantsReducedShareImmediatelyAfterRecovery(t *testing.T) {
 	const totalCalls = 600 // a multiple of this scenario's exact acceptance period (see below), so the count lands exactly, not on a rounded boundary
 	counts := map[string]int{}
 	for i := 0; i < totalCalls; i++ {
-		name, ok := r.Select("gpt-4o")
+		name, ok := r.Select("gpt-4o", nil)
 		if !ok {
 			t.Fatalf("call %d: Select returned ok=false, want true", i)
 		}
@@ -88,7 +88,7 @@ func TestSelectRampShareIncreasesToFullWeightOverRecoveryWindow(t *testing.T) {
 	countA := func() int {
 		n := 0
 		for i := 0; i < perStage; i++ {
-			if name, ok := r.Select("gpt-4o"); ok && name == "a" {
+			if name, ok := r.Select("gpt-4o", nil); ok && name == "a" {
 				n++
 			}
 		}
@@ -159,7 +159,7 @@ func TestSelectFullyRampedDeploymentMatchesUnmodifiedProportionalWeightMath(t *t
 	counts := map[string]int{}
 	const totalCalls = 400 // identical call count to TestSelectProportionalForWeightedDeployments
 	for i := 0; i < totalCalls; i++ {
-		name, ok := r.Select("gpt-4o")
+		name, ok := r.Select("gpt-4o", nil)
 		if !ok {
 			t.Fatalf("call %d: Select returned ok=false, want true", i)
 		}

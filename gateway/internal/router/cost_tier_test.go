@@ -18,7 +18,7 @@ func TestSelectIgnoresCostTierWhenAnyDeploymentInGroupIsUntiered(t *testing.T) {
 
 	want := []string{"a", "b", "c", "a", "b", "c"}
 	for i, w := range want {
-		got, ok := r.Select("gpt-4o")
+		got, ok := r.Select("gpt-4o", nil)
 		if !ok || got != w {
 			t.Fatalf("call %d: Select = (%q, %v), want (%q, true) — a mixed tiered/untiered group must behave exactly like plain WRR", i, got, ok, w)
 		}
@@ -36,7 +36,7 @@ func TestSelectPrefersLowestHealthyCostTier(t *testing.T) {
 	}, HealthConfig{})
 
 	for i := 0; i < 10; i++ {
-		got, ok := r.Select("gpt-4o")
+		got, ok := r.Select("gpt-4o", nil)
 		if !ok || got != "cheap" {
 			t.Fatalf("call %d: Select = (%q, %v), want (%q, true) — the cheaper tier is healthy, must always be preferred", i, got, ok, "cheap")
 		}
@@ -57,7 +57,7 @@ func TestSelectFallsThroughToNextTierWhenCheaperTierFullyUnhealthy(t *testing.T)
 	r.ReportProbeResult("cheap", false) // trips UnhealthyThreshold=1 immediately
 
 	for i := 0; i < 10; i++ {
-		got, ok := r.Select("gpt-4o")
+		got, ok := r.Select("gpt-4o", nil)
 		if !ok || got != "expensive" {
 			t.Fatalf("call %d: Select = (%q, %v), want (%q, true) — the cheap tier is fully unhealthy, must fall through to the next tier", i, got, ok, "expensive")
 		}
@@ -79,7 +79,7 @@ func TestSelectProportionalWeightingHoldsWithinAPreferredCostTier(t *testing.T) 
 	counts := map[string]int{}
 	const totalCalls = 300 // a multiple of tier 1's own total weight (3)
 	for i := 0; i < totalCalls; i++ {
-		got, ok := r.Select("gpt-4o")
+		got, ok := r.Select("gpt-4o", nil)
 		if !ok {
 			t.Fatalf("call %d: Select returned ok=false", i)
 		}
@@ -133,7 +133,7 @@ func TestSelectPrefersARealAdmittedFallbackOverAnUnhealthyLastExaminedCandidate(
 
 	r.ReportProbeResult("expensiveDown", false) // genuinely unhealthy (UnhealthyThreshold=1)
 
-	got, ok := r.Select("gpt-4o")
+	got, ok := r.Select("gpt-4o", nil)
 	if !ok {
 		t.Fatalf("Select returned ok=false, want true")
 	}

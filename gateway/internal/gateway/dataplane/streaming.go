@@ -185,7 +185,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 
 	var found bool
-	dep, found = p.nextDeployment(req.Model)
+	dep, found = p.nextDeployment(req.Model, nil)
 	if !found {
 		err = fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		return
@@ -334,7 +334,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
 			dep, resp, err = hopDep, hopResp, hopErr
 		}
-	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
+	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model, map[string]bool{dep.Name: true}); hasFallback {
 		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 		dep = fallbackDep
 		resp, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)

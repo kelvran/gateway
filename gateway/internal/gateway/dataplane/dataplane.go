@@ -1471,7 +1471,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			return nil, ErrGuardrailBlocked
 		}
 
-		dep, found := p.nextDeployment(req.Model)
+		dep, found := p.nextDeployment(req.Model, nil)
 		if !found {
 			return nil, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		}
@@ -1501,7 +1501,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
 					dep, resp, err = hopDep, hopResp, hopErr
 				}
-			} else if fallbackDep, hasFallback := p.nextDeployment(req.Model); hasFallback && fallbackDep.Name != dep.Name {
+			} else if fallbackDep, hasFallback := p.nextDeployment(req.Model, map[string]bool{dep.Name: true}); hasFallback {
 				fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 				dep = fallbackDep
 				resp, err = p.callDeploymentWithCapacityCheck(ctx, dep, req)
@@ -1578,9 +1578,22 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 // nextDeployment selects the next deployment for model via p.router
 // (weighted round-robin, per docs/rfcs/2026-09-04-weighted-routing.md).
 // The second return value is false if no deployment is configured for
-// model at all.
-func (p *Pipeline) nextDeployment(model string) (Deployment, bool) {
-	name, ok := p.router.Select(model)
+// model at all, or (when exclude is non-empty) every configured
+// deployment for model is either unhealthy or excluded.
+//
+// exclude matters specifically for a same-model WRR re-pick after an
+// initial deployment's call already failed: router.Select's own WRR
+// cursor is one shared sequence across every concurrent caller for a
+// model, so without excluding the just-failed name, a re-pick can
+// legitimately land back on it if another concurrent request's own
+// Select call happened to land between this request's two picks — a
+// real, confirmed-live bug (a genuinely healthy-per-active-probing
+// sibling deployment existed, but the re-pick returned the same broken
+// one, so no fallback was even attempted) that a sequential test can
+// never reproduce, since two back-to-back same-goroutine calls with no
+// concurrent interleaving always alternate.
+func (p *Pipeline) nextDeployment(model string, exclude map[string]bool) (Deployment, bool) {
+	name, ok := p.router.Select(model, exclude)
 	if !ok {
 		return Deployment{}, false
 	}

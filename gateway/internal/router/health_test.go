@@ -25,7 +25,7 @@ func TestSelectExcludesOnlyAfterNConsecutiveFailures(t *testing.T) {
 	// "a" must still be selectable after only 2 of 3 required failures.
 	sawA := false
 	for i := 0; i < 4; i++ {
-		if name, _ := r.Select("gpt-4o"); name == "a" {
+		if name, _ := r.Select("gpt-4o", nil); name == "a" {
 			sawA = true
 		}
 	}
@@ -42,7 +42,7 @@ func TestSelectExcludesOnlyAfterNConsecutiveFailures(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		if name, ok := r.Select("gpt-4o"); !ok || name != "b" {
+		if name, ok := r.Select("gpt-4o", nil); !ok || name != "b" {
 			t.Fatalf("call %d after \"a\" tripped its 3rd consecutive failure: Select = (%q, %v), want (%q, true)", i, name, ok, "b")
 		}
 	}
@@ -76,7 +76,7 @@ func TestSelectReincludesOnlyAfterMConsecutiveSuccesses(t *testing.T) {
 		t.Fatal("after only 1 of 2 required consecutive successes: changed = true, want false")
 	}
 	for i := 0; i < 10; i++ {
-		if name, ok := r.Select("gpt-4o"); !ok || name != "b" {
+		if name, ok := r.Select("gpt-4o", nil); !ok || name != "b" {
 			t.Fatalf("call %d after only 1 of 2 required successes: Select = (%q, %v), want (%q, true) — \"a\" must stay excluded", i, name, ok, "b")
 		}
 	}
@@ -91,7 +91,7 @@ func TestSelectReincludesOnlyAfterMConsecutiveSuccesses(t *testing.T) {
 
 	sawA := false
 	for i := 0; i < 10; i++ {
-		if name, _ := r.Select("gpt-4o"); name == "a" {
+		if name, _ := r.Select("gpt-4o", nil); name == "a" {
 			sawA = true
 		}
 	}
@@ -130,7 +130,7 @@ func TestSelectFailsOpenWhenEveryDeploymentUnhealthy(t *testing.T) {
 		t.Fatal("setup: \"solo\" should be unhealthy after 3 consecutive failures")
 	}
 
-	name, ok := r.Select("gpt-4o")
+	name, ok := r.Select("gpt-4o", nil)
 	if !ok {
 		t.Fatal("Select with the only configured deployment unhealthy returned ok=false, want true (fail open)")
 	}
@@ -160,7 +160,7 @@ func TestSelectSkipsUnhealthyDespiteHeavilySkewedWeight(t *testing.T) {
 	}
 
 	for i := 0; i < 20; i++ {
-		if name, ok := r.Select("gpt-4o"); !ok || name != "light" {
+		if name, ok := r.Select("gpt-4o", nil); !ok || name != "light" {
 			t.Fatalf("call %d: Select = (%q, %v), want (%q, true) — \"heavy\" is unhealthy, \"light\" must always be chosen instead", i, name, ok, "light")
 		}
 	}

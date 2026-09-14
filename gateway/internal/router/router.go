@@ -85,13 +85,32 @@ func New(deployments []Deployment, health HealthConfig) *Router {
 
 // Select returns the next chosen deployment's Name for model, skipping
 // any deployment currently marked unhealthy (see selectHealthy in
-// health.go). The second return value is false only if no deployment is
-// configured for model at all — the same "not found" contract
+// health.go) and any name present in exclude (nil-safe: a nil map's
+// lookups always report false, so every existing caller passing nil is
+// unaffected). The second return value is false only if no deployment
+// is configured for model at all, or every configured deployment is
+// either unhealthy or excluded — the same "not found" contract
 // dataplane.Pipeline.nextDeployment already has today.
-func (r *Router) Select(model string) (string, bool) {
+//
+// exclude exists specifically for a same-model WRR fallback re-pick
+// (dataplane.go/streaming.go's own "else if" branch, after
+// nextDeployment's FIRST pick already failed): Select's own cursor
+// (modelState.next, wrr.go) is one shared, mutex-protected sequence
+// across every concurrent caller for this model — under real
+// concurrency, an odd number of OTHER requests' own next() calls can
+// land between this request's first and second pick, which (with two
+// equal-weight deployments, a strict alternation) makes the second
+// pick land back on the exact same name the first pick already failed
+// on. A sequential test never exercises this: two back-to-back calls
+// from the same goroutine, with no other caller interleaved, always
+// alternate. Confirmed live: a 20-concurrent-request burst against a
+// deliberately-broken deployment produced exactly this failure mode
+// for 3 of 20 requests (no fallback attempted at all, the original
+// error surfaced directly) before this fix.
+func (r *Router) Select(model string, exclude map[string]bool) (string, bool) {
 	ms, ok := r.models[model]
 	if !ok {
 		return "", false
 	}
-	return r.selectHealthy(ms)
+	return r.selectHealthy(ms, exclude)
 }

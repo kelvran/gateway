@@ -73,7 +73,7 @@ func TestSelectConcurrentWithReportProbeResultNeverRacesUnderRaceDetector(t *tes
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.Select("gpt-4o")
+			r.Select("gpt-4o", nil)
 		}()
 	}
 	wg.Wait()

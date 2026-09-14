@@ -150,7 +150,7 @@ func TestProbeDeploymentsReincludesDeploymentAfterMConsecutiveSuccesses(t *testi
 
 	sawBad := false
 	for i := 0; i < 40; i++ {
-		if name, _ := p.router.Select("gpt-4o"); name == "bad" {
+		if name, _ := p.router.Select("gpt-4o", nil); name == "bad" {
 			sawBad = true
 			break
 		}

@@ -395,18 +395,30 @@ func (r *Router) activeCostTier(ms *modelState) (tier int, filterActive bool) {
 // fail-open ramp case is rare and self-correcting: rampCredit persists
 // across calls, so a rejected offer only delays, never permanently
 // denies, that deployment's eventual admission.
-func (r *Router) selectHealthy(ms *modelState) (string, bool) {
+func (r *Router) selectHealthy(ms *modelState, exclude map[string]bool) (string, bool) {
 	tier, tierFilterActive := r.activeCostTier(ms)
 
 	var name string
 	var ok bool
 	var fallbackName string
 	var fallbackOK bool
+	// lastAdmissible/lastAdmissibleOK is the final fail-open answer when
+	// nothing in this pass ever returns early below: the most recent
+	// NON-excluded candidate seen, admitted or not. Tracked separately
+	// from name/ok (which after the loop hold whatever ms.next() last
+	// produced, excluded or not) so that fail-open path can never hand
+	// the caller back a name it explicitly asked to exclude.
+	var lastAdmissible string
+	var lastAdmissibleOK bool
 	for i := 0; i < ms.sumW; i++ {
 		name, ok = ms.next()
 		if !ok {
 			return "", false
 		}
+		if exclude[name] {
+			continue
+		}
+		lastAdmissible, lastAdmissibleOK = name, ok
 		if !r.admitTurn(name) {
 			continue
 		}
@@ -420,5 +432,5 @@ func (r *Router) selectHealthy(ms *modelState) (string, bool) {
 	if fallbackOK {
 		return fallbackName, true
 	}
-	return name, ok
+	return lastAdmissible, lastAdmissibleOK
 }
