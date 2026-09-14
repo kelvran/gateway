@@ -54,6 +54,25 @@ CallModel = Callable[[str], Awaitable[str]]
 # per docs/rfcs/2026-09-09-evals-judge-debiasing-position-swap.md.
 BIAS_MITIGATIONS_APPLIED = ["cot_forcing", "reference_guided_grading"]
 
+# JUDGE_PROMPT_VERSION tags every judge verdict at scoring time with the
+# version of THIS module's own prompt-generation logic that produced it
+# -- directly mirroring EvalCase.revision's existing "an explicit version
+# tag, kept separate from git history" pattern for dataset entries, per
+# docs/upgrade-research/evals-optimization-beyond-settled-2026-09-14.md
+# Finding 1. Bump this (e.g. "v2") whenever any judge-prompt template in
+# this module changes shape or wording -- _JUDGE_PROMPT_TEMPLATE,
+# _JUDGE_PROMPT_TEMPLATE_WITH_AXIS, or either debiased template below --
+# the golden-fixture regression test failing on a prompt-wording change
+# is the natural trigger to remember. Public (no leading underscore) so
+# evals.cli's own debiasing path, which builds its prompts via
+# build_debiased_judge_prompt rather than calling judge() directly, can
+# stamp the same version without duplicating it. Without this, a
+# judge-prompt change silently invalidates comparability of historical
+# scores while report/trend tooling keeps rendering old and new scores
+# identically -- the real failure mode this field exists to make
+# detectable, not just theoretical.
+JUDGE_PROMPT_VERSION = "v1"
+
 # Additive to BIAS_MITIGATIONS_APPLIED for a panel score specifically —
 # every panelist's own call already applies the two mitigations above;
 # this describes a property of the PANEL itself, not any one call.
@@ -178,6 +197,17 @@ class JudgeResult(BaseModel):
     `quote_grounded` there instead, since it's always present alongside
     and duplicating it here would just be `[v.quote_grounded for v in
     panel_votes]` restated.
+
+    `judge_prompt_version` (added 2026-09-14) is always `JUDGE_PROMPT_
+    VERSION` — this module's own current prompt-generation version,
+    stamped unconditionally, single-judge or panel — never something a
+    caller passes in. A `JudgeResult` built by an older version of this
+    module before this field existed still validates, defaulting to the
+    CURRENT `JUDGE_PROMPT_VERSION`, which is honest for a freshly-built
+    result but not for one deserialized from an old on-disk `Score` —
+    callers reconstructing a `JudgeResult`-shaped value from historical
+    data must set this explicitly from the stored value, never rely on
+    the default.
     """
 
     passed: bool
@@ -186,6 +216,7 @@ class JudgeResult(BaseModel):
     panel_votes: list[PanelVote] | None = None
     quorum_reached: bool | None = None
     quote_grounded: bool | None = None
+    judge_prompt_version: str = JUDGE_PROMPT_VERSION
 
 
 class PanelVerdict(BaseModel):

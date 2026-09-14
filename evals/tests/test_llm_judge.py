@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from evals.judge.llm_judge import (
+    JUDGE_PROMPT_VERSION,
     build_judge_prompt,
     judge,
     quote_is_grounded,
@@ -36,6 +37,33 @@ def test_judge_parses_pass_verdict_and_rationale():
         "cot_forcing",
         "reference_guided_grading",
     ]
+
+
+def test_judge_stamps_current_judge_prompt_version_single_judge():
+    fake_response = "REASONING: matches.\nVERDICT: PASS\n"
+    result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=_make_fake_call_model(fake_response),
+        )
+    )
+    assert result.judge_prompt_version == JUDGE_PROMPT_VERSION
+
+
+def test_judge_stamps_current_judge_prompt_version_panel():
+    fake_response = "REASONING: matches.\nVERDICT: PASS\n"
+    result = asyncio.run(
+        judge(
+            output="Paris",
+            reference="Paris",
+            call_model=[
+                _make_fake_call_model(fake_response),
+                _make_fake_call_model(fake_response),
+            ],
+        )
+    )
+    assert result.judge_prompt_version == JUDGE_PROMPT_VERSION
 
 
 def test_judge_parses_fail_verdict():

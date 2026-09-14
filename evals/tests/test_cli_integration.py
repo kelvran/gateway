@@ -1497,6 +1497,65 @@ def test_run_use_score_cache_second_invocation_makes_no_new_judge_calls(
     assert persisted[3].from_cache is True
 
 
+def test_run_use_score_cache_preserves_original_judge_prompt_version_on_hit(
+    tmp_path, monkeypatch
+):
+    """A cache hit must replay the ORIGINAL judge_prompt_version stored on
+    disk, never overwrite it with the current JUDGE_PROMPT_VERSION
+    constant -- the whole point of the field (see
+    Score.judge_prompt_version's own doc comment) is detecting a
+    judge-prompt change against historical scores, which a silent
+    overwrite on every cache hit would defeat entirely.
+    """
+
+    async def fake_call_model(prompt: str) -> str:
+        return "REASONING: matches exactly.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda model_id, **kwargs: fake_call_model,
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    args = [
+        "run",
+        "--suite",
+        "tests/fixtures/llm_judge_example.json",
+        "--scores",
+        str(scores_path),
+        "--llm-judge",
+        "--use-score-cache",
+    ]
+    runner = CliRunner()
+
+    first = runner.invoke(main, args)
+    assert first.exit_code == 0, first.output
+
+    first_persisted = load_scores(scores_path)
+    assert first_persisted[0].judge_prompt_version == cli_module.JUDGE_PROMPT_VERSION
+
+    # Simulate a Score written by an OLDER judge-prompt version, by
+    # rewriting the on-disk line directly -- a real "before this field
+    # existed, or before the last prompt bump" historical record.
+    lines = scores_path.read_text().splitlines()
+    rewritten = []
+    for line in lines:
+        record = json.loads(line)
+        if record.get("scorer_type") == "llm_judge":
+            record["judge_prompt_version"] = "v0-simulated-old"
+        rewritten.append(json.dumps(record))
+    scores_path.write_text("\n".join(rewritten) + "\n")
+
+    second = runner.invoke(main, args)
+    assert second.exit_code == 0, second.output
+
+    second_persisted = load_scores(scores_path)
+    cache_hit = second_persisted[2]
+    assert cache_hit.from_cache is True
+    assert cache_hit.judge_prompt_version == "v0-simulated-old"
+
+
 def test_run_without_use_score_cache_rejudges_every_time(tmp_path, monkeypatch):
     call_count = {"n": 0}
 

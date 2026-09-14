@@ -56,6 +56,7 @@ from evals.judge.cache import compute_score_cache_key
 from evals.judge.deterministic import exact_match, regex_match
 from evals.judge.llm_judge import (
     BIAS_MITIGATIONS_APPLIED,
+    JUDGE_PROMPT_VERSION,
     build_debiased_judge_prompt,
     judge,
     parse_judge_response,
@@ -290,6 +291,7 @@ def _load_cached_scores(scores_path: Path) -> dict[str, Score]:
                         cost_usd=Decimal("0"),
                         score_cache_key=vote.score_cache_key,
                         from_cache=False,
+                        judge_prompt_version=s.judge_prompt_version,
                     ),
                 )
     return cached
@@ -395,6 +397,11 @@ class _JudgeOutcome:
     panel_votes: list[PanelVote] | None = None
     quorum_reached: bool | None = None
     quote_grounded: bool | None = None
+    # judge_prompt_version -- the ORIGINAL stored value on a cache hit,
+    # never overwritten with the current constant; JUDGE_PROMPT_VERSION
+    # on a fresh call (single-judge or panel, debiased or not) -- see
+    # Score.judge_prompt_version's own doc comment.
+    judge_prompt_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -532,6 +539,7 @@ async def _judge_with_cache(
             from_cache=True,
             axis=axis,
             quote_grounded=cached.quote_grounded,
+            judge_prompt_version=cached.judge_prompt_version,
         )
     if debias:
         debiased = await _debiased_judge_verdict(
@@ -551,6 +559,7 @@ async def _judge_with_cache(
             from_cache=False,
             axis=axis,
             quote_grounded=debiased.quote_grounded,
+            judge_prompt_version=JUDGE_PROMPT_VERSION,
         )
     try:
         result = await judge(
@@ -567,6 +576,7 @@ async def _judge_with_cache(
         from_cache=False,
         axis=axis,
         quote_grounded=result.quote_grounded,
+        judge_prompt_version=result.judge_prompt_version,
     )
 
 
@@ -687,6 +697,7 @@ async def _judge_panel_with_cache(
                 panel_votes=votes,
                 quorum_reached=verdict.quorum_reached,
                 quote_grounded=_panel_quote_grounded(votes),
+                judge_prompt_version=JUDGE_PROMPT_VERSION,
             )
         try:
             result = await judge(
@@ -723,6 +734,7 @@ async def _judge_panel_with_cache(
             panel_votes=votes,
             quorum_reached=result.quorum_reached,
             quote_grounded=_panel_quote_grounded(votes),
+            judge_prompt_version=result.judge_prompt_version,
         )
 
     votes: list[PanelVote] = []
@@ -784,6 +796,15 @@ async def _judge_panel_with_cache(
     verdict = reduce_panel_votes(votes)
     all_cached = all(v.from_cache for v in votes)
     cost_usd = Decimal("0") if all_cached else _sum_panel_cost(fresh_costs)
+    # judge_prompt_version: PanelVote itself carries no per-vote version
+    # tag, so a cached vote's original version is genuinely unrecoverable
+    # here -- a real, disclosed simplification (see Score.judge_prompt_
+    # version's own doc comment), not a silently wrong guess. When at
+    # least one vote is fresh this run, JUDGE_PROMPT_VERSION is at least
+    # correct for the votes that matter most (this run's own real calls);
+    # when every vote is a cache hit, honestly report None rather than
+    # assume it matches the current constant.
+    judge_prompt_version = None if all_cached else JUDGE_PROMPT_VERSION
     return _JudgeOutcome(
         passed=verdict.passed,
         rationale=None,
@@ -795,6 +816,7 @@ async def _judge_panel_with_cache(
         panel_votes=votes,
         quorum_reached=verdict.quorum_reached,
         quote_grounded=_panel_quote_grounded(votes),
+        judge_prompt_version=judge_prompt_version,
     )
 
 
@@ -1249,6 +1271,7 @@ def run_cmd(
                         panel_votes=outcome.panel_votes,
                         quorum_reached=outcome.quorum_reached,
                         quote_grounded=outcome.quote_grounded,
+                        judge_prompt_version=outcome.judge_prompt_version,
                     )
                 )
                 if outcome.axis is not None:
@@ -1972,6 +1995,7 @@ def rollout_cmd(
                         panel_votes=outcome.panel_votes,
                         quorum_reached=outcome.quorum_reached,
                         quote_grounded=outcome.quote_grounded,
+                        judge_prompt_version=outcome.judge_prompt_version,
                     )
                 )
                 if outcome.axis is not None:

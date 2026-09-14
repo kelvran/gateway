@@ -289,6 +289,17 @@ class Score(BaseModel):
     # panel_votes (None if panel_votes is empty/absent). None for a Score
     # built before this field existed.
     quote_grounded: bool | None = None
+    # judge_prompt_version (added 2026-09-14, per docs/upgrade-research/
+    # evals-optimization-beyond-settled-2026-09-14.md Finding 1) tags a
+    # real llm_judge/llm_judge_panel Score with which version of
+    # evals.judge.llm_judge's own prompt-generation logic produced it --
+    # evals.judge.llm_judge.JUDGE_PROMPT_VERSION at construction time on
+    # a fresh call, or the ORIGINAL stored value on a --use-score-cache
+    # hit (never overwritten with the current constant) -- so a later
+    # judge-prompt change is detectable against historical scores
+    # instead of silently invalidating their comparability. Always None
+    # for a deterministic score, which has no judge prompt at all.
+    judge_prompt_version: str | None = None
 
 
 SpanStatus = Literal["UNSET", "OK", "ERROR"]
