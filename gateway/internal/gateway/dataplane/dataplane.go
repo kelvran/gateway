@@ -250,29 +250,38 @@ func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
 
 // rerouteToCapableDeploymentIfNeeded checks whether dep -- the
 // deployment nextDeployment(req.Model, nil) just picked as the first
-// attempt -- can satisfy req's own ResponseFormat, via
-// capabilityOKForRequest. If not, it walks the rest of req.Model's own
-// deployment pool (excluding dep and every other incapable candidate
-// already tried) looking for one that can, returning the first capable
-// deployment found. If every deployment in the pool is incapable -- or
-// req.ResponseFormat is nil, in which case capability is irrelevant --
-// dep is returned unchanged: never a hard error, only ever a
-// best-effort improvement before the first real upstream call happens.
+// attempt -- can satisfy req's own ResponseFormat (via
+// capabilityOKForRequest) AND vk's own AllowedRegions constraint, if any
+// (via isRegionAllowed). If not, it walks the rest of req.Model's own
+// deployment pool (excluding dep and every other ineligible candidate
+// already tried) looking for one that satisfies both, returning the
+// first eligible deployment found. If every deployment in the pool is
+// ineligible -- or req.ResponseFormat is nil AND vk has no region
+// constraint, in which case neither check is relevant -- dep is returned
+// unchanged: never a hard error, only ever a best-effort improvement
+// before the first real upstream call happens.
 //
-// Closes the "first attempt" half of a real, deliberately-accepted v1
-// scope limit: capabilityOKForRequest already gates every FALLBACK hop
-// (attemptFallbackChain's own capabilityOK closure, fallback.go), but
-// nothing previously applied that same check to the very first pick --
-// a caller whose first-picked deployment could not honor ResponseFormat
-// got silent, unenforced output with zero chance of ever reaching a
-// capable deployment in the same pool, even when one existed. See
-// THREAT_MODEL.md's Gateway Elevation-of-Privilege row and
+// Closes the "first attempt" half of two real, deliberately-accepted v1
+// scope limits, both the identical shape: capabilityOKForRequest and
+// isRegionAllowed already gate every FALLBACK hop
+// (attemptFallbackChain's own capabilityOK/regionOK closures,
+// fallback.go), but nothing previously applied either check to the very
+// first pick -- a caller whose first-picked deployment could not honor
+// ResponseFormat, or sat outside vk's own AllowedRegions, got silent,
+// unenforced output with zero chance of ever reaching an eligible
+// deployment in the same pool, even when one existed. See
+// THREAT_MODEL.md's Gateway Elevation-of-Privilege row,
 // docs/upgrade-research/advanced-tool-calling-structured-output-2026-09-14.md
-// Finding 4. Called from both real first-pick call sites (runMissPath
+// Finding 4 (capability), and
+// docs/upgrade-research/data-residency-regional-routing-2026-09-15.md
+// (region). Called from both real first-pick call sites (runMissPath
 // here; the streaming path's HandleChatCompletionStream in
 // streaming.go).
-func (p *Pipeline) rerouteToCapableDeploymentIfNeeded(dep Deployment, req adapter.ChatRequest) Deployment {
-	if capabilityOKForRequest(dep, req) {
+func (p *Pipeline) rerouteToCapableDeploymentIfNeeded(dep Deployment, req adapter.ChatRequest, vk *identity.VirtualKey) Deployment {
+	eligible := func(d Deployment) bool {
+		return capabilityOKForRequest(d, req) && isRegionAllowed(vk, d.Region)
+	}
+	if eligible(dep) {
 		return dep
 	}
 	excluded := map[string]bool{dep.Name: true}
@@ -281,7 +290,7 @@ func (p *Pipeline) rerouteToCapableDeploymentIfNeeded(dep Deployment, req adapte
 		if !hasCandidate {
 			return dep
 		}
-		if capabilityOKForRequest(candidate, req) {
+		if eligible(candidate) {
 			return candidate
 		}
 		excluded[candidate.Name] = true
@@ -1449,6 +1458,23 @@ func isModelAllowed(vk *identity.VirtualKey, model string) bool {
 	return ok
 }
 
+// isRegionAllowed reports whether region (a candidate deployment's own
+// Deployment.Region) satisfies vk's AllowedRegions constraint. An empty
+// AllowedRegions set means no constraint — mirrors isModelAllowed's own
+// shape exactly. Unlike isModelAllowed, an empty region never matches a
+// real constraint (fails closed) — see identity.VirtualKey.AllowedRegions'
+// own doc comment for why.
+func isRegionAllowed(vk *identity.VirtualKey, region string) bool {
+	if len(vk.AllowedRegions) == 0 {
+		return true
+	}
+	if region == "" {
+		return false
+	}
+	_, ok := vk.AllowedRegions[region]
+	return ok
+}
+
 // HandleChatCompletion runs the full request pipeline for one canonical
 // ChatRequest, given the raw Authorization header value.
 func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, req adapter.ChatRequest) (resp adapter.ChatResponse, err error) {
@@ -1647,7 +1673,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		if !found {
 			return nil, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		}
-		dep = p.rerouteToCapableDeploymentIfNeeded(dep, req)
+		dep = p.rerouteToCapableDeploymentIfNeeded(dep, req, vk)
 
 		resp, err := p.callDeploymentWithCapacityCheck(ctx, dep, req)
 		var fallback fallbackInfo
@@ -1669,6 +1695,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 					func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, vk.ID, model) },
 					func(depName string) bool { return p.checkDeploymentCapacity(ctx, depName) },
 					func(d Deployment) bool { return capabilityOKForRequest(d, req) },
+					func(d Deployment) bool { return isRegionAllowed(vk, d.Region) },
 				)
 				if attempted {
 					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}

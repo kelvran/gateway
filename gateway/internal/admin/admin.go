@@ -68,12 +68,17 @@ type Credentials struct {
 // already familiar with the static config shape needs no second
 // vocabulary for the live-mutation API.
 type virtualKeyRequest struct {
-	KeyHash                    string            `json:"key_hash"`
-	BudgetUSD                  decimal.Decimal   `json:"budget_usd"`
-	BudgetResetIntervalSeconds int               `json:"budget_reset_interval_seconds"`
-	BudgetWarnPercent          float64           `json:"budget_warn_percent"`
-	AllowedModels              []string          `json:"allowed_models"`
-	RateLimit                  *rateLimitRequest `json:"rate_limit"`
+	KeyHash                    string          `json:"key_hash"`
+	BudgetUSD                  decimal.Decimal `json:"budget_usd"`
+	BudgetResetIntervalSeconds int             `json:"budget_reset_interval_seconds"`
+	BudgetWarnPercent          float64         `json:"budget_warn_percent"`
+	AllowedModels              []string        `json:"allowed_models"`
+	// AllowedRegions restricts this key to deployments in a subset of
+	// regions (Deployment.Region), per
+	// docs/upgrade-research/data-residency-regional-routing-2026-09-15.md
+	// — mirrors AllowedModels's own convention exactly.
+	AllowedRegions []string          `json:"allowed_regions"`
+	RateLimit      *rateLimitRequest `json:"rate_limit"`
 }
 
 // rotateVirtualKeyRequest is the POST /admin/virtual_keys/{name}/rotate
@@ -372,6 +377,13 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 				allowedModels[m] = struct{}{}
 			}
 		}
+		var allowedRegions map[string]struct{}
+		if len(req.AllowedRegions) > 0 {
+			allowedRegions = make(map[string]struct{}, len(req.AllowedRegions))
+			for _, reg := range req.AllowedRegions {
+				allowedRegions[reg] = struct{}{}
+			}
+		}
 		burst, refill := 0.0, 0.0
 		var tpmCapacity, tpmRefill float64
 		var perModel map[string]ratelimit.ModelRateLimit
@@ -414,6 +426,7 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 			BudgetResetInterval: secondsToDuration(req.BudgetResetIntervalSeconds),
 			BudgetWarnPercent:   req.BudgetWarnPercent,
 			AllowedModels:       allowedModels,
+			AllowedRegions:      allowedRegions,
 			RateLimitBurst:      burst,
 			RateLimitRefill:     refill,
 		}

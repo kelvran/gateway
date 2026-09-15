@@ -75,6 +75,21 @@ type VirtualKey struct {
 	// AllowedModels restricts this key to a subset of configured models.
 	// Empty or nil means every configured model is allowed.
 	AllowedModels map[string]struct{}
+	// AllowedRegions restricts this key to deployments whose own
+	// Deployment.Region is in this set — a data-residency constraint, per
+	// docs/upgrade-research/data-residency-regional-routing-2026-09-15.md's
+	// confirmed finding that a same-model fallback could otherwise silently
+	// cross a deployment's region boundary with no override available.
+	// Empty or nil means no constraint — mirrors AllowedModels's own
+	// "empty means unrestricted" convention exactly. When a constraint IS
+	// set, a candidate deployment whose own Region is "" (true for every
+	// non-Bedrock provider today — Region is documented as required only
+	// for Bedrock) does NOT satisfy it: this fails closed deliberately,
+	// since there is no way to positively prove a non-Bedrock deployment's
+	// residency, and treating an unknown region as automatically compliant
+	// would silently defeat the exact guarantee this field exists to
+	// provide. See dataplane.isRegionAllowed for the enforcement logic.
+	AllowedRegions map[string]struct{}
 	// RateLimitBurst and RateLimitRefill configure this key's own
 	// token-bucket rate limiter (see internal/ratelimit.TokenBucket).
 	RateLimitBurst  float64

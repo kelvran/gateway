@@ -711,6 +711,45 @@ func TestLoadNumericBooleanLiteralsStillParseCorrectly(t *testing.T) {
 	}
 }
 
+// TestLoadParsesAllowedRegions mirrors TestLoadNumericBooleanLiteralsStillParseCorrectly's
+// own allowed_models proof, for the new allowed_regions section, per
+// docs/upgrade-research/data-residency-regional-routing-2026-09-15.md.
+func TestLoadParsesAllowedRegions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    allowed_regions:\n" +
+		"      eu-west-1: true\n" +
+		"      us-east-1: false\n" +
+		"  team-beta:\n" +
+		"    key_hash: \"bb\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	alpha, beta := cfg.VirtualKeys[0], cfg.VirtualKeys[1]
+	if len(alpha.AllowedRegions) != 1 || alpha.AllowedRegions[0] != "eu-west-1" {
+		t.Errorf("team-alpha.AllowedRegions = %v, want exactly [eu-west-1] (us-east-1: false must be excluded)", alpha.AllowedRegions)
+	}
+	if len(beta.AllowedRegions) != 0 {
+		t.Errorf("team-beta.AllowedRegions = %v, want empty (no constraint declared)", beta.AllowedRegions)
+	}
+}
+
 func TestLoadRejectsDeploymentMissingFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

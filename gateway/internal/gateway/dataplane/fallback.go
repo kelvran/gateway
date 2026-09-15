@@ -364,12 +364,18 @@ const (
 //     silently under-enforce. Callers pass a closure over the ORIGINAL
 //     request's own ResponseFormat, never the just-failed hop's — the
 //     capability requirement travels with the client's request, not with
-//     whichever deployment most recently failed. Deliberately scoped to
-//     fallback hops only, not the first-attempt router pick — see
-//     bedrock.additionalModelRequestFieldsFor's own doc comment for why
-//     that narrower first-attempt gap is a named, accepted one, not
-//     closed here.
-func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool, capabilityOK func(d Deployment) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
+//     whichever deployment most recently failed.
+//   - regionOK, checked immediately after capabilityOK, in the same
+//     position and with the same skip-without-charging-backoff semantics,
+//     per docs/upgrade-research/data-residency-regional-routing-2026-09-15.md's
+//     confirmed finding: before this, a same-model fallback hop had no
+//     region awareness at all, so a virtual key's own AllowedRegions
+//     constraint (identity.VirtualKey) could be silently defeated by a
+//     fallback landing on an out-of-region deployment sharing the same
+//     canonical model. Callers pass a closure over the ORIGINAL request's
+//     own vk, mirroring capabilityOK's "travels with the client, not the
+//     failed hop" contract exactly.
+func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool, capabilityOK func(d Deployment) bool, regionOK func(d Deployment) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
 	consecutiveFailures := 0
 	realAttempts := 0
 	for _, name := range targets {
@@ -406,6 +412,10 @@ func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, t
 		}
 
 		if !capabilityOK(nextDep) {
+			continue
+		}
+
+		if !regionOK(nextDep) {
 			continue
 		}
 

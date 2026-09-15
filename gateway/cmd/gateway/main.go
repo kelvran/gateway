@@ -413,6 +413,13 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 				allowedModels[m] = struct{}{}
 			}
 		}
+		var allowedRegions map[string]struct{}
+		if len(vk.AllowedRegions) > 0 {
+			allowedRegions = make(map[string]struct{}, len(vk.AllowedRegions))
+			for _, r := range vk.AllowedRegions {
+				allowedRegions[r] = struct{}{}
+			}
+		}
 		virtualKeys = append(virtualKeys, identity.VirtualKey{
 			ID:                    vk.Name,
 			KeyHash:               vk.KeyHash,
@@ -420,6 +427,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			BudgetResetInterval:   time.Duration(vk.BudgetResetIntervalSeconds) * time.Second,
 			BudgetWarnPercent:     vk.BudgetWarnPercent,
 			AllowedModels:         allowedModels,
+			AllowedRegions:        allowedRegions,
 			RateLimitBurst:        burst,
 			RateLimitRefill:       refill,
 			MaxConcurrentRequests: vk.MaxConcurrentRequests,

@@ -234,6 +234,13 @@ type VirtualKeyConfig struct {
 	// AllowedModels restricts this key to a subset of configured models.
 	// Empty means every configured model is allowed.
 	AllowedModels []string
+	// AllowedRegions restricts this key to deployments in a subset of
+	// regions (Deployment.Region), per
+	// docs/upgrade-research/data-residency-regional-routing-2026-09-15.md.
+	// Empty means no constraint. See identity.VirtualKey.AllowedRegions'
+	// own doc comment for the fail-closed behavior against a deployment
+	// with no region set at all.
+	AllowedRegions []string
 	// RateLimitBurst and RateLimitRefill configure this key's own
 	// token-bucket rate limiter. Zero means "use the gateway's default"
 	// (resolved by cmd/gateway, not here — this package only parses what
@@ -619,6 +626,14 @@ func Load(path string) (*Config, error) {
 				}
 			}
 			sort.Strings(vk.AllowedModels)
+		}
+		if ar, ok := getMap(vkMap, "allowed_regions"); ok {
+			for region, v := range ar {
+				if enabled, ok := v.(bool); ok && enabled {
+					vk.AllowedRegions = append(vk.AllowedRegions, region)
+				}
+			}
+			sort.Strings(vk.AllowedRegions)
 		}
 		cfg.VirtualKeys = append(cfg.VirtualKeys, vk)
 	}
