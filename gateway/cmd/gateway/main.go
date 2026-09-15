@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -65,13 +66,75 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
-// gracefulShutdownTimeout bounds how long an in-flight request (most
-// realistically a long streaming SSE/eventstream response) gets to
-// finish after a SIGTERM/SIGINT before the process force-exits
-// regardless. A fixed default, not a config field — nothing in this
-// codebase's own tests runs anywhere close to it, and a config knob
-// nobody has asked for yet would be premature.
+// gracefulShutdownTimeout bounds how long http.Server.Shutdown itself
+// waits for in-flight connections to go idle before giving up and
+// returning — NOT how long an in-flight request-handler goroutine
+// actually gets to run. Shutdown never cancels a still-running handler's
+// own context when this deadline expires; it just stops waiting on it.
+// See postShutdownDrainGrace below for what actually bounds a
+// handler's remaining runtime, and drainInFlight's own doc comment for
+// why that distinction matters. A fixed default, not a config field —
+// nothing in this codebase's own tests runs anywhere close to it, and a
+// config knob nobody has asked for yet would be premature.
 const gracefulShutdownTimeout = 30 * time.Second
+
+// postShutdownDrainGrace bounds how much EXTRA time an in-flight
+// client-facing request-handler goroutine gets, after
+// gracefulShutdownTimeout's own wait gives up, to finish naturally —
+// including running its own deferred dataplane.Pipeline.finalize call —
+// before main() force-exits via os.Exit. Without this, a request whose
+// handler goroutine is still running when Shutdown's deadline expires
+// gets killed by os.Exit (which never runs deferred functions) with NO
+// chance to reconcile its budget reservation, record telemetry, or write
+// its audit-log line — not just an unbilled request, but a total
+// accounting/audit blackout, on every routine deploy that happens to
+// catch a request mid-stream. Total worst-case shutdown time is
+// gracefulShutdownTimeout + postShutdownDrainGrace (45s at these
+// defaults) — a request still running past that point is still
+// force-killed (a genuinely stuck request, e.g. no context deadline
+// against a hung upstream, was never going to bill correctly regardless
+// of how long it's given).
+const postShutdownDrainGrace = 15 * time.Second
+
+// trackInFlight wraps next so wg.Add/Done bracket every request the
+// returned handler serves — used only on the client-facing mux, never
+// the admin mux (admin writes are already short/synchronous, with
+// nothing analogous to a long-running streamed request's own deferred
+// finalize to protect). Applied around wrapHTTPServerSpan's own span
+// creation (Handler: trackInFlight(wg, wrapHTTPServerSpan(mux)) at this
+// function's call site), so a request drained by drainInFlight below
+// still gets a properly-closed span, not one abandoned mid-flight.
+func trackInFlight(wg *sync.WaitGroup, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wg.Add(1)
+		defer wg.Done()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// drainInFlight waits up to grace for every handler goroutine wg is
+// tracking to finish on its own — giving each one, including its own
+// deferred dataplane.Pipeline.finalize call, a real chance to complete
+// after http.Server.Shutdown's own wait has already given up (see
+// gracefulShutdownTimeout/postShutdownDrainGrace's own doc comments for
+// why Shutdown's deadline expiring does NOT itself stop a still-running
+// handler). Logs a warning and returns promptly, rather than blocking
+// forever, if grace elapses with work still outstanding — a genuinely
+// stuck request is accepted as still force-killed by the caller's
+// subsequent os.Exit, not something this function can safely wait out
+// indefinitely.
+func drainInFlight(wg *sync.WaitGroup, grace time.Duration, logger *slog.Logger) {
+	drained := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(grace):
+		logger.Warn("gateway_shutdown_forced_with_requests_still_in_flight")
+	}
+}
 
 // maxRequestBodyBytes bounds a single /v1/chat/completions request body —
 // large enough for a real multi-modal (inline base64 image/document)
@@ -243,9 +306,14 @@ func run(configPath string, logger *slog.Logger) error {
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
 	mux.HandleFunc("/healthz", healthzHandler)
 
+	// inFlight tracks real client-facing handler invocations so shutdown
+	// can give them a fair, bounded chance to finish — including their
+	// own deferred finalize call — before a hard os.Exit, per
+	// postShutdownDrainGrace's own doc comment.
+	var inFlight sync.WaitGroup
 	server := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: wrapHTTPServerSpan(mux),
+		Handler: trackInFlight(&inFlight, wrapHTTPServerSpan(mux)),
 		// ReadHeaderTimeout: an unset value leaves this server open to a
 		// real Slowloris attack (a client trickling request headers in
 		// to hold a connection slot open indefinitely), caught by gosec.
@@ -352,8 +420,18 @@ func run(configPath string, logger *slog.Logger) error {
 	case <-ctx.Done():
 		stop()
 		logger.Info("gateway shutting down", "reason", context.Cause(ctx))
-		if err := shutdownBoth(); err != nil {
-			return fmt.Errorf("graceful shutdown: %w", err)
+		shutdownErr := shutdownBoth()
+		// Give any still-running request-handler goroutine (one
+		// Shutdown's own wait gave up on above, per
+		// gracefulShutdownTimeout's doc comment) a real, bounded chance
+		// to finish on its own — including its deferred finalize call —
+		// before this function returns and main()'s os.Exit runs, which
+		// would otherwise kill it mid-flight with zero cleanup. Runs
+		// regardless of shutdownErr: a Shutdown timeout is exactly the
+		// case this exists for.
+		drainInFlight(&inFlight, postShutdownDrainGrace, logger)
+		if shutdownErr != nil {
+			return fmt.Errorf("graceful shutdown: %w", shutdownErr)
 		}
 		return nil
 	}
