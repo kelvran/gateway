@@ -192,6 +192,16 @@ services:
       # directory, not just one.
       - ./docs/operations/grafana/provisioning/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/kelvran-dashboards.yaml:ro
       - ./docs/operations/grafana/dashboards/kelvran-overview.json:/otel-lgtm/kelvran-overview.json:ro
+      # MWMB SLO alerting, per
+      # docs/operations/grafana/prometheus/kelvran-slo-rules.yml's own
+      # header -- the prometheus.yaml mount replaces the image's own
+      # REAL config at /otel-lgtm/prometheus.yaml (confirmed live via
+      # that container's own --config.file flag; NOT the decoy classic-
+      # format /otel-lgtm/prometheus/prometheus.yml the image also ships
+      # but never actually references), adding only a rule_files: entry
+      # that did not exist at all before.
+      - ./docs/operations/grafana/prometheus/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
+      - ./docs/operations/grafana/prometheus/kelvran-slo-rules.yml:/otel-lgtm/prometheus/kelvran-slo-rules.yml:ro
     profiles: ["observability"]
 
   # Optional: real network fault injection between gateway and an

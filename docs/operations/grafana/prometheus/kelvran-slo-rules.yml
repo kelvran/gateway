@@ -1,0 +1,133 @@
+# Multiwindow multi-burn-rate (MWMB) SLO alerting for Kelvran's real,
+# already-emitted gen_ai.client.operation.duration metric, per
+# docs/upgrade-research/slo-error-budget-observability-2026-09-15.md's
+# confirmed finding: the MWMB algorithm itself (Google's SRE Workbook)
+# is provably buildable and testable now, independent of real production
+# traffic -- only the specific numeric SLO target below is provisional.
+# The pattern's real-world precedent is the OSS tool Sloth
+# (https://sloth.dev), which generates rules structurally identical to
+# these from a higher-level spec -- these are hand-authored directly
+# rather than depending on installing that CLI, since the math is
+# well-documented and mechanical for a single rule file.
+#
+# PROVISIONAL SLO TARGET (kelvranAvailabilityTarget = 0.99, i.e. a 1%
+# error budget) -- revisit once real production traffic exists to
+# calibrate against; per that same research, this is the one piece of
+# this file that IS traffic-gated, unlike the alerting mechanism itself.
+# The 14.4x/6x burn-rate multipliers below are Google's own published
+# constants and are dimensionless (independent of the specific target
+# level), so they do not need to change when the target above is
+# eventually recalibrated.
+#
+# Metric-name translation confirmed live against this repo's own already-
+# working dashboard (docs/operations/grafana/dashboards/kelvran-overview.json):
+# the OTel histogram gen_ai.client.operation.duration (unit "s") becomes
+# gen_ai_client_operation_duration_seconds_count in Prometheus; the
+# error.type/gen_ai.provider.name attributes become the error_type/
+# gen_ai_provider_name labels.
+groups:
+  - name: kelvran-slo-error-ratio
+    interval: 30s
+    rules:
+      # --- Overall (all providers/models pooled) error-ratio recording
+      # rules, one per MWMB window. ---
+      - record: kelvran:slo_errors:ratio_rate5m
+        expr: >
+          sum(rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[5m]))
+          /
+          sum(rate(gen_ai_client_operation_duration_seconds_count[5m]))
+      - record: kelvran:slo_errors:ratio_rate30m
+        expr: >
+          sum(rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[30m]))
+          /
+          sum(rate(gen_ai_client_operation_duration_seconds_count[30m]))
+      - record: kelvran:slo_errors:ratio_rate1h
+        expr: >
+          sum(rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[1h]))
+          /
+          sum(rate(gen_ai_client_operation_duration_seconds_count[1h]))
+      - record: kelvran:slo_errors:ratio_rate6h
+        expr: >
+          sum(rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[6h]))
+          /
+          sum(rate(gen_ai_client_operation_duration_seconds_count[6h]))
+
+      # --- Per-provider error-ratio recording rules, so a Bedrock outage
+      # doesn't blow the same error budget as an OpenAI blip. Prometheus
+      # fires one alert INSTANCE per distinct gen_ai_provider_name value
+      # that crosses a threshold below -- no per-provider rule
+      # duplication needed. ---
+      - record: kelvran:slo_errors:ratio_rate5m_by_provider
+        expr: >
+          sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[5m]))
+          /
+          sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count[5m]))
+      - record: kelvran:slo_errors:ratio_rate30m_by_provider
+        expr: >
+          sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[30m]))
+          /
+          sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count[30m]))
+      - record: kelvran:slo_errors:ratio_rate1h_by_provider
+        expr: >
+          sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[1h]))
+          /
+          sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count[1h]))
+      - record: kelvran:slo_errors:ratio_rate6h_by_provider
+        expr: >
+          sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[6h]))
+          /
+          sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count[6h]))
+
+  - name: kelvran-slo-burn-rate-alerts
+    interval: 30s
+    rules:
+      # --- Overall alerts. errorBudget = 1 - target = 0.01 (PROVISIONAL,
+      # see this file's own header). ---
+      - alert: KelvranSLOFastBurn
+        expr: >
+          kelvran:slo_errors:ratio_rate1h > (14.4 * 0.01)
+          and
+          kelvran:slo_errors:ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Kelvran gateway is burning its error budget fast (>=14.4x, sustained over 1h+5m)"
+          description: "At this rate the 30-day error budget would be exhausted in ~2 days. See kelvran:slo_errors:ratio_rate1h/5m."
+
+      - alert: KelvranSLOSlowBurn
+        expr: >
+          kelvran:slo_errors:ratio_rate6h > (6 * 0.01)
+          and
+          kelvran:slo_errors:ratio_rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Kelvran gateway is burning its error budget at a sustained elevated rate (>=6x, sustained over 6h+30m)"
+          description: "At this rate the 30-day error budget would be exhausted in ~5 days. See kelvran:slo_errors:ratio_rate6h/30m."
+
+      # --- Per-provider alerts -- same burn-rate thresholds, scoped to
+      # gen_ai_provider_name so one provider's outage doesn't get
+      # averaged away by every other healthy provider's traffic. ---
+      - alert: KelvranSLOFastBurnByProvider
+        expr: >
+          kelvran:slo_errors:ratio_rate1h_by_provider > (14.4 * 0.01)
+          and
+          kelvran:slo_errors:ratio_rate5m_by_provider > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Provider {{ $labels.gen_ai_provider_name }} is burning Kelvran's error budget fast (>=14.4x, sustained over 1h+5m)"
+
+      - alert: KelvranSLOSlowBurnByProvider
+        expr: >
+          kelvran:slo_errors:ratio_rate6h_by_provider > (6 * 0.01)
+          and
+          kelvran:slo_errors:ratio_rate30m_by_provider > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Provider {{ $labels.gen_ai_provider_name }} is burning Kelvran's error budget at a sustained elevated rate (>=6x, sustained over 6h+30m)"
