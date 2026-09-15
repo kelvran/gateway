@@ -167,6 +167,13 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline, logger)))
 	mux.Handle("POST /admin/prompts/{id}", requireBearerToken(creds.Admin, upsertPromptHandler(pipeline, logger)))
 	mux.Handle("DELETE /admin/prompts/{id}", requireBearerToken(creds.Admin, deletePromptHandler(pipeline, logger)))
+	// Live bbolt backup, per cfg.Admin.BackupDir's own doc comment --
+	// admin-only (a write-shaped, disk-touching operation, same tier as
+	// every other write route on this mux), always registered (unlike
+	// EnablePprof's conditional mount above) so an unconfigured caller
+	// gets an informative 501 from backupHandler itself, not a bare 404
+	// indistinguishable from a typo'd path.
+	mux.Handle("POST /admin/backup", requireBearerToken(creds.Admin, backupHandler(cfg, pipeline, logger)))
 	// pprof, per cfg.Admin.EnablePprof's own doc comment — off by
 	// default, admin-credential-gated (never the viewer tier: profiling
 	// data is a stronger information-disclosure/DoS-surface signal than
@@ -523,6 +530,34 @@ func rotateVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 // own "pair the narrow tier with an equally narrow route" design.
 // PercentUsed is 0 whenever BudgetUSD is zero/unlimited (nothing to
 // divide by) — never a fabricated 100% or a divide-by-zero.
+// backupResponse is POST /admin/backup's response body -- the filenames
+// actually written, per backupHandler's own doc comment.
+type backupResponse struct {
+	Files []string `json:"files"`
+}
+
+// backupHandler backs up every configured, bbolt-backed durable store to
+// cfg.Admin.BackupDir, via dataplane.Pipeline.BackupStores -- see that
+// method's own doc comment for the exact per-store skip/error semantics.
+// Returns 501 (not registered/disabled, per this route's own doc
+// comment above) when BackupDir is unset -- the common no-persistence
+// case, distinct from a real backup failure (500).
+func backupHandler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg.Admin.BackupDir == "" {
+			http.Error(w, "admin.backup_dir is not configured", http.StatusNotImplemented)
+			return
+		}
+		backedUp, err := pipeline.BackupStores(cfg.Admin.BackupDir)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSONResponse(w, backupResponse{Files: backedUp})
+		logger.Info("admin_backup_completed", "files", backedUp, "authorized_by", "admin")
+	}
+}
+
 type virtualKeySpendResponse struct {
 	SpentUSD                   string  `json:"spent_usd"`
 	BudgetUSD                  string  `json:"budget_usd"`

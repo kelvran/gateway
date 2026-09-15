@@ -621,6 +621,16 @@ func (t *Tracker) Delete(keyID string) error {
 	return t.store.Delete(context.Background(), keyID)
 }
 
+// Store returns the underlying durable Store, or nil if this Tracker was
+// constructed via NewTracker (no store) — an escape hatch for a caller
+// that needs to reach the concrete implementation (e.g.
+// dataplane.Pipeline.BackupStores type-asserting for a bbolt backup
+// primitive), since Tracker itself has no backup-shaped method of its
+// own; it only ever calls Load/Save/Delete/Close on this value.
+func (t *Tracker) Store() Store {
+	return t.store
+}
+
 // Close releases the underlying store, if any. Safe to call even on a
 // Tracker constructed via NewTracker (no store).
 func (t *Tracker) Close() error {

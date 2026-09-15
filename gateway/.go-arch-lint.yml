@@ -33,10 +33,11 @@ components:
   prompt:            { in: prompt }
   prompt-boltstore:  { in: prompt/boltstore }
   gatewayevents:     { in: ../api/gatewayevents/v1 }
+  backup:            { in: backup }
 
 # Components deliberately absent from `deps:` below (identity, budget,
 # ratelimit, router, costaccounting, guardrail, telemetry,
-# cache-correlation, cache, adapter, controlplane) are pure leaves per
+# cache-correlation, cache, adapter, controlplane, backup) are pure leaves per
 # gateway/ARCHITECTURE.md's dependency direction rules: a component with
 # no entry here may depend on nothing else in this project (verified
 # against go-arch-lint's own source -- checker_imports.go denies any
@@ -96,6 +97,7 @@ deps:
     mayDependOn:
       - adapter
       - adapter-impl
+      - backup
       - budget
       - cache
       - costaccounting

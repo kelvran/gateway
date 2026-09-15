@@ -60,6 +60,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying *bolt.DB — see
+// identity/boltstore.Store.DB's identical doc comment.
+func (s *Store) DB() *bolt.DB {
+	return s.db
+}
+
 // Load implements prompt.Persister. ctx is accepted for interface
 // symmetry with a future networked Persister, but unused here -- a bbolt
 // transaction is synchronous and fast enough that there is no real

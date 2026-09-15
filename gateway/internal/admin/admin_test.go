@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
+	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/router"
 )
@@ -888,5 +891,102 @@ func TestPprofEnabledWithAdminCredentialServesRealProfilingData(t *testing.T) {
 	}
 	if rec.Body.Len() == 0 {
 		t.Error("GET /admin/debug/pprof/goroutine returned an empty body, want a real goroutine profile")
+	}
+}
+
+// TestBackupRouteDisabledReturns501WhenNoBackupDirConfigured proves the
+// common no-persistence case is a clear, distinguishable 501 -- never a
+// bare 404 indistinguishable from a typo'd path, and never a 200 that
+// silently did nothing.
+func TestBackupRouteDisabledReturns501WhenNoBackupDirConfigured(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodPost, "/admin/backup", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("POST /admin/backup with no backup_dir configured: status = %d, want 501, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBackupRouteRequiresAdminCredential proves this write-shaped,
+// disk-touching route is gated exactly like every other write route on
+// this mux -- admin-only, never viewer or cost_viewer.
+func TestBackupRouteRequiresAdminCredential(t *testing.T) {
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+		http.MethodPost, "/admin/backup", "wrong-value-entirely", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /admin/backup with a wrong credential: status = %d, want 401", rec.Code)
+	}
+}
+
+// TestBackupRouteWritesTimestampedFilesForEachConfiguredStore is the
+// real behavioral proof: a genuinely bbolt-backed store (identity, wired
+// via a real identityboltstore.Store, unlike newTestPipeline's own
+// in-memory-only default) produces a real, independently-openable backup
+// file in the configured directory.
+func TestBackupRouteWritesTimestampedFilesForEachConfiguredStore(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.db")
+	identityStore, err := identityboltstore.Open(identityPath)
+	if err != nil {
+		t.Fatalf("identityboltstore.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = identityStore.Close() })
+
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []dataplane.Deployment{
+		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+	pipeline, err := dataplane.NewPipeline(dataplane.Config{
+		Verifier: verifier,
+		Limiter: ratelimit.NewInMemoryKeyLimiter([]ratelimit.KeyConfig{
+			{ID: "test-key", Capacity: 100, RefillPerSecond: 100},
+		}),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         router.New([]router.Deployment{{Name: "d1", Model: "gpt-4o"}}, router.HealthConfig{}),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		IdentityStore:  identityStore,
+		Upstream: func(ctx context.Context, dep dataplane.Deployment, req any) (any, error) {
+			return &openai.Response{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	backupDir := t.TempDir()
+	cfg := testConfig()
+	cfg.Admin.BackupDir = backupDir
+	h := Handler(cfg, pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodPost, "/admin/backup", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /admin/backup: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp backupResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(resp.Files) != 1 || !strings.HasPrefix(resp.Files[0], "identity-") {
+		t.Fatalf("resp.Files = %v, want exactly one identity-prefixed filename (budget/prompt are in-memory-only in this test, correctly skipped)", resp.Files)
+	}
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatalf("reading backup dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("backup dir contains %d entries, want exactly 1", len(entries))
 	}
 }

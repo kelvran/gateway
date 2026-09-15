@@ -502,6 +502,13 @@ type AdminConfig struct {
 	// Finding 3. Meaningless (never read) when TokenEnv is empty, since
 	// the whole admin server never starts in that case.
 	EnablePprof bool
+	// BackupDir, if set, enables POST /admin/backup: a live bbolt backup
+	// of every configured, persist_path-backed durable store, written to
+	// this directory, per
+	// docs/upgrade-research/state-durability-operational-recovery-2026-09-15.md.
+	// Empty (the default) disables the route entirely — mirrors every
+	// other optional admin capability's "off unless configured" posture.
+	BackupDir string
 }
 
 // HealthProbeConfig configures the active/synthetic health-probing
@@ -760,6 +767,7 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.CostViewerTokenEnv, _ = getString(adminRaw, "cost_viewer_token_env")
 		cfg.Admin.PersistPath, _ = getString(adminRaw, "persist_path")
 		cfg.Admin.EnablePprof, _ = getBool(adminRaw, "enable_pprof")
+		cfg.Admin.BackupDir, _ = getString(adminRaw, "backup_dir")
 	}
 
 	if healthProbeRaw, ok := getMap(root, "health_probe"); ok {

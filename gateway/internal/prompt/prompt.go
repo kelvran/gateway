@@ -154,6 +154,13 @@ func (s *Store) Close() error {
 	return s.persist.Close()
 }
 
+// Persister returns the underlying durable Persister, or nil if this
+// Store was constructed via NewStore (no persister) — mirrors
+// budget.Tracker.Store's own identical escape-hatch rationale.
+func (s *Store) Persister() Persister {
+	return s.persist
+}
+
 // Upsert creates a NEW version of id from messages -- version =
 // len(existing versions for id) + 1 (1 for a brand-new id). Every prior
 // version's own Prompt value is left completely untouched: Upsert only

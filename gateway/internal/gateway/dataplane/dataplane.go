@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -53,6 +54,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter/gemini"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
+	"github.com/kelvran/gateway/gateway/internal/backup"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
@@ -620,6 +622,48 @@ func (p *Pipeline) Close() error {
 	}
 	promptErr := p.prompts.Close()
 	return errors.Join(budgetErr, limiterErr, identityErr, promptErr)
+}
+
+// BackupStores backs up every configured, bbolt-backed durable store
+// (identity/budget/prompt — whichever have a real persist_path
+// configured) to destDir, one timestamped file per store, via
+// backup.CopyFile — safe to call while this Pipeline is actively serving
+// traffic, per that package's own doc comment. A store with no
+// persistence configured (the in-memory-only default) is silently
+// skipped, not an error — there is nothing to back up. Returns the
+// filenames actually written; a failure backing up one store does not
+// prevent attempting the others, per
+// docs/upgrade-research/state-durability-operational-recovery-2026-09-15.md
+// (mirrors Close's own errors.Join-every-cleanup-regardless convention).
+func (p *Pipeline) BackupStores(destDir string) ([]string, error) {
+	candidates := []struct {
+		kind  string
+		store any
+	}{
+		{"identity", p.identityStore},
+		{"budget", p.budget.Store()},
+		{"prompt", p.prompts.Persister()},
+	}
+
+	var backedUp []string
+	var errs []error
+	for _, c := range candidates {
+		if c.store == nil {
+			continue
+		}
+		dbHolder, ok := c.store.(backup.DBBacked)
+		if !ok {
+			continue
+		}
+		filename := fmt.Sprintf("%s-%s.bbolt", c.kind, time.Now().UTC().Format("20060102T150405Z"))
+		destPath := filepath.Join(destDir, filename)
+		if err := backup.CopyFile(dbHolder.DB(), destPath); err != nil {
+			errs = append(errs, fmt.Errorf("backing up %s store: %w", c.kind, err))
+			continue
+		}
+		backedUp = append(backedUp, filename)
+	}
+	return backedUp, errors.Join(errs...)
 }
 
 // ErrCannotDeleteLastVirtualKey is returned by DeleteVirtualKey when name

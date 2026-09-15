@@ -59,6 +59,15 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying *bolt.DB, for a caller that needs the raw
+// handle for something Store's own interface doesn't expose — e.g.
+// backup.CopyFile's live, hot-backup primitive
+// (dataplane.Pipeline.BackupStores). Not part of identity.Store; callers
+// reach it via a type assertion.
+func (s *Store) DB() *bolt.DB {
+	return s.db
+}
+
 // Load implements identity.Store. ctx is accepted for interface symmetry
 // with a future networked Store implementation, but unused here — a
 // bbolt transaction is synchronous and fast enough that there is no real
