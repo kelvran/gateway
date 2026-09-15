@@ -130,9 +130,13 @@ func newTopupTestPipeline(t *testing.T, tracker *budget.Tracker, capUSD decimal.
 // stream is still in flight, its own outstanding budget reservation is
 // topped up to reflect its REAL, growing output — visible to a
 // concurrent sibling as reduced remaining headroom — and, once the
-// stream finishes (with no real usage frame from this mock, so its real
-// cost settles at $0), the transient top-up is cleanly undone with no
-// permanent over- or under-counting left behind.
+// stream finishes (this mock never sends a real usage frame, so
+// finishStreamedResponse's estimateOrRealUsage bills an estimate derived
+// from the same real, already-delivered content instead — see
+// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md),
+// the transient top-up reservation is cleanly replaced by that real,
+// non-zero estimated cost — never silently discarded down to $0, the
+// exact correctness bug this fix closes.
 func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStreamIsInFlight(t *testing.T) {
 	tracker := budget.NewTracker()
 	capUSD := decimal.NewFromFloat(100.00) // generous — this test proves top-up SUCCEEDS, not the rejection boundary (see the sibling exhaustion test for that)
@@ -200,14 +204,22 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 		t.Fatalf("HandleChatCompletionStream: %v, want nil", res.err)
 	}
 
-	// This mock never sends a usage frame, so the target's own REAL cost
-	// settles at $0 (stream_missing_usage, per finishStreamedResponse) —
-	// Reconcile must cleanly undo the transient $1.00 top-up, leaving
-	// final spend at exactly the priming amount, never a permanent leak
-	// or double-count from the top-up mechanism itself.
+	// This mock never sends a usage frame, so finishStreamedResponse
+	// estimates usage from acc's own real, already-accumulated 400 chars
+	// (10 frames * 40 chars) -> 100 estimated completion tokens -> a real
+	// $1.00 cost, per estimateOrRealUsage. Reconcile replaces the
+	// transient $1.00 top-up reservation with that real $1.00 cost —
+	// netting to the SAME total spend the mid-stream check above already
+	// observed (priming's $0.05 + this request's own real, estimated
+	// $1.00 = $1.05), not a reversion to $0.05. Before this fix, the
+	// missing usage frame meant real cost was left at exactly $0 here,
+	// silently discarding 100 real, already-delivered, provider-billed
+	// tokens — the exact bug
+	// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md
+	// names and this fix closes.
 	finalSpent := tracker.SpentUSD("topup-key", 0)
-	if !finalSpent.Equal(decimal.NewFromFloat(0.05)) {
-		t.Fatalf("final SpentUSD after the stream completed = %s, want 0.05 — the transient top-up must be fully undone by Reconcile, leaving no permanent trace", finalSpent)
+	if !finalSpent.Equal(decimal.NewFromFloat(1.05)) {
+		t.Fatalf("final SpentUSD after the stream completed = %s, want 1.05 — the real, estimated cost of the 100 tokens actually delivered must be billed, not discarded to $0", finalSpent)
 	}
 }
 
@@ -259,13 +271,25 @@ func TestHandleChatCompletionStreamMidStreamTopupExhaustionGracefullyTruncatesSt
 		t.Fatalf("framesServed = %d, want close to the hand-traced rejection point (frame 10)", framesServed)
 	}
 
-	// spent must be left EXACTLY at whatever the last SUCCESSFUL top-up
-	// (or the initial reservation, if none succeeded) set it to — never
-	// increased by the rejected attempt itself, per IncreaseReservation's
-	// own "leave completely unchanged on rejection" contract.
+	// The guard trips having already accumulated one more frame's worth
+	// of real content than the last successful top-up reserved for (the
+	// rejected frame's own content is added to acc BEFORE the top-up
+	// check runs and rejects — see streamDeployment's own ordering) — so
+	// finishStreamedResponse's estimate, once billed, is real and can
+	// legitimately push cumulative spend slightly past the nominal $1.00
+	// cap: the cap bounds NEW reservation admission (Reserve/
+	// IncreaseReservation), it does not retroactively truncate an
+	// already-incurred REAL cost once the tokens have actually been
+	// generated and delivered — the identical principle the buffered
+	// path's own Reconcile already applies to any real cost that turns
+	// out larger than its own reservation. Exact value: 10 frames * 40
+	// chars = 400 chars -> 100 estimated completion tokens -> $1.00 real
+	// cost for this request, plus priming's $0.05 = $1.05 total — never
+	// $0 the way a missing usage frame used to silently produce before
+	// this fix.
 	finalSpent := tracker.SpentUSD("topup-key", 0)
-	if finalSpent.GreaterThan(decimal.NewFromFloat(1.00)) {
-		t.Fatalf("SpentUSD after the guard tripped = %s, want <= the $1.00 cap — a rejected top-up must never push spend past the cap it was rejected FOR exceeding", finalSpent)
+	if !finalSpent.Equal(decimal.NewFromFloat(1.05)) {
+		t.Fatalf("SpentUSD after the guard tripped = %s, want 1.05 — the real, estimated cost of content already generated before the guard tripped must be billed, even though it exceeds the nominal $1.00 cap", finalSpent)
 	}
 
 	if got := logBuf.String(); !strings.Contains(got, "streaming_midstream_reservation_topup_exhausted") {

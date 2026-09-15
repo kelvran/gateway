@@ -132,6 +132,26 @@ func RecordRateLimitFailOpen(ctx context.Context, keyID string) {
 	rateLimitFailOpenCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
 }
 
+// streamCostEstimatedCounter is per
+// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md — an
+// aggregate, alertable signal for how often a streamed response's cost
+// was billed from an estimate rather than the provider's own reported
+// usage, mirroring rateLimitFailOpenCounter's own construction pattern.
+var streamCostEstimatedCounter = mustInt64Counter(
+	meter,
+	"kelvran.streaming.cost_estimated",
+	metric.WithDescription("Streamed responses billed against an estimated, not provider-reported, token count."),
+	metric.WithUnit("{response}"),
+)
+
+// RecordStreamCostEstimated increments the cost-estimated counter for
+// keyID. The caller (dataplane.finalize) calls this exactly when
+// ChatCompletionResult.CostEstimated is true — see that field's own doc
+// comment for what triggers it.
+func RecordStreamCostEstimated(ctx context.Context, keyID string) {
+	streamCostEstimatedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
+}
+
 // RecordFallbackHop emits a "fallback_hop" span event for a single FAILED
 // fallback-chain hop attempt, per AttrKelvranFallbackHopErrorClass's own
 // doc comment (result.go). Uses trace.SpanFromContext(ctx) rather than an

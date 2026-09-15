@@ -148,4 +148,19 @@ message GatewayDecisionEvent {
   // just an aggregate dashboard total" (PRD.md:41) -- the SPEND half was
   // already closed by agent_run_id/cost_usd above.
   string savings_usd = 14;
+
+  // Added 2026-09-16, per
+  // docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md:
+  // true only for a streamed response whose cost_usd was computed from
+  // an estimated usage -- the provider never sent its own terminal usage
+  // frame (a mid-stream guard cut the connection, or the client
+  // disconnected before it arrived) -- rather than the provider's own
+  // reported token count. false (the proto3 default) for every buffered
+  // response and every streamed response where the provider did send a
+  // real usage frame. A purely disclosure-only field: it does not change
+  // whether or how much this request was billed, only whether that
+  // figure is flagged as an estimate for downstream analysis. Additive
+  // field, non-breaking per `buf breaking`, same precedent as every
+  // other field added to this message since v1 froze.
+  bool cost_is_estimated = 15;
 }

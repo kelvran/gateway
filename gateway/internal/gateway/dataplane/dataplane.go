@@ -1516,7 +1516,10 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
 		// (a).
 		err = p.attachRetryAfter(vk, err)
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, err, time.Since(start))
+		// costEstimated is always false on the buffered path — see
+		// finalize's own doc comment; only HandleChatCompletionStream ever
+		// estimates, via estimateOrRealUsage (streaming.go).
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, false, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -2118,7 +2121,16 @@ func realServingModel(dep Deployment, fallbackModel string) string {
 // ever made (the corresponding Reserve/ReserveTPM call was never
 // reached, or ran and was rejected) — see budget.Tracker.Reconcile's own
 // doc comment for why calling it with a zero reservedUSD is always safe.
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, cacheAttempted bool, err error, duration time.Duration) {
+//
+// costEstimated is always false on the buffered path (HandleChatCompletion
+// never estimates usage) — HandleChatCompletionStream sets it true when
+// estimateOrRealUsage (streaming.go) had to derive resp.Usage from the
+// accumulator instead of a real provider-reported usage frame. Purely a
+// telemetry/audit disclosure flag: it does NOT gate the billing decision
+// itself (cost is computed from resp.Usage exactly the same way whether
+// that usage is real or estimated), only whether ChatCompletionResult/
+// GatewayDecisionEvent flag the resulting cost as an estimate.
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, cacheAttempted bool, costEstimated bool, err error, duration time.Duration) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too.
@@ -2259,6 +2271,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// the exact decimal string is formatted here, at the boundary,
 		// per docs/rfcs/2026-09-02-decimal-cost-accounting.md.
 		CostUSD:                            cost.String(),
+		CostEstimated:                      costEstimated,
 		SavingsUSD:                         savingsUsd,
 		AgentRunID:                         telemetry.AgentRunIDFromContext(ctx),
 		Billable:                           billable,
@@ -2270,6 +2283,14 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		ResponseFormatRequestedNotEnforced: responseFormatRequestedNotEnforced,
 	}
 	telemetry.RecordChatCompletionResult(span, result)
+	// kelvran.streaming.cost_estimated, per
+	// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md:
+	// an aggregate, alertable counterpart to
+	// ChatCompletionResult.CostEstimated's per-request span attribute —
+	// see that field's own doc comment for what triggers it.
+	if costEstimated {
+		telemetry.RecordStreamCostEstimated(ctx, virtualKeyID)
+	}
 	// Same result struct, per
 	// docs/rfcs/2026-09-07-gateway-genai-metrics.md's "reuse the existing
 	// per-request data capture point" design — not a second, independent
@@ -2338,6 +2359,10 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// way to answer "why did this agent run cost $X" at all.
 		AgentRunId: result.AgentRunID,
 		CostUsd:    result.CostUSD,
+		// Per docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md:
+		// disclosure-only, mirrors result.CostEstimated — see that field's
+		// own doc comment.
+		CostIsEstimated: result.CostEstimated,
 		// Per docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md:
 		// closes the SAVINGS half of PRD.md:41's success metric ("Cost
 		// savings attributable and explainable down to the individual

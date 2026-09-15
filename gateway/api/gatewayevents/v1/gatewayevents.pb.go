@@ -217,9 +217,23 @@ type GatewayDecisionEvent struct {
 	// attributable and explainable down to the individual agent run, not
 	// just an aggregate dashboard total" (PRD.md:41) -- the SPEND half was
 	// already closed by agent_run_id/cost_usd above.
-	SavingsUsd    string `protobuf:"bytes,14,opt,name=savings_usd,json=savingsUsd,proto3" json:"savings_usd,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SavingsUsd string `protobuf:"bytes,14,opt,name=savings_usd,json=savingsUsd,proto3" json:"savings_usd,omitempty"`
+	// Added 2026-09-16, per
+	// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md:
+	// true only for a streamed response whose cost_usd was computed from
+	// an estimated usage -- the provider never sent its own terminal usage
+	// frame (a mid-stream guard cut the connection, or the client
+	// disconnected before it arrived) -- rather than the provider's own
+	// reported token count. false (the proto3 default) for every buffered
+	// response and every streamed response where the provider did send a
+	// real usage frame. A purely disclosure-only field: it does not change
+	// whether or how much this request was billed, only whether that
+	// figure is flagged as an estimate for downstream analysis. Additive
+	// field, non-breaking per `buf breaking`, same precedent as every
+	// other field added to this message since v1 froze.
+	CostIsEstimated bool `protobuf:"varint,15,opt,name=cost_is_estimated,json=costIsEstimated,proto3" json:"cost_is_estimated,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GatewayDecisionEvent) Reset() {
@@ -350,11 +364,18 @@ func (x *GatewayDecisionEvent) GetSavingsUsd() string {
 	return ""
 }
 
+func (x *GatewayDecisionEvent) GetCostIsEstimated() bool {
+	if x != nil {
+		return x.CostIsEstimated
+	}
+	return false
+}
+
 var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x84\a\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb0\a\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -373,7 +394,8 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"agentRunId\x12\x19\n" +
 	"\bcost_usd\x18\r \x01(\tR\acostUsd\x12\x1f\n" +
 	"\vsavings_usd\x18\x0e \x01(\tR\n" +
-	"savingsUsd\"\x98\x02\n" +
+	"savingsUsd\x12*\n" +
+	"\x11cost_is_estimated\x18\x0f \x01(\bR\x0fcostIsEstimated\"\x98\x02\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +

@@ -80,6 +80,10 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// cacheAttempted mirrors HandleChatCompletion's identical field —
 		// see finalize's own doc comment.
 		cacheAttempted bool
+		// costEstimated mirrors estimateOrRealUsage's own return value —
+		// see finalize's own doc comment for costEstimated. Always false
+		// on the buffered path (HandleChatCompletion never estimates).
+		costEstimated bool
 	)
 	start := time.Now()
 	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
@@ -89,7 +93,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
 		// (a).
 		err = p.attachRetryAfter(vk, err)
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, costEstimated, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -194,7 +198,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 
 	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens}
 	var blocked bool
-	resp, dep, fallback, blocked, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
+	resp, dep, fallback, blocked, costEstimated, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
 	if err != nil {
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
 		return
@@ -301,7 +305,7 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 // reservation made against the client's originally-requested model stays
 // that same reservation regardless of which deployment ultimately serves
 // the response.
-func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, bool, error) {
+func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, bool, bool, error) {
 	var firstChunkSent bool
 	var fallback fallbackInfo
 	// blocked is set by finishStreamedResponse (via streamDeployment/
@@ -313,9 +317,18 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	// blocked=true bleeding into a later, unrelated hop's result.
 	var blocked bool
 
-	resp, err := p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
+	// estimated mirrors blocked's own "set once, at whichever single hop
+	// actually completes a stream" reasoning — see
+	// estimateOrRealUsage's doc comment for what it means. Reassigned by
+	// the attemptFallbackChain closure below via normal closure capture
+	// (attemptFallbackChain's own call signature is fixed/shared with the
+	// buffered path's identical fallback machinery, so it cannot itself
+	// return a third value) — never stale when attempted is false, since
+	// that only happens after an ALREADY-failed attempt that itself set
+	// estimated to false on its own error return.
+	resp, estimated, err := p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
 	if err == nil || firstChunkSent {
-		return resp, dep, fallback, blocked, err
+		return resp, dep, fallback, blocked, estimated, err
 	}
 
 	originalDep, originalErr := dep, err
@@ -324,7 +337,10 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 			func(d Deployment) (adapter.ChatResponse, error) {
 				defer p.releaseDeploymentConcurrency(d.Name)
-				return p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID, msr, &blocked)
+				var hopResp adapter.ChatResponse
+				var hopErr error
+				hopResp, estimated, hopErr = p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID, msr, &blocked)
+				return hopResp, hopErr
 			},
 			func() bool { return firstChunkSent },
 			func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, keyID, model) },
@@ -339,21 +355,21 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model, map[string]bool{dep.Name: true}); hasFallback {
 		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 		dep = fallbackDep
-		resp, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
+		resp, estimated, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
 	}
-	return resp, dep, fallback, blocked, err
+	return resp, dep, fallback, blocked, estimated, err
 }
 
 // streamDeploymentWithCapacityCheck wraps streamDeployment with dep's
 // own checkDeploymentCapacity gate and guaranteed release — the
 // streaming sibling of callDeploymentWithCapacityCheck (dataplane.go),
 // used for EVERY call to a deployment, hop 1 included.
-func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
 	if !p.checkDeploymentRateLimit(ctx, dep.Name) {
-		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "rate_limit"}
+		return adapter.ChatResponse{}, false, &DeploymentCapacityError{Deployment: dep.Name, Reason: "rate_limit"}
 	}
 	if !p.checkDeploymentConcurrency(dep.Name) {
-		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "concurrency"}
+		return adapter.ChatResponse{}, false, &DeploymentCapacityError{Deployment: dep.Name, Reason: "concurrency"}
 	}
 	defer p.releaseDeploymentConcurrency(dep.Name)
 	return p.streamDeployment(ctx, dep, req, sw, firstChunkSent, keyID, msr, blocked)
@@ -372,18 +388,18 @@ func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep De
 // see streamrunaway.go. msr is that same guard's sibling: this request's
 // own outstanding budget/TPM reservations, topped up in place as real
 // accumulated output grows past them — see checkMidStreamReservationTopup.
-func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
 	if dep.Provider == "bedrock" {
 		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent, keyID, msr, blocked)
 	}
 
 	a, ok := p.adapters[dep.Provider]
 	if !ok {
-		return adapter.ChatResponse{}, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
+		return adapter.ChatResponse{}, false, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
 	}
 	streamAdapter, ok := a.(streaming.StreamingAdapter)
 	if !ok {
-		return adapter.ChatResponse{}, fmt.Errorf("%w: provider %q", ErrStreamingNotSupported, dep.Provider)
+		return adapter.ChatResponse{}, false, fmt.Errorf("%w: provider %q", ErrStreamingNotSupported, dep.Provider)
 	}
 
 	upstreamReq := req
@@ -393,7 +409,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 
 	providerReq, err := streamAdapter.ToProvider(upstreamReq)
 	if err != nil {
-		return adapter.ChatResponse{}, fmt.Errorf("adapter %q ToProvider: %w", dep.Provider, err)
+		return adapter.ChatResponse{}, false, fmt.Errorf("adapter %q ToProvider: %w", dep.Provider, err)
 	}
 
 	// upstreamCtx is a CHILD of ctx, scoped to exactly this one upstream
@@ -411,7 +427,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 
 	body, err := p.upstreamStream(upstreamCtx, dep, providerReq)
 	if err != nil {
-		return adapter.ChatResponse{}, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
+		return adapter.ChatResponse{}, false, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
 	}
 	defer func() { _ = body.Close() }()
 
@@ -427,12 +443,12 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 			break
 		}
 		if readErr != nil {
-			return adapter.ChatResponse{}, fmt.Errorf("reading stream from deployment %q: %w", dep.Name, readErr)
+			return adapter.ChatResponse{}, false, fmt.Errorf("reading stream from deployment %q: %w", dep.Name, readErr)
 		}
 
 		chunks, done, usage, decErr := decoder.Decode(ev)
 		if decErr != nil {
-			return adapter.ChatResponse{}, fmt.Errorf("decoding stream from deployment %q: %w", dep.Name, decErr)
+			return adapter.ChatResponse{}, false, fmt.Errorf("decoding stream from deployment %q: %w", dep.Name, decErr)
 		}
 		if usage != nil {
 			finalUsage = usage
@@ -440,7 +456,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		for _, c := range chunks {
 			acc.add(c)
 			if writeErr := sw.WriteChunk(c); writeErr != nil {
-				return adapter.ChatResponse{}, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
+				return adapter.ChatResponse{}, false, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
 			}
 			*firstChunkSent = true
 		}
@@ -505,14 +521,14 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 // binary-framed implementor. Everything after decoding (accumulation,
 // client tee, final-response assembly) is identical, via the shared
 // finishStreamedResponse.
-func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, error) {
+func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
 	a, ok := p.adapters[dep.Provider]
 	if !ok {
-		return adapter.ChatResponse{}, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
+		return adapter.ChatResponse{}, false, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
 	}
 	bedrockAdapter, ok := a.(*bedrock.Adapter)
 	if !ok {
-		return adapter.ChatResponse{}, fmt.Errorf("%w: provider %q", ErrStreamingNotSupported, dep.Provider)
+		return adapter.ChatResponse{}, false, fmt.Errorf("%w: provider %q", ErrStreamingNotSupported, dep.Provider)
 	}
 
 	upstreamReq := req
@@ -522,7 +538,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 
 	providerReq, err := bedrockAdapter.ToProvider(upstreamReq)
 	if err != nil {
-		return adapter.ChatResponse{}, fmt.Errorf("adapter %q ToProvider: %w", dep.Provider, err)
+		return adapter.ChatResponse{}, false, fmt.Errorf("adapter %q ToProvider: %w", dep.Provider, err)
 	}
 
 	// See streamDeployment's identical upstreamCtx comment: scoped to
@@ -533,7 +549,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 
 	body, err := p.upstreamStream(upstreamCtx, dep, providerReq)
 	if err != nil {
-		return adapter.ChatResponse{}, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
+		return adapter.ChatResponse{}, false, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
 	}
 	defer func() { _ = body.Close() }()
 
@@ -554,13 +570,13 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 			break
 		}
 		if readErr != nil {
-			return adapter.ChatResponse{}, fmt.Errorf("reading binary event stream from deployment %q: %w", dep.Name, readErr)
+			return adapter.ChatResponse{}, false, fmt.Errorf("reading binary event stream from deployment %q: %w", dep.Name, readErr)
 		}
 		payloadBuf = msg.Payload
 
 		chunks, usage, decErr := decoder.Decode(msg)
 		if decErr != nil {
-			return adapter.ChatResponse{}, fmt.Errorf("decoding stream from deployment %q: %w", dep.Name, decErr)
+			return adapter.ChatResponse{}, false, fmt.Errorf("decoding stream from deployment %q: %w", dep.Name, decErr)
 		}
 		if usage != nil {
 			finalUsage = usage
@@ -568,7 +584,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 		for _, c := range chunks {
 			acc.add(c)
 			if writeErr := sw.WriteChunk(c); writeErr != nil {
-				return adapter.ChatResponse{}, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
+				return adapter.ChatResponse{}, false, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
 			}
 			*firstChunkSent = true
 		}
@@ -604,26 +620,67 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, blocked)
 }
 
+// estimateOrRealUsage returns finalUsage verbatim (estimated=false) when
+// the provider actually sent one, or — when it never arrived, e.g. a
+// mid-stream guard cut the connection before the provider's terminal
+// usage frame, or a client disconnect discarded the stream before EOF —
+// a conservative estimate derived from acc's own already-accumulated
+// content, using the exact same provider-agnostic chars-per-token proxy
+// (streamRunawayCharsPerToken) the mid-stream reservation-topup guard
+// already trusts for the identical purpose (streamrunaway.go). Prompt
+// tokens are estimated from req.Messages via serializeMessages — the
+// same deterministic encoding already used for the L1 cache key —
+// rather than left at zero, since a real, non-trivial prompt was
+// genuinely sent to the provider and billed by it regardless of how the
+// completion side of the exchange ended.
+//
+// Billing a real, non-zero estimate instead of leaving usage at its
+// zero value is the actual fix for two real correctness bugs: real,
+// already-provider-billed output tokens were previously either recorded
+// as an explicit $0.00 charge (when err == nil, e.g. a mid-stream guard
+// trip) or silently unbilled entirely (when err != nil, e.g. a client
+// disconnect) — see docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md.
+func estimateOrRealUsage(req adapter.ChatRequest, acc *streamAccumulator, finalUsage *adapter.Usage) (usage adapter.Usage, estimated bool) {
+	if finalUsage != nil {
+		return *finalUsage, false
+	}
+	promptTokens := len(serializeMessages(req.Messages)) / streamRunawayCharsPerToken
+	completionTokens := acc.totalContentLen() / streamRunawayCharsPerToken
+	return adapter.Usage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+	}, true
+}
+
 // finishStreamedResponse builds the final ChatResponse from an
-// accumulator and finalUsage, runs the audit-only post-call guardrail
+// accumulator and finalUsage (estimating usage via estimateOrRealUsage
+// when the provider never sent its own terminal usage frame — see that
+// function's own doc comment), runs the audit-only post-call guardrail
 // check, and writes the client-facing done sentinel — the provider-
 // agnostic tail shared by streamDeployment (SSE-framed providers) and
 // streamDeploymentBedrock (binary-framed) per
 // docs/rfcs/2026-09-04-bedrock-converse-stream.md: none of this logic
-// depends on how chunks actually arrived.
-func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage, blocked *bool) (adapter.ChatResponse, error) {
-	var usage adapter.Usage
-	if finalUsage != nil {
-		usage = *finalUsage
-	} else {
+// depends on how chunks actually arrived. The returned bool reports
+// whether usage was estimated (true) rather than provider-reported
+// (false) — callers thread this through to finalize purely for
+// telemetry/audit disclosure, per estimateOrRealUsage's own doc comment;
+// it does not change the billing decision itself.
+func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage, blocked *bool) (adapter.ChatResponse, bool, error) {
+	usage, estimated := estimateOrRealUsage(req, acc, finalUsage)
+	if estimated {
 		// Per the RFC's Cost Accounting section: a provider stream that
 		// never sends usage does not fail the request, but must not be
-		// silently unmetered either — a zero-usage entry is recorded and
-		// flagged loudly here so it's visible in logs, not just absent.
+		// silently unmetered either — an estimated, non-zero usage is
+		// billed instead (see estimateOrRealUsage), flagged loudly here
+		// so the estimate itself is visible in logs, not just silently
+		// substituted.
 		p.logger.Warn("stream_missing_usage", append(traceLogFields(ctx),
 			"deployment", dep.Name,
 			"provider", dep.Provider,
 			"model", req.Model,
+			"estimated_prompt_tokens", usage.PromptTokens,
+			"estimated_completion_tokens", usage.CompletionTokens,
 		)...)
 	}
 
@@ -657,8 +714,8 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	}
 
 	if err := sw.WriteDone(); err != nil {
-		return adapter.ChatResponse{}, fmt.Errorf("writing done sentinel for deployment %q: %w", dep.Name, err)
+		return adapter.ChatResponse{}, estimated, fmt.Errorf("writing done sentinel for deployment %q: %w", dep.Name, err)
 	}
 
-	return resp, nil
+	return resp, estimated, nil
 }

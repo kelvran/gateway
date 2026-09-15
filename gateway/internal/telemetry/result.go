@@ -151,6 +151,16 @@ const (
 	// budget-alert-ladder bucket. Distinct from checkBudgetWarnThreshold's
 	// own log-only, per-tenant-configurable BudgetWarnPercent.
 	AttrKelvranBudgetPercentBucket = "kelvran.budget.percent_bucket"
+	// AttrKelvranCostEstimated is per
+	// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md:
+	// set true only when a streamed response's cost was computed from an
+	// estimated usage (dataplane.estimateOrRealUsage), never the
+	// provider's own reported token count — see
+	// ChatCompletionResult.CostEstimated's own doc comment. Only emitted
+	// when true, never a fabricated "false" for the overwhelming majority
+	// of requests where usage is real, matching every other
+	// only-emit-when-meaningful attribute in this file.
+	AttrKelvranCostEstimated = "kelvran.cost.estimated"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider
@@ -259,6 +269,16 @@ type ChatCompletionResult struct {
 	CostUSD    string
 	AgentRunID string
 	Err        error
+
+	// CostEstimated is true only for a streamed response whose CostUSD was
+	// computed from an estimated usage (the provider never sent its own
+	// terminal usage frame, e.g. a mid-stream guard cut the connection, or
+	// a client disconnected) rather than the provider's own reported token
+	// count — see dataplane.estimateOrRealUsage's own doc comment. Always
+	// false on the buffered path. A purely disclosure-only flag: it does
+	// not change how CostUSD itself was computed or whether the request
+	// was billed, only whether that cost is flagged as an estimate.
+	CostEstimated bool
 
 	// SavingsUSD mirrors CostUSD's exact convention (a pre-formatted
 	// decimal string, never float64, for the same precision reason) but
@@ -380,6 +400,9 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 		attribute.Bool(AttrKelvranCacheHit, r.CacheHit),
 		attribute.String(AttrKelvranCostUSD, r.CostUSD),
 	)
+	if r.CostEstimated {
+		attrs = append(attrs, attribute.Bool(AttrKelvranCostEstimated, true))
+	}
 	// AttrKelvranSavingsUSD, unlike AttrKelvranCostUSD above, is only
 	// ever set on a genuine cache hit -- an empty SavingsUSD ("never a
 	// cache hit") and a real "0" ("a cache hit worth exactly $0") are

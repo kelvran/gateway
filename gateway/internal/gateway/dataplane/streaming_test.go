@@ -18,6 +18,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/streaming"
 )
 
 // realOpenAISSEStream is a minimal but genuine OpenAI streaming response:
@@ -526,5 +527,51 @@ func TestHandleChatCompletionStreamTruncatedResponseNeverCached(t *testing.T) {
 
 	if upstreamCalls != 2 {
 		t.Errorf("upstreamCalls = %d, want 2 — a truncated (finish_reason:\"length\") streamed response must never populate the cache", upstreamCalls)
+	}
+}
+
+// TestEstimateOrRealUsageUsesProviderUsageWhenAvailable proves the
+// unestimated regression case: when the provider DID send a real usage
+// frame, that value is returned verbatim, with estimated=false — this
+// fix must never override or alter genuinely-reported usage.
+func TestEstimateOrRealUsageUsesProviderUsageWhenAvailable(t *testing.T) {
+	req := adapter.ChatRequest{Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
+	acc := newStreamAccumulator()
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{{Index: 0, Delta: streaming.MessageDelta{Content: "ignored"}}}})
+	real := adapter.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8}
+
+	usage, estimated := estimateOrRealUsage(req, acc, &real)
+	if estimated {
+		t.Error("estimated = true, want false — a real provider usage frame must never be flagged as estimated")
+	}
+	if usage != real {
+		t.Errorf("usage = %+v, want the real usage verbatim (%+v), unaltered by the accumulator's own content", usage, real)
+	}
+}
+
+// TestEstimateOrRealUsageEstimatesFromAccumulatorWhenUsageIsNil is the
+// direct, isolated proof of this fix's core arithmetic: when the
+// provider never sent a usage frame, completion tokens are estimated
+// from the accumulator's real content length via
+// streamRunawayCharsPerToken — never left at zero.
+func TestEstimateOrRealUsageEstimatesFromAccumulatorWhenUsageIsNil(t *testing.T) {
+	req := adapter.ChatRequest{Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
+	acc := newStreamAccumulator()
+	// 40 chars of real content -> 40/streamRunawayCharsPerToken(4) = 10
+	// estimated completion tokens.
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{{Index: 0, Delta: streaming.MessageDelta{Content: strings.Repeat("x", 40)}}}})
+
+	usage, estimated := estimateOrRealUsage(req, acc, nil)
+	if !estimated {
+		t.Error("estimated = false, want true — no provider usage frame arrived, so this must be flagged as an estimate")
+	}
+	if usage.CompletionTokens != 10 {
+		t.Errorf("CompletionTokens = %d, want 10 (40 real chars / streamRunawayCharsPerToken)", usage.CompletionTokens)
+	}
+	if usage.CompletionTokens == 0 {
+		t.Error("CompletionTokens = 0 — this is the exact bug this fix closes: real, already-delivered content must never be billed as zero")
+	}
+	if usage.TotalTokens != usage.PromptTokens+usage.CompletionTokens {
+		t.Errorf("TotalTokens = %d, want PromptTokens(%d) + CompletionTokens(%d)", usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens)
 	}
 }
