@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/budget"
@@ -280,6 +282,78 @@ func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+otherBearerValue, adapter.ChatRequest{Model: "gpt-4o"})
 	if err == nil {
 		t.Fatal("HandleChatCompletion succeeded with a deleted key's bearer value")
+	}
+}
+
+// TestDeleteVirtualKeyViaHTTPAlsoErasesItsBudgetSpend is the real
+// behavioral proof of the budget-data-erasure fix: a deleted key's real,
+// non-zero recorded spend must not survive the deletion — for GDPR/CCPA
+// erasure-request handling, per
+// docs/upgrade-research/data-retention-right-to-erasure-2026-09-15.md.
+// Builds its own pipeline (rather than newTestPipeline, whose empty
+// price table would make every request cost exactly $0, proving
+// nothing) with a real, non-zero completion-token price so a genuine
+// bill is recorded before deletion.
+func TestDeleteVirtualKeyViaHTTPAlsoErasesItsBudgetSpend(t *testing.T) {
+	// A second key is required alongside "test-key" -- DeleteVirtualKey
+	// (dataplane.go) rejects deleting the only remaining virtual key
+	// (identity.NewVerifier's own "at least one key required" rule), and
+	// this test's whole point is proving the delete itself succeeds.
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+		{ID: "other-key", KeyHash: testHashOf("other-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []dataplane.Deployment{
+		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+	pipeline, err := dataplane.NewPipeline(dataplane.Config{
+		Verifier: verifier,
+		Limiter: ratelimit.NewInMemoryKeyLimiter([]ratelimit.KeyConfig{
+			{ID: "test-key", Capacity: 100, RefillPerSecond: 100},
+			{ID: "other-key", Capacity: 100, RefillPerSecond: 100},
+		}),
+		Budget:      budget.NewTracker(),
+		Cache:       inprocess.New(0),
+		CacheL2:     inprocess.New(0),
+		CacheL3:     inprocess.NewLexicalCache(0),
+		Guardrails:  guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:    adapter.Registry{"openai": openai.New()},
+		Router:      router.New([]router.Deployment{{Name: "d1", Model: "gpt-4o"}}, router.HealthConfig{}),
+		Deployments: deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{
+			"gpt-4o": {CompletionPerToken: decimal.NewFromFloat(0.01)},
+		}),
+		Upstream: func(ctx context.Context, dep dataplane.Deployment, req any) (any, error) {
+			return &openai.Response{
+				ID: "chatcmpl-fake", Model: dep.UpstreamModel,
+				Choices: []openai.Choice{{Message: openai.Message{Role: "assistant", Content: json.RawMessage(`"hi"`)}, FinishReason: "stop"}},
+				Usage:   openai.Usage{PromptTokens: 1, CompletionTokens: 5, TotalTokens: 6},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+	if spent := pipeline.SpentUSD("test-key", 0); spent.IsZero() {
+		t.Fatal("setup: SpentUSD is 0 after a real request — nothing was billed to erase")
+	}
+
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	rec := doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	if spent := pipeline.SpentUSD("test-key", 0); !spent.IsZero() {
+		t.Errorf("SpentUSD after DELETE = %s, want 0 — the deleted key's real spend must not survive deletion", spent)
 	}
 }
 

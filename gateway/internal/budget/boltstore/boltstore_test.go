@@ -205,6 +205,36 @@ func TestSaveRewritesLegacyEntryToNewJSONFormatOnNextSave(t *testing.T) {
 	}
 }
 
+// TestDeleteRemovesTheEntry mirrors internal/identity/boltstore's own
+// identically-named test exactly.
+func TestDeleteRemovesTheEntry(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	if err := s.Save(ctx, "team-alpha", budget.State{Spent: decimal.RequireFromString("5")}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := s.Delete(ctx, "team-alpha"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	got, err := s.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Load after Delete = %v, want empty map", got)
+	}
+}
+
+// TestDeleteOfNeverPersistedIDIsANoOpNotAnError mirrors
+// internal/identity/boltstore's own identically-named test exactly.
+func TestDeleteOfNeverPersistedIDIsANoOpNotAnError(t *testing.T) {
+	s, _ := openTestStore(t)
+	if err := s.Delete(context.Background(), "never-persisted"); err != nil {
+		t.Errorf("Delete of a never-persisted ID: %v, want nil error", err)
+	}
+}
+
 // TestLoadRejectsCorruptValue proves a corrupted stored value (written
 // directly, bypassing Save) surfaces as a clear error from Load, never a
 // silent zero or a panic — neither the JSON decode nor the legacy

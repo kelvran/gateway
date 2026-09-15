@@ -65,6 +65,11 @@ type State struct {
 type Store interface {
 	Load(ctx context.Context) (map[string]State, error)
 	Save(ctx context.Context, keyID string, state State) error
+	// Delete purges keyID's persisted state entirely — for GDPR/CCPA
+	// erasure-request handling, per
+	// docs/upgrade-research/data-retention-right-to-erasure-2026-09-15.md.
+	// A no-op, not an error, for a keyID with no persisted entry.
+	Delete(ctx context.Context, keyID string) error
 	Close() error
 }
 
@@ -590,6 +595,30 @@ func (t *Tracker) CheckAndMarkBudgetAlertBucket(keyID string, percentUsed float6
 	t.highestAlertedBucket[keyID] = newHighest
 	t.highestAlertedEpoch[keyID] = currentEpoch
 	return newHighest, true
+}
+
+// Delete purges keyID's spend/rolling-window/alert-bucket state, in
+// memory and (if a Store is configured) durably — for GDPR/CCPA
+// erasure-request handling, per
+// docs/upgrade-research/data-retention-right-to-erasure-2026-09-15.md.
+// Called by dataplane.Pipeline.DeleteVirtualKey alongside the identity
+// store's own deletion, folded into that existing route rather than a
+// new standalone one — a key's budget spend has no independent lawful
+// purpose once the key itself is deleted. A no-op, not an error, for a
+// keyID with no recorded state at all.
+func (t *Tracker) Delete(keyID string) error {
+	t.mu.Lock()
+	delete(t.spent, keyID)
+	delete(t.periodStart, keyID)
+	delete(t.periodEpoch, keyID)
+	delete(t.billedCount, keyID)
+	delete(t.highestAlertedBucket, keyID)
+	delete(t.highestAlertedEpoch, keyID)
+	t.mu.Unlock()
+	if t.store == nil {
+		return nil
+	}
+	return t.store.Delete(context.Background(), keyID)
 }
 
 // Close releases the underlying store, if any. Safe to call even on a

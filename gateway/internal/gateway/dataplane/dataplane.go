@@ -770,6 +770,15 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 
 		if p.verifier.CompareAndSwap(old, newVerifier) {
 			p.deletePersistedVirtualKeyIfStoreConfigured(name)
+			// Budget-data erasure, folded into this existing route rather
+			// than a new standalone one — see budget.Tracker.Delete's own
+			// doc comment for why. Non-fatal-logged on failure, mirroring
+			// every other persistence call's posture: a budget-cleanup
+			// failure must never turn a successful key revocation into an
+			// error response — revocation is the security-critical half.
+			if err := p.budget.Delete(name); err != nil {
+				p.logger.Warn("budget_persist_failed", "key_id", name, "error", err.Error())
+			}
 			return nil
 		}
 		// Lost the race to a concurrent writer -- retry against fresh state.

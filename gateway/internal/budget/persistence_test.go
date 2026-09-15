@@ -21,8 +21,10 @@ type fakeStore struct {
 		keyID string
 		state State
 	}
-	saveErr error
-	closed  bool
+	deleteCalls []string
+	saveErr     error
+	deleteErr   error
+	closed      bool
 }
 
 func newFakeStore(initial map[string]State) *fakeStore {
@@ -53,6 +55,17 @@ func (f *fakeStore) Save(_ context.Context, keyID string, state State) error {
 		return f.saveErr
 	}
 	f.data[keyID] = state
+	return nil
+}
+
+func (f *fakeStore) Delete(_ context.Context, keyID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteCalls = append(f.deleteCalls, keyID)
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	delete(f.data, keyID)
 	return nil
 }
 
@@ -136,6 +149,7 @@ func (s *erroringLoadStore) Load(context.Context) (map[string]State, error) {
 	return nil, s.err
 }
 func (s *erroringLoadStore) Save(context.Context, string, State) error { return nil }
+func (s *erroringLoadStore) Delete(context.Context, string) error      { return nil }
 func (s *erroringLoadStore) Close() error                              { return nil }
 
 func TestRecordPersistsCumulativeTotalToStore(t *testing.T) {
@@ -242,5 +256,75 @@ func TestCloseOnPlainTrackerIsANoOp(t *testing.T) {
 	tr := NewTracker()
 	if err := tr.Close(); err != nil {
 		t.Errorf("Close() on a plain (no-store) Tracker = %v, want nil", err)
+	}
+}
+
+// TestDeletePurgesAllInMemoryState proves every one of Tracker's 5
+// in-memory maps is actually purged, not just spend -- a partial purge
+// would leave stale rolling-window/alert-bucket state behind for a
+// deleted key's ID, ready to silently resurrect if that same ID is ever
+// reused.
+func TestDeletePurgesAllInMemoryState(t *testing.T) {
+	tr := NewTracker()
+	tr.Record("team-alpha", d("5"), time.Hour) // seeds spent + periodStart + periodEpoch
+	_, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("100"), time.Hour)
+	if !reserved {
+		t.Fatal("setup: Reserve did not reserve anything")
+	}
+	realCost := d("1")
+	tr.Reconcile("team-alpha", reservedUSD, epoch, &realCost, time.Hour) // seeds billedCount
+	tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.9)                  // seeds highestAlertedBucket/Epoch
+
+	if err := tr.Delete("team-alpha"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if got := tr.SpentUSD("team-alpha", 0); !got.IsZero() {
+		t.Errorf("SpentUSD after Delete = %s, want 0", got)
+	}
+	// A fresh Reserve for the same ID must behave like a brand-new key
+	// (full-headroom cold-start reservation, epoch 0) -- not carry over
+	// any of the purged state.
+	_, reserved, reservedUSD, epoch = tr.Reserve("team-alpha", d("100"), time.Hour)
+	if !reserved {
+		t.Fatal("Reserve after Delete did not reserve anything")
+	}
+	if epoch != 0 {
+		t.Errorf("reservationEpoch after Delete = %d, want 0 (a fresh key, not carried-over rolling-window state)", epoch)
+	}
+	if !reservedUSD.Equal(d("100")) {
+		t.Errorf("reservedUSD after Delete = %s, want 100 (cold-start full-headroom reservation, billedCount purged back to 0)", reservedUSD)
+	}
+}
+
+// TestDeleteOnKeyWithNoRecordedStateIsANoOp proves Delete never errors
+// for an ID it has never seen — the common case when erasing a virtual
+// key that was created but never actually billed.
+func TestDeleteOnKeyWithNoRecordedStateIsANoOp(t *testing.T) {
+	tr := NewTracker()
+	if err := tr.Delete("never-seen"); err != nil {
+		t.Errorf("Delete on an unrecorded key = %v, want nil", err)
+	}
+}
+
+// TestDeleteCallsThroughToStore proves the durable half: when a Store is
+// configured, Delete removes the persisted entry too, not just the
+// in-memory maps.
+func TestDeleteCallsThroughToStore(t *testing.T) {
+	store := newFakeStore(map[string]State{"team-alpha": {Spent: d("5")}})
+	tr, err := NewTrackerWithStore(context.Background(), store, nil)
+	if err != nil {
+		t.Fatalf("NewTrackerWithStore: %v", err)
+	}
+
+	if err := tr.Delete("team-alpha"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if len(store.deleteCalls) != 1 || store.deleteCalls[0] != "team-alpha" {
+		t.Errorf("store.deleteCalls = %v, want exactly [\"team-alpha\"]", store.deleteCalls)
+	}
+	if _, ok := store.data["team-alpha"]; ok {
+		t.Error("store.data still has \"team-alpha\" after Delete — the durable entry was not actually removed")
 	}
 }

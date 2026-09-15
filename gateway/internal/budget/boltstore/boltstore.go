@@ -121,3 +121,12 @@ func (s *Store) Save(_ context.Context, keyID string, state budget.State) error 
 		return b.Put([]byte(keyID), encoded)
 	})
 }
+
+// Delete implements budget.Store, mirroring
+// internal/identity/boltstore.Store.Delete's identical pattern exactly.
+func (s *Store) Delete(_ context.Context, keyID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(bucketName))
+		return b.Delete([]byte(keyID))
+	})
+}
