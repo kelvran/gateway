@@ -1,8 +1,9 @@
-.PHONY: help setup lint lint-gateway lint-evals lint-proto test test-gateway test-evals verify gen-proto check-proto
+.PHONY: help setup config-safe lint lint-gateway lint-evals lint-proto test test-gateway test-evals verify gen-proto check-proto
 
 help:
 	@echo "Kelvran — real targets as of the api/gatewayevents contract pass (see docs/agents/LOGS.md)."
 	@echo "  make setup       - bootstrap both toolchains (go mod download + uv sync)"
+	@echo "  make config-safe - print resolved docker-compose config with secret values redacted"
 	@echo "  make lint        - lint gateway/ (golangci-lint), evals/ (ruff), api/ (buf lint + breaking)"
 	@echo "  make test        - run gateway/ + evals/ test suites (go test + pytest)"
 	@echo "  make verify      - build + vet + lint + test + check-proto, both deployables — what CI runs"
@@ -12,6 +13,15 @@ help:
 setup:
 	cd gateway && go mod download
 	cd evals && uv sync
+
+# Redacts secret-shaped env var VALUES (matched by KEY/SECRET/TOKEN/PASSWORD
+# in the var NAME, not an enumerated list — so it fails safe against any
+# future secret-shaped name without needing an update) from `docker compose
+# config`'s resolved, interpolated output. Use this instead of the bare
+# `docker compose config`, which has leaked the pilot's real AWS access key
+# into a transcript twice — see AGENTS.md's Gotchas section.
+config-safe:
+	docker compose config | sed -E 's/^([[:space:]]*[A-Za-z0-9_]*(KEY|SECRET|TOKEN|PASSWORD)[A-Za-z0-9_]*:)[[:space:]].*/\1 ***REDACTED***/'
 
 lint-gateway:
 	cd gateway && go vet ./... && golangci-lint run ./... && go run github.com/fe3dback/go-arch-lint@v1.18.0 check
