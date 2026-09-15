@@ -14,14 +14,21 @@ setup:
 	cd gateway && go mod download
 	cd evals && uv sync
 
-# Redacts secret-shaped env var VALUES (matched by KEY/SECRET/TOKEN/PASSWORD
-# in the var NAME, not an enumerated list — so it fails safe against any
-# future secret-shaped name without needing an update) from `docker compose
-# config`'s resolved, interpolated output. Use this instead of the bare
-# `docker compose config`, which has leaked the pilot's real AWS access key
-# into a transcript twice — see AGENTS.md's Gotchas section.
+# Redacts secret-shaped env var VALUES from `docker compose config`'s
+# resolved, interpolated output. Use this instead of the bare `docker
+# compose config`, which has leaked the pilot's real AWS access key into
+# a transcript twice — see AGENTS.md's Gotchas section. Two passes:
+# (1) matched by KEY/SECRET/TOKEN/PASSWORD/PASS/CREDENTIAL/DSN/URI/URL/
+#     CONNECTION in the var NAME, not an enumerated list — fails safe
+#     against any future secret-shaped name without needing an update.
+# (2) a userinfo-shaped `user:pass@host` substring inside any value —
+#     catches a connection-string secret even under a var name pass (1)
+#     doesn't recognize (none exist in this repo today, but the pattern
+#     is real and not name-dependent).
 config-safe:
-	docker compose config | sed -E 's/^([[:space:]]*[A-Za-z0-9_]*(KEY|SECRET|TOKEN|PASSWORD)[A-Za-z0-9_]*:)[[:space:]].*/\1 ***REDACTED***/'
+	docker compose config | sed -E \
+	  -e 's/^([[:space:]]*[A-Za-z0-9_]*(KEY|SECRET|TOKEN|PASSWORD|PASS|CREDENTIAL|DSN|URI|URL|CONNECTION)[A-Za-z0-9_]*:)[[:space:]].*/\1 ***REDACTED***/' \
+	  -e 's#://[^:/@[:space:]]+:[^@[:space:]]+@#://***REDACTED***@#g'
 
 lint-gateway:
 	cd gateway && go vet ./... && golangci-lint run ./... && go run github.com/fe3dback/go-arch-lint@v1.18.0 check
