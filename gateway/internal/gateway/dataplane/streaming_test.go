@@ -491,6 +491,87 @@ func TestHandleChatCompletionStreamNoFallbackAfterFirstByte(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionStreamDisconnectAfterRealContentStillBillsIt is
+// the direct proof of the client-disconnect billing fix: real content
+// delivered to the client before a mid-stream read error (a client
+// disconnect is the common real trigger) must be billed at its real,
+// estimated cost — never silently discarded to $0 — per
+// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md.
+// Unlike TestHandleChatCompletionStreamNoFallbackAfterFirstByte above
+// (which deliberately fails BEFORE any real text content is decoded, so
+// its own correct bill is $0 and proves nothing about this fix), this
+// fixture lets three full content frames (60 real chars total) through
+// first.
+func TestHandleChatCompletionStreamDisconnectAfterRealContentStillBillsIt(t *testing.T) {
+	contentStream := "" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"` + strings.Repeat("a", 20) + `"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"` + strings.Repeat("b", 20) + `"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"` + strings.Repeat("c", 20) + `"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":15,"total_tokens":20}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	// Fail 5 bytes into the finish_reason frame -- all three 20-char
+	// content frames (60 real chars total) are guaranteed fully delivered
+	// first; the usage frame is never reached at all.
+	thirdContentFrameEnd := strings.LastIndex(contentStream, `"content":"`+strings.Repeat("c", 20))
+	thirdContentFrameEnd = strings.Index(contentStream[thirdContentFrameEnd:], "\n\n") + thirdContentFrameEnd + len("\n\n")
+
+	keys := []identity.VirtualKey{{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100}}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tracker := budget.NewTracker()
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:    verifier,
+		Limiter:     ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:      tracker,
+		Cache:       inprocess.New(0),
+		CacheL2:     inprocess.New(0),
+		CacheL3:     inprocess.NewLexicalCache(0),
+		Guardrails:  guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:    adapter.Registry{"openai": openai.New()},
+		Router:      testRouter(deployments),
+		Deployments: deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{
+			"gpt-4o": {CompletionPerToken: decimal.NewFromFloat(0.01)},
+		}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("non-streaming Upstream should never be called by this test")
+			return nil, nil
+		},
+		UpstreamStream: func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+			return nopCloserReader{&failAfterNBytesReader{r: strings.NewReader(contentStream), n: thirdContentFrameEnd + 5}}, nil
+		},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	streamErr := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, rec)
+	if streamErr == nil {
+		t.Fatal("expected an error from the mid-stream connection loss, got nil")
+	}
+
+	// 60 real chars / streamRunawayCharsPerToken(4) = 15 estimated
+	// completion tokens * $0.01/token = $0.15 -- real, non-zero, exactly
+	// computable. Before this fix, the missing usage frame on this exact
+	// error path meant real cost was left at $0, silently discarding 60
+	// real, already-delivered, provider-billed characters' worth of
+	// content.
+	got := tracker.SpentUSD("test-key", 0)
+	want := decimal.NewFromFloat(0.15)
+	if !got.Equal(want) {
+		t.Errorf("SpentUSD after the disconnect = %s, want %s — real content delivered before a client disconnect must still be billed", got, want)
+	}
+}
+
 // TestHandleChatCompletionStreamTruncatedResponseNeverCached is the
 // streaming-path counterpart to TestHandleChatCompletionTruncatedResponseNeverCached
 // (dataplane_test.go) -- live-verified 2026-09-13: unlike L1/L2's own

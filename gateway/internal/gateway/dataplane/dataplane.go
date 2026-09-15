@@ -2133,9 +2133,20 @@ func realServingModel(dep Deployment, fallbackModel string) string {
 func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, cacheAttempted bool, costEstimated bool, err error, duration time.Duration) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
-	// internal/budget's own tests, not assumed here too.
+	// internal/budget's own tests, not assumed here too. The gate is
+	// `err == nil || billable`, not a bare `err == nil`: a streamed
+	// response that delivered real content before erroring out (a client
+	// disconnect, per HandleChatCompletionStream's own comment on
+	// firstChunkSent-gated billable) still has a real resp.Usage
+	// (estimated, per estimateOrRealUsage) that must be priced, not
+	// silently left at $0 — see
+	// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md.
+	// billable is never true on any OTHER err != nil path (verified: the
+	// buffered path's runMissPath explicitly returns billable=false on
+	// its own error branch), so this is a genuinely narrow, deliberate
+	// exception, not a general loosening.
 	var cost decimal.Decimal
-	if err == nil {
+	if err == nil || billable {
 		// Priced against realServingModel(dep, req.Model), NOT req.Model
 		// directly — closes
 		// evals/tests/fixtures/regression_corpus_cost_abuse.json's
@@ -2166,13 +2177,17 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// later errors out, times out, or turns out non-billable (a cache
 	// hit or coalesced singleflight follower), or that capacity leaks
 	// permanently. realCost/realTokens stay nil (release-only) unless
-	// err == nil && billable — the exact same gate the old billable-only
-	// Record/RecordTokens calls used, so the cost-double-counting
-	// invariant (docs/rfcs/2026-09-05-gateway-cost-double-counting.md)
-	// carries over unchanged.
+	// billable — simplified from the old `err == nil && billable` gate
+	// (the `err == nil` half is now redundant, not removed for
+	// correctness: billable is never true when err != nil on any path
+	// except the one streaming client-disconnect exception described on
+	// cost's own gate above) — so the cost-double-counting invariant
+	// (docs/rfcs/2026-09-05-gateway-cost-double-counting.md) carries over
+	// unchanged for every OTHER path, while that one exception now bills
+	// correctly instead of only releasing.
 	if vk != nil {
 		var realCost *decimal.Decimal
-		if err == nil && billable {
+		if billable {
 			realCost = &cost
 		}
 		if budgetReserved || realCost != nil {
@@ -2184,7 +2199,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		}
 
 		var realTokens *float64
-		if err == nil && billable {
+		if billable {
 			rt := float64(resp.Usage.TotalTokens)
 			realTokens = &rt
 		}

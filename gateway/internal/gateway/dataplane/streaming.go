@@ -198,8 +198,22 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 
 	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens}
 	var blocked bool
-	resp, dep, fallback, blocked, costEstimated, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
+	var firstChunkSent bool
+	resp, dep, fallback, blocked, costEstimated, firstChunkSent, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
 	if err != nil {
+		// firstChunkSent means real content already reached the client
+		// before this error (a client disconnect is the common real
+		// case) — resp still carries that real, already-delivered
+		// content with an estimated usage (streamDeploymentWithFallback/
+		// streamDeployment's own read-error handling), so it must still
+		// be billed, not silently discarded, per
+		// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md.
+		// billable's own meaning ("resp came from this specific call's
+		// own real, unshared upstream call") extends naturally to
+		// "delivered real content" here — never true on any OTHER
+		// streaming error path (auth, rate limit, no deployment, etc.),
+		// since none of those ever set firstChunkSent.
+		billable = firstChunkSent
 		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
 		return
 	}
@@ -305,7 +319,12 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 // reservation made against the client's originally-requested model stays
 // that same reservation regardless of which deployment ultimately serves
 // the response.
-func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, bool, bool, error) {
+func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, bool, bool, bool, error) {
+	// firstChunkSent, in addition to gating fallback attempts below, is
+	// also returned to the caller — HandleChatCompletionStream uses it to
+	// decide whether an err != nil return is still billable (real content
+	// already reached the client before the connection broke), per
+	// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md.
 	var firstChunkSent bool
 	var fallback fallbackInfo
 	// blocked is set by finishStreamedResponse (via streamDeployment/
@@ -328,7 +347,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	// estimated to false on its own error return.
 	resp, estimated, err := p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
 	if err == nil || firstChunkSent {
-		return resp, dep, fallback, blocked, estimated, err
+		return resp, dep, fallback, blocked, estimated, firstChunkSent, err
 	}
 
 	originalDep, originalErr := dep, err
@@ -357,7 +376,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 		dep = fallbackDep
 		resp, estimated, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
 	}
-	return resp, dep, fallback, blocked, estimated, err
+	return resp, dep, fallback, blocked, estimated, firstChunkSent, err
 }
 
 // streamDeploymentWithCapacityCheck wraps streamDeployment with dep's
@@ -443,7 +462,21 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 			break
 		}
 		if readErr != nil {
-			return adapter.ChatResponse{}, false, fmt.Errorf("reading stream from deployment %q: %w", dep.Name, readErr)
+			// A non-EOF read error here includes a client-disconnect-
+			// propagated context cancellation (upstreamCtx is a child of
+			// ctx, itself derived from the client's own r.Context(),
+			// canceled by net/http on disconnect) — acc may already hold
+			// real, already-client-delivered content at this point.
+			// Estimating usage from it (rather than discarding acc
+			// entirely, the pre-fix behavior) lets the caller bill for
+			// what was genuinely generated and provider-billed before the
+			// connection broke, per
+			// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md
+			// — the caller (streamDeploymentWithFallback) decides whether
+			// this is actually billable, gated on *firstChunkSent, not
+			// this function.
+			usage, estimated := estimateOrRealUsage(req, acc, finalUsage)
+			return acc.build(usage), estimated, fmt.Errorf("reading stream from deployment %q: %w", dep.Name, readErr)
 		}
 
 		chunks, done, usage, decErr := decoder.Decode(ev)
@@ -570,7 +603,12 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 			break
 		}
 		if readErr != nil {
-			return adapter.ChatResponse{}, false, fmt.Errorf("reading binary event stream from deployment %q: %w", dep.Name, readErr)
+			// See streamDeployment's identical read-error comment: acc may
+			// already hold real, already-client-delivered content, so
+			// estimate usage from it rather than discarding it — the
+			// caller decides billability, gated on *firstChunkSent.
+			usage, estimated := estimateOrRealUsage(req, acc, finalUsage)
+			return acc.build(usage), estimated, fmt.Errorf("reading binary event stream from deployment %q: %w", dep.Name, readErr)
 		}
 		payloadBuf = msg.Payload
 
