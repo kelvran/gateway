@@ -10,7 +10,8 @@ excludeFiles:
 components:
   identity:          { in: identity }
   identity-boltstore: { in: identity/boltstore }
-  budget:            { in: [budget, budget/**] }
+  budget:            { in: budget }
+  budget-boltstore:  { in: budget/boltstore }
   ratelimit:         { in: [ratelimit, ratelimit/**] }
   router:            { in: router }
   costaccounting:    { in: costaccounting }
@@ -66,6 +67,9 @@ deps:
   prompt-boltstore:
     mayDependOn:
       - prompt
+  budget-boltstore:
+    mayDependOn:
+      - budget
   cache-inprocess:
     mayDependOn:
       - cache

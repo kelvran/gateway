@@ -7,8 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
-
-	"github.com/shopspring/decimal"
+	"time"
 )
 
 // fakeStore is a tiny in-memory Store, kept in this package's own test
@@ -17,43 +16,43 @@ import (
 // follows (e.g. internal/telemetry never imports internal/identity).
 type fakeStore struct {
 	mu        sync.Mutex
-	data      map[string]decimal.Decimal
+	data      map[string]State
 	saveCalls []struct {
 		keyID string
-		spent decimal.Decimal
+		state State
 	}
 	saveErr error
 	closed  bool
 }
 
-func newFakeStore(initial map[string]decimal.Decimal) *fakeStore {
+func newFakeStore(initial map[string]State) *fakeStore {
 	if initial == nil {
-		initial = map[string]decimal.Decimal{}
+		initial = map[string]State{}
 	}
 	return &fakeStore{data: initial}
 }
 
-func (f *fakeStore) Load(context.Context) (map[string]decimal.Decimal, error) {
+func (f *fakeStore) Load(context.Context) (map[string]State, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make(map[string]decimal.Decimal, len(f.data))
+	out := make(map[string]State, len(f.data))
 	for k, v := range f.data {
 		out[k] = v
 	}
 	return out, nil
 }
 
-func (f *fakeStore) Save(_ context.Context, keyID string, spent decimal.Decimal) error {
+func (f *fakeStore) Save(_ context.Context, keyID string, state State) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.saveCalls = append(f.saveCalls, struct {
 		keyID string
-		spent decimal.Decimal
-	}{keyID, spent})
+		state State
+	}{keyID, state})
 	if f.saveErr != nil {
 		return f.saveErr
 	}
-	f.data[keyID] = spent
+	f.data[keyID] = state
 	return nil
 }
 
@@ -63,7 +62,7 @@ func (f *fakeStore) Close() error {
 }
 
 func TestNewTrackerWithStoreHydratesExistingSpend(t *testing.T) {
-	store := newFakeStore(map[string]decimal.Decimal{"team-alpha": d("7.5")})
+	store := newFakeStore(map[string]State{"team-alpha": {Spent: d("7.5")}})
 	tr, err := NewTrackerWithStore(context.Background(), store, nil)
 	if err != nil {
 		t.Fatalf("NewTrackerWithStore: %v", err)
@@ -79,6 +78,50 @@ func TestNewTrackerWithStoreHydratesExistingSpend(t *testing.T) {
 	}
 }
 
+// TestNewTrackerWithStoreHydratesPeriodStartAndEpochAcrossRestart is the
+// regression proof for the rolling-window persistence gap: a restart must
+// NOT treat a key with real, persisted rolling-window bookkeeping as a
+// fresh window.
+func TestNewTrackerWithStoreHydratesPeriodStartAndEpochAcrossRestart(t *testing.T) {
+	oneHourAgo := time.Now().Add(-time.Hour)
+	store := newFakeStore(map[string]State{
+		"team-alpha": {Spent: d("5"), PeriodStart: oneHourAgo, PeriodEpoch: 3, BilledCount: 2},
+	})
+	tr, err := NewTrackerWithStore(context.Background(), store, nil)
+	if err != nil {
+		t.Fatalf("NewTrackerWithStore: %v", err)
+	}
+
+	_, reserved, _, reservationEpoch := tr.Reserve("team-alpha", d("100"), 24*time.Hour)
+	if !reserved {
+		t.Fatal("Reserve did not grant a reservation")
+	}
+	if reservationEpoch != 3 {
+		t.Errorf("reservationEpoch = %d, want 3 (hydrated from the store, not a fresh window)", reservationEpoch)
+	}
+}
+
+// TestNewTrackerWithStoreLegacyEntryStartsAFreshWindowNotAFabricatedOne
+// proves the migration boundary: a legacy (pre-migration, zero PeriodStart)
+// entry must NOT be treated as "epoch 0, real window" — its window starts
+// fresh at the first observation after this restart, exactly matching
+// pre-fix behavior for that one key.
+func TestNewTrackerWithStoreLegacyEntryStartsAFreshWindowNotAFabricatedOne(t *testing.T) {
+	store := newFakeStore(map[string]State{"team-alpha": {Spent: d("5")}}) // zero PeriodStart == legacy
+	tr, err := NewTrackerWithStore(context.Background(), store, nil)
+	if err != nil {
+		t.Fatalf("NewTrackerWithStore: %v", err)
+	}
+
+	_, reserved, _, reservationEpoch := tr.Reserve("team-alpha", d("100"), 24*time.Hour)
+	if !reserved {
+		t.Fatal("Reserve did not grant a reservation")
+	}
+	if reservationEpoch != 0 {
+		t.Errorf("reservationEpoch = %d, want 0 (a legacy entry starts a fresh window, not epoch 3-or-whatever it never had)", reservationEpoch)
+	}
+}
+
 func TestNewTrackerWithStoreLoadErrorPropagates(t *testing.T) {
 	store := &erroringLoadStore{err: errors.New("simulated load failure")}
 	_, err := NewTrackerWithStore(context.Background(), store, nil)
@@ -89,11 +132,11 @@ func TestNewTrackerWithStoreLoadErrorPropagates(t *testing.T) {
 
 type erroringLoadStore struct{ err error }
 
-func (s *erroringLoadStore) Load(context.Context) (map[string]decimal.Decimal, error) {
+func (s *erroringLoadStore) Load(context.Context) (map[string]State, error) {
 	return nil, s.err
 }
-func (s *erroringLoadStore) Save(context.Context, string, decimal.Decimal) error { return nil }
-func (s *erroringLoadStore) Close() error                                        { return nil }
+func (s *erroringLoadStore) Save(context.Context, string, State) error { return nil }
+func (s *erroringLoadStore) Close() error                              { return nil }
 
 func TestRecordPersistsCumulativeTotalToStore(t *testing.T) {
 	store := newFakeStore(nil)
@@ -109,11 +152,41 @@ func TestRecordPersistsCumulativeTotalToStore(t *testing.T) {
 		t.Fatalf("len(saveCalls) = %d, want 2", len(store.saveCalls))
 	}
 	// Save must receive the cumulative total, not just the delta.
-	if !store.saveCalls[0].spent.Equal(d("3")) {
-		t.Errorf("first Save spent = %v, want 3", store.saveCalls[0].spent)
+	if !store.saveCalls[0].state.Spent.Equal(d("3")) {
+		t.Errorf("first Save spent = %v, want 3", store.saveCalls[0].state.Spent)
 	}
-	if !store.saveCalls[1].spent.Equal(d("7")) {
-		t.Errorf("second Save spent = %v, want 7 (cumulative, not the 4-delta)", store.saveCalls[1].spent)
+	if !store.saveCalls[1].state.Spent.Equal(d("7")) {
+		t.Errorf("second Save spent = %v, want 7 (cumulative, not the 4-delta)", store.saveCalls[1].state.Spent)
+	}
+}
+
+// TestRecordPersistsFullStateIncludingPeriodBookkeeping proves Record's
+// persisted State carries the CURRENT periodStart/periodEpoch/billedCount
+// alongside spend, not just a bare total — the actual fix for the
+// rolling-window persistence gap on Record's own persistence path.
+func TestRecordPersistsFullStateIncludingPeriodBookkeeping(t *testing.T) {
+	store := newFakeStore(nil)
+	tr, err := NewTrackerWithStore(context.Background(), store, nil)
+	if err != nil {
+		t.Fatalf("NewTrackerWithStore: %v", err)
+	}
+
+	// Establish a real window (first Record call starts periodStart) and
+	// one real Reconcile'd cost so billedCount is non-zero.
+	tr.Record("team-alpha", d("1"), 24*time.Hour)
+	_, reserved, reservedUSD, reservationEpoch := tr.Reserve("team-alpha", d("100"), 24*time.Hour)
+	if !reserved {
+		t.Fatal("Reserve did not grant a reservation")
+	}
+	realCost := d("2")
+	tr.Reconcile("team-alpha", reservedUSD, reservationEpoch, &realCost, 24*time.Hour)
+
+	last := store.saveCalls[len(store.saveCalls)-1].state
+	if last.BilledCount != 1 {
+		t.Errorf("persisted BilledCount = %d, want 1", last.BilledCount)
+	}
+	if last.PeriodStart.IsZero() {
+		t.Error("persisted PeriodStart is zero, want the real window start")
 	}
 }
 

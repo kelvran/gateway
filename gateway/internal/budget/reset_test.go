@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/shopspring/decimal"
 )
 
 // fakeClock returns a func() time.Time that starts at t0 and advances
@@ -38,7 +36,7 @@ func TestResetIntervalZeroNeverResetsEvenAcrossLargeTimeGaps(t *testing.T) {
 }
 
 func TestFirstAccessStartsWindowWithoutResettingExistingSpend(t *testing.T) {
-	store := newFakeStore(map[string]decimal.Decimal{"team-alpha": d("42")})
+	store := newFakeStore(map[string]State{"team-alpha": {Spent: d("42")}})
 	tr, err := NewTrackerWithStore(context.Background(), store, nil)
 	if err != nil {
 		t.Fatalf("NewTrackerWithStore: %v", err)
@@ -105,7 +103,7 @@ func TestRecordAfterResetAccumulatesOnFreshZeroNotStaleTotal(t *testing.T) {
 }
 
 func TestResetTriggeredByAllowPersistsZeroToStore(t *testing.T) {
-	store := newFakeStore(map[string]decimal.Decimal{"team-alpha": d("50")})
+	store := newFakeStore(map[string]State{"team-alpha": {Spent: d("50")}})
 	tr, err := NewTrackerWithStore(context.Background(), store, nil)
 	if err != nil {
 		t.Fatalf("NewTrackerWithStore: %v", err)
@@ -118,13 +116,13 @@ func TestResetTriggeredByAllowPersistsZeroToStore(t *testing.T) {
 	clock.advance(window + time.Second)
 	tr.Allow("team-alpha", d("1"), window) // crosses the boundary -- Allow alone, no Record
 
-	if got, ok := store.data["team-alpha"]; !ok || !got.IsZero() {
+	if got, ok := store.data["team-alpha"]; !ok || !got.Spent.IsZero() {
 		t.Errorf("store.data[team-alpha] = %v (present=%v), want 0 -- Allow's own reset must durably persist, not just update the in-memory map", got, ok)
 	}
 }
 
 func TestResetTriggeredBySpentUSDPersistsZeroToStore(t *testing.T) {
-	store := newFakeStore(map[string]decimal.Decimal{"team-alpha": d("50")})
+	store := newFakeStore(map[string]State{"team-alpha": {Spent: d("50")}})
 	tr, err := NewTrackerWithStore(context.Background(), store, nil)
 	if err != nil {
 		t.Fatalf("NewTrackerWithStore: %v", err)
@@ -137,7 +135,7 @@ func TestResetTriggeredBySpentUSDPersistsZeroToStore(t *testing.T) {
 	clock.advance(window + time.Second)
 	tr.SpentUSD("team-alpha", window) // crosses the boundary
 
-	if got, ok := store.data["team-alpha"]; !ok || !got.IsZero() {
+	if got, ok := store.data["team-alpha"]; !ok || !got.Spent.IsZero() {
 		t.Errorf("store.data[team-alpha] = %v (present=%v), want 0 -- SpentUSD's own reset must durably persist too", got, ok)
 	}
 }

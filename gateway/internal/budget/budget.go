@@ -43,12 +43,28 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// State is one virtual key's full persisted budget state: cumulative
+// spend plus enough rolling-window bookkeeping (PeriodStart/PeriodEpoch/
+// BilledCount) that a process restart no longer resets a key's own
+// reset-window clock to the restart moment — the real fix for the gap
+// NewTrackerWithStore's own doc comment used to document as an accepted,
+// "self-limiting" tradeoff. PeriodStart's zero value is the sentinel a
+// Store implementation uses to signal "no rolling-window bookkeeping
+// available for this key" (e.g. a legacy pre-migration entry) — see
+// boltstore's own Load for the one real producer of that case.
+type State struct {
+	Spent       decimal.Decimal
+	PeriodStart time.Time
+	PeriodEpoch int64
+	BilledCount int64
+}
+
 // Store persists budget spend durably across process restarts. Optional —
 // a Tracker constructed via NewTracker (no store) is unchanged: pure
 // in-memory. See internal/budget/boltstore for the real implementation.
 type Store interface {
-	Load(ctx context.Context) (map[string]decimal.Decimal, error)
-	Save(ctx context.Context, keyID string, spent decimal.Decimal) error
+	Load(ctx context.Context) (map[string]State, error)
+	Save(ctx context.Context, keyID string, state State) error
 	Close() error
 }
 
@@ -107,46 +123,60 @@ func NewTracker() *Tracker {
 }
 
 // NewTrackerWithStore constructs a Tracker backed by store: existing
-// spend is loaded immediately, so a restart resumes exactly where it left
-// off, and every subsequent Record call persists synchronously before
-// returning — no async-flush window, no data lost between a Record call
-// and a crash. logger defaults to slog.Default() if nil; it is used only
-// to report a Save failure (see Record's doc comment) — a persistence
-// failure never fails the request itself.
+// spend AND rolling-window bookkeeping (PeriodStart/PeriodEpoch/
+// BilledCount) are loaded immediately, so a restart resumes exactly where
+// it left off — including a key's reset-window clock, which no longer
+// silently re-anchors to the restart moment — and every subsequent Record
+// call persists synchronously before returning — no async-flush window,
+// no data lost between a Record call and a crash. logger defaults to
+// slog.Default() if nil; it is used only to report a Save failure (see
+// Record's doc comment) — a persistence failure never fails the request
+// itself.
 //
-// A key's rolling-window reset boundary (periodStart, see
-// maybeResetLocked) is NOT itself persisted — only cumulative spend is,
-// matching the real scope docs/rfcs/2026-09-03-budget-persistence.md
-// shipped. A restart therefore resets a key's own reset-window clock to
-// the restart moment (not its spend), extending that one window by at
-// most resetInterval — a narrow, self-limiting, and pre-existing class
-// of behavior (a store-less Tracker already loses all budget state on
-// every restart today), not a new bypass this feature introduces.
+// A key whose loaded State has a zero PeriodStart (a legacy
+// pre-migration entry — see boltstore's own Load) is seeded with spend
+// only, exactly matching this function's own pre-fix behavior for that
+// one key: its window clock starts fresh at the first observation after
+// this restart, per resetIfNeeded's own "first observation" rule, rather
+// than fabricating a window boundary this Tracker was never actually
+// told.
 func NewTrackerWithStore(ctx context.Context, store Store, logger *slog.Logger) (*Tracker, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	spent, err := store.Load(ctx)
+	states, err := store.Load(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if spent == nil {
-		spent = make(map[string]decimal.Decimal)
+	spent := make(map[string]decimal.Decimal, len(states))
+	periodStart := make(map[string]time.Time, len(states))
+	periodEpoch := make(map[string]int64, len(states))
+	billedCount := make(map[string]int64, len(states))
+	for keyID, s := range states {
+		spent[keyID] = s.Spent
+		if !s.PeriodStart.IsZero() {
+			periodStart[keyID] = s.PeriodStart
+			periodEpoch[keyID] = s.PeriodEpoch
+			billedCount[keyID] = s.BilledCount
+		}
 	}
-	return &Tracker{spent: spent, periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
+	return &Tracker{spent: spent, periodStart: periodStart, periodEpoch: periodEpoch, billedCount: billedCount, highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
 }
 
 // resetIfNeeded resets keyID's spend to zero and starts a fresh window,
-// returning true, if resetInterval > 0 and at least that much time has
-// elapsed since the window began. The very first observation of a key
-// (no periodStart yet) starts its window at now() without resetting
-// spend -- a freshly-loaded key from a Store may already have real,
-// non-zero spend, and starting its clock is not the same as pretending
-// that spend never happened. Locks/unlocks t.mu itself; callers must not
-// already hold it.
-func (t *Tracker) resetIfNeeded(keyID string, resetInterval time.Duration) bool {
+// reporting justReset true, if resetInterval > 0 and at least that much
+// time has elapsed since the window began. The very first observation of
+// a key (no periodStart yet) starts its window at now() without
+// resetting spend -- a freshly-loaded key from a Store may already have
+// real, non-zero spend, and starting its clock is not the same as
+// pretending that spend never happened. periodStart/periodEpoch are
+// always returned as the CURRENT (post-call) values for keyID, so a
+// caller can pass them straight to persistZeroIfStoreConfigured without
+// a second lock acquisition, regardless of which branch was taken.
+// Locks/unlocks t.mu itself; callers must not already hold it.
+func (t *Tracker) resetIfNeeded(keyID string, resetInterval time.Duration) (justReset bool, periodStart time.Time, periodEpoch int64) {
 	if resetInterval <= 0 {
-		return false
+		return false, time.Time{}, 0
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -154,7 +184,7 @@ func (t *Tracker) resetIfNeeded(keyID string, resetInterval time.Duration) bool 
 	now := t.now()
 	if !seen {
 		t.periodStart[keyID] = now
-		return false
+		return false, now, t.periodEpoch[keyID]
 	}
 	if now.Sub(start) >= resetInterval {
 		t.spent[keyID] = decimal.Zero
@@ -172,21 +202,25 @@ func (t *Tracker) resetIfNeeded(keyID string, resetInterval time.Duration) bool 
 		// stale by a later Reconcile call -- see periodEpoch's own field
 		// comment.
 		t.periodEpoch[keyID]++
-		return true
+		return true, now, t.periodEpoch[keyID]
 	}
-	return false
+	return false, start, t.periodEpoch[keyID]
 }
 
 // persistZeroIfStoreConfigured durably records a just-occurred
 // resetIfNeeded reset, for a caller (Allow/SpentUSD) that doesn't already
-// persist its own result the way Record does. A no-op when no Store is
-// configured. A persistence failure is logged, never fatal — mirrors
-// Record's own established failure handling.
-func (t *Tracker) persistZeroIfStoreConfigured(keyID string) {
+// persist its own result the way Record does. periodStart/periodEpoch
+// must be the exact values resetIfNeeded returned alongside justReset —
+// carried through so the persisted State reflects the fresh window's own
+// boundary, not a stale one from before this reset. A no-op when no
+// Store is configured. A persistence failure is logged, never fatal —
+// mirrors Record's own established failure handling.
+func (t *Tracker) persistZeroIfStoreConfigured(keyID string, periodStart time.Time, periodEpoch int64) {
 	if t.store == nil {
 		return
 	}
-	if err := t.store.Save(context.Background(), keyID, decimal.Zero); err != nil {
+	state := State{Spent: decimal.Zero, PeriodStart: periodStart, PeriodEpoch: periodEpoch, BilledCount: 0}
+	if err := t.store.Save(context.Background(), keyID, state); err != nil {
 		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
 	}
 }
@@ -201,8 +235,8 @@ func (t *Tracker) persistZeroIfStoreConfigured(keyID string) {
 // the reset so a restart doesn't silently reload the stale pre-reset
 // total.
 func (t *Tracker) Allow(keyID string, capUSD decimal.Decimal, resetInterval time.Duration) bool {
-	if t.resetIfNeeded(keyID, resetInterval) {
-		t.persistZeroIfStoreConfigured(keyID)
+	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
+		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
 	if capUSD.Sign() <= 0 {
 		return true
@@ -232,8 +266,8 @@ func (t *Tracker) Allow(keyID string, capUSD decimal.Decimal, resetInterval time
 // budget-spend-at-decision-time field), never part of the enforcement
 // decision itself, which Allow alone still makes correctly.
 func (t *Tracker) SpentUSD(keyID string, resetInterval time.Duration) decimal.Decimal {
-	if t.resetIfNeeded(keyID, resetInterval) {
-		t.persistZeroIfStoreConfigured(keyID)
+	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
+		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -250,9 +284,12 @@ func (t *Tracker) SpentUSD(keyID string, resetInterval time.Duration) decimal.De
 // resetIfNeeded) — costUSD then accumulates on top of that fresh zero,
 // not the stale pre-reset total.
 //
-// When a Store is configured, the new total is persisted synchronously
-// before Record returns — this alone already durably reflects any reset
-// that just happened, since it's computed from the post-reset spend, so
+// When a Store is configured, the new total — alongside the CURRENT
+// periodStart/periodEpoch/billedCount, captured under the same lock
+// acquisition that updates spend, so the persisted State is always
+// internally consistent — is persisted synchronously before Record
+// returns; this alone already durably reflects any reset that just
+// happened, since it's computed from the post-reset bookkeeping, so
 // Record never needs persistZeroIfStoreConfigured's separate call the way
 // Allow/SpentUSD do. A persistence failure is logged
 // ("budget_persist_failed") and Record still returns normally — the
@@ -268,12 +305,13 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 	t.mu.Lock()
 	newTotal := t.spent[keyID].Add(costUSD)
 	t.spent[keyID] = newTotal
+	state := State{Spent: newTotal, PeriodStart: t.periodStart[keyID], PeriodEpoch: t.periodEpoch[keyID], BilledCount: t.billedCount[keyID]}
 	t.mu.Unlock()
 
 	if t.store == nil {
 		return
 	}
-	if err := t.store.Save(context.Background(), keyID, newTotal); err != nil {
+	if err := t.store.Save(context.Background(), keyID, state); err != nil {
 		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
 	}
 }
@@ -303,8 +341,8 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 // can detect whether a rolling-window reset happened for this key, by
 // ANY caller, between this Reserve call and that Reconcile call.
 func (t *Tracker) Reserve(keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal, reservationEpoch int64) {
-	if t.resetIfNeeded(keyID, resetInterval) {
-		t.persistZeroIfStoreConfigured(keyID)
+	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
+		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
 	if capUSD.Sign() <= 0 {
 		return true, false, decimal.Zero, 0
@@ -392,8 +430,8 @@ func (t *Tracker) reservationAmountLocked(keyID string, capUSD decimal.Decimal) 
 // TestReconcileDoesNotUndercountAcrossAConcurrentlyTriggeredReset for a
 // concrete, 100%-reproducible demonstration of the resulting money-leak.
 func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, reservationEpoch int64, realCost *decimal.Decimal, resetInterval time.Duration) {
-	if t.resetIfNeeded(keyID, resetInterval) {
-		t.persistZeroIfStoreConfigured(keyID)
+	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
+		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
 
 	t.mu.Lock()
@@ -407,12 +445,13 @@ func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, reservati
 		t.billedCount[keyID]++
 	}
 	t.spent[keyID] = newTotal
+	state := State{Spent: newTotal, PeriodStart: t.periodStart[keyID], PeriodEpoch: t.periodEpoch[keyID], BilledCount: t.billedCount[keyID]}
 	t.mu.Unlock()
 
 	if !billed || t.store == nil {
 		return
 	}
-	if err := t.store.Save(context.Background(), keyID, newTotal); err != nil {
+	if err := t.store.Save(context.Background(), keyID, state); err != nil {
 		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
 	}
 }
@@ -473,8 +512,8 @@ func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, reservati
 // epoch this returns into its eventual Reconcile call, mirroring
 // Reserve's own contract — never the original pre-stream epoch.
 func (t *Tracker) IncreaseReservation(keyID string, capUSD, currentReservedUSD, newReservedUSD decimal.Decimal, reservationEpoch int64, resetInterval time.Duration) (allowed bool, appliedUSD decimal.Decimal, newReservationEpoch int64) {
-	if t.resetIfNeeded(keyID, resetInterval) {
-		t.persistZeroIfStoreConfigured(keyID)
+	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
+		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
 	if capUSD.Sign() <= 0 || !newReservedUSD.GreaterThan(currentReservedUSD) {
 		return true, currentReservedUSD, reservationEpoch

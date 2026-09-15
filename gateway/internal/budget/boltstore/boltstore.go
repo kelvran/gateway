@@ -2,26 +2,39 @@
 // internal/budget.Tracker restart-durable persistence, per
 // docs/rfcs/2026-09-03-budget-persistence.md.
 //
-// Spend is stored as the exact decimal string (spent.String()), never a
-// numeric encoding of any kind — bbolt has no notion of a "float column"
-// to misuse, but the discipline is stated explicitly anyway, matching the
-// same precision-preservation reasoning as
+// Each key's full budget.State (spend plus rolling-window bookkeeping) is
+// JSON-encoded — decimal.Decimal has its own MarshalJSON/UnmarshalJSON
+// that round-trips through its exact decimal string form, never a
+// float64, preserving the same precision-preservation discipline as
 // docs/rfcs/2026-09-02-decimal-cost-accounting.md's YAML-parser fix and
 // docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md's string-typed cost
 // attribute: the boundary between Kelvran's money type and any external
-// representation must never round-trip through anything but decimal text.
+// representation must never round-trip through anything but decimal
+// text, JSON-framed or not.
+//
+// Load transparently reads a pre-existing bucket entry written before
+// this file understood budget.State (a bare spent.String() byte string,
+// with no JSON object framing at all) — see Load's own comment. This
+// makes the schema widening lazy and automatic: no separate migration
+// tool, no downtime, no operator action required on an existing
+// deployment. The very next Save for that key rewrites it in the new
+// format.
 package boltstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/shopspring/decimal"
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/kelvran/gateway/gateway/internal/budget"
 )
 
-// bucketName is the single bbolt bucket this store uses: keyID -> the
-// exact decimal string of that key's cumulative spend.
+// bucketName is the single bbolt bucket this store uses: keyID -> a
+// JSON-encoded budget.State (or, for a not-yet-migrated legacy entry, a
+// bare decimal string — see Load).
 const bucketName = "spend"
 
 // Store is a bbolt-backed budget.Store. The zero value is not usable;
@@ -60,17 +73,32 @@ func (s *Store) Close() error {
 // with a future networked Store implementation, but unused here — a
 // bbolt transaction is synchronous and fast enough that there is no real
 // mid-transaction cancellation point to honor.
-func (s *Store) Load(_ context.Context) (map[string]decimal.Decimal, error) {
-	result := map[string]decimal.Decimal{}
+//
+// Each entry is tried as JSON-encoded budget.State first. A bucket entry
+// written before this file understood State — a bare decimal string with
+// no JSON object framing — reliably fails that unmarshal (a bare JSON
+// number literal can't decode into a struct), so on that specific failure
+// this falls back to decimal.NewFromString and treats it as a legacy
+// entry: budget.State{Spent: parsed}, with PeriodStart left at its zero
+// value — exactly this store's pre-migration behavior for that one key.
+// See budget.NewTrackerWithStore's own doc comment for how a zero
+// PeriodStart is interpreted. Only if BOTH decodes fail is this a
+// genuinely corrupt value.
+func (s *Store) Load(_ context.Context) (map[string]budget.State, error) {
+	result := map[string]budget.State{}
 	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		return b.ForEach(func(k, v []byte) error {
-			d, err := decimal.NewFromString(string(v))
-			if err != nil {
-				return fmt.Errorf("boltstore: key %q has a corrupt stored spend value %q: %w", k, v, err)
+			var state budget.State
+			if jsonErr := json.Unmarshal(v, &state); jsonErr == nil {
+				result[string(k)] = state
+				return nil
 			}
-			result[string(k)] = d
-			return nil
+			if d, decErr := decimal.NewFromString(string(v)); decErr == nil {
+				result[string(k)] = budget.State{Spent: d}
+				return nil
+			}
+			return fmt.Errorf("boltstore: key %q has a corrupt stored spend value %q", k, v)
 		})
 	})
 	if err != nil {
@@ -79,11 +107,17 @@ func (s *Store) Load(_ context.Context) (map[string]decimal.Decimal, error) {
 	return result, nil
 }
 
-// Save implements budget.Store, upserting keyID's cumulative spend in one
-// bbolt transaction.
-func (s *Store) Save(_ context.Context, keyID string, spent decimal.Decimal) error {
+// Save implements budget.Store, upserting keyID's full budget.State
+// (JSON-encoded) in one bbolt transaction — including for a key whose
+// existing entry was still in the legacy bare-decimal-string format,
+// which this unconditionally rewrites in the new format.
+func (s *Store) Save(_ context.Context, keyID string, state budget.State) error {
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("boltstore: encoding state for key %q: %w", keyID, err)
+	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
-		return b.Put([]byte(keyID), []byte(spent.String()))
+		return b.Put([]byte(keyID), encoded)
 	})
 }
