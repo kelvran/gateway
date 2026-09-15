@@ -3129,6 +3129,28 @@ const bedrockSigningName = "bedrock"
 // pre-existing (void) contract as closely as possible.
 func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Deployment, body []byte) error {
 	switch dep.Provider {
+	case "openai":
+		httpReq.Header.Set("Authorization", "Bearer "+dep.APIKey)
+		// Idempotency-Key, per
+		// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md:
+		// makes Kelvran's OWN retries/fallbacks to the same deployment
+		// safe against double-billing by OpenAI, mirroring Stripe's/
+		// OpenAI's own documented Idempotency-Key contract. body is the
+		// deterministic, provider-native marshaled request for this
+		// specific dep — the same sha256 hash already computed inline for
+		// Bedrock's SigV4 signing below, reused here as the key. Stable
+		// only across retries to THIS deployment: a fallback hop to a
+		// DIFFERENT deployment computes a different hash and gets no
+		// protection from the first attempt — correct scope, since that
+		// deployment never saw the first attempt at all. Anthropic has no
+		// equivalent header in its current public API reference (verified
+		// live against platform.claude.com's own request-header table,
+		// 2026-09-16 — Authorization/x-api-key/anthropic-workspace-id/
+		// anthropic-version/content-type are the only ones documented) —
+		// deliberately NOT added there; see
+		// TestSetUpstreamAuthHeadersDoesNotSetIdempotencyKeyForAnthropicOrGeminiOrBedrock.
+		payloadHash := sha256.Sum256(body)
+		httpReq.Header.Set("Idempotency-Key", hex.EncodeToString(payloadHash[:]))
 	case "anthropic":
 		httpReq.Header.Set("x-api-key", dep.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")

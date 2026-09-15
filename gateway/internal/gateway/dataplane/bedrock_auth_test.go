@@ -2,6 +2,8 @@ package dataplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"testing"
@@ -132,6 +134,75 @@ func TestSetUpstreamAuthHeadersNonBedrockProvidersUnchanged(t *testing.T) {
 		want := c.wantPrefix + key
 		if got := httpReq.Header.Get(c.headerName); got != want {
 			t.Errorf("%s: header %q = %q, want %q", c.provider, c.headerName, got, want)
+		}
+	}
+}
+
+// TestSetUpstreamAuthHeadersSetsIdempotencyKeyForOpenAI proves OpenAI's
+// own outbound calls get a real, content-derived Idempotency-Key, per
+// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md.
+func TestSetUpstreamAuthHeadersSetsIdempotencyKeyForOpenAI(t *testing.T) {
+	dep := Deployment{Name: "d", Provider: "openai", APIKey: testCred("openai")}
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+	httpReq, err := http.NewRequest(http.MethodPost, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, body); err != nil {
+		t.Fatalf("setUpstreamAuthHeaders: %v", err)
+	}
+
+	wantHash := sha256.Sum256(body)
+	want := hex.EncodeToString(wantHash[:])
+	if got := httpReq.Header.Get("Idempotency-Key"); got != want {
+		t.Errorf("Idempotency-Key = %q, want the hex-encoded sha256 of body (%q)", got, want)
+	}
+}
+
+// TestSetUpstreamAuthHeadersIdempotencyKeyIsStableAcrossRetriesWithIdenticalBody
+// proves the actual retry-safety property: calling this twice with the
+// identical body (exactly what Kelvran's own retry/fallback machinery
+// would do against the SAME deployment) produces the identical key.
+func TestSetUpstreamAuthHeadersIdempotencyKeyIsStableAcrossRetriesWithIdenticalBody(t *testing.T) {
+	dep := Deployment{Name: "d", Provider: "openai", APIKey: testCred("openai")}
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"retry me"}]}`)
+
+	keys := make([]string, 2)
+	for i := range keys {
+		httpReq, err := http.NewRequest(http.MethodPost, "https://example.com", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, body); err != nil {
+			t.Fatalf("setUpstreamAuthHeaders: %v", err)
+		}
+		keys[i] = httpReq.Header.Get("Idempotency-Key")
+	}
+
+	if keys[0] == "" || keys[0] != keys[1] {
+		t.Errorf("Idempotency-Key across two calls with the identical body = %q, %q, want identical, non-empty values", keys[0], keys[1])
+	}
+}
+
+// TestSetUpstreamAuthHeadersDoesNotSetIdempotencyKeyForAnthropicOrGeminiOrBedrock
+// encodes the verified-live finding (platform.claude.com's own request-
+// header reference, 2026-09-16) that Anthropic has no Idempotency-Key-
+// shaped header at all, so a future contributor doesn't "helpfully" add
+// an invented one without re-verifying — and confirms Gemini/Bedrock,
+// which never claimed to support one, stay untouched too.
+func TestSetUpstreamAuthHeadersDoesNotSetIdempotencyKeyForAnthropicOrGeminiOrBedrock(t *testing.T) {
+	for _, provider := range []string{"anthropic", "gemini", "bedrock"} {
+		dep := Deployment{Name: "d", Provider: provider, APIKey: testCred(provider), AccessKeyID: testCred("access-key"), SecretAccessKey: testCred("access-value"), Region: "us-east-1"}
+		httpReq, err := http.NewRequest(http.MethodPost, "https://example.com", nil)
+		if err != nil {
+			t.Fatalf("NewRequest(%s): %v", provider, err)
+		}
+		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, []byte(`{}`)); err != nil {
+			t.Fatalf("setUpstreamAuthHeaders(%s): %v", provider, err)
+		}
+		if got := httpReq.Header.Get("Idempotency-Key"); got != "" {
+			t.Errorf("%s: Idempotency-Key = %q, want empty — no verified support for this header", provider, got)
 		}
 	}
 }
