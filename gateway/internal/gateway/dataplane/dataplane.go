@@ -2520,11 +2520,31 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if cacheInfo.Hit() {
 		savingsUsd = cost.String()
 	}
+	// requestModelForMetrics guards RequestModel's own single consumer
+	// (RecordChatCompletionMetrics's gen_ai.request.model attribute)
+	// against an unbounded-cardinality DoS: req.Model is fully
+	// client-controlled, unauthenticated input at this point (finalize
+	// runs via defer on every call, including an auth failure that never
+	// resolved a deployment at all), and an OTel/Prometheus metric
+	// attribute is exactly the sink where an attacker minting one unique
+	// req.Model string per request would otherwise create one brand-new,
+	// permanent time series per request. dep.Name != "" reuses the same
+	// signal responseFormatRequestedNotEnforced above already relies
+	// on: a non-empty dep.Name means req.Model genuinely matched a real,
+	// admin-configured model group and the router resolved a deployment
+	// for it — bounded cardinality by construction, safe to pass through
+	// unchanged. An empty dep.Name (auth failure, no deployment
+	// configured for this model, or a guardrail block before routing)
+	// means req.Model could be anything; sentinel it instead.
+	requestModelForMetrics := req.Model
+	if dep.Name == "" {
+		requestModelForMetrics = "unresolved"
+	}
 	result := telemetry.ChatCompletionResult{
 		VirtualKeyID:    virtualKeyID,
 		Provider:        dep.Provider,
 		DeploymentName:  dep.Name,
-		RequestModel:    req.Model,
+		RequestModel:    requestModelForMetrics,
 		ResponseModel:   responseModel,
 		ResponseID:      resp.ID,
 		FinishReasons:   finishReasons(resp),
