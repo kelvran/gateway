@@ -162,6 +162,9 @@ jobs:
       - name: ruff
         working-directory: evals
         run: uvx ruff check .
+      - name: ruff format --check (formatting is configured in pyproject.toml but was never enforced)
+        working-directory: evals
+        run: uvx ruff format --check .
       - name: mypy (incremental per-module strict allowlist)
         # Closes the real AGENTS.md Conventions gap ("type hints on all
         # public functions" was documented but never enforced by CI/lint).
@@ -407,6 +410,10 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+      # Required for the Trivy step below to upload SARIF results to the
+      # code-scanning dashboard (same grant codeql.yml/scorecard.yml already
+      # use for their own SARIF uploads).
+      security-events: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Log in to GHCR
@@ -456,6 +463,33 @@ jobs:
           context: ./gateway
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+      - name: Trivy vulnerability scan of the published image
+        # govulncheck (gateway job, above) and pip-audit (evals job) scan
+        # SOURCE dependencies -- nothing previously scanned the actual BUILT
+        # image this job just pushed to GHCR. Scans the exact digest just
+        # built (via docker/login-action's already-authenticated session
+        # above, no extra registry credentials needed), not a mutable tag.
+        # Report-only, no exit-code gate: the final image is FROM scratch
+        # (gateway/Dockerfile) with no OS packages at all, so this mainly
+        # surfaces vulnerabilities in the statically-linked Go binary
+        # itself; no measured real-world finding count exists yet for this
+        # repo to set a real (non-guessed) failure threshold from, matching
+        # this repo's own no-guessed-thresholds convention (see the evals
+        # job's regression-corpus-gate comment above). Findings surface via
+        # the code-scanning dashboard instead, same posture as CodeQL/
+        # Scorecard.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/kelvran/gateway@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+      - name: Upload Trivy SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-gateway-image
       - name: Install cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
       - name: Sign the published image (keyless, via GitHub OIDC)
