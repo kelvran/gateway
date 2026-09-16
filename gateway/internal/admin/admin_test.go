@@ -269,6 +269,65 @@ func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
 	}
 }
 
+// TestUpsertVirtualKeyRejectsNegativeBudgetUSD is the regression proof
+// for the real bug fixed alongside it: this handler previously performed
+// no validation at all on budget_usd, silently accepting a negative
+// value that lands in decimal.Decimal.IsPositive()'s own "unlimited"
+// bucket for the wrong reason.
+func TestUpsertVirtualKeyRejectsNegativeBudgetUSD(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"-10"}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-negative-budget", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyRejectsNegativeBudgetResetIntervalSeconds proves
+// the more severe half of the same finding: a negative
+// budget_reset_interval_seconds becomes a negative time.Duration, which
+// budget.Tracker's resetIfNeeded compares via now.Sub(start) >=
+// resetInterval -- trivially true on every check, silently forcing a
+// permanent reset rather than erroring on the operator mistake.
+func TestUpsertVirtualKeyRejectsNegativeBudgetResetIntervalSeconds(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_reset_interval_seconds":-3600}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-negative-reset", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyRejectsOutOfRangeBudgetWarnPercent proves the third
+// field of the same finding: budget_warn_percent outside [0, 100] is a
+// non-fatal but confusing operator mistake (an alert threshold that can
+// never fire, or fires immediately) worth rejecting up front.
+func TestUpsertVirtualKeyRejectsOutOfRangeBudgetWarnPercent(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_warn_percent":150}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-bad-warn-percent", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyAcceptsZeroBudgetFieldsAsUnlimitedDefault is the
+// regression guard: 0 (the common, "no budget configured" default for
+// every one of these 3 fields) must still be accepted, not swept up by
+// an overly strict >= 0 boundary mistake.
+func TestUpsertVirtualKeyAcceptsZeroBudgetFieldsAsUnlimitedDefault(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"0","budget_reset_interval_seconds":0,"budget_warn_percent":0}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-zero-budget", fakeAdminCredential(), body)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 	pipeline := newTestPipeline(t)
 	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())

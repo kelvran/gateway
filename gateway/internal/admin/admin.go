@@ -382,6 +382,35 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 			http.Error(w, "key_hash is required", http.StatusBadRequest)
 			return
 		}
+		// **Fixed 2026-09-17, real bug**: this handler performed no
+		// validation at all on budget_usd/budget_reset_interval_seconds/
+		// budget_warn_percent before this check existed. A negative
+		// budget_reset_interval_seconds becomes a negative time.Duration
+		// (secondsToDuration below), which budget.Tracker's own
+		// resetIfNeeded compares via now.Sub(start) >= resetInterval --
+		// trivially true on every single check against a negative
+		// duration, silently disabling the rolling-window mechanism
+		// entirely (a permanent reset, not a "no window" no-op) rather
+		// than erroring on an operator mistake. A negative budget_usd is
+		// equally nonsensical against IsPositive()'s own "positive means
+		// enforced, non-positive means unlimited" convention (line 639
+		// below) -- silently landing in the "unlimited" bucket for the
+		// wrong reason. budget_warn_percent outside [0, 100] is a
+		// non-fatal but equally confusing operator mistake worth
+		// rejecting up front rather than producing an alert threshold
+		// that can never fire (>100) or fires immediately (<0).
+		if req.BudgetUSD.IsNegative() {
+			http.Error(w, "budget_usd must not be negative", http.StatusBadRequest)
+			return
+		}
+		if req.BudgetResetIntervalSeconds < 0 {
+			http.Error(w, "budget_reset_interval_seconds must not be negative", http.StatusBadRequest)
+			return
+		}
+		if req.BudgetWarnPercent < 0 || req.BudgetWarnPercent > 100 {
+			http.Error(w, "budget_warn_percent must be between 0 and 100", http.StatusBadRequest)
+			return
+		}
 
 		var allowedModels map[string]struct{}
 		if len(req.AllowedModels) > 0 {
