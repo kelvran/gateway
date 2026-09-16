@@ -576,7 +576,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			return nil, fmt.Errorf("opening virtual-key store at %q: %w", cfg.Admin.PersistPath, err)
 		}
 		identityStore = store
-		virtualKeys, keyConfigs, concurrencyConfigs, err = mergePersistedVirtualKeys(virtualKeys, keyConfigs, concurrencyConfigs, store)
+		virtualKeys, keyConfigs, concurrencyConfigs, err = mergePersistedVirtualKeys(virtualKeys, keyConfigs, concurrencyConfigs, store, logger)
 		if err != nil {
 			_ = store.Close()
 			return nil, fmt.Errorf("hydrating virtual keys from %q: %w", cfg.Admin.PersistPath, err)
@@ -852,7 +852,15 @@ func validateFallbackChainTargets(deployments []dataplane.Deployment) error {
 // applies) — any PerModel/TPM override the config version of that same ID
 // might have had does not survive, since that shape lives only in
 // ratelimit.KeyConfig, never in identity.VirtualKey.
-func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []ratelimit.KeyConfig, concurrencyConfigs []ratelimit.ConcurrencyConfig, store identity.Store) ([]identity.VirtualKey, []ratelimit.KeyConfig, []ratelimit.ConcurrencyConfig, error) {
+//
+// logger records one line per config-declared ID a persisted entry
+// overwrites — this is a one-shot startup event (no log-volume concern),
+// and a per-ID line is grep-able exactly like every other per-key audit
+// line elsewhere in this codebase (e.g. admin_virtual_key_upserted). Never
+// logged for a persisted ID with no config-declared counterpart at all
+// (the net-new-entry branch below) — there is nothing to disclose an
+// override AGAINST in that case.
+func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []ratelimit.KeyConfig, concurrencyConfigs []ratelimit.ConcurrencyConfig, store identity.Store, logger *slog.Logger) ([]identity.VirtualKey, []ratelimit.KeyConfig, []ratelimit.ConcurrencyConfig, error) {
 	persisted, err := store.Load(context.Background())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("loading persisted virtual keys: %w", err)
@@ -869,6 +877,7 @@ func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []r
 		concurrencyConfig := ratelimit.ConcurrencyConfig{ID: id, MaxInFlight: vk.MaxConcurrentRequests}
 
 		if i, exists := indexByID[id]; exists {
+			logger.Info("startup_virtual_key_overridden_by_persisted_store", "key_id", id)
 			virtualKeys[i] = vk
 			keyConfigs[i] = keyConfig
 			concurrencyConfigs[i] = concurrencyConfig
