@@ -37,7 +37,7 @@ components:
   idempotency:            { in: idempotency }
   idempotency-inprocess:  { in: idempotency/inprocess }
 
-# Components deliberately absent from `deps:` below (identity, budget,
+# Components deliberately absent from `deps:` below (identity,
 # ratelimit, router, costaccounting, guardrail, telemetry,
 # cache-correlation, cache, adapter, controlplane, backup, idempotency) are pure leaves per
 # gateway/ARCHITECTURE.md's dependency direction rules: a component with
@@ -73,6 +73,9 @@ deps:
   budget-boltstore:
     mayDependOn:
       - budget
+  budget:
+    mayDependOn:
+      - telemetry
   cache-inprocess:
     mayDependOn:
       - cache

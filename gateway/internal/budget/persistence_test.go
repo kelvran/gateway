@@ -8,6 +8,13 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // fakeStore is a tiny in-memory Store, kept in this package's own test
@@ -210,6 +217,21 @@ func TestRecordPersistsFullStateIncludingPeriodBookkeeping(t *testing.T) {
 // docs/rfcs/2026-09-03-budget-persistence.md's whole design point is that
 // this is a real but non-fatal degradation, not a request failure.
 func TestRecordLogsButContinuesOnPersistFailure(t *testing.T) {
+	// kelvran.persistence.failed, per
+	// docs/upgrade-research/admin-operator-experience-2026-09-14.md: this
+	// package's own test binary has no other otel.SetMeterProvider swap
+	// (unlike internal/telemetry/internal/gateway/dataplane, each of
+	// which already spent their own one-per-test-binary global-meter
+	// delegation elsewhere), so this is a real, independent proof that
+	// budget.go's own call site actually increments the shared counter
+	// with store_kind="budget" — not just that RecordPersistenceFailed
+	// itself works in isolation (already proven directly in
+	// internal/telemetry's own test suite).
+	reader := sdkmetric.NewManualReader()
+	prevProvider := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	defer otel.SetMeterProvider(prevProvider)
+
 	store := newFakeStore(nil)
 	store.saveErr = errors.New("simulated disk failure")
 
@@ -235,6 +257,32 @@ func TestRecordLogsButContinuesOnPersistFailure(t *testing.T) {
 	}
 	if !bytes.Contains(logBuf.Bytes(), []byte("budget_persist_failed")) {
 		t.Errorf("log output = %q, want it to contain \"budget_persist_failed\"", logBuf.String())
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("reader.Collect: %v", err)
+	}
+	var gotCount int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "kelvran.persistence.failed" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("kelvran.persistence.failed data type = %T, want metricdata.Sum[int64]", m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				storeKind, _ := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranPersistenceStoreKind))
+				if storeKind.AsString() == "budget" {
+					gotCount += dp.Value
+				}
+			}
+		}
+	}
+	if gotCount != 1 {
+		t.Errorf("kelvran.persistence.failed[store_kind=budget] = %d, want 1", gotCount)
 	}
 }
 

@@ -469,6 +469,35 @@ func RecordBudgetThresholdCrossed(ctx context.Context, keyID string, percentBuck
 	))
 }
 
+// persistenceFailedCounter is per
+// docs/upgrade-research/admin-operator-experience-2026-09-14.md: 6
+// existing Warn-log-only call sites (budget_persist_failed x4,
+// identity_persist_failed x2, across internal/budget and
+// gateway/dataplane) had no paired metric at all — a durable-store write
+// failure was invisible to any dashboard/alert that doesn't tail logs.
+// One shared counter, not one per store kind — see
+// AttrKelvranPersistenceStoreKind's own doc comment.
+var persistenceFailedCounter = mustInt64Counter(
+	meter,
+	"kelvran.persistence.failed",
+	metric.WithDescription("Durable-store writes that failed (budget or identity), by store kind."),
+	metric.WithUnit("{write}"),
+)
+
+// RecordPersistenceFailed increments the persistence-failure counter for
+// storeKind ("budget" or "identity") and keyID. Callers pair this
+// counter-then-log at each existing Warn-log call site (the more recent
+// of this codebase's two established orderings), never as a replacement
+// for that log line -- the log carries the actual error detail this
+// counter deliberately does not (a raw error string is unbounded-
+// cardinality and not a meaningful metric attribute).
+func RecordPersistenceFailed(ctx context.Context, storeKind, keyID string) {
+	persistenceFailedCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(AttrKelvranPersistenceStoreKind, storeKind),
+		attribute.String(AttrKelvranVirtualKeyID, keyID),
+	))
+}
+
 // Config selects how spans are exported.
 type Config struct {
 	// Exporter is "stdout", "otlp", or "none". "" defaults to "stdout" —

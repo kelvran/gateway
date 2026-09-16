@@ -161,6 +161,16 @@ const (
 	// of requests where usage is real, matching every other
 	// only-emit-when-meaningful attribute in this file.
 	AttrKelvranCostEstimated = "kelvran.cost.estimated"
+	// AttrKelvranPersistenceStoreKind is per
+	// docs/upgrade-research/admin-operator-experience-2026-09-14.md: which
+	// durable store (identity/budget) a
+	// telemetry.RecordPersistenceFailed-reported write failure hit — one
+	// shared counter with this attribute, not a separately-named counter
+	// per store, mirroring AttrKelvranBudgetPercentBucket's own "a second
+	// attribute, not a second counter" precedent, since "a durable-store
+	// write failed" is one alertable event type regardless of which
+	// subsystem.
+	AttrKelvranPersistenceStoreKind = "kelvran.persistence.store_kind"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider

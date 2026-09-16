@@ -771,6 +771,7 @@ func (p *Pipeline) persistVirtualKeyIfStoreConfigured(vk identity.VirtualKey) {
 		return
 	}
 	if err := p.identityStore.Save(context.Background(), vk); err != nil {
+		telemetry.RecordPersistenceFailed(context.Background(), "identity", vk.ID)
 		p.logger.Warn("identity_persist_failed", "key_id", vk.ID, "error", err.Error())
 	}
 }
@@ -784,6 +785,7 @@ func (p *Pipeline) deletePersistedVirtualKeyIfStoreConfigured(id string) {
 		return
 	}
 	if err := p.identityStore.Delete(context.Background(), id); err != nil {
+		telemetry.RecordPersistenceFailed(context.Background(), "identity", id)
 		p.logger.Warn("identity_persist_failed", "key_id", id, "error", err.Error())
 	}
 }
@@ -839,6 +841,7 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 			// failure must never turn a successful key revocation into an
 			// error response — revocation is the security-critical half.
 			if err := p.budget.Delete(name); err != nil {
+				telemetry.RecordPersistenceFailed(context.Background(), "budget", name)
 				p.logger.Warn("budget_persist_failed", "key_id", name, "error", err.Error())
 			}
 			return nil

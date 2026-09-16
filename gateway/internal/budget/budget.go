@@ -41,6 +41,8 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // State is one virtual key's full persisted budget state: cumulative
@@ -226,6 +228,7 @@ func (t *Tracker) persistZeroIfStoreConfigured(keyID string, periodStart time.Ti
 	}
 	state := State{Spent: decimal.Zero, PeriodStart: periodStart, PeriodEpoch: periodEpoch, BilledCount: 0}
 	if err := t.store.Save(context.Background(), keyID, state); err != nil {
+		telemetry.RecordPersistenceFailed(context.Background(), "budget", keyID)
 		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
 	}
 }
@@ -317,6 +320,7 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 		return
 	}
 	if err := t.store.Save(context.Background(), keyID, state); err != nil {
+		telemetry.RecordPersistenceFailed(context.Background(), "budget", keyID)
 		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
 	}
 }
@@ -457,6 +461,7 @@ func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, reservati
 		return
 	}
 	if err := t.store.Save(context.Background(), keyID, state); err != nil {
+		telemetry.RecordPersistenceFailed(context.Background(), "budget", keyID)
 		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
 	}
 }

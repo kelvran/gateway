@@ -442,6 +442,13 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	RecordLLMSpend(ctx, 0.01)
 	RecordLLMSpend(ctx, 0.02)
 
+	// kelvran.persistence.failed, per
+	// docs/upgrade-research/admin-operator-experience-2026-09-14.md —
+	// same "must share this function's one delegation" constraint.
+	RecordPersistenceFailed(ctx, "budget", "team-budget-persist-failure")
+	RecordPersistenceFailed(ctx, "identity", "team-identity-persist-failure")
+	RecordPersistenceFailed(ctx, "identity", "team-identity-persist-failure")
+
 	// Three RecordChatCompletionMetrics scenarios, each given a unique
 	// RequestModel so their attribute sets never collide into the same
 	// histogram data point: a genuine billable success (both histograms
@@ -485,6 +492,7 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 
 	counts := map[[2]string]int64{}
 	savingsByLayer := map[string]float64{}
+	persistenceFailedByStoreKind := map[string]int64{}
 	// lookupCounts is keyed by (outcome, layer) -- layer is "" for every
 	// miss, matching RecordCacheLookup's own "never a fabricated
 	// empty-string layer on a miss" convention (it simply omits the
@@ -512,6 +520,15 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 				}
 				for _, dp := range sum.DataPoints {
 					totalSpendUSD += dp.Value
+				}
+			case "kelvran.persistence.failed":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.persistence.failed data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					storeKind, _ := dp.Attributes.Value(attribute.Key(AttrKelvranPersistenceStoreKind))
+					persistenceFailedByStoreKind[storeKind.AsString()] += dp.Value
 				}
 			case "kelvran.cache.l3.gate_outcome":
 				sum, ok := m.Data.(metricdata.Sum[int64])
@@ -671,5 +688,12 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	}
 	if _, ok := tokensByModelAndType[[2]string{"genai-metrics-failure", GenAITokenTypeInput}]; ok {
 		t.Error("failure scenario recorded an input token.usage data point — must be suppressed")
+	}
+
+	if got := persistenceFailedByStoreKind["budget"]; got != 1 {
+		t.Errorf("kelvran.persistence.failed[store_kind=budget] = %d, want 1", got)
+	}
+	if got := persistenceFailedByStoreKind["identity"]; got != 2 {
+		t.Errorf("kelvran.persistence.failed[store_kind=identity] = %d, want 2", got)
 	}
 }
