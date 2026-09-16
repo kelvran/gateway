@@ -45,6 +45,13 @@ var ErrStreamingNotSupported = errors.New("dataplane: streaming not supported fo
 // touches UpstreamStream at all.
 var ErrStreamingNotConfigured = errors.New("dataplane: streaming is not configured for this pipeline")
 
+// ErrBedrockStreamTruncated is returned by streamDeploymentBedrock when
+// its own eventstream.Decoder.Decode call reports io.EOF before a
+// messageStop event was ever observed -- see that call site's own doc
+// comment for why bare io.EOF is not a reliable "clean end of stream"
+// signal for this specific decoder.
+var ErrBedrockStreamTruncated = errors.New("dataplane: bedrock event stream ended before a messageStop event was received")
+
 // UpstreamStreamCaller performs the actual upstream HTTP call for one
 // deployment when streaming, returning the raw response body for the
 // caller to read as SSE frames — unlike UpstreamCaller, it does not decode
@@ -627,6 +634,30 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	for {
 		msg, readErr := eventDecoder.Decode(body, payloadBuf)
 		if errors.Is(readErr, io.EOF) {
+			// **Fixed 2026-09-17, real bug**: aws-sdk-go-v2's own
+			// eventstream.Decoder.Decode does not reliably distinguish a
+			// clean end-of-stream from a connection truncated mid-frame.
+			// Its decodePayload uses io.Copy, which (per io.Copy's own
+			// documented contract) treats an EOF from the underlying
+			// reader as successful completion, not an error -- a payload
+			// truncated mid-read is silently accepted as "fully read,"
+			// short. The VERY NEXT read (the frame's trailing CRC, via
+			// io.ReadFull) then hits the now-closed connection with zero
+			// bytes available for THAT read specifically, which
+			// io.ReadFull reports as bare io.EOF (io.ReadFull only
+			// upgrades to io.ErrUnexpectedEOF when 0 < n < requested for
+			// the SAME read) -- indistinguishable, at this loop's level,
+			// from a legitimate "no more frames" EOF at a real frame
+			// boundary. Confirmed by reading aws-sdk-go-v2's own
+			// decode.go directly, not assumed. acc.hasFinishReason()
+			// closes the ambiguity: per stream.go's own documented event
+			// sequence, messageStop always arrives before the stream
+			// closes on a genuinely complete response -- its absence at
+			// EOF means this was a truncation, not a clean end.
+			if !acc.hasFinishReason() {
+				usage, estimated := estimateOrRealUsage(req, acc, finalUsage)
+				return acc.build(usage), estimated, fmt.Errorf("reading binary event stream from deployment %q: %w", dep.Name, ErrBedrockStreamTruncated)
+			}
 			break
 		}
 		if readErr != nil {
