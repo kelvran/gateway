@@ -248,7 +248,15 @@ jobs:
           python3 -c "
           import os, sys
           pct = float(os.environ['NEW_PERCENT_COVERED'])
-          threshold = 93.0
+          # Real bug, found live 2026-09-17: python-coverage-comment-action's
+          # own new_percent_covered output is a 0.0-1.0 FRACTION (confirmed
+          # against a real PR run's own log: 0.9496359223300971 for what the
+          # coverage comment itself displayed as 94.96%), not a 0-100
+          # percentage -- comparing it against 93.0 made this step fail
+          # unconditionally, on every PR, regardless of real coverage. Both
+          # of this repo's only 2 open PRs (Dependabot #1, #2) were blocked
+          # by this before the fix.
+          threshold = 0.93
           print(f'python-coverage-comment-action new_percent_covered={pct} vs threshold={threshold}')
           sys.exit(0 if pct >= threshold else 1)
           "
