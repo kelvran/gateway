@@ -168,24 +168,25 @@ func TestNormalizedKeyDiffersOnResponseFormatFingerprint(t *testing.T) {
 	}
 }
 
-// TestKeyEmptyResponseFormatFingerprintIsByteIdenticalToPreExistingBehavior
-// is the load-bearing backward-compatibility proof: a request with no
-// ResponseFormat at all (fingerprint "") must produce the EXACT SAME key
-// this function produced before responseFormatFingerprint existed.
-// wantPreExisting is a FIXED, independently-computed hash of this exact
-// (tenantID, model, messages, temperature, maxTokens,
-// guardrailPolicyVersion) tuple through the pre-existing five-field
-// Fprintf sequence (no response_format segment at all) — not merely two
-// freshly-computed calls compared against each other, which would pass
-// even if the fold order/separator changed for every caller uniformly.
-func TestKeyEmptyResponseFormatFingerprintIsByteIdenticalToPreExistingBehavior(t *testing.T) {
+// TestKeyEmptyResponseFormatFingerprintIsStillDeterministic replaces a
+// prior byte-for-byte backward-compatibility assertion against the
+// pre-2026-09-17 hash scheme. That guarantee was deliberately dropped as
+// part of fixing a real ambiguous-delimiter collision in writeField (see
+// key.go's doc comment) — the fix changes Key's output for every input,
+// including this one, so asserting a specific historical hash constant
+// would just re-pin the old (broken) scheme's byte layout. What still
+// matters, and what this asserts instead, is that an empty
+// responseFormatFingerprint remains fully deterministic and distinct from
+// a non-empty one (covered separately by TestKeyDiffersOnResponseFormatFingerprint).
+func TestKeyEmptyResponseFormatFingerprintIsStillDeterministic(t *testing.T) {
 	temp := 0.5
 	maxTokens := 100
 	messages := `[{"role":"user","content":"hi"}]`
 
-	const wantPreExisting = "8f695eebf80febfdac0ac6ed13ccec4143da82318f37e547437beb97db21cad5"
-	if got := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", ""); got != wantPreExisting {
-		t.Errorf(`Key(..., "", "") = %q, want %q (the exact pre-existing hash, unchanged by adding an empty response_format segment)`, got, wantPreExisting)
+	k1 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	k2 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	if k1 != k2 {
+		t.Errorf("Key with empty responseFormatFingerprint is not deterministic: %q != %q", k1, k2)
 	}
 }
 
@@ -224,20 +225,59 @@ func TestNormalizedKeyDiffersOnPromptFingerprint(t *testing.T) {
 	}
 }
 
-// TestKeyEmptyPromptFingerprintIsByteIdenticalToPreExistingBehavior is
+// TestKeyEmptyPromptFingerprintIsStillDeterministic is
 // promptFingerprint's own version of
-// TestKeyEmptyResponseFormatFingerprintIsByteIdenticalToPreExistingBehavior
-// above: a request with no PromptID at all (fingerprint "") must produce
-// the exact same key as before this parameter existed -- the same fixed,
-// independently-computed hash, not merely two freshly-computed empty
-// calls compared against each other.
-func TestKeyEmptyPromptFingerprintIsByteIdenticalToPreExistingBehavior(t *testing.T) {
+// TestKeyEmptyResponseFormatFingerprintIsStillDeterministic above — see
+// that test's doc comment for why this no longer pins a historical hash
+// constant.
+func TestKeyEmptyPromptFingerprintIsStillDeterministic(t *testing.T) {
 	temp := 0.5
 	maxTokens := 100
 	messages := `[{"role":"user","content":"hi"}]`
 
-	const wantPreExisting = "8f695eebf80febfdac0ac6ed13ccec4143da82318f37e547437beb97db21cad5"
-	if got := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", ""); got != wantPreExisting {
-		t.Errorf(`Key(..., "", "") = %q, want %q (the exact pre-existing hash, unchanged by adding an empty prompt segment)`, got, wantPreExisting)
+	k1 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	k2 := Key("team-alpha", "gpt-4o", messages, &temp, &maxTokens, "v1", "", "")
+	if k1 != k2 {
+		t.Errorf("Key with empty promptFingerprint is not deterministic: %q != %q", k1, k2)
+	}
+}
+
+// TestKeyAmbiguousDelimiterCollisionIsFixed is the load-bearing regression
+// proof for the real bug fixed in key.go's writeField: two DIFFERENT
+// (model, messages) pairs, crafted so the first's model field contains a
+// literal NUL byte immediately followed by what looks like the second
+// pair's own "messages" tag, must NOT collide. Under the pre-fix bare
+// "\x00tag=value" scheme they did collide by construction — this exact
+// (model, messages) pair combination was hand-verified to produce
+// byte-identical hash input under that scheme before this fix.
+func TestKeyAmbiguousDelimiterCollisionIsFixed(t *testing.T) {
+	temp := 0.5
+	maxTokens := 100
+
+	// model absorbs a fake "\x00messages=b" tag+value; messages is empty
+	// on this side of the pair.
+	collidingModel := Key("team-alpha", "a\x00messages=b", "c", &temp, &maxTokens, "v1", "", "")
+	// The "real" split of the exact same total bytes: model="a",
+	// messages="b\x00messages=c".
+	collidingMessages := Key("team-alpha", "a", "b\x00messages=c", &temp, &maxTokens, "v1", "", "")
+
+	if collidingModel == collidingMessages {
+		t.Fatalf("Key(model=%q, messages=%q) collided with Key(model=%q, messages=%q): both produced %q — ambiguous-delimiter collision is NOT fixed",
+			"a\x00messages=b", "c", "a", "b\x00messages=c", collidingModel)
+	}
+}
+
+// TestNormalizedKeyAmbiguousDelimiterCollisionIsFixed is NormalizedKey's
+// own version of TestKeyAmbiguousDelimiterCollisionIsFixed above.
+func TestNormalizedKeyAmbiguousDelimiterCollisionIsFixed(t *testing.T) {
+	temp := 0.5
+	maxTokens := 100
+
+	collidingModel := NormalizedKey("team-alpha", "a\x00messages=b", "c", &temp, &maxTokens, "v1", "", "")
+	collidingMessages := NormalizedKey("team-alpha", "a", "b\x00messages=c", &temp, &maxTokens, "v1", "", "")
+
+	if collidingModel == collidingMessages {
+		t.Fatalf("NormalizedKey(model=%q, messages=%q) collided with NormalizedKey(model=%q, messages=%q): both produced %q — ambiguous-delimiter collision is NOT fixed",
+			"a\x00messages=b", "c", "a", "b\x00messages=c", collidingModel)
 	}
 }

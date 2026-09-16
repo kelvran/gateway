@@ -1586,19 +1586,28 @@ func isRegionAllowed(vk *identity.VirtualKey, region string) bool {
 const idempotencyKeyTTL = 10 * time.Minute
 
 // idempotencyStoreKey scopes a client-supplied Idempotency-Key to tenantID
-// (a virtual key's own ID), using the same NUL-byte-tagged sha256 pattern
-// as cache.Key/NormalizedKey above — naive string concatenation (e.g.
-// tenantID+":"+idempotencyKey) is exactly the unescaped-delimiter
-// collision class those two functions already guard against: a tenant ID
-// or key containing the separator byte could otherwise collide two
-// DIFFERENT (tenant, key) pairs onto the same idempotency.Store entry.
+// (a virtual key's own ID), using a length-prefixed sha256 field encoding
+// -- see internal/cache.writeField's doc comment for why a bare
+// "\x00tag=value" separator (this function's own pre-2026-09-17 scheme,
+// and cache.Key/NormalizedKey's) is NOT actually collision-safe: a tenant
+// ID containing a literal NUL byte could absorb the "\x00idempotency_key="
+// tag and part of a different key's value, letting two DIFFERENT (tenant,
+// key) pairs collide onto the same idempotency.Store entry. tenantID here
+// is server-assigned (an identity.VirtualKey.ID), not raw per-request
+// client input, so this exact vector is far less directly reachable than
+// cache.Key's own model field was -- fixed anyway, for the same structural
+// reason and so this function's own doc comment stops claiming a
+// collision-safety property the old scheme didn't actually have.
 // Unscoped (a bare idempotencyKey) would let two different tenants that
 // happen to send the same literal header value collide on one another's
 // stored responses — real cross-tenant leakage, the same severity class
 // THREAT_MODEL.md already tracks for the cache.
 func idempotencyStoreKey(tenantID, idempotencyKey string) string {
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "tenant=%s\x00idempotency_key=%s", tenantID, idempotencyKey)
+	_, _ = fmt.Fprintf(h, "tenant:%d:", len(tenantID))
+	_, _ = io.WriteString(h, tenantID)
+	_, _ = fmt.Fprintf(h, "idempotency_key:%d:", len(idempotencyKey))
+	_, _ = io.WriteString(h, idempotencyKey)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

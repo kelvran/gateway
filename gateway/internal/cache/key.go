@@ -4,7 +4,69 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
+	"io"
 )
+
+// writeField writes one hash-input field as tag + ":" + decimal-length +
+// ":" + the raw value bytes. This is a length-prefixed (netstring-style)
+// encoding, not a bare separator-delimited one: the decimal length makes
+// every field's end position unambiguous regardless of what bytes the
+// value itself contains, including an embedded instance of "tag:" for
+// some OTHER field.
+//
+// **Fixed 2026-09-17, real bug**: the prior scheme wrote
+// "\x00tag=value" segments with no length prefix, trusting "\x00" plus a
+// literal tag name to be an unambiguous separator. It wasn't: model (a
+// fully client-controlled request field, written via bare %s, never
+// re-escaped) can contain a literal NUL byte -- a client sends this via
+// ordinary JSON's backslash-u-0000 escape, which encoding/json decodes into a
+// real 0x00 byte in the resulting Go string, no special transport needed.
+// Given that, two DIFFERENTLY-VALUED (model, messages) pairs could be
+// crafted to produce byte-IDENTICAL hash input, e.g. model=`a\x00messages=b`
+// with messages=`c` versus model=`a` with messages=`b\x00messages=c` --
+// classic ambiguous-delimiter collision, confirmed by direct construction,
+// not a theoretical concern. THREAT_MODEL.md's cache STRIDE table already
+// names exactly this collision class (KeyPooling) as the attack this
+// function's own tenant-folding was built to prevent; it just didn't
+// close every instance of it. Length-prefixing each field removes the
+// ambiguity structurally: reading `len(value)` decimal digits then
+// skipping exactly that many bytes cannot be spoofed by any byte content
+// inside the value, so two different (field values) tuples can no longer
+// produce the same hash input by construction.
+//
+// This intentionally changes Key/NormalizedKey's output for every
+// existing input versus the pre-fix scheme -- an accepted, one-time,
+// self-healing consequence (L1/L2 are caches, not durable state; every
+// existing entry silently stops being hit and gets naturally re-populated,
+// exactly like this file's own documented guardrail-policy-version-bump
+// behavior already does on every policy change).
+func writeField(h hash.Hash, tag string, value string) {
+	_, _ = fmt.Fprintf(h, "%s:%d:", tag, len(value))
+	_, _ = io.WriteString(h, value)
+}
+
+// formatOptionalFloat/formatOptionalInt render Key/NormalizedKey's two
+// pointer-typed fields as a value writeField can hash unambiguously,
+// preserving the nil-vs-zero-value distinction the pointer type exists
+// to carry (nil means "caller never set this field at all", not "set to
+// zero"). "<nil>" is a safe sentinel here specifically because %v of a
+// float64/int can never itself produce that string -- a real formatted
+// number is always digits/./e/-/+ (or Inf/NaN), so a present value can
+// never be mistaken for the absent-marker.
+func formatOptionalFloat(v *float64) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%v", *v)
+}
+
+func formatOptionalInt(v *int) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%v", *v)
+}
 
 // Key fabricates the L1 exact-match cache key from the fields that
 // determine whether two requests are byte-for-byte equivalent for caching
@@ -58,14 +120,19 @@ import (
 //
 // Unlike guardrailPolicyVersion (always real, never empty in practice),
 // an empty responseFormatFingerprint is the common, expected case (every
-// request with no ResponseFormat at all) and the segment is omitted
-// entirely for it, never emitted as an empty "\x00response_format=" --
-// this is the backward-compatibility guarantee: a nil-ResponseFormat
-// request produces the EXACT SAME key this function produced before
-// this parameter existed, byte for byte, not merely "a key that's stable
-// going forward."
+// request with no ResponseFormat at all). **Changed 2026-09-17**: this
+// used to be omitted from the hash input entirely when empty, as a
+// byte-for-byte backward-compatibility guarantee versus the key this
+// function produced before this parameter existed. That guarantee is
+// gone -- writeField's fix for the real ambiguous-delimiter collision
+// documented on writeField above already breaks exact byte-compatibility
+// with every pre-fix key regardless, so there is no remaining reason to
+// special-case the empty value here too; it's now folded in
+// unconditionally like every other field, which is simpler and no less
+// safe (an empty length-prefixed field is exactly as unambiguous as any
+// other value).
 //
-// promptFingerprint is folded in exactly the same conditional way as
+// promptFingerprint is folded in the same unconditional way as
 // responseFormatFingerprint immediately above -- per the server-side
 // prompt-management feature (internal/prompt): callers (dataplane)
 // compute this as internal/prompt.Store.Resolve's own returned
@@ -80,33 +147,21 @@ import (
 // its own "stored provenance, not just message bytes" gap.
 func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string) string {
 	h := sha256.New()
-	// hash.Hash.Write (which fmt.Fprint[f] calls into here) is documented
-	// to never return an error, so there is nothing a caller could ever
-	// meaningfully do with these return values — discarded explicitly
-	// (rather than left unchecked) so that stays a visible, deliberate
-	// choice instead of something errcheck has to keep flagging.
-	//
-	// The leading "layer=l1" tag exists so Key and NormalizedKey can never
-	// collide even given byte-identical remaining inputs — cheap
+	// The leading "layer"/"l1" field exists so Key and NormalizedKey can
+	// never collide even given byte-identical remaining inputs — cheap
 	// insurance against a future refactor ever sharing one cache.Cache
 	// instance across layers, since today's isolation relies entirely on
 	// L1/L2 living in separate instances, per
 	// docs/rfcs/2026-09-03-cache-l2-normalized-match.md.
-	_, _ = fmt.Fprintf(h, "layer=l1\x00tenant=%s\x00model=%s\x00messages=%s\x00temperature=", tenantID, model, serializedMessages)
-	if temperature != nil {
-		_, _ = fmt.Fprintf(h, "%v", *temperature)
-	}
-	_, _ = fmt.Fprint(h, "\x00max_tokens=")
-	if maxTokens != nil {
-		_, _ = fmt.Fprintf(h, "%v", *maxTokens)
-	}
-	_, _ = fmt.Fprintf(h, "\x00guardrail_policy=%s", guardrailPolicyVersion)
-	if responseFormatFingerprint != "" {
-		_, _ = fmt.Fprintf(h, "\x00response_format=%s", responseFormatFingerprint)
-	}
-	if promptFingerprint != "" {
-		_, _ = fmt.Fprintf(h, "\x00prompt=%s", promptFingerprint)
-	}
+	writeField(h, "layer", "l1")
+	writeField(h, "tenant", tenantID)
+	writeField(h, "model", model)
+	writeField(h, "messages", serializedMessages)
+	writeField(h, "temperature", formatOptionalFloat(temperature))
+	writeField(h, "max_tokens", formatOptionalInt(maxTokens))
+	writeField(h, "guardrail_policy", guardrailPolicyVersion)
+	writeField(h, "response_format", responseFormatFingerprint)
+	writeField(h, "prompt", promptFingerprint)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -123,20 +178,14 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 // parameter -- see its doc comment above.
 func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string) string {
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "layer=l2\x00tenant=%s\x00model=%s\x00messages=%s\x00temperature=", tenantID, model, normalizedMessages)
-	if temperature != nil {
-		_, _ = fmt.Fprintf(h, "%v", *temperature)
-	}
-	_, _ = fmt.Fprint(h, "\x00max_tokens=")
-	if maxTokens != nil {
-		_, _ = fmt.Fprintf(h, "%v", *maxTokens)
-	}
-	_, _ = fmt.Fprintf(h, "\x00guardrail_policy=%s", guardrailPolicyVersion)
-	if responseFormatFingerprint != "" {
-		_, _ = fmt.Fprintf(h, "\x00response_format=%s", responseFormatFingerprint)
-	}
-	if promptFingerprint != "" {
-		_, _ = fmt.Fprintf(h, "\x00prompt=%s", promptFingerprint)
-	}
+	writeField(h, "layer", "l2")
+	writeField(h, "tenant", tenantID)
+	writeField(h, "model", model)
+	writeField(h, "messages", normalizedMessages)
+	writeField(h, "temperature", formatOptionalFloat(temperature))
+	writeField(h, "max_tokens", formatOptionalInt(maxTokens))
+	writeField(h, "guardrail_policy", guardrailPolicyVersion)
+	writeField(h, "response_format", responseFormatFingerprint)
+	writeField(h, "prompt", promptFingerprint)
 	return hex.EncodeToString(h.Sum(nil))
 }

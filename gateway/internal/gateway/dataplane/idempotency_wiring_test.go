@@ -415,3 +415,19 @@ func TestHandleChatCompletionIdempotencyKeyWaiterReturnsPromptlyOnItsOwnContextC
 		t.Fatal("call B never returned after its own context was canceled — it hung waiting on the in-flight claim instead")
 	}
 }
+
+// TestIdempotencyStoreKeyAmbiguousDelimiterCollisionIsFixed is the
+// regression proof for the same real bug class fixed in
+// internal/cache.writeField (see that file's doc comment): a tenantID
+// containing a literal NUL byte immediately followed by what looks like
+// the "idempotency_key" tag must not collide with a different, genuinely
+// distinct (tenantID, idempotencyKey) pair.
+func TestIdempotencyStoreKeyAmbiguousDelimiterCollisionIsFixed(t *testing.T) {
+	collidingTenant := idempotencyStoreKey("a\x00idempotency_key=b", "c")
+	collidingKey := idempotencyStoreKey("a", "b\x00idempotency_key=c")
+
+	if collidingTenant == collidingKey {
+		t.Fatalf("idempotencyStoreKey(tenant=%q, key=%q) collided with idempotencyStoreKey(tenant=%q, key=%q): both produced %q — ambiguous-delimiter collision is NOT fixed",
+			"a\x00idempotency_key=b", "c", "a", "b\x00idempotency_key=c", collidingTenant)
+	}
+}
