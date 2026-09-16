@@ -2,6 +2,7 @@ package guardrail
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -45,7 +46,20 @@ func (e *Engine) Version() string { return e.version }
 func (e *Engine) Check(ctx context.Context, text string) Verdict {
 	var verdict Verdict
 	for _, d := range e.detectors {
-		findings, err := d.Detect(ctx, text)
+		// **Fixed 2026-09-17, real bug**: a Detector panicking (e.g. a
+		// nil-pointer deref, or bedrockguard hitting an unexpected
+		// response shape) previously had no recover anywhere in this
+		// call path -- it would unwind straight out of Check, aborting
+		// this request ungracefully (net/http's own per-request recovery
+		// catches it eventually, but as a bare 500, skipping every
+		// REMAINING detector and defeating this subsystem's own
+		// documented "fail-open-with-logging" design for every other
+		// failure mode). detectSafely converts a panic into the exact
+		// same (nil, error) shape a normal Detect error already
+		// produces, so the existing err-handling branch below (log +
+		// ErrorActions-gated block + continue to the next detector)
+		// applies uniformly to both.
+		findings, err := detectSafely(ctx, d, text)
 		if err != nil {
 			e.logger.Warn("guardrail_detector_error", "detector", d.Name(), "category", string(d.Category()), "error", err.Error())
 			verdict.DetectorError = err
@@ -77,6 +91,20 @@ func (e *Engine) Check(ctx context.Context, text string) Verdict {
 		e.logger.Warn("guardrail_verdict_warn", "finding_count", len(verdict.Findings))
 	}
 	return verdict
+}
+
+// detectSafely calls d.Detect, recovering a panic into a plain error so
+// Check's own err-handling branch (log + ErrorActions-gated block +
+// continue) applies uniformly whether a detector returns an error or
+// panics -- see Check's own doc comment on this call site for the real
+// bug this closes.
+func detectSafely(ctx context.Context, d Detector, text string) (findings []Finding, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("guardrail: detector %q panicked: %v", d.Name(), r)
+		}
+	}()
+	return d.Detect(ctx, text)
 }
 
 // DefaultDetectors returns the RFC's own v1 detector set — every

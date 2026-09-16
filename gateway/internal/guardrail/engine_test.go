@@ -31,6 +31,20 @@ func (f fakeDetector) Detect(_ context.Context, _ string) ([]Finding, error) {
 	return f.findings, f.err
 }
 
+// panickingDetector is a test-only Detector that panics unconditionally
+// -- for proving detectSafely's own recover, distinct from fakeDetector's
+// ordinary error-return path above.
+type panickingDetector struct {
+	name     string
+	category Category
+}
+
+func (p panickingDetector) Name() string       { return p.name }
+func (p panickingDetector) Category() Category { return p.category }
+func (p panickingDetector) Detect(_ context.Context, _ string) ([]Finding, error) {
+	panic("simulated detector panic")
+}
+
 func TestEngineCheckBlockTierFindingBlocks(t *testing.T) {
 	e := NewEngine([]Detector{
 		fakeDetector{name: "fake", category: CategoryCredential, findings: []Finding{{Category: CategoryCredential, Detector: "fake"}}},
@@ -78,6 +92,47 @@ func TestEngineCheckDetectorErrorOnWarnTierCategoryDoesNotBlock(t *testing.T) {
 	verdict := e.Check(context.Background(), "irrelevant text")
 	if verdict.Blocked {
 		t.Error("Blocked = true, want false for a detector error on a Warn-tier category")
+	}
+}
+
+// TestEngineCheckPanickingDetectorDoesNotPanicAndSetsDetectorError is the
+// regression proof for the real bug fixed in detectSafely's own doc
+// comment: a Detector panicking previously had no recover anywhere in
+// Check's call path, unwinding straight out of Check instead of
+// degrading exactly like a normal Detect error already does. Mirrors
+// TestEngineCheckDetectorErrorOnBlockTierCategoryBlocks's own structure
+// with a panicking detector in place of an error-returning one.
+func TestEngineCheckPanickingDetectorDoesNotPanicAndSetsDetectorError(t *testing.T) {
+	e := NewEngine([]Detector{
+		panickingDetector{name: "fake-panicking", category: CategoryCredential},
+	}, DefaultPolicy(), "test", nil)
+
+	verdict := e.Check(context.Background(), "irrelevant text")
+	if !verdict.Blocked {
+		t.Error("Blocked = false, want true for a panicking detector on a Block-tier category — a panic must degrade exactly like a Detect error")
+	}
+	if verdict.DetectorError == nil {
+		t.Error("DetectorError is nil, want a wrapped error describing the panic")
+	}
+}
+
+// TestEngineCheckPanickingDetectorDoesNotPreventLaterDetectorsFromRunning
+// proves the panic-recovery loop actually continues to the NEXT
+// detector, rather than merely not crashing — the same "fail open, keep
+// going" property Check's own err != nil branch already has via
+// "continue".
+func TestEngineCheckPanickingDetectorDoesNotPreventLaterDetectorsFromRunning(t *testing.T) {
+	e := NewEngine([]Detector{
+		panickingDetector{name: "fake-panicking", category: CategoryContactInfo},
+		fakeDetector{name: "fake-after-panic", category: CategoryCredential, findings: []Finding{{Category: CategoryCredential, Detector: "fake-after-panic"}}},
+	}, DefaultPolicy(), "test", nil)
+
+	verdict := e.Check(context.Background(), "irrelevant text")
+	if !verdict.Blocked {
+		t.Error("Blocked = false, want true — the detector AFTER the panicking one must still have run and found a Block-tier finding")
+	}
+	if len(verdict.Findings) != 1 {
+		t.Errorf("Findings len = %d, want 1 (only the detector after the panic contributes a finding)", len(verdict.Findings))
 	}
 }
 
