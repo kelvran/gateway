@@ -36,6 +36,17 @@ jobs:
   judge-accuracy:
     name: evals judge + panel accuracy against the real judge-accuracy corpus
     runs-on: ubuntu-latest
+    # Explicit, minimal grant, per a live 2026-09-16 adversarial-audit
+    # finding: this job had no permissions: block at all. Its only
+    # GitHub-side interactions are checkout, actions/cache
+    # (restore/save), and actions/upload-artifact — none of which are
+    # gated by a named permissions: scope (cache/artifact storage access
+    # is governed by the run's own context, not GITHUB_TOKEN scopes);
+    # contents: read is the correct, minimal, explicit grant for
+    # checkout, and matches ci.yml's own established per-job-explicit
+    # convention rather than relying on the repo's read-only default.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4

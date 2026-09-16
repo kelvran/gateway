@@ -11,6 +11,15 @@ jobs:
   proto:
     name: api (buf lint, breaking, generated-code drift check)
     runs-on: ubuntu-latest
+    # Explicit, minimal grant per a live 2026-09-16 adversarial-audit
+    # finding: this job never writes anywhere (checkout + buf lint/
+    # breaking, all read-only), so the repo's own read-only default
+    # (see the evals job's identical comment below) already covered it
+    # in practice -- but Scorecard's TokenPermissionsID check (and this
+    # repo's own established per-job-explicit convention, not a
+    # workflow-level default) wants this stated, not implied.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -64,6 +73,11 @@ jobs:
   gateway:
     name: gateway (build, vet, lint, test)
     runs-on: ubuntu-latest
+    # Explicit, minimal grant — see the proto job's identical comment
+    # just above: this job is also entirely read-only (build/vet/lint/
+    # test, no writes anywhere).
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0

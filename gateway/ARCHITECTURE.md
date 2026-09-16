@@ -294,10 +294,11 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              off-by-default HTTP surface on its own separate net.Listener (never the
                              client-facing gateway's mux/port) exposing read-only config introspection
                              (GET /admin/config — safe to return wholesale, since Config never holds a
-                             raw secret) plus the one section made live-mutable in v1, virtual keys
+                             raw secret) plus the two sections made live-mutable in v1: virtual keys
                              (POST/DELETE /admin/virtual_keys/{name}, via a new
                              dataplane.Pipeline.UpsertVirtualKey/DeleteVirtualKey pair built around
-                             identity.Verifier becoming an atomic.Pointer). Auth is a deliberately
+                             identity.Verifier becoming an atomic.Pointer) and, per **Corrected
+                             2026-09-16** below, a deployment's own routing weight. Auth is a deliberately
                              separate, two-tier static bearer credential space from client-facing virtual
                              keys — never delegates to identity.Verifier. An optional second, read-only
                              viewer credential (admin.viewer_token_env) can authenticate GET /admin/config
@@ -310,9 +311,15 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              `/admin/debug/pprof/`, on this same mux, gated behind the admin credential
                              specifically — never the viewer tier — mirroring Envoy Gateway's own shipped
                              `enablePprof` field, per docs/upgrade-research/performance-latency-optimization-2026-09-14.md
-                             Finding 3. Admin mutations are in-memory-only in v1
+                             Finding 3. **Corrected 2026-09-16**: the very next sentence's own
+                             "routing... stays static-YAML-only, named explicitly as later follow-on
+                             work" claim went stale the moment `POST /admin/deployments/{name}/weight`
+                             shipped (router.Router.SetWeight, in-memory-only, reverts to config.yaml on
+                             restart exactly like every other admin mutation here) — caught by a live
+                             adversarial-audit doc-staleness pass, not silently left wrong. Admin
+                             mutations are in-memory-only in v1
                              (lost on restart, reverting to config.yaml); every other config section
-                             (guardrails, budgets' shape, rate limits, routing, cache, price table,
+                             (guardrails, budgets' shape, rate limits, cache, price table,
                              telemetry) stays static-YAML-only, named explicitly as later follow-on work
 /internal/prompt             — **Corrected 2026-09-12**: missing from a prior pass of this tree, a
                              doc-vs-code staleness instance per AGENTS.md's catalogued pattern.
