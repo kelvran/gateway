@@ -770,6 +770,16 @@ func upsertPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		// A stored prompt template's Messages gets resolved into every
+		// FUTURE request that references it (internal/prompt.Store.Resolve)
+		// -- an excessively long template multiplies its own cost across
+		// every future call, the same resource-exhaustion shape
+		// adapter.ValidateMessageCount already bounds for a direct,
+		// one-shot client request (cmd/gateway/main.go).
+		if err := adapter.ValidateMessageCount(req.Messages); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		p, err := pipeline.UpsertPrompt(id, req.Messages)
 		if err != nil {

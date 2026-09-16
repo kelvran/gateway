@@ -1070,6 +1070,19 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 
+		// Cheap count-only checks first (Go's own len(), no decode/
+		// scan work) so a pathologically-shaped body is rejected before
+		// paying for the genuinely expensive per-part/per-tool checks
+		// below (base64 decode + MIME sniff; JSON Schema tokenization).
+		if err := adapter.ValidateMessageCount(req.Messages); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := adapter.ValidateToolDefs(req.Tools); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		if err := adapter.ValidateContentParts(req.Messages); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

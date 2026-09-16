@@ -65,8 +65,21 @@ func ValidateResponseFormatSchema(rf *ResponseFormat) error {
 	if rf == nil || rf.JSONSchema == nil || len(rf.JSONSchema.Schema) == 0 {
 		return nil
 	}
+	if err := validateJSONComplexity(rf.JSONSchema.Schema); err != nil {
+		return fmt.Errorf("adapter: response_format.json_schema.schema: %w", err)
+	}
+	return nil
+}
 
-	dec := json.NewDecoder(bytes.NewReader(rf.JSONSchema.Schema))
+// validateJSONComplexity is ValidateResponseFormatSchema's own
+// depth/token-counting walk, extracted so ValidateToolDefs below can
+// apply the identical bound to ToolDef.ParametersJSON — the same kind of
+// caller-supplied JSON Schema content, with the same complexity-DoS
+// shape. Returns ErrResponseFormatSchemaTooComplex (the shared sentinel;
+// the wrapping message text at each call site names which field
+// actually exceeded it) or a wrapped decode error for malformed JSON.
+func validateJSONComplexity(raw json.RawMessage) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	depth := 0
 	tokens := 0
 	for {
@@ -75,7 +88,7 @@ func ValidateResponseFormatSchema(rf *ResponseFormat) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("adapter: response_format.json_schema.schema is not valid JSON: %w", err)
+			return fmt.Errorf("not valid JSON: %w", err)
 		}
 
 		tokens++
@@ -93,6 +106,73 @@ func ValidateResponseFormatSchema(rf *ResponseFormat) error {
 			case '}', ']':
 				depth--
 			}
+		}
+	}
+	return nil
+}
+
+// ErrTooManyMessages is returned by ValidateMessageCount when a
+// caller-supplied ChatRequest.Messages exceeds maxMessagesPerRequest.
+var ErrTooManyMessages = errors.New("adapter: messages exceeds this gateway's per-request message-count bound")
+
+// maxMessagesPerRequest bounds ChatRequest.Messages's length, per
+// THREAT_MODEL.md's Gateway Denial-of-Service row: the 32MiB whole-body
+// cap (cmd/gateway/main.go's maxRequestBodyBytes) bounds total request
+// bytes, but a request built almost entirely of many tiny messages could
+// still carry tens of thousands of them within that same byte budget --
+// each one flowing into every downstream per-message pass (guardrail
+// scanning, cache-key serialization, provider ToProvider translation)
+// before authentication/budget/rate-limit are ever checked. 2,000 is far
+// beyond any realistic conversation length (this codebase's own fixtures
+// never exceed a handful) while still bounding a pathologically
+// many-message input well short of the byte cap.
+const maxMessagesPerRequest = 2000
+
+// ValidateMessageCount bounds ChatRequest.Messages's length -- see
+// maxMessagesPerRequest's own doc comment for the resource-exhaustion
+// rationale. A nil or empty Messages is not this function's concern
+// (dataplane's own downstream checks already reject an empty
+// conversation for unrelated reasons); this only ever rejects an
+// excessively LONG one.
+func ValidateMessageCount(messages []Message) error {
+	if len(messages) > maxMessagesPerRequest {
+		return fmt.Errorf("%w: %d messages, max %d", ErrTooManyMessages, len(messages), maxMessagesPerRequest)
+	}
+	return nil
+}
+
+// ErrTooManyToolDefs is returned by ValidateToolDefs when a
+// caller-supplied ChatRequest.Tools exceeds maxToolDefsPerRequest.
+var ErrTooManyToolDefs = errors.New("adapter: tools exceeds this gateway's per-request tool-definition-count bound")
+
+// maxToolDefsPerRequest mirrors maxMessagesPerRequest's own
+// resource-exhaustion rationale, applied to ChatRequest.Tools: 256 is far
+// beyond any realistic tool set (this codebase's own fixtures never
+// exceed a handful) while still bounding a pathologically large one.
+// Unlike Messages, ToolDef also carries its OWN unbounded-until-now
+// complexity vector -- ParametersJSON, a caller-supplied JSON Schema
+// structurally identical to (and unlike) ResponseFormat.JSONSchema.Schema
+// had no bound at all before this function existed -- so ValidateToolDefs
+// bounds both the count AND, per tool, ParametersJSON's own structural
+// complexity via the same validateJSONComplexity walk
+// ValidateResponseFormatSchema already uses.
+const maxToolDefsPerRequest = 256
+
+// ValidateToolDefs bounds ChatRequest.Tools's length and, per tool,
+// ParametersJSON's structural complexity -- see maxToolDefsPerRequest's
+// own doc comment. A nil or empty Tools, or a tool with empty
+// ParametersJSON, is a no-op for the corresponding check, matching every
+// other optional-field convention in this codebase.
+func ValidateToolDefs(tools []ToolDef) error {
+	if len(tools) > maxToolDefsPerRequest {
+		return fmt.Errorf("%w: %d tools, max %d", ErrTooManyToolDefs, len(tools), maxToolDefsPerRequest)
+	}
+	for _, t := range tools {
+		if len(t.ParametersJSON) == 0 {
+			continue
+		}
+		if err := validateJSONComplexity(json.RawMessage(t.ParametersJSON)); err != nil {
+			return fmt.Errorf("adapter: tools[%q].parameters: %w", t.Name, err)
 		}
 	}
 	return nil
