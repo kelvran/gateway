@@ -226,7 +226,22 @@ func newUpstreamTransport() *http.Transport {
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the gateway's YAML config file")
+	validateOnly := flag.Bool("validate", false, "load and validate the config file, then exit (0 if valid, 1 if not) -- no listener, no store, no telemetry, nothing else started")
 	flag.Parse()
+
+	if *validateOnly {
+		cfg, err := controlplane.Load(*configPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "config error:", err)
+			os.Exit(1)
+		}
+		if err := validateConfig(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "config error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("config is valid")
+		return
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -476,6 +491,14 @@ func resolveJitterFraction(f float64) float64 {
 // buildPipeline resolves every secret referenced by name in cfg from the
 // environment and wires the full dataplane.Pipeline.
 func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pipeline, error) {
+	// Config-only checks first, before opening any bbolt store below (a
+	// strict improvement over this check's own prior position, deep
+	// inside the deployment loop below, after identityStore was already
+	// opened) — see validateConfig's own doc comment.
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	virtualKeys := make([]identity.VirtualKey, 0, len(cfg.VirtualKeys))
 	keyConfigs := make([]ratelimit.KeyConfig, 0, len(cfg.VirtualKeys))
 	// concurrencyConfigs feeds ratelimit.NewConcurrencyLimiter, per
@@ -565,13 +588,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		return nil, fmt.Errorf("constructing identity verifier: %w", err)
 	}
 
-	registry := adapter.Registry{
-		"openai":       openai.New(),
-		"anthropic":    anthropic.New(),
-		"gemini":       gemini.New(),
-		"bedrock":      bedrock.New(),
-		"openaicompat": openaicompat.New(),
-	}
+	registry := newAdapterRegistry()
 
 	deployments := make([]dataplane.Deployment, 0, len(cfg.Deployments))
 	routerDeployments := make([]router.Deployment, 0, len(cfg.Deployments))
@@ -588,16 +605,9 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	deploymentConcurrencyConfigs := make([]ratelimit.ConcurrencyConfig, 0, len(cfg.Deployments))
 	deploymentRateLimitConfigs := make([]ratelimit.KeyConfig, 0, len(cfg.Deployments))
 	for _, d := range cfg.Deployments {
-		// Fail fast at startup, not per-request, per
-		// docs/rfcs/2026-09-05-gateway-gen-ai-provider-name-validation.md
-		// — before this check, an unregistered provider produced a
-		// generic error only once a real request happened to route to
-		// that deployment (dataplane.callDeployment's own "no adapter
-		// registered" error), which could sit unnoticed until traffic
-		// actually hit it.
-		if _, ok := registry[d.Provider]; !ok {
-			return nil, fmt.Errorf("deployment %q: no adapter registered for provider %q", d.Name, d.Provider)
-		}
+		// Provider-registration and fallback_chains referential-integrity
+		// are both already checked above, by validateConfig — see that
+		// function's own doc comment. Nothing else here needs re-checking.
 		dep := dataplane.Deployment{
 			Name:                            d.Name,
 			Model:                           d.Model,
@@ -646,9 +656,6 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			Capacity:        d.RateLimitBurst,
 			RefillPerSecond: d.RateLimitRefill,
 		})
-	}
-	if err := validateFallbackChainTargets(deployments); err != nil {
-		return nil, err
 	}
 
 	depRouter := router.New(routerDeployments, router.HealthConfig{
@@ -751,6 +758,55 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		CacheL2TTL:     time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
 		CacheL3TTL:     time.Duration(cfg.Cache.L3.TTLSeconds) * time.Second,
 	})
+}
+
+// newAdapterRegistry returns the fixed set of provider adapters this
+// gateway ships, in construction (never per-request) order. Shared by
+// buildPipeline (the real, wired registry) and validateConfig (which
+// only ever checks provider NAME membership) so the two lists can never
+// drift apart.
+func newAdapterRegistry() adapter.Registry {
+	return adapter.Registry{
+		"openai":       openai.New(),
+		"anthropic":    anthropic.New(),
+		"gemini":       gemini.New(),
+		"bedrock":      bedrock.New(),
+		"openaicompat": openaicompat.New(),
+	}
+}
+
+// validateConfig runs every startup check that depends ONLY on cfg's own
+// content -- never opening a file, never touching the network, never
+// reading an environment variable -- so it's safe to call from the
+// -validate dry-run flag with no other side effect at all, and safe to
+// call as buildPipeline's own first statement, before identityStore ever
+// opens a bbolt file (a strict improvement over this check's prior
+// position deep inside buildPipeline's deployment loop, after the store
+// was already open). Both checks it runs (adapter registration,
+// fallback_chains referential integrity) already existed inside
+// buildPipeline before this function extracted them; see -validate's own
+// flag description in main() and TestValidateConfigNeverOpensAnyBoltStore
+// for the actual "no side effects" proof.
+func validateConfig(cfg *controlplane.Config) error {
+	registry := newAdapterRegistry()
+	deployments := make([]dataplane.Deployment, 0, len(cfg.Deployments))
+	for _, d := range cfg.Deployments {
+		// Fail fast at startup, not per-request, per
+		// docs/rfcs/2026-09-05-gateway-gen-ai-provider-name-validation.md
+		// — before this check, an unregistered provider produced a
+		// generic error only once a real request happened to route to
+		// that deployment (dataplane.callDeployment's own "no adapter
+		// registered" error), which could sit unnoticed until traffic
+		// actually hit it.
+		if _, ok := registry[d.Provider]; !ok {
+			return fmt.Errorf("deployment %q: no adapter registered for provider %q", d.Name, d.Provider)
+		}
+		deployments = append(deployments, dataplane.Deployment{
+			Name:           d.Name,
+			FallbackChains: d.FallbackChains,
+		})
+	}
+	return validateFallbackChainTargets(deployments)
 }
 
 // validateFallbackChainTargets fails startup, not first-request, if any
