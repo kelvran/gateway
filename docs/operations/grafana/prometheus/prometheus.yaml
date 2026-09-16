@@ -7,6 +7,11 @@
 # `rule_files:` key added at the bottom, which did not exist at all
 # before this file -- adds MWMB SLO alerting per
 # docs/operations/grafana/prometheus/kelvran-slo-rules.yml's own header.
+# The `alerting:` block (also new, not part of the image's own original
+# content) points at the new standalone `alertmanager` Compose service --
+# without it, kelvran-slo-rules.yml's own 4 alert rules evaluate but are
+# never delivered anywhere; see
+# docs/operations/grafana/alertmanager/alertmanager.yml's own header.
 ---
 global:
   scrape_native_histograms: true
@@ -47,3 +52,7 @@ storage:
     out_of_order_time_window: 10m
 rule_files:
   - "/otel-lgtm/prometheus/kelvran-slo-rules.yml"
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]

@@ -204,6 +204,23 @@ services:
       - ./docs/operations/grafana/prometheus/kelvran-slo-rules.yml:/otel-lgtm/prometheus/kelvran-slo-rules.yml:ro
     profiles: ["observability"]
 
+  # Standalone Alertmanager -- kelvran-slo-rules.yml's own 4 MWMB alert
+  # rules have evaluated inside `observability`'s bundled Prometheus since
+  # that file first shipped, but grafana/otel-lgtm bundles the OTel
+  # Collector/Prometheus/Tempo/Loki/Grafana only, never an Alertmanager --
+  # an evaluated-but-firing alert had nowhere to actually go. Same
+  # `profiles: ["observability"]` gate as `observability` itself, not its
+  # own separate flag: an Alertmanager with no Prometheus pointed at it
+  # (or vice versa) is useless on its own, so there is no real independent-
+  # use case for splitting the two behind separate profiles.
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./docs/operations/grafana/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    profiles: ["observability"]
+
   # Optional: real network fault injection between gateway and an
   # upstream provider, per
   # docs/upgrade-research/chaos-engineering-resilience-testing-2026-09-14.md

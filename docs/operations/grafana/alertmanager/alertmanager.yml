@@ -1,0 +1,30 @@
+# Alertmanager config for Kelvran's observability profile, per
+# docs/upgrade-research/slo-error-budget-observability-2026-09-15.md:
+# kelvran-slo-rules.yml (../prometheus/kelvran-slo-rules.yml) already
+# defines 4 real MWMB SLO alert rules, but nothing in this Compose stack
+# received them until this file existed -- Prometheus itself only
+# EVALUATES alert rules; it never delivers a notification anywhere on
+# its own without a configured Alertmanager to forward to (wired via
+# prometheus.yaml's own new `alerting:` block).
+#
+# This is a minimal, generic-webhook PLACEHOLDER receiver -- no real
+# Slack/PagerDuty/Opsgenie credential exists for this pilot yet, and
+# inventing one here would be indistinguishable from a real, working
+# integration to a future reader. `null` receiver naming is deliberately
+# NOT used (that would silently swallow every alert with no visible
+# effect at all); this points at a real (if fake) webhook URL that
+# receiver's own request logs make failure/success visibly obvious
+# against, exactly the property a real receiver would eventually need
+# too.
+route:
+  receiver: placeholder-webhook
+  group_by: ["alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: placeholder-webhook
+    webhook_configs:
+      - url: "http://placeholder-receiver.invalid/kelvran-alerts"
+        send_resolved: true
