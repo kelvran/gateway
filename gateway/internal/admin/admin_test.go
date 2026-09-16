@@ -992,6 +992,77 @@ func TestBackupRouteWritesTimestampedFilesForEachConfiguredStore(t *testing.T) {
 	}
 }
 
+// TestBackupRouteReturns500WhenBackupDirIsUnwritable is the regression
+// proof for a live 2026-09-16 adversarial-audit finding: none of this
+// file's 3 existing backup-route tests ever drove backupHandler's own
+// err != nil -> 500 branch — only the success path (writable dir) and
+// the two auth/config-gate short-circuits were covered. A configured but
+// unwritable BackupDir is the real, reachable failure this branch exists
+// for (e.g. a disk went read-only, or an operator misconfigured
+// permissions), and must surface as a genuine 500 with the real error in
+// the body, never a silent partial success.
+func TestBackupRouteReturns500WhenBackupDirIsUnwritable(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.db")
+	identityStore, err := identityboltstore.Open(identityPath)
+	if err != nil {
+		t.Fatalf("identityboltstore.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = identityStore.Close() })
+
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []dataplane.Deployment{
+		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+	pipeline, err := dataplane.NewPipeline(dataplane.Config{
+		Verifier: verifier,
+		Limiter: ratelimit.NewInMemoryKeyLimiter([]ratelimit.KeyConfig{
+			{ID: "test-key", Capacity: 100, RefillPerSecond: 100},
+		}),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         router.New([]router.Deployment{{Name: "d1", Model: "gpt-4o"}}, router.HealthConfig{}),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		IdentityStore:  identityStore,
+		Upstream: func(ctx context.Context, dep dataplane.Deployment, req any) (any, error) {
+			return &openai.Response{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	backupDir := t.TempDir()
+	if err := os.Chmod(backupDir, 0o500); err != nil {
+		t.Fatalf("os.Chmod(backupDir, 0o500): %v", err)
+	}
+	// Restore write permission BEFORE t.TempDir()'s own cleanup runs, or
+	// that cleanup itself fails to remove the directory.
+	t.Cleanup(func() { _ = os.Chmod(backupDir, 0o700) })
+
+	cfg := testConfig()
+	cfg.Admin.BackupDir = backupDir
+	h := Handler(cfg, pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodPost, "/admin/backup", fakeAdminCredential(), "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /admin/backup with an unwritable BackupDir: status = %d, want 500, body: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("500 response body is empty, want the real underlying error")
+	}
+}
+
 // TestUpdateDeploymentWeightViaHTTPChangesLiveRouting is the real
 // behavioral proof, mirroring
 // TestUpsertVirtualKeyViaHTTPMakesTheKeyImmediatelyUsable's own "HTTP
@@ -1075,5 +1146,36 @@ func TestUpdateDeploymentWeightRequiresAdminCredential(t *testing.T) {
 		http.MethodPost, "/admin/deployments/d1/weight", "wrong-value-entirely", `{"weight":3}`)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("POST /admin/deployments/d1/weight with a wrong credential: status = %d, want 401", rec.Code)
+	}
+}
+
+// TestUpdateDeploymentWeightRejectsNegativeWeight, ...MalformedBody, and
+// ...UnknownDeployment are the regression proof for a live 2026-09-16
+// adversarial-audit finding: updateDeploymentWeightHandler has 3 named
+// error branches (negative weight -> 400, invalid JSON body -> 400,
+// unknown deployment -> 404), and this file's only 2 pre-existing tests
+// for this route covered only the success path and the auth gate — none
+// of these 3 branches had ever been exercised at the HTTP layer.
+func TestUpdateDeploymentWeightRejectsNegativeWeight(t *testing.T) {
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+		http.MethodPost, "/admin/deployments/d1/weight", fakeAdminCredential(), `{"weight":-1}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /admin/deployments/d1/weight with weight=-1: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateDeploymentWeightRejectsMalformedBody(t *testing.T) {
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+		http.MethodPost, "/admin/deployments/d1/weight", fakeAdminCredential(), `{not valid json`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /admin/deployments/d1/weight with a malformed body: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateDeploymentWeightRejectsUnknownDeployment(t *testing.T) {
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+		http.MethodPost, "/admin/deployments/does-not-exist/weight", fakeAdminCredential(), `{"weight":3}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("POST /admin/deployments/does-not-exist/weight: status = %d, want 404, body: %s", rec.Code, rec.Body.String())
 	}
 }

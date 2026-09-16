@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
@@ -271,5 +273,145 @@ func TestHandleChatCompletionStreamIdempotencyKeyReplaysWithoutASecondUpstreamCa
 	}
 	if !strings.Contains(rec2.Body.String(), "Hello!") {
 		t.Errorf("replayed stream body = %q, want it to contain the original response's own content", rec2.Body.String())
+	}
+}
+
+// TestHandleChatCompletionIdempotencyKeyWaiterResolvesAfterInFlightCallCompletes
+// is the regression proof for a live 2026-09-16 adversarial-audit
+// finding: claimIdempotency's own StateInFlight wait branch (the
+// `select { case <-result.Done: continue; case <-ctx.Done(): ... }` at
+// its default case) had zero test coverage anywhere — every existing
+// idempotency test called HandleChatCompletion/HandleChatCompletionStream
+// strictly sequentially, so the first call always fully completed (and
+// thus resolved its claim) before the second one ever started. This
+// test genuinely overlaps two calls: the first blocks inside its own
+// Upstream call until released, forcing the second to observe
+// StateInFlight and actually block in claimIdempotency's own wait loop.
+func TestHandleChatCompletionIdempotencyKeyWaiterResolvesAfterInFlightCallCompletes(t *testing.T) {
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	var upstreamCalls int32
+	upstreamEntered := make(chan struct{})
+	release := make(chan struct{})
+	p := newTestPipelineWithIdempotency(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		if atomic.AddInt32(&upstreamCalls, 1) == 1 {
+			close(upstreamEntered)
+			<-release
+		}
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys, idempotencyinprocess.New())
+
+	req := adapter.ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	type outcome struct {
+		resp adapter.ChatResponse
+		err  error
+	}
+	callA := make(chan outcome, 1)
+	go func() {
+		resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "concurrent-key")
+		callA <- outcome{resp, err}
+	}()
+
+	select {
+	case <-upstreamEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("call A never reached its own Upstream call")
+	}
+
+	callB := make(chan outcome, 1)
+	go func() {
+		resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "concurrent-key")
+		callB <- outcome{resp, err}
+	}()
+
+	// Call B must genuinely be blocked (parked on claimIdempotency's own
+	// wait loop), not racing ahead independently -- confirm it has NOT
+	// returned yet while call A is still deliberately held open.
+	select {
+	case <-callB:
+		t.Fatal("call B returned before call A completed — it should have been blocked on the in-flight claim's own Done channel")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+
+	aOut := <-callA
+	if aOut.err != nil {
+		t.Fatalf("call A: %v", aOut.err)
+	}
+	bOut := <-callB
+	if bOut.err != nil {
+		t.Fatalf("call B: %v", bOut.err)
+	}
+	if bOut.resp.ID != aOut.resp.ID {
+		t.Errorf("call B's replayed response ID = %q, want %q (call A's own response, replayed after the wait resolved)", bOut.resp.ID, aOut.resp.ID)
+	}
+	if got := atomic.LoadInt32(&upstreamCalls); got != 1 {
+		t.Errorf("upstreamCalls = %d, want 1 — call B must never make its own upstream call once it replays call A's result", got)
+	}
+}
+
+// TestHandleChatCompletionIdempotencyKeyWaiterReturnsPromptlyOnItsOwnContextCancellation
+// covers the OTHER branch of claimIdempotency's wait select: a waiter
+// whose own request context is canceled while parked on the in-flight
+// claim's Done channel must return ctx.Err() promptly, never hang until
+// the in-flight call eventually finishes (or forever, if it never does).
+func TestHandleChatCompletionIdempotencyKeyWaiterReturnsPromptlyOnItsOwnContextCancellation(t *testing.T) {
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	upstreamEntered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // never leak call A's own blocked goroutine
+	var entered bool
+	p := newTestPipelineWithIdempotency(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		if !entered {
+			entered = true
+			close(upstreamEntered)
+		}
+		<-release
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys, idempotencyinprocess.New())
+
+	req := adapter.ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	go func() {
+		_, _ = p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "concurrent-key")
+	}()
+
+	select {
+	case <-upstreamEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("call A never reached its own Upstream call")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := p.HandleChatCompletion(ctx, "Bearer test-key", req, "concurrent-key")
+		errCh <- err
+	}()
+
+	// Give call B a real chance to reach and park inside claimIdempotency's
+	// own select before canceling — otherwise cancellation could race
+	// ahead of the claim even being attempted at all.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("call B err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call B never returned after its own context was canceled — it hung waiting on the in-flight claim instead")
 	}
 }

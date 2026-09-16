@@ -152,6 +152,17 @@ linters:
       - path: cmd/gateway/graceful_shutdown_integration_test\.go
         linters:
           - bodyclose
+      # G302 is written for FILE permission bits (0600 or less) --
+      # these two os.Chmod calls target a DIRECTORY (deliberately made
+      # read-only, then restored, to prove the admin backup route's own
+      # 500 path against a real unwritable BackupDir), where an execute
+      # bit is required for traversal and 0600 would make the directory
+      # itself inaccessible, not just its contents unwritable. gosec's
+      # rule can't distinguish a directory mode from a file mode.
+      - path: internal/admin/admin_test\.go
+        linters:
+          - gosec
+        text: "G302"
 
 formatters:
   enable:

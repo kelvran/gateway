@@ -150,3 +150,80 @@ func TestSetWeightReturnsErrorForUnknownDeploymentInModel(t *testing.T) {
 		t.Fatalf("Select after a failed SetWeight = (%q, %v), want (%q, true) — a failed SetWeight must not corrupt state", got, ok, "a")
 	}
 }
+
+// TestSetWeightNormalizesZeroOrNegativeWeightToOne is the regression
+// proof for a live 2026-09-16 adversarial-audit finding: SetWeight's own
+// doc comment documents that weight <= 0 normalizes to 1 (the same
+// "unset" convention newModelState itself already applies), and
+// POST /admin/deployments/{name}/weight explicitly accepts weight=0 as
+// meaningful — but nothing had ever exercised that branch through
+// SetWeight itself (only through New's initial-weight path). Proves the
+// resulting Select distribution actually reflects weight-1, not a
+// silently-dropped or zero-traffic deployment.
+func TestSetWeightNormalizesZeroOrNegativeWeightToOne(t *testing.T) {
+	for _, weight := range []int{0, -5} {
+		t.Run("", func(t *testing.T) {
+			r := New([]Deployment{
+				{Name: "a", Model: "gpt-4o", Weight: 3},
+				{Name: "b", Model: "gpt-4o", Weight: 3},
+			}, HealthConfig{})
+
+			if err := r.SetWeight("gpt-4o", "a", weight); err != nil {
+				t.Fatalf("SetWeight(%d): %v", weight, err)
+			}
+
+			// a is now weight-1 (normalized), b stays weight-3 -- a 1:3
+			// ratio, degenerate case of the same wrr.c algorithm already
+			// proven elsewhere in this package. Sequence hand-traced
+			// against wrr.go's own next() implementation, not guessed:
+			// deps=[a(1),b(3)], gcd=1, maxW=3, sumW=4.
+			want := []string{"b", "b", "a", "b"}
+			for i, w := range want {
+				got, ok := r.Select("gpt-4o", nil)
+				if !ok {
+					t.Fatalf("call %d: Select returned ok=false, want true", i)
+				}
+				if got != w {
+					t.Fatalf("call %d: Select = %q, want %q (full wanted 3:1 sequence for weight=%d: %v) — weight<=0 must normalize to 1, never mean zero traffic or get silently dropped", i, got, w, weight, want)
+				}
+			}
+		})
+	}
+}
+
+// TestSetWeightIsSafeUnderConcurrentReportProbeResult is the regression
+// proof for a live 2026-09-16 adversarial-audit finding: no test combined
+// SetWeight (modelsMu) with ReportProbeResult (healthMu) concurrently on
+// the SAME deployment/model — the two existing concurrency tests each
+// only paired one of {SetWeight, ReportProbeResult} with Select, never
+// with each other. Run under `go test -race`.
+func TestSetWeightIsSafeUnderConcurrentReportProbeResult(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "a", Model: "gpt-4o"},
+		{Name: "b", Model: "gpt-4o"},
+	}, HealthConfig{UnhealthyThreshold: 2, HealthyThreshold: 2, RecoveryRampSteps: 3, RecoveryRampInitialPercent: 25})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r.ReportProbeResult("a", i%2 == 0)
+		}(i)
+	}
+	for w := 1; w <= 50; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			_ = r.SetWeight("gpt-4o", "a", w)
+		}(w)
+	}
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.Select("gpt-4o", nil)
+		}()
+	}
+	wg.Wait()
+}
