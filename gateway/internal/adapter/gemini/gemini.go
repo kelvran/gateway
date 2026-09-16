@@ -535,7 +535,16 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 				Signature: part.ThoughtSignature,
 			})
 		case part.FunctionCall != nil:
-			argsJSON, err := json.Marshal(part.FunctionCall.Args)
+			// **Fixed 2026-09-17, real bug**: see anthropic.go's
+			// identical fix -- part.FunctionCall.Args decodes to a nil
+			// map when Gemini sends "args": null or omits the field,
+			// which json.Marshal renders as the literal bytes "null"
+			// rather than a valid empty-object "{}".
+			args := part.FunctionCall.Args
+			if args == nil {
+				args = map[string]any{}
+			}
+			argsJSON, err := json.Marshal(args)
 			if err != nil {
 				return adapter.ChatResponse{}, fmt.Errorf("gemini: marshaling functionCall %q args: %w", part.FunctionCall.Name, err)
 			}

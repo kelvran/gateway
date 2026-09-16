@@ -197,6 +197,34 @@ func TestFromProviderMapsStopReasonToCanonicalFinishReason(t *testing.T) {
 	}
 }
 
+// TestFromProviderToolUseWithNilInputMarshalsToEmptyObjectNotNull is the
+// regression proof for the real bug fixed in FromProvider's own tool_use
+// case: a nil Input map (what Go decodes from a wire response omitting
+// "input" or sending "input": null) must produce ArgumentsJSON == "{}",
+// not the literal string "null" -- a caller that json.Unmarshals
+// ArgumentsJSON expecting an object, or a subsequent ToProvider replaying
+// this tool call into a different provider, would break on "null".
+func TestFromProviderToolUseWithNilInputMarshalsToEmptyObjectNotNull(t *testing.T) {
+	nativeResp := &Response{
+		ID:         "msg_test",
+		Model:      "claude-opus-4",
+		Role:       "assistant",
+		Content:    []ContentBlock{{Type: "tool_use", ID: "toolu_1", Name: "get_weather", Input: nil}},
+		StopReason: "tool_use",
+	}
+
+	got, err := New().FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if len(got.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(got.Choices[0].Message.ToolCalls))
+	}
+	if got := got.Choices[0].Message.ToolCalls[0].ArgumentsJSON; got != "{}" {
+		t.Errorf("ArgumentsJSON = %q, want %q", got, "{}")
+	}
+}
+
 // TestToProviderToolResultMessage covers the canonical role:"tool" ->
 // native role:"user"/tool_result-block translation this adapter also
 // performs, since Anthropic has no native "tool" role.

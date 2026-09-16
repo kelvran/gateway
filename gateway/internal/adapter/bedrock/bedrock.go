@@ -904,7 +904,16 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	for _, block := range native.Output.Message.Content {
 		switch {
 		case block.ToolUse != nil:
-			argsJSON, err := json.Marshal(block.ToolUse.Input)
+			// **Fixed 2026-09-17, real bug**: see anthropic.go's
+			// identical fix -- block.ToolUse.Input decodes to a nil map
+			// when Bedrock sends "input": null or omits the field,
+			// which json.Marshal renders as the literal bytes "null"
+			// rather than a valid empty-object "{}".
+			input := block.ToolUse.Input
+			if input == nil {
+				input = map[string]any{}
+			}
+			argsJSON, err := json.Marshal(input)
 			if err != nil {
 				return adapter.ChatResponse{}, fmt.Errorf("bedrock: marshaling toolUse %q input: %w", block.ToolUse.Name, err)
 			}

@@ -545,7 +545,20 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		case "text":
 			textParts = append(textParts, block.Text)
 		case "tool_use":
-			argsJSON, err := json.Marshal(block.Input)
+			// **Fixed 2026-09-17, real bug**: block.Input decodes to a
+			// nil map (Go's zero value) when Anthropic sends "input":
+			// null or omits the field entirely -- json.Marshal(nilMap)
+			// produces the literal bytes "null", not "{}", so
+			// ArgumentsJSON below could become the string "null" rather
+			// than a valid empty-object JSON string. A caller that
+			// json.Unmarshals ArgumentsJSON expecting an object (or a
+			// subsequent ToProvider replaying this tool call into a
+			// different provider's own request) would break on that.
+			input := block.Input
+			if input == nil {
+				input = map[string]any{}
+			}
+			argsJSON, err := json.Marshal(input)
 			if err != nil {
 				return adapter.ChatResponse{}, fmt.Errorf("anthropic: marshaling tool_use %q input: %w", block.ID, err)
 			}
