@@ -893,6 +893,35 @@ func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Du
 	}
 }
 
+// ErrDeploymentNotFound is returned by UpdateDeploymentWeight when name
+// does not match any currently-configured deployment — distinct from
+// ErrNoDeployment, which is about a MODEL having no routable deployment
+// at request time, not a deployment NAME's own existence.
+var ErrDeploymentNotFound = errors.New("dataplane: deployment not found")
+
+// UpdateDeploymentWeight live-mutates the named deployment's own routing
+// weight, per docs/upgrade-research/admin-operator-experience-2026-09-14.md.
+// A thin pass-through to router.Router.SetWeight — p.router's own
+// identity never changes (a plain *router.Router field, set once at
+// NewPipeline time, never CAS-swapped like p.verifier), so no
+// synchronization is needed here; SetWeight's own modelsMu covers the
+// actual live mutation. This method exists only to resolve name -> its
+// own configured Model, which Router itself has no notion of (it only
+// knows deployment names grouped by model, per Deployment's own shape).
+//
+// In-memory only, v1: config.yaml stays the source of truth on restart,
+// exactly matching how weight already works today for a deployment that
+// has never had this route called against it — a virtual key needed
+// persistence because it's created live with no config fallback, but a
+// deployment's weight always has one.
+func (p *Pipeline) UpdateDeploymentWeight(name string, weight int) error {
+	dep, ok := p.deploymentsByName[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrDeploymentNotFound, name)
+	}
+	return p.router.SetWeight(dep.Model, name, weight)
+}
+
 // GetVirtualKey returns a copy of the virtual key identified by name,
 // live -- the read-only counterpart to UpsertVirtualKey/DeleteVirtualKey,
 // for the new admin GET /admin/virtual_keys/{name}/spend route

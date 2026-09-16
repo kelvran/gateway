@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -988,5 +989,91 @@ func TestBackupRouteWritesTimestampedFilesForEachConfiguredStore(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("backup dir contains %d entries, want exactly 1", len(entries))
+	}
+}
+
+// TestUpdateDeploymentWeightViaHTTPChangesLiveRouting is the real
+// behavioral proof, mirroring
+// TestUpsertVirtualKeyViaHTTPMakesTheKeyImmediatelyUsable's own "HTTP
+// mutation, then a real pipeline call observes the effect" pattern: a
+// weight change via this route must actually shift which deployment
+// router.Router.Select picks, not just return 204. Each call uses a
+// distinct message body so every one is a genuine cache MISS (an
+// identical repeated body would cache-hit after the first call and never
+// re-select a deployment at all).
+func TestUpdateDeploymentWeightViaHTTPChangesLiveRouting(t *testing.T) {
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []dataplane.Deployment{
+		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		{Name: "d2", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+	pipeline, err := dataplane.NewPipeline(dataplane.Config{
+		Verifier: verifier,
+		Limiter: ratelimit.NewInMemoryKeyLimiter([]ratelimit.KeyConfig{
+			{ID: "test-key", Capacity: 100, RefillPerSecond: 100},
+		}),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         router.New([]router.Deployment{{Name: "d1", Model: "gpt-4o"}, {Name: "d2", Model: "gpt-4o"}}, router.HealthConfig{}),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		// The response CONTENT (never resp.Model -- callDeployment always
+		// echoes back the client's own requested model there, per
+		// finalize's own doc comment on realServingModel vs resp.Model)
+		// encodes dep.Name -- the only way this test can tell which of
+		// the two deployments actually served a given call.
+		Upstream: func(ctx context.Context, dep dataplane.Deployment, req any) (any, error) {
+			return &openai.Response{
+				ID: "chatcmpl-" + dep.Name, Model: dep.Name,
+				Choices: []openai.Choice{{Message: openai.Message{Role: "assistant", Content: json.RawMessage(`"` + dep.Name + `"`)}, FinishReason: "stop"}},
+				Usage:   openai.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodPost, "/admin/deployments/d1/weight", fakeAdminCredential(), `{"weight":3}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /admin/deployments/d1/weight: status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	want := []string{"d1", "d1", "d1", "d2"}
+	for i, w := range want {
+		req := adapter.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []adapter.Message{{Role: "user", Content: fmt.Sprintf("call %d", i)}},
+		}
+		resp, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		got := resp.Choices[0].Message.Content
+		if got != w {
+			t.Fatalf("call %d served by %q, want %q (full wanted 3:1 sequence: %v) — the weight update did not change live routing", i, got, w, want)
+		}
+	}
+}
+
+// TestUpdateDeploymentWeightRequiresAdminCredential proves this
+// write-shaped, live-routing-mutating route is gated exactly like every
+// other write route on this mux — admin-only.
+func TestUpdateDeploymentWeightRequiresAdminCredential(t *testing.T) {
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+		http.MethodPost, "/admin/deployments/d1/weight", "wrong-value-entirely", `{"weight":3}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /admin/deployments/d1/weight with a wrong credential: status = %d, want 401", rec.Code)
 	}
 }

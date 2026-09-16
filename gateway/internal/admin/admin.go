@@ -174,6 +174,12 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	// gets an informative 501 from backupHandler itself, not a bare 404
 	// indistinguishable from a typo'd path.
 	mux.Handle("POST /admin/backup", requireBearerToken(creds.Admin, backupHandler(cfg, pipeline, logger)))
+	// Deployment weight live-mutation, per
+	// docs/upgrade-research/admin-operator-experience-2026-09-14.md --
+	// admin-only, same tier as every other write route on this mux: a
+	// deployment's routing weight is an operational lever, not read-only
+	// reporting.
+	mux.Handle("POST /admin/deployments/{name}/weight", requireBearerToken(creds.Admin, updateDeploymentWeightHandler(pipeline, logger)))
 	// pprof, per cfg.Admin.EnablePprof's own doc comment — off by
 	// default, admin-credential-gated (never the viewer tier: profiling
 	// data is a stronger information-disclosure/DoS-surface signal than
@@ -555,6 +561,52 @@ func backupHandler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, logge
 		}
 		writeJSONResponse(w, backupResponse{Files: backedUp})
 		logger.Info("admin_backup_completed", "files", backedUp, "authorized_by", "admin")
+	}
+}
+
+// updateDeploymentWeightRequest is POST
+// /admin/deployments/{name}/weight's own request body.
+type updateDeploymentWeightRequest struct {
+	Weight int `json:"weight"`
+}
+
+// updateDeploymentWeightHandler live-mutates name's own routing weight,
+// via dataplane.Pipeline.UpdateDeploymentWeight -- see that method's own
+// doc comment for the exact in-memory-only, restart-reverts-to-config
+// scope. Negative weight is rejected outright (400), mirroring
+// controlplane's own identical "has a negative weight" parse-time check
+// -- 0 is accepted and means "unset," per Deployment.Weight's own
+// long-standing convention, not a special case introduced here. 404 if
+// name doesn't match any configured deployment. logger records name and
+// the new weight on every successful update.
+func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if name == "" {
+			http.Error(w, "deployment name is required", http.StatusBadRequest)
+			return
+		}
+
+		var req updateDeploymentWeightRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Weight < 0 {
+			http.Error(w, fmt.Sprintf("weight must be non-negative, got %d", req.Weight), http.StatusBadRequest)
+			return
+		}
+
+		err := pipeline.UpdateDeploymentWeight(name, req.Weight)
+		switch {
+		case err == nil:
+			logger.Info("admin_deployment_weight_updated", "name", name, "weight", req.Weight, "authorized_by", "admin")
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, dataplane.ErrDeploymentNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 

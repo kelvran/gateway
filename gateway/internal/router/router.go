@@ -27,7 +27,10 @@
 // traffic-independent active-probe half is real here.
 package router
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // Router selects a deployment for a canonical model via smooth weighted
 // round-robin, skipping any deployment ReportProbeResult has marked
@@ -35,7 +38,14 @@ import "sync"
 // dataplane.Pipeline, mirroring ratelimit.KeyLimiter/budget.Tracker's
 // single-instance shape.
 type Router struct {
-	models map[string]*modelState
+	// modelsMu guards models itself (the map's own identity per key —
+	// i.e. read/write of the map, not each *modelState's own internal
+	// fields, which stay guarded by that modelState's own mu per
+	// wrr.go). Needed once SetWeight can replace a model's *modelState
+	// value live, live-mutating a map concurrently with Select's own
+	// unguarded read would otherwise be a real data race.
+	modelsMu sync.RWMutex
+	models   map[string]*modelState
 
 	healthMu  sync.Mutex
 	healthCfg HealthConfig
@@ -108,9 +118,58 @@ func New(deployments []Deployment, health HealthConfig) *Router {
 // for 3 of 20 requests (no fallback attempted at all, the original
 // error surfaced directly) before this fix.
 func (r *Router) Select(model string, exclude map[string]bool) (string, bool) {
+	r.modelsMu.RLock()
 	ms, ok := r.models[model]
+	r.modelsMu.RUnlock()
 	if !ok {
 		return "", false
 	}
 	return r.selectHealthy(ms, exclude)
+}
+
+// SetWeight live-mutates deploymentName's own weight within model's
+// routing group to weight (weight <= 0 normalizes to 1, the same "unset"
+// convention newModelState itself already applies) — every OTHER
+// deployment in the group keeps its existing weight, in the same input
+// order newModelState requires for its degrade-to-plain-round-robin
+// proof (see modelState's own doc comment). Rebuilding the whole group
+// necessarily resets THIS model's own WRR cursor (i/cw) — there is no
+// principled way to carry a cursor's meaning forward across a changed
+// weight distribution — but every OTHER model's cursor, and every
+// deployment's health state (health.go's own map, keyed by deployment
+// name, never by model), is completely untouched: a concurrent Select
+// call already holding the OLD *modelState value keeps using it to
+// completion, simply abandoned (not mutated in place) once this method
+// installs the new one.
+//
+// Returns an error, changing nothing, if model has no configured
+// deployment group at all, or deploymentName is not a member of it —
+// this only ever adjusts an EXISTING deployment's weight, never adds or
+// removes one (that needs a real config reload/restart, exactly like
+// every other deployment-topology change today).
+func (r *Router) SetWeight(model, deploymentName string, weight int) error {
+	r.modelsMu.Lock()
+	defer r.modelsMu.Unlock()
+
+	ms, ok := r.models[model]
+	if !ok {
+		return fmt.Errorf("router: no deployment group configured for model %q", model)
+	}
+
+	deps := make([]weightedDeployment, len(ms.deps))
+	copy(deps, ms.deps)
+	found := false
+	for i := range deps {
+		if deps[i].name == deploymentName {
+			deps[i].weight = weight
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("router: deployment %q is not a member of model %q's routing group", deploymentName, model)
+	}
+
+	r.models[model] = newModelState(deps)
+	return nil
 }
