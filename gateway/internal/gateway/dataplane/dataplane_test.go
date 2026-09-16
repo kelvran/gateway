@@ -142,7 +142,7 @@ func TestHandleChatCompletionRejectsMissingAuth(t *testing.T) {
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
-	_, err := p.HandleChatCompletion(context.Background(), "", adapter.ChatRequest{Model: "gpt-4o"})
+	_, err := p.HandleChatCompletion(context.Background(), "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("expected an error for missing Authorization header")
 	}
@@ -159,7 +159,7 @@ func TestHandleChatCompletionRejectsRateLimited(t *testing.T) {
 		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
 	}, keys)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"})
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err = %v, want ErrRateLimited", err)
 	}
@@ -177,7 +177,7 @@ func TestHandleChatCompletionMissThenCacheHit(t *testing.T) {
 		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}
 
-	resp1, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	resp1, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestHandleChatCompletionMissThenCacheHit(t *testing.T) {
 		t.Fatalf("upstreamCalls after first call = %d, want 1", upstreamCalls)
 	}
 
-	resp2, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+	resp2, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -225,14 +225,14 @@ func TestHandleChatCompletionTruncatedResponseNeverCached(t *testing.T) {
 		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("upstreamCalls after first call = %d, want 1", upstreamCalls)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -253,7 +253,7 @@ func TestHandleChatCompletionFallsBackOnUpstreamError(t *testing.T) {
 		{Name: "secondary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
 	})
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"})
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got error: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestHandleChatCompletionNoDeploymentForModel(t *testing.T) {
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "unknown-model"})
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "unknown-model"}, "")
 	if err == nil {
 		t.Fatal("expected an error for an unconfigured model")
 	}
@@ -301,7 +301,7 @@ func TestHandleChatCompletionModelNotAllowedCheckedBeforeRateLimitAndBudget(t *t
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys, tracker)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if !errors.Is(err, ErrModelNotAllowed) {
 		t.Fatalf("err = %v, want ErrModelNotAllowed (must be checked before rate-limit/budget)", err)
 	}
@@ -319,12 +319,12 @@ func TestHandleChatCompletionPerKeyRateLimitsAreIndependent(t *testing.T) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer exhausted-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer exhausted-secret", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("exhausted key: err = %v, want ErrRateLimited", err)
 	}
 
-	_, err = p.HandleChatCompletion(context.Background(), "Bearer fresh-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	_, err = p.HandleChatCompletion(context.Background(), "Bearer fresh-secret", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("fresh key was blocked by the exhausted key's rate limit: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestHandleChatCompletionBudgetExceededRejectsBeforeUpstream(t *testing.T) {
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys, tracker)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
@@ -374,7 +374,7 @@ func TestHandleChatCompletionCacheIsolatedAcrossVirtualKeys(t *testing.T) {
 		Messages: []adapter.Message{{Role: "user", Content: "identical question"}},
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-secret", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-secret", req, ""); err != nil {
 		t.Fatalf("team-alpha first call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -383,7 +383,7 @@ func TestHandleChatCompletionCacheIsolatedAcrossVirtualKeys(t *testing.T) {
 
 	// team-beta's identical request must be a cache MISS against
 	// team-alpha's entry — the load-bearing assertion.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", req, ""); err != nil {
 		t.Fatalf("team-beta first call: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -391,13 +391,13 @@ func TestHandleChatCompletionCacheIsolatedAcrossVirtualKeys(t *testing.T) {
 	}
 
 	// Each key's own SECOND identical request must now be a cache hit.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-secret", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-secret", req, ""); err != nil {
 		t.Fatalf("team-alpha second call: %v", err)
 	}
 	if upstreamCalls != 2 {
 		t.Fatalf("upstreamCalls after team-alpha's second (should be a HIT) call = %d, want still 2", upstreamCalls)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", req, ""); err != nil {
 		t.Fatalf("team-beta second call: %v", err)
 	}
 	if upstreamCalls != 2 {

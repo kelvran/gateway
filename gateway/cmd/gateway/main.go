@@ -56,6 +56,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/guardrail/bedrockguard"
+	idempotencyinprocess "github.com/kelvran/gateway/gateway/internal/idempotency/inprocess"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/prompt"
@@ -689,8 +690,18 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	return dataplane.NewPipeline(dataplane.Config{
 		Verifier:      verifier,
 		IdentityStore: identityStore,
-		Prompts:       promptStore,
-		Limiter:       keyLimiter,
+		// Always constructed, never nil — mirrors Cache/CacheL2/CacheL3's
+		// own "no config gate, just always wire it in" precedent below:
+		// idempotency.Store's own contract already makes an empty
+		// Idempotency-Key header (the overwhelmingly common case) a
+		// guaranteed no-op, so there is no "is anything configured" gate
+		// to add here. Single-instance-only (see
+		// internal/idempotency/inprocess's own package doc) until a
+		// Redis-backed implementation exists for the gateway2 multi-
+		// instance Compose profile — named, not yet built.
+		IdempotencyStore: idempotencyinprocess.New(),
+		Prompts:          promptStore,
+		Limiter:          keyLimiter,
 		// Always constructed, never nil — a virtual key with
 		// MaxConcurrentRequests <= 0 (every config written before this
 		// feature existed) is simply absent from concurrencyConfigs'
@@ -1019,7 +1030,7 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		// be added to that same response.
 		ctx, upstreamDuration := dataplane.WithOverheadTracker(ctx)
 		requestStart := time.Now()
-		resp, err := p.HandleChatCompletion(ctx, r.Header.Get("Authorization"), req)
+		resp, err := p.HandleChatCompletion(ctx, r.Header.Get("Authorization"), req, r.Header.Get("Idempotency-Key"))
 		if err != nil {
 			writeErrorResponse(w, err)
 			return
@@ -1057,7 +1068,7 @@ func handleStreamingChatCompletion(p *dataplane.Pipeline, w http.ResponseWriter,
 	w.Header().Set("Connection", "keep-alive")
 
 	ctx := telemetry.ExtractContext(r.Context(), r)
-	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), req, w); err != nil {
+	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), req, w, r.Header.Get("Idempotency-Key")); err != nil {
 		writeErrorResponse(w, err)
 	}
 }

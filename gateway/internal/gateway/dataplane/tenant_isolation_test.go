@@ -53,7 +53,7 @@ func TestTenantIsolationL3LexicalNearDuplicateNeverCrossesTenants(t *testing.T) 
 	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "Explain how binary search works in a sorted array"}}}
 	nearDuplicate := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "Explain how binary search   works in a sorted array"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a-secret", first); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a-secret", first, ""); err != nil {
 		t.Fatalf("tenant-a first request: %v", err)
 	}
 	// tenant-b's request is a lexical near-duplicate of tenant-a's — a
@@ -61,7 +61,7 @@ func TestTenantIsolationL3LexicalNearDuplicateNeverCrossesTenants(t *testing.T) 
 	// TestHandleChatCompletionLexicalNearDuplicateHitsL3) — but must be a
 	// genuine miss (a second real upstream call) here, since it's a
 	// DIFFERENT tenant.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-b-secret", nearDuplicate); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-b-secret", nearDuplicate, ""); err != nil {
 		t.Fatalf("tenant-b request: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -70,7 +70,7 @@ func TestTenantIsolationL3LexicalNearDuplicateNeverCrossesTenants(t *testing.T) 
 
 	// Confirm tenant-a's OWN second identical request still hits L3 —
 	// proving this is real tenant-scoping, not L3 being broken outright.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a-secret", nearDuplicate); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a-secret", nearDuplicate, ""); err != nil {
 		t.Fatalf("tenant-a second request: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -101,7 +101,7 @@ func TestTenantIsolationFallbackServedResponseNeverCrossesTenants(t *testing.T) 
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "identical request for both tenants"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a-secret", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a-secret", req, ""); err != nil {
 		t.Fatalf("tenant-a request (expected to succeed via fallback): %v", err)
 	}
 	if primaryAttempts != 1 || fallbackAttempts != 1 {
@@ -111,7 +111,7 @@ func TestTenantIsolationFallbackServedResponseNeverCrossesTenants(t *testing.T) 
 	// tenant-b's identical request must NOT be served from tenant-a's
 	// fallback-cached entry — it must independently retry primary (fail)
 	// then fallback (succeed) again.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-b-secret", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-b-secret", req, ""); err != nil {
 		t.Fatalf("tenant-b request (expected to succeed via its own fallback): %v", err)
 	}
 	if primaryAttempts != 2 || fallbackAttempts != 2 {
@@ -122,7 +122,7 @@ func TestTenantIsolationFallbackServedResponseNeverCrossesTenants(t *testing.T) 
 	// hit (no new primary/fallback attempts) — proving the fallback path
 	// really did write to tenant-a's own cache namespace correctly, not
 	// that caching from fallback is broken outright.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a-secret", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a-secret", req, ""); err != nil {
 		t.Fatalf("tenant-a second request: %v", err)
 	}
 	if primaryAttempts != 2 || fallbackAttempts != 2 {

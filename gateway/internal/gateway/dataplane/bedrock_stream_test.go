@@ -71,7 +71,7 @@ func TestHandleChatCompletionStreamBedrockFullSequenceDecodesCorrectly(t *testin
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
-	}, rec)
+	}, rec, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletionStream: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestHandleChatCompletionStreamBedrockFullSequenceDecodesCorrectly(t *testin
 	rec2 := httptest.NewRecorder()
 	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
-	}, rec2)
+	}, rec2, "")
 	if err != nil {
 		t.Fatalf("second (cache-hit) HandleChatCompletionStream: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestHandleChatCompletionStreamBedrockExceptionFrameSurfacesAsError(t *testi
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
-	}, rec)
+	}, rec, "")
 	if err == nil {
 		t.Fatal("HandleChatCompletionStream: want error for an exception frame mid-stream, got nil")
 	}

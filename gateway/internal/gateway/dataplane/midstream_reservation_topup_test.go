@@ -171,7 +171,7 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 		err := p.HandleChatCompletionStream(context.Background(), "Bearer topup-secret", adapter.ChatRequest{
 			Model: "gpt-4o", Stream: true,
 			Messages: []adapter.Message{{Role: "user", Content: "generate a long response"}},
-		}, rec)
+		}, rec, "")
 		done <- result{err: err}
 	}()
 
@@ -258,7 +258,7 @@ func TestHandleChatCompletionStreamMidStreamTopupExhaustionGracefullyTruncatesSt
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer topup-secret", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 		Messages: []adapter.Message{{Role: "user", Content: "generate as much as you possibly can"}},
-	}, rec)
+	}, rec, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletionStream: %v, want nil — a top-up exhaustion must finish as a normal, truncated-but-valid stream, not an error", err)
 	}

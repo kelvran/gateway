@@ -59,7 +59,7 @@ func TestChatCompletionLogLineIncludesTopLevelTraceAndSpanIDMatchingGatewayEvent
 	p := crossInstanceTestPipeline(t, &logBuf)
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestBudgetWarnThresholdLogIncludesTraceAndSpanID(t *testing.T) {
 	p := warnThresholdTestPipeline(t, vk, &logBuf)
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer warn-key-trace", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer warn-key-trace", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 

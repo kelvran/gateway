@@ -57,7 +57,7 @@ func TestHandleChatCompletionCoalescesConcurrentIdenticalCacheMisses(t *testing.
 			defer wg.Done()
 			ready.Done()
 			<-go_
-			results[i], errs[i] = p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+			results[i], errs[i] = p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
 		}(i)
 	}
 
@@ -127,11 +127,11 @@ func TestHandleChatCompletionNeverCoalescesAcrossDifferentTenants(t *testing.T) 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = p.HandleChatCompletion(context.Background(), "Bearer test-key", req)
+		_, _ = p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = p.HandleChatCompletion(context.Background(), "Bearer team-beta-secret", req)
+		_, _ = p.HandleChatCompletion(context.Background(), "Bearer team-beta-secret", req, "")
 	}()
 
 	select {

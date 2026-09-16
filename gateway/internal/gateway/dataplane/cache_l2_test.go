@@ -196,10 +196,10 @@ func TestHandleChatCompletionL2CacheHitOnNormalizedButNotExactRepeat(t *testing.
 	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "what is the weather in paris"}}}
 	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "  what is the weather in paris?  "}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second)
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second, "")
 	if err != nil {
 		t.Fatalf("second HandleChatCompletion: %v", err)
 	}
@@ -226,10 +226,10 @@ func TestHandleChatCompletionL2CacheIsolatedAcrossVirtualKeys(t *testing.T) {
 	reqAlpha := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "identical question?"}}}
 	reqBeta := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "identical question"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-secret", reqAlpha); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-secret", reqAlpha, ""); err != nil {
 		t.Fatalf("alpha request: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", reqBeta); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", reqBeta, ""); err != nil {
 		t.Fatalf("beta request: %v", err)
 	}
 	if upstreamCalls != 2 {

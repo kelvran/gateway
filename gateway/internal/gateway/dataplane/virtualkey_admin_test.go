@@ -23,7 +23,7 @@ func TestUpsertVirtualKeyAddsANewKeyImmediatelyUsable(t *testing.T) {
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
 	// Before the upsert, this brand-new key must not exist.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer brand-new-secret", adapter.ChatRequest{Model: "gpt-4o"}); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer brand-new-secret", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Fatal("HandleChatCompletion succeeded before the key was ever added")
 	}
 
@@ -35,7 +35,7 @@ func TestUpsertVirtualKeyAddsANewKeyImmediatelyUsable(t *testing.T) {
 		t.Fatalf("UpsertVirtualKey: %v", err)
 	}
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer brand-new-secret", adapter.ChatRequest{Model: "gpt-4o"})
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer brand-new-secret", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion after UpsertVirtualKey: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestUpsertVirtualKeyAddsANewKeyImmediatelyUsable(t *testing.T) {
 	}
 
 	// The pre-existing key from construction must still work unchanged.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("pre-existing key stopped working after an unrelated upsert: %v", err)
 	}
 }
@@ -68,10 +68,10 @@ func TestUpsertVirtualKeyRegistersTheRateLimiterBeforeItCanBeReached(t *testing.
 
 	// Would panic on a nil *TokenBucket before Register existed, not
 	// just fail an assertion — this call not panicking is the proof.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer delta-secret", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer delta-secret", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("first call against a freshly-upserted key: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer delta-secret", adapter.ChatRequest{Model: "gpt-4o"}); !errors.Is(err, ErrRateLimited) {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer delta-secret", adapter.ChatRequest{Model: "gpt-4o"}, ""); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("second call (capacity 1, zero refill) = %v, want ErrRateLimited — Register must have used the real configured capacity, not an unlimited default", err)
 	}
 }
@@ -103,7 +103,7 @@ func TestUpsertVirtualKeyReplacesAnExistingKeysBudget(t *testing.T) {
 		t.Fatalf("UpsertVirtualKey: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}); !errors.Is(err, ErrModelNotAllowed) {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); !errors.Is(err, ErrModelNotAllowed) {
 		t.Fatalf("HandleChatCompletion after restricting AllowedModels = %v, want ErrModelNotAllowed", err)
 	}
 }
@@ -121,11 +121,11 @@ func TestDeleteVirtualKeyRemovesAccess(t *testing.T) {
 		t.Fatalf("DeleteVirtualKey: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", adapter.ChatRequest{Model: "gpt-4o"}); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer beta-secret", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Fatal("HandleChatCompletion succeeded with a deleted key's token")
 	}
 	// The remaining key must be entirely unaffected.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("surviving key stopped working after deleting an unrelated one: %v", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestDeleteVirtualKeyRefusesToDeleteTheLastKey(t *testing.T) {
 	}
 
 	// Refused, unchanged: the key must still work.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("the refused-deletion key stopped working: %v", err)
 	}
 }

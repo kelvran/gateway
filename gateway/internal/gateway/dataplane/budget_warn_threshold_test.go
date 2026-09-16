@@ -78,7 +78,7 @@ func TestFinalizeLogsBudgetWarnThresholdCrossed(t *testing.T) {
 	p := warnThresholdTestPipeline(t, vk, &logBuf)
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer warn-key", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer warn-key", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -103,7 +103,7 @@ func TestFinalizeDoesNotLogBudgetWarnBelowThreshold(t *testing.T) {
 	p := warnThresholdTestPipeline(t, vk, &logBuf)
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer under-key", req); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer under-key", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 

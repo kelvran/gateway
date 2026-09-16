@@ -178,7 +178,7 @@ func structuredOutputChatRequest() adapter.ChatRequest {
 func TestHandleChatCompletionSilentlyOmitsStructuredOutputEnforcementForUnsupportedBedrockModelOnFirstAttempt(t *testing.T) {
 	h := newBedrockStructuredOutputPipeline(t, unsupportedBedrockStructuredOutputModel)
 
-	resp, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", structuredOutputChatRequest())
+	resp, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", structuredOutputChatRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want a normal successful response -- the documented v1 scope limit is a silent omission, never an error", err)
 	}
@@ -203,7 +203,7 @@ func TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttribut
 	before := len(spanRecorder.Ended())
 	h := newBedrockStructuredOutputPipeline(t, unsupportedBedrockStructuredOutputModel)
 
-	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", structuredOutputChatRequest())
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", structuredOutputChatRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedWhenSup
 	// docs/rfcs/2026-09-12-gateway-structured-output-normalization.md.
 	h := newBedrockStructuredOutputPipeline(t, "global.anthropic.claude-haiku-4-5-20251001-v1:0")
 
-	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", structuredOutputChatRequest())
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", structuredOutputChatRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedOnAuthF
 
 	// Deliberately wrong bearer token -- fails auth before routing ever
 	// selects a deployment.
-	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer wrong-credential", structuredOutputChatRequest())
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer wrong-credential", structuredOutputChatRequest(), "")
 	if err == nil {
 		t.Fatal("expected an auth error")
 	}
@@ -281,7 +281,7 @@ func TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedOnAuthF
 func TestHandleChatCompletionReroutesFirstPickToCapableDeploymentWhenOneExists(t *testing.T) {
 	h := newBedrockStructuredOutputPipelineTwoDeployments(t)
 
-	resp, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-two-dep-cred", structuredOutputChatRequest())
+	resp, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-two-dep-cred", structuredOutputChatRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}

@@ -105,10 +105,10 @@ func TestCallDeploymentThreadsDisableCacheControlAutoPopulateFromDeployment(t *t
 		{Role: "user", Content: "hi"},
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "claude-auto-on", Messages: messages}); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "claude-auto-on", Messages: messages}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion(claude-auto-on): %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "claude-auto-off", Messages: messages}); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "claude-auto-off", Messages: messages}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion(claude-auto-off): %v", err)
 	}
 
@@ -182,7 +182,7 @@ func TestCallDeploymentSharedAcrossTenantsForcesCacheControlOffEvenWhenNotExplic
 		{Role: "system", Content: "You are a helpful assistant."},
 		{Role: "user", Content: "hi"},
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "claude-shared", Messages: messages}); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "claude-shared", Messages: messages}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 

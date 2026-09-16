@@ -59,6 +59,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/cache"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
+	"github.com/kelvran/gateway/gateway/internal/idempotency"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/prompt"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
@@ -327,6 +328,16 @@ type Config struct {
 	// know where to Save/Delete future mutations, never how to hydrate
 	// the initial state.
 	IdentityStore identity.Store
+	// IdempotencyStore, if set, enables client-facing request
+	// deduplication via an Idempotency-Key header, per
+	// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md.
+	// nil (the zero value) means the whole mechanism is off — an
+	// Idempotency-Key header sent to a Pipeline with no store configured
+	// is silently ignored, matching an empty header's own "guaranteed
+	// no-op" convention. Single-instance-only (internal/idempotency/inprocess)
+	// unless a future Redis-backed implementation is built, mirroring
+	// Limiter's own in-memory-vs-Redis choice below.
+	IdempotencyStore idempotency.Store
 	// Limiter enforces each virtual key's own burst/refill rate limit —
 	// either in-memory (ratelimit.NewInMemoryKeyLimiter) or Redis-backed
 	// (ratelimit.NewRedisKeyLimiter), per
@@ -445,7 +456,13 @@ type Pipeline struct {
 	// change, mirroring budget.Tracker's own "in-memory state is already
 	// correct; only persistence itself can lag/fail" posture.
 	identityStore identity.Store
-	limiter       *ratelimit.KeyLimiter
+	// idempotencyStore is nil unless Config.IdempotencyStore was set — see
+	// that field's own doc comment. Read by HandleChatCompletion/
+	// HandleChatCompletionStream's own claimIdempotencyIfSet helper only;
+	// an Idempotency-Key header is a guaranteed no-op when this is nil,
+	// exactly like an empty header.
+	idempotencyStore idempotency.Store
+	limiter          *ratelimit.KeyLimiter
 	// concurrency is nil whenever Config.Concurrency was left unset — see
 	// that field's own doc comment; checkConcurrency/releaseConcurrency
 	// treat a nil concurrency as "no cap configured," never panicking.
@@ -575,6 +592,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 
 	p := &Pipeline{
 		identityStore:         cfg.IdentityStore,
+		idempotencyStore:      cfg.IdempotencyStore,
 		limiter:               cfg.Limiter,
 		concurrency:           cfg.Concurrency,
 		deploymentConcurrency: cfg.DeploymentConcurrency,
@@ -1528,9 +1546,119 @@ func isRegionAllowed(vk *identity.VirtualKey, region string) bool {
 	return ok
 }
 
+// idempotencyKeyTTL bounds how long a claimed Idempotency-Key stays valid
+// before an abandoned claim (a caller that crashed or never returned) lets
+// a later request with the same key start fresh, per
+// internal/idempotency.Store.Claim's own ttl parameter. 10 minutes is
+// generous slack over any real upstream call's own timeout budget.
+const idempotencyKeyTTL = 10 * time.Minute
+
+// idempotencyStoreKey scopes a client-supplied Idempotency-Key to tenantID
+// (a virtual key's own ID), using the same NUL-byte-tagged sha256 pattern
+// as cache.Key/NormalizedKey above — naive string concatenation (e.g.
+// tenantID+":"+idempotencyKey) is exactly the unescaped-delimiter
+// collision class those two functions already guard against: a tenant ID
+// or key containing the separator byte could otherwise collide two
+// DIFFERENT (tenant, key) pairs onto the same idempotency.Store entry.
+// Unscoped (a bare idempotencyKey) would let two different tenants that
+// happen to send the same literal header value collide on one another's
+// stored responses — real cross-tenant leakage, the same severity class
+// THREAT_MODEL.md already tracks for the cache.
+func idempotencyStoreKey(tenantID, idempotencyKey string) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "tenant=%s\x00idempotency_key=%s", tenantID, idempotencyKey)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// claimIdempotency implements the Idempotency-Key contract described in
+// internal/idempotency's own package doc, as the shared plug-in point for
+// both HandleChatCompletion and HandleChatCompletionStream. idempotencyKey
+// == "" or p.idempotencyStore == nil is a guaranteed no-op (owns=false,
+// replay=false, err=nil) — the caller proceeds exactly as if this method
+// didn't exist, and must NOT call completeIdempotency, since nothing was
+// ever claimed. owns=true means the caller is now this key's sole owner
+// and MUST eventually call completeIdempotency for the same (tenantID,
+// idempotencyKey) pair (mirroring checkConcurrency/releaseConcurrency's
+// own claim/release shape elsewhere in this file). replay=true means
+// cachedResp is a prior attempt's own stored response, to return to the
+// client VERBATIM with no further pipeline work and no Complete/Fail call
+// of its own.
+func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKey string, req adapter.ChatRequest) (owns bool, replay bool, cachedResp adapter.ChatResponse, err error) {
+	if p.idempotencyStore == nil || idempotencyKey == "" {
+		return false, false, adapter.ChatResponse{}, nil
+	}
+
+	body, marshalErr := json.Marshal(req)
+	if marshalErr != nil {
+		return false, false, adapter.ChatResponse{}, fmt.Errorf("dataplane: idempotency: marshal request for fingerprint: %w", marshalErr)
+	}
+	fingerprint := sha256.Sum256(body)
+	storeKey := idempotencyStoreKey(tenantID, idempotencyKey)
+
+	for {
+		result, claimErr := p.idempotencyStore.Claim(ctx, storeKey, fingerprint, idempotencyKeyTTL)
+		if claimErr != nil {
+			return false, false, adapter.ChatResponse{}, fmt.Errorf("dataplane: idempotency: %w", claimErr)
+		}
+		switch result.State {
+		case idempotency.StateNew:
+			return true, false, adapter.ChatResponse{}, nil
+		case idempotency.StateCompleted:
+			var resp adapter.ChatResponse
+			if unmarshalErr := json.Unmarshal(result.Response, &resp); unmarshalErr != nil {
+				return false, false, adapter.ChatResponse{}, fmt.Errorf("dataplane: idempotency: unmarshal stored response: %w", unmarshalErr)
+			}
+			return false, true, resp, nil
+		default: // idempotency.StateInFlight
+			select {
+			case <-result.Done:
+				continue
+			case <-ctx.Done():
+				return false, false, adapter.ChatResponse{}, ctx.Err()
+			}
+		}
+	}
+}
+
+// completeIdempotency resolves idempotencyKey's claim once a call that
+// claimIdempotency confirmed owns it (owns == true) finishes, per
+// internal/idempotency's own Complete/Fail contract — called from the
+// handler's existing deferred finalize closure, exactly like Fail's own
+// doc comment expects ("Complete is expected to run from a defer"). A
+// marshal failure degrades to Fail rather than silently caching a broken
+// replay, matching this codebase's own posture that audit/bookkeeping
+// plumbing must never turn a successful response into an error (contrast
+// Tracker.Delete's identical non-fatal-logged posture). Never called with
+// a nil p.idempotencyStore: owns is only ever true when claimIdempotency
+// already confirmed the store is non-nil.
+func (p *Pipeline) completeIdempotency(ctx context.Context, tenantID, idempotencyKey string, resp adapter.ChatResponse, err error) {
+	storeKey := idempotencyStoreKey(tenantID, idempotencyKey)
+	if err != nil {
+		if failErr := p.idempotencyStore.Fail(ctx, storeKey); failErr != nil {
+			p.logger.Warn("idempotency_fail_failed", "key", idempotencyKey, "error", failErr)
+		}
+		return
+	}
+	body, marshalErr := json.Marshal(resp)
+	if marshalErr != nil {
+		p.logger.Warn("idempotency_complete_marshal_failed", "key", idempotencyKey, "error", marshalErr)
+		if failErr := p.idempotencyStore.Fail(ctx, storeKey); failErr != nil {
+			p.logger.Warn("idempotency_fail_failed", "key", idempotencyKey, "error", failErr)
+		}
+		return
+	}
+	if completeErr := p.idempotencyStore.Complete(ctx, storeKey, body); completeErr != nil {
+		p.logger.Warn("idempotency_complete_failed", "key", idempotencyKey, "error", completeErr)
+	}
+}
+
 // HandleChatCompletion runs the full request pipeline for one canonical
-// ChatRequest, given the raw Authorization header value.
-func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, req adapter.ChatRequest) (resp adapter.ChatResponse, err error) {
+// ChatRequest, given the raw Authorization header value. idempotencyKey,
+// if non-empty, is the client's own Idempotency-Key header value — see
+// claimIdempotency's own doc comment for the full contract. An empty
+// idempotencyKey (or a nil p.idempotencyStore) is a guaranteed no-op,
+// identical to this parameter never having existed.
+func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, req adapter.ChatRequest, idempotencyKey string) (resp adapter.ChatResponse, err error) {
 	var (
 		cacheInfo             cacheProvenance
 		vk                    *identity.VirtualKey
@@ -1539,6 +1667,13 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		fallback              fallbackInfo
 		budgetSpentAtDecision decimal.Decimal
 		billable              bool
+		// idempotencyOwned is claimIdempotency's own owns return value —
+		// true only when THIS call is the sole owner of idempotencyKey's
+		// claim and must resolve it via completeIdempotency in the defer
+		// below. Never true when idempotencyKey == "" or
+		// p.idempotencyStore == nil — see claimIdempotency's own doc
+		// comment.
+		idempotencyOwned bool
 		// tpmReserved/tpmReservedTokens and budgetReserved/
 		// budgetReservedUSD are checkRateLimit's/budget.Reserve's own
 		// return values, threaded through to finalize's ReconcileTPM/
@@ -1569,6 +1704,9 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
 		// (a).
 		err = p.attachRetryAfter(vk, err)
+		if idempotencyOwned {
+			p.completeIdempotency(ctx, vk.ID, idempotencyKey, resp, err)
+		}
 		// costEstimated is always false on the buffered path — see
 		// finalize's own doc comment; only HandleChatCompletionStream ever
 		// estimates, via estimateOrRealUsage (streaming.go).
@@ -1583,6 +1721,22 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	if !isModelAllowed(vk, req.Model) {
 		err = fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
+		return
+	}
+
+	// Claimed right after auth, before rate-limit/budget checks: claiming
+	// before auth would let an unauthenticated caller exhaust idempotency
+	// slots for an identity it doesn't own; claiming after budget.Reserve
+	// would double-reserve budget for an in-flight wait — exactly the
+	// class of bug docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md
+	// closed. A replay short-circuits here with no further pipeline work
+	// and no upstream call.
+	var idempotencyReplay bool
+	idempotencyOwned, idempotencyReplay, resp, err = p.claimIdempotency(ctx, vk.ID, idempotencyKey, req)
+	if err != nil {
+		return
+	}
+	if idempotencyReplay {
 		return
 	}
 

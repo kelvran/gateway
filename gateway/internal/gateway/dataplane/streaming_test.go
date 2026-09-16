@@ -131,7 +131,7 @@ func TestHandleChatCompletionStreamModelNotAllowedCheckedFirst(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
-	}, rec)
+	}, rec, "")
 	if !errors.Is(err, ErrModelNotAllowed) {
 		t.Fatalf("err = %v, want ErrModelNotAllowed (must be checked before rate-limit/budget)", err)
 	}
@@ -155,7 +155,7 @@ func TestHandleChatCompletionStreamBudgetExceededRejectsBeforeUpstream(t *testin
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
-	}, rec)
+	}, rec, "")
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
@@ -183,7 +183,7 @@ func TestHandleChatCompletionStreamCacheIsolatedAcrossVirtualKeys(t *testing.T) 
 	}
 
 	rec1 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", req, rec1); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", req, rec1, ""); err != nil {
 		t.Fatalf("team-alpha first call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -193,7 +193,7 @@ func TestHandleChatCompletionStreamCacheIsolatedAcrossVirtualKeys(t *testing.T) 
 	// team-beta's identical request must be a real cache MISS (a second
 	// real UpstreamStream call), not served from team-alpha's cache entry.
 	rec2 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer beta-secret", req, rec2); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer beta-secret", req, rec2, ""); err != nil {
 		t.Fatalf("team-beta first call: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -203,7 +203,7 @@ func TestHandleChatCompletionStreamCacheIsolatedAcrossVirtualKeys(t *testing.T) 
 	// Each key's own SECOND identical request must now be a fake-streamed
 	// cache hit — upstreamCalls stays at 2.
 	rec3 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", req, rec3); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", req, rec3, ""); err != nil {
 		t.Fatalf("team-alpha second call: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -221,7 +221,7 @@ func TestHandleChatCompletionStreamCacheMissRealStream(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
-	}, rec)
+	}, rec, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletionStream: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestHandleChatCompletionStreamCacheMissRealStream(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
-	}, rec2)
+	}, rec2, "")
 	if err != nil {
 		t.Fatalf("second (cache-hit) HandleChatCompletionStream: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestHandleChatCompletionStreamUnsupportedProviderReturnsTypedError(t *testi
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "claude-legacy", Stream: true,
-	}, rec)
+	}, rec, "")
 	if !errors.Is(err, ErrStreamingNotSupported) {
 		t.Fatalf("err = %v, want ErrStreamingNotSupported", err)
 	}
@@ -299,7 +299,7 @@ func TestHandleChatCompletionStreamNotConfiguredOnCacheMiss(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
-	}, rec)
+	}, rec, "")
 	if !errors.Is(err, ErrStreamingNotConfigured) {
 		t.Fatalf("err = %v, want ErrStreamingNotConfigured", err)
 	}
@@ -321,7 +321,7 @@ func TestHandleChatCompletionStreamFallbackBeforeFirstByte(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
-	}, rec)
+	}, rec, "")
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got error: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestHandleChatCompletionStreamMultiHopFallbackChainRoutesByClassAndHop(t *t
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
-	}, rec)
+	}, rec, "")
 	if err != nil {
 		t.Fatalf("expected the chain to eventually succeed at hop-2, got error: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestHandleChatCompletionStreamMultiHopChainStopsOnceChunkSent(t *testing.T)
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
-	}, rec)
+	}, rec, "")
 	if err == nil {
 		t.Fatal("expected an error from hop-1's mid-stream connection loss, got nil")
 	}
@@ -479,7 +479,7 @@ func TestHandleChatCompletionStreamNoFallbackAfterFirstByte(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
-	}, rec)
+	}, rec, "")
 	if err == nil {
 		t.Fatal("expected an error from the mid-stream connection loss, got nil")
 	}
@@ -554,7 +554,7 @@ func TestHandleChatCompletionStreamDisconnectAfterRealContentStillBillsIt(t *tes
 	rec := httptest.NewRecorder()
 	streamErr := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
-	}, rec)
+	}, rec, "")
 	if streamErr == nil {
 		t.Fatal("expected an error from the mid-stream connection loss, got nil")
 	}
@@ -597,12 +597,12 @@ func TestHandleChatCompletionStreamTruncatedResponseNeverCached(t *testing.T) {
 	req := adapter.ChatRequest{Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "give me a truncated answer"}}}
 
 	rec1 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec1); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec1, ""); err != nil {
 		t.Fatalf("first HandleChatCompletionStream: %v", err)
 	}
 
 	rec2 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec2); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec2, ""); err != nil {
 		t.Fatalf("second HandleChatCompletionStream: %v", err)
 	}
 

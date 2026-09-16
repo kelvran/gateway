@@ -58,7 +58,7 @@ type UpstreamStreamCaller func(ctx context.Context, dep Deployment, providerReq 
 // still happen exactly once per request, via the same deferred logRequest
 // pattern HandleChatCompletion uses, since a streamed generation is just
 // as billable as a buffered one.
-func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, req adapter.ChatRequest, w http.ResponseWriter) (err error) {
+func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, req adapter.ChatRequest, w http.ResponseWriter, idempotencyKey string) (err error) {
 	var (
 		cacheInfo             cacheProvenance
 		resp                  adapter.ChatResponse
@@ -68,6 +68,9 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		fallback              fallbackInfo
 		budgetSpentAtDecision decimal.Decimal
 		billable              bool
+		// idempotencyOwned mirrors HandleChatCompletion's identical field —
+		// see claimIdempotency's own doc comment.
+		idempotencyOwned bool
 		// See HandleChatCompletion's identical fields: checkRateLimit's/
 		// budget.Reserve's own return values, threaded through to
 		// finalize's ReconcileTPM/Reconcile calls on every return path,
@@ -93,6 +96,9 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design
 		// (a).
 		err = p.attachRetryAfter(vk, err)
+		if idempotencyOwned {
+			p.completeIdempotency(ctx, vk.ID, idempotencyKey, resp, err)
+		}
 		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, costEstimated, err, time.Since(start))
 	}()
 
@@ -105,6 +111,31 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		err = fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
 		return
 	}
+
+	// Claimed here, before resolvePromptIfSet/rate-limit/budget — see
+	// HandleChatCompletion's identical comment for the full ordering
+	// rationale. streaming.NewWriter has no side effects of its own (only
+	// WriteChunk ever writes to w), so constructing sw this early to
+	// support a replay's own writeFakeStream call below is safe: no
+	// bytes reach the client, and no status code is committed, until
+	// something actually calls WriteChunk.
+	sw, swErr := streaming.NewWriter(w)
+	if swErr != nil {
+		err = fmt.Errorf("dataplane: stream: %w", swErr)
+		return
+	}
+	var idempotencyReplay bool
+	var idempotencyCachedResp adapter.ChatResponse
+	idempotencyOwned, idempotencyReplay, idempotencyCachedResp, err = p.claimIdempotency(ctx, vk.ID, idempotencyKey, req)
+	if err != nil {
+		return
+	}
+	if idempotencyReplay {
+		resp = idempotencyCachedResp
+		err = writeFakeStream(sw, idempotencyCachedResp)
+		return
+	}
+
 	// See HandleChatCompletion's identical block/comment — same
 	// placement (after the model-allowlist check, before rate-limiting),
 	// same resolvePromptIfSet helper.
@@ -134,12 +165,6 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
 	if !budgetOK {
 		err = ErrBudgetExceeded
-		return
-	}
-
-	sw, swErr := streaming.NewWriter(w)
-	if swErr != nil {
-		err = fmt.Errorf("dataplane: stream: %w", swErr)
 		return
 	}
 

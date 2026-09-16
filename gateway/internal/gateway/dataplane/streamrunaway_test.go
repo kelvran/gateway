@@ -173,7 +173,7 @@ func TestHandleChatCompletionStreamRunawayGuardCutsOffExcessiveCompletion(t *tes
 	err = p.HandleChatCompletionStream(ctx, "Bearer runaway-secret", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, MaxTokens: &maxTokens,
 		Messages: []adapter.Message{{Role: "user", Content: "generate as much as you possibly can"}},
-	}, rec)
+	}, rec, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletionStream: %v, want nil -- a runaway cutoff must finish as a normal, truncated-but-valid stream, not an error", err)
 	}
@@ -274,7 +274,7 @@ func TestHandleChatCompletionStreamRunawayGuardUnaffectedForOrdinaryStream(t *te
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, MaxTokens: &maxTokens,
 		Messages: []adapter.Message{{Role: "user", Content: "write something of moderate length"}},
-	}, rec)
+	}, rec, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletionStream: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestHandleChatCompletionStreamRunawayGuardCutsOffExcessiveCompletionBedrock
 	err = p.HandleChatCompletionStream(ctx, authHeader, adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, MaxTokens: &maxTokens,
 		Messages: []adapter.Message{{Role: "user", Content: "generate as much as you possibly can"}},
-	}, rec)
+	}, rec, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletionStream: %v, want nil -- a runaway cutoff must finish as a normal, truncated-but-valid stream, not an error", err)
 	}
