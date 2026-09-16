@@ -51,12 +51,30 @@ const (
 	StateCompleted
 )
 
+// Token identifies exactly which underlying claim a StateNew ClaimResult
+// refers to — the zero Token never means anything real (a real Store
+// implementation's own token generator must never hand out the zero
+// value), so a caller that never received a StateNew Claim has no way to
+// forge one. Complete/Fail must be called with the SAME Token the
+// StateNew Claim returned; a caller passing a stale Token (e.g. from a
+// claim this Store has since swept as abandoned and replaced with a
+// DIFFERENT claim for the same key, per Claim's own ttl/abandonment doc
+// comment) gets a safe no-op, never a mutation of that unrelated, newer
+// claim — closes the exact gap a live 2026-09-16 adversarial audit found:
+// a key-only (no ownership check) Complete/Fail lookup could otherwise
+// resolve a completely different caller's in-flight claim. Meaningless
+// for StateInFlight/StateCompleted results — there is nothing left for
+// THIS caller to resolve either way.
+type Token uint64
+
 // ClaimResult is Claim's own return value — exactly one of Response
-// (StateCompleted) or Done (StateInFlight) is meaningful, per State.
+// (StateCompleted), Done (StateInFlight), or Token (StateNew) is
+// meaningful, per State.
 type ClaimResult struct {
 	State    State
 	Response []byte
 	Done     <-chan struct{}
+	Token    Token
 }
 
 // Store is the concurrency-safe claim/complete/fail primitive this
@@ -70,15 +88,20 @@ type Store interface {
 	Claim(ctx context.Context, key string, fingerprint [32]byte, ttl time.Duration) (ClaimResult, error)
 	// Complete records resp as the successful, replayable result for key
 	// — the caller MUST be the one that received StateNew from Claim for
-	// this exact key. A no-op-shaped error (never panics) if key is
-	// unknown or already resolved — Complete is expected to run from a
-	// defer, so it must never be a second source of failure.
-	Complete(ctx context.Context, key string, resp []byte) error
+	// this exact key, and must pass that Claim's own Token back
+	// unchanged. A no-op-shaped error (never panics) if key is unknown,
+	// already resolved, or token no longer matches the claim currently
+	// held for key (a stale token from an abandoned, since-superseded
+	// claim) — Complete is expected to run from a defer, so it must
+	// never be a second source of failure, and must never resolve a
+	// claim it was not actually granted.
+	Complete(ctx context.Context, key string, token Token, resp []byte) error
 	// Fail releases key's claim with NO stored response, per this
 	// package's own doc comment: a genuinely failed attempt may be
 	// retried under the SAME key, by the original caller or by a caller
 	// that was waiting on ClaimResult.Done — either becomes the new
 	// StateNew owner via a subsequent Claim call, whichever calls it
-	// first. Never an error for an unknown key.
-	Fail(ctx context.Context, key string) error
+	// first. Never an error for an unknown key or a stale token (same
+	// no-op reasoning as Complete's own token check).
+	Fail(ctx context.Context, key string, token Token) error
 }

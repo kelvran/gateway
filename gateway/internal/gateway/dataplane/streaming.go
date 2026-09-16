@@ -21,6 +21,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/bedrock"
 	"github.com/kelvran/gateway/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/idempotency"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/streaming"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
@@ -68,9 +69,10 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		fallback              fallbackInfo
 		budgetSpentAtDecision decimal.Decimal
 		billable              bool
-		// idempotencyOwned mirrors HandleChatCompletion's identical field —
-		// see claimIdempotency's own doc comment.
+		// idempotencyOwned/idempotencyToken mirror HandleChatCompletion's
+		// identical fields — see claimIdempotency's own doc comment.
 		idempotencyOwned bool
+		idempotencyToken idempotency.Token
 		// See HandleChatCompletion's identical fields: checkRateLimit's/
 		// budget.Reserve's own return values, threaded through to
 		// finalize's ReconcileTPM/Reconcile calls on every return path,
@@ -97,7 +99,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// (a).
 		err = p.attachRetryAfter(vk, err)
 		if idempotencyOwned {
-			p.completeIdempotency(ctx, vk.ID, idempotencyKey, resp, err)
+			p.completeIdempotency(ctx, vk.ID, idempotencyKey, idempotencyToken, resp, err)
 		}
 		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, costEstimated, err, time.Since(start))
 	}()
@@ -126,7 +128,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 	var idempotencyReplay bool
 	var idempotencyCachedResp adapter.ChatResponse
-	idempotencyOwned, idempotencyReplay, idempotencyCachedResp, err = p.claimIdempotency(ctx, vk.ID, idempotencyKey, req)
+	idempotencyOwned, idempotencyReplay, idempotencyCachedResp, idempotencyToken, err = p.claimIdempotency(ctx, vk.ID, idempotencyKey, req)
 	if err != nil {
 		return
 	}

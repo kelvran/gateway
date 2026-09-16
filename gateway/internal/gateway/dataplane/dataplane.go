@@ -1615,14 +1615,14 @@ func idempotencyStoreKey(tenantID, idempotencyKey string) string {
 // cachedResp is a prior attempt's own stored response, to return to the
 // client VERBATIM with no further pipeline work and no Complete/Fail call
 // of its own.
-func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKey string, req adapter.ChatRequest) (owns bool, replay bool, cachedResp adapter.ChatResponse, err error) {
+func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKey string, req adapter.ChatRequest) (owns bool, replay bool, cachedResp adapter.ChatResponse, token idempotency.Token, err error) {
 	if p.idempotencyStore == nil || idempotencyKey == "" {
-		return false, false, adapter.ChatResponse{}, nil
+		return false, false, adapter.ChatResponse{}, 0, nil
 	}
 
 	body, marshalErr := json.Marshal(req)
 	if marshalErr != nil {
-		return false, false, adapter.ChatResponse{}, fmt.Errorf("dataplane: idempotency: marshal request for fingerprint: %w", marshalErr)
+		return false, false, adapter.ChatResponse{}, 0, fmt.Errorf("dataplane: idempotency: marshal request for fingerprint: %w", marshalErr)
 	}
 	fingerprint := sha256.Sum256(body)
 	storeKey := idempotencyStoreKey(tenantID, idempotencyKey)
@@ -1630,23 +1630,23 @@ func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKe
 	for {
 		result, claimErr := p.idempotencyStore.Claim(ctx, storeKey, fingerprint, idempotencyKeyTTL)
 		if claimErr != nil {
-			return false, false, adapter.ChatResponse{}, fmt.Errorf("dataplane: idempotency: %w", claimErr)
+			return false, false, adapter.ChatResponse{}, 0, fmt.Errorf("dataplane: idempotency: %w", claimErr)
 		}
 		switch result.State {
 		case idempotency.StateNew:
-			return true, false, adapter.ChatResponse{}, nil
+			return true, false, adapter.ChatResponse{}, result.Token, nil
 		case idempotency.StateCompleted:
 			var resp adapter.ChatResponse
 			if unmarshalErr := json.Unmarshal(result.Response, &resp); unmarshalErr != nil {
-				return false, false, adapter.ChatResponse{}, fmt.Errorf("dataplane: idempotency: unmarshal stored response: %w", unmarshalErr)
+				return false, false, adapter.ChatResponse{}, 0, fmt.Errorf("dataplane: idempotency: unmarshal stored response: %w", unmarshalErr)
 			}
-			return false, true, resp, nil
+			return false, true, resp, 0, nil
 		default: // idempotency.StateInFlight
 			select {
 			case <-result.Done:
 				continue
 			case <-ctx.Done():
-				return false, false, adapter.ChatResponse{}, ctx.Err()
+				return false, false, adapter.ChatResponse{}, 0, ctx.Err()
 			}
 		}
 	}
@@ -1656,17 +1656,21 @@ func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKe
 // claimIdempotency confirmed owns it (owns == true) finishes, per
 // internal/idempotency's own Complete/Fail contract — called from the
 // handler's existing deferred finalize closure, exactly like Fail's own
-// doc comment expects ("Complete is expected to run from a defer"). A
-// marshal failure degrades to Fail rather than silently caching a broken
-// replay, matching this codebase's own posture that audit/bookkeeping
-// plumbing must never turn a successful response into an error (contrast
-// Tracker.Delete's identical non-fatal-logged posture). Never called with
-// a nil p.idempotencyStore: owns is only ever true when claimIdempotency
-// already confirmed the store is non-nil.
-func (p *Pipeline) completeIdempotency(ctx context.Context, tenantID, idempotencyKey string, resp adapter.ChatResponse, err error) {
+// doc comment expects ("Complete is expected to run from a defer"). token
+// MUST be the exact idempotency.Token claimIdempotency's own StateNew
+// return gave this call — see idempotency.Token's own doc comment for
+// why: passing anything else risks resolving a completely different,
+// unrelated claim for the same key. A marshal failure degrades to Fail
+// rather than silently caching a broken replay, matching this codebase's
+// own posture that audit/bookkeeping plumbing must never turn a
+// successful response into an error (contrast Tracker.Delete's identical
+// non-fatal-logged posture). Never called with a nil p.idempotencyStore:
+// owns is only ever true when claimIdempotency already confirmed the
+// store is non-nil.
+func (p *Pipeline) completeIdempotency(ctx context.Context, tenantID, idempotencyKey string, token idempotency.Token, resp adapter.ChatResponse, err error) {
 	storeKey := idempotencyStoreKey(tenantID, idempotencyKey)
 	if err != nil {
-		if failErr := p.idempotencyStore.Fail(ctx, storeKey); failErr != nil {
+		if failErr := p.idempotencyStore.Fail(ctx, storeKey, token); failErr != nil {
 			p.logger.Warn("idempotency_fail_failed", "key", idempotencyKey, "error", failErr)
 		}
 		return
@@ -1674,12 +1678,12 @@ func (p *Pipeline) completeIdempotency(ctx context.Context, tenantID, idempotenc
 	body, marshalErr := json.Marshal(resp)
 	if marshalErr != nil {
 		p.logger.Warn("idempotency_complete_marshal_failed", "key", idempotencyKey, "error", marshalErr)
-		if failErr := p.idempotencyStore.Fail(ctx, storeKey); failErr != nil {
+		if failErr := p.idempotencyStore.Fail(ctx, storeKey, token); failErr != nil {
 			p.logger.Warn("idempotency_fail_failed", "key", idempotencyKey, "error", failErr)
 		}
 		return
 	}
-	if completeErr := p.idempotencyStore.Complete(ctx, storeKey, body); completeErr != nil {
+	if completeErr := p.idempotencyStore.Complete(ctx, storeKey, token, body); completeErr != nil {
 		p.logger.Warn("idempotency_complete_failed", "key", idempotencyKey, "error", completeErr)
 	}
 }
@@ -1706,6 +1710,13 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// p.idempotencyStore == nil — see claimIdempotency's own doc
 		// comment.
 		idempotencyOwned bool
+		// idempotencyToken is claimIdempotency's own StateNew Token —
+		// meaningless unless idempotencyOwned is true, but always passed
+		// through to completeIdempotency's Complete/Fail call regardless,
+		// since idempotency.Store.Complete/Fail's own contract requires
+		// the exact token a StateNew Claim granted (see idempotency.Token's
+		// own doc comment for why a bare key-only Complete/Fail is unsafe).
+		idempotencyToken idempotency.Token
 		// tpmReserved/tpmReservedTokens and budgetReserved/
 		// budgetReservedUSD are checkRateLimit's/budget.Reserve's own
 		// return values, threaded through to finalize's ReconcileTPM/
@@ -1737,7 +1748,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// (a).
 		err = p.attachRetryAfter(vk, err)
 		if idempotencyOwned {
-			p.completeIdempotency(ctx, vk.ID, idempotencyKey, resp, err)
+			p.completeIdempotency(ctx, vk.ID, idempotencyKey, idempotencyToken, resp, err)
 		}
 		// costEstimated is always false on the buffered path — see
 		// finalize's own doc comment; only HandleChatCompletionStream ever
@@ -1764,7 +1775,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	// closed. A replay short-circuits here with no further pipeline work
 	// and no upstream call.
 	var idempotencyReplay bool
-	idempotencyOwned, idempotencyReplay, resp, err = p.claimIdempotency(ctx, vk.ID, idempotencyKey, req)
+	idempotencyOwned, idempotencyReplay, resp, idempotencyToken, err = p.claimIdempotency(ctx, vk.ID, idempotencyKey, req)
 	if err != nil {
 		return
 	}
