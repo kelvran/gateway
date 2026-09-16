@@ -615,8 +615,14 @@ func Load(path string) (*Config, error) {
 		if rl, ok := getMap(vkMap, "rate_limit"); ok {
 			vk.RateLimitBurst, _ = getFloat(rl, "burst")
 			vk.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
+			if err := validateRateLimitPair(vk.RateLimitBurst, vk.RateLimitRefill, fmt.Sprintf("controlplane: virtual key %q rate_limit.burst/refill_per_second", name)); err != nil {
+				return nil, err
+			}
 			vk.TPMCapacity, _ = getFloat(rl, "tpm_capacity")
 			vk.TPMRefillPerSecond, _ = getFloat(rl, "tpm_refill_per_second")
+			if err := validateRateLimitPair(vk.TPMCapacity, vk.TPMRefillPerSecond, fmt.Sprintf("controlplane: virtual key %q rate_limit.tpm_capacity/tpm_refill_per_second", name)); err != nil {
+				return nil, err
+			}
 			vk.MaxConcurrentRequests, _ = getInt(rl, "max_concurrent_requests")
 			if pm, ok := getMap(rl, "per_model"); ok {
 				perModel, err := parsePerModelRateLimits(name, pm)
@@ -948,13 +954,54 @@ func getFloat(m map[string]any, key string) (float64, bool) {
 	case float64:
 		return n, true
 	case string:
+		// **Fixed 2026-09-17, real bug**: same class as getInt's own
+		// string-case fix above -- strconv.ParseFloat's documented
+		// ErrRange contract returns err != nil AND a non-zero ±Inf
+		// value for a syntactically-valid-but-out-of-range literal
+		// (e.g. "1e400"), not 0. Every call site discards ok via "_",
+		// so the original bare "return f, err == nil" let +Inf/-Inf
+		// flow straight into burst/refill/tpm_capacity/etc. despite the
+		// parse having genuinely failed.
 		f, err := strconv.ParseFloat(n, 64)
-		return f, err == nil
+		if err != nil {
+			return 0, false
+		}
+		return f, true
 	default:
 		return 0, false
 	}
 }
 
+// maxSafeConfigInt bounds getInt's float64 case, well short of int64's
+// own true range limit deliberately: math.MaxInt64 itself is not exactly
+// representable as a float64 (float64 only has 53 bits of exact integer
+// precision, 2^53 ≈ 9.007e15), so comparing a float64 directly against
+// math.MaxInt64 has its own rounding hazard right at the boundary.
+// 1e15 is comfortably inside float64's exact-integer range on every
+// platform AND vastly larger than any sane value for the fields this
+// function actually serves (weight, cost_tier, max_concurrent_requests,
+// cache TTL/MaxEntries, health-probe intervals/thresholds/ramp steps) —
+// simpler and safer than hugging the true int64 boundary for a class of
+// config field that never legitimately needs to.
+const maxSafeConfigInt = 1e15
+
+// getInt reads key as an int. **Fixed 2026-09-17, real bug**: the
+// float64 case used a bare int(n) conversion — the Go spec explicitly
+// leaves the result of converting an out-of-range float to int
+// implementation-defined, not merely "clamped": a config value like
+// weight: 99999999999999999999 (parsed as a float64 by this file's own
+// numeric-literal handling, per parseYAMLScalar) silently produced an
+// arbitrary, platform-dependent garbage int — not a value any caller
+// could reason about, let alone one worth silently accepting. Every one
+// of this function's 16 call sites already discards its own ok return
+// today (matching the golangci.yml-documented convention for this
+// parser's optional-field getX helpers), so returning (0, false) here on
+// overflow degrades to this codebase's own already-established "0 means
+// unset/use the default" convention for every affected field — safe,
+// well-defined, and consistent, in place of undefined-behavior garbage.
+// Retrofitting a hard load-time error onto all 16 call sites is a
+// larger, separate, disproportionate change for this one edge case and
+// is deliberately out of scope here.
 func getInt(m map[string]any, key string) (int, bool) {
 	v, ok := m[key]
 	if !ok {
@@ -962,10 +1009,31 @@ func getInt(m map[string]any, key string) (int, bool) {
 	}
 	switch n := v.(type) {
 	case float64:
+		if n < -maxSafeConfigInt || n > maxSafeConfigInt {
+			return 0, false
+		}
 		return int(n), true
 	case string:
+		// **Fixed 2026-09-17, real bug**: this is the branch every real
+		// YAML numeric literal actually takes -- parseYAMLScalar never
+		// produces a float64 itself (it returns the raw, unconverted
+		// string for anything that isn't quoted/true/false), so the
+		// float64 case above is defensive only; this string case is the
+		// one every genuine config value like "weight: 999...9" (20
+		// digits, overflowing int64) reaches. strconv.Atoi's own
+		// documented contract: on ErrRange, it returns err != nil AND a
+		// non-zero "maximum magnitude integer" value (math.MaxInt64 for
+		// this overflow direction) -- NOT 0. Every one of this
+		// function's 16 call sites discards ok via "_", so returning i
+		// unconditionally here (the original code) let that
+		// maximum-magnitude value flow straight into weight/cost_tier/
+		// etc. despite the parse having genuinely failed. Explicitly
+		// zeroing on error closes that.
 		i, err := strconv.Atoi(n)
-		return i, err == nil
+		if err != nil {
+			return 0, false
+		}
+		return i, true
 	default:
 		return 0, false
 	}
@@ -1075,8 +1143,8 @@ func parsePerModelRateLimits(keyName string, raw map[string]any) (map[string]Mod
 		}
 		tpmCapacity, _ := getFloat(modelMap, "tpm_capacity")
 		tpmRefill, _ := getFloat(modelMap, "tpm_refill_per_second")
-		if (tpmCapacity > 0) != (tpmRefill > 0) {
-			return nil, fmt.Errorf("controlplane: virtual key %q rate_limit.per_model.%s.tpm_capacity/tpm_refill_per_second must both be set, or neither", keyName, model)
+		if err := validateRateLimitPair(tpmCapacity, tpmRefill, fmt.Sprintf("controlplane: virtual key %q rate_limit.per_model.%s.tpm_capacity/tpm_refill_per_second", keyName, model)); err != nil {
+			return nil, err
 		}
 		out[model] = ModelRateLimitConfig{Burst: burst, RefillPerSecond: refill, TPMCapacity: tpmCapacity, TPMRefillPerSecond: tpmRefill}
 	}
@@ -1095,16 +1163,36 @@ func parsePerModelRateLimits(keyName string, raw map[string]any) (map[string]Mod
 // config error is a HALF-set pair: burst set without refill_per_second,
 // or vice versa, which can only be a mistake, never a deliberate
 // "disabled" state. The same rule applies independently to the TPM pair.
+// validateRateLimitPair enforces the "set both, or neither, and never
+// negative" invariant shared by every burst/refill_per_second and
+// tpm_capacity/tpm_refill_per_second pair across this config
+// (deployment-level, virtual-key-level, and per-model-level) --
+// factored out so it isn't hand-rolled, and independently kept in sync,
+// at each call site. **Fixed 2026-09-17, real bug**: the half-set check
+// alone ((a > 0) != (b > 0)) silently accepted a pair that was BOTH
+// negative, e.g. burst: -5, refill_per_second: -3 -- neither is > 0, so
+// the mismatch check never fired, even though a negative token-bucket
+// capacity/refill rate is exactly as nonsensical as a half-set pair.
+func validateRateLimitPair(a, b float64, context string) error {
+	if a < 0 || b < 0 {
+		return fmt.Errorf("%s must not be negative", context)
+	}
+	if (a > 0) != (b > 0) {
+		return fmt.Errorf("%s must both be set, or neither", context)
+	}
+	return nil
+}
+
 func parseDeploymentRateLimit(deploymentName string, rl map[string]any, dep *DeploymentConfig) error {
 	dep.RateLimitBurst, _ = getFloat(rl, "burst")
 	dep.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
-	if (dep.RateLimitBurst > 0) != (dep.RateLimitRefill > 0) {
-		return fmt.Errorf("controlplane: deployment %q rate_limit must set both burst and refill_per_second together, or neither", deploymentName)
+	if err := validateRateLimitPair(dep.RateLimitBurst, dep.RateLimitRefill, fmt.Sprintf("controlplane: deployment %q rate_limit.burst/refill_per_second", deploymentName)); err != nil {
+		return err
 	}
 	dep.TPMCapacity, _ = getFloat(rl, "tpm_capacity")
 	dep.TPMRefillPerSecond, _ = getFloat(rl, "tpm_refill_per_second")
-	if (dep.TPMCapacity > 0) != (dep.TPMRefillPerSecond > 0) {
-		return fmt.Errorf("controlplane: deployment %q rate_limit.tpm_capacity/tpm_refill_per_second must both be set, or neither", deploymentName)
+	if err := validateRateLimitPair(dep.TPMCapacity, dep.TPMRefillPerSecond, fmt.Sprintf("controlplane: deployment %q rate_limit.tpm_capacity/tpm_refill_per_second", deploymentName)); err != nil {
+		return err
 	}
 	dep.MaxConcurrentRequests, _ = getInt(rl, "max_concurrent_requests")
 	return nil
