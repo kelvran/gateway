@@ -450,6 +450,30 @@ type Config struct {
 // sees the new one. No lock, no partial-update window within one request.
 type Pipeline struct {
 	verifier atomic.Pointer[identity.Verifier]
+	// virtualKeyMutationMu serializes Upsert/Delete/RotateVirtualKey's
+	// entire CAS-retry-then-persist sequence against each other.
+	// **Fixed 2026-09-17, real bug**: each of those 3 methods' own
+	// in-memory CompareAndSwap loop was already safe against every OTHER
+	// concurrent caller -- but the PERSISTENCE call each one issues
+	// immediately after its own CAS succeeds is a separate, uncoordinated
+	// I/O call with no ordering guarantee relative to a DIFFERENT
+	// method's own persistence call. Two concurrent admin calls on the
+	// SAME key (e.g. Rotate + Delete) could leave the on-disk bbolt store
+	// inconsistent with the final in-memory state: whichever CAS won LAST
+	// in-memory is not necessarily whichever persist call happened to
+	// land last on disk, since persistence isn't part of the same atomic
+	// operation. That divergence is invisible until a restart reloads the
+	// stale persisted record via mergePersistedVirtualKeys, resurrecting
+	// data the in-memory state had already discarded.
+	//
+	// These are admin-only, low-frequency operations (not a request-path
+	// hot loop), so serializing the whole mutate-then-persist sequence
+	// with a plain mutex is the correct, boring fix -- it eliminates the
+	// interleaving entirely rather than trying to reconcile two
+	// independently-racing I/O calls after the fact. The CAS retry loop
+	// inside each method is kept as-is (defense-in-depth against any
+	// future caller that forgets to hold this lock), not removed.
+	virtualKeyMutationMu sync.Mutex
 	// identityStore is nil unless Config.IdentityStore was set — see that
 	// field's own doc comment. Read only by Upsert/Delete/RotateVirtualKey,
 	// after their own CompareAndSwap has already committed the in-memory
@@ -729,6 +753,8 @@ var ErrVirtualKeyNotFound = errors.New("dataplane: virtual key not found")
 // (register before an ID becomes resolvable) is satisfied identically
 // whether the very first CAS wins or a later retry does.
 func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.KeyConfig) error {
+	p.virtualKeyMutationMu.Lock()
+	defer p.virtualKeyMutationMu.Unlock()
 	p.limiter.Register(rateLimit)
 	for {
 		old := p.verifier.Load()
@@ -811,6 +837,8 @@ func (p *Pipeline) deletePersistedVirtualKeyIfStoreConfigured(id string) {
 // in the Verifier because a concurrent write silently overwrote the
 // removal.
 func (p *Pipeline) DeleteVirtualKey(name string) error {
+	p.virtualKeyMutationMu.Lock()
+	defer p.virtualKeyMutationMu.Unlock()
 	for {
 		old := p.verifier.Load()
 		current := old.Keys()
@@ -863,6 +891,8 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 // limit, not a bug: supporting an unbounded chain of still-valid old
 // hashes has no real operational need this feature was built to serve.
 func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Duration) error {
+	p.virtualKeyMutationMu.Lock()
+	defer p.virtualKeyMutationMu.Unlock()
 	for {
 		old := p.verifier.Load()
 		current := old.Keys()
