@@ -151,6 +151,70 @@ func TestRecordNegativeCostIgnored(t *testing.T) {
 // buffered path's own "error before ever computing a cost" case) must
 // release the reservation back to the pre-Reserve total, incrementing
 // neither spend beyond that nor billedCount.
+// TestReserveBoundaryExactlyAtCapRejectsAndReservesNothing mirrors
+// TestAllowBoundaryExactlyAtCap's own structure for Reserve: spend ==
+// cap is a strict upper bound, not inclusive, so Reserve must reject and
+// reserve nothing -- Reserve's own gate is !spent.LessThan(capUSD), a
+// ">=" comparison, matching Allow's identical convention.
+func TestReserveBoundaryExactlyAtCapRejectsAndReservesNothing(t *testing.T) {
+	tr := NewTracker()
+	tr.Record("team-alpha", d("10"), 0)
+
+	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("10"), 0)
+	if allowed || reserved {
+		t.Errorf("Reserve with spend == cap = (allowed=%v, reserved=%v), want (false, false)", allowed, reserved)
+	}
+	if !reservedUSD.IsZero() {
+		t.Errorf("Reserve with spend == cap reservedUSD = %s, want 0", reservedUSD)
+	}
+	if epoch != 0 {
+		t.Errorf("Reserve with spend == cap reservationEpoch = %d, want 0", epoch)
+	}
+}
+
+// TestIncreaseReservationAppliesWhenDeltaLandsExactlyAtCap proves
+// IncreaseReservation's own boundary is the OPPOSITE convention from
+// Reserve's: its gate is spent.Add(delta).GreaterThan(capUSD), a strict
+// ">", so a delta that lands EXACTLY at the remaining cap/balance (using
+// up every last cent of headroom) must still be applied, not rejected.
+func TestIncreaseReservationAppliesWhenDeltaLandsExactlyAtCap(t *testing.T) {
+	// A cold-start key with no billing history reserves the full
+	// remaining headroom on its first Reserve call (reservationAmountLocked's
+	// own documented "cold-start conservatism"), which would make any
+	// further top-up a zero-or-negative delta (IncreaseReservation's own
+	// "newReservedUSD not actually larger" early return) -- so this
+	// seeds real billing history first (via Reconcile) so the
+	// historical-average reservation Reserve computes leaves real
+	// headroom to top up against.
+	tr := NewTracker()
+	capUSD := d("10")
+	realCost := d("1")
+	tr.Reconcile("team-alpha", d("0"), 0, &realCost, 0) // seeds billedCount=1, spent=1
+
+	allowed, reserved, currentReservedUSD, epoch := tr.Reserve("team-alpha", capUSD, 0)
+	if !allowed || !reserved {
+		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
+	}
+	// currentReservedUSD is the historical-average reservation
+	// (spent/billedCount = 1/1 = 1) -- well under capUSD's remaining
+	// headroom. Top it up by a delta that lands EXACTLY at the cap:
+	// spent so far is 1 (the seeded real cost) + currentReservedUSD (the
+	// just-applied reservation) = 2; remaining headroom to capUSD=10 is
+	// 8, so newReservedUSD = currentReservedUSD + 8 lands exactly at the
+	// cap.
+	newReservedUSD := currentReservedUSD.Add(d("8"))
+	ok, applied, newEpoch := tr.IncreaseReservation("team-alpha", capUSD, currentReservedUSD, newReservedUSD, epoch, 0)
+	if !ok {
+		t.Fatalf("IncreaseReservation with a delta landing exactly at the cap = false, want true (a top-up that exactly fills remaining headroom must be applied, not rejected)")
+	}
+	if !applied.Equal(newReservedUSD) {
+		t.Errorf("IncreaseReservation appliedUSD = %s, want %s", applied, newReservedUSD)
+	}
+	if newEpoch != epoch {
+		t.Errorf("IncreaseReservation newReservationEpoch = %d, want %d (no reset occurred)", newEpoch, epoch)
+	}
+}
+
 func TestReconcileNilRealCostReleasesReservationWithNoReplacement(t *testing.T) {
 	tr := NewTracker()
 	preReserveSpent := tr.SpentUSD("team-alpha", 0)

@@ -73,6 +73,29 @@ func TestSpendResetsAfterWindowElapses(t *testing.T) {
 	}
 }
 
+// TestSpendResetsExactlyAtWindowBoundary pins down resetIfNeeded's own
+// exact boundary (now.Sub(start) >= resetInterval, a "greater than or
+// equal", not the finer-grained after/before-only case
+// TestSpendResetsAfterWindowElapses/TestSpendDoesNotResetBeforeWindowElapses
+// already prove): advancing the clock by PRECISELY window (not window
+// plus any extra slack) must already trigger a real reset.
+func TestSpendResetsExactlyAtWindowBoundary(t *testing.T) {
+	tr := NewTracker()
+	clock := newFakeClock(time.Now())
+	tr.now = clock.now
+	const window = time.Hour
+
+	tr.Record("team-alpha", d("10"), window) // starts the window
+	clock.advance(window)                    // now.Sub(start) == resetInterval, exactly
+
+	if got := tr.SpentUSD("team-alpha", window); !got.IsZero() {
+		t.Errorf("SpentUSD exactly at the window boundary = %s, want 0 (>= triggers a reset, not just strictly >)", got)
+	}
+	if !tr.Allow("team-alpha", d("1"), window) {
+		t.Error("Allow exactly at the window boundary = false, want true — a 1 dollar cap should easily cover a freshly-reset 0 spend")
+	}
+}
+
 func TestSpendDoesNotResetBeforeWindowElapses(t *testing.T) {
 	tr := NewTracker()
 	clock := newFakeClock(time.Now())
