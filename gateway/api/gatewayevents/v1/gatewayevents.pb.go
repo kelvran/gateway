@@ -232,8 +232,21 @@ type GatewayDecisionEvent struct {
 	// field, non-breaking per `buf breaking`, same precedent as every
 	// other field added to this message since v1 froze.
 	CostIsEstimated bool `protobuf:"varint,15,opt,name=cost_is_estimated,json=costIsEstimated,proto3" json:"cost_is_estimated,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Added 2026-09-17, per docs/upgrade-research/billing-monetization-
+	// integration-2026-09-15.md: virtual_key_id's own
+	// identity.VirtualKey.BillingSubjectID at the moment this event was
+	// emitted -- an opaque, operator-supplied external billing identifier,
+	// never read by any enforcement path in this codebase (purely
+	// metadata for a future export consumer, e.g. a billing platform's
+	// usage-ingestion API, to key off of). "" (the proto3 default) means
+	// this key has no known billing subject -- every key configured
+	// before this field existed, and every row where virtual_key_id itself
+	// is "" (auth failed, no key was ever resolved). Additive field,
+	// non-breaking per `buf breaking`, same precedent as every other field
+	// added to this message since v1 froze.
+	BillingSubjectId string `protobuf:"bytes,16,opt,name=billing_subject_id,json=billingSubjectId,proto3" json:"billing_subject_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GatewayDecisionEvent) Reset() {
@@ -371,11 +384,18 @@ func (x *GatewayDecisionEvent) GetCostIsEstimated() bool {
 	return false
 }
 
+func (x *GatewayDecisionEvent) GetBillingSubjectId() string {
+	if x != nil {
+		return x.BillingSubjectId
+	}
+	return ""
+}
+
 var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb0\a\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xde\a\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -395,7 +415,8 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\bcost_usd\x18\r \x01(\tR\acostUsd\x12\x1f\n" +
 	"\vsavings_usd\x18\x0e \x01(\tR\n" +
 	"savingsUsd\x12*\n" +
-	"\x11cost_is_estimated\x18\x0f \x01(\bR\x0fcostIsEstimated\"\x98\x02\n" +
+	"\x11cost_is_estimated\x18\x0f \x01(\bR\x0fcostIsEstimated\x12,\n" +
+	"\x12billing_subject_id\x18\x10 \x01(\tR\x10billingSubjectId\"\x98\x02\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +

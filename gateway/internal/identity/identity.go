@@ -120,6 +120,19 @@ type VirtualKey struct {
 	// comment.
 	PreviousKeyHash          string
 	PreviousKeyHashExpiresAt time.Time
+	// BillingSubjectID is an opaque, operator-supplied external billing
+	// identifier, per docs/upgrade-research/billing-monetization-
+	// integration-2026-09-15.md — never read by any enforcement path in
+	// this codebase (budget.Reserve/Reconcile never touch it); purely
+	// metadata threaded onto GatewayDecisionEvent for a future export
+	// consumer (a billing platform's usage-ingestion API) to key off of.
+	// Deliberately vendor-neutral, not named after any one platform's
+	// own vocabulary (Stripe's customer_id, Metronome's external_id,
+	// etc.) — every surveyed vendor names this differently, and no
+	// vendor has been chosen yet. Empty (the default) means this key has
+	// no known billing subject — every key configured before this field
+	// existed.
+	BillingSubjectID string
 }
 
 // Store persists admin-API-mutated virtual keys durably across process

@@ -2736,8 +2736,10 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	}
 
 	var virtualKeyID string
+	var billingSubjectID string
 	if vk != nil {
 		virtualKeyID = vk.ID
+		billingSubjectID = vk.BillingSubjectID
 	}
 	// outcome is computed once and shared by GatewayDecisionEvent.Outcome
 	// below and, via errorTypeFor, the GenAI error.type attribute — both
@@ -2912,6 +2914,14 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		FallbackFromDeployment: fallback.from,
 		FallbackReason:         fallback.reason,
 		BudgetSpentUsd:         budgetSpentAtDecision.String(),
+		// Added per docs/upgrade-research/billing-monetization-
+		// integration-2026-09-15.md: read-only metadata for the async
+		// export path only -- never read by budget.Reserve/Reconcile's
+		// synchronous enforcement path, matching that RFC's own Finding F
+		// (Kong/OpenMeter precedent) decoupling requirement. "" when vk
+		// is nil (auth failed) or vk.BillingSubjectID was never
+		// configured.
+		BillingSubjectId: billingSubjectID,
 		// Per docs/rfcs/2026-09-12-gateway-cost-attribution-aggregation.md:
 		// the same values already flowing into the OTel span a few lines
 		// above (result.AgentRunID/result.CostUSD) -- no new capture

@@ -1082,6 +1082,66 @@ func TestLoadRejectsUnknownDeploymentKind(t *testing.T) {
 	}
 }
 
+// TestVirtualKeyConfigParsesOptionalBillingSubjectID proves
+// billing_subject_id parses through when present.
+func TestVirtualKeyConfigParsesOptionalBillingSubjectID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    billing_subject_id: \"cust_12345\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.VirtualKeys[0].BillingSubjectID; got != "cust_12345" {
+		t.Errorf("BillingSubjectID = %q, want %q", got, "cust_12345")
+	}
+}
+
+// TestBillingSubjectIDDefaultsEmptyWhenUnconfigured proves every virtual
+// key configured before this field existed parses to "" -- no
+// unexpected default value.
+func TestBillingSubjectIDDefaultsEmptyWhenUnconfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.VirtualKeys[0].BillingSubjectID; got != "" {
+		t.Errorf("BillingSubjectID = %q, want empty", got)
+	}
+}
+
 // TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists proves
 // each error-class key parses into an ORDERED slice (not just a set) —
 // this file's YAML-subset parser has no list support, so fallback_chains

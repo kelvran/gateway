@@ -163,4 +163,18 @@ message GatewayDecisionEvent {
   // field, non-breaking per `buf breaking`, same precedent as every
   // other field added to this message since v1 froze.
   bool cost_is_estimated = 15;
+
+  // Added 2026-09-17, per docs/upgrade-research/billing-monetization-
+  // integration-2026-09-15.md: virtual_key_id's own
+  // identity.VirtualKey.BillingSubjectID at the moment this event was
+  // emitted -- an opaque, operator-supplied external billing identifier,
+  // never read by any enforcement path in this codebase (purely
+  // metadata for a future export consumer, e.g. a billing platform's
+  // usage-ingestion API, to key off of). "" (the proto3 default) means
+  // this key has no known billing subject -- every key configured
+  // before this field existed, and every row where virtual_key_id itself
+  // is "" (auth failed, no key was ever resolved). Additive field,
+  // non-breaking per `buf breaking`, same precedent as every other field
+  // added to this message since v1 froze.
+  string billing_subject_id = 16;
 }

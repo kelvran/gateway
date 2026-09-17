@@ -302,6 +302,11 @@ type VirtualKeyConfig struct {
 	// underneath (in-flight count, not a token bucket) is genuinely
 	// different.
 	MaxConcurrentRequests int
+	// BillingSubjectID mirrors identity.VirtualKey.BillingSubjectID's own
+	// doc comment exactly — an opaque, vendor-neutral external billing
+	// identifier, never read by any enforcement path. Empty (the
+	// default) means no known billing subject.
+	BillingSubjectID string
 }
 
 // ModelRateLimitConfig is one virtual key's per-model RPM override — see
@@ -698,6 +703,7 @@ func Load(path string) (*Config, error) {
 			}
 			sort.Strings(vk.AllowedRegions)
 		}
+		vk.BillingSubjectID, _ = getString(vkMap, "billing_subject_id")
 		cfg.VirtualKeys = append(cfg.VirtualKeys, vk)
 	}
 	sort.Slice(cfg.VirtualKeys, func(i, j int) bool { return cfg.VirtualKeys[i].Name < cfg.VirtualKeys[j].Name })

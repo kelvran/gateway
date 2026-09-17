@@ -741,6 +741,94 @@ func TestGatewayEventStreamingFallbackFalseAfterFirstChunkSent(t *testing.T) {
 	}
 }
 
+// TestGatewayDecisionEventCarriesBillingSubjectIDWhenConfigured proves
+// docs/upgrade-research/billing-monetization-integration-2026-09-15.md's
+// field: a virtual key's own identity.VirtualKey.BillingSubjectID reaches
+// the logged GatewayDecisionEvent's BillingSubjectId, the one durable
+// export surface a future billing-platform ingestion consumer would read
+// from — not just held on the in-memory VirtualKey struct.
+func TestGatewayDecisionEventCarriesBillingSubjectIDWhenConfigured(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	keys := []identity.VirtualKey{
+		{ID: "team-bill1", KeyHash: testHashOf("team-bill1"), RateLimitBurst: 100, RateLimitRefill: 100, BillingSubjectID: "cust_acme_12345"},
+	}
+	p := newTestPipelineWithKeysAndLogger(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, nil, keys, logger)
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill1", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+
+	event := decodeLoggedGatewayEvent(t, &logBuf)
+	if event.GetBillingSubjectId() != "cust_acme_12345" {
+		t.Errorf("BillingSubjectId = %q, want %q", event.GetBillingSubjectId(), "cust_acme_12345")
+	}
+}
+
+// TestBudgetReserveAndReconcileAreUnaffectedByBillingSubjectIDField is a
+// deliberate negative test proving the decoupling constraint named in
+// BillingSubjectID's own doc comment (api/gatewayevents/v1/gatewayevents.
+// proto) and in the Kong/OpenMeter precedent from
+// docs/upgrade-research/billing-monetization-integration-2026-09-15.md:
+// budget.Tracker.Reserve/Reconcile's synchronous enforcement path must
+// never read this field. Two virtual keys, identical in every real
+// enforcement input (same BudgetUSD cap, same requests, same price table)
+// except that only one carries a BillingSubjectID, must accrue IDENTICAL
+// real spend — if Reserve/Reconcile ever branched on BillingSubjectID,
+// this would be the first place that divergence would show up.
+func TestBudgetReserveAndReconcileAreUnaffectedByBillingSubjectIDField(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	keys := []identity.VirtualKey{
+		{ID: "team-bill2", KeyHash: testHashOf("team-bill2"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("1000"), BillingSubjectID: "cust_billed_67890"},
+		{ID: "team-bill3", KeyHash: testHashOf("team-bill3"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("1000")},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	priceTable := costaccounting.PriceTable{
+		"gpt-4o": {PromptPerToken: decimal.RequireFromString("0.0001"), CompletionPerToken: decimal.RequireFromString("0.0001")},
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(priceTable),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			return fakeOpenAIResponse("gpt-4o"), nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill2", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+		t.Fatalf("HandleChatCompletion (with BillingSubjectID): %v", err)
+	}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill3", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+		t.Fatalf("HandleChatCompletion (without BillingSubjectID): %v", err)
+	}
+	spentWith := p.budget.SpentUSD("team-bill2", 0)
+	spentWithout := p.budget.SpentUSD("team-bill3", 0)
+	if spentWith.IsZero() {
+		t.Fatal("expected nonzero spend recorded for the key with BillingSubjectID set")
+	}
+	if !spentWith.Equal(spentWithout) {
+		t.Errorf("SpentUSD diverged between an otherwise-identical key with BillingSubjectID set (%s) and without (%s) — Reserve/Reconcile must never read this field", spentWith, spentWithout)
+	}
+}
+
 // newTestPipelineWithKeysAndLogger mirrors newTestPipelineWithKeysAndBudget
 // (dataplane_test.go) exactly, except it lets a test supply its own
 // logger (to capture and decode gatewayevents_v1 log output) instead of
