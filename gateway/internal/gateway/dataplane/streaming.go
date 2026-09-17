@@ -52,6 +52,26 @@ var ErrStreamingNotConfigured = errors.New("dataplane: streaming is not configur
 // signal for this specific decoder.
 var ErrBedrockStreamTruncated = errors.New("dataplane: bedrock event stream ended before a messageStop event was received")
 
+// maxBedrockStreamBytes bounds a single Bedrock ConverseStream response
+// body's total bytes -- see streamDeploymentBedrock's own doc comment on
+// why this exists (aws-sdk-go-v2's eventstream.Decoder places no upper
+// bound on a single frame's declared length). 256MiB is far beyond any
+// realistic Converse response (even an unusually large multi-turn/
+// tool-heavy conversation's JSON-wrapped event-stream framing) while
+// still bounding a pathological input to a known, finite worst case.
+const maxBedrockStreamBytes = 256 << 20
+
+// limitedReadCloser wraps an io.ReadCloser with a byte ceiling on Read
+// (via io.LimitReader) while still forwarding Close to the original
+// closer -- io.LimitReader alone drops the Close method, and body must
+// stay a real io.ReadCloser for this function's own deferred Close call.
+type limitedReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (l *limitedReadCloser) Close() error { return l.closer.Close() }
+
 // UpstreamStreamCaller performs the actual upstream HTTP call for one
 // deployment when streaming, returning the raw response body for the
 // caller to read as SSE frames — unlike UpstreamCaller, it does not decode
@@ -618,6 +638,23 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	if err != nil {
 		return adapter.ChatResponse{}, false, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
 	}
+	// **Fixed 2026-09-17, real bug**: aws-sdk-go-v2's own
+	// eventstream.Decoder places no upper bound on a single frame's
+	// declared length -- its messagePrelude.ValidateLens only rejects
+	// Length == 0, confirmed by reading message.go directly. A single
+	// pathological frame could otherwise make decodePayload's io.Copy
+	// buffer an arbitrarily large payload (up to ~4GiB, Length's own
+	// uint32 range) fully into memory before this loop ever gets a
+	// chance to react to it. maxBedrockStreamBytes bounds the STREAM's
+	// total bytes rather than any single frame specifically (the SDK's
+	// public Decoder API gives no hook to intercept a frame's declared
+	// length before it starts reading the payload) -- coarser than a
+	// true per-frame cap, but it closes the unbounded-memory worst case:
+	// hitting this cap surfaces as a plain io.EOF with no messageStop
+	// ever seen, which the truncation check just above already turns
+	// into a real, typed ErrBedrockStreamTruncated error rather than a
+	// silent success.
+	body = &limitedReadCloser{Reader: io.LimitReader(body, maxBedrockStreamBytes), closer: body}
 	defer func() { _ = body.Close() }()
 
 	decoder := bedrock.NewStreamDecoder()

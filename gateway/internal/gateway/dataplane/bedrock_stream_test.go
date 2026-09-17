@@ -191,3 +191,37 @@ func TestHandleChatCompletionStreamBedrockMidFrameTruncationSurfacesAsError(t *t
 		t.Errorf("error = %v, want errors.Is(err, ErrBedrockStreamTruncated)", err)
 	}
 }
+
+// TestHandleChatCompletionStreamBedrockOversizedStreamIsBounded is the
+// regression proof for the real bug fixed in maxBedrockStreamBytes's own
+// doc comment: aws-sdk-go-v2's eventstream.Decoder places no upper bound
+// on a single frame's declared length, so a pathological frame could
+// otherwise make decodePayload buffer an unbounded amount of memory.
+// Builds a real, wire-encoded fixture whose single contentBlockDelta
+// frame's raw payload exceeds maxBedrockStreamBytes -- the read is cut
+// off by the byte-limited reader partway through this one oversized
+// frame, which (with no messageStop ever received) correctly surfaces as
+// ErrBedrockStreamTruncated rather than an unbounded read.
+func TestHandleChatCompletionStreamBedrockOversizedStreamIsBounded(t *testing.T) {
+	oversizedPayload := make([]byte, maxBedrockStreamBytes+1024)
+	wire := encodeBedrockWireFixture(t, []eventstream.Message{
+		bedrockWireEvent("messageStart", `{"role":"assistant"}`),
+		bedrockWireEvent("contentBlockDelta", string(oversizedPayload)),
+	})
+
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(wire)), nil
+	}, []Deployment{{Name: "d1", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: "anthropic.claude-3-5-sonnet-20241022-v2:0", BaseURL: "http://unused"}},
+		adapter.Registry{"bedrock": bedrock.New()})
+
+	rec := httptest.NewRecorder()
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, rec, "")
+	if err == nil {
+		t.Fatal("HandleChatCompletionStream: want error for a stream whose single frame exceeds maxBedrockStreamBytes, got nil — unbounded read is NOT fixed")
+	}
+	if !errors.Is(err, ErrBedrockStreamTruncated) {
+		t.Errorf("error = %v, want errors.Is(err, ErrBedrockStreamTruncated)", err)
+	}
+}
