@@ -8,6 +8,38 @@ shape; it has never been applied against a real, live cluster (no cluster
 exists yet to verify against) — treat it as a real starting point, not a
 tested-in-production artifact.
 
+**Updated 2026-09-17/18**, per the backlog Phase 7 infra round: `base/`
+gained a dedicated `serviceaccount.yaml` (needed for IRSA to have anything
+to attach a trust policy to), and a real `overlays/eks-irsa/` now exists —
+see "Which annotation for which cluster type" and "Secrets management"
+below.
+
+## Which annotation for which cluster type
+
+`base/serviceaccount.yaml` carries BOTH `eks.amazonaws.com/role-arn` and
+`iam.amazonaws.com/role` annotations, always — this is safe on every cluster
+type, since only the mechanism actually running in-cluster reads its own
+annotation:
+
+- **EKS**: use `eks.amazonaws.com/role-arn`, set to
+  `terraform/irsa-trust/`'s own `role_arn` output. Apply
+  `overlays/eks-irsa/` (not `base/` alone) to also get a real ESO
+  `SecretStore`/`ExternalSecret` pulling from AWS Secrets Manager via IRSA
+  — see that overlay's own manifests for the exact shape.
+- **Self-managed Kubernetes (kiam/kube2iam)**: use
+  `iam.amazonaws.com/role`, set to whatever role ARN your own
+  kiam/kube2iam deployment is configured to allow this annotation to
+  assume — kiam/kube2iam typically assumes via the EC2 instance profile
+  the proxy itself runs under, a different trust principal than IRSA's
+  OIDC provider, so `terraform/irsa-trust/` does not cover this path;
+  provision that role yourself, matching your own kiam/kube2iam
+  installation's documented trust requirement. Apply `base/` alone (bring
+  your own Secret, same as before this section existed — ESO is optional
+  here, not required).
+- **ECS/Fargate**: neither annotation applies — see `../ecs/` instead,
+  which uses Fargate's own native task-role secrets mechanism, no
+  IRSA/kiam/kube2iam/ESO equivalent needed at all.
+
 ## Why plain Kustomize, not Helm
 
 For a 1-service, single-maintainer project, `kubectl apply -k` / Kustomize is
@@ -46,18 +78,25 @@ kubectl apply -k base/
   `volumeClaimTemplates` gives each replica its own **separate** bbolt
   file, not a merged/consistent one.
 - **Secrets management: bring your own ExternalSecrets (or your own
-  Secret objects).** Plain Kubernetes Secrets are only base64-encoded,
-  not encrypted, and readable by anyone with pod-create authorization in
-  the namespace. The vendor-neutral, matches-this-project's-own-
-  self-hosted-deploy-anywhere-positioning answer is
+  Secret objects) — EXCEPT on EKS, where a real ESO wiring now exists.**
+  Plain Kubernetes Secrets are only base64-encoded, not encrypted, and
+  readable by anyone with pod-create authorization in the namespace.
   [External Secrets Operator](https://external-secrets.io/) (CRD-based,
   supports AWS Secrets Manager, HashiCorp Vault, GCP/Azure/IBM secret
-  managers) — a documented decision, not a live deployment: no
-  `ExternalSecret`/`SecretStore` manifest is included here, since which
-  backend to target is a real choice tied to where you actually run.
-  `base/secret-placeholder.yaml` is a plain `Secret` stub, meant to be
-  replaced (by ESO, Sealed Secrets, or your own process), never applied
-  as-is with real credentials committed alongside it.
+  managers) is the vendor-neutral answer this repo picked. As of the
+  backlog Phase 7 infra round, `overlays/eks-irsa/` is a REAL, schema-
+  validated (via `kubeconform` against the live `external-secrets.io`
+  CRD schemas, not just eyeballed) `SecretStore`+`ExternalSecret` pair —
+  authenticating via IRSA (no static AWS key anywhere), targeting AWS
+  Secrets Manager, producing a real `gateway-upstream-credentials` Secret
+  under the exact name `deployment.yaml`'s `envFrom` already references.
+  It has still never been applied against a real cluster (same
+  disclosure as everything else in this directory) — the schema
+  validation proves the manifests are well-formed, not that they behave
+  correctly against a live ESO controller. On any OTHER cluster type
+  (self-managed K8s without ESO, or ECS — see "Which annotation for
+  which cluster type" above), `base/secret-placeholder.yaml` is still
+  the plain `Secret` stub to replace with your own process.
 - **CPU/memory sizing numbers in `base/deployment.yaml` are illustrative,
   not measured.** No real streaming-load data exists yet to calibrate
   against — treat them as a starting point to load-test against your own

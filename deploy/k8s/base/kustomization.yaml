@@ -5,6 +5,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - secret-placeholder.yaml
+  - serviceaccount.yaml
 
 # Generates the gateway-config ConfigMap deployment.yaml mounts, from a
 # LOCAL, gitignored config.yaml -- see ../README.md's Usage section

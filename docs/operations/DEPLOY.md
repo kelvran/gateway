@@ -8,6 +8,7 @@ Two independently deployable units — `gateway` (Go) and `evals` (Python) — j
 
 - **Docker Compose** (local/dev) — `gateway` as a Compose service, plus an optional Redis dependency, for local development. `evals` is a Click CLI, not a long-running process — run it directly, not as a Compose service (see below).
 - **Kubernetes / production** — `gateway` and `evals` as separate Deployments, scaled and released independently, sharing only the `api/` contract version they were built against.
+- **ECS/Fargate** (added as part of the backlog Phase 7 infra round) — a real alternative to Kubernetes for `gateway` specifically, using Fargate's native secrets injection instead of ESO/IRSA — see below.
 
 ## Prerequisites
 
@@ -32,6 +33,30 @@ To bring `gateway` up locally:
 ## Kubernetes / Production
 
 **Corrected 2026-09-14**: this section previously said "(Intended shape.)... not created yet" — real, plain Kustomize manifests now exist at `deploy/k8s/` (`deploy/k8s/base/{deployment,service,secret-placeholder,kustomization}.yaml`), referencing the real `ghcr.io/kelvran/gateway` image, per `docs/upgrade-research/kubernetes-production-deployment-2026-09-14.md`. Never applied against a real, live cluster (none exists yet to verify against) — see `deploy/k8s/README.md`'s own disclosed limitations before using this anywhere real: `replicas: 1` is deliberate (no PVC/StatefulSet for `budget.persist_path` cross-replica consistency yet), Secrets management is bring-your-own (External Secrets Operator is the documented, not yet live, decision), and CPU/memory sizing is illustrative, not measured against real traffic. `GOMEMLIMIT` is already handled in code (`cmd/gateway/main.go`, via `github.com/KimMachineGun/automemlimit`, reading the real cgroup memory limit at startup) — the manifest's own `resources.limits.memory` is what that mechanism reads. Liveness and readiness both point at `/healthz`, which checks zero external dependencies (confirmed against `healthzHandler`), so it is safe to reuse for both without the shared-dependency-readiness anti-pattern a Redis/upstream-provider check would risk. Never make the admin/control-plane API internet-facing (per `SECURITY.md`'s operator best practices) — it binds loopback-only inside the container by default, so this is not exposed by the included Service at all, by construction.
+
+**Updated 2026-09-17/18**, per the backlog Phase 7 infra round: "Secrets management is bring-your-own" above is no longer true across the board — `deploy/k8s/base/serviceaccount.yaml` now exists (a dedicated ServiceAccount, needed for IRSA to have anything to attach a trust policy to) and `deploy/k8s/overlays/eks-irsa/` is a real, schema-validated `SecretStore`/`ExternalSecret` pair for EKS specifically, paired with a new `terraform/irsa-trust/` module that provisions the IAM side (an OIDC-federated trust policy scoped to that exact namespace/ServiceAccount). Self-managed Kubernetes without ESO still uses the plain `secret-placeholder.yaml` stub, now via `iam.amazonaws.com/role` (kiam/kube2iam's own annotation convention, which `terraform/irsa-trust/` does NOT provision — kiam/kube2iam's trust principal differs from IRSA's OIDC provider). See `deploy/k8s/README.md`'s "Which annotation for which cluster type" section for the full breakdown across all three deployment targets (EKS, self-managed K8s, and ECS below).
+
+## ECS/Fargate
+
+Added as part of the backlog Phase 7 infra round, per
+`docs/upgrade-research/terraform-iac-deployment-automation-2026-09-15.md`'s
+Finding 1/7. Real Terraform now exists at `deploy/ecs/` (an
+`aws_ecs_task_definition` + its CloudWatch Logs group) and
+`terraform/ecs-task-role/` (the task execution role + task role Fargate's
+own two-role model requires, IAM-scoped to exactly the Secrets Manager
+ARNs and, optionally, Bedrock model ARNs the task needs) — see `deploy/ecs/README.md`
+for the exact apply order and for what this deliberately does NOT
+provision (cluster, service, networking, load balancer, config-file
+delivery — all bring-your-own, same disclosure posture as everything else
+in this deployment guide). Like `deploy/k8s/`, never applied against a
+real, live ECS cluster — `terraform validate`/`terraform plan` (structural,
+no real AWS credentials) is the extent of verification so far.
+
+The one thing genuinely specific to this target vs. Kubernetes+IRSA/ESO:
+Fargate injects Secrets Manager values into the container natively via the
+task definition's own `secrets` block, resolved by the task EXECUTION role
+before the container ever starts — no operator-installed ESO/kiam/kube2iam
+equivalent needed at all for this path.
 
 ## Configuration Reference
 

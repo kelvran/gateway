@@ -26,6 +26,10 @@ spec:
       labels:
         app.kubernetes.io/name: kelvran-gateway
     spec:
+      # See serviceaccount.yaml's own comment for why a dedicated
+      # ServiceAccount exists at all (IRSA needs one to attach a trust
+      # policy to) and why it's safe across every cluster type.
+      serviceAccountName: kelvran-gateway
       # Matches gateway/Dockerfile's own non-root USER 65532:65532
       # (distroless's "nonroot" numeric UID convention) -- restated here,
       # not just relied on from the image, so a cluster-wide Pod Security

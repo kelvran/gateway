@@ -1,0 +1,26 @@
+# EKS + External Secrets Operator overlay -- layers a real SecretStore/
+# ExternalSecret on top of ../../base, replacing base/secret-placeholder.yaml
+# entirely (see ../../README.md's Secrets management section for why this
+# is an overlay, not folded into base/: base/ is applied identically across
+# all three deployment targets in docs/operations/DEPLOY.md, and ECS/
+# self-managed-K8s-without-ESO have no SecretStore/ExternalSecret CRDs
+# installed to satisfy -- this overlay is EKS+ESO-specific by design).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - secretstore.yaml
+  - externalsecret.yaml
+
+# Removes base/secret-placeholder.yaml's plain Secret entirely -- the
+# ExternalSecret below creates a real Secret object under the SAME name
+# (gateway-upstream-credentials) that deployment.yaml's envFrom already
+# references, so keeping both would be two objects racing to own one name.
+patches:
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gateway-upstream-credentials
