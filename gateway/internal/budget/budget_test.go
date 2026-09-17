@@ -137,6 +137,49 @@ func TestRecordAccumulatesExactlyAcrossManySmallAdditions(t *testing.T) {
 	}
 }
 
+// TestRecordExactAtExtremeLargeMagnitude proves decimal precision holds
+// at the opposite end of the scale from
+// TestRecordAccumulatesExactlyAcrossManySmallAdditions above: a single
+// value well beyond 1e15 (float64's own exact-integer-representable
+// ceiling, 2^53 ≈ 9.007e15) must still be tracked exactly, never
+// silently rounded the way a float64-based accumulator would be.
+func TestRecordExactAtExtremeLargeMagnitude(t *testing.T) {
+	tr := NewTracker()
+	large := d("1234567890123456.78") // well beyond 1e15
+	tr.Record("team-alpha", large, 0)
+
+	if tr.Allow("team-alpha", large, 0) {
+		t.Errorf("Allow(cap=%v) = true after recording exactly that amount, want false (spend == cap is a strict boundary)", large)
+	}
+	justOver := large.Add(d("0.01"))
+	if !tr.Allow("team-alpha", justOver, 0) {
+		t.Errorf("Allow(cap=%v) = false, want true — recorded spend must be exactly %v, not drifted at this magnitude", justOver, large)
+	}
+}
+
+// TestRecordAccumulatesExactlyAtSubMicroCentMagnitude is the sibling
+// proof at the opposite (tiny) end from the extreme-large test above:
+// many additions of a sub-micro-cent fragment (well below the
+// 0.0000075 fragment TestRecordAccumulatesExactlyAcrossManySmallAdditions
+// already uses) must still sum exactly, with zero precision loss.
+func TestRecordAccumulatesExactlyAtSubMicroCentMagnitude(t *testing.T) {
+	tr := NewTracker()
+	fragment := d("0.000000001") // 1e-9, well below 1e-7
+	const n = 10000
+	for i := 0; i < n; i++ {
+		tr.Record("team-alpha", fragment, 0)
+	}
+
+	exact := d("0.00001") // 10000 * 0.000000001, exact
+	if tr.Allow("team-alpha", exact, 0) {
+		t.Errorf("Allow(cap=%v) = true after accumulating exactly that amount, want false", exact)
+	}
+	justOver := exact.Add(d("0.000000001"))
+	if !tr.Allow("team-alpha", justOver, 0) {
+		t.Errorf("Allow(cap=%v) = false, want true — accumulated spend must be exactly %v, not drifted at this magnitude", justOver, exact)
+	}
+}
+
 func TestRecordNegativeCostIgnored(t *testing.T) {
 	tr := NewTracker()
 	tr.Record("team-alpha", d("5"), 0)

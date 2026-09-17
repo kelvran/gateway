@@ -2,6 +2,7 @@ package inprocess
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -162,6 +163,31 @@ func TestLexicalSearchAtExactExpiryInstantStillReturnsCandidate(t *testing.T) {
 	}
 	if len(candidates) != 1 {
 		t.Errorf("Search at the exact expiry instant (now == expiresAt) returned %d candidates, want 1 — expiry is a strict After, not >=", len(candidates))
+	}
+}
+
+// TestLexicalCacheTenantCountIsUnbounded documents a currently-accepted
+// gap rather than proving a bug: c.tenants (the per-tenant bucket map)
+// has no cap of its own, unlike maxEntries bounding each tenant's OWN
+// entry count. Puts one entry each for a large number of distinct
+// tenant IDs and confirms len(c.tenants) grows linearly with no ceiling
+// -- so a future intentional fix (or an explicit decision to accept
+// this risk) has a test to update instead of discovering the gap from
+// scratch.
+func TestLexicalCacheTenantCountIsUnbounded(t *testing.T) {
+	c := NewLexicalCache(10)
+	ctx := context.Background()
+
+	const tenantCount = 5000
+	for i := 0; i < tenantCount; i++ {
+		tenantID := "tenant-" + strconv.Itoa(i)
+		if err := c.Put(ctx, tenantID, sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+			t.Fatalf("Put(%s): %v", tenantID, err)
+		}
+	}
+
+	if got := len(c.tenants); got != tenantCount {
+		t.Errorf("len(c.tenants) = %d, want %d — tenant count grows linearly with no cap, a known, currently-accepted gap", got, tenantCount)
 	}
 }
 
