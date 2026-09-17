@@ -110,7 +110,21 @@ func testConfig() *controlplane.Config {
 			{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", APIKeyEnv: envVarName},
 		},
 		PriceTable: map[string]controlplane.ModelPriceConfig{},
+		// Matches controlplane.Load's own default (true when unconfigured)
+		// -- a struct literal built directly here bypasses Load entirely,
+		// so this must be set explicitly or every audit-log-asserting test
+		// below would silently start seeing suppressed logs instead.
+		Admin: controlplane.AdminConfig{EnableAuditLog: true},
 	}
+}
+
+// auditLogDisabledConfig returns testConfig() with Admin.EnableAuditLog
+// cleared -- a small variant, not a second full config builder, mirroring
+// pprofEnabledConfig's own established shape.
+func auditLogDisabledConfig() *controlplane.Config {
+	cfg := testConfig()
+	cfg.Admin.EnableAuditLog = false
+	return cfg
 }
 
 func doRequest(t *testing.T, h http.Handler, method, path, bearerValue, body string) *httptest.ResponseRecorder {
@@ -1128,6 +1142,38 @@ func TestPromptReadRoutesLogAnAuditEntryWithoutLeakingContent(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), secretLookingContent) {
 		t.Errorf("audit log must never contain prompt message content; got: %s", buf.String())
+	}
+}
+
+// TestAuditLogDisabledSuppressesVirtualKeyUpsertEntry proves
+// cfg.Admin.EnableAuditLog=false actually suppresses a write-route audit
+// line, not just a read one — the request itself must still succeed.
+func TestAuditLogDisabledSuppressesVirtualKeyUpsertEntry(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(auditLogDisabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+
+	body := `{"key_hash":"` + testHashOf("audit-disabled-test-value") + `"}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-omega", fakeAdminCredential(), body)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+	if logOutput := buf.String(); logOutput != "" {
+		t.Errorf("expected zero audit-log output with EnableAuditLog=false; got: %s", logOutput)
+	}
+}
+
+// TestAuditLogDisabledSuppressesPromptReadEntries mirrors the above for a
+// read route, proving the suppression isn't scoped only to writes.
+func TestAuditLogDisabledSuppressesPromptReadEntries(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(auditLogDisabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+
+	rec := doRequest(t, h, http.MethodGet, "/admin/prompts", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/prompts: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if logOutput := buf.String(); logOutput != "" {
+		t.Errorf("expected zero audit-log output with EnableAuditLog=false; got: %s", logOutput)
 	}
 }
 

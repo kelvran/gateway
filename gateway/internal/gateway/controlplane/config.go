@@ -509,6 +509,15 @@ type AdminConfig struct {
 	// Empty (the default) disables the route entirely — mirrors every
 	// other optional admin capability's "off unless configured" posture.
 	BackupDir string
+	// EnableAuditLog gates every admin-route audit-log line (see
+	// internal/admin's own package doc) behind a single config field.
+	// Default true when the "admin" section is absent entirely, or
+	// present but this key is unset — preserving the always-on behavior
+	// every prior release shipped with; an operator sets this to false
+	// only to explicitly opt OUT, e.g. because a separate compliance
+	// pipeline already captures the same audit trail and this codebase's
+	// own logging would just be redundant duplicate volume.
+	EnableAuditLog bool
 }
 
 // HealthProbeConfig configures the active/synthetic health-probing
@@ -766,6 +775,10 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	// Default true regardless of whether an "admin" section exists at
+	// all below -- EnableAuditLog's own doc comment explains why this
+	// must default on, unlike EnablePprof/every other admin field here.
+	cfg.Admin.EnableAuditLog = true
 	if adminRaw, ok := getMap(root, "admin"); ok {
 		cfg.Admin.ListenAddr, _ = getString(adminRaw, "listen_addr")
 		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
@@ -774,6 +787,9 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.PersistPath, _ = getString(adminRaw, "persist_path")
 		cfg.Admin.EnablePprof, _ = getBool(adminRaw, "enable_pprof")
 		cfg.Admin.BackupDir, _ = getString(adminRaw, "backup_dir")
+		if v, present := getBool(adminRaw, "enable_audit_log"); present {
+			cfg.Admin.EnableAuditLog = v
+		}
 	}
 
 	if healthProbeRaw, ok := getMap(root, "health_probe"); ok {

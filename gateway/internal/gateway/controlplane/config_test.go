@@ -1486,7 +1486,12 @@ func TestLoadBedrockDeploymentWithSessionTokenEnv(t *testing.T) {
 
 // TestLoadWithoutAdminSectionDefaultsToZeroValue proves admin: is
 // genuinely optional — a bare config with no admin: section at all must
-// parse with a zero-valued AdminConfig, mirroring
+// parse with every AdminConfig field at its zero value, EXCEPT
+// EnableAuditLog, which defaults true regardless of whether the section
+// exists at all (see that field's own doc comment for why: preserving
+// every prior release's always-on audit-log behavior takes priority over
+// this test's own previously-bare "zero value" framing — corrected here,
+// not silently left stale, per this field's addition). Otherwise mirrors
 // TestLoadWithoutTelemetrySectionDefaultsToZeroValue's own proof for a
 // different optional section.
 func TestLoadWithoutAdminSectionDefaultsToZeroValue(t *testing.T) {
@@ -1501,8 +1506,8 @@ func TestLoadWithoutAdminSectionDefaultsToZeroValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load without an admin section: %v", err)
 	}
-	if cfg.Admin != (AdminConfig{}) {
-		t.Errorf("Admin = %+v, want the zero value", cfg.Admin)
+	if want := (AdminConfig{EnableAuditLog: true}); cfg.Admin != want {
+		t.Errorf("Admin = %+v, want %+v", cfg.Admin, want)
 	}
 }
 
@@ -1526,6 +1531,49 @@ func TestLoadAdminSectionParsesListenAddrAndTokenEnv(t *testing.T) {
 	}
 	if cfg.Admin.TokenEnv != "KELVRAN_ADMIN_TOKEN" {
 		t.Errorf("Admin.TokenEnv = %q, want %q", cfg.Admin.TokenEnv, "KELVRAN_ADMIN_TOKEN")
+	}
+}
+
+// TestLoadAdminSectionPresentButEnableAuditLogUnsetStillDefaultsTrue is
+// the mirror-image case TestLoadWithoutAdminSectionDefaultsToZeroValue
+// doesn't cover: an admin: section that exists (for some other field)
+// but never mentions enable_audit_log at all must still default true,
+// not fall back to Go's bare zero value the way every OTHER AdminConfig
+// field does.
+func TestLoadAdminSectionPresentButEnableAuditLogUnsetStillDefaultsTrue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  listen_addr: \"127.0.0.1:8081\"\n  token_env: \"KELVRAN_ADMIN_TOKEN\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Admin.EnableAuditLog {
+		t.Error("Admin.EnableAuditLog = false, want true (admin: present but enable_audit_log unset must still default true)")
+	}
+}
+
+// TestLoadAdminSectionExplicitlyDisablesAuditLog proves the actual opt-out
+// path: enable_audit_log: false is honored, not silently overridden back
+// to the default.
+func TestLoadAdminSectionExplicitlyDisablesAuditLog(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  enable_audit_log: false\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Admin.EnableAuditLog {
+		t.Error("Admin.EnableAuditLog = true, want false (enable_audit_log: false must be honored)")
 	}
 }
 

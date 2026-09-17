@@ -130,6 +130,26 @@ type perModelRateLimitRequest struct {
 	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
 }
 
+// auditLogger gates every admin audit-log line behind
+// cfg.Admin.EnableAuditLog, so an operator can disable Kelvran's own
+// admin-mutation audit trail (e.g. because a separate compliance pipeline
+// already captures the same events) without a per-call-site conditional
+// at each of this package's own logging points. Every logger call in this
+// package IS an audit entry (confirmed: this file has zero Warn/Error/Debug
+// calls, only Info) — so wrapping the single Info method here is
+// sufficient to gate all of them, not just some.
+type auditLogger struct {
+	logger  *slog.Logger
+	enabled bool
+}
+
+func (a auditLogger) Info(msg string, args ...any) {
+	if !a.enabled {
+		return
+	}
+	a.logger.Info(msg, args...)
+}
+
 // Handler builds the admin HTTP surface. cfg is the already-loaded,
 // secret-free static config (served verbatim by GET /admin/config — see
 // the RFC's "why Config is safe to return wholesale" section); pipeline
@@ -139,20 +159,22 @@ type perModelRateLimitRequest struct {
 // "never starts with an empty/bypassable token" rule) credential tiers;
 // logger records a structured audit entry on every successful virtual-key
 // create/delete (never the credential/secret value itself), per
-// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md.
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md — unless
+// cfg.Admin.EnableAuditLog is false, per that field's own doc comment.
 func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Credentials, logger *slog.Logger) http.Handler {
+	audit := auditLogger{logger: logger, enabled: cfg.Admin.EnableAuditLog}
 	mux := http.NewServeMux()
-	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg, logger)))
-	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, logger)))
-	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, logger)))
-	mux.Handle("POST /admin/virtual_keys/{name}/rotate", requireBearerToken(creds.Admin, rotateVirtualKeyHandler(pipeline, logger)))
+	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg, audit)))
+	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, audit)))
+	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, audit)))
+	mux.Handle("POST /admin/virtual_keys/{name}/rotate", requireBearerToken(creds.Admin, rotateVirtualKeyHandler(pipeline, audit)))
 	// Deliberately its own middleware call, not requireEitherBearerToken:
 	// this is the one route CostViewer authenticates, alongside Admin and
 	// Viewer (both of which already see strictly more elsewhere on this
 	// mux, so neither loses anything by also being able to read this
 	// narrower view) — see requireAnyBearerToken's own doc comment.
 	mux.Handle("GET /admin/virtual_keys/{name}/spend", requireAnyBearerToken(
-		getVirtualKeySpendHandler(pipeline, logger),
+		getVirtualKeySpendHandler(pipeline, audit),
 		tokenTier{creds.Admin, "admin"},
 		tokenTier{creds.Viewer, "viewer"},
 		tokenTier{creds.CostViewer, "cost_viewer"},
@@ -162,24 +184,24 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	// price_table/deployments/guardrails config above) -- reads are
 	// viewer-or-admin, like GET /admin/config; writes are admin-only,
 	// like the virtual-key routes above.
-	mux.Handle("GET /admin/prompts", requireEitherBearerToken(creds, listPromptsHandler(pipeline, logger)))
-	mux.Handle("GET /admin/prompts/{id}", requireEitherBearerToken(creds, getPromptHandler(pipeline, logger)))
-	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline, logger)))
-	mux.Handle("POST /admin/prompts/{id}", requireBearerToken(creds.Admin, upsertPromptHandler(pipeline, logger)))
-	mux.Handle("DELETE /admin/prompts/{id}", requireBearerToken(creds.Admin, deletePromptHandler(pipeline, logger)))
+	mux.Handle("GET /admin/prompts", requireEitherBearerToken(creds, listPromptsHandler(pipeline, audit)))
+	mux.Handle("GET /admin/prompts/{id}", requireEitherBearerToken(creds, getPromptHandler(pipeline, audit)))
+	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline, audit)))
+	mux.Handle("POST /admin/prompts/{id}", requireBearerToken(creds.Admin, upsertPromptHandler(pipeline, audit)))
+	mux.Handle("DELETE /admin/prompts/{id}", requireBearerToken(creds.Admin, deletePromptHandler(pipeline, audit)))
 	// Live bbolt backup, per cfg.Admin.BackupDir's own doc comment --
 	// admin-only (a write-shaped, disk-touching operation, same tier as
 	// every other write route on this mux), always registered (unlike
 	// EnablePprof's conditional mount above) so an unconfigured caller
 	// gets an informative 501 from backupHandler itself, not a bare 404
 	// indistinguishable from a typo'd path.
-	mux.Handle("POST /admin/backup", requireBearerToken(creds.Admin, backupHandler(cfg, pipeline, logger)))
+	mux.Handle("POST /admin/backup", requireBearerToken(creds.Admin, backupHandler(cfg, pipeline, audit)))
 	// Deployment weight live-mutation, per
 	// docs/upgrade-research/admin-operator-experience-2026-09-14.md --
 	// admin-only, same tier as every other write route on this mux: a
 	// deployment's routing weight is an operational lever, not read-only
 	// reporting.
-	mux.Handle("POST /admin/deployments/{name}/weight", requireBearerToken(creds.Admin, updateDeploymentWeightHandler(pipeline, logger)))
+	mux.Handle("POST /admin/deployments/{name}/weight", requireBearerToken(creds.Admin, updateDeploymentWeightHandler(pipeline, audit)))
 	// pprof, per cfg.Admin.EnablePprof's own doc comment — off by
 	// default, admin-credential-gated (never the viewer tier: profiling
 	// data is a stronger information-disclosure/DoS-surface signal than
@@ -348,7 +370,7 @@ func bearerToken(r *http.Request) (string, bool) {
 // detect after the fact, exactly the recon signal THREAT_MODEL.md's own
 // "a compromised admin credential IS a full privilege escalation" row
 // names as the accepted residual risk this closes visibility into.
-func getConfigHandler(cfg *controlplane.Config, logger *slog.Logger) http.HandlerFunc {
+func getConfigHandler(cfg *controlplane.Config, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(cfg); err != nil {
@@ -388,7 +410,7 @@ func validateAdminIdentifier(id, fieldName string) error {
 // ordering guarantee (rate limiter registered before the Verifier swap).
 // logger records name (never the presented credential or key_hash) on
 // every successful upsert.
-func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if name == "" {
@@ -522,7 +544,7 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 // (dataplane.Pipeline.DeleteVirtualKey's own refusal — never leaves the
 // gateway with no client able to authenticate at all). logger records
 // name on every successful delete.
-func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if name == "" {
@@ -552,7 +574,7 @@ func deleteVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 // name and the grace period (never either key hash) on every successful
 // rotation, mirroring upsertVirtualKeyHandler's identical "log
 // identifiers, not secret material" discipline.
-func rotateVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func rotateVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if name == "" {
@@ -604,7 +626,7 @@ type backupResponse struct {
 // Returns 501 (not registered/disabled, per this route's own doc
 // comment above) when BackupDir is unset -- the common no-persistence
 // case, distinct from a real backup failure (500).
-func backupHandler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func backupHandler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if cfg.Admin.BackupDir == "" {
 			http.Error(w, "admin.backup_dir is not configured", http.StatusNotImplemented)
@@ -635,7 +657,7 @@ type updateDeploymentWeightRequest struct {
 // long-standing convention, not a special case introduced here. 404 if
 // name doesn't match any configured deployment. logger records name and
 // the new weight on every successful update.
-func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if name == "" {
@@ -682,7 +704,7 @@ type virtualKeySpendResponse struct {
 // any configured key. logger records this read (name + credential tier,
 // never spend/budget figures) mirroring every other read route's audit
 // convention.
-func getVirtualKeySpendHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func getVirtualKeySpendHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		vk, ok := pipeline.GetVirtualKey(name)
@@ -743,7 +765,7 @@ func writeJSONResponse(w http.ResponseWriter, v any) {
 // read (route + credential tier, never any prompt content) — see
 // getConfigHandler's own doc comment for why every prompt-read route was
 // a real, previously-silent audit-logging gap.
-func listPromptsHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func listPromptsHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		prompts := pipeline.ListPrompts()
 		responses := make([]promptResponse, 0, len(prompts))
@@ -756,7 +778,7 @@ func listPromptsHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.
 }
 
 // getPromptHandler serves id's latest version, or 404 if id is unknown.
-func getPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func getPromptHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		p, ok := pipeline.GetPrompt(id, 0)
@@ -772,7 +794,7 @@ func getPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.Ha
 // getPromptVersionHandler serves one specific historical version of id,
 // or 404 if id or that version is unknown, or 400 if version isn't a
 // positive integer.
-func getPromptVersionHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func getPromptVersionHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		versionStr := r.PathValue("version")
@@ -797,7 +819,7 @@ func getPromptVersionHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 // version (never the prompt's own message content) on every successful
 // upsert, mirroring upsertVirtualKeyHandler's identical "log identifiers,
 // not payload content" discipline.
-func upsertPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func upsertPromptHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if id == "" {
@@ -853,7 +875,7 @@ func upsertPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http
 
 // deletePromptHandler removes every version of id. 404 if id doesn't
 // match any stored prompt. logger records id on every successful delete.
-func deletePromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http.HandlerFunc {
+func deletePromptHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if id == "" {
