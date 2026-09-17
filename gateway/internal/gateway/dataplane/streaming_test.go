@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -654,5 +655,71 @@ func TestEstimateOrRealUsageEstimatesFromAccumulatorWhenUsageIsNil(t *testing.T)
 	}
 	if usage.TotalTokens != usage.PromptTokens+usage.CompletionTokens {
 		t.Errorf("TotalTokens = %d, want PromptTokens(%d) + CompletionTokens(%d)", usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens)
+	}
+}
+
+// TestFinishStreamedResponseLogsWarningOnDuplicateIndexAfterFinish proves
+// finishStreamedResponse's own new warning fires through the REAL
+// pipeline when a provider sends a real content delta to an index whose
+// finish_reason chunk already arrived -- closing the SILENT half of the
+// gap streamAccumulator.add's own detection exists to fix (see that
+// method's doc comment): the anomaly is now at least visible in logs,
+// not just safely-but-quietly folded into the accumulated content.
+func TestFinishStreamedResponseLogsWarningOnDuplicateIndexAfterFinish(t *testing.T) {
+	const sseWithDuplicateAfterFinish = "" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Hello!"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+		// A real anomaly: more content for index 0, AFTER it already finished.
+		`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":" again"},"finish_reason":null}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("non-streaming Upstream should never be called by a streaming test")
+			return nil, nil
+		},
+		UpstreamStream: func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+			return nopCloserReader{strings.NewReader(sseWithDuplicateAfterFinish)}, nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, rec, "")
+	if err != nil {
+		t.Fatalf("HandleChatCompletionStream: %v", err)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "stream_duplicate_index_after_finish") {
+		t.Errorf("expected a stream_duplicate_index_after_finish warning; got log output:\n%s", logOutput)
 	}
 }

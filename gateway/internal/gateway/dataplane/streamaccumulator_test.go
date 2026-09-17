@@ -131,3 +131,55 @@ func TestStreamAccumulatorUsageOnlyChunkAddsNoChoices(t *testing.T) {
 		t.Errorf("ID = %q, want resp-2 (should still be captured from a choice-less chunk)", got.ID)
 	}
 }
+
+// TestStreamAccumulatorAddDetectsDuplicateIndexAfterFinishReason proves
+// the new anomaly-detection: a chunk delivering real content to an index
+// whose finishReason was ALREADY set is recorded in
+// duplicateAfterFinishIndices.
+func TestStreamAccumulatorAddDetectsDuplicateIndexAfterFinishReason(t *testing.T) {
+	acc := newStreamAccumulator()
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{Content: "Hello"}},
+	}})
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{}, FinishReason: strPtr("stop")},
+	}})
+	if len(acc.duplicateAfterFinishIndices) != 0 {
+		t.Fatalf("duplicateAfterFinishIndices = %v after a normal finish, want empty", acc.duplicateAfterFinishIndices)
+	}
+
+	// A REPLAYED/duplicate event for the same index, after it already
+	// finished -- the real anomaly this test proves gets detected.
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{Content: " again"}},
+	}})
+	if len(acc.duplicateAfterFinishIndices) != 1 || acc.duplicateAfterFinishIndices[0] != 0 {
+		t.Errorf("duplicateAfterFinishIndices = %v, want [0]", acc.duplicateAfterFinishIndices)
+	}
+}
+
+// TestStreamAccumulatorAddStillConcatenatesContentOnDuplicateIndexReuse
+// proves no behavior regression: the concatenation itself stays
+// unchanged (the safest default for this display-only corruption class)
+// -- detection is additive, not a replacement for the existing fold
+// logic.
+func TestStreamAccumulatorAddStillConcatenatesContentOnDuplicateIndexReuse(t *testing.T) {
+	acc := newStreamAccumulator()
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{Content: "Hello"}},
+	}})
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{}, FinishReason: strPtr("stop")},
+	}})
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{Content: " again"}},
+	}})
+
+	got := acc.build(adapter.Usage{})
+	if len(got.Choices) != 1 {
+		t.Fatalf("len(Choices) = %d, want 1", len(got.Choices))
+	}
+	if got.Choices[0].Message.Content != "Hello again" {
+		t.Errorf("Content = %q, want %q (concatenation unchanged)", got.Choices[0].Message.Content, "Hello again")
+	}
+}

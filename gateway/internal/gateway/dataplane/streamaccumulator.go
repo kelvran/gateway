@@ -19,6 +19,11 @@ type streamAccumulator struct {
 	model   string
 	choices map[int]*accumulatingChoice
 	order   []int // choice indices in first-seen order
+	// duplicateAfterFinishIndices records every choice Index that
+	// received a real delta (content/role/tool-call) AFTER that same
+	// index's own finishReason had already been set — see add's own doc
+	// comment for why this is detected and recorded, not hard-failed.
+	duplicateAfterFinishIndices []int
 }
 
 type accumulatingChoice struct {
@@ -44,6 +49,17 @@ func newStreamAccumulator() *streamAccumulator {
 // Anthropic's message_delta translation) — add handles that by simply
 // updating id/model and returning, matching every StreamDecoder's
 // documented contract that a chunk can legitimately carry no choices.
+//
+// A chunk whose Index matches an already-seen choice that ALSO already
+// has a non-empty finishReason is a real anomaly: a provider bug or a
+// corrupted/replayed stream reusing an index for what should be a
+// logically distinct block. Detected and RECORDED (see
+// duplicateAfterFinishIndices), never hard-failed — the existing
+// concatenation behavior below is left unchanged as the safest default
+// for this display-only corruption class (matching this codebase's own
+// forward-compatible convention for stream anomalies elsewhere); the
+// caller (streaming.go's finishStreamedResponse) logs a warning so the
+// anomaly is at least visible, closing the SILENT half of the gap.
 func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 	if chunk.ID != "" {
 		acc.id = chunk.ID
@@ -58,6 +74,10 @@ func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 			c = &accumulatingChoice{toolCalls: map[int]*accumulatingToolCall{}}
 			acc.choices[cc.Index] = c
 			acc.order = append(acc.order, cc.Index)
+		}
+
+		if c.finishReason != "" && (cc.Delta.Content != "" || cc.Delta.Role != "" || len(cc.Delta.ToolCalls) > 0) {
+			acc.duplicateAfterFinishIndices = append(acc.duplicateAfterFinishIndices, cc.Index)
 		}
 
 		if cc.Delta.Role != "" {

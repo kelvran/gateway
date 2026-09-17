@@ -823,6 +823,18 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 		)...)
 	}
 
+	if len(acc.duplicateAfterFinishIndices) > 0 {
+		// Logged, never a failure -- see streamAccumulator.add's own doc
+		// comment for why this anomaly is detected-and-recorded, not
+		// hard-failed: the content is already safely (if unusually)
+		// concatenated, and this is a visibility fix, not a correctness
+		// fix for the choice/content shape itself.
+		p.logger.Warn("stream_duplicate_index_after_finish", append(traceLogFields(ctx),
+			"deployment", dep.Name,
+			"indices", acc.duplicateAfterFinishIndices,
+		)...)
+	}
+
 	resp := acc.build(usage)
 	// Echo back the client-facing canonical model name, matching
 	// callDeployment's convention for the buffered path.

@@ -225,3 +225,41 @@ func TestHandleChatCompletionStreamBedrockOversizedStreamIsBounded(t *testing.T)
 		t.Errorf("error = %v, want errors.Is(err, ErrBedrockStreamTruncated)", err)
 	}
 }
+
+// TestStreamDeploymentBedrockPropagatesDuplicateMetadataErrorRatherThanOverwritingUsage
+// is the $-impact regression test for bedrock.StreamDecoder's new
+// at-most-once tracking: a real wire-encoded stream carrying TWO metadata
+// events (a corrupted/replayed frame, or a real upstream bug) must fail
+// the whole request with a real, typed error -- never silently let the
+// second event's usage overwrite the first, already-real usage.
+func TestStreamDeploymentBedrockPropagatesDuplicateMetadataErrorRatherThanOverwritingUsage(t *testing.T) {
+	wire := encodeBedrockWireFixture(t, []eventstream.Message{
+		bedrockWireEvent("messageStart", `{"role":"assistant"}`),
+		bedrockWireEvent("contentBlockStart", `{"contentBlockIndex":0,"start":{}}`),
+		bedrockWireEvent("contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"Hello!"}}`),
+		bedrockWireEvent("contentBlockStop", `{"contentBlockIndex":0}`),
+		bedrockWireEvent("messageStop", `{"stopReason":"end_turn"}`),
+		bedrockWireEvent("metadata", `{"usage":{"inputTokens":9,"outputTokens":4,"totalTokens":13}}`),
+		// A second, DUPLICATE metadata event -- with different (here:
+		// zeroed, simulating a corrupted replay) usage, to prove it's
+		// rejected outright rather than silently applied on top of the
+		// real, already-correct usage above.
+		bedrockWireEvent("metadata", `{"usage":{"inputTokens":0,"outputTokens":0,"totalTokens":0}}`),
+	})
+
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(wire)), nil
+	}, []Deployment{{Name: "d1", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: "anthropic.claude-3-5-sonnet-20241022-v2:0", BaseURL: "http://unused"}},
+		adapter.Registry{"bedrock": bedrock.New()})
+
+	rec := httptest.NewRecorder()
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, rec, "")
+	if err == nil {
+		t.Fatal("HandleChatCompletionStream: want a real error for a duplicate metadata event, got nil -- usage corruption would have been silently accepted")
+	}
+	if !errors.Is(err, bedrock.ErrBedrockDuplicateStreamEvent) {
+		t.Errorf("error = %v, want errors.Is(err, bedrock.ErrBedrockDuplicateStreamEvent)", err)
+	}
+}

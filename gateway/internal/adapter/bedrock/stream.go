@@ -133,16 +133,34 @@ type metadataEvent struct {
 	Usage Usage `json:"usage"`
 }
 
+// ErrBedrockDuplicateStreamEvent is returned by Decode when
+// messageStart, messageStop, or metadata arrives a SECOND time within
+// the same decoder's lifetime -- each is structurally guaranteed to fire
+// at most once in a real Converse stream event sequence (see
+// StreamDecoder's own doc comment), so a repeat is either a corrupted
+// upstream connection or a replayed frame, never a legitimate event.
+// Real dollar consequences: a duplicate metadata event, if silently
+// accepted, would overwrite already-billed real usage with garbage via
+// streaming.go's plain "if usage != nil { finalUsage = usage }"
+// last-write-wins assignment -- so this is a hard error for the caller
+// to propagate, not a log-and-continue, unlike streamAccumulator.add's
+// own display-only duplicate-choice-index detection.
+var ErrBedrockDuplicateStreamEvent = errors.New("bedrock: duplicate stream event received")
+
 // StreamDecoder decodes Bedrock ConverseStream's real binary
 // application/vnd.amazon.eventstream frames into canonical streaming
-// chunks. Deliberately stateless (zero fields) -- unlike Anthropic's
-// decoder (must track open content-block kinds, since content_block_delta
-// doesn't repeat its type) or Gemini's (a sentRole bool), every Bedrock
-// event is self-describing: contentBlockDelta's own payload carries
-// either "text" or "toolUse" directly, and messageStart is structurally
-// guaranteed to fire exactly once, at the true start of the real event
-// sequence (messageStart -> [contentBlockStart -> contentBlockDelta* ->
-// contentBlockStop]* -> messageStop -> metadata).
+// chunks. Tracks only whether each of the 3 at-most-once events
+// (messageStart/messageStop/metadata) has already been seen -- unlike
+// Anthropic's decoder (must track open content-block kinds, since
+// content_block_delta doesn't repeat its type) or Gemini's (a sentRole
+// bool), every Bedrock event is otherwise self-describing:
+// contentBlockDelta's own payload carries either "text" or "toolUse"
+// directly, and messageStart/messageStop/metadata are each structurally
+// guaranteed to fire AT MOST once, in the true event sequence
+// (messageStart -> [contentBlockStart -> contentBlockDelta* ->
+// contentBlockStop]* -> messageStop -> metadata) -- a second occurrence
+// of any of the three is itself the anomaly ErrBedrockDuplicateStreamEvent
+// exists to catch, not a legitimate repeat to fold in.
 //
 // Decode never returns a "done" signal (unlike streaming.StreamDecoder) --
 // metadata (carrying real usage) is confirmed to arrive AFTER messageStop,
@@ -151,11 +169,13 @@ type metadataEvent struct {
 // purely on eventstream.Decoder.Decode returning io.EOF when the
 // transport closes -- the same pattern already proven correct for
 // gemini's stream.go, which likewise always returns done=false.
-type StreamDecoder struct{}
+type StreamDecoder struct {
+	messageStartSeen bool
+	messageStopSeen  bool
+	metadataSeen     bool
+}
 
-// NewStreamDecoder returns a fresh StreamDecoder. Since it carries no
-// state, every call is equivalent, but a constructor is still provided to
-// match every other adapter's own convention.
+// NewStreamDecoder returns a fresh StreamDecoder with no events seen yet.
 func NewStreamDecoder() *StreamDecoder {
 	return &StreamDecoder{}
 }
@@ -188,6 +208,10 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 
 	switch eventType {
 	case "messageStart":
+		if d.messageStartSeen {
+			return nil, nil, fmt.Errorf("%w: messageStart", ErrBedrockDuplicateStreamEvent)
+		}
+		d.messageStartSeen = true
 		var ev messageStartEvent
 		if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 			return nil, nil, fmt.Errorf("bedrock: decoding messageStart: %w", err)
@@ -256,6 +280,10 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 		return nil, nil, nil
 
 	case "messageStop":
+		if d.messageStopSeen {
+			return nil, nil, fmt.Errorf("%w: messageStop", ErrBedrockDuplicateStreamEvent)
+		}
+		d.messageStopSeen = true
 		var ev messageStopEvent
 		if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 			return nil, nil, fmt.Errorf("bedrock: decoding messageStop: %w", err)
@@ -270,6 +298,10 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 		return []streaming.ChatCompletionChunk{chunk}, nil, nil
 
 	case "metadata":
+		if d.metadataSeen {
+			return nil, nil, fmt.Errorf("%w: metadata", ErrBedrockDuplicateStreamEvent)
+		}
+		d.metadataSeen = true
 		var ev metadataEvent
 		if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 			return nil, nil, fmt.Errorf("bedrock: decoding metadata: %w", err)

@@ -414,3 +414,56 @@ func TestDecodeUnknownEventTypeIsForwardCompatible(t *testing.T) {
 		t.Errorf("chunks/usage = %+v/%+v, want none/nil for an unknown event type", chunks, usage)
 	}
 }
+
+// TestDecodeRejectsDuplicateMessageStartEvent proves the new at-most-once
+// tracking: a second messageStart on the SAME decoder instance is a real
+// error, per StreamDecoder's own doc comment.
+func TestDecodeRejectsDuplicateMessageStartEvent(t *testing.T) {
+	d := NewStreamDecoder()
+	if _, _, err := d.Decode(newEventMessage("messageStart", `{"role":"assistant"}`)); err != nil {
+		t.Fatalf("first Decode: %v", err)
+	}
+	_, _, err := d.Decode(newEventMessage("messageStart", `{"role":"assistant"}`))
+	if !errors.Is(err, ErrBedrockDuplicateStreamEvent) {
+		t.Errorf("second Decode: err = %v, want ErrBedrockDuplicateStreamEvent", err)
+	}
+}
+
+// TestDecodeRejectsDuplicateMessageStopEvent mirrors
+// TestDecodeRejectsDuplicateMessageStartEvent for messageStop.
+func TestDecodeRejectsDuplicateMessageStopEvent(t *testing.T) {
+	d := NewStreamDecoder()
+	if _, _, err := d.Decode(newEventMessage("messageStop", `{"stopReason":"end_turn"}`)); err != nil {
+		t.Fatalf("first Decode: %v", err)
+	}
+	_, _, err := d.Decode(newEventMessage("messageStop", `{"stopReason":"end_turn"}`))
+	if !errors.Is(err, ErrBedrockDuplicateStreamEvent) {
+		t.Errorf("second Decode: err = %v, want ErrBedrockDuplicateStreamEvent", err)
+	}
+}
+
+// TestDecodeRejectsDuplicateMetadataEvent is the $-impact regression
+// test: a duplicate metadata event must be a hard error, never silently
+// accepted to overwrite real, already-computed usage with a second
+// (potentially corrupted/replayed) value -- see
+// ErrBedrockDuplicateStreamEvent's own doc comment for the real billing
+// consequence this closes.
+func TestDecodeRejectsDuplicateMetadataEvent(t *testing.T) {
+	d := NewStreamDecoder()
+	firstPayload := `{"usage":{"inputTokens":58,"outputTokens":12,"totalTokens":70}}`
+	_, usage, err := d.Decode(newEventMessage("metadata", firstPayload))
+	if err != nil {
+		t.Fatalf("first Decode: %v", err)
+	}
+	if usage == nil || usage.TotalTokens != 70 {
+		t.Fatalf("first Decode usage = %+v, want TotalTokens=70", usage)
+	}
+
+	// A second metadata event, even with DIFFERENT (here: corrupted/
+	// zeroed) usage -- must be rejected outright, never silently applied.
+	secondPayload := `{"usage":{"inputTokens":0,"outputTokens":0,"totalTokens":0}}`
+	_, _, err = d.Decode(newEventMessage("metadata", secondPayload))
+	if !errors.Is(err, ErrBedrockDuplicateStreamEvent) {
+		t.Errorf("second Decode: err = %v, want ErrBedrockDuplicateStreamEvent", err)
+	}
+}
