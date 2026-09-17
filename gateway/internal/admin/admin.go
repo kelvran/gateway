@@ -359,6 +359,29 @@ func getConfigHandler(cfg *controlplane.Config, logger *slog.Logger) http.Handle
 	}
 }
 
+// maxAdminIdentifierLen bounds a caller-supplied identifier (a virtual
+// key name or prompt id) accepted at write time by upsertVirtualKeyHandler/
+// upsertPromptHandler. **Fixed 2026-09-17, real bug**: neither handler
+// validated length or character content on this path parameter at all
+// before this check existed -- it becomes a map key in every in-memory
+// store this identifier touches (identity.Verifier, budget.Tracker,
+// ratelimit.KeyLimiter, prompt.Store) and is logged on every future
+// request that references it. 256 is far beyond any realistic name/id
+// while still bounding an operator mistake or a pathologically long
+// value to a known, finite cost -- checked only at WRITE time (upsert),
+// never at read/delete/rotate, where an oversized value just fails an
+// ordinary "not found" lookup with no growth risk.
+const maxAdminIdentifierLen = 256
+
+// validateAdminIdentifier rejects an empty or oversized identifier --
+// see maxAdminIdentifierLen's own doc comment.
+func validateAdminIdentifier(id, fieldName string) error {
+	if len(id) > maxAdminIdentifierLen {
+		return fmt.Errorf("%s exceeds %d characters", fieldName, maxAdminIdentifierLen)
+	}
+	return nil
+}
+
 // upsertVirtualKeyHandler adds a brand-new virtual key, or replaces the
 // existing one with the same name, live — see
 // dataplane.Pipeline.UpsertVirtualKey's own doc comment for the exact
@@ -370,6 +393,10 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 		name := r.PathValue("name")
 		if name == "" {
 			http.Error(w, "virtual key name is required", http.StatusBadRequest)
+			return
+		}
+		if err := validateAdminIdentifier(name, "virtual key name"); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -775,6 +802,10 @@ func upsertPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http
 		id := r.PathValue("id")
 		if id == "" {
 			http.Error(w, "prompt id is required", http.StatusBadRequest)
+			return
+		}
+		if err := validateAdminIdentifier(id, "prompt id"); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 

@@ -269,6 +269,23 @@ func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
 	}
 }
 
+// TestUpsertVirtualKeyRejectsOversizedName is the regression proof for
+// the real bug fixed in maxAdminIdentifierLen's own doc comment: this
+// handler previously validated neither length nor character content on
+// the name path parameter at all before it became a map key in
+// identity.Verifier/budget.Tracker/ratelimit.KeyLimiter and every future
+// log line referencing it.
+func TestUpsertVirtualKeyRejectsOversizedName(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	oversizedName := strings.Repeat("a", maxAdminIdentifierLen+1)
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `"}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/"+oversizedName, fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestUpsertVirtualKeyRejectsNegativeBudgetUSD is the regression proof
 // for the real bug fixed alongside it: this handler previously performed
 // no validation at all on budget_usd, silently accepting a negative
@@ -606,6 +623,20 @@ func TestUpsertPromptCreatesVersionOneThenVersionTwo(t *testing.T) {
 	}
 	if second.Version != 2 {
 		t.Errorf("second upsert: Version = %d, want 2", second.Version)
+	}
+}
+
+// TestUpsertPromptRejectsOversizedID is the regression proof for the
+// real bug fixed in maxAdminIdentifierLen's own doc comment: this
+// handler previously validated neither length nor character content on
+// the id path parameter at all before it became a map key in
+// prompt.Store and every future log line referencing it.
+func TestUpsertPromptRejectsOversizedID(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	oversizedID := strings.Repeat("a", maxAdminIdentifierLen+1)
+	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/"+oversizedID, fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
 	}
 }
 
