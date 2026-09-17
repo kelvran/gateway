@@ -276,3 +276,33 @@ func TestValidateToolDefsAcceptsEmptyParametersJSON(t *testing.T) {
 		t.Fatalf("ValidateToolDefs() = %v, want nil for a tool with empty ParametersJSON", err)
 	}
 }
+
+func TestValidateFieldSizesAcceptsContentWellWithinBounds(t *testing.T) {
+	messages := []Message{{Role: "user", Content: "hello"}}
+	if err := ValidateFieldSizes(messages); err != nil {
+		t.Fatalf("ValidateFieldSizes() = %v, want nil", err)
+	}
+}
+
+func TestValidateFieldSizesAcceptsContentExactlyAtLimit(t *testing.T) {
+	messages := []Message{{Role: "user", Content: strings.Repeat("a", maxFieldSizeBytes)}}
+	if err := ValidateFieldSizes(messages); err != nil {
+		t.Fatalf("ValidateFieldSizes() = %v, want nil for content exactly at the %d-byte limit", err, maxFieldSizeBytes)
+	}
+}
+
+func TestValidateFieldSizesRejectsContentOneByteBeyondLimit(t *testing.T) {
+	messages := []Message{{Role: "user", Content: strings.Repeat("a", maxFieldSizeBytes+1)}}
+	err := ValidateFieldSizes(messages)
+	if !errors.Is(err, ErrFieldTooLarge) {
+		t.Fatalf("ValidateFieldSizes() = %v, want ErrFieldTooLarge for content one byte beyond the %d-byte limit", err, maxFieldSizeBytes)
+	}
+}
+
+func TestValidateFieldSizesRejectsContentPartDataOneByteBeyondLimit(t *testing.T) {
+	messages := []Message{{Role: "user", Parts: []ContentPart{{Type: "image", MediaType: "image/png", Data: strings.Repeat("a", maxFieldSizeBytes+1)}}}}
+	err := ValidateFieldSizes(messages)
+	if !errors.Is(err, ErrFieldTooLarge) {
+		t.Fatalf("ValidateFieldSizes() = %v, want ErrFieldTooLarge for a content part data field one byte beyond the %d-byte limit", err, maxFieldSizeBytes)
+	}
+}

@@ -227,3 +227,36 @@ func ValidateContentParts(messages []Message) error {
 	}
 	return nil
 }
+
+// ErrFieldTooLarge is returned by ValidateFieldSizes when a single
+// Message.Content or ContentPart.Data field exceeds maxFieldSizeBytes.
+var ErrFieldTooLarge = errors.New("adapter: a single message/content-part field exceeds this gateway's per-field size bound")
+
+// maxFieldSizeBytes bounds a single Message.Content string or
+// ContentPart.Data (base64) string, independently of
+// cmd/gateway/main.go's own maxRequestBodyBytes (32MiB) whole-body cap.
+// Defense-in-depth alongside ValidateMessageCount/ValidateToolDefs:
+// those bound the NUMBER of items; this bounds any ONE item from
+// consuming a disproportionate share of the byte budget in a single
+// field, which downstream per-field work (guardrail regex scanning,
+// MIME sniffing, cache-key serialization) pays for as one large unit of
+// work rather than many small ones. 8MiB is far beyond any realistic
+// single message or inline attachment while still meaningfully bounding
+// a single pathological field below the whole-body cap.
+const maxFieldSizeBytes = 8 << 20
+
+// ValidateFieldSizes bounds every Message.Content and ContentPart.Data
+// field's own length -- see maxFieldSizeBytes's own doc comment.
+func ValidateFieldSizes(messages []Message) error {
+	for _, m := range messages {
+		if len(m.Content) > maxFieldSizeBytes {
+			return fmt.Errorf("%w: message content is %d bytes, max %d", ErrFieldTooLarge, len(m.Content), maxFieldSizeBytes)
+		}
+		for _, part := range m.Parts {
+			if len(part.Data) > maxFieldSizeBytes {
+				return fmt.Errorf("%w: content part data is %d bytes, max %d", ErrFieldTooLarge, len(part.Data), maxFieldSizeBytes)
+			}
+		}
+	}
+	return nil
+}

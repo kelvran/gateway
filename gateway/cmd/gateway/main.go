@@ -1082,6 +1082,10 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if err := adapter.ValidateFieldSizes(req.Messages); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		if err := adapter.ValidateContentParts(req.Messages); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
