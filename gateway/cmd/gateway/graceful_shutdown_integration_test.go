@@ -140,6 +140,119 @@ func TestIntegrationGracefulShutdownDrainsInFlightRequestBeforeExiting(t *testin
 	}
 }
 
+// TestIntegrationGracefulShutdownForceExitsWhenRequestOutlivesDrainGrace
+// is the regression proof this package's own suite was missing: the
+// force-exit path (a request that outlives BOTH gracefulShutdownTimeout
+// AND postShutdownDrainGrace) was previously only unit-tested on the
+// bare drainInFlight helper in isolation, never exercised through run()'s
+// real end-to-end SIGTERM handling the way
+// TestIntegrationGracefulShutdownDrainsInFlightRequestBeforeExiting above
+// proves the successful-drain path. Overrides both timing vars to a
+// short duration for this one test only (restored via t.Cleanup) so it
+// runs in well under a second rather than the real 45s worst case.
+func TestIntegrationGracefulShutdownForceExitsWhenRequestOutlivesDrainGrace(t *testing.T) {
+	origTimeout, origGrace := gracefulShutdownTimeout, postShutdownDrainGrace
+	gracefulShutdownTimeout = 100 * time.Millisecond
+	postShutdownDrainGrace = 100 * time.Millisecond
+	t.Cleanup(func() {
+		gracefulShutdownTimeout, postShutdownDrainGrace = origTimeout, origGrace
+	})
+
+	const listenAddr = "127.0.0.1:18762"
+
+	requestReceived := make(chan struct{})
+	// Deliberately never released — the mock upstream call blocks
+	// forever, holding the in-flight request open past both overridden
+	// windows above.
+	releaseUpstream := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestReceived)
+		<-releaseUpstream
+	}))
+	defer upstream.Close()
+
+	const upstreamKeyEnvVar = "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_GRACEFUL_FORCE_EXIT"
+	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
+
+	configPath := writeGracefulShutdownTestConfig(t, listenAddr, upstream.URL, upstreamKeyEnvVar)
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- run(configPath, logger)
+	}()
+
+	waitForListener(t, listenAddr)
+
+	reqBody := strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+	httpReq, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/v1/chat/completions", reqBody)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+gracefulShutdownTestSecret())
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	type postResult struct {
+		resp *http.Response
+		err  error
+	}
+	respCh := make(chan postResult, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(httpReq)
+		respCh <- postResult{resp: resp, err: err}
+	}()
+
+	select {
+	case <-requestReceived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("mock upstream never received the request")
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	// run() must return a real, non-nil "graceful shutdown" error --
+	// Shutdown's own gracefulShutdownTimeout wait gives up on the
+	// never-finishing in-flight request.
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Fatal("run() returned nil error, want a real graceful-shutdown error for a request that outlives the drain grace")
+		}
+		if !strings.Contains(err.Error(), "graceful shutdown") {
+			t.Errorf("run() error = %v, want it to mention \"graceful shutdown\"", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() never returned — the force-exit path did not bound the wait as expected")
+	}
+
+	// The client's in-flight request must never receive a completed
+	// response -- the connection is dropped, not gracefully finished,
+	// since the handler goroutine was still blocked on the upstream call
+	// when the process gave up waiting on it.
+	select {
+	case result := <-respCh:
+		if result.err == nil {
+			_ = result.resp.Body.Close()
+			t.Fatal("in-flight request completed successfully, want it to fail/hang since the upstream call never released")
+		}
+	case <-time.After(1 * time.Second):
+		// Also acceptable: the client is still blocked because the
+		// underlying TCP connection was never actually torn down by the
+		// (still-running) handler goroutine itself -- what matters is
+		// that no successful response body was ever delivered, which the
+		// respCh-received branch above already checks when it fires.
+	}
+
+	if !strings.Contains(logBuf.String(), "gateway_shutdown_forced_with_requests_still_in_flight") {
+		t.Errorf("log output does not contain the forced-shutdown warning line; full output:\n%s", logBuf.String())
+	}
+
+	close(releaseUpstream) // let the leaked mock-upstream handler goroutine exit, avoiding a test-process leak.
+}
+
 // waitForListener polls until listenAddr accepts a real TCP connection,
 // proving run()'s listener is genuinely bound before the test sends any
 // HTTP request against it.
