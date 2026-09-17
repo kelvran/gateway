@@ -178,6 +178,23 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              (never undercounting) or avoid mixing different-priced models under one alias
                              until per-deployment pricing exists. See
                              docs/upgrade-research/competitor-feature-parity-2026-09-14.md Finding 1.
+                             **Added 2026-09-17** (missing from this entry until now, caught by a doc-
+                             staleness sweep): `Deployment` gained an optional `Sticky bool` flag, and
+                             `router.go` a `stickyGroups map[string]bool` (per-model-group, OR semantics —
+                             deliberately different from `CostTier`'s all-or-nothing gate). New
+                             `sticky.go`: `hashStickyKey`/`stickyPick` bucket a caller-supplied key (the
+                             virtual key's own ID) via a monotonic threshold hash
+                             (`hash(key) % 10000 < canaryThreshold`), not an N-way cumulative-range-mod-
+                             `sumW` scheme — the latter reintroduces non-monotonicity on every weight edit,
+                             the whole point sticky canary routing exists to avoid (a canary weight ramp
+                             must only ever ADD newly-bucketed callers, never bounce an already-canary one
+                             back to stable). `Router.SelectSticky` is a genuinely separate entry point
+                             from `Select` (byte-for-byte unchanged) — `dataplane.Pipeline.
+                             nextDeploymentSticky` calls it as `runMissPath`'s and
+                             `HandleChatCompletionStream`'s own FIRST pick (never a fallback/re-pick site,
+                             which wants "not this one," the opposite of stickiness), falling through to
+                             plain `selectHealthy` whenever the sticky pick also fails `exclude`/health/
+                             cost-tier filtering — never bypassing those safety gates.
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
@@ -382,7 +399,15 @@ admin → adapter, controlplane, dataplane, identity, prompt, ratelimit   (the H
 
 ## Request Lifecycle
 
-Every capability is a stage in one linear pipeline against a single canonical schema:
+Every capability is a stage in one linear pipeline against a single canonical schema. **Corrected
+2026-09-17**: this is no longer true without exception — `/v1/embeddings` (`Pipeline.HandleEmbeddings`,
+`cmd/gateway/main.go`'s `embeddingsHandler`) runs a materially different, narrower pipeline against a
+different canonical schema (`adapter.EmbeddingRequest`, not `ChatRequest`), by its own doc comment's
+explicit disclosure: it does NOT thread through cache, idempotency, the per-identity concurrency cap,
+fallback chains, or telemetry spans — it reuses only the budget/rate-limit/guardrail primitives and a
+plain (non-sticky) `nextDeployment` pick. See the Embeddings entry under Canonical Schema & Provider
+Adapters below. The lifecycle diagram immediately following this paragraph describes the
+`/v1/chat/completions` pipeline specifically, not every capability this gateway exposes:
 
 ```
 [client/agent request, carrying session/agent_run_id if present]
@@ -414,7 +439,12 @@ Every capability is a stage in one linear pipeline against a single canonical sc
     model's pool for a capable alternative before the first real upstream call — best-effort, not a
     hard error; falls through to the original pick unchanged when no capable deployment exists
     anywhere in the pool. See THREAT_MODEL.md's Gateway Elevation-of-Privilege row for the gap this
-    closes
+    closes. **Corrected 2026-09-17**: "weighted round-robin selects a deployment" above describes the
+    first pick's FALLBACK behavior, not its only behavior — for a model group with any `Sticky`-flagged
+    deployment, the real first pick is `nextDeploymentSticky` → `router.Router.SelectSticky`, which
+    deterministically hash-buckets the request by the calling virtual key's own ID into a stable/canary
+    side before ever falling through to plain WRR (only on an exclude/health/cost-tier rejection). See
+    `/internal/router`'s own entry above for the full mechanism
   → deployment capacity check, PER HOP (every hop, not just the first): the resolved deployment's own
     optional rate_limit/max_concurrent_requests ceiling — a genuinely different scope from the per-key
     checks above, bounding one shared deployment's own AGGREGATE load across every virtual key and every
@@ -454,6 +484,8 @@ One canonical internal schema, OpenAI Chat-Completions-shaped — the dialect vL
 2. **System-prompt placement** — in-array `role:"system"` (OpenAI) vs. top-level `system` param (Anthropic/Bedrock) vs. `systemInstruction` (Gemini).
 3. **Streaming event shape** — OpenAI's homogeneous `delta.content` fragments vs. Anthropic's typed SSE event sequence (needs a stateful per-stream parser tracking open content blocks / accumulating tool-call indices) vs. Bedrock's binary EventStream encoding (real per docs/rfcs/2026-09-04-bedrock-converse-stream.md — decoded by `bedrock.StreamDecoder`, a genuinely stateless decoder since every Bedrock event is self-describing, unlike Anthropic's). Real for OpenAI, Anthropic, Gemini, openaicompat, and Bedrock (see `/internal/streaming` above and each adapter's `stream.go`).
 4. **Unknown-field preservation** — e.g. Gemini's `thoughtSignature` must round-trip verbatim across turns or multi-turn tool use silently breaks. Adapters must never strip fields they don't recognize.
+
+**Added 2026-09-17 — a second, separate canonical schema now exists for embeddings.** `adapter.EmbeddingRequest`/`EmbeddingResponse` and a new `EmbeddingAdapter` interface (`ToEmbeddingProvider`/`FromEmbeddingProvider`) are deliberately NOT added to the existing `Adapter` interface above — every provider package would otherwise need a dummy/panicking implementation. Only `openai` and `bedrock` implement it today (both have a real native embeddings model; Gemini is deferred for lack of demand signal beyond the default, Anthropic is skipped entirely — no native embeddings model, only a third-party Voyage AI pointer, out of scope for a first pass). Bedrock's Titan `InvokeModel` embeddings endpoint has a real, AWS-enforced single-input-per-call constraint (confirmed against `evals/scripts/validate_embedding_gate.py`, not assumed) — `bedrock.ErrBedrockEmbeddingBatchNotSupported` rejects a multi-input request outright rather than silently truncating it. `Pipeline.HandleEmbeddings` (`/v1/embeddings`) is its own function, never a `HandleChatCompletion` retrofit — see the Request Lifecycle section's own correction above for exactly which pipeline stages it does and doesn't thread through.
 
 **Corrected 2026-09-10**: Bedrock's Converse API DOES have a real, genuine `additionalModelRequestFields`-style escape hatch, and the canonical schema now has a use for it — this doc's own prior claim ("no such field exists") is now stale, not the code. Structured-output/JSON-schema requests (`ChatRequest.ResponseFormat`, a new canonical field alongside `Tools`) are the first thing to use it: `bedrock.Request.AdditionalModelRequestFields` carries `{"output_config":{"format":{"type":"json_schema","schema":{...}}}}`, live-verified against a real Converse API call — but genuinely restricted to a specific whitelist of Bedrock-hosted Claude models (`adapter.SupportsStructuredOutput`'s Bedrock branch; calling it against an unsupported model, e.g. `global.anthropic.claude-sonnet-5`, returns a clean, real AWS `ValidationException`, not a silent ignore). Anthropic's own direct Messages API expresses the same feature as a top-level `output_config.format` field (no beta header required); OpenAI/openaicompat mirror OpenAI's real `response_format`/`json_schema` shape; Gemini maps it onto `responseMimeType`/`responseSchema` (an OpenAPI-3.0-*subset* dialect, not full JSON Schema — a named fidelity caveat, never translated/validated). v1 is request-shape normalization only — no JSON Schema validation library exists in this module's `go.mod`, and a provider with no native enforcement mechanism simply gets no v1 support, named explicitly rather than silently missing. A new provider's OTHER quirks are still handled the same way the four points above already are, inside that provider's own adapter package via its provider-specific request/response structs (`ToProvider`/`FromProvider`), never by touching the core pipeline or the canonical schema itself — this escape hatch is Bedrock-specific plumbing for one real API capability, not a general-purpose bypass.
 
