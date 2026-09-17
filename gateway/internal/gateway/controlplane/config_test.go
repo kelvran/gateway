@@ -1729,3 +1729,136 @@ func TestLoadDeploymentWithAnOverflowingWeightDefaultsToZeroNotGarbage(t *testin
 		t.Errorf("Weight = %d, want 0 (the safe overflow fallback, not garbage)", got)
 	}
 }
+
+// TestLoadDuplicateTopLevelKeyLastValueWins documents current, real
+// behavior rather than proving a bug: parseYAMLMini builds each mapping
+// level via plain map assignment (parent[key] = ...), so a duplicate
+// key at the same level silently lets the LAST occurrence win -- pinned
+// down explicitly so a future change to reject duplicates (a stricter,
+// arguably safer YAML parser behavior) is a deliberate decision, not an
+// accidental behavior change nobody notices.
+func TestLoadDuplicateTopLevelKeyLastValueWins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nlisten_addr: \":9090\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a duplicate top-level key: %v", err)
+	}
+	if cfg.ListenAddr != ":9090" {
+		t.Errorf("ListenAddr = %q, want %q (the LAST duplicate occurrence, per parseYAMLMini's own plain-map-assignment behavior)", cfg.ListenAddr, ":9090")
+	}
+}
+
+// TestLoadDuplicateDeploymentNameSecondEntrySilentlyWins is the same
+// documentation as TestLoadDuplicateTopLevelKeyLastValueWins above, for
+// the more operationally significant case: two deployment entries under
+// the SAME name silently collapse into one (the second one's config) at
+// the parseYAMLMini stage, before Load's own deployment-processing loop
+// ever runs -- an operator's copy-paste mistake here silently drops an
+// entire deployment's intended config with no warning.
+func TestLoadDuplicateDeploymentNameSecondEntrySilentlyWins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"first-model\"\n    provider: \"openai\"\n    upstream_model: \"first-model\"\n    base_url: \"https://first\"\n    api_key_env: \"X\"\n  d1:\n    model: \"second-model\"\n    provider: \"openai\"\n    upstream_model: \"second-model\"\n    base_url: \"https://second\"\n    api_key_env: \"Y\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a duplicate deployment name: %v", err)
+	}
+	if len(cfg.Deployments) != 1 {
+		t.Fatalf("len(Deployments) = %d, want 1 (the two \"d1\" entries collapse into one)", len(cfg.Deployments))
+	}
+	if cfg.Deployments[0].Model != "second-model" {
+		t.Errorf("Deployments[0].Model = %q, want %q (the second, silently-winning entry)", cfg.Deployments[0].Model, "second-model")
+	}
+}
+
+// TestLoadRejectsTopLevelYAMLList proves Load returns a real,
+// human-readable error for valid-YAML-but-wrong-shape content: a
+// top-level list instead of a mapping. parseYAMLMini's own "key: value"
+// line-parsing rejects a bare "- item" list-item line (no colon) with
+// its own "expected \"key: value\"" error.
+func TestLoadRejectsTopLevelYAMLList(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "- listen_addr\n- virtual_keys\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a top-level YAML list returned nil error, want a real error")
+	}
+}
+
+// TestLoadRejectsVirtualKeysAsYAMLList mirrors
+// TestLoadRejectsTopLevelYAMLList for a nested section: virtual_keys
+// must be a mapping (keyed by virtual key name), not a list.
+func TestLoadRejectsVirtualKeysAsYAMLList(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  - team-alpha\n  - team-beta\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with virtual_keys as a YAML list returned nil error, want a real error")
+	}
+}
+
+// TestLoadPreservesUnicodeInVirtualKeyNameAndModelName proves non-ASCII
+// string fields round-trip correctly through parseYAMLMini -- correctly
+// handled already (this parser works on Go strings/runes throughout,
+// never byte-indexed ASCII assumptions), but never previously exercised
+// with a real non-ASCII value.
+func TestLoadPreservesUnicodeInVirtualKeyNameAndModelName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  \"team-éé\":\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"gemini-日本語\"\n    provider: \"openai\"\n    upstream_model: \"gemini-日本語\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with non-ASCII virtual key name and model name: %v", err)
+	}
+	if len(cfg.VirtualKeys) != 1 || cfg.VirtualKeys[0].Name != "team-éé" {
+		t.Errorf("VirtualKeys = %+v, want one entry named %q", cfg.VirtualKeys, "team-éé")
+	}
+	if len(cfg.Deployments) != 1 || cfg.Deployments[0].Model != "gemini-日本語" {
+		t.Errorf("Deployments = %+v, want one entry with model %q", cfg.Deployments, "gemini-日本語")
+	}
+}
+
+// TestLoadBudgetUSDExtremeMagnitudePreservesPrecision proves an
+// extreme-magnitude budget_usd literal round-trips exactly through
+// decimal.Decimal -- getDecimal parses from the raw source string via
+// decimal.NewFromString, never through an intermediate float64, so this
+// is already correct; never previously exercised at this magnitude.
+func TestLoadBudgetUSDExtremeMagnitudePreservesPrecision(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: \"1234567890123456.78\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with an extreme-magnitude budget_usd: %v", err)
+	}
+	want := decimal.RequireFromString("1234567890123456.78")
+	if len(cfg.VirtualKeys) != 1 || !cfg.VirtualKeys[0].BudgetUSD.Equal(want) {
+		t.Errorf("VirtualKeys[0].BudgetUSD = %v, want %v (exact, not rounded)", cfg.VirtualKeys[0].BudgetUSD, want)
+	}
+}
