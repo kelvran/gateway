@@ -270,6 +270,57 @@ func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
 	}
 }
 
+// TestUpsertVirtualKeyRejectsMalformedJSONBody proves the handler's own
+// json.NewDecoder(r.Body).Decode error path against genuinely
+// syntactically invalid JSON -- distinct from
+// TestUpsertVirtualKeyMissingKeyHashIsRejected above, which sends
+// well-formed JSON missing a required field.
+func TestUpsertVirtualKeyRejectsMalformedJSONBody(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-x", fakeAdminCredential(), `{not valid json`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// truncatedBodyReader yields a fixed prefix of bytes, then a genuine
+// non-EOF read error -- simulating a real client connection dropping
+// mid-body (a Content-Length/actual-bytes mismatch), which
+// json.Decoder.Decode must surface as a real decode error, never a 500
+// or a hang.
+type truncatedBodyReader struct {
+	prefix []byte
+	sent   bool
+}
+
+func (r *truncatedBodyReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		n := copy(p, r.prefix)
+		return n, nil
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+// TestUpsertVirtualKeyRejectsTruncatedBodyContentLengthMismatch proves
+// this handler's own json.Decode call handles a body that ends
+// (errors) partway through, well-formed-looking JSON prefix included --
+// never a 500, never a hang.
+func TestUpsertVirtualKeyRejectsTruncatedBodyContentLengthMismatch(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := &truncatedBodyReader{prefix: []byte(`{"key_hash":"` + testHashOf("irrelevant"))}
+	req := httptest.NewRequest(http.MethodPost, "/admin/virtual_keys/team-truncated", io.NopCloser(body))
+	req.Header.Set("Authorization", "Bearer "+fakeAdminCredential())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestUpsertVirtualKeyRejectsOversizedName is the regression proof for
 // the real bug fixed in maxAdminIdentifierLen's own doc comment: this
 // handler previously validated neither length nor character content on
@@ -343,6 +394,21 @@ func TestUpsertVirtualKeyAcceptsZeroBudgetFieldsAsUnlimitedDefault(t *testing.T)
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-zero-budget", fakeAdminCredential(), body)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyRejectsMalformedBudgetUSDValue proves a budget_usd
+// value that fails decimal parsing is rejected -- decimal.Decimal's own
+// UnmarshalJSON returns an error for a non-numeric string, which
+// propagates up through this handler's outer json.Decode call as an
+// ordinary malformed-body 400, never silently defaulting to zero.
+func TestUpsertVirtualKeyRejectsMalformedBudgetUSDValue(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"not-a-number"}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-bad-budget-usd", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -777,6 +843,17 @@ func TestUpsertPromptRejectsOversizedID(t *testing.T) {
 func TestUpsertPromptRejectsEmptyMessages(t *testing.T) {
 	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertPromptRejectsMalformedJSONBody mirrors
+// TestUpsertVirtualKeyRejectsMalformedJSONBody's own proof for this
+// handler's identical json.Decode error path.
+func TestUpsertPromptRejectsMalformedJSONBody(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{not valid json`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
 	}
