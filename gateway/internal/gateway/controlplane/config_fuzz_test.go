@@ -42,6 +42,10 @@ func FuzzLoad(f *testing.F) {
 	f.Add([]byte("::::\n"))
 	f.Add([]byte("key: value\n  bad indent: oops\nkey2\n"))
 	f.Add([]byte("a:\n  b:\n    c:\n      d: \"deeply nested\"\n"))
+	// Pathologically deep, past maxYAMLNestingDepth -- the prior seed
+	// above only ever exercised 4 levels, never the new nesting-depth
+	// guard's own rejection branch at all.
+	f.Add([]byte(nestedYAMLMapping(100)))
 	f.Add([]byte("unterminated quote: \"never closes\n"))
 	f.Add([]byte("nul\x00byte: value\n"))
 	f.Add([]byte("listen_addr: \":8080\"\napi_key_env: \"K\"\nprice_table:\n  m:\n    prompt_per_token: \"not-a-number\"\n"))

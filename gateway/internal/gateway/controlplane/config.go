@@ -850,6 +850,17 @@ func Load(path string) (*Config, error) {
 // indentation. No lists, no flow style, no anchors/aliases, no
 // multi-line strings — this config's shape never needs any of those.
 
+// maxYAMLNestingDepth bounds how many nested-mapping levels
+// parseYAMLMini accepts. The parser itself is fully iterative (stack is
+// a plain slice, no function ever calls itself), so no depth can ever
+// overflow Go's call stack — this is defense-in-depth, not a bug fix.
+// Depth was otherwise unbounded, limited only by available memory and
+// the source file's own literal size (2 spaces of indentation per
+// level, so a pathological file must be proportionally wide/long, not
+// just deep, to reach a large depth) — 64 is a generous ceiling, well
+// beyond any real config.yaml this project has ever produced.
+const maxYAMLNestingDepth = 64
+
 // parseYAMLMini parses data into a tree of map[string]any, where leaf
 // values are string or bool. Numeric scalars are deliberately left as
 // their raw source string (see parseYAMLScalar's doc comment) — this is
@@ -889,6 +900,9 @@ func parseYAMLMini(data []byte) (map[string]any, error) {
 		valueStr := strings.TrimSpace(content[colonIdx+1:])
 
 		if valueStr == "" {
+			if len(stack) > maxYAMLNestingDepth {
+				return nil, fmt.Errorf("line %d: exceeds max YAML nesting depth of %d", i+1, maxYAMLNestingDepth)
+			}
 			child := map[string]any{}
 			parent[key] = child
 			stack = append(stack, frame{indent: indent, m: child})

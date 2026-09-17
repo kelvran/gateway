@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1908,5 +1909,59 @@ func TestLoadBudgetUSDExtremeMagnitudePreservesPrecision(t *testing.T) {
 	want := decimal.RequireFromString("1234567890123456.78")
 	if len(cfg.VirtualKeys) != 1 || !cfg.VirtualKeys[0].BudgetUSD.Equal(want) {
 		t.Errorf("VirtualKeys[0].BudgetUSD = %v, want %v (exact, not rounded)", cfg.VirtualKeys[0].BudgetUSD, want)
+	}
+}
+
+// nestedYAMLMapping builds depth nested-mapping levels, each 2 spaces
+// more indented than the last ("level0:\n  level1:\n    level2:\n..."),
+// with no leaf value on the innermost line -- every line is itself an
+// empty-value "key:" line, so parseYAMLMini pushes exactly depth new
+// frames, one per line, deterministically.
+func nestedYAMLMapping(depth int) string {
+	var b strings.Builder
+	for i := 0; i < depth; i++ {
+		b.WriteString(strings.Repeat("  ", i))
+		fmt.Fprintf(&b, "level%d:\n", i)
+	}
+	return b.String()
+}
+
+// TestParseYAMLMiniRejectsNestingBeyondMaxDepth proves the new
+// maxYAMLNestingDepth guard actually rejects a pathologically deep
+// config -- 70 levels, well past the 64-level ceiling.
+func TestParseYAMLMiniRejectsNestingBeyondMaxDepth(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(nestedYAMLMapping(70)), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with 70 levels of nesting returned nil error, want a max-nesting-depth error")
+	}
+	if !strings.Contains(err.Error(), "nesting depth") {
+		t.Errorf("Load error = %v, want it to mention nesting depth", err)
+	}
+}
+
+// TestParseYAMLMiniAcceptsNestingAtExactlyMaxDepth is the boundary proof:
+// exactly 64 levels (maxYAMLNestingDepth's own value) must still parse
+// successfully -- the guard must not be off-by-one in the stricter
+// direction.
+func TestParseYAMLMiniAcceptsNestingAtExactlyMaxDepth(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(nestedYAMLMapping(maxYAMLNestingDepth)), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// This deeply-nested content has no listen_addr/deployments/etc, so
+	// Load fails validation past the parse step -- the point of this
+	// test is only that parseYAMLMini itself never rejects exactly 64
+	// levels, proven by asserting the error is NOT a nesting-depth one.
+	_, err := Load(path)
+	if err != nil && strings.Contains(err.Error(), "nesting depth") {
+		t.Errorf("Load with exactly %d levels of nesting was rejected as too deep: %v", maxYAMLNestingDepth, err)
 	}
 }
