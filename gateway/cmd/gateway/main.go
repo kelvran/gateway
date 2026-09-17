@@ -329,6 +329,7 @@ func run(configPath string, logger *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux.HandleFunc("/v1/embeddings", embeddingsHandler(pipeline))
 	mux.HandleFunc("/healthz", healthzHandler)
 
 	// inFlight tracks real client-facing handler invocations so shutdown
@@ -627,6 +628,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			FallbackChains:                  d.FallbackChains,
 			DisableCacheControlAutoPopulate: d.DisableCacheControlAutoPopulate,
 			SharedAcrossTenants:             d.SharedAcrossTenants,
+			Kind:                            d.Kind,
 		}
 		if d.Provider == "bedrock" {
 			dep.AccessKeyID = os.Getenv(d.AccessKeyIDEnv)
@@ -750,6 +752,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Deployments:           deployments,
 		CostCalculator:        costaccounting.NewCalculator(priceTable),
 		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
+		EmbeddingUpstream:     dataplane.NewHTTPEmbeddingUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
 		// Streaming upstream calls deliberately do NOT use client.Timeout
 		// (the field above) — that would kill a long-running-but-healthy
 		// stream mid-way, exactly as readily as a genuinely stalled one.
@@ -1136,6 +1139,60 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 	}
 }
 
+// embeddingsHandler adapts dataplane.Pipeline.HandleEmbeddings to
+// net/http, mirroring chatCompletionsHandler's identical decode-run-encode
+// shape. No streaming variant exists (embeddings has no streaming concept
+// in any vendor's API), and no ValidateContentParts/ResponseFormatSchema
+// calls (embeddings requests carry neither multi-modal content parts nor
+// a response_format field) — otherwise the same request-size ceiling
+// (maxRequestBodyBytes) and error-response convention as chat.
+func embeddingsHandler(p *dataplane.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "reading request body", http.StatusBadRequest)
+			return
+		}
+
+		var req adapter.EmbeddingRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.Model == "" {
+			http.Error(w, "model is required", http.StatusBadRequest)
+			return
+		}
+		if len(req.Input) == 0 {
+			http.Error(w, "input is required and must be non-empty", http.StatusBadRequest)
+			return
+		}
+
+		ctx := telemetry.ExtractContext(r.Context(), r)
+		resp, err := p.HandleEmbeddings(ctx, r.Header.Get("Authorization"), req)
+		if err != nil {
+			writeErrorResponse(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			slog.Error("encoding embeddings response", "error", err)
+		}
+	}
+}
+
 // handleStreamingChatCompletion runs the streaming pipeline and writes SSE
 // chunks directly to w as they arrive. The response Content-Type is set
 // before the pipeline runs, since it must be set before the first byte is
@@ -1200,8 +1257,13 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		status = http.StatusForbidden
 	case errors.Is(err, dataplane.ErrStreamingNotSupported):
 		status = http.StatusBadRequest
-	case errors.Is(err, dataplane.ErrStreamingNotConfigured):
+	case errors.Is(err, dataplane.ErrStreamingNotConfigured), errors.Is(err, dataplane.ErrEmbeddingsNotConfigured):
 		status = http.StatusNotImplemented
+	case errors.Is(err, dataplane.ErrNotAnEmbeddingDeployment):
+		// 400, not the 502 default -- naming a model that resolves to a
+		// chat (not embedding) deployment on the embeddings route is a
+		// client request-shape mistake, never an upstream failure.
+		status = http.StatusBadRequest
 	case errors.Is(err, dataplane.ErrGuardrailBlocked):
 		// 400, not the 502 default — a guardrail rejection is a
 		// content-policy decision about THIS request, never an upstream

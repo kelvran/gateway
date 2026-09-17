@@ -175,6 +175,15 @@ type DeploymentConfig struct {
 	// existed) means this deployment participates only in plain,
 	// non-sticky WRR selection — byte-for-byte unaffected.
 	Sticky bool
+	// Kind distinguishes what kind of request this deployment serves —
+	// empty or "chat" (the default, and every deployment configured
+	// before this field existed) means an ordinary chat-completions
+	// deployment; "embedding" means a POST /v1/embeddings deployment,
+	// per docs/upgrade-research/api-surface-expansion-2026-09-15.md.
+	// Routing/registry construction (cmd/gateway/main.go) splits
+	// deployments by this field into two disjoint pools — additive, zero
+	// behavior change for every existing chat deployment.
+	Kind string
 }
 
 // fallbackClassContentPolicy, fallbackClassContextWindowExceeded, and
@@ -719,6 +728,25 @@ func Load(path string) (*Config, error) {
 		dep.DisableCacheControlAutoPopulate, _ = getBool(depMap, "disable_cache_control_auto_populate")
 		dep.SharedAcrossTenants, _ = getBool(depMap, "shared_across_tenants")
 		dep.Sticky, _ = getBool(depMap, "sticky")
+		dep.Kind, _ = getString(depMap, "kind")
+		switch dep.Kind {
+		case "", "chat":
+			dep.Kind = "chat"
+		case "embedding":
+			// Only openai/bedrock have a real EmbeddingAdapter
+			// implementation today — Anthropic has no native embeddings
+			// model at all (confirmed live, points to third-party Voyage
+			// AI instead; see docs/upgrade-research/api-surface-expansion-2026-09-15.md),
+			// and gemini/openaicompat are simply not built for this pass.
+			// Rejected at config-load time (cheaper than a runtime 500
+			// from a missing type assertion) rather than deferred to the
+			// first real request against this deployment.
+			if dep.Provider != "openai" && dep.Provider != "bedrock" {
+				return nil, fmt.Errorf("controlplane: deployment %q has kind \"embedding\" but provider %q has no embeddings support (only openai/bedrock do)", name, dep.Provider)
+			}
+		default:
+			return nil, fmt.Errorf("controlplane: deployment %q has unknown kind %q (want \"chat\" or \"embedding\")", name, dep.Kind)
+		}
 		if rl, ok := getMap(depMap, "rate_limit"); ok {
 			if err := parseDeploymentRateLimit(name, rl, &dep); err != nil {
 				return nil, err

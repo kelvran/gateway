@@ -478,3 +478,59 @@ type Adapter interface {
 	// Name identifies the adapter (e.g. "openai", "anthropic").
 	Name() string
 }
+
+// EmbeddingRequest is the canonical, provider-agnostic embeddings
+// request — deliberately its own type, never a retrofit of ChatRequest,
+// per this codebase's own established additive-capability convention
+// (Parts/CacheControl/ReasoningBlocks/ToolChoice were all added as new
+// types/fields, never by repurposing an existing one for a second
+// meaning).
+type EmbeddingRequest struct {
+	// Model is the canonical model name a Deployment with Kind ==
+	// "embedding" resolves to routing — same convention as
+	// ChatRequest.Model.
+	Model string `json:"model"`
+	// Input is one or more texts to embed. A single string is the
+	// common case; multiple strings amortize one upstream round trip
+	// across a batch, mirroring OpenAI's own real "input: string |
+	// string[]" contract.
+	Input []string `json:"input"`
+}
+
+// EmbeddingResponse is the canonical, provider-agnostic embeddings
+// response.
+type EmbeddingResponse struct {
+	Model string `json:"model"`
+	// Data holds one embedding vector per EmbeddingRequest.Input entry,
+	// in the same order.
+	Data []EmbeddingData `json:"data"`
+	// Usage.CompletionTokens is always zero for an embeddings response —
+	// there is no completion, only input tokenization — reusing the
+	// shared Usage type regardless so costaccounting.Calculate's
+	// existing PromptTokens-priced-per-model logic applies with zero
+	// changes.
+	Usage Usage `json:"usage"`
+}
+
+// EmbeddingData is one embedding vector, indexed to its EmbeddingRequest
+// input position.
+type EmbeddingData struct {
+	Index     int       `json:"index"`
+	Embedding []float64 `json:"embedding"`
+}
+
+// EmbeddingAdapter translates between the canonical embeddings schema
+// above and one upstream provider's native wire format. Deliberately a
+// SEPARATE interface from Adapter, not an extra method appended to it —
+// every provider package implementing Adapter would otherwise need a
+// dummy/panicking implementation of an operation it doesn't support
+// (Anthropic has no native embeddings model at all; see
+// docs/upgrade-research/api-surface-expansion-2026-09-15.md). A
+// provider's own *Adapter concrete type may implement BOTH interfaces
+// (openai/bedrock do); Registry stores every value as the Adapter
+// interface, so a caller wanting embeddings support type-asserts to
+// EmbeddingAdapter at the call site (see dataplane.Pipeline.HandleEmbeddings).
+type EmbeddingAdapter interface {
+	ToEmbeddingProvider(EmbeddingRequest) (any, error)
+	FromEmbeddingProvider(any) (EmbeddingResponse, error)
+}

@@ -1010,6 +1010,78 @@ func TestLoadDeploymentStickyParsesTrue(t *testing.T) {
 	}
 }
 
+// TestLoadDeploymentKindUnsetDefaultsToChat proves a deployment with no
+// kind key parses as "chat" -- every deployment configured before this
+// field existed.
+func TestLoadDeploymentKindUnsetDefaultsToChat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].Kind; got != "chat" {
+		t.Errorf("Kind = %q, want %q", got, "chat")
+	}
+}
+
+// TestLoadDeploymentKindEmbeddingParsesForOpenAI proves the real,
+// buildable case: an openai deployment with kind: embedding parses
+// cleanly.
+func TestLoadDeploymentKindEmbeddingParsesForOpenAI(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := minimalDeploymentConfig("    kind: \"embedding\"\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].Kind; got != "embedding" {
+		t.Errorf("Kind = %q, want %q", got, "embedding")
+	}
+}
+
+// TestLoadRejectsAnthropicDeploymentConfiguredWithEmbeddingKind proves
+// the config-time rejection: Anthropic has no native embeddings model at
+// all (see adapter.EmbeddingAdapter's own doc comment), so kind:
+// embedding on an anthropic deployment must fail to load, not surface as
+// a runtime 501 on the first real request.
+func TestLoadRejectsAnthropicDeploymentConfiguredWithEmbeddingKind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"anthropic\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n    kind: \"embedding\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with an anthropic deployment configured kind: embedding returned nil error, want a real error")
+	}
+}
+
+// TestLoadRejectsUnknownDeploymentKind proves an unrecognized kind value
+// is a real config error, not silently treated as "chat."
+func TestLoadRejectsUnknownDeploymentKind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := minimalDeploymentConfig("    kind: \"something-else\"\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with an unknown kind returned nil error, want a real error")
+	}
+}
+
 // TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists proves
 // each error-class key parses into an ORDERED slice (not just a set) —
 // this file's YAML-subset parser has no list support, so fallback_chains

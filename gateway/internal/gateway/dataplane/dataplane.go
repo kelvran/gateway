@@ -220,6 +220,16 @@ type Deployment struct {
 	// this deployment is not declared shared, and behaves exactly as
 	// before this field existed.
 	SharedAcrossTenants bool
+	// Kind mirrors controlplane.DeploymentConfig.Kind — "chat" (the
+	// default, every deployment built before this field existed) or
+	// "embedding". Shares the SAME router/deploymentsByName registry as
+	// every chat deployment (a chat and an embedding model are always
+	// different canonical Model strings, so there's no real grouping
+	// collision to avoid) — Kind is checked only at each pipeline
+	// entrypoint (HandleEmbeddings vs. HandleChatCompletion/Stream) as a
+	// defense-in-depth guard against a client naming the wrong kind of
+	// model for the route it called.
+	Kind string
 }
 
 // effectiveCacheControlAutoDisabled reports whether CacheControl
@@ -421,8 +431,16 @@ type Config struct {
 	Deployments    []Deployment
 	CostCalculator *costaccounting.Calculator
 	Upstream       UpstreamCaller
-	Logger         *slog.Logger
-	CacheTTL       time.Duration
+	// EmbeddingUpstream calls a Kind=="embedding" deployment's own
+	// upstream, mirroring Upstream's identical shape/contract — a
+	// separate field (not a second use of Upstream) since the two
+	// providerReq/providerResp concrete types are entirely disjoint
+	// (adapter.EmbeddingAdapter's, never adapter.Adapter's). nil is a
+	// guaranteed no-op: HandleEmbeddings returns ErrEmbeddingsNotConfigured
+	// rather than a nil-pointer panic.
+	EmbeddingUpstream UpstreamCaller
+	Logger            *slog.Logger
+	CacheTTL          time.Duration
 	// CacheL2TTL defaults to 75 seconds when unset — shorter than
 	// CacheTTL's 5-minute default, as defense-in-depth per the RFC's TTL
 	// rationale (not a substitute for the normalization allowlist's own
@@ -531,6 +549,7 @@ type Pipeline struct {
 	deploymentsByName map[string]Deployment
 	costCalc          *costaccounting.Calculator
 	upstream          UpstreamCaller
+	embeddingUpstream UpstreamCaller
 	upstreamStream    UpstreamStreamCaller
 	logger            *slog.Logger
 	cacheTTL          time.Duration
@@ -640,6 +659,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		deploymentsByName:     byName,
 		costCalc:              cfg.CostCalculator,
 		upstream:              cfg.Upstream,
+		embeddingUpstream:     cfg.EmbeddingUpstream,
 		upstreamStream:        cfg.UpstreamStream,
 		logger:                logger,
 		cacheTTL:              ttl,
@@ -1759,6 +1779,115 @@ func (p *Pipeline) completeIdempotency(ctx context.Context, tenantID, idempotenc
 	if completeErr := p.idempotencyStore.Complete(ctx, storeKey, token, body); completeErr != nil {
 		p.logger.Warn("idempotency_complete_failed", "key", idempotencyKey, "error", completeErr)
 	}
+}
+
+// ErrEmbeddingsNotConfigured is returned by HandleEmbeddings when the
+// resolved deployment's provider has no real EmbeddingAdapter
+// implementation (only openai/bedrock do — see adapter.EmbeddingAdapter's
+// own doc comment) or when EmbeddingUpstream was never configured at
+// all — a config-time gap that should already have been caught by
+// controlplane.Load's own Kind=="embedding" provider check, but guarded
+// here too as defense-in-depth rather than a type-assertion panic.
+var ErrEmbeddingsNotConfigured = errors.New("dataplane: embeddings are not configured for this deployment")
+
+// ErrNotAnEmbeddingDeployment is returned by HandleEmbeddings when the
+// deployment routed to for req.Model has Kind != "embedding" — a
+// defense-in-depth guard (a chat and an embedding model are always
+// different canonical Model strings in practice, so this should never
+// actually trigger) against a client naming a chat model on the
+// embeddings route.
+var ErrNotAnEmbeddingDeployment = errors.New("dataplane: requested model is not an embedding deployment")
+
+// HandleEmbeddings runs the request pipeline for one canonical
+// EmbeddingRequest, given the raw Authorization header value. A
+// deliberately narrower v1 than HandleChatCompletion — per
+// docs/upgrade-research/api-surface-expansion-2026-09-15.md's own
+// scoping, this reuses only the already-decoupled generic subsystems
+// (auth, per-key RPM rate-limiting, budget reserve/reconcile, guardrail
+// scanning, cost accounting) and does NOT thread through cache,
+// idempotency, the per-identity concurrency cap, fallback chains, or
+// telemetry spans — none of which this pass has a real, demonstrated
+// need for yet on an embeddings-shaped request; named future work if
+// that changes, not a silent gap.
+func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader string, req adapter.EmbeddingRequest) (adapter.EmbeddingResponse, error) {
+	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
+	if verifyErr != nil {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: auth: %w", verifyErr)
+	}
+
+	if !isModelAllowed(vk, req.Model) {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
+	}
+
+	// RPM only -- no TPM reservation/reconciliation: unlike chat
+	// completions, no character-length-proxy estimate exists for
+	// embeddings input text either, the same reason pre-call TPM
+	// estimation was already dropped for 2 of 5 chat providers (see
+	// DECISIONS.md's Phase 0 entry, "pre-call TPM for Anthropic+vLLM
+	// dropped"). Mirrors checkRateLimit's own fail-open-on-backend-error
+	// posture (docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md)
+	// without its TPM half.
+	allowed, rlErr := p.limiter.AllowForModel(ctx, vk.ID, req.Model)
+	if rlErr != nil {
+		p.logger.Warn("embeddings_ratelimit_backend_unavailable", "key_id", vk.ID, "error", rlErr.Error())
+		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
+	} else if !allowed {
+		return adapter.EmbeddingResponse{}, ErrRateLimited
+	}
+
+	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch := p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	if !budgetOK {
+		return adapter.EmbeddingResponse{}, ErrBudgetExceeded
+	}
+	var realCost *decimal.Decimal
+	defer func() {
+		if budgetReserved {
+			p.budget.Reconcile(vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
+		}
+	}()
+
+	for _, text := range req.Input {
+		if verdict := p.guardrails.Check(ctx, text); verdict.Blocked {
+			return adapter.EmbeddingResponse{}, ErrGuardrailBlocked
+		}
+	}
+
+	dep, found := p.nextDeployment(req.Model, nil)
+	if !found {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
+	}
+	if dep.Kind != "embedding" {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: deployment %q", ErrNotAnEmbeddingDeployment, dep.Name)
+	}
+
+	av, ok := p.adapters[dep.Provider].(adapter.EmbeddingAdapter)
+	if !ok || p.embeddingUpstream == nil {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: provider %q", ErrEmbeddingsNotConfigured, dep.Provider)
+	}
+
+	providerReq, err := av.ToEmbeddingProvider(req)
+	if err != nil {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: translating embedding request for deployment %q: %w", dep.Name, err)
+	}
+	providerResp, err := p.embeddingUpstream(ctx, dep, providerReq)
+	if err != nil {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: embedding upstream call failed for deployment %q: %w", dep.Name, err)
+	}
+	resp, err := av.FromEmbeddingProvider(providerResp)
+	if err != nil {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: translating embedding response for deployment %q: %w", dep.Name, err)
+	}
+	// Echo back the client-facing canonical model name, matching
+	// callDeployment's identical convention for chat completions.
+	resp.Model = req.Model
+
+	cost := p.costCalc.Calculate(dep.Model, costaccounting.Usage{
+		PromptTokens: resp.Usage.PromptTokens,
+		TotalTokens:  resp.Usage.TotalTokens,
+	})
+	realCost = &cost
+
+	return resp, nil
 }
 
 // HandleChatCompletion runs the full request pipeline for one canonical
@@ -3299,6 +3428,75 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 		unmarshal, ok := responseUnmarshalers[dep.Provider]
 		if !ok {
 			return nil, fmt.Errorf("no response unmarshaler registered for provider %q", dep.Provider)
+		}
+		return unmarshal(respBody)
+	}
+}
+
+// embeddingResponseUnmarshalers mirrors responseUnmarshalers exactly, one
+// level over: decodes raw upstream JSON response bytes into the concrete
+// provider-native type each adapter's FromEmbeddingProvider expects.
+// Keyed by provider name — only openai/bedrock have a real
+// EmbeddingAdapter implementation (see adapter.EmbeddingAdapter's own doc
+// comment), so this map is deliberately narrower than responseUnmarshalers.
+var embeddingResponseUnmarshalers = map[string]func([]byte) (any, error){
+	"openai": func(b []byte) (any, error) {
+		var r openai.EmbeddingResponseWire
+		if err := json.Unmarshal(b, &r); err != nil {
+			return nil, fmt.Errorf("unmarshaling openai embeddings response: %w", err)
+		}
+		return &r, nil
+	},
+	"bedrock": func(b []byte) (any, error) {
+		var r bedrock.EmbeddingResponseWire
+		if err := json.Unmarshal(b, &r); err != nil {
+			return nil, fmt.Errorf("unmarshaling bedrock embeddings response: %w", err)
+		}
+		return &r, nil
+	},
+}
+
+// NewHTTPEmbeddingUpstreamCaller mirrors NewHTTPUpstreamCaller exactly,
+// one level over: POSTs the marshaled provider-native EMBEDDING request
+// to dep.BaseURL and decodes the response via
+// embeddingResponseUnmarshalers. Reuses setUpstreamAuthHeaders verbatim —
+// that function signs/authenticates based on the real *http.Request and
+// body bytes, never hardcoding a chat-specific URL path, so Bedrock's
+// SigV4 signing is exactly as correct here as it is for Converse (both
+// are bedrock-runtime operations under the same SigV4 service name).
+func NewHTTPEmbeddingUpstreamCaller(client *http.Client) UpstreamCaller {
+	return func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		body, err := json.Marshal(providerReq)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling provider embedding request: %w", err)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, dep.BaseURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("building upstream embedding request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, body); err != nil {
+			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
+		}
+
+		httpResp, err := client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("calling upstream %q: %w", dep.BaseURL, err)
+		}
+		defer func() { _ = httpResp.Body.Close() }()
+
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("reading upstream embedding response: %w", err)
+		}
+		if httpResp.StatusCode >= 300 {
+			return nil, &UpstreamHTTPError{StatusCode: httpResp.StatusCode, Body: string(respBody)}
+		}
+
+		unmarshal, ok := embeddingResponseUnmarshalers[dep.Provider]
+		if !ok {
+			return nil, fmt.Errorf("no embedding response unmarshaler registered for provider %q", dep.Provider)
 		}
 		return unmarshal(respBody)
 	}
