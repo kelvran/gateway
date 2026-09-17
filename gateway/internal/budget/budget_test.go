@@ -146,6 +146,55 @@ func TestRecordNegativeCostIgnored(t *testing.T) {
 	}
 }
 
+// TestReconcileNilRealCostReleasesReservationWithNoReplacement proves
+// Reconcile's own documented release-only path: a nil realCost (the
+// buffered path's own "error before ever computing a cost" case) must
+// release the reservation back to the pre-Reserve total, incrementing
+// neither spend beyond that nor billedCount.
+func TestReconcileNilRealCostReleasesReservationWithNoReplacement(t *testing.T) {
+	tr := NewTracker()
+	preReserveSpent := tr.SpentUSD("team-alpha", 0)
+
+	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("100"), 0)
+	if !allowed || !reserved {
+		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
+	}
+
+	tr.Reconcile("team-alpha", reservedUSD, epoch, nil, 0)
+
+	if got := tr.SpentUSD("team-alpha", 0); !got.Equal(preReserveSpent) {
+		t.Errorf("SpentUSD after a nil-realCost Reconcile = %v, want the pre-Reserve total %v", got, preReserveSpent)
+	}
+	if got := tr.billedCount["team-alpha"]; got != 0 {
+		t.Errorf("billedCount after a nil-realCost Reconcile = %d, want 0 (never billed)", got)
+	}
+}
+
+// TestReconcileNegativeRealCostTreatedAsReleaseOnly mirrors the nil case
+// above for a negative *realCost -- Reconcile's own billed gate
+// (realCost != nil && realCost.Sign() >= 0) treats a negative pointed-to
+// value identically to nil, per Record's own established
+// TestRecordNegativeCostIgnored precedent for the sibling method.
+func TestReconcileNegativeRealCostTreatedAsReleaseOnly(t *testing.T) {
+	tr := NewTracker()
+	preReserveSpent := tr.SpentUSD("team-alpha", 0)
+
+	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("100"), 0)
+	if !allowed || !reserved {
+		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
+	}
+
+	negativeCost := d("-5")
+	tr.Reconcile("team-alpha", reservedUSD, epoch, &negativeCost, 0)
+
+	if got := tr.SpentUSD("team-alpha", 0); !got.Equal(preReserveSpent) {
+		t.Errorf("SpentUSD after a negative-realCost Reconcile = %v, want the pre-Reserve total %v (release-only, not a negative charge)", got, preReserveSpent)
+	}
+	if got := tr.billedCount["team-alpha"]; got != 0 {
+		t.Errorf("billedCount after a negative-realCost Reconcile = %d, want 0 (never billed)", got)
+	}
+}
+
 func TestKeysTrackIndependently(t *testing.T) {
 	tr := NewTracker()
 	tr.Record("team-alpha", d("100"), 0)

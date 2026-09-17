@@ -3,9 +3,12 @@ package bedrockguard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 )
@@ -116,6 +119,43 @@ func TestDetectUpstreamErrorReturnsError(t *testing.T) {
 	_, err := d.Detect(context.Background(), "irrelevant")
 	if err == nil {
 		t.Fatal("Detect returned nil error, want a non-nil error for a 403 response")
+	}
+}
+
+// TestDetectSlowResponseReturnsErrorBeforeHanging is the real-world gap
+// this package's own suite was missing: a slow/hanging ApplyGuardrail
+// call was previously only ever observed live, during a 2026-09-16
+// production dry run against the real pilot (a real Bedrock Guardrails
+// call timed out once and the request correctly failed open) -- never
+// reproduced or asserted on in a unit test. Injects a short-timeout
+// *http.Client (mirroring testConfig's own srv.Client() injection
+// pattern) against a handler that blocks well past it, and asserts
+// Detect returns a genuine timeout/deadline error within a small,
+// bounded wall-clock ceiling -- never nil findings, and never hanging
+// for anywhere close to the real 5s default requestTimeout.
+func TestDetectSlowResponseReturnsErrorBeforeHanging(t *testing.T) {
+	unblock := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-unblock // held open deliberately; released only at test end to avoid leaking the server's handler goroutine
+	}))
+	defer srv.Close()
+	defer close(unblock)
+
+	shortTimeoutClient := &http.Client{Timeout: 50 * time.Millisecond}
+	d := New(testConfig(srv.URL), shortTimeoutClient)
+
+	start := time.Now()
+	_, err := d.Detect(context.Background(), "irrelevant")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Detect returned nil error, want a real timeout error for a response that never arrives")
+	}
+	if elapsed > time.Second {
+		t.Errorf("Detect took %v to return, want well under 1s given a 50ms client timeout — it may have hung on the real 5s default requestTimeout instead of the injected client", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "Client.Timeout") {
+		t.Errorf("Detect error = %v, want a genuine client-timeout/context-deadline error", err)
 	}
 }
 
