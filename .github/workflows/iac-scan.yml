@@ -8,6 +8,19 @@ name: IaC security scan
 # manifest-security scan for deploy/k8s/base. One tool (Checkov) covers
 # both frameworks, per this repo's own "don't duplicate a tool" convention
 # (AGENTS.md/DECISIONS.md) rather than adding two separate scanners.
+#
+# Updated 2026-09-17/18, backlog Phase 7 infra round: extended the
+# terraform-validate matrix to the 3 new modules (backend-bootstrap,
+# irsa-trust, ecs-task-role) plus deploy/ecs's own root module, and added
+# a real terraform-plan job -- per that same research doc's Finding 8 and
+# the plan's own Phase 7a text, a STRUCTURAL-ONLY plan (fake static
+# credentials, skip_credentials_validation, no real AWS account touched
+# at all) since no backend is actually configured in any module yet and
+# CI has no real AWS credentials. A real gated terraform-apply job (the
+# other half of Finding 8's recommended pattern) intentionally does NOT
+# exist yet -- it becomes buildable only once an operator has actually
+# applied terraform/backend-bootstrap and wired a real backend into at
+# least one module (see terraform/README.md), which hasn't happened.
 on:
   push:
     branches: [main]
@@ -23,21 +36,91 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [bedrock-judge-panel, vector-s3-shipper]
+        module:
+          - terraform/bedrock-judge-panel
+          - terraform/vector-s3-shipper
+          - terraform/backend-bootstrap
+          - terraform/irsa-trust
+          - terraform/ecs-task-role
+          - deploy/ecs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_wrapper: false
       - name: terraform fmt -check
-        working-directory: terraform/${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
         run: terraform fmt -check -recursive
       - name: terraform init (backend disabled — CI never touches real state)
-        working-directory: terraform/${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
         run: terraform init -backend=false -input=false
       - name: terraform validate
-        working-directory: terraform/${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
         run: terraform validate
+
+  terraform-plan:
+    name: terraform (${{ matrix.module.path }}) — structural plan (no real AWS account)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - path: terraform/bedrock-judge-panel
+            vars: '-var=account_id=123456789012 -var=trusted_principal_arns=["arn:aws:iam::123456789012:role/example"]'
+          - path: terraform/vector-s3-shipper
+            vars: "-var=bucket_name=kelvran-ci-dummy-bucket"
+          - path: terraform/backend-bootstrap
+            vars: "-var=bucket_name=kelvran-ci-dummy-state-bucket"
+          - path: terraform/irsa-trust
+            vars: '-var=account_id=123456789012 -var=oidc_provider_url=oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE -var=secrets_manager_secret_arns=["arn:aws:secretsmanager:us-east-1:123456789012:secret:example-abc123"]'
+          - path: terraform/ecs-task-role
+            vars: '-var=secrets_manager_secret_arns=["arn:aws:secretsmanager:us-east-1:123456789012:secret:example-abc123"]'
+          - path: deploy/ecs
+            vars: "-var=execution_role_arn=arn:aws:iam::123456789012:role/example-execution -var=task_role_arn=arn:aws:iam::123456789012:role/example-task"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+      - name: write a CI-only provider override (never committed -- ephemeral runner workspace only)
+        # Structural plan, no real AWS account: fake static credentials
+        # plus the 4 skip_* provider arguments Terraform's own AWS
+        # provider exposes specifically for this "no real backend call"
+        # use case. `_override.tf` is Terraform's own documented
+        # override-file convention -- it MERGES with (or, for a module
+        # with no provider block at all, like bedrock-judge-panel/
+        # ecs-task-role, ADDS) the module's real provider config, without
+        # ever editing the committed .tf files themselves.
+        working-directory: ${{ matrix.module.path }}
+        run: |
+          cat > zz_ci_override.tf <<'EOF'
+          provider "aws" {
+            region                      = "us-east-1"
+            access_key                  = "test"
+            secret_key                  = "test"
+            skip_credentials_validation = true
+            skip_requesting_account_id  = true
+            skip_metadata_api_check     = true
+            skip_region_validation      = true
+          }
+          EOF
+      - name: terraform init (backend disabled — CI never touches real state)
+        working-directory: ${{ matrix.module.path }}
+        run: terraform init -backend=false -input=false
+      - name: terraform plan (structural only — see the override step above)
+        working-directory: ${{ matrix.module.path }}
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+        run: terraform plan -input=false -out=tfplan ${{ matrix.module.vars }}
+      - name: upload tfplan artifact for human review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tfplan-${{ strategy.job-index }}
+          path: ${{ matrix.module.path }}/tfplan
+          retention-days: 14
 
   terraform-checkov:
     name: terraform (Checkov IaC security scan)
@@ -66,6 +149,46 @@ jobs:
         with:
           sarif_file: results.sarif
           category: checkov-terraform
+
+  kubernetes-kubeconform:
+    name: kubernetes (kubeconform schema validation)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.8"
+      - name: install kubeconform
+        run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+      - name: kubeconform (core resources — no CRD schema needed)
+        # Validates the raw manifest FILES directly, never through
+        # `kustomize build`/`kubectl apply -k` -- deploy/k8s/base/
+        # kustomization.yaml's own configMapGenerator references a local,
+        # gitignored config.yaml that doesn't exist in a fresh checkout
+        # (see that file's own comment), the exact same reason
+        # kubernetes-checkov below already scans this directory's raw
+        # files rather than a rendered kustomize build.
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          kubeconform -strict -summary \
+            deploy/k8s/base/deployment.yaml \
+            deploy/k8s/base/service.yaml \
+            deploy/k8s/base/secret-placeholder.yaml \
+            deploy/k8s/base/serviceaccount.yaml
+      - name: kubeconform (ExternalSecrets Operator CRDs, via the real external-secrets.io schema catalog)
+        # -ignore-missing-schemas: if the CRDs-catalog project's own schema
+        # for a resource is ever missing/renamed upstream, this degrades
+        # to "not validated" rather than failing CI on a third-party
+        # catalog gap unrelated to whether OUR manifests are well-formed.
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          kubeconform -strict -summary -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            deploy/k8s/overlays/eks-irsa/secretstore.yaml \
+            deploy/k8s/overlays/eks-irsa/externalsecret.yaml
 
   kubernetes-checkov:
     name: kubernetes (Checkov manifest security scan)
