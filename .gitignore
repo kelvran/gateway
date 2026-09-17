@@ -36,3 +36,25 @@ docker-compose.override.yml
 
 # Personal, per-session agent daily logs — never shared repo state.
 scratch-pad/
+
+# Terraform (terraform/, deploy/ecs/) — a real gap until the backlog
+# Phase 7 infra round: terraform/bedrock-judge-panel and
+# terraform/vector-s3-shipper never had this, and only avoided ever
+# committing their own .terraform/ provider cache because nobody had run
+# `terraform init` (without -backend=false's own separate CI-only path)
+# in them locally before. .terraform.lock.hcl is NOT ignored — that file
+# is meant to be committed, per Terraform's own convention.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+tfplan
