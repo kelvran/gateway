@@ -140,6 +140,31 @@ func TestLexicalSearchExpiredEntryIsReapedAndNotReturned(t *testing.T) {
 	}
 }
 
+// TestLexicalSearchAtExactExpiryInstantStillReturnsCandidate is
+// LexicalCache's own sibling of inprocess.go's identical
+// TestGetAtExactExpiryInstantStillHits: the expiry check here (now.After(
+// entry.expiresAt), lexical.go's own line) is the same strict ">", so
+// now == expiresAt exactly must still return the candidate, not reap it.
+func TestLexicalSearchAtExactExpiryInstantStillReturnsCandidate(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewLexicalCacheWithClock(0, clock.now)
+	ctx := context.Background()
+
+	const ttl = 10 * time.Second
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", ttl); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	clock.Advance(ttl) // now == expiresAt exactly, not one instant past it.
+
+	candidates, err := c.Search(ctx, "team-alpha", sig(1, 2, 3), 5)
+	if err != nil {
+		t.Fatalf("Search at the exact expiry instant returned error: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Errorf("Search at the exact expiry instant (now == expiresAt) returned %d candidates, want 1 — expiry is a strict After, not >=", len(candidates))
+	}
+}
+
 func TestLexicalSearchResultsSortedBySimilarityDescending(t *testing.T) {
 	c := NewLexicalCache(0)
 	ctx := context.Background()
