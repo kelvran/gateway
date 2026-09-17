@@ -225,6 +225,30 @@ func TestFromProviderToolUseWithNilInputMarshalsToEmptyObjectNotNull(t *testing.
 	}
 }
 
+// TestFromProviderMissingRoleDefaultsToAssistant is the regression proof
+// for the real bug fixed in FromProvider's own hardcoded Role: a
+// response with role omitted or emptied must still produce
+// Message.Role == "assistant" -- a chat completion response is
+// structurally always the assistant's turn, matching bedrock.go/
+// gemini.go's own identical convention.
+func TestFromProviderMissingRoleDefaultsToAssistant(t *testing.T) {
+	nativeResp := &Response{
+		ID:         "msg_test",
+		Model:      "claude-opus-4",
+		Role:       "",
+		Content:    []ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: "end_turn",
+	}
+
+	got, err := New().FromProvider(nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Choices[0].Message.Role != "assistant" {
+		t.Errorf("Role = %q, want %q", got.Choices[0].Message.Role, "assistant")
+	}
+}
+
 // TestToProviderToolResultMessage covers the canonical role:"tool" ->
 // native role:"user"/tool_result-block translation this adapter also
 // performs, since Anthropic has no native "tool" role.

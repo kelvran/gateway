@@ -120,6 +120,20 @@ func TestRoundTrip(t *testing.T) {
 // self-hosted runtime sends one (mirrors real OpenAI's own field --
 // whether a given runtime actually populates it is runtime-dependent
 // and NOT independently verified here; see Usage's own doc comment).
+// TestFromProviderEmptyChoicesReturnsError mirrors openai.go's identical
+// fix/test -- see that package's own doc comment.
+func TestFromProviderEmptyChoicesReturnsError(t *testing.T) {
+	raw := []byte(`{"id": "chatcmpl-test", "model": "llama-3", "choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}}`)
+	var nativeResp Response
+	if err := json.Unmarshal(raw, &nativeResp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if _, err := New().FromProvider(&nativeResp); err == nil {
+		t.Fatal("FromProvider: want error for an empty choices array, got nil")
+	}
+}
+
 func TestFromProviderExtractsRealCachedTokens(t *testing.T) {
 	raw := []byte(`{
 		"id": "cmpl-test",

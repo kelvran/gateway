@@ -585,8 +585,17 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		}
 	}
 
+	// **Fixed 2026-09-17, real bug**: this used to trust native.Role
+	// unconditionally, defaulting to "" (not "assistant") whenever
+	// Anthropic's response omitted or emptied the field -- an undefined
+	// role value flowing straight to the client. A chat completion
+	// response is structurally always the assistant's turn regardless of
+	// what the wire payload says, so this now just hardcodes it, matching
+	// bedrock.go/gemini.go's own identical convention for this same
+	// field (neither reads a native role for the response message at
+	// all).
 	message := adapter.Message{
-		Role:            native.Role,
+		Role:            "assistant",
 		Content:         strings.Join(textParts, ""),
 		ToolCalls:       toolCalls,
 		ReasoningBlocks: reasoningBlocks,
