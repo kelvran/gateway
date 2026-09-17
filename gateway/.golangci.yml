@@ -163,6 +163,14 @@ linters:
         linters:
           - gosec
         text: "G302"
+      # Every exec.Command call here targets a binary this SAME test just
+      # built (go build's own -o output path, a fixed test-controlled
+      # arg0) or the fixed "go" toolchain -- never attacker-reachable
+      # input, unlike the untrusted-argv shape G204 exists to catch.
+      - path: cmd/gateway/graceful_shutdown_second_signal_test\.go
+        linters:
+          - gosec
+        text: "G204"
 
 formatters:
   enable:
