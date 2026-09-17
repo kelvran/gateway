@@ -1747,7 +1747,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	)
 
 	start := time.Now()
-	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
+	ctx, span := telemetry.Tracer.Start(ctx, "chat "+boundedModelForTelemetry(req.Model))
 	defer func() {
 		// attachRetryAfter runs BEFORE finalize, reassigning the named
 		// return err, so finalize's own outcomeFor-based classification
@@ -2817,6 +2817,35 @@ func responseWasTruncated(resp adapter.ChatResponse) bool {
 	return false
 }
 
+// maxModelForTelemetry bounds req.Model's own length wherever it flows
+// into the OTel span name or a structured log line. **Fixed 2026-09-17,
+// real bug**: req.Model is fully client-controlled, unauthenticated
+// input at the point the span is created (HandleChatCompletion/
+// HandleChatCompletionStream start the span before auth is checked) --
+// an unauthenticated caller could previously send an arbitrarily large
+// model string (bounded only by the 32MiB whole-body cap) straight into
+// both the span name and the chat_completion log line's own "model"
+// field on every single call, including a failed-auth one. 256 is far
+// beyond any realistic model name while still bounding a pathological
+// one to a small, fixed cost. Distinct from telemetry.RequestModel's own
+// separate fix (dataplane.go's finalize sentinels that field to
+// "unresolved" for the metric attribute specifically, since a metric
+// attribute's cardinality is a different, more acute risk than a single
+// span/log field's byte length) -- this bound applies unconditionally,
+// including to a genuinely valid, resolved model name that just happens
+// to be unusually long.
+const maxModelForTelemetry = 256
+
+// boundedModelForTelemetry truncates model to maxModelForTelemetry bytes
+// for use in a span name or log field -- see that constant's own doc
+// comment.
+func boundedModelForTelemetry(model string) string {
+	if len(model) <= maxModelForTelemetry {
+		return model
+	}
+	return model[:maxModelForTelemetry]
+}
+
 // traceLogFields returns "trace_id"/"span_id" key-value pairs for ctx's
 // active span, or nil when ctx carries no valid span context at all
 // (e.g. a background health-probe pass, or a direct unit-test call with
@@ -2849,7 +2878,7 @@ func traceLogFields(ctx context.Context) []any {
 // precomputed by finalize (decimal.Zero when err != nil) so it's never
 // calculated twice.
 func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
-	fields := append(traceLogFields(ctx), "model", req.Model, "cache_hit", cacheInfo.Hit())
+	fields := append(traceLogFields(ctx), "model", boundedModelForTelemetry(req.Model), "cache_hit", cacheInfo.Hit())
 	if cacheInfo.Hit() {
 		fields = append(fields, "cache_layer", cacheInfo.Layer, "cache_age_ms", cacheInfo.AgeMs)
 		if cacheInfo.Layer == "L3" {

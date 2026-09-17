@@ -118,7 +118,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		costEstimated bool
 	)
 	start := time.Now()
-	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
+	ctx, span := telemetry.Tracer.Start(ctx, "chat "+boundedModelForTelemetry(req.Model))
 	defer func() {
 		// See HandleChatCompletion's identical comment: attachRetryAfter
 		// must run before finalize, per

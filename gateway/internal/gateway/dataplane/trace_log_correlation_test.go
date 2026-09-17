@@ -159,3 +159,38 @@ func TestBudgetWarnThresholdLogIncludesTraceAndSpanID(t *testing.T) {
 		t.Errorf("budget_warn_threshold_crossed line has no span_id field; line: %s", warnLine)
 	}
 }
+
+// TestChatCompletionLogsBoundedModelStringEvenOnAuthFailure is the
+// regression proof for the real bug fixed in maxModelForTelemetry's own
+// doc comment: req.Model is fully client-controlled, unauthenticated
+// input at the point finalize/logRequest run (via defer, on every call
+// including an outright auth failure) -- an unauthenticated caller could
+// previously send an arbitrarily large model string straight into the
+// chat_completion log line's own "model" field, bounded only by the
+// 32MiB whole-body cap.
+func TestChatCompletionLogsBoundedModelStringEvenOnAuthFailure(t *testing.T) {
+	var logBuf bytes.Buffer
+	p := crossInstanceTestPipeline(t, &logBuf)
+
+	hugeModel := strings.Repeat("X", 5*1024*1024)
+	req := adapter.ChatRequest{Model: hugeModel, Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer not-a-real-key", req, ""); err == nil {
+		t.Fatal("HandleChatCompletion with an unregistered bearer token returned nil error, want an auth failure")
+	}
+
+	var chatCompletionLine string
+	for _, line := range strings.Split(logBuf.String(), "\n") {
+		if strings.Contains(line, `"msg":"chat_completion"`) {
+			chatCompletionLine = line
+			break
+		}
+	}
+	if chatCompletionLine == "" {
+		t.Fatalf("no chat_completion log line found; full log output:\n%s", logBuf.String())
+	}
+
+	loggedModel := extractJSONStringField(t, chatCompletionLine, "model")
+	if len(loggedModel) > maxModelForTelemetry {
+		t.Errorf("logged model field is %d bytes, want at most %d — unbounded model string is NOT fixed", len(loggedModel), maxModelForTelemetry)
+	}
+}
