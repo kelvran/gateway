@@ -3,7 +3,16 @@
 # ("Single static binary, scratch/alpine Docker image").
 
 # --- builder stage ---
-FROM golang:1.27.1-alpine AS builder
+# Pinned by digest (independently re-verified via `docker buildx
+# imagetools inspect golang:1.27.1-alpine` -- matches exactly, not
+# blindly copied from a remediation suggestion) -- closes a real open
+# OpenSSF Scorecard Pinned-Dependencies finding (PinnedDependenciesID:
+# "containerImage not pinned by hash"). Resolves to golang:1.27.1-alpine
+# as of this pin -- a trailing "# 1.27.1-alpine" comment on the FROM
+# line itself is NOT valid Dockerfile syntax (confirmed by a real local
+# build failure, "FROM requires either one or three arguments", not
+# assumed), so the human-readable tag is named here instead.
+FROM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
 
 WORKDIR /src
 

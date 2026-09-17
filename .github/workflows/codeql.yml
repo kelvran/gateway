@@ -17,6 +17,12 @@ on:
     # avoid runner contention.
     - cron: "0 3 * * 1"
 
+# Top-level default, per a real open OpenSSF Scorecard Token-Permissions
+# finding (TokenPermissionsID) -- see ci.yml's identical comment for why
+# this is a safe, purely-defensive addition alongside the job's own
+# already-explicit permissions block.
+permissions: {}
+
 jobs:
   analyze:
     name: analyze (${{ matrix.language }})

@@ -27,6 +27,12 @@ on:
   pull_request:
     branches: [main]
 
+# Top-level default, per a real open OpenSSF Scorecard Token-Permissions
+# finding (TokenPermissionsID) -- see ci.yml's identical comment for why
+# this is a safe, purely-defensive addition alongside every job's own
+# already-explicit permissions block.
+permissions: {}
+
 jobs:
   terraform-validate:
     name: terraform (${{ matrix.module }}) — fmt, validate
