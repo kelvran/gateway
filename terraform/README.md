@@ -16,6 +16,7 @@ managed services); workload-layer resources stay in Kustomize/Compose.
 | `backend-bootstrap/` | The S3 bucket + DynamoDB table every OTHER module's own remote state can live in | Applied once, by hand — see its own README |
 | `irsa-trust/` | IAM role with an OIDC-federated trust policy for an EXISTING EKS cluster's ServiceAccount (IRSA) | An existing EKS cluster with an OIDC provider already registered |
 | `ecs-task-role/` | ECS task execution role + task role, scoped to Secrets Manager ARNs | An existing AWS account, no cluster needed |
+| `iam-access-analyzer/` | IAM Access Analyzer, unused-access finding type (catches forgotten, not leaked, credentials) | An existing AWS account, no cluster needed |
 
 Every module is a standalone root module — no module in this tree reads
 another module's remote state via a `terraform_remote_state` data source.

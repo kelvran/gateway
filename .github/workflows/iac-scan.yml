@@ -48,6 +48,7 @@ jobs:
           - terraform/backend-bootstrap
           - terraform/irsa-trust
           - terraform/ecs-task-role
+          - terraform/iam-access-analyzer
           - deploy/ecs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,6 +92,8 @@ jobs:
           - path: terraform/ecs-task-role
             tfvars: |
               secrets_manager_secret_arns = ["arn:aws:secretsmanager:us-east-1:123456789012:secret:example-abc123"]
+          - path: terraform/iam-access-analyzer
+            tfvars: "" # every variable has a real default; nothing required
           - path: deploy/ecs
             tfvars: |
               execution_role_arn = "arn:aws:iam::123456789012:role/example-execution"
