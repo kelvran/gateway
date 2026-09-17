@@ -204,6 +204,39 @@ func TestFromProviderMalformedFunctionCallReturnsError(t *testing.T) {
 	}
 }
 
+// TestFromProviderFunctionCallWithNilArgsMarshalsToEmptyObjectNotNull is
+// the regression proof for the real bug fixed in FromProvider's own
+// functionCall case: a nil Args map (what Go decodes from a wire
+// response omitting "args" or sending "args": null) must produce
+// ArgumentsJSON == "{}", not the literal string "null" -- a caller that
+// json.Unmarshals ArgumentsJSON expecting an object, or a subsequent
+// ToProvider replaying this tool call into a different provider, would
+// break on "null".
+func TestFromProviderFunctionCallWithNilArgsMarshalsToEmptyObjectNotNull(t *testing.T) {
+	resp := &Response{
+		Candidates: []Candidate{
+			{
+				Content: Content{
+					Role:  "model",
+					Parts: []Part{{FunctionCall: &FunctionCall{ID: "call_1", Name: "get_weather", Args: nil}}},
+				},
+				FinishReason: "STOP",
+			},
+		},
+	}
+
+	got, err := New().FromProvider(resp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if len(got.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(got.Choices[0].Message.ToolCalls))
+	}
+	if got := got.Choices[0].Message.ToolCalls[0].ArgumentsJSON; got != "{}" {
+		t.Errorf("ArgumentsJSON = %q, want %q", got, "{}")
+	}
+}
+
 func TestFromProviderNoCandidatesReturnsError(t *testing.T) {
 	resp := &Response{Candidates: []Candidate{}}
 

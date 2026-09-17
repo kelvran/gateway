@@ -3,6 +3,7 @@ package inprocess
 import (
 	"context"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,6 +172,33 @@ func TestGetAfterTTLExpiry(t *testing.T) {
 	}
 }
 
+// TestGetAtExactExpiryInstantStillHits pins down the exact boundary
+// TestGetAfterTTLExpiry above never isolates on its own (that test
+// advances a full second PAST expiry, not to the exact instant): Get's
+// own check is c.now().After(entry.expiresAt), a strict ">", so
+// now == expiresAt must still be a hit, matching this documented
+// behavior explicitly rather than leaving the exact boundary untested.
+func TestGetAtExactExpiryInstantStillHits(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewWithClock(0, clock.now)
+	ctx := context.Background()
+
+	const ttl = 10 * time.Second
+	if err := c.Put(ctx, "key1", []byte("value"), ttl); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	clock.Advance(ttl) // now == expiresAt exactly, not one instant past it.
+
+	_, _, ok, err := c.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get at the exact expiry instant returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("Get at the exact expiry instant (now == expiresAt) returned ok=false, want true — expiry is a strict After, not >=")
+	}
+}
+
 func TestPutCopiesData(t *testing.T) {
 	c := New(0)
 	ctx := context.Background()
@@ -225,6 +253,46 @@ func TestEvictionRemovesLeastRecentlyUsed(t *testing.T) {
 	}
 	if _, _, ok, _ := c.Get(ctx, "c"); !ok {
 		t.Error("Get(c) after overflow = false, want true (just inserted)")
+	}
+}
+
+// TestEvictionWithMaxEntriesOfOneEvictsImmediately is
+// TestEvictionRemovesLeastRecentlyUsed's own degenerate-boundary sibling:
+// a cap of exactly 1 (never previously tested — every other test uses a
+// cap of 2+) must still evict correctly on a genuinely different second
+// key, while a same-key overwrite under that same cap of 1 must never
+// evict the key it's overwriting.
+func TestEvictionWithMaxEntriesOfOneEvictsImmediately(t *testing.T) {
+	c := New(1)
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "a", []byte("A"), time.Hour); err != nil {
+		t.Fatalf("Put(a): %v", err)
+	}
+	if err := c.Put(ctx, "b", []byte("B"), time.Hour); err != nil {
+		t.Fatalf("Put(b): %v", err)
+	}
+
+	if _, _, ok, _ := c.Get(ctx, "a"); ok {
+		t.Error("Get(a) after a second Put with maxEntries=1 = true, want false (evicted)")
+	}
+	if _, _, ok, _ := c.Get(ctx, "b"); !ok {
+		t.Error("Get(b) after a second Put with maxEntries=1 = false, want true (just inserted)")
+	}
+
+	// Overwriting "b" with a new value, still under the same cap of 1,
+	// must never evict "b" itself -- Put's own "update existing" branch
+	// (elem, found := c.entries[key]; found) never touches c.recency's
+	// length at all.
+	if err := c.Put(ctx, "b", []byte("B2"), time.Hour); err != nil {
+		t.Fatalf("Put(b, overwrite): %v", err)
+	}
+	got, _, ok, err := c.Get(ctx, "b")
+	if err != nil || !ok {
+		t.Fatalf("Get(b) after a same-key overwrite under maxEntries=1: ok=%v err=%v", ok, err)
+	}
+	if string(got) != "B2" {
+		t.Errorf("Get(b) = %q after overwrite, want %q", got, "B2")
 	}
 }
 
@@ -312,5 +380,53 @@ func TestZeroOrNegativeMaxEntriesDefaultsToDefaultMaxEntries(t *testing.T) {
 		if got := c.recency.Len(); got != defaultMaxEntries {
 			t.Errorf("New(%d): after inserting %d entries, recency.Len() = %d, want %d (the default cap)", maxEntries, defaultMaxEntries+1, got, defaultMaxEntries)
 		}
+	}
+}
+
+// TestConcurrentPutAndDeleteSameKeyLeavesConsistentState is the
+// load-bearing concurrency proof for this package's own mutex: N
+// goroutines repeatedly racing Put and Delete against the SAME key must
+// never panic (the real signal here is `go test -race` itself finding
+// no data race) and must always leave c.entries/c.recency in a mutually
+// consistent state -- a key present in one must be present in the other,
+// and vice versa, no matter which operation "won" the race.
+func TestConcurrentPutAndDeleteSameKeyLeavesConsistentState(t *testing.T) {
+	c := New(0)
+	ctx := context.Background()
+	const key = "racing-key"
+	const rounds = 500
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			_ = c.Put(ctx, key, []byte("v"), time.Minute)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			_ = c.Delete(ctx, key)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			_, _, _, _ = c.Get(ctx, key)
+		}
+	}()
+	wg.Wait()
+
+	// Direct, locked inspection of internal state -- c.mu is this
+	// package's own real lock, not a test-only shortcut. Put/Delete
+	// always add to or remove from c.entries and c.recency TOGETHER
+	// (removeLocked's own doc comment: "deletes elem from both the map
+	// and the recency list") -- their lengths must always match exactly.
+	c.mu.Lock()
+	entriesLen, recencyLen := len(c.entries), c.recency.Len()
+	c.mu.Unlock()
+	if entriesLen != recencyLen {
+		t.Fatalf("len(c.entries) = %d, c.recency.Len() = %d -- inconsistent after concurrent Put/Delete/Get", entriesLen, recencyLen)
 	}
 }

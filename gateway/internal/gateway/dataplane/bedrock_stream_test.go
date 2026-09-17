@@ -150,3 +150,78 @@ func TestHandleChatCompletionStreamBedrockExceptionFrameSurfacesAsError(t *testi
 		t.Errorf("error = %v, want errors.Is(err, bedrock.ErrBedrockThrottled)", err)
 	}
 }
+
+// TestHandleChatCompletionStreamBedrockMidFrameTruncationSurfacesAsError is
+// the regression proof for the real bug fixed in ErrBedrockStreamTruncated's
+// own doc comment: aws-sdk-go-v2's eventstream.Decoder.Decode reports bare
+// io.EOF for a connection cut off mid-frame (its own decodePayload uses
+// io.Copy, which swallows an EOF from a short payload read as success; the
+// very next read -- the frame's own trailing CRC -- then hits the closed
+// connection with zero bytes for THAT read and surfaces as a second, plain
+// io.EOF) -- indistinguishable from a genuinely clean end-of-stream at a
+// real frame boundary without checking whether messageStop was ever seen.
+// Truncates a real, wire-encoded fixture mid-way through its LAST frame
+// (a contentBlockDelta, deliberately never followed by messageStop/
+// metadata) rather than hand-rolling approximate bytes, so this proves
+// against the actual AWS SDK decoder, not a mock of it.
+func TestHandleChatCompletionStreamBedrockMidFrameTruncationSurfacesAsError(t *testing.T) {
+	wire := encodeBedrockWireFixture(t, []eventstream.Message{
+		bedrockWireEvent("messageStart", `{"role":"assistant"}`),
+		bedrockWireEvent("contentBlockStart", `{"contentBlockIndex":0,"start":{}}`),
+		bedrockWireEvent("contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"Hel"}}`),
+	})
+	// Cut off the last 8 bytes (well inside the final contentBlockDelta
+	// frame's own payload/CRC trailer, never at a clean frame boundary) --
+	// a real, if crude, simulation of a connection dropping mid-frame.
+	truncated := wire[:len(wire)-8]
+
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(truncated)), nil
+	}, []Deployment{{Name: "d1", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: "anthropic.claude-3-5-sonnet-20241022-v2:0", BaseURL: "http://unused"}},
+		adapter.Registry{"bedrock": bedrock.New()})
+
+	rec := httptest.NewRecorder()
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, rec, "")
+	if err == nil {
+		t.Fatal("HandleChatCompletionStream: want error for a stream truncated mid-frame with no messageStop ever received, got nil — silently treated as a clean end of stream")
+	}
+	if !errors.Is(err, ErrBedrockStreamTruncated) {
+		t.Errorf("error = %v, want errors.Is(err, ErrBedrockStreamTruncated)", err)
+	}
+}
+
+// TestHandleChatCompletionStreamBedrockOversizedStreamIsBounded is the
+// regression proof for the real bug fixed in maxBedrockStreamBytes's own
+// doc comment: aws-sdk-go-v2's eventstream.Decoder places no upper bound
+// on a single frame's declared length, so a pathological frame could
+// otherwise make decodePayload buffer an unbounded amount of memory.
+// Builds a real, wire-encoded fixture whose single contentBlockDelta
+// frame's raw payload exceeds maxBedrockStreamBytes -- the read is cut
+// off by the byte-limited reader partway through this one oversized
+// frame, which (with no messageStop ever received) correctly surfaces as
+// ErrBedrockStreamTruncated rather than an unbounded read.
+func TestHandleChatCompletionStreamBedrockOversizedStreamIsBounded(t *testing.T) {
+	oversizedPayload := make([]byte, maxBedrockStreamBytes+1024)
+	wire := encodeBedrockWireFixture(t, []eventstream.Message{
+		bedrockWireEvent("messageStart", `{"role":"assistant"}`),
+		bedrockWireEvent("contentBlockDelta", string(oversizedPayload)),
+	})
+
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(wire)), nil
+	}, []Deployment{{Name: "d1", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: "anthropic.claude-3-5-sonnet-20241022-v2:0", BaseURL: "http://unused"}},
+		adapter.Registry{"bedrock": bedrock.New()})
+
+	rec := httptest.NewRecorder()
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, rec, "")
+	if err == nil {
+		t.Fatal("HandleChatCompletionStream: want error for a stream whose single frame exceeds maxBedrockStreamBytes, got nil — unbounded read is NOT fixed")
+	}
+	if !errors.Is(err, ErrBedrockStreamTruncated) {
+		t.Errorf("error = %v, want errors.Is(err, ErrBedrockStreamTruncated)", err)
+	}
+}

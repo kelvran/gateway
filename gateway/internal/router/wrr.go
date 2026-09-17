@@ -39,6 +39,16 @@ type modelState struct {
 // newModelState builds a modelState from deps (in the caller's exact
 // order), normalizing any zero weight to 1 (the "unset in config"
 // default) before computing gcd/max.
+//
+// **Fixed 2026-09-17, real bug**: this used to index normalized[0]
+// unconditionally, panicking on an empty deps slice — inconsistent with
+// next()'s own defensive n==0 branch immediately below, which existed
+// specifically to handle that case gracefully but could never actually
+// run, since construction crashed first. Not reachable via any call site
+// today (New only ever groups deployments that exist; SetWeight only
+// rebuilds from an already-non-empty group), but a length guard costs
+// nothing and removes a landmine for any future caller — e.g. an admin
+// route that removes the last deployment from a model's group.
 func newModelState(deps []weightedDeployment) *modelState {
 	normalized := make([]weightedDeployment, len(deps))
 	copy(normalized, deps)
@@ -46,6 +56,10 @@ func newModelState(deps []weightedDeployment) *modelState {
 		if normalized[i].weight <= 0 {
 			normalized[i].weight = 1
 		}
+	}
+
+	if len(normalized) == 0 {
+		return &modelState{deps: normalized, i: -1}
 	}
 
 	g := normalized[0].weight

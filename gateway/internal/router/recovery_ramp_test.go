@@ -122,6 +122,64 @@ func TestSelectRampShareIncreasesToFullWeightOverRecoveryWindow(t *testing.T) {
 	}
 }
 
+// TestSelectRampResetsToInitialPercentOnSubThresholdFlapFailure is the
+// regression proof for a real gap in this file's own suite: a single
+// FAILURE during an active ramp, below UnhealthyThreshold (so it does
+// NOT re-trip the deployment unhealthy), must still reset the ramp back
+// to its own initial percent -- health.go's ReportProbeResult failure
+// branch clears rampStep/rampCredit unconditionally whenever h.ramping is
+// true, regardless of whether this particular failure was itself enough
+// to flip healthy back to false. Never previously exercised.
+func TestSelectRampResetsToInitialPercentOnSubThresholdFlapFailure(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "a", Model: "gpt-4o"},
+		{Name: "b", Model: "gpt-4o"},
+	}, HealthConfig{UnhealthyThreshold: 2, HealthyThreshold: 2, RecoveryRampSteps: 4, RecoveryRampInitialPercent: 20})
+
+	r.ReportProbeResult("a", false) // 1 of 2 required failures
+	r.ReportProbeResult("a", false) // 2 of 2 -> ejects "a"
+	r.ReportProbeResult("a", true)  // 1 of 2 required successes
+	r.ReportProbeResult("a", true)  // 2 of 2 -> recovers, ramp starts at rampStep=0 (20%)
+
+	const perStage = 600
+	countA := func() int {
+		n := 0
+		for i := 0; i < perStage; i++ {
+			if name, ok := r.Select("gpt-4o", nil); ok && name == "a" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Advance the ramp one real stage first (rampStep 0 -> 1, 20% ->
+	// 40%), confirming the elevated share via the exact same numbers
+	// TestSelectRampShareIncreasesToFullWeightOverRecoveryWindow already
+	// proves for stage 1.
+	r.ReportProbeResult("a", true)
+	if got := countA(); got != 171 {
+		t.Fatalf("after advancing to ramp stage 1: counts[\"a\"] over %d calls = %d, want 171", perStage, got)
+	}
+
+	// A single failure, below UnhealthyThreshold=2 (only 1 consecutive
+	// failure, not 2) -- must NOT flip healthy back to false, but MUST
+	// reset the ramp to its initial percent (stage 0, 20%), per
+	// health.go's own "if h.ramping { rampStep = 0; rampCredit = 0 }"
+	// branch running unconditionally on any failure while ramping,
+	// independent of the separate healthy-flip check.
+	healthy, changed := r.ReportProbeResult("a", false)
+	if !healthy {
+		t.Fatal("a single sub-threshold failure flipped healthy to false, want it to stay true (UnhealthyThreshold=2, only 1 consecutive failure so far)")
+	}
+	if changed {
+		t.Fatal("a single sub-threshold failure reported changed=true, want false — health state itself did not flip")
+	}
+
+	if got := countA(); got != 100 {
+		t.Fatalf("after a sub-threshold flap failure: counts[\"a\"] over %d calls = %d, want 100 (reset back to the RecoveryRampInitialPercent stage, not still at stage 1's 171)", perStage, got)
+	}
+}
+
 // defaultRecoveryRampInitialPercentPlusStage is a tiny formatting helper
 // purely for this test file's own failure messages — mirrors
 // health.go's admitRampedTurn percent formula so a failing assertion's

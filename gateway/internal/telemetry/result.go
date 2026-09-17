@@ -320,6 +320,20 @@ type ChatCompletionResult struct {
 	// gen_ai.request.model attribute; RecordChatCompletionResult does not
 	// set it on the span, since the span name ("chat "+req.Model) already
 	// carries this information for tracing.
+	//
+	// **Fixed 2026-09-17, real bug**: because this is a metric attribute
+	// (not a span attribute — see above), and req.Model is fully
+	// client-controlled, unauthenticated input that finalize sees on
+	// EVERY call including an outright auth failure, passing it through
+	// unbounded was a real cardinality-exhaustion DoS against the
+	// metrics backend: any unauthenticated caller could mint one
+	// brand-new, permanent Prometheus/OTel time series per request just
+	// by varying this string. finalize's own call site now sentinels
+	// this field to "unresolved" whenever no real deployment was ever
+	// resolved for the request (dep.Name == "") — the same signal that
+	// already gates responseFormatRequestedNotEnforced — so this field
+	// is safe to treat as always bounded-cardinality from here on;
+	// ChatCompletionResult itself performs no sanitization of its own.
 	RequestModel string
 	// Duration is the elapsed time from HandleChatCompletion/
 	// HandleChatCompletionStream's own entry to finalize actually

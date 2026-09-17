@@ -137,12 +137,168 @@ func TestRecordAccumulatesExactlyAcrossManySmallAdditions(t *testing.T) {
 	}
 }
 
+// TestRecordExactAtExtremeLargeMagnitude proves decimal precision holds
+// at the opposite end of the scale from
+// TestRecordAccumulatesExactlyAcrossManySmallAdditions above: a single
+// value well beyond 1e15 (float64's own exact-integer-representable
+// ceiling, 2^53 ≈ 9.007e15) must still be tracked exactly, never
+// silently rounded the way a float64-based accumulator would be.
+func TestRecordExactAtExtremeLargeMagnitude(t *testing.T) {
+	tr := NewTracker()
+	large := d("1234567890123456.78") // well beyond 1e15
+	tr.Record("team-alpha", large, 0)
+
+	if tr.Allow("team-alpha", large, 0) {
+		t.Errorf("Allow(cap=%v) = true after recording exactly that amount, want false (spend == cap is a strict boundary)", large)
+	}
+	justOver := large.Add(d("0.01"))
+	if !tr.Allow("team-alpha", justOver, 0) {
+		t.Errorf("Allow(cap=%v) = false, want true — recorded spend must be exactly %v, not drifted at this magnitude", justOver, large)
+	}
+}
+
+// TestRecordAccumulatesExactlyAtSubMicroCentMagnitude is the sibling
+// proof at the opposite (tiny) end from the extreme-large test above:
+// many additions of a sub-micro-cent fragment (well below the
+// 0.0000075 fragment TestRecordAccumulatesExactlyAcrossManySmallAdditions
+// already uses) must still sum exactly, with zero precision loss.
+func TestRecordAccumulatesExactlyAtSubMicroCentMagnitude(t *testing.T) {
+	tr := NewTracker()
+	fragment := d("0.000000001") // 1e-9, well below 1e-7
+	const n = 10000
+	for i := 0; i < n; i++ {
+		tr.Record("team-alpha", fragment, 0)
+	}
+
+	exact := d("0.00001") // 10000 * 0.000000001, exact
+	if tr.Allow("team-alpha", exact, 0) {
+		t.Errorf("Allow(cap=%v) = true after accumulating exactly that amount, want false", exact)
+	}
+	justOver := exact.Add(d("0.000000001"))
+	if !tr.Allow("team-alpha", justOver, 0) {
+		t.Errorf("Allow(cap=%v) = false, want true — accumulated spend must be exactly %v, not drifted at this magnitude", justOver, exact)
+	}
+}
+
 func TestRecordNegativeCostIgnored(t *testing.T) {
 	tr := NewTracker()
 	tr.Record("team-alpha", d("5"), 0)
 	tr.Record("team-alpha", d("-100"), 0) // must not reduce recorded spend
 	if tr.Allow("team-alpha", d("5"), 0) {
 		t.Error("Allow after a negative Record reduced spend below the cap = true, want false")
+	}
+}
+
+// TestReconcileNilRealCostReleasesReservationWithNoReplacement proves
+// Reconcile's own documented release-only path: a nil realCost (the
+// buffered path's own "error before ever computing a cost" case) must
+// release the reservation back to the pre-Reserve total, incrementing
+// neither spend beyond that nor billedCount.
+// TestReserveBoundaryExactlyAtCapRejectsAndReservesNothing mirrors
+// TestAllowBoundaryExactlyAtCap's own structure for Reserve: spend ==
+// cap is a strict upper bound, not inclusive, so Reserve must reject and
+// reserve nothing -- Reserve's own gate is !spent.LessThan(capUSD), a
+// ">=" comparison, matching Allow's identical convention.
+func TestReserveBoundaryExactlyAtCapRejectsAndReservesNothing(t *testing.T) {
+	tr := NewTracker()
+	tr.Record("team-alpha", d("10"), 0)
+
+	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("10"), 0)
+	if allowed || reserved {
+		t.Errorf("Reserve with spend == cap = (allowed=%v, reserved=%v), want (false, false)", allowed, reserved)
+	}
+	if !reservedUSD.IsZero() {
+		t.Errorf("Reserve with spend == cap reservedUSD = %s, want 0", reservedUSD)
+	}
+	if epoch != 0 {
+		t.Errorf("Reserve with spend == cap reservationEpoch = %d, want 0", epoch)
+	}
+}
+
+// TestIncreaseReservationAppliesWhenDeltaLandsExactlyAtCap proves
+// IncreaseReservation's own boundary is the OPPOSITE convention from
+// Reserve's: its gate is spent.Add(delta).GreaterThan(capUSD), a strict
+// ">", so a delta that lands EXACTLY at the remaining cap/balance (using
+// up every last cent of headroom) must still be applied, not rejected.
+func TestIncreaseReservationAppliesWhenDeltaLandsExactlyAtCap(t *testing.T) {
+	// A cold-start key with no billing history reserves the full
+	// remaining headroom on its first Reserve call (reservationAmountLocked's
+	// own documented "cold-start conservatism"), which would make any
+	// further top-up a zero-or-negative delta (IncreaseReservation's own
+	// "newReservedUSD not actually larger" early return) -- so this
+	// seeds real billing history first (via Reconcile) so the
+	// historical-average reservation Reserve computes leaves real
+	// headroom to top up against.
+	tr := NewTracker()
+	capUSD := d("10")
+	realCost := d("1")
+	tr.Reconcile("team-alpha", d("0"), 0, &realCost, 0) // seeds billedCount=1, spent=1
+
+	allowed, reserved, currentReservedUSD, epoch := tr.Reserve("team-alpha", capUSD, 0)
+	if !allowed || !reserved {
+		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
+	}
+	// currentReservedUSD is the historical-average reservation
+	// (spent/billedCount = 1/1 = 1) -- well under capUSD's remaining
+	// headroom. Top it up by a delta that lands EXACTLY at the cap:
+	// spent so far is 1 (the seeded real cost) + currentReservedUSD (the
+	// just-applied reservation) = 2; remaining headroom to capUSD=10 is
+	// 8, so newReservedUSD = currentReservedUSD + 8 lands exactly at the
+	// cap.
+	newReservedUSD := currentReservedUSD.Add(d("8"))
+	ok, applied, newEpoch := tr.IncreaseReservation("team-alpha", capUSD, currentReservedUSD, newReservedUSD, epoch, 0)
+	if !ok {
+		t.Fatalf("IncreaseReservation with a delta landing exactly at the cap = false, want true (a top-up that exactly fills remaining headroom must be applied, not rejected)")
+	}
+	if !applied.Equal(newReservedUSD) {
+		t.Errorf("IncreaseReservation appliedUSD = %s, want %s", applied, newReservedUSD)
+	}
+	if newEpoch != epoch {
+		t.Errorf("IncreaseReservation newReservationEpoch = %d, want %d (no reset occurred)", newEpoch, epoch)
+	}
+}
+
+func TestReconcileNilRealCostReleasesReservationWithNoReplacement(t *testing.T) {
+	tr := NewTracker()
+	preReserveSpent := tr.SpentUSD("team-alpha", 0)
+
+	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("100"), 0)
+	if !allowed || !reserved {
+		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
+	}
+
+	tr.Reconcile("team-alpha", reservedUSD, epoch, nil, 0)
+
+	if got := tr.SpentUSD("team-alpha", 0); !got.Equal(preReserveSpent) {
+		t.Errorf("SpentUSD after a nil-realCost Reconcile = %v, want the pre-Reserve total %v", got, preReserveSpent)
+	}
+	if got := tr.billedCount["team-alpha"]; got != 0 {
+		t.Errorf("billedCount after a nil-realCost Reconcile = %d, want 0 (never billed)", got)
+	}
+}
+
+// TestReconcileNegativeRealCostTreatedAsReleaseOnly mirrors the nil case
+// above for a negative *realCost -- Reconcile's own billed gate
+// (realCost != nil && realCost.Sign() >= 0) treats a negative pointed-to
+// value identically to nil, per Record's own established
+// TestRecordNegativeCostIgnored precedent for the sibling method.
+func TestReconcileNegativeRealCostTreatedAsReleaseOnly(t *testing.T) {
+	tr := NewTracker()
+	preReserveSpent := tr.SpentUSD("team-alpha", 0)
+
+	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("100"), 0)
+	if !allowed || !reserved {
+		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
+	}
+
+	negativeCost := d("-5")
+	tr.Reconcile("team-alpha", reservedUSD, epoch, &negativeCost, 0)
+
+	if got := tr.SpentUSD("team-alpha", 0); !got.Equal(preReserveSpent) {
+		t.Errorf("SpentUSD after a negative-realCost Reconcile = %v, want the pre-Reserve total %v (release-only, not a negative charge)", got, preReserveSpent)
+	}
+	if got := tr.billedCount["team-alpha"]; got != 0 {
+		t.Errorf("billedCount after a negative-realCost Reconcile = %d, want 0 (never billed)", got)
 	}
 }
 

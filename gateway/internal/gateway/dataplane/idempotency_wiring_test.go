@@ -1,9 +1,11 @@
 package dataplane
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
@@ -413,5 +415,118 @@ func TestHandleChatCompletionIdempotencyKeyWaiterReturnsPromptlyOnItsOwnContextC
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("call B never returned after its own context was canceled — it hung waiting on the in-flight claim instead")
+	}
+}
+
+// TestIdempotencyStoreKeyAmbiguousDelimiterCollisionIsFixed is the
+// regression proof for the same real bug class fixed in
+// internal/cache.writeField (see that file's doc comment): a tenantID
+// containing a literal NUL byte immediately followed by what looks like
+// the "idempotency_key" tag must not collide with a different, genuinely
+// distinct (tenantID, idempotencyKey) pair.
+func TestIdempotencyStoreKeyAmbiguousDelimiterCollisionIsFixed(t *testing.T) {
+	collidingTenant := idempotencyStoreKey("a\x00idempotency_key=b", "c")
+	collidingKey := idempotencyStoreKey("a", "b\x00idempotency_key=c")
+
+	if collidingTenant == collidingKey {
+		t.Fatalf("idempotencyStoreKey(tenant=%q, key=%q) collided with idempotencyStoreKey(tenant=%q, key=%q): both produced %q — ambiguous-delimiter collision is NOT fixed",
+			"a\x00idempotency_key=b", "c", "a", "b\x00idempotency_key=c", collidingTenant)
+	}
+}
+
+// TestHandleChatCompletionRecordsTelemetryEvenWhenItsOwnContextIsCanceledWhileWaiting
+// is the regression proof for a real gap: no test previously asserted
+// that telemetry (finalize's own deferred span/log recording) survives
+// a request whose context was ALREADY canceled by the time finalize
+// runs. HandleChatCompletion's own span is started (telemetry.Tracer.Start)
+// and finalize deferred BEFORE auth/idempotency are ever checked, so a
+// call canceled while parked on claimIdempotency's own StateInFlight
+// wait still runs finalize on its way out -- this proves that via the
+// chat_completion log line (a safe, always-available proxy for "finalize
+// ran to completion," avoiding this package's own documented
+// one-otel.SetMeterProvider-delegation-per-test-binary constraint that a
+// second real metrics/span assertion here would collide with -- see
+// TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome's own doc
+// comment in internal/telemetry for that constraint's full explanation).
+func TestHandleChatCompletionRecordsTelemetryEvenWhenItsOwnContextIsCanceledWhileWaiting(t *testing.T) {
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	upstreamEntered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var entered bool
+	upstream := func(ctx context.Context, dep Deployment, req any) (any, error) {
+		if !entered {
+			entered = true
+			close(upstreamEntered)
+		}
+		<-release
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}
+
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	var logBuf bytes.Buffer
+	p, err := NewPipeline(Config{
+		Verifier:         verifier,
+		IdempotencyStore: idempotencyinprocess.New(),
+		Limiter:          ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:           budget.NewTracker(),
+		Cache:            inprocess.New(0),
+		CacheL2:          inprocess.New(0),
+		CacheL3:          inprocess.NewLexicalCache(0),
+		Guardrails:       guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:         adapter.Registry{"openai": openai.New()},
+		Router:           testRouter(deployments),
+		Deployments:      deployments,
+		CostCalculator:   costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream:         upstream,
+		Logger:           slog.New(slog.NewJSONHandler(&logBuf, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
+
+	go func() {
+		_, _ = p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "concurrent-key")
+	}()
+
+	select {
+	case <-upstreamEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("call A never reached its own Upstream call")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := p.HandleChatCompletion(ctx, "Bearer test-key", req, "concurrent-key")
+		errCh <- err
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("call B err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call B never returned after its own context was canceled")
+	}
+
+	// finalize runs via defer regardless of how HandleChatCompletion
+	// returns -- it must still have written call B's own chat_completion
+	// log line, proving telemetry recording was not silently skipped
+	// just because ctx was already canceled by the time finalize ran.
+	if !strings.Contains(logBuf.String(), `"msg":"chat_completion"`) {
+		t.Errorf("no chat_completion log line found for the canceled call — finalize's own telemetry recording did not survive a canceled context; full log output:\n%s", logBuf.String())
 	}
 }

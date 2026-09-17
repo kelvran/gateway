@@ -172,6 +172,54 @@ func TestResolveSubstitutesKnownVariables(t *testing.T) {
 	}
 }
 
+// TestResolveDoesNotRecursivelyExpandPlaceholderShapedVariableValues is
+// the regression proof for a real gap: substitute()'s own
+// ReplaceAllStringFunc call scans the ORIGINAL content exactly once --
+// the replacement text a variable resolves to is never itself re-scanned
+// for further {{...}} placeholders. Never previously exercised with a
+// variable VALUE that happens to look like another placeholder.
+func TestResolveDoesNotRecursivelyExpandPlaceholderShapedVariableValues(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", []adapter.Message{
+		{Role: "user", Content: "Hello, {{name}}!"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	resolved, _, _, err := s.Resolve("greeting", 0, map[string]string{"name": "{{secret}}", "secret": "LEAKED"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := "Hello, {{secret}}!"
+	if resolved[0].Content != want {
+		t.Errorf("resolved[0].Content = %q, want %q (the literal replacement text, never re-scanned into a second substitution pass)", resolved[0].Content, want)
+	}
+}
+
+// TestResolveTerminatesOnASelfReferentialVariableValue is the same
+// proof's termination half: a variable whose OWN value is its own
+// placeholder text must not cause an infinite substitution loop --
+// impossible with substitute()'s actual single-pass implementation, but
+// worth pinning down explicitly rather than only inferring it from the
+// non-recursion test above.
+func TestResolveTerminatesOnASelfReferentialVariableValue(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("self-ref", []adapter.Message{
+		{Role: "user", Content: "Hi {{name}}"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	resolved, _, _, err := s.Resolve("self-ref", 0, map[string]string{"name": "{{name}}"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := "Hi {{name}}"
+	if resolved[0].Content != want {
+		t.Errorf("resolved[0].Content = %q, want %q", resolved[0].Content, want)
+	}
+}
+
 func TestResolveSubstitutesTextContentPartsNotJustMessageContent(t *testing.T) {
 	// A multi-modal message's own lead-in/trailing text lives in
 	// Parts[i].Text (Type == "text"), independently of Content -- see
@@ -378,6 +426,48 @@ func TestNewStoreWithPersisterLoadsExistingPrompts(t *testing.T) {
 	}
 	if got.Messages[0].Content != "preloaded" {
 		t.Errorf("got.Messages[0].Content = %q, want %q", got.Messages[0].Content, "preloaded")
+	}
+}
+
+// TestGetLatestWithOutOfOrderPersistedVersions documents a real, current
+// behavioral quirk rather than proving a bug: Get's own "latest" logic
+// (version <= 0) returns versions[len(versions)-1] -- the LAST SLICE
+// ELEMENT, never the entry with the maximum Version field. In-memory
+// Upsert always appends in ascending order, so this never bites via that
+// path, but a Persister.Load() implementation that returns a
+// DIFFERENTLY-ordered slice (out of order, or even just reversed) would
+// make "latest" resolve to whatever happens to be last in that slice,
+// not the highest version -- pinned down here explicitly so a future
+// intentional fix (defensively sorting on load, or documenting that
+// Persister implementations must return ascending order) has a test to
+// update, rather than discovering this from scratch.
+func TestGetLatestWithOutOfOrderPersistedVersions(t *testing.T) {
+	fp := &fakePersister{
+		data: map[string][]Prompt{
+			"greeting": {
+				{ID: "greeting", Version: 2, Messages: msgs("v2-content")},
+				{ID: "greeting", Version: 1, Messages: msgs("v1-content")},
+			},
+		},
+	}
+	s, err := NewStoreWithPersister(context.Background(), fp)
+	if err != nil {
+		t.Fatalf("NewStoreWithPersister: %v", err)
+	}
+
+	got, ok := s.Get("greeting", 0)
+	if !ok {
+		t.Fatalf("Get(greeting, 0): not found")
+	}
+	// Documents CURRENT behavior: the last slice element (Version 1) is
+	// returned as "latest," even though Version 2 is the genuinely
+	// higher version number -- almost certainly not the intended
+	// contract, but this is what Get actually does today.
+	if got.Version != 1 {
+		t.Errorf("Get(greeting, 0).Version = %d, want 1 (the last slice element, not the highest Version field — see this test's own doc comment)", got.Version)
+	}
+	if got.Messages[0].Content != "v1-content" {
+		t.Errorf("Get(greeting, 0).Messages[0].Content = %q, want %q", got.Messages[0].Content, "v1-content")
 	}
 }
 

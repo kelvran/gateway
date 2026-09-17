@@ -2,6 +2,7 @@ package inprocess
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -137,6 +138,56 @@ func TestLexicalSearchExpiredEntryIsReapedAndNotReturned(t *testing.T) {
 	}
 	if len(candidates) != 0 {
 		t.Errorf("Search after TTL expiry returned %d candidates, want 0", len(candidates))
+	}
+}
+
+// TestLexicalSearchAtExactExpiryInstantStillReturnsCandidate is
+// LexicalCache's own sibling of inprocess.go's identical
+// TestGetAtExactExpiryInstantStillHits: the expiry check here (now.After(
+// entry.expiresAt), lexical.go's own line) is the same strict ">", so
+// now == expiresAt exactly must still return the candidate, not reap it.
+func TestLexicalSearchAtExactExpiryInstantStillReturnsCandidate(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	c := NewLexicalCacheWithClock(0, clock.now)
+	ctx := context.Background()
+
+	const ttl = 10 * time.Second
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", ttl); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	clock.Advance(ttl) // now == expiresAt exactly, not one instant past it.
+
+	candidates, err := c.Search(ctx, "team-alpha", sig(1, 2, 3), 5)
+	if err != nil {
+		t.Fatalf("Search at the exact expiry instant returned error: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Errorf("Search at the exact expiry instant (now == expiresAt) returned %d candidates, want 1 — expiry is a strict After, not >=", len(candidates))
+	}
+}
+
+// TestLexicalCacheTenantCountIsUnbounded documents a currently-accepted
+// gap rather than proving a bug: c.tenants (the per-tenant bucket map)
+// has no cap of its own, unlike maxEntries bounding each tenant's OWN
+// entry count. Puts one entry each for a large number of distinct
+// tenant IDs and confirms len(c.tenants) grows linearly with no ceiling
+// -- so a future intentional fix (or an explicit decision to accept
+// this risk) has a test to update instead of discovering the gap from
+// scratch.
+func TestLexicalCacheTenantCountIsUnbounded(t *testing.T) {
+	c := NewLexicalCache(10)
+	ctx := context.Background()
+
+	const tenantCount = 5000
+	for i := 0; i < tenantCount; i++ {
+		tenantID := "tenant-" + strconv.Itoa(i)
+		if err := c.Put(ctx, tenantID, sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+			t.Fatalf("Put(%s): %v", tenantID, err)
+		}
+	}
+
+	if got := len(c.tenants); got != tenantCount {
+		t.Errorf("len(c.tenants) = %d, want %d — tenant count grows linearly with no cap, a known, currently-accepted gap", got, tenantCount)
 	}
 }
 

@@ -3,7 +3,9 @@ package dataplane
 import (
 	"context"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
@@ -150,5 +152,132 @@ func TestDeletedVirtualKeyStaysGoneAfterAPipelineRestart(t *testing.T) {
 	}
 	if err := store2.Close(); err != nil {
 		t.Fatalf("Close (second): %v", err)
+	}
+}
+
+// blockingOnceStore wraps a real identity.Store, letting a test hold its
+// FIRST Save call open indefinitely (blocked on release) after signaling
+// entered -- deterministically forcing a specific persistence-call
+// interleaving, rather than hoping a fixed sleep happens to land in the
+// right place. Only Save is intercepted; every other method (including
+// Delete) passes straight through to the real store.
+type blockingOnceStore struct {
+	identity.Store
+	entered atomic.Bool
+	// signalOnce/release are set by the test AFTER construction; both
+	// are only ever touched by this single blocked Save call and the
+	// test's own goroutine, never concurrently with each other.
+	signalEntered chan struct{}
+	release       chan struct{}
+}
+
+func (b *blockingOnceStore) Save(ctx context.Context, vk identity.VirtualKey) error {
+	if b.entered.CompareAndSwap(false, true) {
+		close(b.signalEntered)
+		<-b.release
+	}
+	return b.Store.Save(ctx, vk)
+}
+
+// TestConcurrentRotateAndDeleteSameVirtualKeySurvivesRestart is the
+// regression proof for the real bug fixed in Pipeline.virtualKeyMutationMu's
+// own doc comment: Upsert/Delete/RotateVirtualKey's in-memory CAS loop was
+// already safe, but each method's own persistence call was a separate,
+// uncoordinated I/O call with no ordering guarantee relative to a
+// DIFFERENT method's own persistence call for the SAME key. Deterministically
+// forces the exact adverse interleaving the fix closes: Rotate's CAS
+// commits in-memory, then its OWN persist call is held open; while it's
+// held, Delete runs to full completion (CAS + persist, removing the key
+// both in-memory and on disk); only THEN is Rotate's held persist call
+// released, writing the stale rotated hash back to disk AFTER Delete's
+// own disk write already removed it. Without virtualKeyMutationMu
+// serializing the two methods' entire mutate-then-persist sequences,
+// Delete's own DeleteVirtualKey call would never even reach its own CAS
+// while Rotate's Save is blocked -- proving the fix directly, not by
+// chance timing.
+func TestConcurrentRotateAndDeleteSameVirtualKeySurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.db")
+	baseKeys := []identity.VirtualKey{
+		{ID: "config-key", KeyHash: testHashOf("config-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+		{ID: "racing-key", KeyHash: testHashOf("racing-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+
+	realStore1, err := identityboltstore.Open(path)
+	if err != nil {
+		t.Fatalf("Open (first): %v", err)
+	}
+	store1 := &blockingOnceStore{Store: realStore1, signalEntered: make(chan struct{}), release: make(chan struct{})}
+	p1 := newTestPipelineWithIdentityStore(t, baseKeys, store1)
+
+	rotateErrCh := make(chan error, 1)
+	go func() {
+		rotateErrCh <- p1.RotateVirtualKey("racing-key", testHashOf("rotated-secret"), time.Minute)
+	}()
+
+	select {
+	case <-store1.signalEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Rotate's own Save call never entered — virtualKeyMutationMu may be blocking it before it even reaches persistence")
+	}
+
+	// At this point Rotate's CAS has ALREADY committed in-memory (the
+	// key now has the rotated hash) and its own persist call is
+	// deliberately held open. If virtualKeyMutationMu is doing its job,
+	// this Delete call cannot even START its own CAS loop until Rotate's
+	// entire method — including the still-blocked Save above — returns.
+	deleteDone := make(chan struct{})
+	go func() {
+		defer close(deleteDone)
+		if err := p1.DeleteVirtualKey("racing-key"); err != nil {
+			t.Errorf("DeleteVirtualKey: %v", err)
+		}
+	}()
+
+	select {
+	case <-deleteDone:
+		t.Fatal("DeleteVirtualKey returned while Rotate's own persist call was still blocked — virtualKeyMutationMu did NOT serialize the two methods")
+	case <-time.After(200 * time.Millisecond):
+		// Expected: Delete is still blocked waiting for the mutex Rotate
+		// is holding.
+	}
+
+	close(store1.release) // let Rotate's held Save call, and the rest of RotateVirtualKey, finish.
+	if err := <-rotateErrCh; err != nil {
+		t.Fatalf("RotateVirtualKey: %v", err)
+	}
+	<-deleteDone
+
+	// Final state, whatever it settled on, in-memory.
+	var finalInMemory *identity.VirtualKey
+	for _, k := range p1.verifier.Load().Keys() {
+		if k.ID == "racing-key" {
+			kk := k
+			finalInMemory = &kk
+		}
+	}
+
+	if err := p1.Close(); err != nil { // closes store1 too
+		t.Fatalf("Close (first): %v", err)
+	}
+
+	store2, err := identityboltstore.Open(path)
+	if err != nil {
+		t.Fatalf("Open (second, simulating a restart): %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+	persisted, err := store2.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	persistedEntry, stillPersisted := persisted["racing-key"]
+
+	if finalInMemory == nil && stillPersisted {
+		t.Fatalf("racing-key is absent in-memory but STILL PERSISTED on disk (%+v) -- a restart would resurrect it", persistedEntry)
+	}
+	if finalInMemory != nil && !stillPersisted {
+		t.Fatalf("racing-key is present in-memory (%+v) but MISSING from the persisted store -- a restart would silently drop it", *finalInMemory)
+	}
+	if finalInMemory != nil && stillPersisted && finalInMemory.KeyHash != persistedEntry.KeyHash {
+		t.Fatalf("racing-key's persisted KeyHash %q does not match its final in-memory KeyHash %q", persistedEntry.KeyHash, finalInMemory.KeyHash)
 	}
 }

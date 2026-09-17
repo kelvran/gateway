@@ -61,6 +61,36 @@ func TestNewInMemoryKeyLimiterBehavesLikeDirectTokenBucket(t *testing.T) {
 	}
 }
 
+// TestHasLimitDistinguishesZeroCapacityFromNeverRegistered is the
+// regression proof for HasLimit's own doc comment, never previously
+// exercised: HasLimit returns false for BOTH a key explicitly registered
+// with Capacity 0 and a key never registered at all (it cannot
+// distinguish the two, since a zero-value KeyConfig map lookup is
+// identical either way) -- this is documented, intentional behavior,
+// pinned down here with concrete cases rather than left implicit.
+func TestHasLimitDistinguishesZeroCapacityFromNeverRegistered(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{
+		{ID: "zero-capacity", Capacity: 0},
+		{ID: "positive-capacity", Capacity: 10, RefillPerSecond: 1},
+		{ID: "negative-capacity", Capacity: -5},
+	})
+
+	cases := []struct {
+		keyID string
+		want  bool
+	}{
+		{"zero-capacity", false},
+		{"positive-capacity", true},
+		{"negative-capacity", false},
+		{"never-registered-at-all", false},
+	}
+	for _, c := range cases {
+		if got := l.HasLimit(c.keyID); got != c.want {
+			t.Errorf("HasLimit(%q) = %v, want %v", c.keyID, got, c.want)
+		}
+	}
+}
+
 func TestNewRedisKeyLimiterPassesCorrectPerKeyConfigToBackend(t *testing.T) {
 	backend := &fakeBackend{}
 	l := NewRedisKeyLimiter([]KeyConfig{

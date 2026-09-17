@@ -284,7 +284,20 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 	// uses a bearer token for a key that was never registered at all —
 	// an auth failure returning long before any cache check — and must
 	// add ZERO further kelvran.cache.lookup data points.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer no-such-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	//
+	// Also doubles as the regression proof for the real bug fixed in
+	// telemetry.ChatCompletionResult.RequestModel's own doc comment
+	// (found via the kelvran-full-power-sweep audit, 2026-09-17): this
+	// exact auth-failure path (no deployment ever resolved) used to pass
+	// req.Model straight through, unbounded, into a metric attribute —
+	// an unauthenticated caller sending a unique, garbage model string on
+	// every call could mint a new gen_ai.request.model time series per
+	// request. Reusing THIS call (rather than a second, separate test
+	// function that swaps the provider again — this package's own
+	// one-delegation-per-test-binary constraint, see above) with a
+	// deliberately attacker-shaped model string checks that.
+	const attackerModel = "attacker-unique-model-name-12345-do-not-let-this-become-a-metric-label"
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer no-such-key", adapter.ChatRequest{Model: attackerModel}, ""); err == nil {
 		t.Fatal("HandleChatCompletion with an unregistered bearer token returned nil error, want an auth failure")
 	}
 
@@ -295,6 +308,7 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 
 	var found bool
 	var cacheLookupTotal int64
+	var sawAttackerModel, sawUnresolvedSentinel bool
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			switch m.Name {
@@ -317,6 +331,23 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 				for _, dp := range sum.DataPoints {
 					cacheLookupTotal += dp.Value
 				}
+			case "gen_ai.client.operation.duration":
+				hist, ok := m.Data.(metricdata.Histogram[float64])
+				if !ok {
+					t.Fatalf("gen_ai.client.operation.duration data type = %T, want metricdata.Histogram[float64]", m.Data)
+				}
+				for _, dp := range hist.DataPoints {
+					model, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrGenAIRequestModel))
+					if !hasAttr {
+						continue
+					}
+					switch model.AsString() {
+					case attackerModel:
+						sawAttackerModel = true
+					case "unresolved":
+						sawUnresolvedSentinel = true
+					}
+				}
 			}
 		}
 	}
@@ -325,6 +356,12 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 	}
 	if cacheLookupTotal != 1 {
 		t.Errorf("kelvran.cache.lookup total = %d, want 1 — the auth-failure call never reached the cache-check stage and must not be counted as a miss", cacheLookupTotal)
+	}
+	if sawAttackerModel {
+		t.Error("gen_ai.request.model carried the raw, attacker-controlled model string through to a metric attribute — unbounded-cardinality DoS is NOT fixed")
+	}
+	if !sawUnresolvedSentinel {
+		t.Error(`gen_ai.request.model never recorded the "unresolved" sentinel for a request that never resolved a deployment`)
 	}
 }
 

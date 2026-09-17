@@ -1,6 +1,9 @@
 package router
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestSelectExcludesOnlyAfterNConsecutiveFailures is the load-bearing
 // N-of-M proof from docs/rfcs/2026-09-07-gateway-active-health-probing.md:
@@ -139,6 +142,44 @@ func TestSelectFailsOpenWhenEveryDeploymentUnhealthy(t *testing.T) {
 	}
 }
 
+// TestSelectFailsOpenWhenAllOfMultipleDeploymentsAreUnhealthy extends
+// TestSelectFailsOpenWhenEveryDeploymentUnhealthy above to the genuinely
+// untested case: 2+ deployments, ALL unhealthy (not just the trivial
+// single-deployment topology) -- Select must still fail open (never
+// ok=false) and return the same, deterministic candidate across repeated
+// calls, not a different one each time.
+func TestSelectFailsOpenWhenAllOfMultipleDeploymentsAreUnhealthy(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "first", Model: "gpt-4o"},
+		{Name: "second", Model: "gpt-4o"},
+	}, HealthConfig{UnhealthyThreshold: 3, HealthyThreshold: 2})
+
+	for _, name := range []string{"first", "second"} {
+		for i := 0; i < 3; i++ {
+			r.ReportProbeResult(name, false)
+		}
+		if r.IsHealthy(name) {
+			t.Fatalf("setup: %q should be unhealthy after 3 consecutive failures", name)
+		}
+	}
+
+	var want string
+	for i := 0; i < 10; i++ {
+		name, ok := r.Select("gpt-4o", nil)
+		if !ok {
+			t.Fatalf("call %d: Select with ALL deployments unhealthy returned ok=false, want true (fail open)", i)
+		}
+		if name != "first" && name != "second" {
+			t.Fatalf("call %d: Select = %q, want one of the two configured deployments", i, name)
+		}
+		if want == "" {
+			want = name
+		} else if name != want {
+			t.Fatalf("call %d: Select = %q, want the SAME deterministic candidate %q every call", i, name, want)
+		}
+	}
+}
+
 // TestSelectSkipsUnhealthyDespiteHeavilySkewedWeight is the correctness
 // proof for selectHealthy's sumW-bounded loop (see wrr.go/health.go's own
 // doc comments): a low-weight healthy deployment must still be found
@@ -163,5 +204,66 @@ func TestSelectSkipsUnhealthyDespiteHeavilySkewedWeight(t *testing.T) {
 		if name, ok := r.Select("gpt-4o", nil); !ok || name != "light" {
 			t.Fatalf("call %d: Select = (%q, %v), want (%q, true) — \"heavy\" is unhealthy, \"light\" must always be chosen instead", i, name, ok, "light")
 		}
+	}
+}
+
+// TestSelectSkipsUnhealthyUnderExtremeWeightSkew proves
+// TestSelectSkipsUnhealthyDespiteHeavilySkewedWeight's own correctness
+// property holds at a genuinely extreme skew (1 vs 1,000,000, not just
+// 1 vs 50) -- selectHealthy's own sumW-bounded loop must still find the
+// light, healthy deployment every time, and must do so within a small,
+// bounded wall-clock ceiling rather than degrading unboundedly at this
+// magnitude.
+func TestSelectSkipsUnhealthyUnderExtremeWeightSkew(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "heavy", Model: "gpt-4o", Weight: 1_000_000},
+		{Name: "light", Model: "gpt-4o", Weight: 1},
+	}, HealthConfig{UnhealthyThreshold: 3, HealthyThreshold: 2})
+
+	for i := 0; i < 3; i++ {
+		r.ReportProbeResult("heavy", false)
+	}
+	if r.IsHealthy("heavy") {
+		t.Fatal("setup: \"heavy\" should be unhealthy after 3 consecutive failures")
+	}
+
+	// A single call, timed generously: this magnitude of skew is already
+	// known (per the kelvran-full-power-sweep audit that found this
+	// exact gap) to incur a real, non-trivial latency cost from
+	// selectHealthy's own sumW-bounded loop (sumW here is just over
+	// 1,000,000) -- this test's own job is proving correctness AND
+	// catching a future regression that makes this path unboundedly
+	// worse, not asserting today's already-accepted cost is small.
+	start := time.Now()
+	name, ok := r.Select("gpt-4o", nil)
+	elapsed := time.Since(start)
+	if !ok || name != "light" {
+		t.Fatalf("Select = (%q, %v), want (%q, true) — \"heavy\" is unhealthy, \"light\" must always be chosen instead", name, ok, "light")
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("one Select call under a 1-vs-1,000,000 weight skew took %v, want well under 10s — a future regression that makes this path far worse should be caught here", elapsed)
+	}
+}
+
+// TestReportProbeResultForUnconfiguredDeploymentNameIsTrackedButNeverSelected
+// proves ReportProbeResult/IsHealthy tolerate a deployment name that was
+// never passed to New at all -- health state is tracked (not silently
+// dropped, and never panics), but Select for a REAL model's own group is
+// completely unaffected by it.
+func TestReportProbeResultForUnconfiguredDeploymentNameIsTrackedButNeverSelected(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "d1", Model: "gpt-4o"},
+	}, HealthConfig{UnhealthyThreshold: 3, HealthyThreshold: 2})
+
+	for i := 0; i < 3; i++ {
+		r.ReportProbeResult("never-configured", false)
+	}
+	if r.IsHealthy("never-configured") {
+		t.Error(`IsHealthy("never-configured") = true after 3 consecutive failures, want false — health state must still be tracked even for a name New never saw`)
+	}
+
+	name, ok := r.Select("gpt-4o", nil)
+	if !ok || name != "d1" {
+		t.Fatalf(`Select("gpt-4o", nil) = (%q, %v), want ("d1", true) — an unconfigured deployment's health state must never affect an unrelated model's own routing`, name, ok)
 	}
 }

@@ -119,6 +119,24 @@ func TestRoundTrip(t *testing.T) {
 // decoded from a raw JSON payload shaped exactly like OpenAI's own OpenAPI
 // spec (openapi.yaml's CompletionUsage schema) -- not hand-constructed Go
 // structs, so a wrong json tag would be caught here too.
+// TestFromProviderEmptyChoicesReturnsError is the regression proof for
+// the real bug fixed in FromProvider's own doc comment: an empty
+// "choices" array must return an error, not a silent, zero-Choice
+// success indistinguishable from a genuine (never-happens-in-practice)
+// zero-choice response, matching gemini.go's own explicit guard for the
+// equivalent empty-response shape.
+func TestFromProviderEmptyChoicesReturnsError(t *testing.T) {
+	raw := []byte(`{"id": "chatcmpl-test", "model": "gpt-4o", "choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}}`)
+	var nativeResp Response
+	if err := json.Unmarshal(raw, &nativeResp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if _, err := New().FromProvider(&nativeResp); err == nil {
+		t.Fatal("FromProvider: want error for an empty choices array, got nil")
+	}
+}
+
 func TestFromProviderExtractsRealCachedTokens(t *testing.T) {
 	raw := []byte(`{
 		"id": "chatcmpl-test",

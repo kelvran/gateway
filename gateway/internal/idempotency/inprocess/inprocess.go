@@ -86,6 +86,9 @@ func (s *Store) sweepExpiredLocked() {
 
 // Claim implements idempotency.Store.
 func (s *Store) Claim(_ context.Context, key string, fingerprint [32]byte, ttl time.Duration) (idempotency.ClaimResult, error) {
+	if ttl <= 0 {
+		return idempotency.ClaimResult{}, idempotency.ErrNonPositiveTTL
+	}
 	for {
 		s.mu.Lock()
 		s.sweepExpiredLocked()

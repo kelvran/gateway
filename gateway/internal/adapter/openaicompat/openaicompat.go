@@ -394,6 +394,12 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	if !ok {
 		return adapter.ChatResponse{}, fmt.Errorf("openaicompat: FromProvider expected *Response, got %T", resp)
 	}
+	// **Fixed 2026-09-17, real bug**: see openai.go's identical fix --
+	// an empty native.Choices previously fell straight through to a
+	// silent, zero-Choice ChatResponse with a nil error.
+	if len(native.Choices) == 0 {
+		return adapter.ChatResponse{}, fmt.Errorf("openaicompat: response contains no choices (unexpected upstream shape)")
+	}
 
 	choices := make([]adapter.Choice, 0, len(native.Choices))
 	for _, c := range native.Choices {

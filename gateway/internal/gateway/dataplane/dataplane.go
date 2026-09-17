@@ -450,6 +450,30 @@ type Config struct {
 // sees the new one. No lock, no partial-update window within one request.
 type Pipeline struct {
 	verifier atomic.Pointer[identity.Verifier]
+	// virtualKeyMutationMu serializes Upsert/Delete/RotateVirtualKey's
+	// entire CAS-retry-then-persist sequence against each other.
+	// **Fixed 2026-09-17, real bug**: each of those 3 methods' own
+	// in-memory CompareAndSwap loop was already safe against every OTHER
+	// concurrent caller -- but the PERSISTENCE call each one issues
+	// immediately after its own CAS succeeds is a separate, uncoordinated
+	// I/O call with no ordering guarantee relative to a DIFFERENT
+	// method's own persistence call. Two concurrent admin calls on the
+	// SAME key (e.g. Rotate + Delete) could leave the on-disk bbolt store
+	// inconsistent with the final in-memory state: whichever CAS won LAST
+	// in-memory is not necessarily whichever persist call happened to
+	// land last on disk, since persistence isn't part of the same atomic
+	// operation. That divergence is invisible until a restart reloads the
+	// stale persisted record via mergePersistedVirtualKeys, resurrecting
+	// data the in-memory state had already discarded.
+	//
+	// These are admin-only, low-frequency operations (not a request-path
+	// hot loop), so serializing the whole mutate-then-persist sequence
+	// with a plain mutex is the correct, boring fix -- it eliminates the
+	// interleaving entirely rather than trying to reconcile two
+	// independently-racing I/O calls after the fact. The CAS retry loop
+	// inside each method is kept as-is (defense-in-depth against any
+	// future caller that forgets to hold this lock), not removed.
+	virtualKeyMutationMu sync.Mutex
 	// identityStore is nil unless Config.IdentityStore was set — see that
 	// field's own doc comment. Read only by Upsert/Delete/RotateVirtualKey,
 	// after their own CompareAndSwap has already committed the in-memory
@@ -729,6 +753,8 @@ var ErrVirtualKeyNotFound = errors.New("dataplane: virtual key not found")
 // (register before an ID becomes resolvable) is satisfied identically
 // whether the very first CAS wins or a later retry does.
 func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.KeyConfig) error {
+	p.virtualKeyMutationMu.Lock()
+	defer p.virtualKeyMutationMu.Unlock()
 	p.limiter.Register(rateLimit)
 	for {
 		old := p.verifier.Load()
@@ -811,6 +837,8 @@ func (p *Pipeline) deletePersistedVirtualKeyIfStoreConfigured(id string) {
 // in the Verifier because a concurrent write silently overwrote the
 // removal.
 func (p *Pipeline) DeleteVirtualKey(name string) error {
+	p.virtualKeyMutationMu.Lock()
+	defer p.virtualKeyMutationMu.Unlock()
 	for {
 		old := p.verifier.Load()
 		current := old.Keys()
@@ -863,6 +891,8 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 // limit, not a bug: supporting an unbounded chain of still-valid old
 // hashes has no real operational need this feature was built to serve.
 func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Duration) error {
+	p.virtualKeyMutationMu.Lock()
+	defer p.virtualKeyMutationMu.Unlock()
 	for {
 		old := p.verifier.Load()
 		current := old.Keys()
@@ -1586,19 +1616,28 @@ func isRegionAllowed(vk *identity.VirtualKey, region string) bool {
 const idempotencyKeyTTL = 10 * time.Minute
 
 // idempotencyStoreKey scopes a client-supplied Idempotency-Key to tenantID
-// (a virtual key's own ID), using the same NUL-byte-tagged sha256 pattern
-// as cache.Key/NormalizedKey above — naive string concatenation (e.g.
-// tenantID+":"+idempotencyKey) is exactly the unescaped-delimiter
-// collision class those two functions already guard against: a tenant ID
-// or key containing the separator byte could otherwise collide two
-// DIFFERENT (tenant, key) pairs onto the same idempotency.Store entry.
+// (a virtual key's own ID), using a length-prefixed sha256 field encoding
+// -- see internal/cache.writeField's doc comment for why a bare
+// "\x00tag=value" separator (this function's own pre-2026-09-17 scheme,
+// and cache.Key/NormalizedKey's) is NOT actually collision-safe: a tenant
+// ID containing a literal NUL byte could absorb the "\x00idempotency_key="
+// tag and part of a different key's value, letting two DIFFERENT (tenant,
+// key) pairs collide onto the same idempotency.Store entry. tenantID here
+// is server-assigned (an identity.VirtualKey.ID), not raw per-request
+// client input, so this exact vector is far less directly reachable than
+// cache.Key's own model field was -- fixed anyway, for the same structural
+// reason and so this function's own doc comment stops claiming a
+// collision-safety property the old scheme didn't actually have.
 // Unscoped (a bare idempotencyKey) would let two different tenants that
 // happen to send the same literal header value collide on one another's
 // stored responses — real cross-tenant leakage, the same severity class
 // THREAT_MODEL.md already tracks for the cache.
 func idempotencyStoreKey(tenantID, idempotencyKey string) string {
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "tenant=%s\x00idempotency_key=%s", tenantID, idempotencyKey)
+	_, _ = fmt.Fprintf(h, "tenant:%d:", len(tenantID))
+	_, _ = io.WriteString(h, tenantID)
+	_, _ = fmt.Fprintf(h, "idempotency_key:%d:", len(idempotencyKey))
+	_, _ = io.WriteString(h, idempotencyKey)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -1738,7 +1777,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	)
 
 	start := time.Now()
-	ctx, span := telemetry.Tracer.Start(ctx, "chat "+req.Model)
+	ctx, span := telemetry.Tracer.Start(ctx, "chat "+boundedModelForTelemetry(req.Model))
 	defer func() {
 		// attachRetryAfter runs BEFORE finalize, reassigning the named
 		// return err, so finalize's own outcomeFor-based classification
@@ -2511,11 +2550,31 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if cacheInfo.Hit() {
 		savingsUsd = cost.String()
 	}
+	// requestModelForMetrics guards RequestModel's own single consumer
+	// (RecordChatCompletionMetrics's gen_ai.request.model attribute)
+	// against an unbounded-cardinality DoS: req.Model is fully
+	// client-controlled, unauthenticated input at this point (finalize
+	// runs via defer on every call, including an auth failure that never
+	// resolved a deployment at all), and an OTel/Prometheus metric
+	// attribute is exactly the sink where an attacker minting one unique
+	// req.Model string per request would otherwise create one brand-new,
+	// permanent time series per request. dep.Name != "" reuses the same
+	// signal responseFormatRequestedNotEnforced above already relies
+	// on: a non-empty dep.Name means req.Model genuinely matched a real,
+	// admin-configured model group and the router resolved a deployment
+	// for it — bounded cardinality by construction, safe to pass through
+	// unchanged. An empty dep.Name (auth failure, no deployment
+	// configured for this model, or a guardrail block before routing)
+	// means req.Model could be anything; sentinel it instead.
+	requestModelForMetrics := req.Model
+	if dep.Name == "" {
+		requestModelForMetrics = "unresolved"
+	}
 	result := telemetry.ChatCompletionResult{
 		VirtualKeyID:    virtualKeyID,
 		Provider:        dep.Provider,
 		DeploymentName:  dep.Name,
-		RequestModel:    req.Model,
+		RequestModel:    requestModelForMetrics,
 		ResponseModel:   responseModel,
 		ResponseID:      resp.ID,
 		FinishReasons:   finishReasons(resp),
@@ -2788,6 +2847,35 @@ func responseWasTruncated(resp adapter.ChatResponse) bool {
 	return false
 }
 
+// maxModelForTelemetry bounds req.Model's own length wherever it flows
+// into the OTel span name or a structured log line. **Fixed 2026-09-17,
+// real bug**: req.Model is fully client-controlled, unauthenticated
+// input at the point the span is created (HandleChatCompletion/
+// HandleChatCompletionStream start the span before auth is checked) --
+// an unauthenticated caller could previously send an arbitrarily large
+// model string (bounded only by the 32MiB whole-body cap) straight into
+// both the span name and the chat_completion log line's own "model"
+// field on every single call, including a failed-auth one. 256 is far
+// beyond any realistic model name while still bounding a pathological
+// one to a small, fixed cost. Distinct from telemetry.RequestModel's own
+// separate fix (dataplane.go's finalize sentinels that field to
+// "unresolved" for the metric attribute specifically, since a metric
+// attribute's cardinality is a different, more acute risk than a single
+// span/log field's byte length) -- this bound applies unconditionally,
+// including to a genuinely valid, resolved model name that just happens
+// to be unusually long.
+const maxModelForTelemetry = 256
+
+// boundedModelForTelemetry truncates model to maxModelForTelemetry bytes
+// for use in a span name or log field -- see that constant's own doc
+// comment.
+func boundedModelForTelemetry(model string) string {
+	if len(model) <= maxModelForTelemetry {
+		return model
+	}
+	return model[:maxModelForTelemetry]
+}
+
 // traceLogFields returns "trace_id"/"span_id" key-value pairs for ctx's
 // active span, or nil when ctx carries no valid span context at all
 // (e.g. a background health-probe pass, or a direct unit-test call with
@@ -2820,7 +2908,7 @@ func traceLogFields(ctx context.Context) []any {
 // precomputed by finalize (decimal.Zero when err != nil) so it's never
 // calculated twice.
 func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
-	fields := append(traceLogFields(ctx), "model", req.Model, "cache_hit", cacheInfo.Hit())
+	fields := append(traceLogFields(ctx), "model", boundedModelForTelemetry(req.Model), "cache_hit", cacheInfo.Hit())
 	if cacheInfo.Hit() {
 		fields = append(fields, "cache_layer", cacheInfo.Layer, "cache_age_ms", cacheInfo.AgeMs)
 		if cacheInfo.Layer == "L3" {

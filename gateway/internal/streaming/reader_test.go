@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"strings"
@@ -107,5 +108,67 @@ func TestReaderEmptyInputReturnsEOFImmediately(t *testing.T) {
 	_, err := r.Next()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("Next() error = %v, want io.EOF", err)
+	}
+}
+
+// erroringReader returns a fixed, non-EOF error after yielding data once
+// -- for proving Next's own non-EOF read-error path, distinct from every
+// other test in this file, which only ever exercises a clean io.EOF.
+type erroringReader struct {
+	data []byte
+	err  error
+	sent bool
+}
+
+func (r *erroringReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		n := copy(p, r.data)
+		return n, nil
+	}
+	return 0, r.err
+}
+
+// TestReaderSurfacesNonEOFReadErrorNotAsEOF is the regression proof for a
+// real gap: every other test in this file exercises Next's own io.EOF
+// path, but a genuine non-EOF read error (a connection reset, a TLS
+// error, etc.) from the underlying reader was never exercised -- Next
+// must wrap and surface it as a real error, never silently treat it as
+// io.EOF (which would make a truncated/corrupted stream look like a
+// clean end).
+func TestReaderSurfacesNonEOFReadErrorNotAsEOF(t *testing.T) {
+	wantErr := errors.New("simulated connection reset")
+	r := NewReader(&erroringReader{data: []byte("data: partial\n"), err: wantErr})
+
+	// The first Scan reads the one complete line successfully; there is
+	// no blank line and no further data, so Next keeps scanning and
+	// hits the erroring second Read call before ever returning.
+	_, err := r.Next()
+	if err == nil {
+		t.Fatal("Next() error = nil, want a real error for a non-EOF read failure")
+	}
+	if errors.Is(err, io.EOF) {
+		t.Fatalf("Next() error = %v, want it to NOT be classified as io.EOF", err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Next() error = %v, want it to wrap %v", err, wantErr)
+	}
+}
+
+// TestReaderRejectsLineExceedingMaxSSELineBytes is the regression proof
+// for maxSSELineBytes's own cap, never previously exercised: a single
+// line with no embedded newline, one byte over the 1 MiB bound, must be
+// rejected via bufio.Scanner's own ErrTooLong, not silently truncated or
+// allowed to grow unbounded.
+func TestReaderRejectsLineExceedingMaxSSELineBytes(t *testing.T) {
+	oversizedLine := "data: " + strings.Repeat("x", (1<<20)+1)
+	r := NewReader(strings.NewReader(oversizedLine))
+
+	_, err := r.Next()
+	if err == nil {
+		t.Fatal("Next() error = nil, want a real error for a line exceeding maxSSELineBytes")
+	}
+	if !errors.Is(err, bufio.ErrTooLong) {
+		t.Errorf("Next() error = %v, want errors.Is(err, bufio.ErrTooLong)", err)
 	}
 }

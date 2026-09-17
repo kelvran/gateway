@@ -83,6 +83,50 @@ func TestRefillNeverExceedsCapacity(t *testing.T) {
 	}
 }
 
+// TestRefillIgnoresBackwardClockJump is the regression proof for
+// refillLocked's own elapsed <= 0 guard, never previously exercised: a
+// backward-moving clock (an NTP correction, e.g.) must never apply a
+// negative refill or otherwise corrupt state — Allow()/token balance
+// must behave exactly as if no time had passed at all, and refill must
+// resume correctly from the pre-jump lastRefill once the clock moves
+// forward again.
+func TestRefillIgnoresBackwardClockJump(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	b := NewTokenBucketWithClock(2, 1, clock.now) // burst of 2, refill 1/sec
+
+	firstAllowed, secondAllowed := b.Allow(), b.Allow()
+	if !firstAllowed || !secondAllowed {
+		t.Fatal("expected first two Allow() calls to succeed within burst capacity")
+	}
+	if b.Allow() {
+		t.Fatal("Allow() succeeded with no tokens and no elapsed time")
+	}
+
+	// Clock jumps BACKWARD by a full hour -- elapsed is now deeply
+	// negative. Must be a complete no-op: no panic, no negative refill,
+	// balance/behavior unchanged from immediately before the jump.
+	clock.Advance(-time.Hour)
+	if b.Allow() {
+		t.Fatal("Allow() succeeded immediately after a backward clock jump — a negative refill was incorrectly applied")
+	}
+
+	// Advancing forward again, from the ORIGINAL (pre-jump) instant, by
+	// enough time for exactly one token, must refill correctly — proving
+	// lastRefill itself was never corrupted by the backward jump (a
+	// buggy implementation that let lastRefill regress backward would
+	// need MORE than 1.1s of forward advance from here to refill a
+	// token, not exactly the same 1.1s TestRejectedUntilRefill's own
+	// forward-only case requires).
+	clock.Advance(time.Hour) // back to the original instant
+	clock.Advance(1100 * time.Millisecond)
+	if !b.Allow() {
+		t.Fatal("Allow() failed after enough forward time elapsed for a token to refill — lastRefill may have been corrupted by the earlier backward jump")
+	}
+	if b.Allow() {
+		t.Fatal("Allow() succeeded immediately after consuming the just-refilled token")
+	}
+}
+
 // TestDebitCanOverdraftBelowZero proves the deliberate design choice in
 // docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md: real token usage is
 // only known after a request completes, so Debit must be able to push

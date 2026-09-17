@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -269,6 +270,148 @@ func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
 	}
 }
 
+// TestUpsertVirtualKeyRejectsMalformedJSONBody proves the handler's own
+// json.NewDecoder(r.Body).Decode error path against genuinely
+// syntactically invalid JSON -- distinct from
+// TestUpsertVirtualKeyMissingKeyHashIsRejected above, which sends
+// well-formed JSON missing a required field.
+func TestUpsertVirtualKeyRejectsMalformedJSONBody(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-x", fakeAdminCredential(), `{not valid json`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// truncatedBodyReader yields a fixed prefix of bytes, then a genuine
+// non-EOF read error -- simulating a real client connection dropping
+// mid-body (a Content-Length/actual-bytes mismatch), which
+// json.Decoder.Decode must surface as a real decode error, never a 500
+// or a hang.
+type truncatedBodyReader struct {
+	prefix []byte
+	sent   bool
+}
+
+func (r *truncatedBodyReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		n := copy(p, r.prefix)
+		return n, nil
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+// TestUpsertVirtualKeyRejectsTruncatedBodyContentLengthMismatch proves
+// this handler's own json.Decode call handles a body that ends
+// (errors) partway through, well-formed-looking JSON prefix included --
+// never a 500, never a hang.
+func TestUpsertVirtualKeyRejectsTruncatedBodyContentLengthMismatch(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := &truncatedBodyReader{prefix: []byte(`{"key_hash":"` + testHashOf("irrelevant"))}
+	req := httptest.NewRequest(http.MethodPost, "/admin/virtual_keys/team-truncated", io.NopCloser(body))
+	req.Header.Set("Authorization", "Bearer "+fakeAdminCredential())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyRejectsOversizedName is the regression proof for
+// the real bug fixed in maxAdminIdentifierLen's own doc comment: this
+// handler previously validated neither length nor character content on
+// the name path parameter at all before it became a map key in
+// identity.Verifier/budget.Tracker/ratelimit.KeyLimiter and every future
+// log line referencing it.
+func TestUpsertVirtualKeyRejectsOversizedName(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	oversizedName := strings.Repeat("a", maxAdminIdentifierLen+1)
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `"}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/"+oversizedName, fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyRejectsNegativeBudgetUSD is the regression proof
+// for the real bug fixed alongside it: this handler previously performed
+// no validation at all on budget_usd, silently accepting a negative
+// value that lands in decimal.Decimal.IsPositive()'s own "unlimited"
+// bucket for the wrong reason.
+func TestUpsertVirtualKeyRejectsNegativeBudgetUSD(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"-10"}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-negative-budget", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyRejectsNegativeBudgetResetIntervalSeconds proves
+// the more severe half of the same finding: a negative
+// budget_reset_interval_seconds becomes a negative time.Duration, which
+// budget.Tracker's resetIfNeeded compares via now.Sub(start) >=
+// resetInterval -- trivially true on every check, silently forcing a
+// permanent reset rather than erroring on the operator mistake.
+func TestUpsertVirtualKeyRejectsNegativeBudgetResetIntervalSeconds(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_reset_interval_seconds":-3600}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-negative-reset", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyRejectsOutOfRangeBudgetWarnPercent proves the third
+// field of the same finding: budget_warn_percent outside [0, 100] is a
+// non-fatal but confusing operator mistake (an alert threshold that can
+// never fire, or fires immediately) worth rejecting up front.
+func TestUpsertVirtualKeyRejectsOutOfRangeBudgetWarnPercent(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_warn_percent":150}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-bad-warn-percent", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyAcceptsZeroBudgetFieldsAsUnlimitedDefault is the
+// regression guard: 0 (the common, "no budget configured" default for
+// every one of these 3 fields) must still be accepted, not swept up by
+// an overly strict >= 0 boundary mistake.
+func TestUpsertVirtualKeyAcceptsZeroBudgetFieldsAsUnlimitedDefault(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"0","budget_reset_interval_seconds":0,"budget_warn_percent":0}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-zero-budget", fakeAdminCredential(), body)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertVirtualKeyRejectsMalformedBudgetUSDValue proves a budget_usd
+// value that fails decimal parsing is rejected -- decimal.Decimal's own
+// UnmarshalJSON returns an error for a non-numeric string, which
+// propagates up through this handler's outer json.Decode call as an
+// ordinary malformed-body 400, never silently defaulting to zero.
+func TestUpsertVirtualKeyRejectsMalformedBudgetUSDValue(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"not-a-number"}`
+	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-bad-budget-usd", fakeAdminCredential(), body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 	pipeline := newTestPipeline(t)
 	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
@@ -286,6 +429,139 @@ func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+otherBearerValue, adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("HandleChatCompletion succeeded with a deleted key's bearer value")
+	}
+}
+
+// TestConcurrentRotateVirtualKeyRequestsForSameNameDoNotCorruptState is
+// the load-bearing proof, at the real HTTP-handler level, that
+// dataplane.Pipeline.virtualKeyMutationMu (fixed earlier this round)
+// correctly serializes two concurrent rotate calls for the SAME virtual
+// key: both requests must succeed, and the final state must
+// deterministically reflect exactly one of the two new secrets, never a
+// corrupted mix of both.
+func TestConcurrentRotateVirtualKeyRequestsForSameNameDoNotCorruptState(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	secretA := "rotated-secret-a"
+	secretB := "rotated-secret-b"
+	bodyA := `{"new_key_hash":"` + testHashOf(secretA) + `"}`
+	bodyB := `{"new_key_hash":"` + testHashOf(secretB) + `"}`
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		codes[0] = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/test-key/rotate", fakeAdminCredential(), bodyA).Code
+	}()
+	go func() {
+		defer wg.Done()
+		codes[1] = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/test-key/rotate", fakeAdminCredential(), bodyB).Code
+	}()
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusNoContent {
+			t.Errorf("rotate call %d status = %d, want 204", i, code)
+		}
+	}
+
+	vk, ok := pipeline.GetVirtualKey("test-key")
+	if !ok {
+		t.Fatal("test-key is gone after concurrent rotate calls")
+	}
+	hashA, hashB := testHashOf(secretA), testHashOf(secretB)
+	if vk.KeyHash != hashA && vk.KeyHash != hashB {
+		t.Fatalf("final KeyHash %q matches NEITHER rotated secret's hash — state corrupted, not just a race on which one won", vk.KeyHash)
+	}
+}
+
+// TestConcurrentUpsertVirtualKeyRequestsForSameNameDoNotCorruptState
+// mirrors the rotate test above for two concurrent upsert calls with
+// genuinely different bodies for the SAME name.
+func TestConcurrentUpsertVirtualKeyRequestsForSameNameDoNotCorruptState(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	secretA := "upsert-race-secret-a"
+	secretB := "upsert-race-secret-b"
+	bodyA := `{"key_hash":"` + testHashOf(secretA) + `"}`
+	bodyB := `{"key_hash":"` + testHashOf(secretB) + `"}`
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		codes[0] = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-race", fakeAdminCredential(), bodyA).Code
+	}()
+	go func() {
+		defer wg.Done()
+		codes[1] = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-race", fakeAdminCredential(), bodyB).Code
+	}()
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusNoContent {
+			t.Errorf("upsert call %d status = %d, want 204", i, code)
+		}
+	}
+
+	vk, ok := pipeline.GetVirtualKey("team-race")
+	if !ok {
+		t.Fatal("team-race is missing after concurrent upsert calls")
+	}
+	hashA, hashB := testHashOf(secretA), testHashOf(secretB)
+	if vk.KeyHash != hashA && vk.KeyHash != hashB {
+		t.Fatalf("final KeyHash %q matches NEITHER request body's hash — state corrupted, not a merge of both", vk.KeyHash)
+	}
+}
+
+// TestConcurrentDeleteVirtualKeyRequestsForSameNameNeverBothSucceed
+// proves the delete side: exactly one of two concurrent DELETE calls for
+// the same name must succeed (204), the other must correctly observe the
+// key already gone (404), and the key must be genuinely gone afterward.
+func TestConcurrentDeleteVirtualKeyRequestsForSameNameNeverBothSucceed(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	// A second key is required -- DeleteVirtualKey rejects deleting the
+	// only remaining virtual key.
+	otherBody := `{"key_hash":"` + testHashOf("team-race-sibling-secret") + `"}`
+	doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-race-sibling", fakeAdminCredential(), otherBody)
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		codes[0] = doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeAdminCredential(), "").Code
+	}()
+	go func() {
+		defer wg.Done()
+		codes[1] = doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeAdminCredential(), "").Code
+	}()
+	wg.Wait()
+
+	var successCount int
+	for _, code := range codes {
+		switch code {
+		case http.StatusNoContent:
+			successCount++
+		case http.StatusNotFound:
+			// Expected for whichever call lost the race against the
+			// other's already-committed deletion.
+		default:
+			t.Errorf("delete call status = %d, want 204 or 404", code)
+		}
+	}
+	if successCount != 1 {
+		t.Errorf("successCount = %d, want exactly 1 — both concurrent deletes must never both report success", successCount)
+	}
+
+	if _, ok := pipeline.GetVirtualKey("test-key"); ok {
+		t.Fatal("test-key is still present after concurrent delete calls")
 	}
 }
 
@@ -550,9 +826,34 @@ func TestUpsertPromptCreatesVersionOneThenVersionTwo(t *testing.T) {
 	}
 }
 
+// TestUpsertPromptRejectsOversizedID is the regression proof for the
+// real bug fixed in maxAdminIdentifierLen's own doc comment: this
+// handler previously validated neither length nor character content on
+// the id path parameter at all before it became a map key in
+// prompt.Store and every future log line referencing it.
+func TestUpsertPromptRejectsOversizedID(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	oversizedID := strings.Repeat("a", maxAdminIdentifierLen+1)
+	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/"+oversizedID, fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUpsertPromptRejectsEmptyMessages(t *testing.T) {
 	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpsertPromptRejectsMalformedJSONBody mirrors
+// TestUpsertVirtualKeyRejectsMalformedJSONBody's own proof for this
+// handler's identical json.Decode error path.
+func TestUpsertPromptRejectsMalformedJSONBody(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{not valid json`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
 	}
@@ -616,6 +917,25 @@ func TestGetPromptRoutesReturnLatestSpecificVersionAndNotFound(t *testing.T) {
 	rec = doRequest(t, h, http.MethodGet, "/admin/prompts/does-not-exist", fakeAdminCredential(), "")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET unknown id status = %d, want 404", rec.Code)
+	}
+}
+
+// TestGetPromptVersionRejectsNonNumericAndNonPositiveVersion proves the
+// version path parameter's own validation (getPromptVersionHandler's
+// strconv.Atoi + version <= 0 check) against every malformed shape --
+// never previously exercised, though already correct.
+func TestGetPromptVersionRejectsNonNumericAndNonPositiveVersion(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+
+	cases := []string{"abc", "0", "-1", "99999999999999999999"}
+	for _, version := range cases {
+		t.Run(version, func(t *testing.T) {
+			rec := doRequest(t, h, http.MethodGet, "/admin/prompts/greeting/versions/"+version, fakeAdminCredential(), "")
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("GET .../versions/%s: status = %d, want 400, body: %s", version, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

@@ -77,7 +77,13 @@ import (
 // why that distinction matters. A fixed default, not a config field —
 // nothing in this codebase's own tests runs anywhere close to it, and a
 // config knob nobody has asked for yet would be premature.
-const gracefulShutdownTimeout = 30 * time.Second
+//
+// **Changed 2026-09-17**: a package-level var, not a const, purely so
+// graceful_shutdown_integration_test.go's force-exit test can override
+// it to a short value for that one test — every real call site
+// (run()'s own shutdownBoth) still just reads this at its real,
+// unchanged default outside of that test.
+var gracefulShutdownTimeout = 30 * time.Second
 
 // postShutdownDrainGrace bounds how much EXTRA time an in-flight
 // client-facing request-handler goroutine gets, after
@@ -95,7 +101,10 @@ const gracefulShutdownTimeout = 30 * time.Second
 // force-killed (a genuinely stuck request, e.g. no context deadline
 // against a hung upstream, was never going to bill correctly regardless
 // of how long it's given).
-const postShutdownDrainGrace = 15 * time.Second
+//
+// **Changed 2026-09-17**: a package-level var for the same
+// test-overridability reason as gracefulShutdownTimeout above.
+var postShutdownDrainGrace = 15 * time.Second
 
 // trackInFlight wraps next so wg.Add/Done bracket every request the
 // returned handler serves — used only on the client-facing mux, never
@@ -1067,6 +1076,23 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		var req adapter.ChatRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Cheap count-only checks first (Go's own len(), no decode/
+		// scan work) so a pathologically-shaped body is rejected before
+		// paying for the genuinely expensive per-part/per-tool checks
+		// below (base64 decode + MIME sniff; JSON Schema tokenization).
+		if err := adapter.ValidateMessageCount(req.Messages); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := adapter.ValidateToolDefs(req.Tools); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := adapter.ValidateFieldSizes(req.Messages); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 

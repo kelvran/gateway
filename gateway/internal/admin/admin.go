@@ -359,6 +359,29 @@ func getConfigHandler(cfg *controlplane.Config, logger *slog.Logger) http.Handle
 	}
 }
 
+// maxAdminIdentifierLen bounds a caller-supplied identifier (a virtual
+// key name or prompt id) accepted at write time by upsertVirtualKeyHandler/
+// upsertPromptHandler. **Fixed 2026-09-17, real bug**: neither handler
+// validated length or character content on this path parameter at all
+// before this check existed -- it becomes a map key in every in-memory
+// store this identifier touches (identity.Verifier, budget.Tracker,
+// ratelimit.KeyLimiter, prompt.Store) and is logged on every future
+// request that references it. 256 is far beyond any realistic name/id
+// while still bounding an operator mistake or a pathologically long
+// value to a known, finite cost -- checked only at WRITE time (upsert),
+// never at read/delete/rotate, where an oversized value just fails an
+// ordinary "not found" lookup with no growth risk.
+const maxAdminIdentifierLen = 256
+
+// validateAdminIdentifier rejects an empty or oversized identifier --
+// see maxAdminIdentifierLen's own doc comment.
+func validateAdminIdentifier(id, fieldName string) error {
+	if len(id) > maxAdminIdentifierLen {
+		return fmt.Errorf("%s exceeds %d characters", fieldName, maxAdminIdentifierLen)
+	}
+	return nil
+}
+
 // upsertVirtualKeyHandler adds a brand-new virtual key, or replaces the
 // existing one with the same name, live — see
 // dataplane.Pipeline.UpsertVirtualKey's own doc comment for the exact
@@ -372,6 +395,10 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 			http.Error(w, "virtual key name is required", http.StatusBadRequest)
 			return
 		}
+		if err := validateAdminIdentifier(name, "virtual key name"); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		var req virtualKeyRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -380,6 +407,35 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) 
 		}
 		if req.KeyHash == "" {
 			http.Error(w, "key_hash is required", http.StatusBadRequest)
+			return
+		}
+		// **Fixed 2026-09-17, real bug**: this handler performed no
+		// validation at all on budget_usd/budget_reset_interval_seconds/
+		// budget_warn_percent before this check existed. A negative
+		// budget_reset_interval_seconds becomes a negative time.Duration
+		// (secondsToDuration below), which budget.Tracker's own
+		// resetIfNeeded compares via now.Sub(start) >= resetInterval --
+		// trivially true on every single check against a negative
+		// duration, silently disabling the rolling-window mechanism
+		// entirely (a permanent reset, not a "no window" no-op) rather
+		// than erroring on an operator mistake. A negative budget_usd is
+		// equally nonsensical against IsPositive()'s own "positive means
+		// enforced, non-positive means unlimited" convention (line 639
+		// below) -- silently landing in the "unlimited" bucket for the
+		// wrong reason. budget_warn_percent outside [0, 100] is a
+		// non-fatal but equally confusing operator mistake worth
+		// rejecting up front rather than producing an alert threshold
+		// that can never fire (>100) or fires immediately (<0).
+		if req.BudgetUSD.IsNegative() {
+			http.Error(w, "budget_usd must not be negative", http.StatusBadRequest)
+			return
+		}
+		if req.BudgetResetIntervalSeconds < 0 {
+			http.Error(w, "budget_reset_interval_seconds must not be negative", http.StatusBadRequest)
+			return
+		}
+		if req.BudgetWarnPercent < 0 || req.BudgetWarnPercent > 100 {
+			http.Error(w, "budget_warn_percent must be between 0 and 100", http.StatusBadRequest)
 			return
 		}
 
@@ -748,6 +804,10 @@ func upsertPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http
 			http.Error(w, "prompt id is required", http.StatusBadRequest)
 			return
 		}
+		if err := validateAdminIdentifier(id, "prompt id"); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		var req promptRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -767,6 +827,16 @@ func upsertPromptHandler(pipeline *dataplane.Pipeline, logger *slog.Logger) http
 		// feature's own RFC) rather than only ever being caught later, at
 		// every future request-time resolution of this same prompt.
 		if err := adapter.ValidateContentParts(req.Messages); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// A stored prompt template's Messages gets resolved into every
+		// FUTURE request that references it (internal/prompt.Store.Resolve)
+		// -- an excessively long template multiplies its own cost across
+		// every future call, the same resource-exhaustion shape
+		// adapter.ValidateMessageCount already bounds for a direct,
+		// one-shot client request (cmd/gateway/main.go).
+		if err := adapter.ValidateMessageCount(req.Messages); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

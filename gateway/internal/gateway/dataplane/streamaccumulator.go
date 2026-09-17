@@ -109,6 +109,23 @@ func (acc *streamAccumulator) totalContentLen() int {
 	return total
 }
 
+// hasFinishReason reports whether any choice has ever recorded a
+// non-empty finish reason -- i.e. a genuine terminal event (OpenAI/
+// Anthropic/Gemini's own finish_reason chunk, or Bedrock's messageStop,
+// per stream.go's own documented event sequence: "messageStop, the last
+// real event before the stream closes") has actually been observed.
+// Used by streamDeploymentBedrock to distinguish a clean end-of-stream
+// from a mid-frame truncation that happens to also surface as io.EOF --
+// see that call site's own doc comment for the real bug this closes.
+func (acc *streamAccumulator) hasFinishReason() bool {
+	for _, c := range acc.choices {
+		if c.finishReason != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // build reconstructs the canonical ChatResponse from every chunk folded in
 // so far via add. Safe to call at most once per accumulator's logical use
 // (it does not reset internal state), matching this type's one-request

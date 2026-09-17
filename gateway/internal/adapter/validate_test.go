@@ -187,3 +187,122 @@ func TestValidateResponseFormatSchemaRejectsMalformedJSON(t *testing.T) {
 		t.Fatalf("ValidateResponseFormatSchema() = %v, want a JSON-parse error, not ErrResponseFormatSchemaTooComplex", err)
 	}
 }
+
+func manyMessages(count int) []Message {
+	messages := make([]Message, count)
+	for i := range messages {
+		messages[i] = Message{Role: "user", Content: "hi"}
+	}
+	return messages
+}
+
+func TestValidateMessageCountAcceptsCountWellWithinBounds(t *testing.T) {
+	if err := ValidateMessageCount(manyMessages(3)); err != nil {
+		t.Fatalf("ValidateMessageCount() = %v, want nil", err)
+	}
+}
+
+func TestValidateMessageCountAcceptsExactlyAtLimit(t *testing.T) {
+	if err := ValidateMessageCount(manyMessages(maxMessagesPerRequest)); err != nil {
+		t.Fatalf("ValidateMessageCount() = %v, want nil for exactly %d messages", err, maxMessagesPerRequest)
+	}
+}
+
+func TestValidateMessageCountRejectsOneBeyondLimit(t *testing.T) {
+	err := ValidateMessageCount(manyMessages(maxMessagesPerRequest + 1))
+	if !errors.Is(err, ErrTooManyMessages) {
+		t.Fatalf("ValidateMessageCount() = %v, want ErrTooManyMessages for %d messages", err, maxMessagesPerRequest+1)
+	}
+}
+
+func TestValidateMessageCountAcceptsNilMessages(t *testing.T) {
+	if err := ValidateMessageCount(nil); err != nil {
+		t.Fatalf("ValidateMessageCount(nil) = %v, want nil", err)
+	}
+}
+
+func manyToolDefs(count int) []ToolDef {
+	tools := make([]ToolDef, count)
+	for i := range tools {
+		tools[i] = ToolDef{Name: fmt.Sprintf("tool_%d", i)}
+	}
+	return tools
+}
+
+func TestValidateToolDefsAcceptsCountWellWithinBounds(t *testing.T) {
+	if err := ValidateToolDefs(manyToolDefs(3)); err != nil {
+		t.Fatalf("ValidateToolDefs() = %v, want nil", err)
+	}
+}
+
+func TestValidateToolDefsAcceptsExactlyAtCountLimit(t *testing.T) {
+	if err := ValidateToolDefs(manyToolDefs(maxToolDefsPerRequest)); err != nil {
+		t.Fatalf("ValidateToolDefs() = %v, want nil for exactly %d tools", err, maxToolDefsPerRequest)
+	}
+}
+
+func TestValidateToolDefsRejectsOneBeyondCountLimit(t *testing.T) {
+	err := ValidateToolDefs(manyToolDefs(maxToolDefsPerRequest + 1))
+	if !errors.Is(err, ErrTooManyToolDefs) {
+		t.Fatalf("ValidateToolDefs() = %v, want ErrTooManyToolDefs for %d tools", err, maxToolDefsPerRequest+1)
+	}
+}
+
+func TestValidateToolDefsAcceptsNilTools(t *testing.T) {
+	if err := ValidateToolDefs(nil); err != nil {
+		t.Fatalf("ValidateToolDefs(nil) = %v, want nil", err)
+	}
+}
+
+func TestValidateToolDefsRejectsAToolWithParametersNestedBeyondDepthLimit(t *testing.T) {
+	tools := []ToolDef{{Name: "deep", ParametersJSON: string(deeplyNestedObjectSchema(maxJSONSchemaDepth + 1))}}
+	err := ValidateToolDefs(tools)
+	if !errors.Is(err, ErrResponseFormatSchemaTooComplex) {
+		t.Fatalf("ValidateToolDefs() = %v, want ErrResponseFormatSchemaTooComplex for a tool nested one level beyond the %d-level depth limit", err, maxJSONSchemaDepth)
+	}
+}
+
+func TestValidateToolDefsRejectsAToolWithTooManyParameterTokens(t *testing.T) {
+	tools := []ToolDef{{Name: "wide", ParametersJSON: string(manyFlatPropertiesSchema(6000))}}
+	err := ValidateToolDefs(tools)
+	if !errors.Is(err, ErrResponseFormatSchemaTooComplex) {
+		t.Fatalf("ValidateToolDefs() = %v, want ErrResponseFormatSchemaTooComplex for a tool exceeding %d tokens", err, maxJSONSchemaTokens)
+	}
+}
+
+func TestValidateToolDefsAcceptsEmptyParametersJSON(t *testing.T) {
+	tools := []ToolDef{{Name: "no-params"}}
+	if err := ValidateToolDefs(tools); err != nil {
+		t.Fatalf("ValidateToolDefs() = %v, want nil for a tool with empty ParametersJSON", err)
+	}
+}
+
+func TestValidateFieldSizesAcceptsContentWellWithinBounds(t *testing.T) {
+	messages := []Message{{Role: "user", Content: "hello"}}
+	if err := ValidateFieldSizes(messages); err != nil {
+		t.Fatalf("ValidateFieldSizes() = %v, want nil", err)
+	}
+}
+
+func TestValidateFieldSizesAcceptsContentExactlyAtLimit(t *testing.T) {
+	messages := []Message{{Role: "user", Content: strings.Repeat("a", maxFieldSizeBytes)}}
+	if err := ValidateFieldSizes(messages); err != nil {
+		t.Fatalf("ValidateFieldSizes() = %v, want nil for content exactly at the %d-byte limit", err, maxFieldSizeBytes)
+	}
+}
+
+func TestValidateFieldSizesRejectsContentOneByteBeyondLimit(t *testing.T) {
+	messages := []Message{{Role: "user", Content: strings.Repeat("a", maxFieldSizeBytes+1)}}
+	err := ValidateFieldSizes(messages)
+	if !errors.Is(err, ErrFieldTooLarge) {
+		t.Fatalf("ValidateFieldSizes() = %v, want ErrFieldTooLarge for content one byte beyond the %d-byte limit", err, maxFieldSizeBytes)
+	}
+}
+
+func TestValidateFieldSizesRejectsContentPartDataOneByteBeyondLimit(t *testing.T) {
+	messages := []Message{{Role: "user", Parts: []ContentPart{{Type: "image", MediaType: "image/png", Data: strings.Repeat("a", maxFieldSizeBytes+1)}}}}
+	err := ValidateFieldSizes(messages)
+	if !errors.Is(err, ErrFieldTooLarge) {
+		t.Fatalf("ValidateFieldSizes() = %v, want ErrFieldTooLarge for a content part data field one byte beyond the %d-byte limit", err, maxFieldSizeBytes)
+	}
+}
