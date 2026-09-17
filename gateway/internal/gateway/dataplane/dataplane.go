@@ -1036,6 +1036,70 @@ func (p *Pipeline) ApplyDeploymentWeightFromEvent(model, deploymentName string, 
 	return p.router.SetWeight(model, deploymentName, weight)
 }
 
+// EraseCacheEntryResult reports what an EraseCacheEntry call actually
+// found (and removed) at each cache layer it can act on.
+type EraseCacheEntryResult struct {
+	L1Found bool
+	L2Found bool
+}
+
+// EraseCacheEntry services a real GDPR Article 17 erasure request
+// against L1 (exact-match) and L2 (normalized-match) cache entries for
+// one specific request shape -- closing the gap named in
+// docs/upgrade-research/ai-compliance-regulatory-readiness-2026-09-14.md
+// Finding 4: cache.Cache.Delete existed with zero live callers anywhere
+// in this codebase since it was added 2026-09-14. Per that field's own
+// doc comment, the caller must already know the exact request-defining
+// fields (model/messages/temperature/max_tokens/response_format, and
+// optionally a prompt reference) the ORIGINAL request used -- Kelvran's
+// cache is keyed by a hash of those fields, not a per-tenant index, so
+// there is no way to "erase everything for tenant X" without knowing
+// which specific requests that tenant made. virtualKeyID is passed
+// explicitly (not resolved from an Authorization header) since this is
+// an admin-only operation with no live per-tenant request in flight.
+//
+// Disclosed, real limitation, not silently narrowed -- and materially
+// stronger than "L3 isn't touched" sounds, confirmed empirically by
+// TestEraseCacheEntryDoesNotPreventAnIdenticalFollowUpFromHittingL3,
+// not just reasoned about: L3 (the lexical near-duplicate cache) has no
+// Delete method on its own LexicalCache interface at all, and
+// writeCache populates L1, L2, AND L3 on every single miss -- so after
+// a successful call to THIS method reports both layers erased, a
+// BYTE-IDENTICAL follow-up request for the exact same content can
+// still be served from cache with zero new upstream call, just from L3
+// instead of L1. This method does not, by itself, guarantee the
+// underlying response content becomes unavailable via the cache;
+// closing that gap needs a real LexicalCache.Delete method (an
+// interface change, out of scope for this pass) — until then, an L3
+// entry's own TTL is the only path to eventual removal, and an operator
+// relying on this endpoint for a real data-subject request should know
+// that.
+func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, req adapter.ChatRequest) (EraseCacheEntryResult, error) {
+	req, promptFP, err := p.resolvePromptIfSet(req)
+	if err != nil {
+		return EraseCacheEntryResult{}, err
+	}
+
+	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
+	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP)
+	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP)
+
+	var result EraseCacheEntryResult
+	if _, _, ok, _ := p.cache.Get(ctx, l1Key); ok {
+		result.L1Found = true
+	}
+	if err := p.cache.Delete(ctx, l1Key); err != nil {
+		return result, fmt.Errorf("deleting L1 cache entry: %w", err)
+	}
+	if _, _, ok, _ := p.cacheL2.Get(ctx, l2Key); ok {
+		result.L2Found = true
+	}
+	if err := p.cacheL2.Delete(ctx, l2Key); err != nil {
+		return result, fmt.Errorf("deleting L2 cache entry: %w", err)
+	}
+	return result, nil
+}
+
 // GetVirtualKey returns a copy of the virtual key identified by name,
 // live -- the read-only counterpart to UpsertVirtualKey/DeleteVirtualKey,
 // for the new admin GET /admin/virtual_keys/{name}/spend route

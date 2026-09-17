@@ -210,6 +210,7 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	// deployment's routing weight is an operational lever, not read-only
 	// reporting.
 	mux.Handle("POST /admin/deployments/{name}/weight", requireBearerToken(creds.Admin, updateDeploymentWeightHandler(pipeline, audit)))
+	mux.Handle("POST /admin/cache/erase", requireBearerToken(creds.Admin, eraseCacheEntryHandler(pipeline, audit)))
 	// pprof, per cfg.Admin.EnablePprof's own doc comment — off by
 	// default, admin-credential-gated (never the viewer tier: profiling
 	// data is a stronger information-disclosure/DoS-surface signal than
@@ -656,6 +657,33 @@ type updateDeploymentWeightRequest struct {
 	Weight int `json:"weight"`
 }
 
+// eraseCacheEntryRequest carries the exact request-defining fields the
+// ORIGINAL request used, plus the virtual key ID it was made under (no
+// live Authorization header to resolve one from here) -- see
+// dataplane.Pipeline.EraseCacheEntry's own doc comment for why this
+// shape is required, not just convenient. adapter.ChatRequest is
+// embedded anonymously so its fields (Model/Messages/Temperature/
+// MaxTokens/ResponseFormat/PromptID/PromptVersion/PromptLabel) flatten
+// into this same JSON object rather than nesting under a sub-key.
+type eraseCacheEntryRequest struct {
+	VirtualKeyID string `json:"virtual_key_id"`
+	adapter.ChatRequest
+}
+
+type eraseCacheEntryResponse struct {
+	L1Found bool `json:"l1_found"`
+	L2Found bool `json:"l2_found"`
+	// L3Skipped is always true -- named explicitly in the response
+	// itself, not just a code comment, so a caller relying on this
+	// endpoint for compliance purposes can't miss that L3 isn't
+	// covered. Confirmed to matter in practice, not just a theoretical
+	// gap: a byte-identical follow-up request for the erased content
+	// CAN still be served from L3 with zero new upstream call, since
+	// the original write populated all three layers -- see
+	// dataplane.Pipeline.EraseCacheEntry's own doc comment.
+	L3Skipped bool `json:"l3_skipped"`
+}
+
 // updateDeploymentWeightHandler live-mutates name's own routing weight,
 // via dataplane.Pipeline.UpdateDeploymentWeight -- see that method's own
 // doc comment for the exact in-memory-only, restart-reverts-to-config
@@ -690,6 +718,41 @@ func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger auditLog
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, dataplane.ErrDeploymentNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+}
+
+// eraseCacheEntryHandler services a real GDPR Article 17 erasure
+// request against a specific cached response, via
+// dataplane.Pipeline.EraseCacheEntry -- see that method's own doc
+// comment for the exact scope (L1+L2 only, never L3, and the caller
+// must already know the original request's own defining fields). Never
+// 404s -- Delete is an idempotent no-op on an already-absent key, so
+// "nothing was found" is a real, successful 200 response
+// (l1_found/l2_found both false), not an error.
+func eraseCacheEntryHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req eraseCacheEntryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.VirtualKeyID == "" {
+			http.Error(w, "virtual_key_id is required", http.StatusBadRequest)
+			return
+		}
+
+		result, err := pipeline.EraseCacheEntry(r.Context(), req.VirtualKeyID, req.ChatRequest)
+		switch {
+		case err == nil:
+			logger.Info("admin_cache_entry_erased", "virtual_key_id", req.VirtualKeyID, "model", req.Model, "l1_found", result.L1Found, "l2_found", result.L2Found, "authorized_by", "admin")
+			writeJSONResponse(w, eraseCacheEntryResponse{L1Found: result.L1Found, L2Found: result.L2Found, L3Skipped: true})
+		case errors.Is(err, dataplane.ErrPromptAndMessagesBothSet),
+			errors.Is(err, dataplane.ErrPromptLabelAndVersionBothSet),
+			errors.Is(err, dataplane.ErrPromptResolutionFailed):
+			http.Error(w, err.Error(), http.StatusBadRequest)
 		default:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}

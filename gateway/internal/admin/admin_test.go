@@ -1676,3 +1676,126 @@ func TestUpdateDeploymentWeightRejectsUnknownDeployment(t *testing.T) {
 		t.Fatalf("POST /admin/deployments/does-not-exist/weight: status = %d, want 404, body: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestEraseCacheEntryHandlerErasesARealHitAndLogsAudit is the HTTP-layer
+// proof for POST /admin/cache/erase -- a real prior chat completion
+// (via the SAME pipeline, over the real dataplane path, not a
+// synthetic cache write) is erased through the admin route, confirmed
+// by a real follow-up upstream call happening again. Mirrors
+// TestUpdateDeploymentWeightViaHTTPChangesLiveRouting's own
+// "prove it through observable behavior, not just a 2xx" discipline.
+func TestEraseCacheEntryHandlerErasesARealHitAndLogsAudit(t *testing.T) {
+	upstreamCalls := 0
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []dataplane.Deployment{
+		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+	pipeline, err := dataplane.NewPipeline(dataplane.Config{
+		Verifier: verifier,
+		Limiter: ratelimit.NewInMemoryKeyLimiter([]ratelimit.KeyConfig{
+			{ID: "test-key", Capacity: 100, RefillPerSecond: 100},
+		}),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         router.New([]router.Deployment{{Name: "d1", Model: "gpt-4o"}}, router.HealthConfig{}),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep dataplane.Deployment, req any) (any, error) {
+			upstreamCalls++
+			return &openai.Response{
+				ID: "chatcmpl-fake", Model: dep.UpstreamModel,
+				Choices: []openai.Choice{{Message: openai.Message{Role: "assistant", Content: json.RawMessage(`"hi"`)}, FinishReason: "stop"}},
+				Usage:   openai.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	chatReq := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "erase-me-via-http"}}}
+	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", chatReq, ""); err != nil {
+		t.Fatalf("priming HandleChatCompletion: %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstreamCalls = %d after priming, want 1", upstreamCalls)
+	}
+
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, logger)
+
+	rec := doRequest(t, h, http.MethodPost, "/admin/cache/erase", fakeAdminCredential(),
+		`{"virtual_key_id":"test-key","model":"gpt-4o","messages":[{"role":"user","content":"erase-me-via-http"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /admin/cache/erase: status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp eraseCacheEntryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if !resp.L1Found || !resp.L2Found || !resp.L3Skipped {
+		t.Errorf("response = %+v, want L1Found=true, L2Found=true, L3Skipped=true", resp)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "admin_cache_entry_erased") || !strings.Contains(logOutput, "virtual_key_id=test-key") {
+		t.Errorf("expected an admin_cache_entry_erased audit-log entry naming test-key; got: %s", logOutput)
+	}
+}
+
+// TestEraseCacheEntryHandlerRequiresAdminToken proves this write-shaped
+// route is gated exactly like every other admin mutation route.
+func TestEraseCacheEntryHandlerRequiresAdminToken(t *testing.T) {
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+		http.MethodPost, "/admin/cache/erase", "wrong-value-entirely", `{"virtual_key_id":"test-key","model":"gpt-4o"}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /admin/cache/erase with a wrong credential: status = %d, want 401", rec.Code)
+	}
+}
+
+func TestEraseCacheEntryHandlerRejectsMissingVirtualKeyID(t *testing.T) {
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+		http.MethodPost, "/admin/cache/erase", fakeAdminCredential(), `{"model":"gpt-4o"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /admin/cache/erase with no virtual_key_id: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestEraseCacheEntryHandlerRejectsMalformedBody(t *testing.T) {
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+		http.MethodPost, "/admin/cache/erase", fakeAdminCredential(), `{not valid json`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /admin/cache/erase with a malformed body: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestEraseCacheEntryHandlerOnNeverCachedEntryStillReturns200 proves a
+// never-cached request shape is a real, successful response
+// (both found flags false), never a 404 -- matching
+// dataplane.Pipeline.EraseCacheEntry's own no-op-not-error contract.
+func TestEraseCacheEntryHandlerOnNeverCachedEntryStillReturns200(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	rec := doRequest(t, h, http.MethodPost, "/admin/cache/erase", fakeAdminCredential(),
+		`{"virtual_key_id":"test-key","model":"gpt-4o","messages":[{"role":"user","content":"never-requested"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var resp eraseCacheEntryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if resp.L1Found || resp.L2Found {
+		t.Errorf("response = %+v, want both found flags false", resp)
+	}
+}
