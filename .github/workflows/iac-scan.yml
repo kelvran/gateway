@@ -25,7 +25,7 @@ jobs:
       matrix:
         module: [bedrock-judge-panel, vector-s3-shipper]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_wrapper: false
@@ -46,7 +46,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Checkov (terraform framework)
         # Report-only (soft_fail): no measured baseline exists yet for
         # Checkov against this repo's own real Terraform, so a hard
@@ -54,7 +54,7 @@ jobs:
         # repo's own testing conventions explicitly reject (see ci.yml's
         # regression-corpus-gate comment). Findings surface via the
         # code-scanning dashboard instead, same posture as CodeQL/Scorecard.
-        uses: bridgecrewio/checkov-action@99bb2caf247dfd9f03cf984373bc6043d4e32ebf # v12.1347.0
+        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12.3122.0
         with:
           directory: terraform/
           framework: terraform
@@ -74,7 +74,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Checkov (kubernetes framework)
         # framework: kubernetes (not kustomize) scans the raw manifests
         # directly and never needs deploy/k8s/base/kustomization.yaml's
@@ -84,7 +84,7 @@ jobs:
         # scan doesn't need it rendered to check the committed resources.
         # soft_fail for the same no-guessed-baseline reason as the
         # terraform-checkov job above.
-        uses: bridgecrewio/checkov-action@99bb2caf247dfd9f03cf984373bc6043d4e32ebf # v12.1347.0
+        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12.3122.0
         with:
           directory: deploy/k8s/base
           framework: kubernetes
