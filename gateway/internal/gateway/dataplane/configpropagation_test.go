@@ -1,0 +1,193 @@
+package dataplane
+
+// Integration tests for push-based cross-instance config propagation
+// (see gateway/internal/configpropagation's own doc comment): a live
+// deployment-weight mutation applied via ONE Pipeline's
+// UpdateDeploymentWeight is published over a real Redis connection and,
+// once a subscriber applies it via ApplyDeploymentWeightFromEvent,
+// visibly changes ANOTHER Pipeline's own routing decisions -- not just
+// that Publish/Subscribe succeed in isolation (configpropagation's own
+// package tests already prove that).
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
+	"github.com/kelvran/gateway/gateway/internal/budget"
+	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
+	"github.com/kelvran/gateway/gateway/internal/configpropagation"
+	"github.com/kelvran/gateway/gateway/internal/costaccounting"
+	"github.com/kelvran/gateway/gateway/internal/guardrail"
+	"github.com/kelvran/gateway/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/router"
+)
+
+// newConfigPropagationTestPipeline builds a *Pipeline with a real
+// weighted router and, when publisher is non-nil, wires it as
+// Config.ConfigPublisher -- deliberately its own small constructor
+// (unlike newEmbeddingTestPipeline, testRouter's own helper always
+// builds a weight-0-for-every-deployment router, which can't exercise a
+// real weight change at all).
+func newConfigPropagationTestPipeline(t *testing.T, deployments []router.Deployment, publisher configpropagation.Publisher) *Pipeline {
+	t.Helper()
+	depRouter := router.New(deployments, router.HealthConfig{})
+
+	dpDeployments := make([]Deployment, 0, len(deployments))
+	for _, d := range deployments {
+		dpDeployments = append(dpDeployments, Deployment{Name: d.Name, Model: d.Model, Provider: "openai", UpstreamModel: d.Model, BaseURL: "http://unused"})
+	}
+
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         depRouter,
+		Deployments:    dpDeployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			return fakeOpenAIResponse("gpt-4o"), nil
+		},
+		ConfigPublisher: publisher,
+		Logger:          discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	return p
+}
+
+// countStableVsCanary calls Select n times against model and counts how
+// many landed on canaryName -- a plain WRR count, not sticky, so a
+// weight change is observable via a real distribution shift.
+func countStableVsCanary(p *Pipeline, model, canaryName string, n int) int {
+	count := 0
+	for i := 0; i < n; i++ {
+		dep, ok := p.nextDeployment(model, nil)
+		if ok && dep.Name == canaryName {
+			count++
+		}
+	}
+	return count
+}
+
+// TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub is
+// the real end-to-end proof: instance A's UpdateDeploymentWeight call
+// changes instance A's OWN routing immediately (already proven at the
+// router-package level) AND, via a real Redis pub/sub round trip,
+// instance B's routing too -- without B's own Admin API ever being
+// called directly.
+func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *testing.T) {
+	ctx := context.Background()
+	container, err := tcredis.Run(ctx, "redis:7-alpine")
+	if err != nil {
+		t.Fatalf("starting test Redis container: %v", err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+
+	connStr, err := container.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("getting test Redis connection string: %v", err)
+	}
+	redisAddr := strings.TrimPrefix(connStr, "redis://")
+
+	deployments := []router.Deployment{
+		{Name: "stable", Model: "gpt-4o", Weight: 99},
+		{Name: "canary", Model: "gpt-4o", Weight: 1},
+	}
+
+	pubA := configpropagation.Open(redisAddr)
+	t.Cleanup(func() { _ = pubA.Close() })
+	pipelineA := newConfigPropagationTestPipeline(t, deployments, pubA)
+
+	// Instance B has NO publisher of its own (it only ever receives, in
+	// this test) -- deliberately proving the propagation is one-way for
+	// this call, not that B rebroadcasts A's own event.
+	pipelineB := newConfigPropagationTestPipeline(t, deployments, nil)
+
+	// B's own subscriber, applying every received event via
+	// ApplyDeploymentWeightFromEvent -- mirrors cmd/gateway/main.go's
+	// real subscriber closure exactly, so this proves the same code
+	// path production wiring uses, not a test-only shortcut.
+	subB := configpropagation.Open(redisAddr)
+	t.Cleanup(func() { _ = subB.Close() })
+	subCtx, cancelSub := context.WithCancel(context.Background())
+	t.Cleanup(cancelSub)
+	go func() {
+		_ = subB.Subscribe(subCtx, func(event configpropagation.MutationEvent) {
+			if event.Type != configpropagation.TypeDeploymentWeight {
+				return
+			}
+			var payload configpropagation.DeploymentWeightPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Errorf("unmarshaling received payload: %v", err)
+				return
+			}
+			if err := pipelineB.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight); err != nil {
+				t.Errorf("ApplyDeploymentWeightFromEvent: %v", err)
+			}
+		})
+	}()
+	time.Sleep(100 * time.Millisecond) // let the subscription actually register.
+
+	// Before the mutation: both instances split ~99:1 in favor of stable.
+	const samples = 1000
+	beforeB := countStableVsCanary(pipelineB, "gpt-4o", "canary", samples)
+	if beforeB > 50 {
+		t.Fatalf("setup: pipelineB's canary count before any mutation = %d/%d, want close to 1%% (~10)", beforeB, samples)
+	}
+
+	// The mutation: instance A raises canary's weight to 50 via its real
+	// Admin-facing method -- this is the exact call
+	// admin.setPromptLabelHandler's sibling, updateDeploymentWeightHandler,
+	// makes in production.
+	if err := pipelineA.UpdateDeploymentWeight(ctx, "canary", 50); err != nil {
+		t.Fatalf("UpdateDeploymentWeight on instance A: %v", err)
+	}
+
+	// Stable's own weight is unchanged (99), so the real post-mutation
+	// ratio is 50/(99+50) ~= 33.6%, not 50% -- generous +/-8 percentage
+	// point band for sampling noise at this sample size.
+	const wantMin, wantMax = 250, 420
+
+	// Instance A's own routing already reflects it immediately (no Redis
+	// round trip needed for the instance that made the call).
+	afterA := countStableVsCanary(pipelineA, "gpt-4o", "canary", samples)
+	if afterA < wantMin || afterA > wantMax {
+		t.Errorf("pipelineA's own canary count after weight=50 = %d/%d, want ~33.6%% (%d-%d)", afterA, samples, wantMin, wantMax)
+	}
+
+	// Instance B's routing must ALSO converge, via the real Redis pub/sub
+	// round trip -- bounded wait, since delivery is asynchronous.
+	deadline := time.Now().Add(5 * time.Second)
+	var afterB int
+	for time.Now().Before(deadline) {
+		afterB = countStableVsCanary(pipelineB, "gpt-4o", "canary", samples)
+		if afterB >= wantMin {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if afterB < wantMin || afterB > wantMax {
+		t.Errorf("pipelineB's canary count after A's mutation = %d/%d, want ~33.6%% (%d-%d) -- cross-instance propagation did not converge within 5s", afterB, samples, wantMin, wantMax)
+	}
+}

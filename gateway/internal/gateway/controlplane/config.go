@@ -376,6 +376,21 @@ type RateLimitConfig struct {
 	RedisAddr string
 }
 
+// ConfigPropagationConfig configures push-based cross-instance admin-
+// mutation propagation, per gateway/internal/configpropagation's own
+// doc comment. Optional — a zero-valued ConfigPropagationConfig
+// (RedisAddr == "") means every admin mutation stays
+// single-instance-only, exactly as before this feature existed.
+type ConfigPropagationConfig struct {
+	// RedisAddr is the Redis server address ("host:port") every gateway
+	// instance sharing propagation must point at the SAME address —
+	// deliberately its own field, not a reuse of RateLimit.RedisAddr
+	// above, since an operator may want distributed rate limiting
+	// without config propagation (or vice versa) against two entirely
+	// different Redis deployments. Empty means no propagation.
+	RedisAddr string
+}
+
 // CacheL2Config configures the L2 (normalized-match) cache layer, per
 // docs/rfcs/2026-09-03-cache-l2-normalized-match.md. Optional — a
 // zero-valued CacheL2Config means both fields default (75s TTL, 10,000
@@ -594,6 +609,12 @@ type Config struct {
 	Prompt PromptConfig
 	// RateLimit configures distributed rate limiting. Optional.
 	RateLimit RateLimitConfig
+	// ConfigPropagation configures push-based cross-instance admin-
+	// mutation propagation, per gateway/internal/configpropagation's own
+	// doc comment. Optional — a zero value (RedisAddr == "") means every
+	// admin mutation stays single-instance-only, exactly as before this
+	// feature existed.
+	ConfigPropagation ConfigPropagationConfig
 	// Cache configures the L1/L2 cache layers. Optional.
 	Cache CacheConfig
 	// Guardrails configures the pre-call/post-call content checks. Optional.
@@ -772,6 +793,10 @@ func Load(path string) (*Config, error) {
 
 	if rateLimitRaw, ok := getMap(root, "rate_limit"); ok {
 		cfg.RateLimit.RedisAddr, _ = getString(rateLimitRaw, "redis_addr")
+	}
+
+	if configPropagationRaw, ok := getMap(root, "config_propagation"); ok {
+		cfg.ConfigPropagation.RedisAddr, _ = getString(configPropagationRaw, "redis_addr")
 	}
 
 	if cacheRaw, ok := getMap(root, "cache"); ok {

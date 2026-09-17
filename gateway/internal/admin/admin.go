@@ -683,7 +683,7 @@ func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger auditLog
 			return
 		}
 
-		err := pipeline.UpdateDeploymentWeight(name, req.Weight)
+		err := pipeline.UpdateDeploymentWeight(r.Context(), name, req.Weight)
 		switch {
 		case err == nil:
 			logger.Info("admin_deployment_weight_updated", "name", name, "weight", req.Weight, "authorized_by", "admin")

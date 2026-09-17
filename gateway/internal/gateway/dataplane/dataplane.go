@@ -57,6 +57,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/backup"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/configpropagation"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/idempotency"
@@ -439,8 +440,15 @@ type Config struct {
 	// guaranteed no-op: HandleEmbeddings returns ErrEmbeddingsNotConfigured
 	// rather than a nil-pointer panic.
 	EmbeddingUpstream UpstreamCaller
-	Logger            *slog.Logger
-	CacheTTL          time.Duration
+	// ConfigPublisher pushes a live deployment-weight mutation to every
+	// other gateway instance sharing the same Redis address, per
+	// internal/configpropagation's own doc comment. nil (the default —
+	// Redis unconfigured) means UpdateDeploymentWeight is a
+	// single-instance-only mutation, exactly as before this feature
+	// existed.
+	ConfigPublisher configpropagation.Publisher
+	Logger          *slog.Logger
+	CacheTTL        time.Duration
 	// CacheL2TTL defaults to 75 seconds when unset — shorter than
 	// CacheTTL's 5-minute default, as defense-in-depth per the RFC's TTL
 	// rationale (not a substitute for the normalization allowlist's own
@@ -550,6 +558,7 @@ type Pipeline struct {
 	costCalc          *costaccounting.Calculator
 	upstream          UpstreamCaller
 	embeddingUpstream UpstreamCaller
+	configPublisher   configpropagation.Publisher
 	upstreamStream    UpstreamStreamCaller
 	logger            *slog.Logger
 	cacheTTL          time.Duration
@@ -660,6 +669,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		costCalc:              cfg.CostCalculator,
 		upstream:              cfg.Upstream,
 		embeddingUpstream:     cfg.EmbeddingUpstream,
+		configPublisher:       cfg.ConfigPublisher,
 		upstreamStream:        cfg.UpstreamStream,
 		logger:                logger,
 		cacheTTL:              ttl,
@@ -974,12 +984,56 @@ var ErrDeploymentNotFound = errors.New("dataplane: deployment not found")
 // has never had this route called against it — a virtual key needed
 // persistence because it's created live with no config fallback, but a
 // deployment's weight always has one.
-func (p *Pipeline) UpdateDeploymentWeight(name string, weight int) error {
+func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weight int) error {
 	dep, ok := p.deploymentsByName[name]
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrDeploymentNotFound, name)
 	}
-	return p.router.SetWeight(dep.Model, name, weight)
+	if err := p.router.SetWeight(dep.Model, name, weight); err != nil {
+		return err
+	}
+
+	// Push-based cross-instance propagation, per
+	// internal/configpropagation's own doc comment — nil
+	// p.configPublisher (Redis unconfigured, the default) is a
+	// guaranteed no-op. A Publish failure is logged, never returned:
+	// mirrors internal/ratelimit/redislimiter's own established
+	// fail-open posture -- a down Redis is a propagation-latency
+	// problem for OTHER instances, never a reason to fail a request
+	// that already succeeded locally on THIS one.
+	if p.configPublisher != nil {
+		payload, err := json.Marshal(configpropagation.DeploymentWeightPayload{
+			Model:          dep.Model,
+			DeploymentName: name,
+			Weight:         weight,
+		})
+		if err != nil {
+			p.logger.Warn("configpropagation_marshal_failed", "deployment", name, "error", err)
+			return nil
+		}
+		event := configpropagation.MutationEvent{
+			Type:             configpropagation.TypeDeploymentWeight,
+			OriginInstanceID: telemetry.InstanceID,
+			Payload:          payload,
+		}
+		if err := p.configPublisher.Publish(ctx, event); err != nil {
+			p.logger.Warn("configpropagation_publish_failed", "deployment", name, "error", err)
+		}
+	}
+	return nil
+}
+
+// ApplyDeploymentWeightFromEvent applies model/deploymentName/weight
+// LOCALLY ONLY — never publishes, unlike UpdateDeploymentWeight — for
+// cmd/gateway's own subscriber loop to call when a
+// configpropagation.MutationEvent arrives from ANOTHER instance. Calling
+// UpdateDeploymentWeight instead here would re-publish the same event
+// right back onto the shared channel, which OriginInstanceID filtering
+// at the subscriber level already prevents from looping back to THIS
+// instance, but would still cost every OTHER instance a redundant,
+// pointless re-delivery.
+func (p *Pipeline) ApplyDeploymentWeightFromEvent(model, deploymentName string, weight int) error {
+	return p.router.SetWeight(model, deploymentName, weight)
 }
 
 // GetVirtualKey returns a copy of the virtual key identified by name,

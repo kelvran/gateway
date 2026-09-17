@@ -51,6 +51,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/budget/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
+	"github.com/kelvran/gateway/gateway/internal/configpropagation"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
@@ -400,6 +401,48 @@ func run(configPath string, logger *slog.Logger) error {
 	// triggers graceful shutdown, no separate stop mechanism needed.
 	go pipeline.RunHealthProbeLoop(ctx, time.Duration(cfg.HealthProbe.IntervalSeconds)*time.Second)
 
+	// Config-propagation subscriber, per internal/configpropagation's
+	// own doc comment — a no-op unless config_propagation.redis_addr is
+	// configured. A SEPARATE *redis.Client connection from the one
+	// buildPipeline's own newConfigPublisher opened above (see that
+	// function's own doc comment for why) — Subscribe blocks until ctx
+	// is canceled, exactly like RunHealthProbeLoop, so it needs no
+	// separate stop mechanism either.
+	if cfg.ConfigPropagation.RedisAddr != "" {
+		subscriber := configpropagation.Open(cfg.ConfigPropagation.RedisAddr)
+		go func() {
+			err := subscriber.Subscribe(ctx, func(event configpropagation.MutationEvent) {
+				if event.OriginInstanceID == telemetry.InstanceID {
+					// This instance's own mutation, already applied
+					// locally before it was ever published — re-applying
+					// it here would be a redundant, pointless no-op at
+					// best (SetWeight is idempotent for the same value)
+					// and a wasted log line at worst.
+					return
+				}
+				switch event.Type {
+				case configpropagation.TypeDeploymentWeight:
+					var payload configpropagation.DeploymentWeightPayload
+					if err := json.Unmarshal(event.Payload, &payload); err != nil {
+						logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
+						return
+					}
+					if err := pipeline.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight); err != nil {
+						logger.Warn("configpropagation_apply_failed", "type", event.Type, "deployment", payload.DeploymentName, "error", err)
+					}
+				default:
+					// Forward-compatible: an event type this build
+					// doesn't know about yet (e.g. published by a newer
+					// gateway version during a rolling deploy) is
+					// skipped, never treated as a fatal error.
+				}
+			})
+			if err != nil && ctx.Err() == nil {
+				logger.Warn("configpropagation_subscribe_stopped", "error", err)
+			}
+		}()
+	}
+
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("gateway listening", "addr", cfg.ListenAddr)
@@ -702,6 +745,12 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		return nil, fmt.Errorf("constructing rate limiter: %w", err)
 	}
 
+	// A SEPARATE *redis.Client connection from the one run()'s own
+	// subscriber goroutine opens below (see newConfigPublisher's own
+	// doc comment for why) -- both lightweight, both fail-open on an
+	// unreachable address exactly like newKeyLimiter's Redis backend.
+	configPublisher := newConfigPublisher(cfg.ConfigPropagation)
+
 	upstreamTransport := newUpstreamTransport()
 
 	guardrailEngine := newGuardrailEngine(cfg.Guardrails, logger)
@@ -753,6 +802,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		CostCalculator:        costaccounting.NewCalculator(priceTable),
 		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
 		EmbeddingUpstream:     dataplane.NewHTTPEmbeddingUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
+		ConfigPublisher:       configPublisher,
 		// Streaming upstream calls deliberately do NOT use client.Timeout
 		// (the field above) — that would kill a long-running-but-healthy
 		// stream mid-way, exactly as readily as a genuinely stalled one.
@@ -965,6 +1015,22 @@ func newKeyLimiter(cfg controlplane.RateLimitConfig, keys []ratelimit.KeyConfig)
 		return nil, fmt.Errorf("opening redis rate limiter at %q: %w", cfg.RedisAddr, err)
 	}
 	return ratelimit.NewRedisKeyLimiter(keys, backend), nil
+}
+
+// newConfigPublisher returns nil (a genuinely nil configpropagation.Publisher
+// INTERFACE value, never a non-nil interface wrapping a nil *PubSub
+// pointer — the classic Go typed-nil trap dataplane.Pipeline's own
+// "p.configPublisher != nil" check depends on being avoided here) when
+// cfg.RedisAddr is empty, matching newKeyLimiter's identical "unset
+// means the feature doesn't exist" convention. configpropagation.Open
+// never fails on an unreachable address (go-redis dials lazily,
+// mirroring redislimiter.Open's own identical contract) so this never
+// returns an error.
+func newConfigPublisher(cfg controlplane.ConfigPropagationConfig) configpropagation.Publisher {
+	if cfg.RedisAddr == "" {
+		return nil
+	}
+	return configpropagation.Open(cfg.RedisAddr)
 }
 
 // guardrailDefaultPolicyVersion is the operational default when
