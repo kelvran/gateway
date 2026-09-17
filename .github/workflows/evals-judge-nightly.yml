@@ -53,8 +53,35 @@ jobs:
     # convention rather than relying on the repo's read-only default.
     permissions:
       contents: read
+    # HEALTHCHECKS_PING_URL: routed through a job-level env (rather than
+    # referencing secrets.* directly in each step's own if:) because the
+    # `secrets` context is NOT available in step-level `if:` expressions
+    # at all -- confirmed by a real actionlint error ("context 'secrets'
+    # is not allowed here"), not assumed. env IS available there.
+    env:
+      HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Dead-man's-switch ping, per docs/upgrade-research/operator-
+      # alerting-integrations-2026-09-15.md Finding 6: this job is a
+      # `schedule:`-triggered cron with no CI branch-protection gate to
+      # notice if it silently stops firing at all (a runner outage, a
+      # cron misconfiguration, GitHub disabling scheduled workflows on
+      # an inactive repo, etc.) -- a scheduled job that quietly never
+      # runs looks identical to "there was nothing to report" from the
+      # outside. healthchecks.io is a real, free-tier, no-infra-to-run
+      # dead-man's-switch service: a check pings /start on entry and
+      # either a bare ping (success) or /fail (failure) on exit; if no
+      # ping arrives within the check's own configured grace period, it
+      # alerts on its own. Wired but genuinely INACTIVE until an
+      # operator creates a free healthchecks.io check and sets this
+      # repo's HEALTHCHECKS_PING_URL secret -- every ping step below
+      # no-ops (never fails the job) when that secret is unset, so this
+      # is a real, disclosed "code path ready, external signup is the
+      # user's own action" gap, not a silent no-op pretending to be live.
+      - name: dead-man's-switch ping (start)
+        if: ${{ env.HEALTHCHECKS_PING_URL != '' }}
+        run: curl -fsS -m 10 --retry 3 "$HEALTHCHECKS_PING_URL/start" > /dev/null
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -163,3 +190,16 @@ jobs:
         with:
           path: evals/judge-accuracy-trend.jsonl
           key: judge-accuracy-trend-${{ github.run_id }}
+      # Success/failure halves of the dead-man's-switch ping above --
+      # see that step's own comment for the full disclosure. success()/
+      # failure() reflect every PRECEDING step's own outcome, including
+      # a real run/report failure earlier in this job -- continue-on-
+      # error on the trend-alert step above means an alert threshold
+      # trip alone never trips failure() here, matching this whole
+      # job's "data-collection run, not a pass/fail gate" posture.
+      - name: dead-man's-switch ping (success)
+        if: ${{ success() && env.HEALTHCHECKS_PING_URL != '' }}
+        run: curl -fsS -m 10 --retry 3 "$HEALTHCHECKS_PING_URL" > /dev/null
+      - name: dead-man's-switch ping (failure)
+        if: ${{ failure() && env.HEALTHCHECKS_PING_URL != '' }}
+        run: curl -fsS -m 10 --retry 3 "$HEALTHCHECKS_PING_URL/fail" > /dev/null

@@ -79,6 +79,41 @@ See `docs/operations/PROVIDERS.md` for exactly which upstream providers receive 
 
 None of these artifacts constitute a SOC 2 report, an ISO 42001 certification, or a formal AI-Policy governance document on their own — those require an operating organization with named leadership and a management-review cadence to certify against, which this OSS project structurally is not. Pursue them only once a real operator or customer requires that specific attestation, not speculatively ahead of one.
 
+## Data Retention & Right to Erasure
+
+**Added 2026-09-18**, per `docs/upgrade-research/data-retention-right-to-erasure-2026-09-15.md`. Kelvran itself is
+almost never the GDPR/CCPA-obligated party — that's typically the organization operating a deployment — but the
+operator's ability to comply is gated entirely on what this software actually does. Retention windows below are
+disclosed provisional defaults (mirroring the same honest framing `docs/rfcs/2026-09-07-evals-trace-ingestion-object-storage.md`
+§4 already uses for its own 90-day S3 lifecycle rule), not numbers derived from a specific compliance requirement.
+
+| Store | Default retention | Configurable? | Erasure mechanism |
+|---|---|---|---|
+| Cache L1 (exact-match) | 300s (`cache.ttl_seconds`) | Yes | `POST /admin/cache/erase` (see below) or wait out the TTL |
+| Cache L2 (normalized-match) | 75s (`cache.l2.ttl_seconds`) | Yes | Same as L1 |
+| Cache L3-lite (lexical near-duplicate) | 300s (`cache.l3.ttl_seconds`) | Yes | **None** — `POST /admin/cache/erase` deliberately does not cover this layer (no `Delete` method exists on `LexicalCache` today); only the TTL removes an L3 entry |
+| Budget-spend history (`internal/budget`, persisted via `budget.persist_path` when configured) | Indefinite — no automatic expiry/rolling-deletion exists | No automatic window; per-key deletion is real (see below) | `DELETE /admin/virtual_keys/{name}` — `budget.Tracker.Delete` removes both the live in-memory record and, via `boltstore.Store.Delete`, the persisted bbolt record too |
+| Admin audit log (`gateway/internal/admin`, `slog.Info` lines) | Indefinite by design (see below), bounded only by whatever process captures stdout | Yes — `admin.enable_audit_log: false` disables it entirely | **None** at the record level (only whole-log disablement) |
+
+**Cache erasure**: `POST /admin/cache/erase` (Admin-tier) services a per-request erasure against L1/L2 for one
+specific request shape — the caller must already know the original request's defining fields, since Kelvran's
+cache is keyed by a content hash, not a per-tenant index. See `dataplane.Pipeline.EraseCacheEntry`'s own doc
+comment for the full mechanism and its L3 limitation.
+
+**Audit log retention basis (disclosed default posture, not a legal determination)**: the admin audit log's
+lack of automatic expiry is deliberate, not an oversight — an administrative action log (who changed a virtual
+key, a deployment weight, a prompt, when) serves this software's own accountability/incident-investigation
+purpose in a way that plausibly falls under UK GDPR Article 17(3)(b)/(e) (compliance with a legal obligation;
+establishment, exercise, or defence of legal claims) as a real, available basis for declining an erasure
+request against it. **This is disclosed as an available basis an operator may invoke, not a settled legal
+conclusion** — per the research doc's own Finding 2, that exemption "must be affirmatively claimed and
+documented" with a genuine statutory basis specific to the invoking organization's own jurisdiction and
+circumstances. Confirm this applies to your own deployment (or adopt a different basis/retention policy)
+before relying on it; this is not legal advice.
+
+See `docs/operations/DATA-SUBJECT-REQUESTS.md` for the manual, interim data-subject-request procedure across
+all three stores, including what today's tooling can and cannot do.
+
 ## Bug Bounty
 
 Not yet adopted. Tracked as a future decision, not a current commitment.
