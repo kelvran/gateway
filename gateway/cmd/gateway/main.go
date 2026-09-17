@@ -625,7 +625,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	// after the first live admin mutation.
 	var identityStore identity.Store
 	if cfg.Admin.PersistPath != "" {
-		store, err := identityboltstore.Open(cfg.Admin.PersistPath)
+		store, err := openPersistStoreWithRecovery(cfg.Admin.PersistPath, cfg.Admin.OnCorruptStore, logger, identityboltstore.Open)
 		if err != nil {
 			return nil, fmt.Errorf("opening virtual-key store at %q: %w", cfg.Admin.PersistPath, err)
 		}
@@ -731,12 +731,12 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		}
 	}
 
-	budgetTracker, err := newBudgetTracker(cfg.Budget, logger)
+	budgetTracker, err := newBudgetTracker(cfg.Budget, cfg.Admin.OnCorruptStore, logger)
 	if err != nil {
 		return nil, fmt.Errorf("constructing budget tracker: %w", err)
 	}
 
-	promptStore, err := newPromptStore(cfg.Prompt)
+	promptStore, err := newPromptStore(cfg.Prompt, cfg.Admin.OnCorruptStore, logger)
 	if err != nil {
 		return nil, fmt.Errorf("constructing prompt store: %w", err)
 	}
@@ -924,6 +924,47 @@ func validateFallbackChainTargets(deployments []dataplane.Deployment) error {
 // logged for a persisted ID with no config-declared counterpart at all
 // (the net-new-entry branch below) — there is nothing to disclose an
 // override AGAINST in that case.
+// openPersistStoreWithRecovery wraps a bbolt-backed store's own Open
+// function with cfg.Admin.OnCorruptStore's disclosed choice, per
+// docs/upgrade-research/state-durability-operational-recovery-2026-09-15.md
+// Finding 4. mode == "fail" (the default) returns open's own error
+// completely unchanged -- byte-for-byte the same behavior as before this
+// field existed, for every config file that doesn't set it. mode ==
+// "reset" is only reached on a genuine open FAILURE (a path that simply
+// doesn't exist yet already succeeds on the first open call, since
+// bbolt creates it) -- it renames the corrupt file aside to
+// "<path>.corrupt-<unix-seconds>" (preserving forensic evidence, never
+// deleting it outright, per the finding's own "even a reset shouldn't
+// destroy evidence of what went wrong" framing) and retries open ONCE
+// against the now-clear path. A rename failure (e.g. a permissions
+// issue unrelated to corruption) surfaces the ORIGINAL open error, not
+// the rename error -- retrying open against a path that still has the
+// corrupt file at it would just reproduce the same failure, so there is
+// nothing a second attempt could recover.
+func openPersistStoreWithRecovery[T any](path string, mode string, logger *slog.Logger, open func(string) (T, error)) (T, error) {
+	store, err := open(path)
+	if err == nil {
+		return store, nil
+	}
+	if mode != "reset" {
+		return store, err
+	}
+
+	logger.Error("persist_store_open_failed", "path", path, "error", err, "on_corrupt_store", mode)
+	backupPath := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+	if renameErr := os.Rename(path, backupPath); renameErr != nil {
+		logger.Error("persist_store_corrupt_backup_failed", "path", path, "backup_path", backupPath, "error", renameErr)
+		return store, err
+	}
+	logger.Warn("persist_store_reset", "path", path, "backup_path", backupPath)
+
+	store, err = open(path)
+	if err != nil {
+		return store, fmt.Errorf("re-opening %q after reset: %w", path, err)
+	}
+	return store, nil
+}
+
 func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []ratelimit.KeyConfig, concurrencyConfigs []ratelimit.ConcurrencyConfig, store identity.Store, logger *slog.Logger) ([]identity.VirtualKey, []ratelimit.KeyConfig, []ratelimit.ConcurrencyConfig, error) {
 	persisted, err := store.Load(context.Background())
 	if err != nil {
@@ -960,11 +1001,13 @@ func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []r
 // docs/rfcs/2026-09-03-budget-persistence.md existed), or one backed by a
 // bbolt store at cfg.PersistPath otherwise — hydrating any existing spend
 // immediately, so a restart resumes exactly where it left off.
-func newBudgetTracker(cfg controlplane.BudgetConfig, logger *slog.Logger) (*budget.Tracker, error) {
+// onCorruptStore ("fail"/"reset") is forwarded straight to
+// openPersistStoreWithRecovery — see that function's own doc comment.
+func newBudgetTracker(cfg controlplane.BudgetConfig, onCorruptStore string, logger *slog.Logger) (*budget.Tracker, error) {
 	if cfg.PersistPath == "" {
 		return budget.NewTracker(), nil
 	}
-	store, err := boltstore.Open(cfg.PersistPath)
+	store, err := openPersistStoreWithRecovery(cfg.PersistPath, onCorruptStore, logger, boltstore.Open)
 	if err != nil {
 		return nil, fmt.Errorf("opening budget store at %q: %w", cfg.PersistPath, err)
 	}
@@ -980,12 +1023,13 @@ func newBudgetTracker(cfg controlplane.BudgetConfig, logger *slog.Logger) (*budg
 // cfg.PersistPath is empty (the default — identical to prompt.Persister's
 // own pre-implementation behavior), or one backed by a bbolt store at
 // cfg.PersistPath otherwise — hydrating any existing prompt templates
-// immediately, mirroring newBudgetTracker's identical shape.
-func newPromptStore(cfg controlplane.PromptConfig) (*prompt.Store, error) {
+// immediately, mirroring newBudgetTracker's identical shape, including
+// onCorruptStore's identical meaning.
+func newPromptStore(cfg controlplane.PromptConfig, onCorruptStore string, logger *slog.Logger) (*prompt.Store, error) {
 	if cfg.PersistPath == "" {
 		return prompt.NewStore(), nil
 	}
-	store, err := promptboltstore.Open(cfg.PersistPath)
+	store, err := openPersistStoreWithRecovery(cfg.PersistPath, onCorruptStore, logger, promptboltstore.Open)
 	if err != nil {
 		return nil, fmt.Errorf("opening prompt store at %q: %w", cfg.PersistPath, err)
 	}

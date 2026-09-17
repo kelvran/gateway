@@ -1660,11 +1660,12 @@ func TestLoadBedrockDeploymentWithSessionTokenEnv(t *testing.T) {
 // TestLoadWithoutAdminSectionDefaultsToZeroValue proves admin: is
 // genuinely optional — a bare config with no admin: section at all must
 // parse with every AdminConfig field at its zero value, EXCEPT
-// EnableAuditLog, which defaults true regardless of whether the section
-// exists at all (see that field's own doc comment for why: preserving
-// every prior release's always-on audit-log behavior takes priority over
-// this test's own previously-bare "zero value" framing — corrected here,
-// not silently left stale, per this field's addition). Otherwise mirrors
+// EnableAuditLog (defaults true, see that field's own doc comment) and
+// OnCorruptStore (defaults "fail", see that field's own doc comment —
+// corrected here, not silently left stale, per this field's addition,
+// the same "priority over this test's own previously-bare zero-value
+// framing" precedent EnableAuditLog's own correction already
+// established). Otherwise mirrors
 // TestLoadWithoutTelemetrySectionDefaultsToZeroValue's own proof for a
 // different optional section.
 func TestLoadWithoutAdminSectionDefaultsToZeroValue(t *testing.T) {
@@ -1679,7 +1680,7 @@ func TestLoadWithoutAdminSectionDefaultsToZeroValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load without an admin section: %v", err)
 	}
-	if want := (AdminConfig{EnableAuditLog: true}); cfg.Admin != want {
+	if want := (AdminConfig{EnableAuditLog: true, OnCorruptStore: "fail"}); cfg.Admin != want {
 		t.Errorf("Admin = %+v, want %+v", cfg.Admin, want)
 	}
 }
@@ -1747,6 +1748,76 @@ func TestLoadAdminSectionExplicitlyDisablesAuditLog(t *testing.T) {
 	}
 	if cfg.Admin.EnableAuditLog {
 		t.Error("Admin.EnableAuditLog = true, want false (enable_audit_log: false must be honored)")
+	}
+}
+
+// TestLoadOnCorruptStoreDefaultsToFailRegardlessOfAdminSectionPresence
+// proves admin.on_corrupt_store defaults to "fail" -- both when the
+// admin section is absent entirely, and when it's present but this key
+// is unset -- preserving every config file written before this field
+// existed exactly the same fatal-on-corruption behavior it always had,
+// mirroring EnableAuditLog's own "default regardless of section
+// presence" precedent.
+func TestLoadOnCorruptStoreDefaultsToFailRegardlessOfAdminSectionPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "admin section absent",
+			content: "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n",
+		},
+		{
+			name:    "admin section present, on_corrupt_store unset",
+			content: "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  token_env: \"KELVRAN_ADMIN_TOKEN\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Admin.OnCorruptStore != "fail" {
+				t.Errorf("Admin.OnCorruptStore = %q, want \"fail\"", cfg.Admin.OnCorruptStore)
+			}
+		})
+	}
+}
+
+// TestLoadOnCorruptStoreParsesReset proves the actual opt-in path.
+func TestLoadOnCorruptStoreParsesReset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  on_corrupt_store: \"reset\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Admin.OnCorruptStore != "reset" {
+		t.Errorf("Admin.OnCorruptStore = %q, want \"reset\"", cfg.Admin.OnCorruptStore)
+	}
+}
+
+// TestLoadRejectsUnknownOnCorruptStoreValue proves a typo or invalid
+// value fails config load loudly at startup, rather than silently
+// falling back to a default the operator never intended.
+func TestLoadRejectsUnknownOnCorruptStoreValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  on_corrupt_store: \"resett\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load succeeded with an invalid admin.on_corrupt_store value, want an error")
 	}
 }
 

@@ -558,6 +558,21 @@ type AdminConfig struct {
 	// pipeline already captures the same audit trail and this codebase's
 	// own logging would just be redundant duplicate volume.
 	EnableAuditLog bool
+	// OnCorruptStore controls what happens when a configured
+	// persist_path (identity/budget/prompt) exists but bbolt fails to
+	// open it -- distinct from "path absent," which is always handled
+	// as "create fresh" regardless of this setting. Per
+	// docs/upgrade-research/state-durability-operational-recovery-2026-09-15.md
+	// Finding 4: "fail" (the default, preserving every prior release's
+	// only behavior) returns the open error, fatal to the whole process
+	// -- honest and loud, but a hard outage from a single corrupted
+	// file. "reset" renames the corrupt file aside (preserving forensic
+	// evidence, never deleting it outright) and starts fresh at that
+	// persist_path, logged at Error level either way. Deliberately NOT
+	// defaulted to "reset" -- that finding's own verdict is build_now
+	// for making this an explicit, disclosed CHOICE, not_yet for
+	// picking reset as the default.
+	OnCorruptStore string
 }
 
 // HealthProbeConfig configures the active/synthetic health-probing
@@ -850,6 +865,10 @@ func Load(path string) (*Config, error) {
 	// all below -- EnableAuditLog's own doc comment explains why this
 	// must default on, unlike EnablePprof/every other admin field here.
 	cfg.Admin.EnableAuditLog = true
+	// Same "default regardless of section presence" reasoning as
+	// EnableAuditLog above -- every config file written before this
+	// field existed must keep the exact prior fail-fatal behavior.
+	cfg.Admin.OnCorruptStore = "fail"
 	if adminRaw, ok := getMap(root, "admin"); ok {
 		cfg.Admin.ListenAddr, _ = getString(adminRaw, "listen_addr")
 		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
@@ -860,6 +879,14 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.BackupDir, _ = getString(adminRaw, "backup_dir")
 		if v, present := getBool(adminRaw, "enable_audit_log"); present {
 			cfg.Admin.EnableAuditLog = v
+		}
+		if v, present := getString(adminRaw, "on_corrupt_store"); present {
+			switch v {
+			case "fail", "reset":
+				cfg.Admin.OnCorruptStore = v
+			default:
+				return nil, fmt.Errorf("controlplane: admin.on_corrupt_store %q is invalid (want \"fail\" or \"reset\")", v)
+			}
 		}
 	}
 

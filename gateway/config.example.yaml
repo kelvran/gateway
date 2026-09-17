@@ -341,11 +341,23 @@ telemetry:
 # viewer_token_env, since profiling data is a stronger information-
 # disclosure/DoS-surface signal than anything the viewer tier exposes
 # elsewhere. Mirrors Envoy Gateway's own shipped enablePprof field.
+# on_corrupt_store (added 2026-09-18, default "fail") controls what
+# happens when a configured identity/budget/prompt persist_path exists
+# but bbolt fails to open it (NOT the "path absent yet" case, which is
+# always handled as "create fresh" regardless of this setting): "fail"
+# is a fatal startup error, exactly as every release before this field
+# existed; "reset" renames the corrupt file aside (as
+# "<path>.corrupt-<unix-seconds>", never deleted -- preserving forensic
+# evidence) and starts fresh, logged loudly either way. See
+# docs/upgrade-research/state-durability-operational-recovery-2026-09-15.md
+# Finding 4 for the full design rationale, including why this
+# deliberately isn't defaulted to "reset".
 # admin:
 #   listen_addr: "127.0.0.1:8081"
 #   token_env: "KELVRAN_ADMIN_TOKEN"
 #   viewer_token_env: "KELVRAN_ADMIN_VIEWER_TOKEN"
 #   enable_pprof: false
+#   on_corrupt_store: "fail"
 
 # Active/synthetic health-probing: a background loop that issues a
 # lightweight, real chat-completion request to every configured
