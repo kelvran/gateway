@@ -429,6 +429,48 @@ func TestNewStoreWithPersisterLoadsExistingPrompts(t *testing.T) {
 	}
 }
 
+// TestGetLatestWithOutOfOrderPersistedVersions documents a real, current
+// behavioral quirk rather than proving a bug: Get's own "latest" logic
+// (version <= 0) returns versions[len(versions)-1] -- the LAST SLICE
+// ELEMENT, never the entry with the maximum Version field. In-memory
+// Upsert always appends in ascending order, so this never bites via that
+// path, but a Persister.Load() implementation that returns a
+// DIFFERENTLY-ordered slice (out of order, or even just reversed) would
+// make "latest" resolve to whatever happens to be last in that slice,
+// not the highest version -- pinned down here explicitly so a future
+// intentional fix (defensively sorting on load, or documenting that
+// Persister implementations must return ascending order) has a test to
+// update, rather than discovering this from scratch.
+func TestGetLatestWithOutOfOrderPersistedVersions(t *testing.T) {
+	fp := &fakePersister{
+		data: map[string][]Prompt{
+			"greeting": {
+				{ID: "greeting", Version: 2, Messages: msgs("v2-content")},
+				{ID: "greeting", Version: 1, Messages: msgs("v1-content")},
+			},
+		},
+	}
+	s, err := NewStoreWithPersister(context.Background(), fp)
+	if err != nil {
+		t.Fatalf("NewStoreWithPersister: %v", err)
+	}
+
+	got, ok := s.Get("greeting", 0)
+	if !ok {
+		t.Fatalf("Get(greeting, 0): not found")
+	}
+	// Documents CURRENT behavior: the last slice element (Version 1) is
+	// returned as "latest," even though Version 2 is the genuinely
+	// higher version number -- almost certainly not the intended
+	// contract, but this is what Get actually does today.
+	if got.Version != 1 {
+		t.Errorf("Get(greeting, 0).Version = %d, want 1 (the last slice element, not the highest Version field — see this test's own doc comment)", got.Version)
+	}
+	if got.Messages[0].Content != "v1-content" {
+		t.Errorf("Get(greeting, 0).Messages[0].Content = %q, want %q", got.Messages[0].Content, "v1-content")
+	}
+}
+
 func TestNewStoreWithPersisterPropagatesLoadError(t *testing.T) {
 	fp := &fakePersister{loadErr: errors.New("boom")}
 	if _, err := NewStoreWithPersister(context.Background(), fp); err == nil {
