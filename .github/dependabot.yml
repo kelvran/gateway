@@ -41,3 +41,17 @@ updates:
         patterns: ["*"]
     cooldown:
       default-days: 14
+
+  # gateway/Dockerfile pins a real base image (golang:1.26.8-alpine, builder
+  # stage only -- the final stage is FROM scratch). Without this ecosystem,
+  # Dependabot never tracks that pin for version/CVE updates, unlike the
+  # gomod/pip/github-actions deps above.
+  - package-ecosystem: "docker"
+    directory: "/gateway"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-deps:
+        patterns: ["*"]
+    cooldown:
+      default-days: 14

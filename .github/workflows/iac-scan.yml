@@ -1,0 +1,98 @@
+name: IaC security scan
+
+# Closes two related gaps neither addressed nor deliberately deferred in
+# docs/upgrade-research/terraform-iac-deployment-automation-2026-09-15.md
+# (Terraform) or docs/upgrade-research/kubernetes-production-deployment-
+# 2026-09-14.md (Kubernetes): no `terraform fmt`/`validate` gate for
+# terraform/bedrock-judge-panel and terraform/vector-s3-shipper, and no
+# manifest-security scan for deploy/k8s/base. One tool (Checkov) covers
+# both frameworks, per this repo's own "don't duplicate a tool" convention
+# (AGENTS.md/DECISIONS.md) rather than adding two separate scanners.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  terraform-validate:
+    name: terraform (${{ matrix.module }}) — fmt, validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [bedrock-judge-panel, vector-s3-shipper]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        working-directory: terraform/${{ matrix.module }}
+        run: terraform fmt -check -recursive
+      - name: terraform init (backend disabled — CI never touches real state)
+        working-directory: terraform/${{ matrix.module }}
+        run: terraform init -backend=false -input=false
+      - name: terraform validate
+        working-directory: terraform/${{ matrix.module }}
+        run: terraform validate
+
+  terraform-checkov:
+    name: terraform (Checkov IaC security scan)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Checkov (terraform framework)
+        # Report-only (soft_fail): no measured baseline exists yet for
+        # Checkov against this repo's own real Terraform, so a hard
+        # pass/fail gate here would be a guessed threshold, which this
+        # repo's own testing conventions explicitly reject (see ci.yml's
+        # regression-corpus-gate comment). Findings surface via the
+        # code-scanning dashboard instead, same posture as CodeQL/Scorecard.
+        uses: bridgecrewio/checkov-action@99bb2caf247dfd9f03cf984373bc6043d4e32ebf # v12.1347.0
+        with:
+          directory: terraform/
+          framework: terraform
+          output_format: sarif
+          soft_fail: true
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: results.sarif
+          category: checkov-terraform
+
+  kubernetes-checkov:
+    name: kubernetes (Checkov manifest security scan)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Checkov (kubernetes framework)
+        # framework: kubernetes (not kustomize) scans the raw manifests
+        # directly and never needs deploy/k8s/base/kustomization.yaml's
+        # configMapGenerator to resolve — that references a local,
+        # gitignored config.yaml that doesn't exist in a fresh checkout
+        # (see deploy/k8s/base/kustomization.yaml's own comment), and this
+        # scan doesn't need it rendered to check the committed resources.
+        # soft_fail for the same no-guessed-baseline reason as the
+        # terraform-checkov job above.
+        uses: bridgecrewio/checkov-action@99bb2caf247dfd9f03cf984373bc6043d4e32ebf # v12.1347.0
+        with:
+          directory: deploy/k8s/base
+          framework: kubernetes
+          output_format: sarif
+          soft_fail: true
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: results.sarif
+          category: checkov-kubernetes
