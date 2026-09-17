@@ -68,17 +68,27 @@ jobs:
       matrix:
         module:
           - path: terraform/bedrock-judge-panel
-            vars: '-var=account_id=123456789012 -var=trusted_principal_arns=["arn:aws:iam::123456789012:role/example"]'
+            tfvars: |
+              account_id = "123456789012"
+              trusted_principal_arns = ["arn:aws:iam::123456789012:role/example"]
           - path: terraform/vector-s3-shipper
-            vars: "-var=bucket_name=kelvran-ci-dummy-bucket"
+            tfvars: |
+              bucket_name = "kelvran-ci-dummy-bucket"
           - path: terraform/backend-bootstrap
-            vars: "-var=bucket_name=kelvran-ci-dummy-state-bucket"
+            tfvars: |
+              bucket_name = "kelvran-ci-dummy-state-bucket"
           - path: terraform/irsa-trust
-            vars: '-var=account_id=123456789012 -var=oidc_provider_url=oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE -var=secrets_manager_secret_arns=["arn:aws:secretsmanager:us-east-1:123456789012:secret:example-abc123"]'
+            tfvars: |
+              account_id = "123456789012"
+              oidc_provider_url = "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE"
+              secrets_manager_secret_arns = ["arn:aws:secretsmanager:us-east-1:123456789012:secret:example-abc123"]
           - path: terraform/ecs-task-role
-            vars: '-var=secrets_manager_secret_arns=["arn:aws:secretsmanager:us-east-1:123456789012:secret:example-abc123"]'
+            tfvars: |
+              secrets_manager_secret_arns = ["arn:aws:secretsmanager:us-east-1:123456789012:secret:example-abc123"]
           - path: deploy/ecs
-            vars: "-var=execution_role_arn=arn:aws:iam::123456789012:role/example-execution -var=task_role_arn=arn:aws:iam::123456789012:role/example-task"
+            tfvars: |
+              execution_role_arn = "arn:aws:iam::123456789012:role/example-execution"
+              task_role_arn = "arn:aws:iam::123456789012:role/example-task"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
@@ -106,6 +116,12 @@ jobs:
             skip_region_validation      = true
           }
           EOF
+      - name: write the dummy tfvars file (heredoc, not a shell command-line arg — avoids word-splitting/quote-stripping on the embedded HCL list literals)
+        working-directory: ${{ matrix.module.path }}
+        run: |
+          cat > zz_ci.tfvars <<'EOF'
+          ${{ matrix.module.tfvars }}
+          EOF
       - name: terraform init (backend disabled — CI never touches real state)
         working-directory: ${{ matrix.module.path }}
         run: terraform init -backend=false -input=false
@@ -114,7 +130,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
-        run: terraform plan -input=false -out=tfplan ${{ matrix.module.vars }}
+        run: terraform plan -input=false -out=tfplan -var-file=zz_ci.tfvars
       - name: upload tfplan artifact for human review
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
