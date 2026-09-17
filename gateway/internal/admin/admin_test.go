@@ -1073,6 +1073,137 @@ func TestDeletePromptLogsAnAuditEntry(t *testing.T) {
 	}
 }
 
+// TestSetPromptLabelMovesAnExistingVersion is the real end-to-end proof
+// for the promote/rollback route: PUT .../labels/{label} moves the label
+// to name an existing version, and the response reflects it.
+func TestSetPromptLabelMovesAnExistingVersion(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v2"}]}`)
+
+	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var l labelResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if l.PromptID != "greeting" || l.Label != "production" || l.Version != 1 {
+		t.Errorf("SetLabel response = %+v, want PromptID=greeting Label=production Version=1", l)
+	}
+}
+
+// TestSetPromptLabelHandlerRequiresAdminToken mirrors
+// TestUpdateDeploymentWeightRequiresAdminCredential's own proof for this
+// write-shaped route.
+func TestSetPromptLabelHandlerRequiresAdminToken(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+
+	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", "wrong-value-entirely", `{"version":1}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("PUT .../labels/production with a wrong credential: status = %d, want 401", rec.Code)
+	}
+}
+
+// TestSetPromptLabelHandlerRejectsANonExistentVersion proves the 404
+// path -- a label can never point at a version that doesn't exist.
+func TestSetPromptLabelHandlerRejectsANonExistentVersion(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+
+	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":99}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("PUT with a nonexistent version: status = %d, want 404, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSetPromptLabelHandlerRejectsMalformedJSONBody mirrors this
+// package's own established malformed-body regression proof for every
+// other write route.
+func TestSetPromptLabelHandlerRejectsMalformedJSONBody(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+
+	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{not valid json`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT with a malformed body: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSetPromptLabelHandlerLogsAnAuditEntry mirrors
+// TestUpsertPromptLogsAnAuditEntryWithoutLeakingContent's own discipline
+// for the new label route.
+func TestSetPromptLabelHandlerLogsAnAuditEntry(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "admin_prompt_label_set") || !strings.Contains(logOutput, "id=greeting") ||
+		!strings.Contains(logOutput, "label=production") || !strings.Contains(logOutput, "version=1") {
+		t.Errorf("expected an admin_prompt_label_set audit-log entry naming greeting/production/version 1; got: %s", logOutput)
+	}
+}
+
+// TestDeletePromptLabelRemovesItAndUnknownLabelReturns404 mirrors
+// TestDeletePromptRemovesItAndUnknownIDReturns404's own shape for the new
+// label-delete route.
+func TestDeletePromptLabelRemovesItAndUnknownLabelReturns404(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+	doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
+
+	rec := doRequest(t, h, http.MethodDelete, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("first DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodDelete, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("second DELETE (already removed): status = %d, want 404, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDeletePromptLabelHandlerRequiresAdminToken mirrors
+// TestSetPromptLabelHandlerRequiresAdminToken for the delete route.
+func TestDeletePromptLabelHandlerRequiresAdminToken(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+	doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
+
+	rec := doRequest(t, h, http.MethodDelete, "/admin/prompts/greeting/labels/production", "wrong-value-entirely", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("DELETE .../labels/production with a wrong credential: status = %d, want 401", rec.Code)
+	}
+}
+
+// TestDeletePromptLabelHandlerLogsAnAuditEntry mirrors
+// TestDeletePromptLogsAnAuditEntry for the new label-delete route.
+func TestDeletePromptLabelHandlerLogsAnAuditEntry(t *testing.T) {
+	logger, buf := capturingLogger()
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+	doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
+	rec := doRequest(t, h, http.MethodDelete, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "admin_prompt_label_deleted") || !strings.Contains(logOutput, "id=greeting") || !strings.Contains(logOutput, "label=production") {
+		t.Errorf("expected an admin_prompt_label_deleted audit-log entry naming greeting/production; got: %s", logOutput)
+	}
+}
+
 // TestGetConfigLogsAnAuditEntryNamingTheCredentialTier is a round-3
 // backlog-audit finding: GET /admin/config previously logged nothing at
 // all, even though every WRITE route already did — a leaked/misused

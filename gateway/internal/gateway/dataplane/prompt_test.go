@@ -419,3 +419,104 @@ func TestHandleChatCompletionL3NeverServesAcrossDifferentPromptFingerprint(t *te
 		t.Errorf("after a different prompt_id resolving to byte-identical, non-volatile content: upstreamCalls = %d, want 2 (L3 must never serve a hit written under a different prompt identity)", upstreamCalls)
 	}
 }
+
+// TestPromptLabelResolvesToWhicheverVersionItCurrentlyPoints is the
+// end-to-end proof for Phase 2b's label feature: a request naming
+// PromptLabel (not PromptVersion) reaches the upstream carrying whichever
+// version the label was most recently SetLabel'd to -- and moving the
+// label (promote OR rollback, the identical operation) changes what the
+// SAME request resolves to on the very next call, with no client-side
+// change at all.
+func TestPromptLabelResolvesToWhicheverVersionItCurrentlyPoints(t *testing.T) {
+	var gotContents []string
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		gotContents = providerMessageContents(t, providerReq)
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, deployments)
+
+	if _, err := p.UpsertPrompt("greeting", []adapter.Message{{Role: "user", Content: "v1"}}); err != nil {
+		t.Fatalf("UpsertPrompt v1: %v", err)
+	}
+	if _, err := p.UpsertPrompt("greeting", []adapter.Message{{Role: "user", Content: "v2"}}); err != nil {
+		t.Fatalf("UpsertPrompt v2: %v", err)
+	}
+	if _, err := p.SetPromptLabel("greeting", "production", 1); err != nil {
+		t.Fatalf("SetPromptLabel(production, 1): %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptLabel: "production"}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+	if len(gotContents) != 1 || gotContents[0] != "v1" {
+		t.Fatalf("with production->1: upstream received %v, want [\"v1\"]", gotContents)
+	}
+
+	// Promote: move the SAME label to v2 -- the identical client request
+	// must now resolve to the new content, with zero client-side change.
+	if _, err := p.SetPromptLabel("greeting", "production", 2); err != nil {
+		t.Fatalf("SetPromptLabel(production, 2): %v", err)
+	}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+		t.Fatalf("HandleChatCompletion after promote: %v", err)
+	}
+	if len(gotContents) != 1 || gotContents[0] != "v2" {
+		t.Fatalf("with production->2: upstream received %v, want [\"v2\"]", gotContents)
+	}
+}
+
+// TestResolvePromptIfSetRejectsBothLabelAndVersionSet proves the
+// "replace, never merge" design applies to PromptLabel/PromptVersion
+// too, mirroring TestPromptIDAndMessagesBothSetIsRejected's own
+// discipline: a request that sets BOTH must fail with
+// ErrPromptLabelAndVersionBothSet and never reach the upstream.
+func TestResolvePromptIfSetRejectsBothLabelAndVersionSet(t *testing.T) {
+	var upstreamCalls int
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, deployments)
+
+	if _, err := p.UpsertPrompt("greeting", []adapter.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("UpsertPrompt: %v", err)
+	}
+	if _, err := p.SetPromptLabel("greeting", "production", 1); err != nil {
+		t.Fatalf("SetPromptLabel: %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptLabel: "production", PromptVersion: 1}
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	if !errors.Is(err, ErrPromptLabelAndVersionBothSet) {
+		t.Errorf("err = %v, want ErrPromptLabelAndVersionBothSet", err)
+	}
+	if upstreamCalls != 0 {
+		t.Errorf("upstreamCalls = %d, want 0 -- a rejected request must never reach the upstream", upstreamCalls)
+	}
+}
+
+// TestUnknownPromptLabelFailsWithErrPromptResolutionFailed mirrors
+// TestUnknownPromptIDFailsWithErrPromptResolutionFailed for a label that
+// was never set.
+func TestUnknownPromptLabelFailsWithErrPromptResolutionFailed(t *testing.T) {
+	var upstreamCalls int
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, deployments)
+
+	if _, err := p.UpsertPrompt("greeting", []adapter.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("UpsertPrompt: %v", err)
+	}
+
+	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptLabel: "staging"}
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	if !errors.Is(err, ErrPromptResolutionFailed) {
+		t.Errorf("err = %v, want ErrPromptResolutionFailed", err)
+	}
+	if upstreamCalls != 0 {
+		t.Errorf("upstreamCalls = %d, want 0", upstreamCalls)
+	}
+}

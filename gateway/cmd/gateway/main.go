@@ -1208,11 +1208,12 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		// failure, matching OpenAI's own API convention for
 		// moderation/content-policy rejections.
 		status = http.StatusBadRequest
-	case errors.Is(err, dataplane.ErrPromptAndMessagesBothSet), errors.Is(err, dataplane.ErrPromptResolutionFailed):
+	case errors.Is(err, dataplane.ErrPromptAndMessagesBothSet), errors.Is(err, dataplane.ErrPromptResolutionFailed), errors.Is(err, dataplane.ErrPromptLabelAndVersionBothSet):
 		// 400, the same "this request itself is malformed" bucket
 		// ErrGuardrailBlocked already occupies — setting both prompt_id
-		// and messages, or naming an unknown prompt_id/prompt_version, is
-		// a client-request-shape problem, never an upstream failure.
+		// and messages, both prompt_label and prompt_version, or naming
+		// an unknown prompt_id/prompt_version/prompt_label, is a
+		// client-request-shape problem, never an upstream failure.
 		status = http.StatusBadRequest
 	case errors.Is(err, dataplane.ErrResolvedPromptContentInvalid):
 		// 400, the identical bucket -- a resolved prompt's own content

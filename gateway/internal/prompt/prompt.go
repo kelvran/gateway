@@ -26,8 +26,9 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
-// ErrPromptNotFound is returned by Get/Resolve/Delete when id (or id at
-// the requested version) does not match any stored prompt.
+// ErrPromptNotFound is returned by Get/Resolve/Delete/SetLabel/
+// ResolveLabel/DeleteLabel when id (or id at the requested version, or
+// id's named label) does not match any stored prompt.
 var ErrPromptNotFound = errors.New("prompt: prompt not found")
 
 // Prompt is one specific, immutable version of an operator-managed
@@ -37,6 +38,20 @@ type Prompt struct {
 	Version   int
 	Messages  []adapter.Message
 	CreatedAt time.Time
+}
+
+// Label is a mutable, named pointer at one specific Version of a
+// Prompt's ID — the promote/rollback primitive: "move production to
+// version 7" is SetLabel(id, "production", 7), never a re-Upsert of
+// version 7's own content (which would mint a NEW version number and
+// silently shift what "latest" means for every un-pinned caller).
+// Rollback is the identical operation with an OLDER version number — no
+// separate verb exists, or needs to.
+type Label struct {
+	PromptID  string
+	Name      string
+	Version   int
+	UpdatedAt time.Time
 }
 
 // Persister is a seam for future real persistence -- Postgres is the
@@ -72,6 +87,15 @@ type Persister interface {
 // atomically swaps the pointer to it.
 type storeState struct {
 	versions map[string][]Prompt
+	// labels maps PromptID -> label name -> Label, per Label's own doc
+	// comment. A mutation that only touches versions (Upsert/Delete's
+	// version-history half) carries the OLD labels map reference forward
+	// unchanged; a mutation that only touches labels (SetLabel/
+	// DeleteLabel) carries the OLD versions map forward unchanged --
+	// exactly mirroring cloneVersionsMap's own "safe to share every
+	// untouched id's slice/map, never mutated in place" reasoning, now
+	// applied across the two top-level fields as well as within each.
+	labels map[string]map[string]Label
 }
 
 // Store holds every operator-managed prompt template, keyed by ID, each
@@ -99,7 +123,7 @@ type Store struct {
 // NewStore constructs an empty, pure in-memory Store.
 func NewStore() *Store {
 	s := &Store{}
-	s.state.Store(&storeState{versions: map[string][]Prompt{}})
+	s.state.Store(&storeState{versions: map[string][]Prompt{}, labels: map[string]map[string]Label{}})
 	return s
 }
 
@@ -117,7 +141,13 @@ func NewStoreWithPersister(ctx context.Context, p Persister) (*Store, error) {
 		loaded = map[string][]Prompt{}
 	}
 	s := &Store{persist: p}
-	s.state.Store(&storeState{versions: loaded})
+	// labels start empty regardless of what's persisted for versions --
+	// v1 scope is in-memory-only for labels (Persister's own interface
+	// carries no label data at all yet, matching every other admin-
+	// mutation feature's v1 precedent: virtual keys/deployment weight
+	// were both in-memory-only before persistence was added later, if
+	// ever). A restart loses label assignments, never version history.
+	s.state.Store(&storeState{versions: loaded, labels: map[string]map[string]Label{}})
 	return s, nil
 }
 
@@ -128,6 +158,29 @@ func NewStoreWithPersister(ctx context.Context, p Persister) (*Store, error) {
 // in this package.
 func cloneVersionsMap(m map[string][]Prompt) map[string][]Prompt {
 	next := make(map[string][]Prompt, len(m))
+	for k, v := range m {
+		next[k] = v
+	}
+	return next
+}
+
+// cloneLabelsMap/cloneLabelMap mirror cloneVersionsMap's identical
+// shallow-copy-the-top-level-map reasoning, one level apart: the outer
+// map is keyed by PromptID (cloneLabelsMap), the inner by label name
+// (cloneLabelMap) — a mutation touching one PromptID's own labels clones
+// both levels for that ID, but shares every OTHER ID's inner map
+// reference untouched, exactly like cloneVersionsMap shares every other
+// ID's []Prompt slice.
+func cloneLabelsMap(m map[string]map[string]Label) map[string]map[string]Label {
+	next := make(map[string]map[string]Label, len(m))
+	for k, v := range m {
+		next[k] = v
+	}
+	return next
+}
+
+func cloneLabelMap(m map[string]Label) map[string]Label {
+	next := make(map[string]Label, len(m))
 	for k, v := range m {
 		next[k] = v
 	}
@@ -199,7 +252,11 @@ func (s *Store) Upsert(id string, messages []adapter.Message) (Prompt, error) {
 		next := cloneVersionsMap(old.versions)
 		next[id] = merged
 
-		if !s.state.CompareAndSwap(old, &storeState{versions: next}) {
+		// labels is carried forward from old, UNTOUCHED -- Upsert never
+		// mutates a label assignment, and old.labels is never mutated in
+		// place by anything in this package, so sharing the reference is
+		// safe (see storeState's own doc comment).
+		if !s.state.CompareAndSwap(old, &storeState{versions: next, labels: old.labels}) {
 			continue // lost the race to a concurrent writer -- retry against fresh state
 		}
 		if s.persist != nil {
@@ -214,7 +271,14 @@ func (s *Store) Upsert(id string, messages []adapter.Message) (Prompt, error) {
 // Get returns id's prompt at version (version <= 0 means "latest"), or
 // false if id (or that specific version of id) does not exist.
 func (s *Store) Get(id string, version int) (Prompt, bool) {
-	versions := s.state.Load().versions[id]
+	return getFromVersions(s.state.Load().versions[id], version)
+}
+
+// getFromVersions is Get's own search, extracted so SetLabel can resolve
+// a version number to a real, existing Prompt (rejecting a label move to
+// a version that doesn't exist) without duplicating this exact
+// "version<=0 means latest, else exact match" contract a second time.
+func getFromVersions(versions []Prompt, version int) (Prompt, bool) {
 	if len(versions) == 0 {
 		return Prompt{}, false
 	}
@@ -264,7 +328,19 @@ func (s *Store) Delete(id string) error {
 		next := cloneVersionsMap(old.versions)
 		delete(next, id)
 
-		if !s.state.CompareAndSwap(old, &storeState{versions: next}) {
+		// A deleted prompt's labels would otherwise dangle, pointing at
+		// version numbers that no longer exist -- cleared here in the
+		// same atomic swap, not left for ResolveLabel to discover as a
+		// confusing not-found later. Only clones the outer labels map
+		// when id actually has any (the common case for a prompt that
+		// never had a label at all costs nothing extra).
+		nextLabels := old.labels
+		if _, hadLabels := old.labels[id]; hadLabels {
+			nextLabels = cloneLabelsMap(old.labels)
+			delete(nextLabels, id)
+		}
+
+		if !s.state.CompareAndSwap(old, &storeState{versions: next, labels: nextLabels}) {
 			continue
 		}
 		if s.persist != nil {
@@ -274,6 +350,100 @@ func (s *Store) Delete(id string) error {
 		}
 		return nil
 	}
+}
+
+// SetLabel points label at id's version (version <= 0 means "whichever
+// version is currently latest" — resolved to a CONCRETE version number
+// at call time and stored as that number, never a live "latest"
+// sentinel that could silently drift if a later Upsert changes what
+// "latest" means). Creates label if it doesn't exist yet for id, or
+// moves it if it does — the identical operation serves both promote
+// ("production" -> 7) and rollback ("production" -> 5, an OLDER
+// version) with no separate verb.
+//
+// Uses the same CompareAndSwap retry loop Upsert/Delete already use (see
+// Store's own doc comment) — a concurrent SetLabel and Upsert/Delete
+// racing on the same storeState pointer must never lose a write.
+//
+// Returns ErrPromptNotFound, changing nothing, if id or the requested
+// version of id does not exist — a label can never point at a
+// nonexistent version.
+func (s *Store) SetLabel(id, label string, version int) (Label, error) {
+	if id == "" {
+		return Label{}, fmt.Errorf("prompt: SetLabel: id must not be empty")
+	}
+	if label == "" {
+		return Label{}, fmt.Errorf("prompt: SetLabel: label must not be empty")
+	}
+	for {
+		old := s.state.Load()
+		p, ok := getFromVersions(old.versions[id], version)
+		if !ok {
+			if version > 0 {
+				return Label{}, fmt.Errorf("%w: %q version %d", ErrPromptNotFound, id, version)
+			}
+			return Label{}, fmt.Errorf("%w: %q", ErrPromptNotFound, id)
+		}
+
+		l := Label{PromptID: id, Name: label, Version: p.Version, UpdatedAt: time.Now()}
+
+		nextLabels := cloneLabelsMap(old.labels)
+		idLabels := cloneLabelMap(nextLabels[id])
+		idLabels[label] = l
+		nextLabels[id] = idLabels
+
+		// versions is carried forward from old, UNTOUCHED -- mirrors
+		// Upsert's identical "only clone the map this call actually
+		// touches" reasoning, the other way around.
+		if !s.state.CompareAndSwap(old, &storeState{versions: old.versions, labels: nextLabels}) {
+			continue
+		}
+		return l, nil
+	}
+}
+
+// DeleteLabel removes label from id entirely — the label no longer
+// exists at all, distinct from SetLabel with an older version (this
+// package's own rollback primitive, which KEEPS the label, just moved).
+// Returns ErrPromptNotFound, changing nothing, if id has no such label.
+func (s *Store) DeleteLabel(id, label string) error {
+	for {
+		old := s.state.Load()
+		idLabels, ok := old.labels[id]
+		if !ok {
+			return fmt.Errorf("%w: %q label %q", ErrPromptNotFound, id, label)
+		}
+		if _, ok := idLabels[label]; !ok {
+			return fmt.Errorf("%w: %q label %q", ErrPromptNotFound, id, label)
+		}
+
+		nextLabels := cloneLabelsMap(old.labels)
+		nextIDLabels := cloneLabelMap(idLabels)
+		delete(nextIDLabels, label)
+		if len(nextIDLabels) == 0 {
+			delete(nextLabels, id)
+		} else {
+			nextLabels[id] = nextIDLabels
+		}
+
+		if !s.state.CompareAndSwap(old, &storeState{versions: old.versions, labels: nextLabels}) {
+			continue
+		}
+		return nil
+	}
+}
+
+// ResolveLabel resolves id's prompt at whichever version label currently
+// points to (see SetLabel), then delegates to Resolve for the identical
+// substitution/fingerprinting logic — a label is purely an indirection
+// to a version number at read time, never a separate resolution path.
+// Returns ErrPromptNotFound if id has no such label.
+func (s *Store) ResolveLabel(id, label string, variables map[string]string) ([]adapter.Message, string, int, error) {
+	l, ok := s.state.Load().labels[id][label]
+	if !ok {
+		return nil, "", 0, fmt.Errorf("%w: %q label %q", ErrPromptNotFound, id, label)
+	}
+	return s.Resolve(id, l.Version, variables)
 }
 
 // placeholderPattern matches a "{{name}}" substitution point -- name is

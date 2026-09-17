@@ -569,3 +569,261 @@ func TestCloseDelegatesToThePersister(t *testing.T) {
 		t.Error("Store.Close did not call through to the persister's own Close")
 	}
 }
+
+// TestSetLabelMovesPointerToAnExistingVersion proves the core promote/
+// rollback primitive: SetLabel moves a label to name any existing
+// version, forward or backward, and ResolveLabel reflects it
+// immediately.
+func TestSetLabelMovesPointerToAnExistingVersion(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", msgs("v1")); err != nil {
+		t.Fatalf("Upsert v1: %v", err)
+	}
+	if _, err := s.Upsert("greeting", msgs("v2")); err != nil {
+		t.Fatalf("Upsert v2: %v", err)
+	}
+	if _, err := s.Upsert("greeting", msgs("v3")); err != nil {
+		t.Fatalf("Upsert v3: %v", err)
+	}
+
+	l, err := s.SetLabel("greeting", "production", 2)
+	if err != nil {
+		t.Fatalf("SetLabel(production, 2): %v", err)
+	}
+	if l.Version != 2 {
+		t.Errorf("SetLabel returned Version = %d, want 2", l.Version)
+	}
+	resolved, _, version, err := s.ResolveLabel("greeting", "production", nil)
+	if err != nil {
+		t.Fatalf("ResolveLabel: %v", err)
+	}
+	if version != 2 || resolved[0].Content != "v2" {
+		t.Errorf("ResolveLabel = (version=%d, content=%q), want (2, \"v2\")", version, resolved[0].Content)
+	}
+
+	// Rollback: move the SAME label to an OLDER version -- the identical
+	// operation, no separate verb.
+	if _, err := s.SetLabel("greeting", "production", 1); err != nil {
+		t.Fatalf("SetLabel(production, 1) (rollback): %v", err)
+	}
+	resolved, _, version, err = s.ResolveLabel("greeting", "production", nil)
+	if err != nil {
+		t.Fatalf("ResolveLabel after rollback: %v", err)
+	}
+	if version != 1 || resolved[0].Content != "v1" {
+		t.Errorf("ResolveLabel after rollback = (version=%d, content=%q), want (1, \"v1\")", version, resolved[0].Content)
+	}
+}
+
+// TestSetLabelRejectsANonExistentVersion proves a label can never point
+// at a version that doesn't exist.
+func TestSetLabelRejectsANonExistentVersion(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", msgs("v1")); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if _, err := s.SetLabel("greeting", "production", 99); !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("SetLabel(production, 99): err = %v, want ErrPromptNotFound", err)
+	}
+	if _, err := s.SetLabel("does-not-exist", "production", 1); !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("SetLabel(unknown id): err = %v, want ErrPromptNotFound", err)
+	}
+}
+
+// TestSetLabelWithNonPositiveVersionResolvesToLatestAtCallTime proves
+// version<=0 resolves to a CONCRETE version number at call time, stored
+// as that number -- never a live "latest" sentinel that would silently
+// drift if a later Upsert changes what "latest" means.
+func TestSetLabelWithNonPositiveVersionResolvesToLatestAtCallTime(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", msgs("v1")); err != nil {
+		t.Fatalf("Upsert v1: %v", err)
+	}
+	if _, err := s.Upsert("greeting", msgs("v2")); err != nil {
+		t.Fatalf("Upsert v2: %v", err)
+	}
+
+	l, err := s.SetLabel("greeting", "production", 0)
+	if err != nil {
+		t.Fatalf("SetLabel(production, 0): %v", err)
+	}
+	if l.Version != 2 {
+		t.Fatalf("SetLabel(0) resolved Version = %d, want 2 (the latest at call time)", l.Version)
+	}
+
+	// A later Upsert creates v3 -- the label must NOT silently follow.
+	if _, err := s.Upsert("greeting", msgs("v3")); err != nil {
+		t.Fatalf("Upsert v3: %v", err)
+	}
+	_, _, version, err := s.ResolveLabel("greeting", "production", nil)
+	if err != nil {
+		t.Fatalf("ResolveLabel: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("ResolveLabel after a later Upsert = version %d, want 2 (label pinned at call time, not live)", version)
+	}
+}
+
+// TestResolveLabelReturnsErrPromptNotFoundForAnUnknownLabel proves
+// ResolveLabel fails loudly, not silently, for a label that was never
+// set.
+func TestResolveLabelReturnsErrPromptNotFoundForAnUnknownLabel(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", msgs("v1")); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if _, _, _, err := s.ResolveLabel("greeting", "staging", nil); !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("ResolveLabel(unset label): err = %v, want ErrPromptNotFound", err)
+	}
+}
+
+// TestSetLabelIsLosslessUnderConcurrentUpsertToSameID mirrors
+// TestConcurrentUpsertGetResolveUnderRace's own discipline for the new
+// label CAS-retry loop: many concurrent SetLabel calls to DIFFERENT
+// label names on the SAME id, run under -race, alongside concurrent
+// Upserts to that same id — every SetLabel call must land (none lost to
+// a racing Upsert's own CompareAndSwap), and every Upsert must still
+// land too (the reverse direction).
+func TestSetLabelIsLosslessUnderConcurrentUpsertToSameID(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", msgs("v1")); err != nil {
+		t.Fatalf("seed Upsert: %v", err)
+	}
+
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			label := fmt.Sprintf("label-%d", i)
+			if _, err := s.SetLabel("greeting", label, 1); err != nil {
+				t.Errorf("SetLabel(%q): %v", label, err)
+			}
+		}(i)
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := s.Upsert("greeting", msgs(fmt.Sprintf("content-%d", i))); err != nil {
+				t.Errorf("Upsert #%d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		label := fmt.Sprintf("label-%d", i)
+		if _, _, _, err := s.ResolveLabel("greeting", label, nil); err != nil {
+			t.Errorf("ResolveLabel(%q) after concurrent run: %v -- a concurrent SetLabel call was lost", label, err)
+		}
+	}
+	latest, ok := s.Get("greeting", 0)
+	if !ok {
+		t.Fatal("Get(greeting, latest) after concurrent run: not found")
+	}
+	if latest.Version != n+1 { // +1 for the seed Upsert.
+		t.Errorf("latest.Version = %d, want %d -- a concurrent Upsert call was lost", latest.Version, n+1)
+	}
+}
+
+// TestDeletePromptStillDeletesAllVersionsAndTheirLabels proves Delete
+// clears a prompt's labels too, not just its version history -- a
+// dangling label pointing at a version number that no longer exists
+// would otherwise surface as a confusing not-found from ResolveLabel
+// rather than from Delete's own, more informative call site.
+func TestDeletePromptStillDeletesAllVersionsAndTheirLabels(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", msgs("v1")); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if _, err := s.SetLabel("greeting", "production", 1); err != nil {
+		t.Fatalf("SetLabel: %v", err)
+	}
+
+	if err := s.Delete("greeting"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, _, _, err := s.ResolveLabel("greeting", "production", nil); !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("ResolveLabel after Delete: err = %v, want ErrPromptNotFound", err)
+	}
+
+	// A fresh Upsert under the SAME id must start completely clean --
+	// including no leftover "production" label silently reappearing.
+	if _, err := s.Upsert("greeting", msgs("new-v1")); err != nil {
+		t.Fatalf("Upsert after Delete: %v", err)
+	}
+	if _, _, _, err := s.ResolveLabel("greeting", "production", nil); !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("ResolveLabel after Delete+re-Upsert: err = %v, want ErrPromptNotFound (label must not resurrect)", err)
+	}
+}
+
+// TestDeleteLabelRemovesItEntirelyWithoutAffectingVersionsOrOtherLabels
+// proves DeleteLabel is scoped to exactly one label name, distinct from
+// SetLabel-to-an-older-version (which keeps the label, just moved).
+func TestDeleteLabelRemovesItEntirelyWithoutAffectingVersionsOrOtherLabels(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", msgs("v1")); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if _, err := s.SetLabel("greeting", "production", 1); err != nil {
+		t.Fatalf("SetLabel(production): %v", err)
+	}
+	if _, err := s.SetLabel("greeting", "staging", 1); err != nil {
+		t.Fatalf("SetLabel(staging): %v", err)
+	}
+
+	if err := s.DeleteLabel("greeting", "production"); err != nil {
+		t.Fatalf("DeleteLabel: %v", err)
+	}
+
+	if _, _, _, err := s.ResolveLabel("greeting", "production", nil); !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("ResolveLabel(production) after DeleteLabel: err = %v, want ErrPromptNotFound", err)
+	}
+	if _, _, _, err := s.ResolveLabel("greeting", "staging", nil); err != nil {
+		t.Errorf("ResolveLabel(staging) after deleting only production: %v, want nil (staging must be unaffected)", err)
+	}
+	if _, ok := s.Get("greeting", 1); !ok {
+		t.Error("Get(greeting, 1) after DeleteLabel: not found, want the version itself unaffected")
+	}
+}
+
+// TestDeleteLabelReturnsErrPromptNotFoundForAnUnknownLabel proves
+// DeleteLabel fails loudly for a label that was never set, on both an
+// unknown id and a known id with no such label.
+func TestDeleteLabelReturnsErrPromptNotFoundForAnUnknownLabel(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", msgs("v1")); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := s.DeleteLabel("greeting", "staging"); !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("DeleteLabel(never-set label): err = %v, want ErrPromptNotFound", err)
+	}
+	if err := s.DeleteLabel("does-not-exist", "production"); !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("DeleteLabel(unknown id): err = %v, want ErrPromptNotFound", err)
+	}
+}
+
+// TestResolveLabelSubstitutesVariablesIdenticallyToResolve proves
+// ResolveLabel delegates to Resolve's own substitution logic rather than
+// re-implementing it -- a label-based request gets the identical
+// {{name}} placeholder behavior a version-pinned request already has.
+func TestResolveLabelSubstitutesVariablesIdenticallyToResolve(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", []adapter.Message{
+		{Role: "user", Content: "Hello, {{name}}!"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if _, err := s.SetLabel("greeting", "production", 1); err != nil {
+		t.Fatalf("SetLabel: %v", err)
+	}
+
+	resolved, _, _, err := s.ResolveLabel("greeting", "production", map[string]string{"name": "Ada"})
+	if err != nil {
+		t.Fatalf("ResolveLabel: %v", err)
+	}
+	if resolved[0].Content != "Hello, Ada!" {
+		t.Errorf("resolved[0].Content = %q, want %q", resolved[0].Content, "Hello, Ada!")
+	}
+}

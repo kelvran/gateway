@@ -189,6 +189,14 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline, audit)))
 	mux.Handle("POST /admin/prompts/{id}", requireBearerToken(creds.Admin, upsertPromptHandler(pipeline, audit)))
 	mux.Handle("DELETE /admin/prompts/{id}", requireBearerToken(creds.Admin, deletePromptHandler(pipeline, audit)))
+	// Prompt label management (promote/rollback), per
+	// internal/prompt.Store.SetLabel's own doc comment -- reuses the
+	// Admin tier exactly, the same convention every other write route on
+	// this mux already follows (no precedent exists for a narrower
+	// "labels-only" tier, and no named demand for one yet). Rollback is
+	// SetLabel to an OLDER version, not a separate route.
+	mux.Handle("PUT /admin/prompts/{id}/labels/{label}", requireBearerToken(creds.Admin, setPromptLabelHandler(pipeline, audit)))
+	mux.Handle("DELETE /admin/prompts/{id}/labels/{label}", requireBearerToken(creds.Admin, deletePromptLabelHandler(pipeline, audit)))
 	// Live bbolt backup, per cfg.Admin.BackupDir's own doc comment --
 	// admin-only (a write-shaped, disk-touching operation, same tier as
 	// every other write route on this mux), always registered (unlike
@@ -887,6 +895,85 @@ func deletePromptHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.
 		switch {
 		case err == nil:
 			logger.Info("admin_prompt_deleted", "id", id, "authorized_by", "admin")
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, prompt.ErrPromptNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+}
+
+// setPromptLabelRequest is the PUT /admin/prompts/{id}/labels/{label}
+// request body -- Version <= 0 means "whichever version is currently
+// latest," resolved to a concrete number at call time (see
+// prompt.Store.SetLabel's own doc comment).
+type setPromptLabelRequest struct {
+	Version int `json:"version"`
+}
+
+// labelResponse mirrors promptResponse's own "never expose the internal
+// package type directly across the HTTP boundary" convention.
+type labelResponse struct {
+	PromptID  string    `json:"prompt_id"`
+	Label     string    `json:"label"`
+	Version   int       `json:"version"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func labelToResponse(l prompt.Label) labelResponse {
+	return labelResponse{PromptID: l.PromptID, Label: l.Name, Version: l.Version, UpdatedAt: l.UpdatedAt}
+}
+
+// setPromptLabelHandler points id's named label at the requested
+// version, live -- the single primitive that serves both promote (a
+// newer version) and rollback (an older one). 404 if id or the requested
+// version doesn't exist. logger records id/label/version (never any
+// prompt content), mirroring upsertPromptHandler's identical discipline.
+func setPromptLabelHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		label := r.PathValue("label")
+		if id == "" || label == "" {
+			http.Error(w, "prompt id and label are both required", http.StatusBadRequest)
+			return
+		}
+		if err := validateAdminIdentifier(label, "label"); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var req setPromptLabelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		l, err := pipeline.SetPromptLabel(id, label, req.Version)
+		switch {
+		case err == nil:
+			logger.Info("admin_prompt_label_set", "id", id, "label", label, "version", l.Version, "authorized_by", "admin")
+			writeJSONResponse(w, labelToResponse(l))
+		case errors.Is(err, prompt.ErrPromptNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+	}
+}
+
+// deletePromptLabelHandler removes id's named label entirely -- distinct
+// from setPromptLabelHandler with an older version (which keeps the
+// label, just moved). 404 if id has no such label.
+func deletePromptLabelHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		label := r.PathValue("label")
+
+		err := pipeline.DeletePromptLabel(id, label)
+		switch {
+		case err == nil:
+			logger.Info("admin_prompt_label_deleted", "id", id, "label", label, "authorized_by", "admin")
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, prompt.ErrPromptNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)

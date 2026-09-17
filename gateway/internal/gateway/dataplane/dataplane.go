@@ -115,6 +115,13 @@ var ErrGuardrailBlocked = errors.New("dataplane: request blocked by guardrail po
 // itself is malformed" bucket ErrGuardrailBlocked already occupies.
 var ErrPromptAndMessagesBothSet = errors.New("dataplane: request sets both prompt_id and messages")
 
+// ErrPromptLabelAndVersionBothSet mirrors ErrPromptAndMessagesBothSet's
+// identical reasoning for PromptLabel/PromptVersion: both name a
+// resolution target for the SAME PromptID, and there is no principled
+// way to decide which one wins, so this is rejected outright rather than
+// silently preferring one.
+var ErrPromptLabelAndVersionBothSet = errors.New("dataplane: request sets both prompt_label and prompt_version")
+
 // ErrPromptResolutionFailed wraps a prompt.Store.Resolve failure -- an
 // unknown PromptID or PromptVersion. Mapped to a 400 by
 // writeErrorResponse: asking for a prompt_id/version this gateway has
@@ -1005,6 +1012,18 @@ func (p *Pipeline) ListPrompts() []prompt.Prompt {
 	return p.prompts.List()
 }
 
+// SetPromptLabel points label at id's version, live -- see
+// prompt.Store.SetLabel's own doc comment for the promote/rollback
+// semantics.
+func (p *Pipeline) SetPromptLabel(id, label string, version int) (prompt.Label, error) {
+	return p.prompts.SetLabel(id, label, version)
+}
+
+// DeletePromptLabel removes label from id entirely, live.
+func (p *Pipeline) DeletePromptLabel(id, label string) error {
+	return p.prompts.DeleteLabel(id, label)
+}
+
 // resolvePromptIfSet resolves req.PromptID into real Messages content via
 // p.prompts, immediately after the model-allowlist check and before
 // rate-limiting -- both HandleChatCompletion and
@@ -1026,7 +1045,22 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 	if len(req.Messages) > 0 {
 		return req, "", ErrPromptAndMessagesBothSet
 	}
-	messages, fingerprint, resolvedVersion, err := p.prompts.Resolve(req.PromptID, req.PromptVersion, req.PromptVariables)
+	if req.PromptLabel != "" && req.PromptVersion > 0 {
+		return req, "", ErrPromptLabelAndVersionBothSet
+	}
+
+	// PromptLabel resolves through Store.ResolveLabel (an indirection to
+	// whichever version the named label currently points at); otherwise
+	// the existing PromptVersion-pin (or <=0 for latest) path, unchanged.
+	var messages []adapter.Message
+	var fingerprint string
+	var resolvedVersion int
+	var err error
+	if req.PromptLabel != "" {
+		messages, fingerprint, resolvedVersion, err = p.prompts.ResolveLabel(req.PromptID, req.PromptLabel, req.PromptVariables)
+	} else {
+		messages, fingerprint, resolvedVersion, err = p.prompts.Resolve(req.PromptID, req.PromptVersion, req.PromptVariables)
+	}
 	if err != nil {
 		return req, "", fmt.Errorf("%w: %w", ErrPromptResolutionFailed, err)
 	}

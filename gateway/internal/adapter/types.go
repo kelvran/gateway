@@ -366,8 +366,20 @@ type ChatRequest struct {
 	PromptID string `json:"prompt_id,omitempty"`
 	// PromptVersion pins PromptID to a specific historical version;
 	// <= 0 (the default) means "the latest version at resolution time."
-	// Meaningless when PromptID == "".
+	// Meaningless when PromptID == "". Mutually exclusive with
+	// PromptLabel below -- setting both is a real client error (see
+	// ErrPromptLabelAndVersionBothSet).
 	PromptVersion int `json:"prompt_version,omitempty"`
+	// PromptLabel resolves PromptID to whichever version a named,
+	// operator-mutable label (internal/prompt.Store.SetLabel) currently
+	// points at, e.g. "production" -- the promote/rollback primitive: an
+	// operator moves the label server-side, and every client already
+	// requesting that label starts serving the new version with no
+	// client-side change at all. Empty (the default, and every
+	// ChatRequest built before this field existed) means no label
+	// resolution -- PromptVersion's own plain-integer-pin behavior
+	// applies instead. Meaningless when PromptID == "".
+	PromptLabel string `json:"prompt_label,omitempty"`
 	// PromptVariables supplies the {{name}} substitution values
 	// internal/prompt.Store.Resolve applies to PromptID's stored
 	// content. Meaningless when PromptID == "".
