@@ -78,6 +78,39 @@ groups:
           /
           sum by (gen_ai_provider_name) (rate(gen_ai_client_operation_duration_seconds_count[6h]))
 
+      # --- Per-model error-ratio recording rules, added 2026-09-18 per
+      # docs/upgrade-research/slo-error-budget-observability-2026-09-15.md
+      # Finding 2: a per-PROVIDER rule above still pools every model that
+      # provider serves, so a single misbehaving model (e.g. a specific
+      # Bedrock foundation model returning elevated errors) can burn
+      # budget without crossing the provider-wide threshold if the
+      # provider's other models keep the pooled ratio low. gen_ai_request_model
+      # is the same attribute (gen_ai.request.model) already attached to
+      # every gen_ai.client.operation.duration recording — confirmed
+      # directly against internal/telemetry/telemetry.go's own
+      # RecordChatCompletionMetrics, not assumed. Mirrors the
+      # by_provider rules immediately above, verbatim in shape. ---
+      - record: kelvran:slo_errors:ratio_rate5m_by_model
+        expr: >
+          sum by (gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[5m]))
+          /
+          sum by (gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_count[5m]))
+      - record: kelvran:slo_errors:ratio_rate30m_by_model
+        expr: >
+          sum by (gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[30m]))
+          /
+          sum by (gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_count[30m]))
+      - record: kelvran:slo_errors:ratio_rate1h_by_model
+        expr: >
+          sum by (gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[1h]))
+          /
+          sum by (gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_count[1h]))
+      - record: kelvran:slo_errors:ratio_rate6h_by_model
+        expr: >
+          sum by (gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_count{error_type!=""}[6h]))
+          /
+          sum by (gen_ai_request_model) (rate(gen_ai_client_operation_duration_seconds_count[6h]))
+
   - name: kelvran-slo-burn-rate-alerts
     interval: 30s
     rules:
@@ -131,3 +164,30 @@ groups:
           severity: warn
         annotations:
           summary: "Provider {{ $labels.gen_ai_provider_name }} is burning Kelvran's error budget at a sustained elevated rate (>=6x, sustained over 6h+30m)"
+
+      # --- Per-model alerts, added 2026-09-18 -- same burn-rate
+      # thresholds as the per-provider alerts above, scoped to
+      # gen_ai_request_model so one misbehaving model doesn't get
+      # averaged away by every other healthy model sharing its
+      # provider. ---
+      - alert: KelvranSLOFastBurnByModel
+        expr: >
+          kelvran:slo_errors:ratio_rate1h_by_model > (14.4 * 0.01)
+          and
+          kelvran:slo_errors:ratio_rate5m_by_model > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Model {{ $labels.gen_ai_request_model }} is burning Kelvran's error budget fast (>=14.4x, sustained over 1h+5m)"
+
+      - alert: KelvranSLOSlowBurnByModel
+        expr: >
+          kelvran:slo_errors:ratio_rate6h_by_model > (6 * 0.01)
+          and
+          kelvran:slo_errors:ratio_rate30m_by_model > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Model {{ $labels.gen_ai_request_model }} is burning Kelvran's error budget at a sustained elevated rate (>=6x, sustained over 6h+30m)"
