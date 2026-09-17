@@ -843,6 +843,25 @@ func TestGetPromptRoutesReturnLatestSpecificVersionAndNotFound(t *testing.T) {
 	}
 }
 
+// TestGetPromptVersionRejectsNonNumericAndNonPositiveVersion proves the
+// version path parameter's own validation (getPromptVersionHandler's
+// strconv.Atoi + version <= 0 check) against every malformed shape --
+// never previously exercised, though already correct.
+func TestGetPromptVersionRejectsNonNumericAndNonPositiveVersion(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
+
+	cases := []string{"abc", "0", "-1", "99999999999999999999"}
+	for _, version := range cases {
+		t.Run(version, func(t *testing.T) {
+			rec := doRequest(t, h, http.MethodGet, "/admin/prompts/greeting/versions/"+version, fakeAdminCredential(), "")
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("GET .../versions/%s: status = %d, want 400, body: %s", version, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestListPromptsReturnsLatestVersionOfEveryPromptSortedByID(t *testing.T) {
 	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
 

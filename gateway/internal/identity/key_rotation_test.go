@@ -6,6 +6,34 @@ import (
 	"time"
 )
 
+// TestNewVerifierRejectsMalformedPreviousKeyHash mirrors
+// TestNewVerifierRejectsMalformedHash's own table-driven cases, but for
+// PreviousKeyHash -- normalizeKeyHash's own validation is applied to
+// PreviousKeyHash identically to KeyHash (see NewVerifier's own source),
+// but this was never directly exercised for that field on its own.
+func TestNewVerifierRejectsMalformedPreviousKeyHash(t *testing.T) {
+	tests := []struct {
+		name string
+		hash string
+	}{
+		{"not hex", "not-valid-hex-at-all!!"},
+		{"wrong length", "abcd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewVerifier([]VirtualKey{{
+				ID:                       "team-alpha",
+				KeyHash:                  hashOf("current-credential"),
+				PreviousKeyHash:          tt.hash,
+				PreviousKeyHashExpiresAt: time.Now().Add(time.Hour),
+			}})
+			if err == nil {
+				t.Fatalf("NewVerifier with previous_key_hash %q returned nil error, want an error", tt.hash)
+			}
+		})
+	}
+}
+
 // TestVerifyAcceptsBothHashesDuringGracePeriod proves the core dual-hash
 // mechanism: a VirtualKey with a non-empty PreviousKeyHash authenticates
 // via EITHER the current credential (KeyHash) or the prior one
