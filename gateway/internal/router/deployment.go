@@ -19,4 +19,9 @@ type Deployment struct {
 	// group must be tiered, or filtering is off for that whole group"
 	// rule Router.activeCostTier (health.go) applies. Zero means "unset."
 	CostTier int
+	// Sticky marks this deployment as the canary side of a stable/canary
+	// pair within its Model group, per Router.SelectSticky's own doc
+	// comment (sticky.go) — false (the default) means this deployment
+	// participates only in plain, non-sticky WRR selection.
+	Sticky bool
 }

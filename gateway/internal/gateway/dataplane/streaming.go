@@ -243,7 +243,13 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 
 	var found bool
-	dep, found = p.nextDeployment(req.Model, nil)
+	// Sticky routing on this first pick too, mirroring runMissPath's own
+	// identical reasoning (dataplane.go) -- a streaming request from the
+	// same tenant must prefer the same side of a configured canary/stable
+	// pair exactly like a buffered one does; leaving this path out would
+	// be a silent, surprising gap for anyone actually using the feature
+	// against a model group that serves both.
+	dep, found = p.nextDeploymentSticky(req.Model, nil, vk.ID)
 	if !found {
 		err = fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		return

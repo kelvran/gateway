@@ -1961,7 +1961,12 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// docs/rfcs/2026-09-14-gateway-overhead-duration-header.md.
 		upstreamStart := time.Now()
 
-		dep, found := p.nextDeployment(req.Model, nil)
+		// Sticky routing applies only to this FIRST pick — a fallback
+		// re-pick (below, and inside attemptFallbackChain) explicitly
+		// wants "not this one," the opposite of stickiness, so it keeps
+		// calling plain nextDeployment unchanged. vk.ID is the same
+		// tenant dimension already used as cache's own tenant key.
+		dep, found := p.nextDeploymentSticky(req.Model, nil, vk.ID)
 		if !found {
 			return nil, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		}
@@ -2089,6 +2094,22 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 // concurrent interleaving always alternate.
 func (p *Pipeline) nextDeployment(model string, exclude map[string]bool) (Deployment, bool) {
 	name, ok := p.router.Select(model, exclude)
+	if !ok {
+		return Deployment{}, false
+	}
+	dep, ok := p.deploymentsByName[name]
+	return dep, ok
+}
+
+// nextDeploymentSticky mirrors nextDeployment for the FIRST pick only —
+// see runMissPath's own call site — via router.Router.SelectSticky
+// instead of Select, so the same virtual key deterministically prefers
+// the same side of a configured canary/stable pair, per
+// router.Router.SelectSticky's own doc comment. Every fallback/re-pick
+// call site (which wants "not this one," the opposite of stickiness)
+// keeps calling plain nextDeployment, unchanged.
+func (p *Pipeline) nextDeploymentSticky(model string, exclude map[string]bool, stickyKey string) (Deployment, bool) {
+	name, ok := p.router.SelectSticky(model, exclude, stickyKey)
 	if !ok {
 		return Deployment{}, false
 	}

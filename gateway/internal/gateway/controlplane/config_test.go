@@ -970,6 +970,46 @@ func TestLoadDeploymentSharedAcrossTenantsParsesTrue(t *testing.T) {
 	}
 }
 
+// TestLoadDeploymentStickyUnsetDefaultsToFalse mirrors
+// TestLoadDeploymentSharedAcrossTenantsUnsetDefaultsToFalse for the new
+// sticky field -- every deployment configured before this feature
+// existed must parse to false, participating only in plain WRR.
+func TestLoadDeploymentStickyUnsetDefaultsToFalse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].Sticky; got {
+		t.Errorf("Sticky = %v, want false (unset -- plain WRR only)", got)
+	}
+}
+
+// TestLoadDeploymentStickyParsesTrue mirrors
+// TestLoadDeploymentSharedAcrossTenantsParsesTrue for the new sticky
+// field.
+func TestLoadDeploymentStickyParsesTrue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := minimalDeploymentConfig("    sticky: true\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Deployments[0].Sticky; !got {
+		t.Errorf("Sticky = %v, want true", got)
+	}
+}
+
 // TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists proves
 // each error-class key parses into an ORDERED slice (not just a set) —
 // this file's YAML-subset parser has no list support, so fallback_chains

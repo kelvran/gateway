@@ -57,6 +57,20 @@ type Router struct {
 	// read-only afterward, safe for concurrent access without a lock,
 	// exactly like models itself.
 	costTiers map[string]int
+	// stickyDeployments maps deployment Name -> its configured Sticky
+	// flag (see Deployment.Sticky's own doc comment) — mirrors
+	// costTiers's exact shape and the same "populated once at New(),
+	// read-only afterward" contract.
+	stickyDeployments map[string]bool
+	// stickyGroups maps Model -> whether ANY deployment in that model's
+	// group has Sticky set (see sticky.go's SelectSticky/stickyPick for
+	// why this is checked once per Select call rather than recomputed).
+	// Deliberately OR, not AND: sticky routing is a per-model-group
+	// toggle an operator turns on for one canary/stable pair, not a
+	// per-deployment tuning knob every member must separately opt into —
+	// unlike costTiers, where the "every deployment in the group must be
+	// tiered, or filtering is off" rule is intentionally the opposite.
+	stickyGroups map[string]bool
 }
 
 // New builds a Router from deployments, grouping by Model in the exact
@@ -76,9 +90,15 @@ type Router struct {
 func New(deployments []Deployment, health HealthConfig) *Router {
 	byModel := map[string][]weightedDeployment{}
 	costTiers := make(map[string]int, len(deployments))
+	stickyDeployments := make(map[string]bool, len(deployments))
+	stickyGroups := map[string]bool{}
 	for _, d := range deployments {
 		byModel[d.Model] = append(byModel[d.Model], weightedDeployment{name: d.Name, weight: d.Weight})
 		costTiers[d.Name] = d.CostTier
+		stickyDeployments[d.Name] = d.Sticky
+		if d.Sticky {
+			stickyGroups[d.Model] = true
+		}
 	}
 
 	models := make(map[string]*modelState, len(byModel))
@@ -86,10 +106,12 @@ func New(deployments []Deployment, health HealthConfig) *Router {
 		models[model] = newModelState(deps)
 	}
 	return &Router{
-		models:    models,
-		healthCfg: health.normalized(),
-		health:    map[string]*deploymentHealth{},
-		costTiers: costTiers,
+		models:            models,
+		healthCfg:         health.normalized(),
+		health:            map[string]*deploymentHealth{},
+		costTiers:         costTiers,
+		stickyDeployments: stickyDeployments,
+		stickyGroups:      stickyGroups,
 	}
 }
 

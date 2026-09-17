@@ -655,6 +655,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			Model:    d.Model,
 			Weight:   d.Weight,
 			CostTier: d.CostTier,
+			Sticky:   d.Sticky,
 		})
 		deploymentConcurrencyConfigs = append(deploymentConcurrencyConfigs, ratelimit.ConcurrencyConfig{
 			ID:          d.Name,

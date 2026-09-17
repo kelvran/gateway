@@ -171,6 +171,14 @@ linters:
         linters:
           - gosec
         text: "G204"
+      # stickyWeight/ms.sumW are both sums of weightedDeployment.weight,
+      # itself normalized to >=1 in newModelState (wrr.go) -- never
+      # negative, so this int->uint64 conversion can't actually
+      # underflow/overflow the way G115 is written to catch.
+      - path: internal/router/sticky\.go
+        linters:
+          - gosec
+        text: "G115"
 
 formatters:
   enable:

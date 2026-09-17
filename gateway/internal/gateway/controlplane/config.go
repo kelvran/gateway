@@ -164,6 +164,17 @@ type DeploymentConfig struct {
 	// a silent gap.
 	TPMCapacity        float64
 	TPMRefillPerSecond float64
+	// Sticky marks this deployment as the canary side of a stable/canary
+	// pair within its Model group, per router.Router.SelectSticky's own
+	// doc comment (gateway/internal/router/sticky.go) — the same tenant
+	// key (a virtual key's ID) then deterministically prefers the same
+	// side on every call, via a monotonic threshold hash: ramping this
+	// deployment's own Weight up only ever ADDS newly-bucketed tenants,
+	// never bounces an already-canary tenant back to stable. False (the
+	// default, and every deployment configured before this field
+	// existed) means this deployment participates only in plain,
+	// non-sticky WRR selection — byte-for-byte unaffected.
+	Sticky bool
 }
 
 // fallbackClassContentPolicy, fallbackClassContextWindowExceeded, and
@@ -707,6 +718,7 @@ func Load(path string) (*Config, error) {
 		}
 		dep.DisableCacheControlAutoPopulate, _ = getBool(depMap, "disable_cache_control_auto_populate")
 		dep.SharedAcrossTenants, _ = getBool(depMap, "shared_across_tenants")
+		dep.Sticky, _ = getBool(depMap, "sticky")
 		if rl, ok := getMap(depMap, "rate_limit"); ok {
 			if err := parseDeploymentRateLimit(name, rl, &dep); err != nil {
 				return nil, err
