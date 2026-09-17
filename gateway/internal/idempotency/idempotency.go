@@ -31,6 +31,23 @@ import (
 // silently proceed with either body.
 var ErrFingerprintMismatch = errors.New("idempotency: key already claimed with a different request body")
 
+// ErrNonPositiveTTL is returned by Claim when ttl <= 0. **Fixed
+// 2026-09-17, real bug**: inprocess.Store previously accepted this
+// silently, computing expiresAt as time.Now() or a past instant --
+// sweepExpiredLocked (which runs at the start of every Claim call, for
+// ANY key) would then evict this exact entry almost immediately, well
+// before the real in-flight request could ever call Complete. Any
+// caller checking Claim again for the same key would see it as a brand
+// new claim rather than in-flight/completed, silently defeating
+// deduplication entirely rather than merely shortening its window. Not
+// reachable via the one real caller today (dataplane.claimIdempotency
+// always passes a fixed positive idempotencyKeyTTL), but this Store
+// interface takes ttl directly from any future caller -- a clear error
+// here is safer than either silently substituting an arbitrary positive
+// default (guessing at intent this package has no basis for) or letting
+// the dead-on-arrival claim through.
+var ErrNonPositiveTTL = errors.New("idempotency: ttl must be positive")
+
 // State is Claim's own outcome for a given key/fingerprint pair.
 type State int
 

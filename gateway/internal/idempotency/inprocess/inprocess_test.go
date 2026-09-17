@@ -405,3 +405,25 @@ func TestFailWithAStaleTokenIsANoOp(t *testing.T) {
 	}
 	_ = newer
 }
+
+// TestClaimRejectsZeroTTL and TestClaimRejectsNegativeTTL are the
+// regression proof for the real bug fixed in idempotency.ErrNonPositiveTTL's
+// own doc comment: Claim previously accepted ttl <= 0 silently, creating
+// an entry that sweepExpiredLocked would evict almost immediately --
+// silently defeating deduplication entirely rather than merely
+// shortening its window.
+func TestClaimRejectsZeroTTL(t *testing.T) {
+	s := New()
+	_, err := s.Claim(context.Background(), "key-1", fp(1), 0)
+	if !errors.Is(err, idempotency.ErrNonPositiveTTL) {
+		t.Errorf("Claim(ttl=0) err = %v, want errors.Is(err, idempotency.ErrNonPositiveTTL)", err)
+	}
+}
+
+func TestClaimRejectsNegativeTTL(t *testing.T) {
+	s := New()
+	_, err := s.Claim(context.Background(), "key-1", fp(1), -time.Minute)
+	if !errors.Is(err, idempotency.ErrNonPositiveTTL) {
+		t.Errorf("Claim(ttl=-1m) err = %v, want errors.Is(err, idempotency.ErrNonPositiveTTL)", err)
+	}
+}
