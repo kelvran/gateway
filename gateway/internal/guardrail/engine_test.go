@@ -70,6 +70,47 @@ func TestEngineCheckWarnTierFindingDoesNotBlock(t *testing.T) {
 	}
 }
 
+// TestEngineCheckBlockTierFindingWinsOverWarnTierFinding is the
+// regression proof for a real gap: no test previously exercised two
+// DIFFERENT detectors firing in the SAME Check call with conflicting
+// Warn/Block verdicts. Check's own loop never short-circuits on the
+// first finding -- every detector always runs, and Blocked is a
+// monotonic OR across all of them -- so a Block-tier finding must win
+// regardless of which detector (first or second in the slice) produced
+// it, and BOTH findings must still be recorded.
+func TestEngineCheckBlockTierFindingWinsOverWarnTierFinding(t *testing.T) {
+	e := NewEngine([]Detector{
+		fakeDetector{name: "warn-detector", category: CategoryContactInfo, findings: []Finding{{Category: CategoryContactInfo, Detector: "warn-detector"}}},
+		fakeDetector{name: "block-detector", category: CategoryCredential, findings: []Finding{{Category: CategoryCredential, Detector: "block-detector"}}},
+	}, DefaultPolicy(), "test", nil)
+
+	verdict := e.Check(context.Background(), "irrelevant text")
+	if !verdict.Blocked {
+		t.Error("Blocked = false, want true — a Block-tier finding must win even though a Warn-tier detector ran first")
+	}
+	if len(verdict.Findings) != 2 {
+		t.Errorf("Findings len = %d, want 2 — both detectors' findings must be recorded, not just the blocking one", len(verdict.Findings))
+	}
+}
+
+// TestEngineCheckBlockTierFindingWinsRegardlessOfDetectorOrder is the
+// same proof with the two detectors' order reversed, so this property
+// doesn't depend on which one happens to run first.
+func TestEngineCheckBlockTierFindingWinsRegardlessOfDetectorOrder(t *testing.T) {
+	e := NewEngine([]Detector{
+		fakeDetector{name: "block-detector", category: CategoryCredential, findings: []Finding{{Category: CategoryCredential, Detector: "block-detector"}}},
+		fakeDetector{name: "warn-detector", category: CategoryContactInfo, findings: []Finding{{Category: CategoryContactInfo, Detector: "warn-detector"}}},
+	}, DefaultPolicy(), "test", nil)
+
+	verdict := e.Check(context.Background(), "irrelevant text")
+	if !verdict.Blocked {
+		t.Error("Blocked = false, want true")
+	}
+	if len(verdict.Findings) != 2 {
+		t.Errorf("Findings len = %d, want 2", len(verdict.Findings))
+	}
+}
+
 func TestEngineCheckDetectorErrorOnBlockTierCategoryBlocks(t *testing.T) {
 	e := NewEngine([]Detector{
 		fakeDetector{name: "fake", category: CategoryCredential, err: errors.New("simulated detector failure")},

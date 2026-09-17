@@ -172,6 +172,54 @@ func TestResolveSubstitutesKnownVariables(t *testing.T) {
 	}
 }
 
+// TestResolveDoesNotRecursivelyExpandPlaceholderShapedVariableValues is
+// the regression proof for a real gap: substitute()'s own
+// ReplaceAllStringFunc call scans the ORIGINAL content exactly once --
+// the replacement text a variable resolves to is never itself re-scanned
+// for further {{...}} placeholders. Never previously exercised with a
+// variable VALUE that happens to look like another placeholder.
+func TestResolveDoesNotRecursivelyExpandPlaceholderShapedVariableValues(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("greeting", []adapter.Message{
+		{Role: "user", Content: "Hello, {{name}}!"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	resolved, _, _, err := s.Resolve("greeting", 0, map[string]string{"name": "{{secret}}", "secret": "LEAKED"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := "Hello, {{secret}}!"
+	if resolved[0].Content != want {
+		t.Errorf("resolved[0].Content = %q, want %q (the literal replacement text, never re-scanned into a second substitution pass)", resolved[0].Content, want)
+	}
+}
+
+// TestResolveTerminatesOnASelfReferentialVariableValue is the same
+// proof's termination half: a variable whose OWN value is its own
+// placeholder text must not cause an infinite substitution loop --
+// impossible with substitute()'s actual single-pass implementation, but
+// worth pinning down explicitly rather than only inferring it from the
+// non-recursion test above.
+func TestResolveTerminatesOnASelfReferentialVariableValue(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("self-ref", []adapter.Message{
+		{Role: "user", Content: "Hi {{name}}"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	resolved, _, _, err := s.Resolve("self-ref", 0, map[string]string{"name": "{{name}}"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := "Hi {{name}}"
+	if resolved[0].Content != want {
+		t.Errorf("resolved[0].Content = %q, want %q", resolved[0].Content, want)
+	}
+}
+
 func TestResolveSubstitutesTextContentPartsNotJustMessageContent(t *testing.T) {
 	// A multi-modal message's own lead-in/trailing text lives in
 	// Parts[i].Text (Type == "text"), independently of Content -- see
