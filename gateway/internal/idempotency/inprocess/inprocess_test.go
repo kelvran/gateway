@@ -3,6 +3,7 @@ package inprocess
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -425,5 +426,93 @@ func TestClaimRejectsNegativeTTL(t *testing.T) {
 	_, err := s.Claim(context.Background(), "key-1", fp(1), -time.Minute)
 	if !errors.Is(err, idempotency.ErrNonPositiveTTL) {
 		t.Errorf("Claim(ttl=-1m) err = %v, want errors.Is(err, idempotency.ErrNonPositiveTTL)", err)
+	}
+}
+
+// TestClaimUnderConcurrentStormGrantsExactlyOneNewClaim is the load-bearing
+// proof that Claim's fan-in behavior holds under real concurrency, not
+// just two sequential calls: a genuine N-way (30) simultaneous storm on
+// the same key must resolve to EXACTLY one StateNew owner (with a real,
+// unique, non-zero Token) and every other caller StateInFlight, all
+// sharing the identical Done channel.
+func TestClaimUnderConcurrentStormGrantsExactlyOneNewClaim(t *testing.T) {
+	const n = 30
+	s := New()
+
+	start := make(chan struct{})
+	results := make(chan idempotency.ClaimResult, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := s.Claim(context.Background(), "storm-key", fp(1), time.Minute)
+			if err != nil {
+				t.Errorf("Claim: %v", err)
+				return
+			}
+			results <- result
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var newCount, inFlightCount int
+	var newToken idempotency.Token
+	var sharedDone <-chan struct{}
+	seenTokens := map[idempotency.Token]bool{}
+	for result := range results {
+		switch result.State {
+		case idempotency.StateNew:
+			newCount++
+			newToken = result.Token
+			if result.Token == 0 {
+				t.Error("StateNew result has Token == 0, want a real, non-zero token")
+			}
+			if seenTokens[result.Token] {
+				t.Errorf("Token %d was granted to more than one StateNew caller", result.Token)
+			}
+			seenTokens[result.Token] = true
+		case idempotency.StateInFlight:
+			inFlightCount++
+			if sharedDone == nil {
+				sharedDone = result.Done
+			} else if sharedDone != result.Done {
+				t.Error("two StateInFlight results share DIFFERENT Done channels for the same key")
+			}
+		default:
+			t.Errorf("unexpected state %v for a fresh key under a concurrent storm", result.State)
+		}
+	}
+	if newCount != 1 {
+		t.Errorf("StateNew count = %d, want exactly 1", newCount)
+	}
+	if inFlightCount != n-1 {
+		t.Errorf("StateInFlight count = %d, want %d", inFlightCount, n-1)
+	}
+
+	// Companion proof: the StateNew owner completes, and every one of the
+	// (n-1) formerly-in-flight callers, upon re-Claim after Done closes,
+	// gets StateCompleted with the identical byte-for-byte response --
+	// the fan-out resolution path, not just the fan-in claim path.
+	wantResp := []byte("the real response")
+	if err := s.Complete(context.Background(), "storm-key", newToken, wantResp); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	<-sharedDone
+
+	for i := 0; i < n-1; i++ {
+		result, err := s.Claim(context.Background(), "storm-key", fp(1), time.Minute)
+		if err != nil {
+			t.Fatalf("re-Claim after completion: %v", err)
+		}
+		if result.State != idempotency.StateCompleted {
+			t.Fatalf("re-Claim state = %v, want StateCompleted", result.State)
+		}
+		if string(result.Response) != string(wantResp) {
+			t.Fatalf("re-Claim Response = %q, want %q", result.Response, wantResp)
+		}
 	}
 }

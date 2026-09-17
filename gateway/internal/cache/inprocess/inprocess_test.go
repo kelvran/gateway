@@ -3,6 +3,7 @@ package inprocess
 import (
 	"context"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -312,5 +313,53 @@ func TestZeroOrNegativeMaxEntriesDefaultsToDefaultMaxEntries(t *testing.T) {
 		if got := c.recency.Len(); got != defaultMaxEntries {
 			t.Errorf("New(%d): after inserting %d entries, recency.Len() = %d, want %d (the default cap)", maxEntries, defaultMaxEntries+1, got, defaultMaxEntries)
 		}
+	}
+}
+
+// TestConcurrentPutAndDeleteSameKeyLeavesConsistentState is the
+// load-bearing concurrency proof for this package's own mutex: N
+// goroutines repeatedly racing Put and Delete against the SAME key must
+// never panic (the real signal here is `go test -race` itself finding
+// no data race) and must always leave c.entries/c.recency in a mutually
+// consistent state -- a key present in one must be present in the other,
+// and vice versa, no matter which operation "won" the race.
+func TestConcurrentPutAndDeleteSameKeyLeavesConsistentState(t *testing.T) {
+	c := New(0)
+	ctx := context.Background()
+	const key = "racing-key"
+	const rounds = 500
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			_ = c.Put(ctx, key, []byte("v"), time.Minute)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			_ = c.Delete(ctx, key)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			_, _, _, _ = c.Get(ctx, key)
+		}
+	}()
+	wg.Wait()
+
+	// Direct, locked inspection of internal state -- c.mu is this
+	// package's own real lock, not a test-only shortcut. Put/Delete
+	// always add to or remove from c.entries and c.recency TOGETHER
+	// (removeLocked's own doc comment: "deletes elem from both the map
+	// and the recency list") -- their lengths must always match exactly.
+	c.mu.Lock()
+	entriesLen, recencyLen := len(c.entries), c.recency.Len()
+	c.mu.Unlock()
+	if entriesLen != recencyLen {
+		t.Fatalf("len(c.entries) = %d, c.recency.Len() = %d -- inconsistent after concurrent Put/Delete/Get", entriesLen, recencyLen)
 	}
 }

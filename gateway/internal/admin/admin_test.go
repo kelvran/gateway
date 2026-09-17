@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -362,6 +363,139 @@ func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+otherBearerValue, adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("HandleChatCompletion succeeded with a deleted key's bearer value")
+	}
+}
+
+// TestConcurrentRotateVirtualKeyRequestsForSameNameDoNotCorruptState is
+// the load-bearing proof, at the real HTTP-handler level, that
+// dataplane.Pipeline.virtualKeyMutationMu (fixed earlier this round)
+// correctly serializes two concurrent rotate calls for the SAME virtual
+// key: both requests must succeed, and the final state must
+// deterministically reflect exactly one of the two new secrets, never a
+// corrupted mix of both.
+func TestConcurrentRotateVirtualKeyRequestsForSameNameDoNotCorruptState(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	secretA := "rotated-secret-a"
+	secretB := "rotated-secret-b"
+	bodyA := `{"new_key_hash":"` + testHashOf(secretA) + `"}`
+	bodyB := `{"new_key_hash":"` + testHashOf(secretB) + `"}`
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		codes[0] = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/test-key/rotate", fakeAdminCredential(), bodyA).Code
+	}()
+	go func() {
+		defer wg.Done()
+		codes[1] = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/test-key/rotate", fakeAdminCredential(), bodyB).Code
+	}()
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusNoContent {
+			t.Errorf("rotate call %d status = %d, want 204", i, code)
+		}
+	}
+
+	vk, ok := pipeline.GetVirtualKey("test-key")
+	if !ok {
+		t.Fatal("test-key is gone after concurrent rotate calls")
+	}
+	hashA, hashB := testHashOf(secretA), testHashOf(secretB)
+	if vk.KeyHash != hashA && vk.KeyHash != hashB {
+		t.Fatalf("final KeyHash %q matches NEITHER rotated secret's hash — state corrupted, not just a race on which one won", vk.KeyHash)
+	}
+}
+
+// TestConcurrentUpsertVirtualKeyRequestsForSameNameDoNotCorruptState
+// mirrors the rotate test above for two concurrent upsert calls with
+// genuinely different bodies for the SAME name.
+func TestConcurrentUpsertVirtualKeyRequestsForSameNameDoNotCorruptState(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	secretA := "upsert-race-secret-a"
+	secretB := "upsert-race-secret-b"
+	bodyA := `{"key_hash":"` + testHashOf(secretA) + `"}`
+	bodyB := `{"key_hash":"` + testHashOf(secretB) + `"}`
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		codes[0] = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-race", fakeAdminCredential(), bodyA).Code
+	}()
+	go func() {
+		defer wg.Done()
+		codes[1] = doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-race", fakeAdminCredential(), bodyB).Code
+	}()
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusNoContent {
+			t.Errorf("upsert call %d status = %d, want 204", i, code)
+		}
+	}
+
+	vk, ok := pipeline.GetVirtualKey("team-race")
+	if !ok {
+		t.Fatal("team-race is missing after concurrent upsert calls")
+	}
+	hashA, hashB := testHashOf(secretA), testHashOf(secretB)
+	if vk.KeyHash != hashA && vk.KeyHash != hashB {
+		t.Fatalf("final KeyHash %q matches NEITHER request body's hash — state corrupted, not a merge of both", vk.KeyHash)
+	}
+}
+
+// TestConcurrentDeleteVirtualKeyRequestsForSameNameNeverBothSucceed
+// proves the delete side: exactly one of two concurrent DELETE calls for
+// the same name must succeed (204), the other must correctly observe the
+// key already gone (404), and the key must be genuinely gone afterward.
+func TestConcurrentDeleteVirtualKeyRequestsForSameNameNeverBothSucceed(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+
+	// A second key is required -- DeleteVirtualKey rejects deleting the
+	// only remaining virtual key.
+	otherBody := `{"key_hash":"` + testHashOf("team-race-sibling-secret") + `"}`
+	doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-race-sibling", fakeAdminCredential(), otherBody)
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		codes[0] = doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeAdminCredential(), "").Code
+	}()
+	go func() {
+		defer wg.Done()
+		codes[1] = doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeAdminCredential(), "").Code
+	}()
+	wg.Wait()
+
+	var successCount int
+	for _, code := range codes {
+		switch code {
+		case http.StatusNoContent:
+			successCount++
+		case http.StatusNotFound:
+			// Expected for whichever call lost the race against the
+			// other's already-committed deletion.
+		default:
+			t.Errorf("delete call status = %d, want 204 or 404", code)
+		}
+	}
+	if successCount != 1 {
+		t.Errorf("successCount = %d, want exactly 1 — both concurrent deletes must never both report success", successCount)
+	}
+
+	if _, ok := pipeline.GetVirtualKey("test-key"); ok {
+		t.Fatal("test-key is still present after concurrent delete calls")
 	}
 }
 
