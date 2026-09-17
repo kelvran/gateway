@@ -140,6 +140,94 @@ func TestIntegrationGracefulShutdownDrainsInFlightRequestBeforeExiting(t *testin
 	}
 }
 
+// TestIntegrationGracefulShutdownRejectsNewRequestAfterSIGTERM proves
+// the other real gap this package's suite was missing: run()'s own
+// http.Server.Shutdown call closes the listener as soon as shutdown
+// begins (per net/http's own documented Shutdown behavior: "Shutdown
+// works by first closing all open listeners..."), so a genuinely NEW
+// connection attempt shortly after SIGTERM is delivered must be
+// refused, never served and never left hanging open indefinitely --
+// distinct from TestIntegrationGracefulShutdownDrainsInFlightRequestBeforeExiting
+// above, which proves an ALREADY-in-flight request is still allowed to
+// finish.
+func TestIntegrationGracefulShutdownRejectsNewRequestAfterSIGTERM(t *testing.T) {
+	const listenAddr = "127.0.0.1:18763"
+
+	requestReceived := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestReceived)
+		<-releaseUpstream
+	}))
+	defer upstream.Close()
+
+	const upstreamKeyEnvVar = "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_GRACEFUL_NEW_REQUEST"
+	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
+
+	configPath := writeGracefulShutdownTestConfig(t, listenAddr, upstream.URL, upstreamKeyEnvVar)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- run(configPath, logger)
+	}()
+
+	waitForListener(t, listenAddr)
+
+	// Get one request genuinely in flight first, purely so run() has a
+	// real reason to still be inside its own drain/shutdown sequence
+	// when this test sends its second, NEW request below (an idle
+	// server with zero in-flight requests would otherwise complete
+	// Shutdown near-instantly, making the timing below unreliable).
+	firstReqBody := strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+	firstReq, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/v1/chat/completions", firstReqBody)
+	if err != nil {
+		t.Fatalf("NewRequest (first): %v", err)
+	}
+	firstReq.Header.Set("Authorization", "Bearer "+gracefulShutdownTestSecret())
+	firstReq.Header.Set("Content-Type", "application/json")
+	go func() { _, _ = http.DefaultClient.Do(firstReq) }() //nolint:bodyclose -- fire-and-forget; this test never inspects its response.
+
+	select {
+	case <-requestReceived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("mock upstream never received the first request")
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	// A brief, deliberate wait for Shutdown to have genuinely begun
+	// (and, per its own documented behavior, already closed the
+	// listener) before attempting a brand-new connection -- mirroring
+	// the existing successful-drain test's identical "give Shutdown a
+	// moment" pattern, just used here to prove the OPPOSITE case.
+	time.Sleep(200 * time.Millisecond)
+
+	secondReqBody := strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+	secondReq, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/v1/chat/completions", secondReqBody)
+	if err != nil {
+		t.Fatalf("NewRequest (second): %v", err)
+	}
+	secondReq.Header.Set("Authorization", "Bearer "+gracefulShutdownTestSecret())
+	secondReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(secondReq)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("a brand-new request after SIGTERM succeeded with status %d, want a connection error — the listener should already be closed", resp.StatusCode)
+	}
+
+	close(releaseUpstream) // let the first, held-open request finish so run() can exit cleanly.
+	select {
+	case <-runErr:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() never returned after graceful shutdown")
+	}
+}
+
 // TestIntegrationGracefulShutdownForceExitsWhenRequestOutlivesDrainGrace
 // is the regression proof this package's own suite was missing: the
 // force-exit path (a request that outlives BOTH gracefulShutdownTimeout
