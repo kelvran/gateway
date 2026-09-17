@@ -139,6 +139,44 @@ func TestSelectFailsOpenWhenEveryDeploymentUnhealthy(t *testing.T) {
 	}
 }
 
+// TestSelectFailsOpenWhenAllOfMultipleDeploymentsAreUnhealthy extends
+// TestSelectFailsOpenWhenEveryDeploymentUnhealthy above to the genuinely
+// untested case: 2+ deployments, ALL unhealthy (not just the trivial
+// single-deployment topology) -- Select must still fail open (never
+// ok=false) and return the same, deterministic candidate across repeated
+// calls, not a different one each time.
+func TestSelectFailsOpenWhenAllOfMultipleDeploymentsAreUnhealthy(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "first", Model: "gpt-4o"},
+		{Name: "second", Model: "gpt-4o"},
+	}, HealthConfig{UnhealthyThreshold: 3, HealthyThreshold: 2})
+
+	for _, name := range []string{"first", "second"} {
+		for i := 0; i < 3; i++ {
+			r.ReportProbeResult(name, false)
+		}
+		if r.IsHealthy(name) {
+			t.Fatalf("setup: %q should be unhealthy after 3 consecutive failures", name)
+		}
+	}
+
+	var want string
+	for i := 0; i < 10; i++ {
+		name, ok := r.Select("gpt-4o", nil)
+		if !ok {
+			t.Fatalf("call %d: Select with ALL deployments unhealthy returned ok=false, want true (fail open)", i)
+		}
+		if name != "first" && name != "second" {
+			t.Fatalf("call %d: Select = %q, want one of the two configured deployments", i, name)
+		}
+		if want == "" {
+			want = name
+		} else if name != want {
+			t.Fatalf("call %d: Select = %q, want the SAME deterministic candidate %q every call", i, name, want)
+		}
+	}
+}
+
 // TestSelectSkipsUnhealthyDespiteHeavilySkewedWeight is the correctness
 // proof for selectHealthy's sumW-bounded loop (see wrr.go/health.go's own
 // doc comments): a low-weight healthy deployment must still be found
