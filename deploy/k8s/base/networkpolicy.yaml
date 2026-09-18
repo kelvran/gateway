@@ -25,6 +25,10 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: kelvran-gateway
+  # See ../deployment.yaml's own comment on this same field for why
+  # it's stated directly here, not just via kustomization.yaml's
+  # transform.
+  namespace: kelvran
   labels:
     app.kubernetes.io/name: kelvran-gateway
 spec:

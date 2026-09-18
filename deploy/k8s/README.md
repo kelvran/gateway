@@ -109,8 +109,21 @@ kubectl apply -k base/
   in-code mechanism to do anything at all (outside a cgroup limit, Go's
   GC runs unbounded, per stdlib default).
 - **Added 2026-09-18, a real Checkov hardening pass**: `base/` now sets
-  a real `namespace: kelvran` (Kustomize's own field, applied to every
-  resource — change it to match your own cluster's naming convention);
+  a real `namespace: kelvran` — change it to match your own cluster's
+  naming convention. **Corrected same day**: the first pass only set
+  this via `kustomization.yaml`'s own top-level `namespace:` transform,
+  which is invisible to Checkov's own `kubernetes-checkov` CI job — that
+  job scans these raw `.yaml` files directly, never through
+  `kustomize build`, so the transform-only version left `CKV_K8S_21`
+  open despite CI going green. Fixed by additionally setting
+  `namespace: kelvran` directly in each raw file's own `metadata:`
+  block; the kustomize-level transform stays too (harmless, and still
+  what makes `overlays/eks-irsa`'s own `secretstore.yaml`/
+  `externalsecret.yaml` — listed directly in that overlay's own
+  `resources:`, not pulled in via `../../base` — need the same explicit
+  per-file `namespace:` to actually match, since a referencing
+  kustomization's `namespace:` field doesn't cascade to siblings listed
+  directly in its own `resources:` list).
   `base/networkpolicy.yaml` gives the gateway Pod a real NetworkPolicy
   (ingress on 8080 from anywhere, matching its own client-facing role;
   egress to anywhere, since upstream LLM providers have no stable,

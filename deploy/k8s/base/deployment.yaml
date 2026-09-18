@@ -5,6 +5,15 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gateway
+  # Closes CKV_K8S_21 ("the default namespace should not be used") for
+  # real: Checkov's own kubernetes-framework scan reads this raw file
+  # directly, never through `kustomize build` (same reason kubeconform
+  # validates raw files too -- see kustomization.yaml's own
+  # configMapGenerator comment) -- kustomization.yaml's own top-level
+  # `namespace:` field is a real, additional kustomize-time override
+  # that applies on top of this when actually deploying via `kubectl
+  # apply -k`, not a substitute for stating it here.
+  namespace: kelvran
   labels:
     app.kubernetes.io/name: kelvran-gateway
 spec:

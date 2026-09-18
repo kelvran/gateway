@@ -24,3 +24,10 @@ patches:
       kind: Secret
       metadata:
         name: gateway-upstream-credentials
+        # Required since base/secret-placeholder.yaml now sets this
+        # explicitly (added 2026-09-18 to close a real Checkov finding,
+        # CKV_K8S_21) -- kustomize's own strategic-merge patch matching
+        # requires an exact identifier match, namespace included; a
+        # patch naming no namespace only matches a resource with NO
+        # namespace set, which secret-placeholder.yaml no longer is.
+        namespace: kelvran
