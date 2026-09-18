@@ -217,3 +217,70 @@ func TestSetWeightOnCanaryDeploymentPreservesExistingCanaryAssignments(t *testin
 		}
 	}
 }
+
+// TestSelectStickyNeverDoubleChargesRampCreditOnATierRejectedCandidate
+// is the regression proof for a real bug an audit found:
+// SelectSticky's own direct admitTurn(name) call already consumes a
+// ramping candidate's own "turn" for this logical selection, but the
+// subsequent fallthrough to selectHealthy did not exclude name — so
+// selectHealthy's own scan (which calls admitTurn on EVERY offered
+// candidate, including one whose tier doesn't match, per its own doc
+// comment) could re-offer and re-admission-check the SAME candidate,
+// incrementing its rampCredit accumulator a second time for one real
+// selection decision. This undermines RecoveryRampSteps/
+// RecoveryRampInitialPercent's entire documented purpose — letting a
+// just-recovered deployment ramp to full traffic admission faster than
+// configured.
+//
+// Constructed so the double-charge is deterministic, not probabilistic:
+// two equal-weight deployments (sumW=2, so selectHealthy's bounded scan
+// offers each exactly once per call), BOTH freshly ramping with a
+// RecoveryRampInitialPercent low enough (1) that a single admitTurn
+// call on either reliably fails admission (0+1 < rampCreditFull=100) —
+// forcing selectHealthy's scan to examine both stable (tier-preferred,
+// but ramp-rejected) and canary (the sticky pick, already directly
+// admitTurn-checked once by SelectSticky itself) within the same call.
+func TestSelectStickyNeverDoubleChargesRampCreditOnATierRejectedCandidate(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "stable", Model: "gpt-4o", Weight: 1, CostTier: 1},
+		{Name: "canary", Model: "gpt-4o", Weight: 1, Sticky: true, CostTier: 2},
+	}, HealthConfig{UnhealthyThreshold: 1, HealthyThreshold: 1, RecoveryRampSteps: 4, RecoveryRampInitialPercent: 1})
+
+	// Put BOTH deployments into a freshly-ramping state (rampStep=0,
+	// rampCredit=0): one failure trips UnhealthyThreshold:1, one
+	// success re-includes and starts the ramp, per ReportProbeResult's
+	// own doc comment.
+	for _, name := range []string{"stable", "canary"} {
+		r.ReportProbeResult(name, false)
+		r.ReportProbeResult(name, true)
+	}
+
+	// Find a key that sticks to canary at this even 1:1 split.
+	var stickyKey string
+	for i := 0; i < 200; i++ {
+		key := fmt.Sprintf("tenant-%d", i)
+		if name, ok := r.stickyPick(r.models["gpt-4o"], key); ok && name == "canary" {
+			stickyKey = key
+			break
+		}
+	}
+	if stickyKey == "" {
+		t.Fatal("no key stuck to canary in 200 tries -- test setup is broken")
+	}
+
+	if _, ok := r.SelectSticky("gpt-4o", nil, stickyKey); !ok {
+		t.Fatal("SelectSticky returned ok=false")
+	}
+
+	// The load-bearing assertion: canary's rampCredit must reflect
+	// EXACTLY one admitTurn call (0 + RecoveryRampInitialPercent(1) = 1)
+	// for this one SelectSticky call, never two (which would mean
+	// selectHealthy's own scan re-admission-checked it after
+	// SelectSticky's own direct call already had).
+	r.healthMu.Lock()
+	gotRampCredit := r.health["canary"].rampCredit
+	r.healthMu.Unlock()
+	if gotRampCredit != 1 {
+		t.Errorf("canary.rampCredit = %d after one SelectSticky call, want exactly 1 (RecoveryRampInitialPercent) -- selectHealthy's own scan double-charged it", gotRampCredit)
+	}
+}

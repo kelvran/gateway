@@ -124,13 +124,44 @@ func (r *Router) SelectSticky(model string, exclude map[string]bool, stickyKey s
 		return r.selectHealthy(ms, exclude)
 	}
 
-	if name, pickOK := r.stickyPick(ms, stickyKey); pickOK {
-		if !exclude[name] && r.admitTurn(name) {
+	if name, pickOK := r.stickyPick(ms, stickyKey); pickOK && !exclude[name] {
+		// Corrected, a real bug an audit found: admitTurn mutates a
+		// ramping deployment's own rampCredit accumulator UNCONDITIONALLY
+		// (per its own doc comment — on every call, regardless of
+		// whether it returns true or false), so this direct call already
+		// consumes name's own "turn" for this logical selection. Falling
+		// through to selectHealthy below WITHOUT excluding name let its
+		// own scan (which calls admitTurn on every candidate it offers,
+		// per selectHealthy's own doc comment) re-offer and re-admission-
+		// check this SAME candidate — double-charging (or, across a
+		// longer scan, charging even more times) a single real selection
+		// decision, letting a just-recovered canary ramp to full traffic
+		// admission faster than RecoveryRampSteps/RecoveryRampInitialPercent
+		// configure. name must be excluded from selectHealthy's own scan
+		// below in EVERY case once this admitTurn call has already run —
+		// whether admitTurn admits it (and the tier check then rejects
+		// it) or admitTurn itself declines to admit it this turn.
+		admitted := r.admitTurn(name)
+		if admitted {
 			tier, tierFilterActive := r.activeCostTier(ms)
 			if !tierFilterActive || r.costTiers[name] == tier {
 				return name, true
 			}
 		}
+		exclude = excludeWith(exclude, name)
 	}
 	return r.selectHealthy(ms, exclude)
+}
+
+// excludeWith returns a NEW map containing every entry of exclude (nil-
+// safe) plus name — never mutates the caller's own exclude map, which
+// SelectSticky's own caller may hold a reference to and expect
+// unchanged.
+func excludeWith(exclude map[string]bool, name string) map[string]bool {
+	next := make(map[string]bool, len(exclude)+1)
+	for k, v := range exclude {
+		next[k] = v
+	}
+	next[name] = true
+	return next
 }
