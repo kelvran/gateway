@@ -28,8 +28,8 @@
 | evals/stats.py                   |       73 |        0 |    100% |           |
 | evals/tracing.py                 |       32 |        0 |    100% |           |
 | evals/trend\_alert.py            |       63 |        1 |     98% |       191 |
-| evals/webhook.py                 |       43 |        2 |     95% |     61-62 |
-| **TOTAL**                        | **1695** |   **85** | **95%** |           |
+| evals/webhook.py                 |       48 |        2 |     96% |   152-153 |
+| **TOTAL**                        | **1700** |   **85** | **95%** |           |
 
 
 ## Setup coverage badge
