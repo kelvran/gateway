@@ -94,3 +94,15 @@ resource "aws_dynamodb_table" "locks" {
 
   tags = var.tags
 }
+
+# Deliberately NOT built, per the same 2026-09-18 Checkov triage as
+# above -- disclosed accepted risk, not an oversight:
+# - CKV_AWS_119 (DynamoDB encrypted with a customer-managed KMS CMK):
+#   DynamoDB has encrypted every table at rest by default (AWS-owned
+#   key) since 2018 with no opt-out -- this table is never actually
+#   unencrypted. Same SSE-S3-not-KMS reasoning as this file's own S3
+#   bucket above: a customer-managed CMK adds real operational cost
+#   (key policy grants, rotation) with no documented compliance driver,
+#   for a table whose own content is even more disposable than the
+#   state bucket's -- a lock record naming whichever module currently
+#   holds the lock, already covered by point_in_time_recovery above.

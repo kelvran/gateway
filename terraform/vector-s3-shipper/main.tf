@@ -85,15 +85,28 @@ resource "aws_s3_bucket_lifecycle_configuration" "gatewayevents" {
     expiration {
       days = var.retention_days
     }
+  }
 
-    # Closes a real Checkov finding (CKV_AWS_300) -- Vector's own
-    # aws_s3 sink only ever calls a single PutObject per object (per
-    # this module's own shipper-policy comment above), so this
-    # shouldn't fire in normal operation, but a real network partition
-    # mid-upload could otherwise leave an orphaned, indefinitely-billed
-    # incomplete multipart upload with nothing in this module to ever
-    # clean it up. 7 days matches AWS's own documented example for this
-    # exact lifecycle action.
+  # A second, deliberately UNSCOPED rule for the abort-multipart action --
+  # not a stylistic split. Checkov's own CKV_AWS_300 check source
+  # (checkov/terraform/checks/resource/aws/S3AbortIncompleteUploads.py,
+  # read directly from bridgecrewio/checkov to root-cause why the
+  # combined single-rule version above kept failing despite having the
+  # abort_incomplete_multipart_upload block) explicitly FAILS any rule
+  # that pairs abort_incomplete_multipart_upload with a non-empty filter
+  # (prefix/tag/object-size) -- it requires the abort action to apply
+  # bucket-wide. That's a real, more-correct guarantee here too, not
+  # just a checkbox: this module's own IAM policy scopes normal writes
+  # to key_prefix, but nothing in S3 itself prevents some other
+  # principal from PUTting outside that prefix and abandoning a
+  # multipart upload there -- an unscoped rule still cleans that up. 7
+  # days matches AWS's own documented example for this lifecycle action.
+  rule {
+    id     = "abort-incomplete-multipart-uploads-bucketwide"
+    status = "Enabled"
+
+    filter {}
+
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
     }
