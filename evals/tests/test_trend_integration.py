@@ -23,6 +23,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 import evals.cli as cli_module
+import evals.webhook as webhook_module
 from evals.cli import main
 from evals.models import EvalCase, Score, TrendSnapshot
 from evals.results_store import (
@@ -1190,7 +1191,7 @@ def test_trend_alert_posts_to_webhook_only_when_alerts_triggered(tmp_path, monke
 
         return _Resp()
 
-    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(webhook_module.urllib.request, "urlopen", fake_urlopen)
 
     trend_path = tmp_path / "trend.jsonl"
     _write_trend_snapshots(trend_path, [_kappa_snapshot(0.1, 1)])
@@ -1214,7 +1215,12 @@ def test_trend_alert_posts_to_webhook_only_when_alerts_triggered(tmp_path, monke
     assert len(calls) == 1
     url, body, timeout = calls[0]
     assert url == "https://example.invalid/hook"
-    assert len(body["alerts"]) == 1
+    # send_webhook wraps the original {"alerts": [...]} payload in a
+    # Standard-Webhooks-shaped envelope -- see evals.webhook's own
+    # module docstring for why (HMAC signing/dedup/retry support).
+    assert body["type"] == "evals_trend_alert"
+    assert body["id"].startswith("evt_")
+    assert len(body["data"]["alerts"]) == 1
     assert timeout == 10
 
 
@@ -1224,7 +1230,7 @@ def test_trend_alert_never_calls_webhook_when_no_alerts_triggered(
     def fake_urlopen(request, timeout=None):
         raise AssertionError("webhook must not be called when zero alerts triggered")
 
-    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(webhook_module.urllib.request, "urlopen", fake_urlopen)
 
     trend_path = tmp_path / "trend.jsonl"
     _write_trend_snapshots(trend_path, [_kappa_snapshot(0.9, 1)])

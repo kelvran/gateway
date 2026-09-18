@@ -141,6 +141,7 @@ module = [
     "evals.rollout",
     "evals.rollout.cache",
     "evals.ingestion",
+    "evals.webhook",
 ]
 ignore_errors = false
 strict = true

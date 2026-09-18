@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -82,6 +81,7 @@ from evals.results_store import (
 from evals.rollout.scheduler import EarlyStopConfig, run_suite
 from evals.stats import cohens_kappa, confusion_matrix, wilson_interval
 from evals.trend_alert import TrendAlert, TrendAlertRule, check_trend_alerts
+from evals.webhook import send_webhook
 
 # evals/.env, next to evals/pyproject.toml — never the process's cwd,
 # since `evals` commands get run from different directories across this
@@ -2902,12 +2902,26 @@ _TREND_ALERT_KNOWN_SERIES = frozenset(
         "triggered."
     ),
 )
+@click.option(
+    "--notify-webhook-secret",
+    "webhook_secret",
+    default=None,
+    help=(
+        "Optional HMAC-SHA256 signing secret for --notify-webhook, per "
+        "the Standard Webhooks specification (standardwebhooks.com) -- "
+        "see evals.webhook.send_webhook's own doc comment. Omit for an "
+        "unsigned payload (e.g. a plain Slack Incoming Webhook has no "
+        "signature-verification concept at all). Meaningless without "
+        "--notify-webhook."
+    ),
+)
 def trend_alert_cmd(
     trend_path: Path,
     threshold_specs: tuple[str, ...],
     window: int,
     out_path: Path | None,
     webhook_url: str | None,
+    webhook_secret: str | None,
 ) -> None:
     """Evaluate operator-supplied threshold rules (static values, per
     docs/upgrade-research/evals-continuous-monitoring-2026-09-11.md
@@ -2984,19 +2998,21 @@ def trend_alert_cmd(
     if out_path is not None:
         out_path.write_text(json.dumps([asdict(a) for a in alerts], indent=2) + "\n")
 
-    # Deliberately no try/except around the POST -- a failed webhook
-    # delivery is exactly the "real tool/IO error" class this module's
-    # other commands already let propagate as a natural, unhandled
-    # exception, not a case to silently swallow.
+    # Deliberately no try/except around send_webhook -- a failed webhook
+    # delivery (even after send_webhook's own bounded retries) is
+    # exactly the "real tool/IO error" class this module's other
+    # commands already let propagate as a natural, unhandled exception,
+    # not a case to silently swallow. See evals.webhook's own module
+    # docstring for the HMAC-signing/retry/dedup properties this now
+    # has, per docs/upgrade-research/operator-alerting-integrations-
+    # 2026-09-15.md Finding 5.
     if webhook_url is not None and alerts:
-        body = json.dumps({"alerts": [asdict(a) for a in alerts]}).encode("utf-8")
-        request = urllib.request.Request(  # noqa: S310 -- webhook_url is an operator-supplied CLI flag, never external/untrusted input
+        send_webhook(
             webhook_url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+            "evals_trend_alert",
+            {"alerts": [asdict(a) for a in alerts]},
+            secret=webhook_secret,
         )
-        urllib.request.urlopen(request, timeout=10)  # noqa: S310 -- same operator-supplied webhook_url, never external/untrusted input
 
 
 if __name__ == "__main__":
