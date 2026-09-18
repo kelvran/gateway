@@ -37,11 +37,12 @@ components:
   idempotency:            { in: idempotency }
   idempotency-inprocess:  { in: idempotency/inprocess }
   configpropagation:      { in: configpropagation }
+  alerting:               { in: alerting }
 
 # Components deliberately absent from `deps:` below (identity,
 # ratelimit, router, costaccounting, guardrail, telemetry,
 # cache-correlation, cache, adapter, controlplane, backup, idempotency,
-# configpropagation) are pure leaves per
+# configpropagation, alerting) are pure leaves per
 # gateway/ARCHITECTURE.md's dependency direction rules: a component with
 # no entry here may depend on nothing else in this project (verified
 # against go-arch-lint's own source -- checker_imports.go denies any
@@ -107,6 +108,7 @@ deps:
     mayDependOn:
       - adapter
       - adapter-impl
+      - alerting
       - backup
       - budget
       - cache

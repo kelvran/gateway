@@ -2208,3 +2208,44 @@ func TestParseYAMLMiniAcceptsNestingAtExactlyMaxDepth(t *testing.T) {
 		t.Errorf("Load with exactly %d levels of nesting was rejected as too deep: %v", maxYAMLNestingDepth, err)
 	}
 }
+
+// TestLoadAlertingSectionDefaultsEmptyWhenUnconfigured proves alerting:
+// is genuinely optional -- a bare config with no alerting: section
+// parses with AlertingConfig at its zero value, matching every other
+// optional section's own convention.
+func TestLoadAlertingSectionDefaultsEmptyWhenUnconfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Alerting != (AlertingConfig{}) {
+		t.Errorf("Alerting = %+v, want the zero value", cfg.Alerting)
+	}
+}
+
+// TestLoadAlertingSectionParsesWebhookURLEnvAndSigningSecretEnv proves
+// the actual opt-in path parses both fields.
+func TestLoadAlertingSectionParsesWebhookURLEnvAndSigningSecretEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nalerting:\n  webhook_url_env: \"KELVRAN_ALERT_WEBHOOK_URL\"\n  signing_secret_env: \"KELVRAN_ALERT_WEBHOOK_SECRET\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Alerting.WebhookURLEnv != "KELVRAN_ALERT_WEBHOOK_URL" {
+		t.Errorf("Alerting.WebhookURLEnv = %q, want %q", cfg.Alerting.WebhookURLEnv, "KELVRAN_ALERT_WEBHOOK_URL")
+	}
+	if cfg.Alerting.SigningSecretEnv != "KELVRAN_ALERT_WEBHOOK_SECRET" {
+		t.Errorf("Alerting.SigningSecretEnv = %q, want %q", cfg.Alerting.SigningSecretEnv, "KELVRAN_ALERT_WEBHOOK_SECRET")
+	}
+}

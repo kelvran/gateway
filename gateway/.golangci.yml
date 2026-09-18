@@ -179,6 +179,17 @@ linters:
         linters:
           - gosec
         text: "G115"
+      # Retry-backoff jitter timing, never a security-sensitive value
+      # (no key/token/ID derives from it, unlike newEventID's own
+      # crypto/rand-sourced 16 bytes in this same file) -- math/rand/v2's
+      # default source is unpredictable enough for this, and Go 1.22+
+      # seeds it from a real CSPRNG anyway; G404 flags the package
+      # unconditionally, with no way to distinguish this from an actual
+      # security-sensitive use.
+      - path: internal/alerting/alerting\.go
+        linters:
+          - gosec
+        text: "G404"
 
 formatters:
   enable:

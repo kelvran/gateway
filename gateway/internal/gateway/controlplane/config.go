@@ -381,6 +381,34 @@ type RateLimitConfig struct {
 	RedisAddr string
 }
 
+// AlertingConfig configures a direct-from-Go webhook push for signals
+// the gateway already computes today but never delivers anywhere --
+// per docs/upgrade-research/operator-alerting-integrations-2026-09-15.md
+// Finding 4, the same pattern LiteLLM's own budget-alerts webhook and
+// Helicone's Slack/email alerts both ship. Optional: a zero value
+// (WebhookURLEnv == "") means no webhook push at all, exactly the
+// "logged, never delivered" behavior every prior release had.
+type AlertingConfig struct {
+	// WebhookURLEnv names the environment variable holding the webhook
+	// destination URL (a Slack Incoming Webhook, or any endpoint
+	// accepting a POST body) -- never a raw URL in config, matching
+	// this codebase's own established secret-by-env-var-name
+	// convention (DeploymentConfig.APIKeyEnv, AdminConfig.TokenEnv).
+	// Required for alerting.WebhookNotifier to activate at all.
+	WebhookURLEnv string
+	// SigningSecretEnv optionally names the environment variable
+	// holding an HMAC-SHA256 signing secret, per the Standard Webhooks
+	// specification (standardwebhooks.com) -- docs/upgrade-research/
+	// operator-alerting-integrations-2026-09-15.md Finding 5's own
+	// baseline-security-property list. Empty means every delivered
+	// event is unsigned -- a real, disclosed choice, not a silent gap:
+	// an operator POSTing directly to a Slack Incoming Webhook (which
+	// has no signature-verification concept at all) has no use for
+	// this; it matters once the destination is a receiver this
+	// codebase doesn't control and wants to verify authenticity.
+	SigningSecretEnv string
+}
+
 // ConfigPropagationConfig configures push-based cross-instance admin-
 // mutation propagation, per gateway/internal/configpropagation's own
 // doc comment. Optional — a zero-valued ConfigPropagationConfig
@@ -644,6 +672,10 @@ type Config struct {
 	// HealthProbe configures the optional active/synthetic health-probing
 	// background loop. Optional.
 	HealthProbe HealthProbeConfig
+	// Alerting configures a direct-from-Go webhook push for
+	// already-computed operational signals (budget-threshold crossings
+	// today). Optional.
+	Alerting AlertingConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -814,6 +846,11 @@ func Load(path string) (*Config, error) {
 
 	if rateLimitRaw, ok := getMap(root, "rate_limit"); ok {
 		cfg.RateLimit.RedisAddr, _ = getString(rateLimitRaw, "redis_addr")
+	}
+
+	if alertingRaw, ok := getMap(root, "alerting"); ok {
+		cfg.Alerting.WebhookURLEnv, _ = getString(alertingRaw, "webhook_url_env")
+		cfg.Alerting.SigningSecretEnv, _ = getString(alertingRaw, "signing_secret_env")
 	}
 
 	if configPropagationRaw, ok := getMap(root, "config_propagation"); ok {

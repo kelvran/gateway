@@ -48,6 +48,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
 	"github.com/kelvran/gateway/gateway/internal/admin"
+	"github.com/kelvran/gateway/gateway/internal/alerting"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/budget/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
@@ -751,6 +752,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	// doc comment for why) -- both lightweight, both fail-open on an
 	// unreachable address exactly like newKeyLimiter's Redis backend.
 	configPublisher := newConfigPublisher(cfg.ConfigPropagation)
+	alertNotifier := newAlertNotifier(cfg.Alerting, logger)
 
 	upstreamTransport := newUpstreamTransport()
 
@@ -804,6 +806,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
 		EmbeddingUpstream:     dataplane.NewHTTPEmbeddingUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
 		ConfigPublisher:       configPublisher,
+		AlertNotifier:         alertNotifier,
 		// Streaming upstream calls deliberately do NOT use client.Timeout
 		// (the field above) — that would kill a long-running-but-healthy
 		// stream mid-way, exactly as readily as a genuinely stalled one.
@@ -1076,6 +1079,33 @@ func newConfigPublisher(cfg controlplane.ConfigPropagationConfig) configpropagat
 		return nil
 	}
 	return configpropagation.Open(cfg.RedisAddr)
+}
+
+// newAlertNotifier builds the optional direct-from-Go webhook push, per
+// internal/alerting's own doc comment. Returns a genuine nil interface
+// (never a typed-nil-in-interface trap — the same pitfall
+// newConfigPublisher's own doc comment already names) when
+// cfg.WebhookURLEnv is empty, so dataplane's own `p.alertNotifier !=
+// nil` check stays correct. A configured-but-empty-resolved env var
+// logs a warning and disables the notifier rather than failing startup
+// -- mirrors DeploymentConfig.APIKeyEnv's own "logged as a warning, not
+// fatal" convention, since a misdelivered alert is a degraded-signal
+// problem, never an auth/security-critical one the way an empty
+// AdminConfig.TokenEnv would be.
+func newAlertNotifier(cfg controlplane.AlertingConfig, logger *slog.Logger) alerting.Notifier {
+	if cfg.WebhookURLEnv == "" {
+		return nil
+	}
+	url := os.Getenv(cfg.WebhookURLEnv)
+	if url == "" {
+		logger.Warn("alerting_webhook_url_env_unset", "env_var", cfg.WebhookURLEnv)
+		return nil
+	}
+	var signingSecret string
+	if cfg.SigningSecretEnv != "" {
+		signingSecret = os.Getenv(cfg.SigningSecretEnv)
+	}
+	return alerting.NewWebhookNotifier(url, signingSecret, logger)
 }
 
 // guardrailDefaultPolicyVersion is the operational default when

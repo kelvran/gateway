@@ -54,6 +54,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter/gemini"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
+	"github.com/kelvran/gateway/gateway/internal/alerting"
 	"github.com/kelvran/gateway/gateway/internal/backup"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache"
@@ -447,8 +448,15 @@ type Config struct {
 	// single-instance-only mutation, exactly as before this feature
 	// existed.
 	ConfigPublisher configpropagation.Publisher
-	Logger          *slog.Logger
-	CacheTTL        time.Duration
+	// AlertNotifier delivers a direct-from-Go webhook push for
+	// operational signals this pipeline already computes (a budget-
+	// threshold crossing today), per internal/alerting's own doc
+	// comment. nil (the default -- no webhook_url_env configured) means
+	// checkBudgetAlertLadder's existing OTel-counter/log-line behavior
+	// is completely unaffected, exactly as before this feature existed.
+	AlertNotifier alerting.Notifier
+	Logger        *slog.Logger
+	CacheTTL      time.Duration
 	// CacheL2TTL defaults to 75 seconds when unset — shorter than
 	// CacheTTL's 5-minute default, as defense-in-depth per the RFC's TTL
 	// rationale (not a substitute for the normalization allowlist's own
@@ -559,6 +567,7 @@ type Pipeline struct {
 	upstream          UpstreamCaller
 	embeddingUpstream UpstreamCaller
 	configPublisher   configpropagation.Publisher
+	alertNotifier     alerting.Notifier
 	upstreamStream    UpstreamStreamCaller
 	logger            *slog.Logger
 	cacheTTL          time.Duration
@@ -670,6 +679,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		upstream:              cfg.Upstream,
 		embeddingUpstream:     cfg.EmbeddingUpstream,
 		configPublisher:       cfg.ConfigPublisher,
+		alertNotifier:         cfg.AlertNotifier,
 		upstreamStream:        cfg.UpstreamStream,
 		logger:                logger,
 		cacheTTL:              ttl,
@@ -3063,6 +3073,26 @@ func (p *Pipeline) checkBudgetAlertLadder(ctx context.Context, vk *identity.Virt
 		"budget_usd", vk.BudgetUSD.String(),
 		"percent_bucket", bucket,
 	)...)
+
+	// Direct-from-Go webhook push, per docs/upgrade-research/operator-
+	// alerting-integrations-2026-09-15.md Finding 4 -- the same signal
+	// the two lines above already compute, now also DELIVERED, not
+	// just logged. p.alertNotifier is nil (a guaranteed no-op) unless
+	// alerting.webhook_url_env is configured, exactly as before this
+	// feature existed. Notify itself is async (see its own doc
+	// comment) -- this call never adds latency to the request path.
+	if p.alertNotifier != nil {
+		p.alertNotifier.Notify(ctx, alerting.Event{
+			Type:      "budget_threshold_crossed",
+			Timestamp: time.Now(),
+			Fields: map[string]any{
+				"key_id":         vk.ID,
+				"spent_usd":      spent.String(),
+				"budget_usd":     vk.BudgetUSD.String(),
+				"percent_bucket": bucket,
+			},
+		})
+	}
 }
 
 // outcomeFor derives a GatewayDecisionEvent's structured Outcome from

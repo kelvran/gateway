@@ -266,6 +266,24 @@ telemetry:
 # rate_limit:
 #   redis_addr: "localhost:6379"
 
+# Direct-from-Go webhook push for operational signals the gateway
+# already computes but never delivers anywhere (a budget-threshold
+# crossing today) -- see
+# docs/upgrade-research/operator-alerting-integrations-2026-09-15.md
+# Finding 4. Optional: omit this whole section for the pre-existing
+# logged-only/OTel-counter-only behavior. webhook_url_env names the
+# environment variable holding the destination URL (a Slack Incoming
+# Webhook, or any endpoint accepting a POST body) -- never a raw URL in
+# config. A configured-but-empty-resolved env var logs a warning and
+# disables the notifier rather than failing startup. signing_secret_env
+# is optional -- when set, every delivered event is HMAC-SHA256 signed
+# per the Standard Webhooks specification (standardwebhooks.com); omit
+# it for an unsigned payload (e.g. a plain Slack Incoming Webhook has no
+# signature-verification concept at all).
+# alerting:
+#   webhook_url_env: "KELVRAN_ALERT_WEBHOOK_URL"
+#   signing_secret_env: "KELVRAN_ALERT_WEBHOOK_SECRET"
+
 # Cache L1 (exact-match), L2 (normalized-match), and L3-lite (lexical
 # near-duplicate) — see docs/rfcs/2026-09-03-cache-l2-normalized-match.md
 # and docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md. Optional:
