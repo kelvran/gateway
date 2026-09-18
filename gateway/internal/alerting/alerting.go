@@ -27,6 +27,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	mathrand "math/rand/v2"
@@ -61,6 +62,22 @@ const (
 	maxDeliveryAttempts = 3
 	baseBackoff         = 500 * time.Millisecond
 )
+
+// permanentSendError wraps a send failure that a retry can never fix:
+// a malformed webhook URL (rejected at request-construction time,
+// before any network call) or a 4xx response from the receiver — by
+// HTTP convention a client-error status means the identical request
+// will fail identically on retry (bad signature, wrong path, auth
+// failure), unlike a transient network error or a 5xx. Added after an
+// audit found deliver's retry loop burned all maxDeliveryAttempts
+// identically regardless of failure class, wasting the full backoff
+// schedule on a guaranteed-repeat failure.
+type permanentSendError struct {
+	err error
+}
+
+func (e *permanentSendError) Error() string { return e.err.Error() }
+func (e *permanentSendError) Unwrap() error { return e.err }
 
 // WebhookNotifier POSTs a JSON payload to a configured URL.
 type WebhookNotifier struct {
@@ -137,6 +154,7 @@ func (w *WebhookNotifier) deliver(ctx context.Context, event Event) {
 	}
 
 	var lastErr error
+	attemptsMade := 0
 	for attempt := 0; attempt < maxDeliveryAttempts; attempt++ {
 		if attempt > 0 {
 			// Exponential backoff (500ms, 1s) with up to 50% jitter —
@@ -152,17 +170,25 @@ func (w *WebhookNotifier) deliver(ctx context.Context, event Event) {
 				return
 			}
 		}
-		if lastErr = w.send(ctx, id, body); lastErr == nil {
+		attemptsMade++
+		lastErr = w.send(ctx, id, body)
+		if lastErr == nil {
 			return
 		}
+		var permErr *permanentSendError
+		if errors.As(lastErr, &permErr) {
+			// Stop immediately rather than burning the remaining
+			// attempts on a failure class retrying can never fix.
+			break
+		}
 	}
-	w.logger.Warn("alerting_webhook_delivery_failed", "event_type", event.Type, "event_id", id, "attempts", maxDeliveryAttempts, "error", lastErr)
+	w.logger.Warn("alerting_webhook_delivery_failed", "event_type", event.Type, "event_id", id, "attempts", attemptsMade, "error", lastErr)
 }
 
 func (w *WebhookNotifier) send(ctx context.Context, id string, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+		return &permanentSendError{fmt.Errorf("building request: %w", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("webhook-id", id)
@@ -177,6 +203,13 @@ func (w *WebhookNotifier) send(ctx context.Context, id string, body []byte) erro
 		return fmt.Errorf("sending request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// 5xx (and any other >=300 that isn't a 4xx, e.g. a 3xx surfaced by
+	// a client that stopped following redirects) is treated as
+	// transient/retryable; 4xx is a client-error class that will fail
+	// identically on retry, so it's wrapped as permanent.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return &permanentSendError{fmt.Errorf("webhook endpoint returned status %d", resp.StatusCode)}
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook endpoint returned status %d", resp.StatusCode)
 	}

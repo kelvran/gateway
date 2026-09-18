@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -206,6 +207,86 @@ func TestWebhookNotifierRetriesOnFailureThenSucceeds(t *testing.T) {
 			t.Errorf("seenIDs = %v, want every attempt to reuse the SAME non-empty webhook-id", seenIDs)
 			break
 		}
+	}
+}
+
+// TestWebhookNotifierDoesNotRetryOnPermanentClientErrorStatus is the
+// regression proof for a real gap an audit found: a 4xx response (a
+// client-error class that will fail identically on retry — bad
+// signature, wrong path, auth failure) previously burned all
+// maxDeliveryAttempts identically to a transient 5xx. Calls deliver
+// directly (synchronous, same package) rather than via the async
+// Notify, so the exact request count is observable without any
+// backoff-timing guesswork.
+func TestWebhookNotifierDoesNotRetryOnPermanentClientErrorStatus(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	notifier := NewWebhookNotifier(server.URL, "", discardLogger())
+	notifier.deliver(t.Context(), Event{Type: "budget_threshold_crossed", Timestamp: time.Now(), Fields: map[string]any{}})
+
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("attempts = %d, want exactly 1 -- a 4xx must never be retried", got)
+	}
+}
+
+// TestWebhookNotifierDoesNotRetryOnMalformedURL proves a webhook URL
+// that fails at request-construction time (rejected by
+// http.NewRequestWithContext before any network call) is also treated
+// as permanent -- never retried, never even reaching the network.
+func TestWebhookNotifierDoesNotRetryOnMalformedURL(t *testing.T) {
+	// A control character in the URL is rejected by net/url's own
+	// parsing inside http.NewRequestWithContext, deterministically,
+	// before any network call is attempted.
+	notifier := NewWebhookNotifier("http://example.invalid/\x7f", "", discardLogger())
+
+	start := time.Now()
+	notifier.deliver(t.Context(), Event{Type: "budget_threshold_crossed", Timestamp: time.Now(), Fields: map[string]any{}})
+	elapsed := time.Since(start)
+
+	// A retried delivery would wait at least baseBackoff (500ms) before
+	// its second attempt; a permanent, single-attempt failure returns
+	// near-instantly. A generous threshold well under one backoff
+	// interval rules out any retry having occurred.
+	if elapsed >= baseBackoff {
+		t.Errorf("deliver took %v, want near-instant (<%v) -- a malformed URL must never be retried", elapsed, baseBackoff)
+	}
+}
+
+// TestWebhookNotifierStillRetriesOnTransportError closes a real test-
+// coverage gap an audit found: every prior failure test drove an
+// httptest.Server returning an HTTP status, never a transport-level
+// failure (connection refused). Dials a real, immediately-closed
+// listener so the connection is refused deterministically, and proves
+// the retry loop still treats it as transient (all maxDeliveryAttempts
+// attempted), unlike a 4xx.
+func TestWebhookNotifierStillRetriesOnTransportError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	deadURL := "http://" + ln.Addr().String()
+	if closeErr := ln.Close(); closeErr != nil {
+		t.Fatalf("closing listener: %v", closeErr)
+	}
+
+	notifier := NewWebhookNotifier(deadURL, "", discardLogger())
+
+	start := time.Now()
+	notifier.deliver(t.Context(), Event{Type: "budget_threshold_crossed", Timestamp: time.Now(), Fields: map[string]any{}})
+	elapsed := time.Since(start)
+
+	// A permanent, single-attempt failure returns near-instantly; a
+	// retried one waits through the full backoff schedule
+	// (baseBackoff + 2*baseBackoff, plus jitter) before giving up --
+	// proving all 3 attempts were genuinely made, not just 1.
+	minRetriedElapsed := baseBackoff + 2*baseBackoff
+	if elapsed < minRetriedElapsed {
+		t.Errorf("deliver took %v, want at least %v -- a connection-refused error must still be retried like any transient failure", elapsed, minRetriedElapsed)
 	}
 }
 
