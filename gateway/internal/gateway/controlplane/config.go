@@ -1019,6 +1019,23 @@ func parseYAMLMini(data []byte) (map[string]any, error) {
 			continue
 		}
 
+		// A real bug an audit found: indent below only strips leading
+		// SPACE characters, so a tab-indented line (an ordinary editor/
+		// copy-paste mistake) computed as indent 0 regardless of true
+		// nesting depth -- silently popping the entire stack back to
+		// the document root and misattributing that line, and every
+		// subsequent line up to the next real indent-0 key, to the
+		// wrong parent. YAML's own spec forbids tabs for indentation
+		// entirely (they're of ambiguous width) -- fail loudly here,
+		// matching every other validator in this file's own "fail on
+		// operator mistakes, never silently misparse" convention,
+		// rather than guessing a tab-to-space width that could still
+		// be wrong.
+		leadingWSLen := len(trimmedRight) - len(strings.TrimLeft(trimmedRight, " \t"))
+		if strings.ContainsRune(trimmedRight[:leadingWSLen], '\t') {
+			return nil, fmt.Errorf("line %d: leading tab characters are not valid YAML indentation -- use spaces only", i+1)
+		}
+
 		indent := len(trimmedRight) - len(strings.TrimLeft(trimmedRight, " "))
 		content := strings.TrimSpace(trimmedRight)
 
@@ -1033,6 +1050,21 @@ func parseYAMLMini(data []byte) (map[string]any, error) {
 		}
 		key := unquoteYAMLScalar(strings.TrimSpace(content[:colonIdx]))
 		valueStr := strings.TrimSpace(content[colonIdx+1:])
+
+		// A real, previously-accepted gap a full-codebase audit
+		// re-surfaced: parent[key] = ... below is a plain map
+		// assignment, so a duplicate key at the same nesting level
+		// (e.g. two deployment entries under the same name, or a
+		// bad copy-paste duplicating a virtual key) used to silently
+		// let the LAST occurrence win, discarding the first entirely
+		// with zero warning -- TestLoadDuplicateTopLevelKeyLastValueWins/
+		// TestLoadDuplicateDeploymentNameSecondEntrySilentlyWins
+		// documented this as current, deliberately-unfixed behavior,
+		// pending exactly this decision. Fails loudly now, matching
+		// every other validator in this file's own convention.
+		if _, exists := parent[key]; exists {
+			return nil, fmt.Errorf("line %d: duplicate key %q at this nesting level", i+1, key)
+		}
 
 		if valueStr == "" {
 			if len(stack) > maxYAMLNestingDepth {

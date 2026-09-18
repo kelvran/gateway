@@ -2022,14 +2022,13 @@ func TestLoadDeploymentWithAnOverflowingWeightDefaultsToZeroNotGarbage(t *testin
 	}
 }
 
-// TestLoadDuplicateTopLevelKeyLastValueWins documents current, real
-// behavior rather than proving a bug: parseYAMLMini builds each mapping
-// level via plain map assignment (parent[key] = ...), so a duplicate
-// key at the same level silently lets the LAST occurrence win -- pinned
-// down explicitly so a future change to reject duplicates (a stricter,
-// arguably safer YAML parser behavior) is a deliberate decision, not an
-// accidental behavior change nobody notices.
-func TestLoadDuplicateTopLevelKeyLastValueWins(t *testing.T) {
+// TestLoadRejectsDuplicateTopLevelKey is the deliberate decision
+// TestLoadDuplicateTopLevelKeyLastValueWins's own doc comment invited:
+// a full-codebase audit re-surfaced silent last-value-wins on a
+// duplicate key as operationally significant enough to fix now.
+// parseYAMLMini must reject a duplicate key at the same nesting level
+// loudly, never silently let the second occurrence win.
+func TestLoadRejectsDuplicateTopLevelKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nlisten_addr: \":9090\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
@@ -2037,23 +2036,22 @@ func TestLoadDuplicateTopLevelKeyLastValueWins(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load with a duplicate top-level key: %v", err)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with a duplicate top-level key returned nil error, want a loud duplicate-key error")
 	}
-	if cfg.ListenAddr != ":9090" {
-		t.Errorf("ListenAddr = %q, want %q (the LAST duplicate occurrence, per parseYAMLMini's own plain-map-assignment behavior)", cfg.ListenAddr, ":9090")
+	if !strings.Contains(err.Error(), "duplicate key") {
+		t.Errorf("Load error = %v, want it to mention a duplicate key", err)
 	}
 }
 
-// TestLoadDuplicateDeploymentNameSecondEntrySilentlyWins is the same
-// documentation as TestLoadDuplicateTopLevelKeyLastValueWins above, for
-// the more operationally significant case: two deployment entries under
-// the SAME name silently collapse into one (the second one's config) at
-// the parseYAMLMini stage, before Load's own deployment-processing loop
-// ever runs -- an operator's copy-paste mistake here silently drops an
-// entire deployment's intended config with no warning.
-func TestLoadDuplicateDeploymentNameSecondEntrySilentlyWins(t *testing.T) {
+// TestLoadRejectsDuplicateDeploymentName is the more operationally
+// significant case TestLoadDuplicateDeploymentNameSecondEntrySilentlyWins's
+// own doc comment named: two deployment entries under the SAME name
+// must now be rejected loudly, never silently collapsed into one (an
+// operator's copy-paste mistake that used to drop an entire
+// deployment's intended config with no warning).
+func TestLoadRejectsDuplicateDeploymentName(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"first-model\"\n    provider: \"openai\"\n    upstream_model: \"first-model\"\n    base_url: \"https://first\"\n    api_key_env: \"X\"\n  d1:\n    model: \"second-model\"\n    provider: \"openai\"\n    upstream_model: \"second-model\"\n    base_url: \"https://second\"\n    api_key_env: \"Y\"\n"
@@ -2061,15 +2059,12 @@ func TestLoadDuplicateDeploymentNameSecondEntrySilentlyWins(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load with a duplicate deployment name: %v", err)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with a duplicate deployment name returned nil error, want a loud duplicate-key error")
 	}
-	if len(cfg.Deployments) != 1 {
-		t.Fatalf("len(Deployments) = %d, want 1 (the two \"d1\" entries collapse into one)", len(cfg.Deployments))
-	}
-	if cfg.Deployments[0].Model != "second-model" {
-		t.Errorf("Deployments[0].Model = %q, want %q (the second, silently-winning entry)", cfg.Deployments[0].Model, "second-model")
+	if !strings.Contains(err.Error(), "duplicate key") {
+		t.Errorf("Load error = %v, want it to mention a duplicate key", err)
 	}
 }
 
@@ -2206,6 +2201,61 @@ func TestParseYAMLMiniAcceptsNestingAtExactlyMaxDepth(t *testing.T) {
 	_, err := Load(path)
 	if err != nil && strings.Contains(err.Error(), "nesting depth") {
 		t.Errorf("Load with exactly %d levels of nesting was rejected as too deep: %v", maxYAMLNestingDepth, err)
+	}
+}
+
+// TestParseYAMLMiniRejectsTabIndentation is the regression proof for a
+// real bug a full-codebase audit found: a tab-indented line previously
+// computed indent 0 (TrimLeft's cutset was space-only), silently
+// collapsing the nesting stack back to the document root and
+// misattributing that line -- and everything after it -- to the wrong
+// parent, with zero parse error. A tab anywhere in a line's own leading
+// whitespace must now be rejected loudly instead.
+func TestParseYAMLMiniRejectsTabIndentation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// A tab before "budget_usd" -- exactly the audit's own reproduction
+	// case (a virtual key's nested field indented with a tab instead of
+	// spaces, the ordinary editor/copy-paste mistake this guards against).
+	content := "virtual_keys:\n  key1:\n    key_hash: \"abc\"\n\tbudget_usd: \"100\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with a tab-indented line returned nil error, want a loud tab-indentation error")
+	}
+	if !strings.Contains(err.Error(), "tab") {
+		t.Errorf("Load error = %v, want it to mention tabs", err)
+	}
+}
+
+// TestParseYAMLMiniAcceptsPureSpaceIndentationUnaffected is the
+// no-regression proof: the tab guard above must never reject or alter
+// parsing of a line indented purely with spaces, regardless of depth.
+func TestParseYAMLMiniAcceptsPureSpaceIndentationUnaffected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "virtual_keys:\n  key1:\n    key_hash: \"abc\"\n    budget_usd: \"100\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	root, err := parseYAMLMini([]byte(content))
+	if err != nil {
+		t.Fatalf("parseYAMLMini with pure-space indentation: %v", err)
+	}
+	virtualKeys, ok := root["virtual_keys"].(map[string]any)
+	if !ok {
+		t.Fatalf("root[\"virtual_keys\"] = %#v, want a map", root["virtual_keys"])
+	}
+	key1, ok := virtualKeys["key1"].(map[string]any)
+	if !ok {
+		t.Fatalf("virtual_keys[\"key1\"] = %#v, want a map", virtualKeys["key1"])
+	}
+	if key1["budget_usd"] != "100" {
+		t.Errorf("key1[\"budget_usd\"] = %#v, want \"100\" nested correctly under key1, not the root", key1["budget_usd"])
 	}
 }
 
