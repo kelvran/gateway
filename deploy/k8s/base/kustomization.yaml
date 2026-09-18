@@ -1,11 +1,21 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Real namespace, not the implicit "default" -- closes a real Checkov
+# finding (CKV_K8S_21, "the default namespace should not be used") on
+# every resource in this overlay at once, per Kustomize's own
+# `namespace:` field applying to every listed resource. Change this to
+# match your own cluster's naming convention -- "kelvran" is this
+# manifest's own real default, not a placeholder requiring a decision
+# before applying (unlike, say, the image tag below).
+namespace: kelvran
+
 resources:
   - deployment.yaml
   - service.yaml
   - secret-placeholder.yaml
   - serviceaccount.yaml
+  - networkpolicy.yaml
 
 # Generates the gateway-config ConfigMap deployment.yaml mounts, from a
 # LOCAL, gitignored config.yaml -- see ../README.md's Usage section

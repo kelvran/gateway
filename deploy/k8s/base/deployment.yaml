@@ -30,18 +30,56 @@ spec:
       # ServiceAccount exists at all (IRSA needs one to attach a trust
       # policy to) and why it's safe across every cluster type.
       serviceAccountName: kelvran-gateway
+      # Closes a real Checkov finding (CKV_K8S_38, "Service Account
+      # Tokens are only mounted where necessary"): the gateway process
+      # itself never calls the Kubernetes API, so it has no use for its
+      # own ServiceAccount's API token being mounted into the container.
+      # Safe alongside IRSA specifically -- IRSA's own mutating webhook
+      # injects AWS credentials (env vars + a separate projected token
+      # volume) based on the ServiceAccount's annotations at admission
+      # time, a distinct mechanism from this K8s-API-token automount.
+      automountServiceAccountToken: false
       # Matches gateway/Dockerfile's own non-root USER 65532:65532
       # (distroless's "nonroot" numeric UID convention) -- restated here,
       # not just relied on from the image, so a cluster-wide Pod Security
       # Standard/admission policy sees an explicit, auditable declaration
-      # rather than an implicit inherited value.
+      # rather than an implicit inherited value. seccompProfile closes a
+      # real Checkov finding (CKV_K8S_31).
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: gateway
-          image: ghcr.io/kelvran/gateway:latest # pin to a real digest/tag before production use
+          # Pinned to the real, currently-published gateway/v0.12.0
+          # release by digest (independently re-verified via `docker
+          # buildx imagetools inspect`, not assumed) -- closes 2 real
+          # Checkov findings (CKV_K8S_14 "Image Tag should be fixed",
+          # CKV_K8S_43 "Image should use digest"). Re-pin this to
+          # whatever the current release is before applying -- this
+          # value goes stale the moment a newer version ships, same as
+          # any other pinned dependency.
+          image: ghcr.io/kelvran/gateway:v0.12.0@sha256:810357492928a1750b0317f9895ef7269999c14f464dd4039ed85ecff84144f4
+          # Container-level securityContext, distinct from the pod-level
+          # block above (Checkov's own CKV_K8S_30 checks for this
+          # specifically) -- closes CKV_K8S_20 (no privilege escalation),
+          # CKV_K8S_37/CKV_K8S_28 (drop every Linux capability, which
+          # covers NET_RAW specifically too -- the gateway needs none of
+          # them, it only ever makes outbound HTTPS calls and serves
+          # HTTP), and CKV_K8S_22 (read-only root filesystem -- safe for
+          # this manifest's own default, in-memory-only configuration,
+          # per ../README.md's own disclosure that no PVC is mounted
+          # here; adding budget/prompt/identity persist_path persistence
+          # later needs its own writable volume mount despite this
+          # setting, not a silent conflict with it).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: 8080

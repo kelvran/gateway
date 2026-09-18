@@ -108,3 +108,31 @@ kubectl apply -k base/
   that mechanism reads; setting a memory limit here is required for the
   in-code mechanism to do anything at all (outside a cgroup limit, Go's
   GC runs unbounded, per stdlib default).
+- **Added 2026-09-18, a real Checkov hardening pass**: `base/` now sets
+  a real `namespace: kelvran` (Kustomize's own field, applied to every
+  resource — change it to match your own cluster's naming convention);
+  `base/networkpolicy.yaml` gives the gateway Pod a real NetworkPolicy
+  (ingress on 8080 from anywhere, matching its own client-facing role;
+  egress to anywhere, since upstream LLM providers have no stable,
+  documented IP/CIDR range to scope a tighter rule to — a real,
+  disclosed limitation, not silently treated as solved); the container
+  spec gained its own `securityContext` (`allowPrivilegeEscalation:
+  false`, every Linux capability dropped, `readOnlyRootFilesystem:
+  true` — safe for this manifest's own default in-memory-only
+  configuration; adding `persist_path` persistence later needs its own
+  writable volume mount despite this setting) and `seccompProfile:
+  RuntimeDefault`; `automountServiceAccountToken: false` at the pod
+  spec level (the gateway process itself never calls the Kubernetes
+  API — safe alongside IRSA, whose own credential injection is a
+  distinct mechanism from this token, per the field's own comment in
+  `deployment.yaml`); and the image reference is pinned to the real,
+  currently-published `gateway/v0.12.0` release by digest — re-pin this
+  yourself before applying, it goes stale the moment a newer version
+  ships, same as any other pinned dependency. **Deliberately NOT
+  changed**, matching this repo's own established "accepted risk, not
+  silently fixed" posture for a Checkov finding that contradicts an
+  already-reasoned-about design choice: `envFrom.secretRef` (Checkov
+  prefers file-mounted secrets over environment variables) stays as-is
+  — `gateway`'s own config model reads every credential via
+  `os.Getenv`, and switching to file-mounted secrets would need a real
+  code change to the gateway itself, not just a manifest edit.

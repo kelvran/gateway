@@ -1,0 +1,42 @@
+# Closes a real Checkov finding (CKV2_K8S_6, "minimize the admission of
+# pods which lack an associated NetworkPolicy") -- before this, the
+# gateway Pod had zero NetworkPolicy of any kind, meaning the cluster's
+# own CNI enforced no traffic restriction on it at all beyond whatever
+# a cluster-wide default (if any) already provided.
+#
+# Ingress: allowed on the client-facing port (8080) from anywhere --
+# this is deliberately permissive, matching Service's own ClusterIP
+# type and this gateway's own role as a client-facing proxy, not an
+# internal-only service. Never opens the admin port (default
+# 127.0.0.1:8081, loopback-only inside the container regardless of any
+# NetworkPolicy -- see service.yaml's own comment) since no Service
+# exposes it in the first place.
+#
+# Egress: allowed to anywhere -- deliberately NOT scoped to specific
+# upstream-provider IP/CIDR ranges. OpenAI/Anthropic/Gemini/Bedrock
+# endpoints are dynamic, AWS/CDN-fronted hostnames with no stable,
+# documented IP range to pin an egress rule to; DNS resolution (UDP/TCP
+# 53) also needs to reach whatever the cluster's own DNS service is,
+# which varies by cluster. A real, disclosed limitation, not silently
+# treated as solved -- tighten this yourself if your own cluster's
+# egress topology allows it (e.g. a fixed NAT gateway IP an egress rule
+# could target).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kelvran-gateway
+  labels:
+    app.kubernetes.io/name: kelvran-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kelvran-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - {}

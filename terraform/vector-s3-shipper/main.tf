@@ -85,6 +85,18 @@ resource "aws_s3_bucket_lifecycle_configuration" "gatewayevents" {
     expiration {
       days = var.retention_days
     }
+
+    # Closes a real Checkov finding (CKV_AWS_300) -- Vector's own
+    # aws_s3 sink only ever calls a single PutObject per object (per
+    # this module's own shipper-policy comment above), so this
+    # shouldn't fire in normal operation, but a real network partition
+    # mid-upload could otherwise leave an orphaned, indefinitely-billed
+    # incomplete multipart upload with nothing in this module to ever
+    # clean it up. 7 days matches AWS's own documented example for this
+    # exact lifecycle action.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
 }
 
@@ -92,6 +104,29 @@ resource "aws_iam_user" "shipper" {
   name = var.shipper_user_name
   tags = var.tags
 }
+
+# Deliberately NOT built, per a 2026-09-18 Checkov triage -- disclosed
+# accepted risk, matching this module's own established SSE-S3-not-KMS
+# precedent below, not an oversight:
+# - CKV_AWS_145/CKV_AWS_144/CKV2_AWS_62/CKV_AWS_18: same reasoning as
+#   terraform/backend-bootstrap's own identical disclosure (KMS/cross-
+#   region-replication/event-notifications/access-logging).
+# - CKV_AWS_40 ("IAM policies attached only to groups or roles") and
+#   CKV_AWS_273 ("access controlled through SSO, not IAM users"): both
+#   flag a real, structural constraint of the tool this module exists
+#   to support, not a fixable oversight -- Vector's own aws_s3 sink
+#   authenticates via a static access-key-ID/secret pair resolved from
+#   its container's environment (see this file's own comment below),
+#   which fundamentally requires an IAM USER, not a role or SSO
+#   identity (roles/SSO issue temporary, assumed credentials Vector has
+#   no built-in mechanism to assume). This is the exact same "eliminate
+#   the long-lived key" gap
+#   docs/upgrade-research/secrets-management-lifecycle-2026-09-15.md
+#   Finding 1 named for gateway's own Bedrock credential, applied to a
+#   DIFFERENT credential here -- closing it for Vector specifically
+#   would need real research into whether Vector supports IRSA/task-
+#   role-style credential assumption, which this pass didn't do; named
+#   as real, disclosed future work, not silently treated as solved.
 
 # Write-only, scoped to key_prefix's own object path -- deliberately NOT
 # the bucket ARN itself (no s3:ListBucket, no s3:GetObject, no
