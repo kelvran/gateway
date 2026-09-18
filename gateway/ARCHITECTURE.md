@@ -251,7 +251,20 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              docs/rfcs/2026-09-03-budget-persistence.md) when `budget.persist_path` is
                              configured; pure in-memory (resets on restart) otherwise — single-instance
                              only, a deliberate, bounded stepping stone ahead of the Postgres control-plane
-                             store below, not a replacement for it
+                             store below, not a replacement for it. **Added 2026-09-18**: a shared
+                             `admin.on_corrupt_store: fail|reset` config knob (default `fail`, byte-for-
+                             byte the original behavior for every config file that doesn't set it)
+                             applies identically to this store AND identity's/prompt's own boltstore-
+                             backed stores, via a single generic `openPersistStoreWithRecovery` helper
+                             in cmd/gateway/main.go. `reset` renames a genuinely corrupt file aside
+                             (preserving it for forensics, never deleting) and retries once against the
+                             now-clear path. **Corrected same day, an audit finding**: this originally
+                             classified ANY open error as corruption-worthy, meaning a permissions
+                             misconfiguration or a disk-full error would have been silently reset (real
+                             data loss) — fixed to match only bbolt's own three documented corruption
+                             sentinels (`ErrInvalid`/`ErrVersionMismatch`/`ErrChecksum`, from
+                             `go.etcd.io/bbolt/errors`) via `errors.Is`; any other error is now treated
+                             exactly like `fail`, never reset.
 /internal/adapter            — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
                              docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
@@ -307,6 +320,34 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              gateway
 /internal/guardrail          — pre/post-call middleware interface; PII/content checks — ACTIVE, per
                              docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md
+/internal/alerting           — **Added 2026-09-18**, per docs/upgrade-research/operator-alerting-
+                             integrations-2026-09-15.md Finding 4: a direct-from-Go webhook push for
+                             operational signals the gateway already computes but never delivered
+                             anywhere (today: budget-threshold-crossed). A pure leaf package (zero
+                             project-internal imports — see the dependency direction rules below), so
+                             any future signal source can depend on it without this package ever
+                             knowing about any of them. Implements the Standard Webhooks specification
+                             (standardwebhooks.com, verified directly against that spec's own current
+                             text before implementing, not assumed): HMAC-SHA256 over
+                             "id.timestamp.body", a "v1,<base64>" header shape, a `whsec_`-prefixed
+                             base64 secret convention — the identical scheme
+                             evals/evals/webhook.py implements in Python, so both deployables' webhook
+                             sends are mutually consistent for any receiver verifying either one.
+                             `alerting.Notifier.Notify`'s own delivery is async (its own goroutine via
+                             `context.WithoutCancel`, never tracked against the shutdown WaitGroup — a
+                             disclosed, accepted tradeoff: an in-flight retry can be abandoned mid-
+                             backoff on process exit) and bounded (3 attempts, exponential backoff with
+                             jitter, giving up rather than looping forever). **Corrected same day, an
+                             audit finding**: the retry loop originally treated every failure
+                             identically; a malformed webhook URL or a permanent 4xx response from the
+                             receiver is now classified as non-retryable and stops the loop immediately,
+                             rather than burning the remaining attempts on a failure retrying can never
+                             fix — 5xx and transport-level errors are still retried exactly as before.
+                             `newAlertNotifier` (cmd/gateway/main.go) returns a genuine nil
+                             `alerting.Notifier` interface — never a typed-nil pointer — when
+                             unconfigured, so `dataplane.Pipeline.alertNotifier != nil` stays a valid
+                             nil-check; wired into `checkBudgetAlertLadder`'s existing threshold-crossed
+                             path, gated on the new `alerting:` config section (`config.example.yaml`).
 /internal/admin               — Real, per docs/rfcs/2026-09-05-gateway-admin-api.md: an optional,
                              off-by-default HTTP surface on its own separate net.Listener (never the
                              client-facing gateway's mux/port) exposing read-only config introspection
@@ -323,7 +364,16 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              (per-route middleware wrapping); omitting it reproduces the original
                              single-credential behavior exactly. Every successful virtual-key
                              create/delete now writes a structured audit-log entry (key name only, never
-                             the credential). **Added 2026-09-14**: an opt-in `admin.enable_pprof` flag
+                             the credential). **Added 2026-09-18**: `POST /admin/cache/erase` (Admin
+                             tier only, audit-logged) finally gives `cache.Cache.Delete` — real since
+                             2026-09-14 but with zero live callers anywhere until now — a real caller,
+                             closing the right-to-erasure gap named in
+                             docs/upgrade-research/ai-compliance-regulatory-readiness-2026-09-14.md
+                             Finding 4. Computes the exact same L1/L2 cache keys the normal request path
+                             would for a given (virtual key, request) pair and does a Get-then-Delete
+                             against each. See the Cache Subsystem section below for this endpoint's own
+                             disclosed limitations (L3 is not touched at all; the Get-then-Delete
+                             sequence isn't atomic). **Added 2026-09-14**: an opt-in `admin.enable_pprof` flag
                              (default false) mounts `net/http/pprof`'s standard handler set under
                              `/admin/debug/pprof/`, on this same mux, gated behind the admin credential
                              specifically — never the viewer tier — mirroring Envoy Gateway's own shipped
@@ -364,7 +414,7 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 ```
 dataplane → cache, adapter, adapter/{anthropic,bedrock,gemini,openai,openaicompat}, streaming,
             budget, ratelimit, router, costaccounting, telemetry, guardrail, identity, prompt,
-            api/gatewayevents/v1
+            api/gatewayevents/v1, alerting
 adapter/{anthropic,bedrock,gemini,openai,openaicompat} → adapter, streaming
 streaming → adapter                (canonical ChatCompletionChunk/StreamDecoder types live in adapter)
 cache/{inprocess,grpcserver,grpcclient} → cache   (each a real implementation of cache's own interfaces)
@@ -378,8 +428,8 @@ guardrail ✗→ adapter, cache, dataplane   (text in, Verdict out — guardrail
 cache     ✗→ dataplane            (no back-references — this is what makes cache extractable later)
 router    ✗→ dataplane, cache     (router.Deployment is its own decoupled type, never dataplane.Deployment —
                                   mirrors ratelimit.KeyConfig's existing decoupling from identity.VirtualKey)
-{identity, budget, ratelimit, router, telemetry, adapter, costaccounting, controlplane, guardrail}
-          ✗→ dataplane, cache     (shared kernel is a leaf — verified: every one of these packages has
+{identity, budget, ratelimit, router, telemetry, adapter, costaccounting, controlplane, guardrail,
+ alerting} ✗→ dataplane, cache    (shared kernel is a leaf — verified: every one of these packages has
                                   zero internal cross-package imports of its own)
 budget    ✗→ identity              (budget tracks by key ID string only — it doesn't need to know what a
                                   VirtualKey is, only that it's a string; keeps both packages independently
@@ -514,6 +564,8 @@ Cache is a package boundary, **not a network hop**, at every stage until (if eve
 **2026-09-13 — real paraphrase-vs-near-duplicate calibration data, from a live production dry-run, not a design assumption.** `internal/cache/lexical.go`'s own package doc already states L3-lite's scope honestly in prose ("lexical near-duplicate matching via MinHash/Jaccard similarity — never embedding-based semantic similarity"), and `docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md` names the same distinction as an unvalidated design choice ("honestly scoped as lexical near-duplicate matching, not semantic paraphrase understanding") — but until this dry-run, neither had a measured number behind it. Two real pairs, both derived from the same ~70-word binary-search explanation: a genuine paraphrase (different wording/word order, same meaning, no new/changed entities/numbers/dates) computed to a real 3-word-shingle Jaccard similarity of ~0.0078 against the original — nowhere near `l3MinSimilarity`'s 0.9 floor (`gateway/internal/gateway/dataplane/dataplane.go`), a clear, correctly-rejected miss; a near-verbatim version of that SAME original with exactly one isolated synonym swap ("efficient" → "effective"), identical word order otherwise, computed to ~0.9143 exact Jaccard, with the real gateway's own 128-value MinHash estimate for that pair landing at 0.9140625 (117/128) — correctly hit, just above the floor. **Confirms**: real, useful typo/near-verbatim/single-word-substitution tolerance. **Does NOT confirm, despite the "near-duplicate" name inviting the assumption**: any tolerance for genuine semantic paraphrase — that traffic shape misses this gate entirely (falls straight through to a real upstream call), by design, not as a bug. No code or gate changed by this finding; see `THREAT_MODEL.md`'s Cache Elevation of Privilege row for the corresponding security-framing update.
 
 L1, L2, and L3 are each a separate `inprocess` cache instance, independently capacity-bounded (LRU eviction, no unbounded mode) — L3's bound is structurally *per tenant*, unlike L1/L2's single shared cap, since true tenant partitioning for a similarity search is a security requirement (`THREAT_MODEL.md`'s KeyPooling mitigation), not a style choice. Tenant namespace is real for every layer today (`cache.Key()`/`cache.NormalizedKey()`'s leading `tenantID` parameter for L1/L2, `LexicalCache`'s own `tenantID` parameter for L3, per `docs/rfcs/2026-09-02-virtual-keys-budgets.md`), enforced at every hop (lookup, write, retry, fallback) — the design decision that defeats cross-tenant leakage.
+
+**2026-09-18 addition — `Pipeline.EraseCacheEntry` finally gives `cache.Cache.Delete` a real caller**, via `POST /admin/cache/erase` (see `/internal/admin` above). Two disclosed, real limitations, not silently narrowed: (1) **L3 is not touched at all** — `LexicalCache` has no `Delete` method on its own interface, and `writeCache` populates L1, L2, AND L3 on every miss, so a byte-identical follow-up request for content this endpoint just reported erased can still be served from cache, from L3 instead of L1 — confirmed empirically by a dedicated regression test, not just reasoned about; an L3 entry's own TTL is the only path to eventual removal until a real `LexicalCache.Delete` exists. (2) **The Get-then-Delete sequence against L1/L2 isn't atomic** — `cache.Cache` has no combined get-and-delete operation, and `inprocess.Cache`'s `Get`/`Delete` each acquire the mutex independently, so a concurrent identical in-flight request's own `writeCache` call landing between this method's Get and Delete (or right after Delete returns) can leave a fresh entry under the same key, invisible to this method's caller. Narrow-window and low-severity (repopulates with a NEW response for a NEW request, never resurrects the erased bytes) — closing it properly needs a new atomic `GetAndDelete` interface method implemented across `inprocess` AND a new RPC for the `grpcclient`/`grpcserver` pair, named as real future work rather than built here.
 
 ## MCP/A2A Subsystem
 
