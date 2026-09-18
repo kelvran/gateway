@@ -1224,83 +1224,96 @@ def run_cmd(
     successes = 0
     total = 0
     scores: list[Score] = []
-    for case in cases:
-        total += 1
-        if llm_judge or llm_judge_panel:
-            outcomes = _judge_case(
-                case,
-                axes,
-                call_model=call_model,
-                cached_scores=cached_scores,
-                panel=panel,
-                cached_votes=cached_votes,
-                debias=judge_debias,
-            )
-            if outcomes is None:
-                click.echo(f"{case.id}: JUDGE_ERROR")
-                continue
-            # A case passes only if every configured axis passes -- a
-            # response isn't good if it fails one dimension even though
-            # it's correct on every other one. Single-axis (axes=None)
-            # degenerates to exactly today's one-outcome behavior.
-            passed = all(o.passed for o in outcomes)
-            scorer_type = "llm_judge_panel" if llm_judge_panel else "llm_judge"
-            scorer_id = (
-                "panel:" + "+".join(sid for sid, _ in panel)
-                if llm_judge_panel
-                else BEDROCK_HAIKU_4_5_MODEL_ID
-            )
-            for outcome in outcomes:
+    try:
+        for case in cases:
+            total += 1
+            if llm_judge or llm_judge_panel:
+                outcomes = _judge_case(
+                    case,
+                    axes,
+                    call_model=call_model,
+                    cached_scores=cached_scores,
+                    panel=panel,
+                    cached_votes=cached_votes,
+                    debias=judge_debias,
+                )
+                if outcomes is None:
+                    click.echo(f"{case.id}: JUDGE_ERROR")
+                    continue
+                # A case passes only if every configured axis passes -- a
+                # response isn't good if it fails one dimension even though
+                # it's correct on every other one. Single-axis (axes=None)
+                # degenerates to exactly today's one-outcome behavior.
+                passed = all(o.passed for o in outcomes)
+                scorer_type = "llm_judge_panel" if llm_judge_panel else "llm_judge"
+                scorer_id = (
+                    "panel:" + "+".join(sid for sid, _ in panel)
+                    if llm_judge_panel
+                    else BEDROCK_HAIKU_4_5_MODEL_ID
+                )
+                for outcome in outcomes:
+                    scores.append(
+                        Score(
+                            eval_case_id=case.id,
+                            eval_case_revision=case.revision,
+                            run_id=None,
+                            scorer_id=scorer_id,
+                            scorer_type=scorer_type,
+                            value=outcome.passed,
+                            rationale=outcome.rationale,
+                            bias_mitigations_applied=outcome.bias_mitigations_applied,
+                            cost_usd=outcome.cost_usd,
+                            score_cache_key=outcome.score_cache_key,
+                            from_cache=outcome.from_cache,
+                            rubric_axis=outcome.axis,
+                            tier=case.tier,
+                            tags=list(case.tags),
+                            flaky=case.flaky,
+                            panel_votes=outcome.panel_votes,
+                            quorum_reached=outcome.quorum_reached,
+                            quote_grounded=outcome.quote_grounded,
+                            judge_prompt_version=outcome.judge_prompt_version,
+                        )
+                    )
+                    if outcome.axis is not None:
+                        verdict = "PASS" if outcome.passed else "FAIL"
+                        click.echo(f"{case.id} [{outcome.axis}]: {verdict}")
+            else:
+                passed = _score_case_deterministic(case)
                 scores.append(
                     Score(
                         eval_case_id=case.id,
                         eval_case_revision=case.revision,
                         run_id=None,
-                        scorer_id=scorer_id,
-                        scorer_type=scorer_type,
-                        value=outcome.passed,
-                        rationale=outcome.rationale,
-                        bias_mitigations_applied=outcome.bias_mitigations_applied,
-                        cost_usd=outcome.cost_usd,
-                        score_cache_key=outcome.score_cache_key,
-                        from_cache=outcome.from_cache,
-                        rubric_axis=outcome.axis,
+                        scorer_id=_deterministic_scorer_id(case),
+                        scorer_type="deterministic",
+                        value=passed,
+                        # Exact, certain zero — a deterministic scorer never
+                        # makes an external call. See Score.cost_usd's own
+                        # docstring for why this is Decimal("0"), not None.
+                        cost_usd=Decimal("0"),
                         tier=case.tier,
                         tags=list(case.tags),
                         flaky=case.flaky,
-                        panel_votes=outcome.panel_votes,
-                        quorum_reached=outcome.quorum_reached,
-                        quote_grounded=outcome.quote_grounded,
-                        judge_prompt_version=outcome.judge_prompt_version,
                     )
                 )
-                if outcome.axis is not None:
-                    verdict = "PASS" if outcome.passed else "FAIL"
-                    click.echo(f"{case.id} [{outcome.axis}]: {verdict}")
-        else:
-            passed = _score_case_deterministic(case)
-            scores.append(
-                Score(
-                    eval_case_id=case.id,
-                    eval_case_revision=case.revision,
-                    run_id=None,
-                    scorer_id=_deterministic_scorer_id(case),
-                    scorer_type="deterministic",
-                    value=passed,
-                    # Exact, certain zero — a deterministic scorer never
-                    # makes an external call. See Score.cost_usd's own
-                    # docstring for why this is Decimal("0"), not None.
-                    cost_usd=Decimal("0"),
-                    tier=case.tier,
-                    tags=list(case.tags),
-                    flaky=case.flaky,
-                )
-            )
-        if passed:
-            successes += 1
-        click.echo(f"{case.id}: {'PASS' if passed else 'FAIL'}")
+            if passed:
+                successes += 1
+            click.echo(f"{case.id}: {'PASS' if passed else 'FAIL'}")
+    finally:
+        # try/finally mirrors rollout_cmd's/audit_corpus_cmd's own identical
+        # fix (a round-3 backlog-audit finding) -- re-surfaced by a later
+        # full-codebase audit specifically for this command, which never
+        # got the same treatment. One case raising (a malformed task_spec,
+        # an unknown match kind, a missing judge reference) previously
+        # propagated straight out of this loop, skipping append_scores
+        # entirely and discarding every OTHER already-scored case's Score
+        # in this same invocation -- even though `scores` is already
+        # fully populated incrementally as the loop runs, so whatever's
+        # accumulated so far is always available to persist here
+        # regardless of how the loop exits.
+        append_scores(scores, scores_path)
 
-    append_scores(scores, scores_path)
     click.echo(format_report(successes, total, confidence=confidence))
 
 
@@ -1585,29 +1598,41 @@ def ingest_cmd(
     error_count = 0
     new_cases: list[EvalCase] = []
     new_runs: list[Run] = []
-    with out_path.open("a", encoding="utf-8") as out_file:
-        for key in keys:
-            for line in iter_object_lines(scheme, bucket, key):
-                try:
-                    event = decode_gateway_decision_event(line)
-                except Exception:
-                    error_count += 1
-                    continue
-                decoded_count += 1
-                # indent=None -- a single compact line, matching the
-                # newline-delimited-JSON shape the object-storage body
-                # itself already uses (never a pretty-printed, multi-line
-                # blob that would break the "one line per event" contract
-                # of --out).
-                out_file.write(MessageToJson(event, indent=None) + "\n")
-                if suite_path is not None:
-                    case, run = gateway_decision_event_to_eval_case_and_run(event)
-                    new_cases.append(case)
-                    new_runs.append(run)
+    try:
+        with out_path.open("a", encoding="utf-8") as out_file:
+            for key in keys:
+                for line in iter_object_lines(scheme, bucket, key):
+                    try:
+                        event = decode_gateway_decision_event(line)
+                    except Exception:
+                        error_count += 1
+                        continue
+                    decoded_count += 1
+                    # indent=None -- a single compact line, matching the
+                    # newline-delimited-JSON shape the object-storage body
+                    # itself already uses (never a pretty-printed, multi-line
+                    # blob that would break the "one line per event" contract
+                    # of --out).
+                    out_file.write(MessageToJson(event, indent=None) + "\n")
+                    if suite_path is not None:
+                        case, run = gateway_decision_event_to_eval_case_and_run(event)
+                        new_cases.append(case)
+                        new_runs.append(run)
+    finally:
+        # try/finally mirrors run_cmd's/rollout_cmd's/audit_corpus_cmd's
+        # own identical fix (a round-3 backlog-audit finding, extended
+        # here by a later full-codebase audit) -- a fetch/iteration
+        # error partway through --source (e.g. a transient S3/GCS
+        # error on a later key) previously propagated straight out of
+        # this loop, skipping _append_cases_to_suite/append_runs
+        # entirely and discarding every already-decoded EvalCase/Run
+        # accumulated from EARLIER keys in new_cases/new_runs -- even
+        # though --out already retains those same events (out_file's
+        # own writes are flushed per-line as the loop runs).
+        if suite_path is not None:
+            _append_cases_to_suite(new_cases, suite_path)
+            append_runs(new_runs, results_path)
 
-    if suite_path is not None:
-        _append_cases_to_suite(new_cases, suite_path)
-        append_runs(new_runs, results_path)
 
     click.echo(
         f"ingested {len(keys)} object(s) from {source}: "

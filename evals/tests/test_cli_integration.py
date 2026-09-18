@@ -104,6 +104,71 @@ def test_run_missing_suite_file_fails_with_nonzero_exit(tmp_path):
     assert "does-not-exist.json" in result.output
 
 
+def test_run_one_bad_case_still_persists_the_other_cases_scores(tmp_path):
+    """Regression proof for a full-codebase-audit finding: run_cmd
+    previously had no try/finally around its scoring loop, so one bad
+    case (here, a task_spec missing "output") raised straight out of the
+    command and discarded every OTHER already-scored case's Score in
+    the same invocation, even though scores.jsonl was never written to
+    incrementally. rollout_cmd/audit_corpus_cmd were already fixed for
+    this exact class; run_cmd was not, until this fix.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "case-1-good",
+                    "revision": 1,
+                    "task_spec": {"output": "Paris"},
+                    "reference": "Paris",
+                    "tier": "golden",
+                },
+                {
+                    "id": "case-2-malformed",
+                    "revision": 1,
+                    "task_spec": {},
+                    "reference": None,
+                    "tier": "golden",
+                },
+                {
+                    "id": "case-3-good",
+                    "revision": 1,
+                    "task_spec": {"output": "London"},
+                    "reference": "Paris",
+                    "tier": "golden",
+                },
+            ]
+        )
+    )
+    scores_path = tmp_path / "scores.jsonl"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--scores",
+            str(scores_path),
+        ],
+    )
+
+    # The bad case's ValueError still propagates as a real, non-zero-exit
+    # failure -- this fix is about not losing OTHER cases' results, never
+    # about silently swallowing the bad case itself.
+    assert result.exit_code != 0
+    assert "case-1-good: PASS" in result.output
+
+    # The load-bearing assertion: case-1's Score, computed and printed
+    # BEFORE case-2 raised, must still be persisted to --scores.
+    persisted = load_scores(scores_path)
+    assert len(persisted) == 1
+    assert persisted[0].eval_case_id == "case-1-good"
+    assert persisted[0].value is True
+
+
 def test_report_prints_pass_rate_with_ci_never_a_bare_percentage():
     runner = CliRunner()
     result = runner.invoke(main, ["report", "--successes", "8", "--total", "10"])
@@ -1400,7 +1465,13 @@ def test_run_llm_judge_requires_a_reference_and_fails_loudly(tmp_path, monkeypat
     assert result.exit_code == 1
     assert "requires a reference" in result.output
     assert "pass_rate=" not in result.output
-    assert not scores_path.exists()
+    # Corrected by the run_cmd try/finally fix (a full-codebase-audit
+    # finding): append_scores now runs unconditionally in `finally`,
+    # mirroring rollout_cmd's own identical, already-established
+    # pattern -- scores_path may now exist (created in append mode),
+    # but the real invariant this test cares about is that ZERO scores
+    # were ever recorded to it, not mere file non-existence.
+    assert load_scores(scores_path) == []
 
 
 def test_run_llm_judge_call_error_marks_judge_error_and_does_not_abort_suite(

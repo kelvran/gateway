@@ -237,3 +237,62 @@ def test_ingested_run_at_regression_tier_still_enforces_failing_score_preconditi
     assert result.exit_code != 0
     assert "nothing to regression-test" in result.output
     assert not (tmp_path / "promoted.json").exists()
+
+
+def test_ingest_persists_earlier_keys_promotable_cases_when_a_later_key_fails(
+    tmp_path, monkeypatch
+):
+    """Regression proof for a full-codebase-audit finding: ingest_cmd
+    previously had no try/finally around its key/line loop, so a fetch
+    error on a LATER key (a real, transient S3/GCS possibility) discarded
+    every already-decoded EvalCase/Run accumulated from EARLIER keys --
+    even though --out already retained those same events. rollout_cmd/
+    audit_corpus_cmd were already fixed for this exact class; ingest_cmd
+    was not, until this fix.
+    """
+    good_lines = _fixture_lines()
+
+    def _fake_iter_object_lines(scheme: str, bucket: str, key: str):
+        if key == "obj-1-good.jsonl":
+            return iter(good_lines)
+        raise RuntimeError("transient object-store fetch error")
+
+    monkeypatch.setattr(
+        cli_module,
+        "list_object_keys",
+        lambda scheme, bucket, prefix: ["obj-1-good.jsonl", "obj-2-fails.jsonl"],
+    )
+    monkeypatch.setattr(cli_module, "iter_object_lines", _fake_iter_object_lines)
+
+    out_path = tmp_path / "ingested.jsonl"
+    suite_path = tmp_path / "suite.json"
+    results_path = tmp_path / "runs.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "ingest",
+            "--source",
+            "s3://my-bucket/gatewayevents/v1/",
+            "--out",
+            str(out_path),
+            "--suite",
+            str(suite_path),
+            "--results",
+            str(results_path),
+        ],
+    )
+
+    # The fetch error on the second key still propagates as a real,
+    # non-zero-exit failure -- this fix is about not losing the FIRST
+    # key's already-decoded results, never about swallowing the error.
+    assert result.exit_code != 0
+
+    # The load-bearing assertion: obj-1's 2 decoded events, mapped to
+    # EvalCase/Run BEFORE obj-2 raised, must still be persisted.
+    cases = json.loads(suite_path.read_text())
+    assert len(cases) == 2
+    assert {c["id"] for c in cases} == {_OK_RUN_ID, _AUTH_FAILED_RUN_ID}
+
+    runs = [json.loads(line) for line in results_path.read_text().splitlines() if line]
+    assert len(runs) == 2
