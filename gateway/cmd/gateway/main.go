@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
+	berrors "go.etcd.io/bbolt/errors"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -944,17 +945,31 @@ func validateFallbackChainTargets(deployments []dataplane.Deployment) error {
 // the rename error -- retrying open against a path that still has the
 // corrupt file at it would just reproduce the same failure, so there is
 // nothing a second attempt could recover.
+//
+// Corrected 2026-09-18, a real bug an audit found: this previously
+// treated ANY open error as reset-worthy, with zero classification --
+// a permissions misconfiguration or a disk-full error during an
+// earlier write would have been silently renamed aside and recreated
+// EMPTY in "reset" mode, a real data-loss path unrelated to actual
+// corruption. isCorruptStoreErr below only matches bbolt's own three
+// documented corruption sentinels (ErrInvalid/ErrVersionMismatch/
+// ErrChecksum, confirmed returned unwrapped through bolt.Open and
+// preserved across every boltstore package's own fmt.Errorf("...: %w",
+// err) wrapping) -- any other error (permissions, disk-full, a locked
+// file -- though bbolt's own DefaultOptions.Timeout of 0 means a locked
+// file blocks forever rather than ever returning an error here) is
+// treated exactly like mode == "fail", never reset.
 func openPersistStoreWithRecovery[T any](path string, mode string, logger *slog.Logger, open func(string) (T, error)) (T, error) {
 	store, err := open(path)
 	if err == nil {
 		return store, nil
 	}
-	if mode != "reset" {
+	if mode != "reset" || !isCorruptStoreErr(err) {
 		return store, err
 	}
 
 	logger.Error("persist_store_open_failed", "path", path, "error", err, "on_corrupt_store", mode)
-	backupPath := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+	backupPath := fmt.Sprintf("%s.corrupt-%d-%d", path, time.Now().Unix(), time.Now().Nanosecond())
 	if renameErr := os.Rename(path, backupPath); renameErr != nil {
 		logger.Error("persist_store_corrupt_backup_failed", "path", path, "backup_path", backupPath, "error", renameErr)
 		return store, err
@@ -966,6 +981,15 @@ func openPersistStoreWithRecovery[T any](path string, mode string, logger *slog.
 		return store, fmt.Errorf("re-opening %q after reset: %w", path, err)
 	}
 	return store, nil
+}
+
+// isCorruptStoreErr reports whether err is one of bbolt's own three
+// documented on-disk-corruption sentinels, as opposed to any other
+// open failure (permissions, disk-full, I/O error) that "reset" mode
+// must never treat as corruption -- see openPersistStoreWithRecovery's
+// own doc comment for why this classification exists.
+func isCorruptStoreErr(err error) bool {
+	return errors.Is(err, berrors.ErrInvalid) || errors.Is(err, berrors.ErrVersionMismatch) || errors.Is(err, berrors.ErrChecksum)
 }
 
 func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []ratelimit.KeyConfig, concurrencyConfigs []ratelimit.ConcurrencyConfig, store identity.Store, logger *slog.Logger) ([]identity.VirtualKey, []ratelimit.KeyConfig, []ratelimit.ConcurrencyConfig, error) {

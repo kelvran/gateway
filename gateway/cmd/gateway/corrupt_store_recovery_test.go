@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	berrors "go.etcd.io/bbolt/errors"
 
 	budgetboltstore "github.com/kelvran/gateway/gateway/internal/budget/boltstore"
 )
@@ -58,7 +61,11 @@ func TestOpenPersistStoreWithRecoveryResetModeRenamesAndRetries(t *testing.T) {
 	fakeOpen := func(p string) (string, error) {
 		calls++
 		if calls == 1 {
-			return "", errors.New("simulated corruption")
+			// A real corruption sentinel, wrapped exactly like every
+			// boltstore package's own Open wraps bolt.Open's error --
+			// isCorruptStoreErr must see through this wrapping via
+			// errors.Is, not just recognize a bare sentinel.
+			return "", fmt.Errorf("boltstore: opening %s: %w", p, berrors.ErrChecksum)
 		}
 		// Second call (post-reset): the path must be clear of the
 		// original corrupt bytes for this to be a REAL proof, not just
@@ -125,7 +132,7 @@ func TestOpenPersistStoreWithRecoveryResetModeFallsBackToOriginalErrorOnRenameFa
 	// behaves differently across platforms/CI runners).
 	path := filepath.Join(t.TempDir(), "does-not-exist-dir", "store.db")
 
-	wantErr := errors.New("simulated corruption")
+	wantErr := fmt.Errorf("boltstore: opening %s: %w", path, berrors.ErrInvalid)
 	calls := 0
 	fakeOpen := func(p string) (string, error) {
 		calls++
@@ -178,6 +185,47 @@ func TestOpenPersistStoreWithRecoverySucceedsOnFirstAttemptNeverTouchesDisk(t *t
 				t.Errorf("expected zero log output on a clean open, got: %s", buf.String())
 			}
 		})
+	}
+}
+
+// TestOpenPersistStoreWithRecoveryResetModeNeverResetsOnNonCorruptionError
+// is the regression proof for a real bug an audit found: this function
+// used to treat ANY open error as reset-worthy, with zero
+// classification -- a permissions misconfiguration or a disk-full
+// error would have been silently renamed aside and recreated EMPTY in
+// "reset" mode, a real data-loss path unrelated to actual corruption.
+// A plain, unwrapped error (never one of bbolt's own three corruption
+// sentinels) must be treated exactly like mode == "fail": returned
+// unchanged, the original file never touched, no retry attempted --
+// even though mode == "reset" is in effect.
+func TestOpenPersistStoreWithRecoveryResetModeNeverResetsOnNonCorruptionError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.db")
+	if err := os.WriteFile(path, []byte("a permissions error has nothing to do with this file's own bytes"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	wantErr := fmt.Errorf("boltstore: opening %s: %w", path, os.ErrPermission)
+	calls := 0
+	fakeOpen := func(p string) (string, error) {
+		calls++
+		return "", wantErr
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	_, err := openPersistStoreWithRecovery(path, "reset", logger, fakeOpen)
+	if !errors.Is(err, wantErr) {
+		t.Errorf("error = %v, want the original non-corruption error surfaced unchanged", err)
+	}
+	if calls != 1 {
+		t.Errorf("open called %d times, want exactly 1 -- a non-corruption error must never trigger a reset retry", calls)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("original file at %q was touched/removed, but this was never genuine corruption: %v", path, statErr)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected zero log output for a non-corruption error even in reset mode, got: %s", buf.String())
 	}
 }
 
