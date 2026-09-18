@@ -1084,6 +1084,26 @@ type EraseCacheEntryResult struct {
 // entry's own TTL is the only path to eventual removal, and an operator
 // relying on this endpoint for a real data-subject request should know
 // that.
+//
+// A second, real, disclosed limitation an audit found: the Get-then-
+// Delete sequence below against each layer is NOT atomic — cache.Cache
+// has no combined get-and-delete operation, so inprocess.Cache's Get
+// and Delete each acquire its own mutex independently. A concurrent
+// identical in-flight request's own writeCache call landing between
+// this method's Get and Delete (or immediately after Delete returns)
+// can leave a fresh entry under the same key, with no signal to this
+// method's own caller that it happened. This is a narrower gap than
+// the L3 one above — it repopulates with a NEW response for a NEW
+// concurrent request, never a resurrection of the specific bytes this
+// call erased, and needs a same-key concurrent request landing in a
+// genuinely narrow window — but it is real and was previously
+// undisclosed. Closing it properly needs an atomic GetAndDelete added
+// to the cache.Cache interface and implemented across every
+// implementation (inprocess AND the grpcclient/grpcserver pair, the
+// latter meaning a new RPC, not just a new local method) — a
+// disproportionately larger change than this narrow race's own actual
+// severity justifies for this pass; named here as real future work,
+// not silently treated as solved.
 func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, req adapter.ChatRequest) (EraseCacheEntryResult, error) {
 	req, promptFP, err := p.resolvePromptIfSet(req)
 	if err != nil {
