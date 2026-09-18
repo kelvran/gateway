@@ -65,6 +65,34 @@ func NewTokenBucketWithClock(burstCapacity, refillPerSecond float64, now func() 
 	}
 }
 
+// Reset reconfigures an EXISTING bucket to burstCapacity/refillPerSecond
+// at full capacity — the exact same "admin update resets the key to
+// full burst" effect KeyLimiter.Register has always documented as
+// deliberate — but WITHOUT discarding this *TokenBucket's own object
+// identity the way constructing a brand-new one via NewTokenBucket
+// would. Added to close a real bug an audit found: KeyLimiter.Register
+// previously replaced tpmBuckets[id] (and perModelTPMBuckets[id][model])
+// outright, so a reservation whose ReserveTPM call had already resolved
+// (and holds, only implicitly via keyID/model, never a pinned pointer)
+// the OLD bucket would have its later ReconcileTPM call re-resolve keyID/
+// model via a fresh map lookup and land on the NEW object instead —
+// crediting/debiting a bucket that was never actually the one debited,
+// while the real, correctly-debited old object was silently discarded,
+// never reconciled. Reset lets Register update capacity/refill/tokens
+// IN PLACE on the SAME object every outstanding reservation already
+// resolved to, closing that window, while still producing the
+// documented full-capacity-reset effect.
+func (b *TokenBucket) Reset(burstCapacity, refillPerSecond float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.capacity = burstCapacity
+	b.refillPerSecond = refillPerSecond
+	b.tokens = burstCapacity
+	b.lastRefill = b.now()
+	b.billedTokens = 0
+	b.billedCount = 0
+}
+
 // Allow attempts to consume one token. It returns true (and consumes a
 // token) if one was available, false otherwise.
 func (b *TokenBucket) Allow() bool {

@@ -590,6 +590,74 @@ func TestRegisterDisablingPerModelTPMRemovesTheStaleBucket(t *testing.T) {
 	}
 }
 
+// TestRegisterReusesTheExistingTPMBucketObjectRatherThanReplacingIt is
+// the regression proof for a real bug an audit found: Register
+// previously replaced tpmBuckets[id] (and perModelTPMBuckets[id][model])
+// with a brand-new *TokenBucket outright on every call. ReserveTPM/
+// ReconcileTPM/IncreaseReservationTPM all re-resolve "the current
+// bucket for keyID/model" via a fresh map lookup on every call (see
+// resolveTPMBucket), rather than holding the specific object instance
+// an outstanding reservation was actually taken from — TPM reservations
+// stay open for a request's/stream's ENTIRE duration (opened once in
+// checkRateLimit, reconciled only in finalize), a window a live admin
+// Register call (UpsertVirtualKey, on ANY field change — it always
+// rebuilds and passes the full KeyConfig) can easily land inside.
+// Replacing the object meant a ReconcileTPM call landing after that
+// swap would misapply its credit/debit to the NEW object while the
+// real, correctly-debited OLD object was silently discarded,
+// unreconciled forever — a permanent capacity leak on the old object.
+// Proven directly at the object-identity level (this package's own
+// tests are white-box, so this is a real, not simulated, pointer
+// comparison) — the level that actually matters for this specific bug,
+// distinct from the separate, already-covered question of whether
+// Register still produces its own documented "resets to full capacity"
+// effect (verified below too, via TokenBucket.Reset).
+func TestRegisterReusesTheExistingTPMBucketObjectRatherThanReplacingIt(t *testing.T) {
+	l := NewInMemoryKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 100, TPMRefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}},
+	}})
+
+	beforeDefault := l.tpmBuckets["team-alpha"]
+	beforePerModel := l.perModelTPMBuckets["team-alpha"]["gpt-4o"]
+	if beforeDefault == nil || beforePerModel == nil {
+		t.Fatal("setup: expected both a key-level and a per-model TPM bucket to already exist")
+	}
+
+	// Exhaust part of the default bucket first, mirroring an in-flight
+	// reservation an admin update might race — Reset (called via
+	// Register below) must still bring it back to full capacity.
+	if _, reserved, _ := l.ReserveTPM("team-alpha", ""); !reserved {
+		t.Fatal("setup: ReserveTPM did not reserve anything")
+	}
+
+	l.Register(KeyConfig{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 100, TPMRefillPerSecond: 0,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}},
+	})
+
+	afterDefault := l.tpmBuckets["team-alpha"]
+	afterPerModel := l.perModelTPMBuckets["team-alpha"]["gpt-4o"]
+
+	if afterDefault != beforeDefault {
+		t.Error("Register replaced the key-level TPM bucket with a new object instead of resetting the existing one in place — any reservation an in-flight request already took from the old object is now permanently unreconciled")
+	}
+	if afterPerModel != beforePerModel {
+		t.Error("Register replaced the per-model TPM bucket with a new object instead of resetting the existing one in place — same reservation-leak risk as the key-level case above")
+	}
+
+	// Register's own documented "resets to full capacity" effect must
+	// still hold, even though the object identity is now preserved —
+	// proven by a fresh ReserveTPM reserving the FULL configured
+	// capacity again, not the partially-exhausted balance from before
+	// Register ran.
+	if _, _, reservedTokens := l.ReserveTPM("team-alpha", ""); reservedTokens != 100 {
+		t.Errorf("ReserveTPM after Register reserved %v tokens, want 100 (full capacity) — Register must still reset the reused object to full capacity", reservedTokens)
+	}
+}
+
 // TestResolveKeyRateLimitAppliesDefaultOnlyWhenBothAreUnset is the unit-
 // level proof for a round-3 backlog-audit finding: this exact function
 // is the ONE shared source of truth cmd/gateway's static-config path and

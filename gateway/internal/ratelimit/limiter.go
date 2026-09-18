@@ -230,6 +230,34 @@ func buildPerModelTPMBuckets(perModel map[string]ModelRateLimit) map[string]*Tok
 	return models
 }
 
+// updatePerModelTPMBuckets is buildPerModelTPMBuckets' Register-only
+// sibling: for each model in perModel with a positive TPMCapacity, it
+// reuses (via TokenBucket.Reset) the existing bucket at
+// existing[model] when one is already present, rather than always
+// constructing a brand-new object the way buildPerModelTPMBuckets
+// (used only for a KeyLimiter's initial construction, where no
+// existing bucket could ever be in use by an outstanding reservation)
+// does — see Register's own call site and TokenBucket.Reset's doc
+// comment for the full reservation-race rationale this closes.
+func updatePerModelTPMBuckets(existing map[string]*TokenBucket, perModel map[string]ModelRateLimit) map[string]*TokenBucket {
+	if len(perModel) == 0 {
+		return nil
+	}
+	models := make(map[string]*TokenBucket, len(perModel))
+	for model, mrl := range perModel {
+		if mrl.TPMCapacity <= 0 {
+			continue
+		}
+		if bucket := existing[model]; bucket != nil {
+			bucket.Reset(mrl.TPMCapacity, mrl.TPMRefillPerSecond)
+			models[model] = bucket
+		} else {
+			models[model] = NewTokenBucket(mrl.TPMCapacity, mrl.TPMRefillPerSecond)
+		}
+	}
+	return models
+}
+
 // NewRedisKeyLimiter builds a KeyLimiter that delegates every Allow call
 // to backend, passing each key's own Capacity/RefillPerSecond through on
 // every call (backend holds no per-key state itself — Redis does).
@@ -485,8 +513,34 @@ func (l *KeyLimiter) Register(cfg KeyConfig) {
 	}
 	l.configs[cfg.ID] = cfg
 	l.buckets[cfg.ID] = NewTokenBucket(cfg.Capacity, cfg.RefillPerSecond)
+	// TPM specifically (never RPM above) uses Reset on the EXISTING
+	// bucket object, when one already exists, rather than replacing it
+	// outright — a real bug an audit found: ReserveTPM/ReconcileTPM/
+	// IncreaseReservationTPM all re-resolve "the current bucket for
+	// keyID/model" via a fresh map lookup on every call (see
+	// resolveTPMBucket), rather than holding the specific *TokenBucket
+	// instance an in-flight reservation was actually taken from — TPM
+	// reservations stay open for a request's/stream's ENTIRE duration
+	// (opened once in checkRateLimit, reconciled only in finalize), a
+	// window a live admin Register call can easily land inside. If
+	// Register replaced the map entry with a brand-new object, a
+	// ReconcileTPM call landing after that swap would misapply its
+	// credit/debit to the NEW (wrong) object while the real, correctly-
+	// debited old object was silently discarded, unreconciled forever.
+	// Reset produces the exact same "resets the key to full burst
+	// capacity" effect the RPM bucket's own replacement already
+	// documents as deliberate, just without discarding the object
+	// identity any outstanding reservation already resolved to. RPM
+	// itself has no equivalent hazard — Allow/AllowForModel are
+	// synchronous, single-call checks with no reserve-now/reconcile-
+	// later window, so replacing its bucket outright on every Register
+	// call remains correct and unchanged here.
 	if cfg.TPMCapacity > 0 {
-		l.tpmBuckets[cfg.ID] = NewTokenBucket(cfg.TPMCapacity, cfg.TPMRefillPerSecond)
+		if existing := l.tpmBuckets[cfg.ID]; existing != nil {
+			existing.Reset(cfg.TPMCapacity, cfg.TPMRefillPerSecond)
+		} else {
+			l.tpmBuckets[cfg.ID] = NewTokenBucket(cfg.TPMCapacity, cfg.TPMRefillPerSecond)
+		}
 	} else {
 		// An update disabling TPM (or one that never had it) must not
 		// leave a stale bucket behind — a previously-registered TPM
@@ -505,8 +559,10 @@ func (l *KeyLimiter) Register(cfg KeyConfig) {
 	} else {
 		delete(l.perModelBuckets, cfg.ID)
 	}
-	// Same rule, same reason, for the per-model TPM dimension.
-	if models := buildPerModelTPMBuckets(cfg.PerModel); len(models) > 0 {
+	// Same rule, same reason, for the per-model TPM dimension — and the
+	// same Reset-in-place fix as the key-level TPM bucket above, per
+	// model, for the identical reservation-race reason.
+	if models := updatePerModelTPMBuckets(l.perModelTPMBuckets[cfg.ID], cfg.PerModel); len(models) > 0 {
 		l.perModelTPMBuckets[cfg.ID] = models
 	} else {
 		delete(l.perModelTPMBuckets, cfg.ID)
