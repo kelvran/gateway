@@ -1633,7 +1633,6 @@ def ingest_cmd(
             _append_cases_to_suite(new_cases, suite_path)
             append_runs(new_runs, results_path)
 
-
     click.echo(
         f"ingested {len(keys)} object(s) from {source}: "
         f"{decoded_count} decoded, {error_count} failed to decode"
