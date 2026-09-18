@@ -285,6 +285,43 @@ func main() {
 	}
 }
 
+// shutdownServersConcurrently calls Shutdown on every non-nil server in
+// servers, CONCURRENTLY, all against the same ctx -- so a slow drain on
+// one server never starves another's share of that same deadline.
+//
+// Corrected, a real bug an audit found: shutdownBoth previously called
+// server.Shutdown(shutdownCtx) and adminServer.Shutdown(shutdownCtx)
+// SEQUENTIALLY. If the main (client-facing) server's own Shutdown
+// consumed the whole gracefulShutdownTimeout waiting on a slow drain
+// (e.g. an SSE stream near its own deadline), the admin server's
+// Shutdown was then entered with an already-expired context and
+// returned context.DeadlineExceeded almost immediately -- giving an
+// in-flight admin mutation (POST /admin/backup, POST
+// /admin/virtual_keys/{name}) effectively zero grace before the
+// following os.Exit killed it mid-flight, with no warning specific to
+// that request, since drainInFlight only tracks the client-facing
+// mux's own inFlight WaitGroup, never the admin one (trackInFlight's
+// own doc comment: "used only on the client-facing mux, never the
+// admin mux"). Extracted into its own function, rather than left as an
+// inline closure, specifically so this concurrency property is
+// directly unit-testable against real *http.Server instances.
+func shutdownServersConcurrently(ctx context.Context, servers ...*http.Server) error {
+	errs := make([]error, len(servers))
+	var wg sync.WaitGroup
+	for i, srv := range servers {
+		if srv == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, srv *http.Server) {
+			defer wg.Done()
+			errs[i] = srv.Shutdown(ctx)
+		}(i, srv)
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
 func run(configPath string, logger *slog.Logger) error {
 	cfg, err := controlplane.Load(configPath)
 	if err != nil {
@@ -462,17 +499,14 @@ func run(configPath string, logger *slog.Logger) error {
 	}
 
 	// shutdownBoth drains the main server, and the admin server too if
-	// one was started, within one shared deadline. Safe to call on
-	// adminServer even if its own ListenAndServe already returned
-	// (Shutdown on an unserved/already-stopped *http.Server is a no-op).
+	// one was started, within one shared deadline via
+	// shutdownServersConcurrently below. Safe to call on adminServer
+	// even if its own ListenAndServe already returned (Shutdown on an
+	// unserved/already-stopped *http.Server is a no-op).
 	shutdownBoth := func() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
 		defer cancel()
-		mainErr := server.Shutdown(shutdownCtx)
-		if adminServer == nil {
-			return mainErr
-		}
-		return errors.Join(mainErr, adminServer.Shutdown(shutdownCtx))
+		return shutdownServersConcurrently(shutdownCtx, server, adminServer)
 	}
 
 	select {

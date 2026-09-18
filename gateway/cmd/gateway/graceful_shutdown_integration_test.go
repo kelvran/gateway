@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -398,4 +399,92 @@ telemetry:
 		t.Fatalf("writing test config: %v", err)
 	}
 	return path
+}
+
+// TestShutdownServersConcurrentlyClosesBothListenersImmediately is the
+// direct regression proof for a real bug an audit found: shutdownBoth
+// previously called server.Shutdown(shutdownCtx) and
+// adminServer.Shutdown(shutdownCtx) SEQUENTIALLY. http.Server.Shutdown's
+// own first action, before it ever polls for idle connections, is
+// closing its own listener(s) — so with sequential calls, the SECOND
+// server's listener stayed open and kept ACCEPTING BRAND-NEW connections
+// for the entire time the FIRST server's Shutdown call was still
+// draining (up to the full gracefulShutdownTimeout), even though the
+// process was already mid-shutdown. Proves the fix directly against
+// shutdownServersConcurrently, using two real *http.Server instances:
+// server A's one in-flight request blocks (deliberately) for the whole
+// test, so its own Shutdown call never returns on its own — the exact
+// "slow client-facing drain" shape the audit's own scenario named.
+// Server B (standing in for the admin server) has no in-flight request
+// at all; this test only checks whether B's LISTENER itself closes
+// promptly, independent of any request activity.
+func TestShutdownServersConcurrentlyClosesBothListenersImmediately(t *testing.T) {
+	aReleased := make(chan struct{})
+	lnA, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen (A): %v", err)
+	}
+	srvA := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			<-aReleased
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() { _ = srvA.Serve(lnA) }()
+
+	lnB, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen (B): %v", err)
+	}
+	srvB := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() { _ = srvB.Serve(lnB) }()
+
+	// A's one in-flight request, held open by aReleased above, for the
+	// whole duration of this test.
+	aReqDone := make(chan struct{})
+	go func() {
+		defer close(aReqDone)
+		resp, reqErr := http.Get("http://" + lnA.Addr().String() + "/")
+		if reqErr == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	time.Sleep(20 * time.Millisecond) // let A's request genuinely reach its handler first.
+
+	const shutdownTimeout = 2 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- shutdownServersConcurrently(ctx, srvA, srvB)
+	}()
+
+	// The load-bearing assertion: B's listener must reject a brand-new
+	// connection attempt SHORTLY after shutdown starts, even though A's
+	// own Shutdown call is still blocked and won't return for the
+	// remainder of shutdownTimeout. With the pre-fix sequential code,
+	// adminServer.Shutdown (B here) was never even CALLED yet at this
+	// point — its own listener, and every route behind it, would still
+	// be accepting new connections.
+	time.Sleep(100 * time.Millisecond)
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	_, connErr := client.Get("http://" + lnB.Addr().String() + "/")
+	if connErr == nil {
+		t.Error("a brand-new connection to B succeeded 100ms after shutdown started, want it rejected — B's listener should already be closed, concurrently with A's still-draining Shutdown call")
+	}
+
+	close(aReleased)
+	<-aReqDone
+	select {
+	case <-shutdownDone:
+	case <-time.After(shutdownTimeout + time.Second):
+		t.Fatal("shutdownServersConcurrently never returned")
+	}
 }
