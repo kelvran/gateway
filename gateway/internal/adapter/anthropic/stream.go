@@ -2,11 +2,35 @@ package anthropic
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/streaming"
 )
+
+// ErrAnthropicDuplicateStreamEvent is returned by Decode when
+// message_start or message_delta arrives a SECOND time within the same
+// decoder's lifetime — mirroring bedrock.ErrBedrockDuplicateStreamEvent
+// for the identical hazard class, per a full-codebase audit finding:
+// this decoder's own doc comments already assert both events fire
+// exactly once ("Anthropic only sends them once, at the very start of
+// the stream" for message_start; "message_delta is the ONLY event that
+// ever carries stop_reason") but, unlike Bedrock's decoder, nothing
+// enforced it. decodeMessageStart/decodeMessageDelta both unconditionally
+// overwrite d.id/d.model/d.inputTokens/... or recompute the final
+// adapter.Usage on every call — a malformed, corrupted, or replayed
+// upstream event carrying a second occurrence would silently corrupt or
+// overwrite the real, already-billed usage via streaming.go's plain
+// "if usage != nil { finalUsage = usage }" last-write-wins assignment,
+// the same real dollar consequence Bedrock's own sentinel error's doc
+// comment names. A duplicate message_stop is deliberately NOT guarded
+// here (unlike Bedrock's three-event guard) — it carries no billing-
+// relevant state at all (Decode's own dispatch returns bare
+// (nil, true, nil, nil) for it), and streaming.go's read loop already
+// stops on the FIRST done=true, so a second one is structurally
+// unreachable, not merely harmless.
+var ErrAnthropicDuplicateStreamEvent = errors.New("anthropic: duplicate stream event received")
 
 // NewStreamDecoder implements streaming.StreamingAdapter, returning a
 // fresh, request-scoped decoder with its own independent state.
@@ -87,6 +111,11 @@ type streamDecoder struct {
 	inputTokens         int
 	cacheReadTokens     int
 	cacheCreationTokens int
+	// messageStartSeen/messageDeltaSeen guard against a duplicate/
+	// replayed event corrupting the fields above or the final billed
+	// usage — see ErrAnthropicDuplicateStreamEvent's own doc comment.
+	messageStartSeen bool
+	messageDeltaSeen bool
 }
 
 // rawEnvelope is unmarshaled first, for every event, purely to read the
@@ -226,6 +255,11 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 }
 
 func (d *streamDecoder) decodeMessageStart(data string) ([]streaming.ChatCompletionChunk, bool, *adapter.Usage, error) {
+	if d.messageStartSeen {
+		return nil, false, nil, fmt.Errorf("%w: message_start", ErrAnthropicDuplicateStreamEvent)
+	}
+	d.messageStartSeen = true
+
 	var m rawMessageStart
 	if err := json.Unmarshal([]byte(data), &m); err != nil {
 		return nil, false, nil, fmt.Errorf("anthropic: decoding message_start: %w", err)
@@ -350,6 +384,11 @@ func (d *streamDecoder) decodeContentBlockStop(data string) ([]streaming.ChatCom
 }
 
 func (d *streamDecoder) decodeMessageDelta(data string) ([]streaming.ChatCompletionChunk, bool, *adapter.Usage, error) {
+	if d.messageDeltaSeen {
+		return nil, false, nil, fmt.Errorf("%w: message_delta", ErrAnthropicDuplicateStreamEvent)
+	}
+	d.messageDeltaSeen = true
+
 	var m rawMessageDelta
 	if err := json.Unmarshal([]byte(data), &m); err != nil {
 		return nil, false, nil, fmt.Errorf("anthropic: decoding message_delta: %w", err)

@@ -732,3 +732,76 @@ func TestStreamDecoder_OrdinaryStreamsNeverEmitReasoningBlocks(t *testing.T) {
 		})
 	}
 }
+
+// TestStreamDecoderDecodeRejectsDuplicateMessageStartEvent is the
+// regression proof for a real gap a full-codebase audit found: Bedrock's
+// sibling decoder hard-fails on a duplicate/replayed messageStart for
+// exactly this billing-integrity reason (see
+// ErrAnthropicDuplicateStreamEvent's own doc comment), but Anthropic's
+// decoder had no equivalent guard at all — a second message_start would
+// have silently overwritten d.id/d.model/d.inputTokens/... with
+// whatever the (malformed/replayed) second event carried.
+func TestStreamDecoderDecodeRejectsDuplicateMessageStartEvent(t *testing.T) {
+	decoder := New().NewStreamDecoder()
+	messageStart := streaming.SSEEvent{
+		Event: "message_start",
+		Data:  `{"type":"message_start","message":{"id":"msg_1","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`,
+	}
+
+	if _, _, _, err := decoder.Decode(messageStart); err != nil {
+		t.Fatalf("first message_start: unexpected error %v", err)
+	}
+	_, _, _, err := decoder.Decode(messageStart)
+	if err == nil {
+		t.Fatal("second message_start: got nil error, want ErrAnthropicDuplicateStreamEvent")
+	}
+	if !errors.Is(err, ErrAnthropicDuplicateStreamEvent) {
+		t.Errorf("second message_start: error = %v, want it to wrap ErrAnthropicDuplicateStreamEvent", err)
+	}
+}
+
+// TestStreamDecoderDecodeRejectsDuplicateMessageDeltaEvent mirrors the
+// message_start test above for message_delta — the event actually
+// carrying the real, billable usage (via streaming.go's
+// "if usage != nil { finalUsage = usage }" last-write-wins assignment),
+// making a silently-accepted duplicate here the one with real dollar
+// consequences, exactly like Bedrock's own metadata-event guard.
+func TestStreamDecoderDecodeRejectsDuplicateMessageDeltaEvent(t *testing.T) {
+	decoder := New().NewStreamDecoder()
+	messageDelta := streaming.SSEEvent{
+		Event: "message_delta",
+		Data:  `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+	}
+
+	if _, _, _, err := decoder.Decode(messageDelta); err != nil {
+		t.Fatalf("first message_delta: unexpected error %v", err)
+	}
+	_, _, _, err := decoder.Decode(messageDelta)
+	if err == nil {
+		t.Fatal("second message_delta: got nil error, want ErrAnthropicDuplicateStreamEvent")
+	}
+	if !errors.Is(err, ErrAnthropicDuplicateStreamEvent) {
+		t.Errorf("second message_delta: error = %v, want it to wrap ErrAnthropicDuplicateStreamEvent", err)
+	}
+}
+
+// TestStreamDecoderDecodeDoesNotRejectARealSingleOccurrenceStream is the
+// no-regression proof: every existing fixture (a real, single-occurrence
+// stream) must still decode with zero errors — the new duplicate guards
+// must never fire on legitimate traffic. decodeFixture itself already
+// t.Fatalf's on any Decode error, so simply running every fixture
+// through it unchanged IS the assertion.
+func TestStreamDecoderDecodeDoesNotRejectARealSingleOccurrenceStream(t *testing.T) {
+	fixtures := []string{
+		"testdata/stream_text_only.txt",
+		"testdata/stream_single_tool_call.txt",
+		"testdata/stream_two_tool_calls_interleaved.txt",
+		"testdata/stream_usage_and_stop.txt",
+		"testdata/stream_usage_with_cache_tokens.txt",
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture, func(t *testing.T) {
+			decodeFixture(t, fixture)
+		})
+	}
+}
