@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/router"
 )
 
@@ -247,7 +248,7 @@ func TestAttemptFallbackChainStopsAtFirstSuccess(t *testing.T) {
 		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
 	}
 
-	dep, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, alwaysAllowCapability, alwaysAllowRegion)
+	dep, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, alwaysAllowRegion)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -275,7 +276,7 @@ func TestAttemptFallbackChainExhaustsInOrderBeforeGivingUp(t *testing.T) {
 		return adapter.ChatResponse{}, errors.New(d.Name + " failed too")
 	}
 
-	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, alwaysAllowCapability, alwaysAllowRegion)
+	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, alwaysAllowRegion)
 	if err == nil {
 		t.Fatal("err = nil, want the last hop's error")
 	}
@@ -305,7 +306,7 @@ func TestAttemptFallbackChainSkipsAlreadyTriedAndUnknownNames(t *testing.T) {
 	// "a" is already tried (the original, failed deployment); "unknown"
 	// is not a real deployment at all (defends against a config typo
 	// that startup validation should have already caught).
-	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"a", "unknown", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, alwaysAllowCapability, alwaysAllowRegion)
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"a", "unknown", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, alwaysAllowRegion)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -332,7 +333,7 @@ func TestAttemptFallbackChainRespectsStop(t *testing.T) {
 		return adapter.ChatResponse{}, nil
 	}
 
-	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{}, call, func() bool { return stopped }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, alwaysAllowCapability, alwaysAllowRegion)
+	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{}, call, func() bool { return stopped }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, alwaysAllowRegion)
 	if attempted {
 		t.Fatal("attempted = true, want false — stop() was already true before the first hop")
 	}
@@ -369,7 +370,7 @@ func TestAttemptFallbackChainSkipsRouterUnhealthyTargetsWithoutAttemptingThem(t 
 		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
 	}
 
-	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, alwaysAllowCapability, alwaysAllowRegion)
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, alwaysAllowRegion)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -413,7 +414,7 @@ func TestAttemptFallbackChainSkipsRateLimitedTargetsWithoutAttemptingThem(t *tes
 	}
 
 	start := time.Now()
-	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, rateLimitOK, alwaysAllowDeploymentCapacity, alwaysAllowCapability, alwaysAllowRegion)
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, rateLimitOK, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, alwaysAllowRegion)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
@@ -459,7 +460,7 @@ func TestAttemptFallbackChainStopsAfterMaxConsecutiveFailuresWithinOneRequest(t 
 		return adapter.ChatResponse{}, errors.New(d.Name + " failed")
 	}
 
-	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d", "e", "f"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, alwaysAllowCapability, alwaysAllowRegion)
+	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d", "e", "f"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, alwaysAllowRegion)
 	if err == nil {
 		t.Fatal("err = nil, want the last attempted hop's error")
 	}
@@ -500,7 +501,7 @@ func TestAttemptFallbackChainInsertsRealMeasurableDelayBetweenHops(t *testing.T)
 	wantFloor := floorHop2 + floorHop3
 
 	start := time.Now()
-	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, alwaysAllowCapability, alwaysAllowRegion)
+	_, _, _, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c", "d"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, alwaysAllowRegion)
 	elapsed := time.Since(start)
 
 	if !attempted {
@@ -551,7 +552,7 @@ func TestAttemptFallbackChainSkipsTargetLackingRequiredCapability(t *testing.T) 
 	}
 
 	start := time.Now()
-	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, capabilityOK, alwaysAllowRegion)
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, capabilityOK, alwaysAllowRegion)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
@@ -570,5 +571,90 @@ func TestAttemptFallbackChainSkipsTargetLackingRequiredCapability(t *testing.T) 
 	}
 	if elapsed >= fallbackChainInterHopBackoffBase {
 		t.Errorf("elapsed = %v, want well under %v — a capability-lacking skip must never charge the inter-hop backoff delay", elapsed, fallbackChainInterHopBackoffBase)
+	}
+}
+
+// TestAttemptFallbackChainReleasesCapacityWhenCapabilityRejectsAnAlreadyAcquiredCandidate
+// is the regression proof for a real, permanent concurrency-slot leak a
+// full-codebase audit found: a candidate that passed the REAL
+// deploymentCapacityOK check (genuinely acquiring a slot from a
+// MaxInFlight=1 limiter) was previously never released when capabilityOK
+// rejected it immediately after — call() (the only pre-existing release
+// point) is never reached on that path. Uses a real
+// ratelimit.ConcurrencyLimiter, not a stub, so the leak is provable via
+// the limiter's own InFlight count, not just code inspection.
+func TestAttemptFallbackChainReleasesCapacityWhenCapabilityRejectsAnAlreadyAcquiredCandidate(t *testing.T) {
+	cc := ratelimit.NewConcurrencyLimiter([]ratelimit.ConcurrencyConfig{{ID: "b", MaxInFlight: 1}})
+	p := &Pipeline{
+		deploymentConcurrency: cc,
+		deploymentsByName: map[string]Deployment{
+			"b": {Name: "b", Model: "m"},
+			"c": {Name: "c", Model: "m"},
+		},
+	}
+
+	rejectB := func(d Deployment) bool { return d.Name != "b" }
+	var calls []string
+	call := func(d Deployment) (adapter.ChatResponse, error) {
+		calls = append(calls, d.Name)
+		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
+	}
+
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit,
+		func(depName string) bool { return p.checkDeploymentCapacity(context.Background(), depName) },
+		p.releaseDeploymentConcurrency,
+		rejectB, alwaysAllowRegion)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !attempted || resp.Model != "served-by-c" {
+		t.Fatalf("attempted=%v resp.Model=%q, want attempted=true resp.Model=served-by-c", attempted, resp.Model)
+	}
+	if len(calls) != 1 || calls[0] != "c" {
+		t.Fatalf("calls = %v, want exactly [c]", calls)
+	}
+
+	// The load-bearing assertion: "b"'s slot, acquired by
+	// deploymentCapacityOK then abandoned by the capabilityOK rejection,
+	// must be back at 0 in-flight -- not leaked.
+	if got := cc.InFlight("b"); got != 0 {
+		t.Errorf("cc.InFlight(\"b\") = %d, want 0 -- the capacity slot acquired for the rejected candidate leaked", got)
+	}
+	// Independently confirm via the real gate itself: a fully-eligible
+	// follow-up call against "b" must still succeed, proving its
+	// MaxInFlight=1 cap isn't permanently exhausted.
+	if !p.checkDeploymentCapacity(context.Background(), "b") {
+		t.Error("checkDeploymentCapacity(b) after the chain = false, want true -- b's slot should be available again")
+	}
+}
+
+// TestAttemptFallbackChainReleasesCapacityWhenRegionRejectsAnAlreadyAcquiredCandidate
+// mirrors the test above for the regionOK rejection path -- the second
+// of the two continue-without-releasing sites the same audit found.
+func TestAttemptFallbackChainReleasesCapacityWhenRegionRejectsAnAlreadyAcquiredCandidate(t *testing.T) {
+	cc := ratelimit.NewConcurrencyLimiter([]ratelimit.ConcurrencyConfig{{ID: "b", MaxInFlight: 1}})
+	p := &Pipeline{
+		deploymentConcurrency: cc,
+		deploymentsByName: map[string]Deployment{
+			"b": {Name: "b", Model: "m"},
+			"c": {Name: "c", Model: "m"},
+		},
+	}
+
+	rejectB := func(d Deployment) bool { return d.Name != "b" }
+	call := func(d Deployment) (adapter.ChatResponse, error) {
+		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
+	}
+
+	_, _, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit,
+		func(depName string) bool { return p.checkDeploymentCapacity(context.Background(), depName) },
+		p.releaseDeploymentConcurrency,
+		alwaysAllowCapability, rejectB)
+	if err != nil || !attempted {
+		t.Fatalf("err=%v attempted=%v, want err=nil attempted=true", err, attempted)
+	}
+
+	if got := cc.InFlight("b"); got != 0 {
+		t.Errorf("cc.InFlight(\"b\") = %d, want 0 -- the capacity slot acquired for the region-rejected candidate leaked", got)
 	}
 }

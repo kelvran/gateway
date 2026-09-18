@@ -81,7 +81,7 @@ func TestAttemptFallbackChainSkipsOutOfRegionTarget(t *testing.T) {
 		return adapter.ChatResponse{Model: "served-by-" + d.Name}, nil
 	}
 
-	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, alwaysAllowCapability, regionOK)
+	_, resp, err, attempted := p.attemptFallbackChain(context.Background(), []string{"b", "c"}, map[string]bool{"a": true}, call, func() bool { return false }, alwaysAllowRateLimit, alwaysAllowDeploymentCapacity, p.releaseDeploymentConcurrency, alwaysAllowCapability, regionOK)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}

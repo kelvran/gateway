@@ -424,6 +424,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 			func() bool { return firstChunkSent },
 			func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, keyID, model) },
 			func(depName string) bool { return p.checkDeploymentCapacity(ctx, depName) },
+			p.releaseDeploymentConcurrency,
 			func(d Deployment) bool { return capabilityOKForRequest(d, req) },
 			func(d Deployment) bool { return isRegionAllowed(msr.vk, d.Region) },
 		)

@@ -345,12 +345,25 @@ const (
 //     out-of-scope change, not attempted here).
 //   - deploymentCapacityOK, checked immediately after rateLimitOK, in the
 //     same position — per docs/upgrade-research/gateway-per-deployment-
-//     concurrency-2026-09-09.md: a false return skips this target
+//     concurrency-2026-09-09.md. A false return skips this target
 //     exactly like an unhealthy or per-key-rate-limited one (no
-//     realAttempts/consecutiveFailures increment, no backoff charged). A
-//     true return has ALREADY acquired the target's own deployment-
-//     scoped concurrency slot — callers' own call closure MUST release
-//     it via a defer, since attemptFallbackChain itself has no way to
+//     realAttempts/consecutiveFailures increment, no backoff charged, and
+//     NOTHING acquired). A true return has ALREADY acquired the target's
+//     own deployment-scoped concurrency slot. **Corrected, a real bug an
+//     audit found**: this function previously assumed the ONLY way that
+//     slot could need releasing was via the caller's own call closure
+//     (a defer, run once call's real work against that deployment
+//     finishes) — but capabilityOK/regionOK/the inter-hop backoff sleep
+//     below can all still reject or abandon a candidate AFTER
+//     deploymentCapacityOK already acquired its slot, and call is never
+//     reached on any of those paths. Each such path now releases that
+//     slot itself, via the new releaseDeploymentCapacity parameter —
+//     ratelimit.ConcurrencyLimiter has no timeout/leak-detection of its
+//     own, so an unreleased slot on any of those paths would otherwise
+//     leak permanently (its own doc comment: "an Acquire without a
+//     matching Release permanently consumes one slot"). The call
+//     closure's own defer remains the release path for the one case
+//     where call IS reached — attemptFallbackChain itself has no way to
 //     know when call's real work against that deployment finishes.
 //   - capabilityOK, checked immediately after deploymentCapacityOK, in
 //     the same position and with the same skip-without-charging-backoff
@@ -375,7 +388,12 @@ const (
 //     canonical model. Callers pass a closure over the ORIGINAL request's
 //     own vk, mirroring capabilityOK's "travels with the client, not the
 //     failed hop" contract exactly.
-func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool, capabilityOK func(d Deployment) bool, regionOK func(d Deployment) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
+//
+// releaseDeploymentCapacity is the release counterpart to
+// deploymentCapacityOK, called on every path above that abandons an
+// already-capacity-acquired candidate without ever reaching call() —
+// see the deploymentCapacityOK bullet above for the full rationale.
+func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool, releaseDeploymentCapacity func(depName string), capabilityOK func(d Deployment) bool, regionOK func(d Deployment) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
 	consecutiveFailures := 0
 	realAttempts := 0
 	for _, name := range targets {
@@ -412,10 +430,12 @@ func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, t
 		}
 
 		if !capabilityOK(nextDep) {
+			releaseDeploymentCapacity(nextDep.Name)
 			continue
 		}
 
 		if !regionOK(nextDep) {
+			releaseDeploymentCapacity(nextDep.Name)
 			continue
 		}
 
@@ -423,6 +443,7 @@ func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, t
 		if realAttempts > 1 {
 			delay := ratelimit.EqualJitterBackoff(realAttempts-1, fallbackChainInterHopBackoffBase, fallbackChainInterHopBackoffCap, rand.Float64())
 			if !sleepOrCanceled(ctx, delay) {
+				releaseDeploymentCapacity(nextDep.Name)
 				break
 			}
 		}

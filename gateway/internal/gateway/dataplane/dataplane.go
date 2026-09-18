@@ -2302,6 +2302,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 					func() bool { return false },
 					func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, vk.ID, model) },
 					func(depName string) bool { return p.checkDeploymentCapacity(ctx, depName) },
+					p.releaseDeploymentConcurrency,
 					func(d Deployment) bool { return capabilityOKForRequest(d, req) },
 					func(d Deployment) bool { return isRegionAllowed(vk, d.Region) },
 				)
