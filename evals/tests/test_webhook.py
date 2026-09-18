@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from evals.webhook import send_webhook
+from evals.webhook import _sign_payload, send_webhook
 
 
 def _fake_secret(suffix: str) -> str:
@@ -30,9 +30,10 @@ class _RecordingServer:
     urlopen.
     """
 
-    def __init__(self, fail_first_n: int = 0) -> None:
+    def __init__(self, fail_first_n: int = 0, fail_status: int = 500) -> None:
         self.requests: list[dict[str, object]] = []
         self._fail_first_n = fail_first_n
+        self._fail_status = fail_status
         recorder = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -53,7 +54,7 @@ class _RecordingServer:
                     }
                 )
                 if len(recorder.requests) <= recorder._fail_first_n:
-                    self.send_response(500)
+                    self.send_response(recorder._fail_status)
                     self.end_headers()
                     return
                 self.send_response(200)
@@ -170,5 +171,62 @@ def test_send_webhook_raises_after_max_attempts():
                 max_attempts=2,
             )
         assert len(srv.requests) == 2
+    finally:
+        srv.close()
+
+
+def test_send_webhook_does_not_retry_on_permanent_client_error_status():
+    """Regression proof for a real gap an audit found: a 4xx response
+    (a client-error class that will fail identically on retry -- bad
+    signature, wrong URL, auth failure) previously burned the full
+    max_attempts identically to a 5xx, since urllib.error.HTTPError is
+    a subclass of urllib.error.URLError and was caught by the same
+    broad handler. Exactly ONE request must reach the server, never
+    retried, even though max_attempts=3 would otherwise allow more.
+    """
+    srv = _RecordingServer(fail_first_n=99, fail_status=401)
+    try:
+        with pytest.raises(Exception):  # noqa: B017,PT011 -- urllib.error.HTTPError, re-raised immediately on the 4xx
+            send_webhook(
+                srv.url,
+                "evals_trend_alert",
+                {"alerts": []},
+                max_attempts=3,
+            )
+        assert len(srv.requests) == 1, "a 4xx must never be retried"
+    finally:
+        srv.close()
+
+
+def test_sign_payload_raises_on_malformed_whsec_secret():
+    """The other real gap the same audit found: a malformed
+    whsec_-prefixed secret previously fell back to signing with the
+    raw, still-prefixed string as the key, with no error surfaced --
+    producing a signature that would fail receiver-side verification
+    with zero diagnostic. Must now raise loudly instead.
+    """
+    malformed_secret = "whsec_" + "not valid base64!!!"
+    with pytest.raises(ValueError, match="not valid base64"):
+        _sign_payload(malformed_secret, "evt_test", "1700000000", b"{}")
+
+
+def test_send_webhook_never_calls_the_server_when_the_secret_is_malformed():
+    """send_webhook must fail before ever reaching the network when
+    signing itself fails -- proves the ValueError from _sign_payload
+    propagates out of send_webhook rather than being swallowed, and
+    that zero requests are sent with a signature that could never
+    verify correctly anyway.
+    """
+    srv = _RecordingServer()
+    try:
+        malformed_secret = "whsec_" + "not valid base64!!!"
+        with pytest.raises(ValueError, match="not valid base64"):
+            send_webhook(
+                srv.url,
+                "evals_trend_alert",
+                {"alerts": []},
+                secret=malformed_secret,
+            )
+        assert len(srv.requests) == 0
     finally:
         srv.close()

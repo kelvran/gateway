@@ -53,13 +53,25 @@ def _sign_payload(secret: str, event_id: str, timestamp: str, body: bytes) -> st
     directly, for the same reason the Go sender accepts one: an
     operator sharing an arbitrary secret with their own receiver has no
     need to follow that exact convention.
+
+    Raises ``ValueError`` if the secret is ``whsec_``-prefixed but the
+    remainder isn't valid base64 -- an audit found the prior version
+    silently fell back to signing with the raw, still-``whsec_``-
+    prefixed string as the key on a decode failure, producing a
+    signature that would fail receiver-side verification with zero
+    diagnostic. ``validate=True`` closes the other half of that same
+    gap: b64decode's own default silently strips non-alphabet
+    characters instead of raising for most malformed input, which
+    would have made this decode failure hard to actually trigger even
+    with the fallback removed.
     """
     key = secret.encode("utf-8")
     if secret.startswith("whsec_"):
         try:
-            key = base64.b64decode(secret[len("whsec_") :])
-        except (ValueError, binascii.Error):
-            pass
+            key = base64.b64decode(secret[len("whsec_") :], validate=True)
+        except (ValueError, binascii.Error) as err:
+            msg = f"webhook secret is whsec_-prefixed but not valid base64: {err}"
+            raise ValueError(msg) from err
     to_sign = f"{event_id}.{timestamp}.".encode() + body
     mac = hmac.new(key, to_sign, hashlib.sha256).digest()
     return "v1," + base64.b64encode(mac).decode("ascii")
@@ -89,6 +101,15 @@ def send_webhook(
     own pre-existing "let a failed delivery raise as an unhandled
     exception" design intent, just after real retries now instead of a
     single attempt.
+
+    A 4xx response is raised immediately, on the FIRST attempt, never
+    retried -- an audit found the prior version retried a 4xx (bad
+    signature, wrong URL, auth failure -- ``urllib.error.HTTPError`` is
+    a subclass of ``urllib.error.URLError``, so it was previously
+    caught by the same broad handler as a transient failure) identically
+    to a 5xx or a network error, burning the full backoff schedule on a
+    request guaranteed to fail identically every time. A 5xx and any
+    other transport-level failure are still retried exactly as before.
     """
     event_id = "evt_" + secrets.token_hex(16)
     timestamp = str(int(time.time()))
@@ -124,6 +145,10 @@ def send_webhook(
         try:
             urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 -- same operator-supplied url
             return
+        except urllib.error.HTTPError as err:
+            if 400 <= err.code < 500:
+                raise
+            last_error = err
         except (urllib.error.URLError, OSError) as err:
             last_error = err
 
