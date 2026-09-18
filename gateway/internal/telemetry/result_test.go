@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -377,6 +378,156 @@ func TestRecordChatCompletionResultRemapsProviderOnSpan(t *testing.T) {
 	}
 }
 
+var (
+	cacheL3TelemetryMetricsOnce   sync.Once
+	cacheL3TelemetryMetricsReader *sdkmetric.ManualReader
+)
+
+// cacheL3TelemetryMetricsReaderForTest returns the ManualReader backing
+// this test binary's real global-meter-delegated instruments.
+//
+// Deliberately a package-level singleton, not a fresh reader per call: the
+// go.opentelemetry.io/otel global MeterProvider delegate is bound via a
+// process-lifetime sync.Once (internal/global/state.go's own
+// delegateMeterOnce, confirmed by reading that source directly) — the
+// FIRST otel.SetMeterProvider call in this test binary's entire process
+// permanently wires every package-level instrument obtained from the
+// global default delegating meter (telemetry.go's counters/histograms
+// among them) to that call's MeterProvider, and every later
+// otel.SetMeterProvider call in the SAME process is a no-op for those
+// already-delegated instruments. Under `go test -count>1` — which reruns
+// this test function's body in the SAME process N times, since package
+// vars (including this one) are never reset between reruns — the original
+// "create a brand-new reader and SetMeterProvider every run" form only
+// ever observed real data on the first run: every later run's fresh reader
+// received zero recordings, because the instruments were already
+// permanently delegated elsewhere. Calling SetMeterProvider exactly once
+// across every rerun, and asserting the DELTA a run's own Record* calls
+// produced (see snapshotCacheL3Telemetry below) rather than an absolute
+// value, is what actually holds regardless of how many times this process
+// replays the test.
+func cacheL3TelemetryMetricsReaderForTest() *sdkmetric.ManualReader {
+	cacheL3TelemetryMetricsOnce.Do(func() {
+		cacheL3TelemetryMetricsReader = sdkmetric.NewManualReader()
+		otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(cacheL3TelemetryMetricsReader)))
+	})
+	return cacheL3TelemetryMetricsReader
+}
+
+// cacheL3TelemetrySnapshot holds every value
+// TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome asserts against,
+// extracted from one metricdata.ResourceMetrics collection. Two snapshots
+// (before/after the test's own Record* calls) are diffed rather than
+// either being read in isolation — see
+// cacheL3TelemetryMetricsReaderForTest's doc comment for why an absolute
+// reading is not safe to assert against.
+type cacheL3TelemetrySnapshot struct {
+	gateOutcomeCounts            map[[2]string]int64
+	savingsByLayer               map[string]float64
+	lookupCounts                 map[[2]string]int64
+	totalSpendUSD                float64
+	persistenceFailedByStoreKind map[string]int64
+	durationSumByModel           map[string]float64
+	// durationErrorTypeByModel is intentionally NOT diffed by its caller —
+	// whether error.type is set on a given model's data point is a static
+	// property of that attribute set, not a cumulative value, so reading
+	// it from the "after" snapshot alone is correct.
+	durationErrorTypeByModel map[string]attrPresence
+	tokenSumByModelAndType   map[[2]string]float64
+}
+
+type attrPresence struct {
+	val string
+	ok  bool
+}
+
+func snapshotCacheL3Telemetry(t *testing.T, rm metricdata.ResourceMetrics) cacheL3TelemetrySnapshot {
+	t.Helper()
+	snap := cacheL3TelemetrySnapshot{
+		gateOutcomeCounts:            map[[2]string]int64{},
+		savingsByLayer:               map[string]float64{},
+		lookupCounts:                 map[[2]string]int64{},
+		persistenceFailedByStoreKind: map[string]int64{},
+		durationSumByModel:           map[string]float64{},
+		durationErrorTypeByModel:     map[string]attrPresence{},
+		tokenSumByModelAndType:       map[[2]string]float64{},
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch m.Name {
+			case "kelvran.cache.lookup":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.cache.lookup data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					outcome, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLookupOutcome))
+					layer, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLayer))
+					snap.lookupCounts[[2]string{outcome.AsString(), layer.AsString()}] += dp.Value
+				}
+			case "kelvran.llm.spend_usd":
+				sum, ok := m.Data.(metricdata.Sum[float64])
+				if !ok {
+					t.Fatalf("kelvran.llm.spend_usd data type = %T, want metricdata.Sum[float64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					snap.totalSpendUSD += dp.Value
+				}
+			case "kelvran.persistence.failed":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.persistence.failed data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					storeKind, _ := dp.Attributes.Value(attribute.Key(AttrKelvranPersistenceStoreKind))
+					snap.persistenceFailedByStoreKind[storeKind.AsString()] += dp.Value
+				}
+			case "kelvran.cache.l3.gate_outcome":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.cache.l3.gate_outcome data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					gate, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Gate))
+					outcome, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Outcome))
+					snap.gateOutcomeCounts[[2]string{gate.AsString(), outcome.AsString()}] += dp.Value
+				}
+			case "kelvran.cache.savings_usd":
+				sum, ok := m.Data.(metricdata.Sum[float64])
+				if !ok {
+					t.Fatalf("kelvran.cache.savings_usd data type = %T, want metricdata.Sum[float64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					layer, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLayer))
+					snap.savingsByLayer[layer.AsString()] += dp.Value
+				}
+			case "gen_ai.client.operation.duration":
+				hist, ok := m.Data.(metricdata.Histogram[float64])
+				if !ok {
+					t.Fatalf("gen_ai.client.operation.duration data type = %T, want metricdata.Histogram[float64]", m.Data)
+				}
+				for _, dp := range hist.DataPoints {
+					model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
+					snap.durationSumByModel[model.AsString()] += dp.Sum
+					errorType, hasErrorType := dp.Attributes.Value(attribute.Key(AttrErrorType))
+					snap.durationErrorTypeByModel[model.AsString()] = attrPresence{errorType.AsString(), hasErrorType}
+				}
+			case "gen_ai.client.token.usage":
+				hist, ok := m.Data.(metricdata.Histogram[float64])
+				if !ok {
+					t.Fatalf("gen_ai.client.token.usage data type = %T, want metricdata.Histogram[float64]", m.Data)
+				}
+				for _, dp := range hist.DataPoints {
+					model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
+					tokenType, _ := dp.Attributes.Value(attribute.Key(AttrGenAITokenType))
+					snap.tokenSumByModelAndType[[2]string{model.AsString(), tokenType.AsString()}] += dp.Sum
+				}
+			}
+		}
+	}
+	return snap
+}
+
 // TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome proves
 // docs/upgrade-research/cache-2026-09-06.md Finding 1's per-gate ablation
 // counter dimensions correctly by (gate, outcome) — a query for one gate's
@@ -408,13 +559,21 @@ func TestRecordChatCompletionResultRemapsProviderOnSpan(t *testing.T) {
 // instruments verified from the one real reader, is the only correct way
 // to add a second global-instrument proof to this package now that this
 // function has already spent this binary's one delegation.
+//
+// Reads a before/after snapshot pair rather than one absolute reading —
+// see cacheL3TelemetryMetricsReaderForTest's own doc comment for why: this
+// same delegation constraint means a naive absolute reading only ever
+// passes on a test binary's first `go test -count` iteration.
 func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
-	reader := sdkmetric.NewManualReader()
-	prevProvider := otel.GetMeterProvider()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-	defer otel.SetMeterProvider(prevProvider)
-
+	reader := cacheL3TelemetryMetricsReaderForTest()
 	ctx := context.Background()
+
+	var before metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &before); err != nil {
+		t.Fatalf("reader.Collect (before): %v", err)
+	}
+	beforeSnap := snapshotCacheL3Telemetry(t, before)
+
 	RecordCacheL3GateOutcome(ctx, CacheL3GateVolatileBypass, true)
 	RecordCacheL3GateOutcome(ctx, CacheL3GateVolatileBypass, false)
 	RecordCacheL3GateOutcome(ctx, CacheL3GateVolatileBypass, false)
@@ -489,79 +648,17 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	if err := reader.Collect(ctx, &rm); err != nil {
 		t.Fatalf("reader.Collect: %v", err)
 	}
-
-	counts := map[[2]string]int64{}
-	savingsByLayer := map[string]float64{}
-	persistenceFailedByStoreKind := map[string]int64{}
-	// lookupCounts is keyed by (outcome, layer) -- layer is "" for every
-	// miss, matching RecordCacheLookup's own "never a fabricated
-	// empty-string layer on a miss" convention (it simply omits the
-	// attribute, which reads back as "" via dp.Attributes.Value's own
-	// not-present zero value).
-	lookupCounts := map[[2]string]int64{}
-	var totalSpendUSD float64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			switch m.Name {
-			case "kelvran.cache.lookup":
-				sum, ok := m.Data.(metricdata.Sum[int64])
-				if !ok {
-					t.Fatalf("kelvran.cache.lookup data type = %T, want metricdata.Sum[int64]", m.Data)
-				}
-				for _, dp := range sum.DataPoints {
-					outcome, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLookupOutcome))
-					layer, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLayer))
-					lookupCounts[[2]string{outcome.AsString(), layer.AsString()}] += dp.Value
-				}
-			case "kelvran.llm.spend_usd":
-				sum, ok := m.Data.(metricdata.Sum[float64])
-				if !ok {
-					t.Fatalf("kelvran.llm.spend_usd data type = %T, want metricdata.Sum[float64]", m.Data)
-				}
-				for _, dp := range sum.DataPoints {
-					totalSpendUSD += dp.Value
-				}
-			case "kelvran.persistence.failed":
-				sum, ok := m.Data.(metricdata.Sum[int64])
-				if !ok {
-					t.Fatalf("kelvran.persistence.failed data type = %T, want metricdata.Sum[int64]", m.Data)
-				}
-				for _, dp := range sum.DataPoints {
-					storeKind, _ := dp.Attributes.Value(attribute.Key(AttrKelvranPersistenceStoreKind))
-					persistenceFailedByStoreKind[storeKind.AsString()] += dp.Value
-				}
-			case "kelvran.cache.l3.gate_outcome":
-				sum, ok := m.Data.(metricdata.Sum[int64])
-				if !ok {
-					t.Fatalf("kelvran.cache.l3.gate_outcome data type = %T, want metricdata.Sum[int64]", m.Data)
-				}
-				for _, dp := range sum.DataPoints {
-					gate, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Gate))
-					outcome, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheL3Outcome))
-					counts[[2]string{gate.AsString(), outcome.AsString()}] += dp.Value
-				}
-			case "kelvran.cache.savings_usd":
-				sum, ok := m.Data.(metricdata.Sum[float64])
-				if !ok {
-					t.Fatalf("kelvran.cache.savings_usd data type = %T, want metricdata.Sum[float64]", m.Data)
-				}
-				for _, dp := range sum.DataPoints {
-					layer, _ := dp.Attributes.Value(attribute.Key(AttrKelvranCacheLayer))
-					savingsByLayer[layer.AsString()] += dp.Value
-				}
-			}
-		}
-	}
+	afterSnap := snapshotCacheL3Telemetry(t, rm)
 
 	const savingsEpsilon = 1e-9
-	if got, want := savingsByLayer["L1"], 0.002+0.001; got < want-savingsEpsilon || got > want+savingsEpsilon {
-		t.Errorf("kelvran.cache.savings_usd[L1] = %v, want %v (both L1 RecordCacheSavings calls summed)", got, want)
+	if got, want := afterSnap.savingsByLayer["L1"]-beforeSnap.savingsByLayer["L1"], 0.002+0.001; got < want-savingsEpsilon || got > want+savingsEpsilon {
+		t.Errorf("kelvran.cache.savings_usd[L1] delta = %v, want %v (both L1 RecordCacheSavings calls summed)", got, want)
 	}
-	if got, want := savingsByLayer["L3"], 0.0015; got < want-savingsEpsilon || got > want+savingsEpsilon {
-		t.Errorf("kelvran.cache.savings_usd[L3] = %v, want %v", got, want)
+	if got, want := afterSnap.savingsByLayer["L3"]-beforeSnap.savingsByLayer["L3"], 0.0015; got < want-savingsEpsilon || got > want+savingsEpsilon {
+		t.Errorf("kelvran.cache.savings_usd[L3] delta = %v, want %v", got, want)
 	}
-	if got := savingsByLayer["L2"]; got != 0 {
-		t.Errorf("kelvran.cache.savings_usd[L2] = %v, want 0 (never recorded)", got)
+	if got := afterSnap.savingsByLayer["L2"] - beforeSnap.savingsByLayer["L2"]; got != 0 {
+		t.Errorf("kelvran.cache.savings_usd[L2] delta = %v, want 0 (never recorded)", got)
 	}
 
 	wantLookups := map[[2]string]int64{
@@ -570,20 +667,20 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 		{"miss", ""}:  2,
 	}
 	for key, wantCount := range wantLookups {
-		if got := lookupCounts[key]; got != wantCount {
-			t.Errorf("lookupCounts[%v] = %d, want %d", key, got, wantCount)
+		if got := afterSnap.lookupCounts[key] - beforeSnap.lookupCounts[key]; got != wantCount {
+			t.Errorf("lookupCounts[%v] delta = %d, want %d", key, got, wantCount)
 		}
 	}
 	// A miss must never carry a layer attribute value -- confirms
 	// RecordCacheLookup's own "omit the attribute, don't fabricate an
 	// empty string" claim actually holds, not just that the counts add up.
-	if got := lookupCounts[[2]string{"miss", "L1"}]; got != 0 {
-		t.Errorf(`lookupCounts[{"miss","L1"}] = %d, want 0 (a miss never carries a layer)`, got)
+	if got := afterSnap.lookupCounts[[2]string{"miss", "L1"}] - beforeSnap.lookupCounts[[2]string{"miss", "L1"}]; got != 0 {
+		t.Errorf(`lookupCounts[{"miss","L1"}] delta = %d, want 0 (a miss never carries a layer)`, got)
 	}
 
 	const spendEpsilon = 1e-9
-	if got, want := totalSpendUSD, 0.01+0.02; got < want-spendEpsilon || got > want+spendEpsilon {
-		t.Errorf("kelvran.llm.spend_usd total = %v, want %v", got, want)
+	if got, want := afterSnap.totalSpendUSD-beforeSnap.totalSpendUSD, 0.01+0.02; got < want-spendEpsilon || got > want+spendEpsilon {
+		t.Errorf("kelvran.llm.spend_usd total delta = %v, want %v", got, want)
 	}
 
 	want := map[[2]string]int64{
@@ -593,107 +690,66 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 		{CacheL3GateFreshnessRiskModel, "pass"}: 1,
 	}
 	for key, wantCount := range want {
-		if got := counts[key]; got != wantCount {
-			t.Errorf("counts[%v] = %d, want %d", key, got, wantCount)
+		if got := afterSnap.gateOutcomeCounts[key] - beforeSnap.gateOutcomeCounts[key]; got != wantCount {
+			t.Errorf("gateOutcomeCounts[%v] delta = %d, want %d", key, got, wantCount)
 		}
 	}
 	// Nothing else must have been recorded — e.g. entity_mismatch's
 	// "reject" call must never bleed into a "pass" data point too.
-	if got := counts[[2]string{CacheL3GateEntityMismatch, "pass"}]; got != 0 {
-		t.Errorf("entity_mismatch pass count = %d, want 0 (only reject was ever recorded)", got)
+	if got := afterSnap.gateOutcomeCounts[[2]string{CacheL3GateEntityMismatch, "pass"}] - beforeSnap.gateOutcomeCounts[[2]string{CacheL3GateEntityMismatch, "pass"}]; got != 0 {
+		t.Errorf("entity_mismatch pass count delta = %d, want 0 (only reject was ever recorded)", got)
 	}
-	if got := counts[[2]string{CacheL3GateFreshnessRiskModel, "reject"}]; got != 0 {
-		t.Errorf("freshness_risk_model reject count = %d, want 0 (only pass was ever recorded)", got)
-	}
-
-	// gen_ai.client.operation.duration: one data point per RequestModel,
-	// keyed by it (each scenario above used a unique one).
-	durationByModel := map[string]metricdata.HistogramDataPoint[float64]{}
-	// gen_ai.client.token.usage: keyed by (RequestModel, token type) —
-	// absent entirely for a (model, type) pair that must never have been
-	// recorded.
-	tokensByModelAndType := map[[2]string]metricdata.HistogramDataPoint[float64]{}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			switch m.Name {
-			case "gen_ai.client.operation.duration":
-				hist, ok := m.Data.(metricdata.Histogram[float64])
-				if !ok {
-					t.Fatalf("gen_ai.client.operation.duration data type = %T, want metricdata.Histogram[float64]", m.Data)
-				}
-				for _, dp := range hist.DataPoints {
-					model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
-					durationByModel[model.AsString()] = dp
-				}
-			case "gen_ai.client.token.usage":
-				hist, ok := m.Data.(metricdata.Histogram[float64])
-				if !ok {
-					t.Fatalf("gen_ai.client.token.usage data type = %T, want metricdata.Histogram[float64]", m.Data)
-				}
-				for _, dp := range hist.DataPoints {
-					model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
-					tokenType, _ := dp.Attributes.Value(attribute.Key(AttrGenAITokenType))
-					tokensByModelAndType[[2]string{model.AsString(), tokenType.AsString()}] = dp
-				}
-			}
-		}
+	if got := afterSnap.gateOutcomeCounts[[2]string{CacheL3GateFreshnessRiskModel, "reject"}] - beforeSnap.gateOutcomeCounts[[2]string{CacheL3GateFreshnessRiskModel, "reject"}]; got != 0 {
+		t.Errorf("freshness_risk_model reject count delta = %d, want 0 (only pass was ever recorded)", got)
 	}
 
-	successDuration, ok := durationByModel["genai-metrics-success"]
-	if !ok {
-		t.Fatal("gen_ai.client.operation.duration has no data point for the success scenario")
+	const durationEpsilon = 1e-9
+	successSum := afterSnap.durationSumByModel["genai-metrics-success"] - beforeSnap.durationSumByModel["genai-metrics-success"]
+	if want := (250 * time.Millisecond).Seconds(); successSum < want-durationEpsilon || successSum > want+durationEpsilon {
+		t.Errorf("success scenario duration Sum delta = %v, want %v", successSum, want)
 	}
-	if successDuration.Sum != (250 * time.Millisecond).Seconds() {
-		t.Errorf("success scenario duration Sum = %v, want %v", successDuration.Sum, (250 * time.Millisecond).Seconds())
-	}
-	if _, hasErrorType := successDuration.Attributes.Value(attribute.Key(AttrErrorType)); hasErrorType {
+	if et := afterSnap.durationErrorTypeByModel["genai-metrics-success"]; et.ok {
 		t.Error("success scenario's operation.duration data point has error.type set — must be absent on success")
 	}
 
-	cacheHitDuration, ok := durationByModel["genai-metrics-cache-hit"]
-	if !ok {
-		t.Fatal("gen_ai.client.operation.duration has no data point for the non-billable cache-hit scenario — duration must be recorded regardless of billable")
-	}
-	if cacheHitDuration.Sum != (5 * time.Millisecond).Seconds() {
-		t.Errorf("cache-hit scenario duration Sum = %v, want %v", cacheHitDuration.Sum, (5 * time.Millisecond).Seconds())
+	cacheHitSum := afterSnap.durationSumByModel["genai-metrics-cache-hit"] - beforeSnap.durationSumByModel["genai-metrics-cache-hit"]
+	if want := (5 * time.Millisecond).Seconds(); cacheHitSum < want-durationEpsilon || cacheHitSum > want+durationEpsilon {
+		t.Errorf("cache-hit scenario duration Sum delta = %v, want %v (duration must be recorded regardless of billable)", cacheHitSum, want)
 	}
 
-	failureDuration, ok := durationByModel["genai-metrics-failure"]
-	if !ok {
-		t.Fatal("gen_ai.client.operation.duration has no data point for the failure scenario")
+	failureSum := afterSnap.durationSumByModel["genai-metrics-failure"] - beforeSnap.durationSumByModel["genai-metrics-failure"]
+	if want := (2 * time.Millisecond).Seconds(); failureSum < want-durationEpsilon || failureSum > want+durationEpsilon {
+		t.Errorf("failure scenario duration Sum delta = %v, want %v", failureSum, want)
 	}
-	errorType, hasErrorType := failureDuration.Attributes.Value(attribute.Key(AttrErrorType))
-	if !hasErrorType || errorType.AsString() != "rate_limited" {
-		t.Errorf("failure scenario's error.type = %v, hasErrorType=%v, want %q", errorType, hasErrorType, "rate_limited")
+	if et := afterSnap.durationErrorTypeByModel["genai-metrics-failure"]; !et.ok || et.val != "rate_limited" {
+		t.Errorf("failure scenario's error.type = %v, hasErrorType=%v, want %q", et.val, et.ok, "rate_limited")
 	}
 
-	inputTokens, ok := tokensByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeInput}]
-	if !ok || inputTokens.Sum != 10 {
-		t.Errorf("success scenario input token usage = %v, ok=%v, want Sum=10", inputTokens, ok)
+	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeInput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeInput}]; got != 10 {
+		t.Errorf("success scenario input token usage delta = %v, want 10", got)
 	}
-	outputTokens, ok := tokensByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeOutput}]
-	if !ok || outputTokens.Sum != 4 {
-		t.Errorf("success scenario output token usage = %v, ok=%v, want Sum=4", outputTokens, ok)
+	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeOutput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeOutput}]; got != 4 {
+		t.Errorf("success scenario output token usage delta = %v, want 4", got)
 	}
 
 	// The load-bearing double-counting-avoidance proof: the cache-hit
 	// scenario replayed the exact same InputTokens/OutputTokens as the
-	// success scenario, but Billable=false — neither must ever appear in
-	// gen_ai.client.token.usage.
-	if _, ok := tokensByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeInput}]; ok {
-		t.Error("non-billable cache-hit scenario recorded an input token.usage data point — must be suppressed")
+	// success scenario, but Billable=false — neither must ever contribute
+	// a delta to gen_ai.client.token.usage.
+	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeInput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeInput}]; got != 0 {
+		t.Errorf("non-billable cache-hit scenario recorded an input token.usage delta of %v — must be suppressed", got)
 	}
-	if _, ok := tokensByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeOutput}]; ok {
-		t.Error("non-billable cache-hit scenario recorded an output token.usage data point — must be suppressed")
+	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeOutput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeOutput}]; got != 0 {
+		t.Errorf("non-billable cache-hit scenario recorded an output token.usage delta of %v — must be suppressed", got)
 	}
-	if _, ok := tokensByModelAndType[[2]string{"genai-metrics-failure", GenAITokenTypeInput}]; ok {
-		t.Error("failure scenario recorded an input token.usage data point — must be suppressed")
+	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-failure", GenAITokenTypeInput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-failure", GenAITokenTypeInput}]; got != 0 {
+		t.Errorf("failure scenario recorded an input token.usage delta of %v — must be suppressed", got)
 	}
 
-	if got := persistenceFailedByStoreKind["budget"]; got != 1 {
-		t.Errorf("kelvran.persistence.failed[store_kind=budget] = %d, want 1", got)
+	if got := afterSnap.persistenceFailedByStoreKind["budget"] - beforeSnap.persistenceFailedByStoreKind["budget"]; got != 1 {
+		t.Errorf("kelvran.persistence.failed[store_kind=budget] delta = %d, want 1", got)
 	}
-	if got := persistenceFailedByStoreKind["identity"]; got != 2 {
-		t.Errorf("kelvran.persistence.failed[store_kind=identity] = %d, want 2", got)
+	if got := afterSnap.persistenceFailedByStoreKind["identity"] - beforeSnap.persistenceFailedByStoreKind["identity"]; got != 2 {
+		t.Errorf("kelvran.persistence.failed[store_kind=identity] delta = %d, want 2", got)
 	}
 }

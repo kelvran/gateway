@@ -211,6 +211,71 @@ func TestRecordPersistsFullStateIncludingPeriodBookkeeping(t *testing.T) {
 	}
 }
 
+var (
+	budgetPersistenceMetricsOnce   sync.Once
+	budgetPersistenceMetricsReader *sdkmetric.ManualReader
+)
+
+// budgetPersistenceMetricsReaderForTest returns the ManualReader backing
+// this test binary's real telemetry.RecordPersistenceFailed counter.
+//
+// Deliberately a package-level singleton, not a fresh reader per call: the
+// go.opentelemetry.io/otel global MeterProvider delegate is bound via a
+// process-lifetime sync.Once (internal/global/state.go's own
+// delegateMeterOnce, confirmed by reading that source directly) — the
+// FIRST otel.SetMeterProvider call in this test binary's entire process
+// permanently wires telemetry.go's package-level persistenceFailedCounter
+// (itself created once, at package-init, from the global default
+// delegating meter) to that call's MeterProvider, and every later
+// otel.SetMeterProvider call in the SAME process is a no-op for that
+// already-delegated instrument. Under `go test -count>1` — which reruns
+// this test function's body in the SAME process N times, since package
+// vars (including this one) are never reset between reruns — the original
+// "create a brand-new reader and SetMeterProvider every run" form only
+// ever observed real data on the first run: every later run's fresh reader
+// received zero Add() calls, because the counter was already permanently
+// delegated elsewhere. Calling SetMeterProvider exactly once across every
+// rerun, and asserting the DELTA a run's own Record() call produced
+// (below) rather than an absolute count, is what actually holds regardless
+// of how many times this process replays the test.
+func budgetPersistenceMetricsReaderForTest() *sdkmetric.ManualReader {
+	budgetPersistenceMetricsOnce.Do(func() {
+		budgetPersistenceMetricsReader = sdkmetric.NewManualReader()
+		otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(budgetPersistenceMetricsReader)))
+	})
+	return budgetPersistenceMetricsReader
+}
+
+// budgetPersistFailedCount reads the CURRENT cumulative
+// kelvran.persistence.failed[store_kind=budget] count off reader — a
+// snapshot, not a per-call delta; callers diff two snapshots themselves.
+func budgetPersistFailedCount(t *testing.T, reader *sdkmetric.ManualReader) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("reader.Collect: %v", err)
+	}
+	var count int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "kelvran.persistence.failed" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("kelvran.persistence.failed data type = %T, want metricdata.Sum[int64]", m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				storeKind, _ := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranPersistenceStoreKind))
+				if storeKind.AsString() == "budget" {
+					count += dp.Value
+				}
+			}
+		}
+	}
+	return count
+}
+
 // TestRecordLogsButContinuesOnPersistFailure proves a Save failure is
 // logged and does not panic, block, or otherwise fail Record — the
 // in-memory state (verified separately below) is already correct;
@@ -226,11 +291,12 @@ func TestRecordLogsButContinuesOnPersistFailure(t *testing.T) {
 	// budget.go's own call site actually increments the shared counter
 	// with store_kind="budget" — not just that RecordPersistenceFailed
 	// itself works in isolation (already proven directly in
-	// internal/telemetry's own test suite).
-	reader := sdkmetric.NewManualReader()
-	prevProvider := otel.GetMeterProvider()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-	defer otel.SetMeterProvider(prevProvider)
+	// internal/telemetry's own test suite). See
+	// budgetPersistenceMetricsReaderForTest's own doc comment for why this
+	// reads a shared reader and asserts a delta, rather than a fresh
+	// reader and an absolute count.
+	reader := budgetPersistenceMetricsReaderForTest()
+	before := budgetPersistFailedCount(t, reader)
 
 	store := newFakeStore(nil)
 	store.saveErr = errors.New("simulated disk failure")
@@ -259,30 +325,8 @@ func TestRecordLogsButContinuesOnPersistFailure(t *testing.T) {
 		t.Errorf("log output = %q, want it to contain \"budget_persist_failed\"", logBuf.String())
 	}
 
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("reader.Collect: %v", err)
-	}
-	var gotCount int64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != "kelvran.persistence.failed" {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("kelvran.persistence.failed data type = %T, want metricdata.Sum[int64]", m.Data)
-			}
-			for _, dp := range sum.DataPoints {
-				storeKind, _ := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranPersistenceStoreKind))
-				if storeKind.AsString() == "budget" {
-					gotCount += dp.Value
-				}
-			}
-		}
-	}
-	if gotCount != 1 {
-		t.Errorf("kelvran.persistence.failed[store_kind=budget] = %d, want 1", gotCount)
+	if got, want := budgetPersistFailedCount(t, reader)-before, int64(1); got != want {
+		t.Errorf("kelvran.persistence.failed[store_kind=budget] delta = %d, want %d", got, want)
 	}
 }
 
