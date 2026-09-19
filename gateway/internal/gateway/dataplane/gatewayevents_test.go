@@ -733,6 +733,65 @@ func TestGatewayEventCarriesSavingsUSD(t *testing.T) {
 	}
 }
 
+// TestGatewayEventCarriesFinishReasonOnSuccessAndOmitsItOnRejection is the
+// regression proof for a real end-to-end research finding
+// (docs/upgrade-research/cost-aware-cascading-tier1-2026-09-20.md): the
+// primary choice's own FinishReason was already computed on every real
+// request (responseWasTruncated's own scan), but never surfaced past
+// that one cache-gating check. Proves both halves of
+// primaryFinishReason's own contract: the real value on a genuine
+// success (never "" just because a response happened to exist), and ""
+// on a rejection that never reached an upstream call at all (resp stays
+// at its zero value, never a fabricated placeholder).
+func TestGatewayEventCarriesFinishReasonOnSuccessAndOmitsItOnRejection(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	keys := defaultTestVirtualKeys()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			return fakeOpenAIResponse("gpt-4o"), nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+	successEvent := decodeLoggedGatewayEvent(t, &logBuf)
+	if got := successEvent.GetFinishReason(); got != "stop" {
+		t.Errorf("FinishReason on success = %q, want %q (fakeOpenAIResponse's own Choices[0].FinishReason)", got, "stop")
+	}
+
+	logBuf.Reset()
+	if _, err := p.HandleChatCompletion(context.Background(), "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+		t.Fatal("HandleChatCompletion with no Authorization header: got nil error, want an auth error")
+	}
+	rejectionEvent := decodeLoggedGatewayEvent(t, &logBuf)
+	if got := rejectionEvent.GetFinishReason(); got != "" {
+		t.Errorf("FinishReason on an auth rejection (resp never populated) = %q, want \"\"", got)
+	}
+}
+
 // TestGatewayEventStreamingFallbackFalseAfterFirstChunkSent is the
 // streaming-specific proof of the exact failure mode
 // docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md names

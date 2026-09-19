@@ -177,4 +177,18 @@ message GatewayDecisionEvent {
   // non-breaking per `buf breaking`, same precedent as every other field
   // added to this message since v1 froze.
   string billing_subject_id = 16;
+
+  // Added 2026-09-20, per this repo's own end-to-end research round
+  // (docs/upgrade-research/cost-aware-cascading-tier1-2026-09-20.md):
+  // the primary response choice's own FinishReason (adapter.Choice's
+  // "stop"/"length"/"tool_calls"/etc.), already computed on every real
+  // request via responseWasTruncated's own Choices[0]-and-beyond scan,
+  // but previously discarded once used for that one cache-gating check
+  // -- never surfaced anywhere a downstream consumer could use it. ""
+  // (the proto3 default) whenever resp itself has no choices at all
+  // (every rejection Outcome before an upstream call ever happens, and
+  // any upstream error where no partial response was ever produced).
+  // Additive field, non-breaking per `buf breaking`, same precedent as
+  // every other field added to this message since v1 froze.
+  string finish_reason = 17;
 }

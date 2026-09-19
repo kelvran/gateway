@@ -245,8 +245,21 @@ type GatewayDecisionEvent struct {
 	// non-breaking per `buf breaking`, same precedent as every other field
 	// added to this message since v1 froze.
 	BillingSubjectId string `protobuf:"bytes,16,opt,name=billing_subject_id,json=billingSubjectId,proto3" json:"billing_subject_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Added 2026-09-20, per this repo's own end-to-end research round
+	// (docs/upgrade-research/cost-aware-cascading-tier1-2026-09-20.md):
+	// the primary response choice's own FinishReason (adapter.Choice's
+	// "stop"/"length"/"tool_calls"/etc.), already computed on every real
+	// request via responseWasTruncated's own Choices[0]-and-beyond scan,
+	// but previously discarded once used for that one cache-gating check
+	// -- never surfaced anywhere a downstream consumer could use it. ""
+	// (the proto3 default) whenever resp itself has no choices at all
+	// (every rejection Outcome before an upstream call ever happens, and
+	// any upstream error where no partial response was ever produced).
+	// Additive field, non-breaking per `buf breaking`, same precedent as
+	// every other field added to this message since v1 froze.
+	FinishReason  string `protobuf:"bytes,17,opt,name=finish_reason,json=finishReason,proto3" json:"finish_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GatewayDecisionEvent) Reset() {
@@ -391,11 +404,18 @@ func (x *GatewayDecisionEvent) GetBillingSubjectId() string {
 	return ""
 }
 
+func (x *GatewayDecisionEvent) GetFinishReason() string {
+	if x != nil {
+		return x.FinishReason
+	}
+	return ""
+}
+
 var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xde\a\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x83\b\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -416,7 +436,8 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\vsavings_usd\x18\x0e \x01(\tR\n" +
 	"savingsUsd\x12*\n" +
 	"\x11cost_is_estimated\x18\x0f \x01(\bR\x0fcostIsEstimated\x12,\n" +
-	"\x12billing_subject_id\x18\x10 \x01(\tR\x10billingSubjectId\"\x98\x02\n" +
+	"\x12billing_subject_id\x18\x10 \x01(\tR\x10billingSubjectId\x12#\n" +
+	"\rfinish_reason\x18\x11 \x01(\tR\ffinishReason\"\x98\x02\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +

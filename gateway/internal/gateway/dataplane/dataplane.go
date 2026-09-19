@@ -3108,6 +3108,11 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// agent run") -- the SPEND half was already closed by
 		// AgentRunId/CostUsd above.
 		SavingsUsd: savingsUsd,
+		// Added per docs/upgrade-research/cost-aware-cascading-tier1-
+		// 2026-09-20.md: a signal this codebase already computes on every
+		// request (responseWasTruncated's own scan) but previously never
+		// surfaced past that one cache-gating check.
+		FinishReason: primaryFinishReason(resp),
 	}
 	span.End()
 
@@ -3280,6 +3285,24 @@ func responseWasTruncated(resp adapter.ChatResponse) bool {
 		}
 	}
 	return false
+}
+
+// primaryFinishReason returns resp's first choice's own FinishReason, for
+// GatewayDecisionEvent.FinishReason -- "" whenever resp has no choices at
+// all (every rejection Outcome before an upstream call ever happens, and
+// any upstream error where no partial response was ever produced). A
+// GatewayDecisionEvent is one record per REQUEST, not per choice, so this
+// deliberately reports only the primary (first) choice, mirroring how
+// resp.Choices[0] is already treated as "the" response everywhere else a
+// single value is needed from a potentially multi-choice response --
+// unlike responseWasTruncated above, which must scan every choice since
+// ANY truncated choice invalidates the whole response for cache-write
+// purposes.
+func primaryFinishReason(resp adapter.ChatResponse) string {
+	if len(resp.Choices) == 0 {
+		return ""
+	}
+	return resp.Choices[0].FinishReason
 }
 
 // maxModelForTelemetry bounds req.Model's own length wherever it flows
