@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -220,6 +221,104 @@ func TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors(t *testing.T) {
 	}
 }
 
+// attackerModelForRateLimitFailOpenTest is a deliberately attacker-shaped
+// model string used by TestRateLimitFailOpenIncrementsMetricCounter — a
+// package-level const (not a local one) so snapshotDataplaneTelemetry can
+// also reference it when checking the gen_ai.request.model
+// cardinality-DoS regression.
+const attackerModelForRateLimitFailOpenTest = "attacker-unique-model-name-12345-do-not-let-this-become-a-metric-label"
+
+var (
+	dataplaneTelemetryMetricsOnce   sync.Once
+	dataplaneTelemetryMetricsReader *sdkmetric.ManualReader
+)
+
+// dataplaneTelemetryMetricsReaderForTest returns the ManualReader
+// backing this test binary's real global-meter-delegated instruments —
+// see gateway/internal/budget/persistence_test.go's
+// budgetPersistenceMetricsReaderForTest doc comment for the underlying
+// go.opentelemetry.io/otel constraint this works around (a
+// process-lifetime sync.Once inside otel's own internal/global package
+// permanently binds every package-level instrument obtained from the
+// global meter to whichever MeterProvider FIRST calls
+// otel.SetMeterProvider in this test binary's process). Sharing one
+// reader across every `go test -count>1` rerun, and asserting the DELTA
+// a run's own request(s) produced (below) rather than an absolute
+// value, is what actually holds regardless of how many times this
+// process replays the test. This is also this package's own
+// one-delegation-per-test-binary constraint (mirrors
+// telemetry/result_test.go's identical rationale) — every
+// otel-metric-verifying scenario in this package's test binary must
+// share this same reader, never a second SetMeterProvider call.
+func dataplaneTelemetryMetricsReaderForTest() *sdkmetric.ManualReader {
+	dataplaneTelemetryMetricsOnce.Do(func() {
+		dataplaneTelemetryMetricsReader = sdkmetric.NewManualReader()
+		otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(dataplaneTelemetryMetricsReader)))
+	})
+	return dataplaneTelemetryMetricsReader
+}
+
+// dataplaneTelemetrySnapshot holds every value
+// TestRateLimitFailOpenIncrementsMetricCounter asserts against.
+// sawAttackerModel/sawUnresolvedSentinel are read from the "after"
+// snapshot only (never diffed) — attribute PRESENCE on a given model
+// string is a static property of a single call's own attribute set, not
+// a cumulative value, so it doesn't need delta treatment.
+type dataplaneTelemetrySnapshot struct {
+	failOpenByKeyID       map[string]int64
+	cacheLookupTotal      int64
+	sawAttackerModel      bool
+	sawUnresolvedSentinel bool
+}
+
+func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dataplaneTelemetrySnapshot {
+	t.Helper()
+	snap := dataplaneTelemetrySnapshot{failOpenByKeyID: map[string]int64{}}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch m.Name {
+			case "kelvran.ratelimit.fail_open":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.ratelimit.fail_open data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					keyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
+					if hasAttr {
+						snap.failOpenByKeyID[keyID.AsString()] += dp.Value
+					}
+				}
+			case "kelvran.cache.lookup":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.cache.lookup data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					snap.cacheLookupTotal += dp.Value
+				}
+			case "gen_ai.client.operation.duration":
+				hist, ok := m.Data.(metricdata.Histogram[float64])
+				if !ok {
+					t.Fatalf("gen_ai.client.operation.duration data type = %T, want metricdata.Histogram[float64]", m.Data)
+				}
+				for _, dp := range hist.DataPoints {
+					model, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrGenAIRequestModel))
+					if !hasAttr {
+						continue
+					}
+					switch model.AsString() {
+					case attackerModelForRateLimitFailOpenTest:
+						snap.sawAttackerModel = true
+					case "unresolved":
+						snap.sawUnresolvedSentinel = true
+					}
+				}
+			}
+		}
+	}
+	return snap
+}
+
 // TestRateLimitFailOpenIncrementsMetricCounter is the load-bearing proof
 // for the aggregate, alertable signal itself — per
 // docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md,
@@ -229,12 +328,16 @@ func TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors(t *testing.T) {
 // the request runs proves the real otel.Meter obtained at telemetry
 // package-init time (before any real provider existed) still delegates to
 // it — the same re-delegation guarantee this codebase already relies on
-// for Tracer.
+// for Tracer. Reads a before/after snapshot pair, not one absolute
+// reading — see dataplaneTelemetryMetricsReaderForTest's own doc comment
+// for why.
 func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
-	reader := sdkmetric.NewManualReader()
-	prevProvider := otel.GetMeterProvider()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-	defer otel.SetMeterProvider(prevProvider)
+	reader := dataplaneTelemetryMetricsReaderForTest()
+	var before metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &before); err != nil {
+		t.Fatalf("reader.Collect (before): %v", err)
+	}
+	beforeSnap := snapshotDataplaneTelemetry(t, before)
 
 	testKeyID := "team-failopen-metric"
 	keys := []identity.VirtualKey{
@@ -296,8 +399,7 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 	// function that swaps the provider again — this package's own
 	// one-delegation-per-test-binary constraint, see above) with a
 	// deliberately attacker-shaped model string checks that.
-	const attackerModel = "attacker-unique-model-name-12345-do-not-let-this-become-a-metric-label"
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer no-such-key", adapter.ChatRequest{Model: attackerModel}, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer no-such-key", adapter.ChatRequest{Model: attackerModelForRateLimitFailOpenTest}, ""); err == nil {
 		t.Fatal("HandleChatCompletion with an unregistered bearer token returned nil error, want an auth failure")
 	}
 
@@ -305,62 +407,18 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 	if err := reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatalf("reader.Collect: %v", err)
 	}
+	afterSnap := snapshotDataplaneTelemetry(t, rm)
 
-	var found bool
-	var cacheLookupTotal int64
-	var sawAttackerModel, sawUnresolvedSentinel bool
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			switch m.Name {
-			case "kelvran.ratelimit.fail_open":
-				sum, ok := m.Data.(metricdata.Sum[int64])
-				if !ok {
-					t.Fatalf("kelvran.ratelimit.fail_open data type = %T, want metricdata.Sum[int64]", m.Data)
-				}
-				for _, dp := range sum.DataPoints {
-					keyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
-					if dp.Value == 1 && hasAttr && keyID.AsString() == testKeyID {
-						found = true
-					}
-				}
-			case "kelvran.cache.lookup":
-				sum, ok := m.Data.(metricdata.Sum[int64])
-				if !ok {
-					t.Fatalf("kelvran.cache.lookup data type = %T, want metricdata.Sum[int64]", m.Data)
-				}
-				for _, dp := range sum.DataPoints {
-					cacheLookupTotal += dp.Value
-				}
-			case "gen_ai.client.operation.duration":
-				hist, ok := m.Data.(metricdata.Histogram[float64])
-				if !ok {
-					t.Fatalf("gen_ai.client.operation.duration data type = %T, want metricdata.Histogram[float64]", m.Data)
-				}
-				for _, dp := range hist.DataPoints {
-					model, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrGenAIRequestModel))
-					if !hasAttr {
-						continue
-					}
-					switch model.AsString() {
-					case attackerModel:
-						sawAttackerModel = true
-					case "unresolved":
-						sawUnresolvedSentinel = true
-					}
-				}
-			}
-		}
+	if got := afterSnap.failOpenByKeyID[testKeyID] - beforeSnap.failOpenByKeyID[testKeyID]; got != 1 {
+		t.Errorf("kelvran.ratelimit.fail_open[key_id=%s] delta = %d, want 1", testKeyID, got)
 	}
-	if !found {
-		t.Error("kelvran.ratelimit.fail_open counter did not record a value of 1 for the expected key_id")
+	if got := afterSnap.cacheLookupTotal - beforeSnap.cacheLookupTotal; got != 1 {
+		t.Errorf("kelvran.cache.lookup total delta = %d, want 1 — the auth-failure call never reached the cache-check stage and must not be counted as a miss", got)
 	}
-	if cacheLookupTotal != 1 {
-		t.Errorf("kelvran.cache.lookup total = %d, want 1 — the auth-failure call never reached the cache-check stage and must not be counted as a miss", cacheLookupTotal)
-	}
-	if sawAttackerModel {
+	if afterSnap.sawAttackerModel {
 		t.Error("gen_ai.request.model carried the raw, attacker-controlled model string through to a metric attribute — unbounded-cardinality DoS is NOT fixed")
 	}
-	if !sawUnresolvedSentinel {
+	if !afterSnap.sawUnresolvedSentinel {
 		t.Error(`gen_ai.request.model never recorded the "unresolved" sentinel for a request that never resolved a deployment`)
 	}
 }
