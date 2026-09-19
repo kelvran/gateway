@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
+	"sort"
 	"strconv"
 	"time"
 
@@ -165,6 +166,7 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	audit := auditLogger{logger: logger, enabled: cfg.Admin.EnableAuditLog}
 	mux := http.NewServeMux()
 	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg, audit)))
+	mux.Handle("GET /admin/virtual_keys", requireEitherBearerToken(creds, listVirtualKeysHandler(pipeline, audit)))
 	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, audit)))
 	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, audit)))
 	mux.Handle("POST /admin/virtual_keys/{name}/rotate", requireBearerToken(creds.Admin, rotateVirtualKeyHandler(pipeline, audit)))
@@ -784,6 +786,72 @@ type virtualKeySpendResponse struct {
 	BudgetUSD                  string  `json:"budget_usd"`
 	BudgetResetIntervalSeconds int     `json:"budget_reset_interval_seconds"`
 	PercentUsed                float64 `json:"percent_used"`
+}
+
+// virtualKeyListEntry is one entry in GET /admin/virtual_keys's list
+// response -- deliberately NEVER includes KeyHash, mirroring
+// virtualKeySpendResponse's own "safe subset, never the secret" rule.
+// AllowedModels/AllowedRegions are converted from identity.VirtualKey's
+// own map[string]struct{} into a sorted []string, matching
+// controlplane.VirtualKeyConfig's identical existing JSON convention
+// (config.go sorts these at load time too) rather than marshaling a Go
+// map directly.
+type virtualKeyListEntry struct {
+	ID                         string   `json:"id"`
+	BudgetUSD                  string   `json:"budget_usd"`
+	BudgetResetIntervalSeconds int      `json:"budget_reset_interval_seconds"`
+	BudgetWarnPercent          float64  `json:"budget_warn_percent"`
+	AllowedModels              []string `json:"allowed_models,omitempty"`
+	AllowedRegions             []string `json:"allowed_regions,omitempty"`
+	RateLimitBurst             float64  `json:"rate_limit_burst,omitempty"`
+	RateLimitRefill            float64  `json:"rate_limit_refill_per_second,omitempty"`
+	BillingSubjectID           string   `json:"billing_subject_id,omitempty"`
+}
+
+func sortedKeysOf(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func virtualKeyToListEntry(vk identity.VirtualKey) virtualKeyListEntry {
+	return virtualKeyListEntry{
+		ID:                         vk.ID,
+		BudgetUSD:                  vk.BudgetUSD.String(),
+		BudgetResetIntervalSeconds: int(vk.BudgetResetInterval.Seconds()),
+		BudgetWarnPercent:          vk.BudgetWarnPercent,
+		AllowedModels:              sortedKeysOf(vk.AllowedModels),
+		AllowedRegions:             sortedKeysOf(vk.AllowedRegions),
+		RateLimitBurst:             vk.RateLimitBurst,
+		RateLimitRefill:            vk.RateLimitRefill,
+		BillingSubjectID:           vk.BillingSubjectID,
+	}
+}
+
+// listVirtualKeysHandler serves every configured virtual key's safe,
+// non-secret metadata -- closes a real gap an end-to-end audit found
+// (docs/upgrade-research/sdk-dashboard-buildstatus-tier1-2026-09-20.md):
+// every virtual-key admin route was scoped to a single already-known
+// {name}, with no way to discover what keys exist at all. Same
+// read tier as GET /admin/config/GET /admin/prompts (viewer-or-admin) --
+// this is a config-shaped read, broader than the narrower CostViewer
+// tier GET .../spend also accepts.
+func listVirtualKeysHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		keys := pipeline.ListVirtualKeys()
+		entries := make([]virtualKeyListEntry, 0, len(keys))
+		for _, vk := range keys {
+			entries = append(entries, virtualKeyToListEntry(vk))
+		}
+		writeJSONResponse(w, entries)
+		logger.Info("admin_virtual_keys_read", "count", len(entries), "authorized_by", credentialTierFromContext(r.Context()))
+	}
 }
 
 // getVirtualKeySpendHandler serves name's current spend against its

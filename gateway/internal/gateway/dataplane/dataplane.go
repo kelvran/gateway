@@ -33,6 +33,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1142,6 +1143,23 @@ func (p *Pipeline) GetVirtualKey(name string) (identity.VirtualKey, bool) {
 		}
 	}
 	return identity.VirtualKey{}, false
+}
+
+// ListVirtualKeys returns every configured virtual key, live, sorted by
+// ID for deterministic output -- a real gap an end-to-end audit found
+// (docs/upgrade-research/sdk-dashboard-buildstatus-tier1-2026-09-20.md):
+// every key operation admin.go exposes is scoped to a single already-
+// known {name}, with no way to discover what keys exist at all, even
+// though the underlying data (identity.Verifier.Keys(), used by
+// GetVirtualKey above) already supports it. Returns copies, like
+// GetVirtualKey -- a caller can never mutate live key state through the
+// returned slice.
+func (p *Pipeline) ListVirtualKeys() []identity.VirtualKey {
+	keys := p.verifier.Load().Keys()
+	result := make([]identity.VirtualKey, len(keys))
+	copy(result, keys)
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result
 }
 
 // SpentUSD returns keyID's cumulative recorded spend under resetInterval's
