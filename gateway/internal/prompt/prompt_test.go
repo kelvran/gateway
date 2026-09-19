@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -661,6 +663,187 @@ func TestSetLabelWithNonPositiveVersionResolvesToLatestAtCallTime(t *testing.T) 
 	}
 	if version != 2 {
 		t.Errorf("ResolveLabel after a later Upsert = version %d, want 2 (label pinned at call time, not live)", version)
+	}
+}
+
+// TestResolveLabelReadsLabelAndVersionFromOneConsistentSnapshot is the
+// regression proof for a real bug an audit found: ResolveLabel used to
+// read the label's own version via one s.state.Load(), then delegate to
+// Resolve, which performed a SECOND, entirely independent s.state.Load()
+// internally -- unlike every other method in this file, which each read
+// state via exactly one Load() per attempt. A concurrent Delete(id)
+// followed by two Upsert(id, ...) calls landing in the gap between those
+// two Loads restarts id's version numbering at 1 (Upsert's own doc
+// comment), so a stale second Load could silently resolve to a
+// completely different, newer prompt "generation" sharing the same bare
+// version number, with no error at all.
+//
+// atomic.Pointer's own CompareAndSwap contract guarantees the *storeState
+// a single Load() returns is never mutated in place -- every mutator in
+// this file installs a brand-new struct via CAS, never touching the old
+// one (confirmed directly in Upsert/Delete/SetLabel/DeleteLabel above).
+// This test proves that guarantee both ways, deterministically, with no
+// goroutines/timing needed: the SAME captured snapshot, used for both the
+// label lookup and the version lookup (exactly what the real, fixed
+// ResolveLabel does today), stays correct even after a real mutation
+// completes on the live store -- while a hand-simulated SECOND,
+// independent Load for the version half (the old, buggy shape) provably
+// does NOT.
+func TestResolveLabelReadsLabelAndVersionFromOneConsistentSnapshot(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("p1", msgs("original-v1")); err != nil {
+		t.Fatalf("seed Upsert v1: %v", err)
+	}
+	if _, err := s.Upsert("p1", msgs("original-v2")); err != nil {
+		t.Fatalf("seed Upsert v2: %v", err)
+	}
+	if _, err := s.SetLabel("p1", "production", 2); err != nil {
+		t.Fatalf("SetLabel: %v", err)
+	}
+
+	// Mirrors ResolveLabel's own single Load -- this ONE snapshot is what
+	// the fixed implementation uses for both the label and version reads.
+	snapshot := s.state.Load()
+	l, ok := snapshot.labels["p1"]["production"]
+	if !ok || l.Version != 2 {
+		t.Fatalf("setup: captured label = %+v, ok=%v, want version 2", l, ok)
+	}
+
+	// The real concurrent mutation the audit's own interleaving found: a
+	// Delete followed by two fresh Upserts, restarting "p1"'s version
+	// numbering at 1 for an entirely new, unrelated prompt generation.
+	if err := s.Delete("p1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := s.Upsert("p1", msgs("UNRELATED-new-v1")); err != nil {
+		t.Fatalf("re-Upsert v1: %v", err)
+	}
+	if _, err := s.Upsert("p1", msgs("UNRELATED-new-v2")); err != nil {
+		t.Fatalf("re-Upsert v2: %v", err)
+	}
+
+	// Sanity check that the mutation actually landed, and that a SECOND,
+	// independent Load for the version half (the OLD buggy shape) really
+	// does reproduce the exact mismatch the audit found -- if this
+	// doesn't hold, the rest of this test would be proving nothing.
+	staleP, staleOK := getFromVersions(s.state.Load().versions["p1"], l.Version)
+	if !staleOK || staleP.Messages[0].Content != "UNRELATED-new-v2" {
+		t.Fatalf("setup: a second, independent Load for version %d = %+v, ok=%v -- want the unrelated new-v2 content (test scenario itself is broken)", l.Version, staleP, staleOK)
+	}
+
+	// The load-bearing assertion: resolving the SAME label's version from
+	// the ORIGINAL, single captured snapshot -- exactly what the real,
+	// fixed ResolveLabel does -- must still return the ORIGINAL content,
+	// completely unaffected by the mutation that happened after it was
+	// captured.
+	p, ok := getFromVersions(snapshot.versions["p1"], l.Version)
+	if !ok || p.Messages[0].Content != "original-v2" {
+		t.Errorf("resolving from the single captured snapshot = %+v, ok=%v, want the original v2 content -- a single Load must be immune to a later mutation", p, ok)
+	}
+
+	// And the real ResolveLabel call, made AFTER the mutation with a
+	// FRESH label lookup, correctly reflects reality: "production" was
+	// cleared by Delete and never reset, so this must fail loudly, never
+	// silently returning either generation's content.
+	_, _, _, err := s.ResolveLabel("p1", "production", nil)
+	if !errors.Is(err, ErrPromptNotFound) {
+		t.Errorf("ResolveLabel after the real delete+recreate cycle = %v, want ErrPromptNotFound", err)
+	}
+}
+
+// TestResolveLabelUnderConcurrentDeleteRecreateNeverReturnsVersionNotFoundForAKnownLabel
+// is the DIFFERENTIAL regression proof for the same TOCTOU bug the
+// deterministic test above documents -- that one proves the underlying
+// atomic.Pointer/CAS immutability property in isolation, but never
+// actually calls the real ResolveLabel during its race window, so
+// reverting ResolveLabel to the old, buggy two-Load shape does not make
+// it fail. This test does, via a real, live race through the actual
+// public API.
+//
+// The invariant this exploits: storeState guarantees that whenever a
+// label names some version V for id WITHIN ONE SNAPSHOT, that same
+// snapshot's versions[id] necessarily contains version V too -- SetLabel
+// only ever installs a label after confirming the target version exists
+// in the very state it's about to CAS into, and Delete clears a prompt's
+// versions and its labels together, in the same atomic swap (see
+// SetLabel/Delete's own doc comments). So for the FIXED, single-Load
+// ResolveLabel, "the label lookup succeeded but the version lookup
+// failed" is structurally impossible. For the OLD, buggy two-Load shape,
+// it's exactly what happens if a concurrent Delete+re-Upsert cycle lands
+// in the gap between the two independent Loads: the first Load catches a
+// label from the OLD generation (version 2), and the second, later Load
+// (inside the old Resolve delegation) catches a moment after Delete but
+// before the new generation's version 2 has been re-created.
+//
+// A transient "label %q" not-found error is expected and harmless (a
+// legitimate Load can land in the brief window after Delete but before
+// SetLabel re-establishes the label) -- only the "version %d" shape is
+// diagnostic, and must never occur.
+func TestResolveLabelUnderConcurrentDeleteRecreateNeverReturnsVersionNotFoundForAKnownLabel(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Upsert("p1", msgs("seed-v1")); err != nil {
+		t.Fatalf("seed Upsert v1: %v", err)
+	}
+	if _, err := s.Upsert("p1", msgs("seed-v2")); err != nil {
+		t.Fatalf("seed Upsert v2: %v", err)
+	}
+	if _, err := s.SetLabel("p1", "production", 2); err != nil {
+		t.Fatalf("seed SetLabel: %v", err)
+	}
+
+	const writerIterations = 3000
+	done := make(chan struct{})
+	var versionNotFoundSeen atomic.Bool
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(done)
+		for i := 0; i < writerIterations; i++ {
+			if err := s.Delete("p1"); err != nil {
+				t.Errorf("Delete #%d: %v", i, err)
+				return
+			}
+			if _, err := s.Upsert("p1", msgs(fmt.Sprintf("gen-%d-v1", i))); err != nil {
+				t.Errorf("Upsert v1 #%d: %v", i, err)
+				return
+			}
+			if _, err := s.Upsert("p1", msgs(fmt.Sprintf("gen-%d-v2", i))); err != nil {
+				t.Errorf("Upsert v2 #%d: %v", i, err)
+				return
+			}
+			if _, err := s.SetLabel("p1", "production", 2); err != nil {
+				t.Errorf("SetLabel #%d: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if _, _, _, err := s.ResolveLabel("p1", "production", nil); err != nil {
+				if !errors.Is(err, ErrPromptNotFound) {
+					t.Errorf("ResolveLabel: unexpected non-ErrPromptNotFound error: %v", err)
+					continue
+				}
+				if strings.Contains(err.Error(), "version") {
+					versionNotFoundSeen.Store(true)
+				}
+			}
+		}
+	}()
+
+	wg.Wait()
+	if versionNotFoundSeen.Load() {
+		t.Error(`ResolveLabel returned a "version not found" error for a label lookup that itself succeeded -- this is only reachable by reading the label and its target version from two DIFFERENT, inconsistent snapshots (the exact TOCTOU bug this test guards against)`)
 	}
 }
 

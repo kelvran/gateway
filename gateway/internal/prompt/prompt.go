@@ -434,16 +434,39 @@ func (s *Store) DeleteLabel(id, label string) error {
 }
 
 // ResolveLabel resolves id's prompt at whichever version label currently
-// points to (see SetLabel), then delegates to Resolve for the identical
-// substitution/fingerprinting logic — a label is purely an indirection
-// to a version number at read time, never a separate resolution path.
-// Returns ErrPromptNotFound if id has no such label.
+// points to (see SetLabel), then applies the identical substitution/
+// fingerprinting logic Resolve itself uses — a label is purely an
+// indirection to a version number at read time, never a separate
+// resolution path. Returns ErrPromptNotFound if id has no such label, or
+// if the labeled version no longer exists.
+//
+// Fixed, a real bug an audit found: this previously read the label's
+// version via one s.state.Load(), then delegated to Resolve, which
+// performed a SECOND, entirely independent s.state.Load() internally —
+// unlike every other method in this file (Upsert/Delete/SetLabel/
+// DeleteLabel/Get/List), which each read state via exactly one Load()
+// per attempt. A concurrent Delete(id) followed by two Upsert(id, ...)
+// calls landing in the gap between those two Loads restarts id's version
+// numbering at 1 (Upsert's own doc comment) — so the label's own
+// captured version number could coincidentally match a version that
+// exists again, but belongs to a completely different, newer prompt
+// "generation." getFromVersions matches purely on the bare integer
+// p.Version, with no generation/identity tie-back to the specific label
+// read, so the stale second Load silently returned unrelated content
+// with no error at all. Reading both the label and its target version
+// from ONE shared snapshot closes this — the same single-Load discipline
+// every other method here already follows.
 func (s *Store) ResolveLabel(id, label string, variables map[string]string) ([]adapter.Message, string, int, error) {
-	l, ok := s.state.Load().labels[id][label]
+	state := s.state.Load()
+	l, ok := state.labels[id][label]
 	if !ok {
 		return nil, "", 0, fmt.Errorf("%w: %q label %q", ErrPromptNotFound, id, label)
 	}
-	return s.Resolve(id, l.Version, variables)
+	p, ok := getFromVersions(state.versions[id], l.Version)
+	if !ok {
+		return nil, "", 0, fmt.Errorf("%w: %q version %d", ErrPromptNotFound, id, l.Version)
+	}
+	return resolveMessages(p, variables), fingerprintFor(p), p.Version, nil
 }
 
 // placeholderPattern matches a "{{name}}" substitution point -- name is
@@ -553,7 +576,15 @@ func (s *Store) Resolve(id string, version int, variables map[string]string) ([]
 		}
 		return nil, "", 0, fmt.Errorf("%w: %q", ErrPromptNotFound, id)
 	}
+	return resolveMessages(p, variables), fingerprintFor(p), p.Version, nil
+}
 
+// resolveMessages applies Resolve's own "{{name}}" substitution over
+// every message in p, given a Prompt already looked up by its caller —
+// extracted so ResolveLabel can apply the identical logic against a
+// Prompt it resolved from its OWN single, consistent state.Load()
+// snapshot, rather than re-deriving it via a second, independent lookup.
+func resolveMessages(p Prompt, variables map[string]string) []adapter.Message {
 	resolved := make([]adapter.Message, len(p.Messages))
 	for i, m := range p.Messages {
 		m.Content = substitute(m.Content, variables)
@@ -577,5 +608,5 @@ func (s *Store) Resolve(id string, version int, variables map[string]string) ([]
 		}
 		resolved[i] = m
 	}
-	return resolved, fingerprintFor(p), p.Version, nil
+	return resolved
 }
