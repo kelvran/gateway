@@ -296,3 +296,56 @@ def test_ingest_persists_earlier_keys_promotable_cases_when_a_later_key_fails(
 
     runs = [json.loads(line) for line in results_path.read_text().splitlines() if line]
     assert len(runs) == 2
+
+
+def test_ingest_persists_runs_even_when_suite_persistence_itself_fails(
+    tmp_path, monkeypatch
+):
+    """Regression proof for a full-codebase-audit finding on the fix
+    above: ingest_cmd's finally block called
+    `_append_cases_to_suite(new_cases, suite_path)` then
+    `append_runs(new_runs, results_path)` with no guard between them --
+    if the FIRST call itself raised (e.g. --suite pointing at a
+    nonexistent parent directory), the second call never ran at all,
+    losing the run data too, even though it targets a completely
+    unrelated, perfectly writable path. _try_persist closes this by
+    isolating each persistence call from the other.
+    """
+    lines = _fixture_lines()
+    monkeypatch.setattr(
+        cli_module, "list_object_keys", lambda scheme, bucket, prefix: ["obj.jsonl"]
+    )
+    monkeypatch.setattr(
+        cli_module, "iter_object_lines", lambda scheme, bucket, key: iter(lines)
+    )
+
+    out_path = tmp_path / "ingested.jsonl"
+    # suite_path's own parent directory does not exist -- write_text
+    # inside _append_cases_to_suite will raise FileNotFoundError.
+    suite_path = tmp_path / "no_such_subdir" / "suite.json"
+    results_path = tmp_path / "runs.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "ingest",
+            "--source",
+            "s3://my-bucket/gatewayevents/v1/",
+            "--out",
+            str(out_path),
+            "--suite",
+            str(suite_path),
+            "--results",
+            str(results_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not suite_path.exists()
+
+    # The load-bearing assertion: the suite-persistence failure must not
+    # have prevented append_runs from running against its own, unrelated,
+    # perfectly writable path.
+    runs = [json.loads(line) for line in results_path.read_text().splitlines() if line]
+    assert len(runs) == 2
+    assert "warning: failed to persist promotable cases" in result.output

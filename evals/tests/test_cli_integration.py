@@ -169,6 +169,66 @@ def test_run_one_bad_case_still_persists_the_other_cases_scores(tmp_path):
     assert persisted[0].value is True
 
 
+def test_run_persist_failure_never_masks_the_real_case_error(tmp_path):
+    """Regression proof for a full-codebase-audit finding on the fix
+    above: run_cmd's finally block called `append_scores(scores,
+    scores_path)` completely unguarded -- if THAT call itself raised
+    (here, --scores pointing at a nonexistent parent directory), the
+    resulting FileNotFoundError replaced case-2's real ValueError as the
+    command's reported failure, and case-1's own already-computed Score
+    (never actually written, since the directory genuinely doesn't
+    exist) was silently discarded with no warning at all. _try_persist
+    closes this: the real error must still be what's reported, and a
+    warning about the persistence failure must still be visible.
+    """
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "case-1-good",
+                    "revision": 1,
+                    "task_spec": {"output": "Paris"},
+                    "reference": "Paris",
+                    "tier": "golden",
+                },
+                {
+                    "id": "case-2-malformed",
+                    "revision": 1,
+                    "task_spec": {},
+                    "reference": None,
+                    "tier": "golden",
+                },
+            ]
+        )
+    )
+    # scores_path's own parent directory does not exist -- append_scores
+    # will raise FileNotFoundError from inside the finally block.
+    scores_path = tmp_path / "no_such_subdir" / "scores.jsonl"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--scores",
+            str(scores_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "case-1-good: PASS" in result.output
+
+    # The load-bearing assertion: case-2's real error, not the secondary
+    # persistence failure, must be what's actually reported.
+    assert result.exception is not None
+    assert not isinstance(result.exception, FileNotFoundError)
+    assert "warning: failed to persist scores" in result.output
+    assert not scores_path.exists()
+
+
 def test_report_prints_pass_rate_with_ci_never_a_bare_percentage():
     runner = CliRunner()
     result = runner.invoke(main, ["report", "--successes", "8", "--total", "10"])

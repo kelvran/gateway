@@ -179,6 +179,36 @@ def _append_cases_to_suite(cases: list[EvalCase], path: Path) -> None:
     path.write_text(json.dumps(existing, indent=2) + "\n")
 
 
+def _try_persist(description: str, fn: Callable[[], None]) -> None:
+    """Runs fn, catching and reporting (never raising) any exception it
+    produces -- for use inside a `finally:` block that persists
+    already-accumulated, in-memory results (Scores, Runs, promotable
+    EvalCases) after a command's own main loop exits, on any path
+    including a mid-loop failure. Closes a real gap an audit found in
+    the try/finally fix that pattern itself relies on
+    (run_cmd/ingest_cmd/rollout_cmd/audit_corpus_cmd all persist inside
+    `finally:` specifically so a later case/key's failure doesn't
+    discard earlier, already-computed results): an UNGUARDED persistence
+    call inside that same finally block can itself raise (e.g. a bad
+    `--scores`/`--suite`/`--results` path whose parent directory doesn't
+    exist) and, on Python's own well-documented finally-block-exception
+    semantics, that new exception REPLACES whatever exception originally
+    triggered the finally -- masking the real root cause AND, when a
+    command persists more than one artifact in the same finally block
+    (rollout_cmd: runs, scores, spans; ingest_cmd: promotable cases, then
+    runs), stopping every LATER persistence call in that same block from
+    ever running at all, defeating this whole fix's own purpose. Reports
+    via click.echo to stderr rather than logging silently, since these
+    commands have no structured logger of their own — an operator running
+    the CLI interactively needs to see this on the terminal, not in a log
+    file they may not be tailing.
+    """
+    try:
+        fn()
+    except Exception as exc:
+        click.echo(f"warning: failed to persist {description}: {exc}", err=True)
+
+
 def _append_case_to_suite(case: EvalCase, path: Path) -> None:
     """Single-case convenience wrapper around `_append_cases_to_suite`,
     for `evals promote`'s one-case-per-invocation call site.
@@ -1311,8 +1341,11 @@ def run_cmd(
         # in this same invocation -- even though `scores` is already
         # fully populated incrementally as the loop runs, so whatever's
         # accumulated so far is always available to persist here
-        # regardless of how the loop exits.
-        append_scores(scores, scores_path)
+        # regardless of how the loop exits. _try_persist (a later audit
+        # finding on this same fix) is what stops append_scores ITSELF
+        # raising (e.g. a --scores path whose parent directory doesn't
+        # exist) from masking the real, original exception above.
+        _try_persist("scores", lambda: append_scores(scores, scores_path))
 
     click.echo(format_report(successes, total, confidence=confidence))
 
@@ -1628,10 +1661,20 @@ def ingest_cmd(
         # entirely and discarding every already-decoded EvalCase/Run
         # accumulated from EARLIER keys in new_cases/new_runs -- even
         # though --out already retains those same events (out_file's
-        # own writes are flushed per-line as the loop runs).
+        # own writes are flushed per-line as the loop runs). _try_persist
+        # (a later audit finding on this same fix) is what stops EITHER
+        # call below, if it itself raises, from masking the real,
+        # original exception above AND from preventing the OTHER call
+        # from ever running -- both real gaps a naive unguarded pair of
+        # sequential calls has, since a failure in the first previously
+        # meant the second (here, the runs — separate data from the
+        # promotable cases the first call persists) never ran at all.
         if suite_path is not None:
-            _append_cases_to_suite(new_cases, suite_path)
-            append_runs(new_runs, results_path)
+            _try_persist(
+                "promotable cases",
+                lambda: _append_cases_to_suite(new_cases, suite_path),
+            )
+        _try_persist("runs", lambda: append_runs(new_runs, results_path))
 
     click.echo(
         f"ingested {len(keys)} object(s) from {source}: "
@@ -2099,9 +2142,13 @@ def rollout_cmd(
     try:
         asyncio.run(_run_and_score())
     finally:
-        append_runs(runs, results_path)
-        append_scores(scores, scores_path)
-        append_spans(span_sink, traces_path)
+        # _try_persist (a later audit finding on this same fix) is what
+        # stops any ONE of these three calls, if it itself raises, from
+        # masking whatever exception _run_and_score raised, or from
+        # preventing the remaining calls from running at all.
+        _try_persist("runs", lambda: append_runs(runs, results_path))
+        _try_persist("scores", lambda: append_scores(scores, scores_path))
+        _try_persist("spans", lambda: append_spans(span_sink, traces_path))
 
     click.echo(format_report(successes, total, confidence=confidence))
 
@@ -2689,8 +2736,15 @@ def audit_corpus_cmd(
                 )
                 findings.append(finding)
     finally:
-        out_path.write_text(
-            json.dumps([asdict(f) for f in findings], indent=2, default=str)
+        # _try_persist (a later audit finding on this same
+        # run_cmd/ingest_cmd/rollout_cmd fix) is what stops write_text
+        # itself, if it raises (e.g. a bad --out path), from masking
+        # whatever exception the loop above raised.
+        _try_persist(
+            "findings",
+            lambda: out_path.write_text(
+                json.dumps([asdict(f) for f in findings], indent=2, default=str)
+            ),
         )
 
     click.echo(
