@@ -31,6 +31,34 @@ func TestPromptInjectionDetectorTruePositiveHiddenUnicode(t *testing.T) {
 	}
 }
 
+// TestPromptInjectionDetectorTruePositiveWordJoinerAndVariationSelector
+// is the regression proof for a real gap this repo's own end-to-end
+// research round found (docs/upgrade-research/ai-security-hardening-
+// tier1-2026-09-20.md): the OWASP GenAI LLM Top 10 2026 edition names
+// U+2060 (WORD JOINER) and the U+FE00-FE0F variation-selector block as
+// a live, real-world-cited smuggling technique hiddenUnicodeRanges was
+// missing.
+func TestPromptInjectionDetectorTruePositiveWordJoinerAndVariationSelector(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		r    rune
+	}{
+		{"word joiner", 0x2060},
+		{"variation selector", 0xFE0F},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := "hello" + string(tc.r) + "world"
+			findings, err := PromptInjectionDetector{}.Detect(context.Background(), text)
+			if err != nil {
+				t.Fatalf("Detect: %v", err)
+			}
+			if len(findings) == 0 {
+				t.Fatalf("expected at least one finding for a hidden %s character", tc.name)
+			}
+		})
+	}
+}
+
 func TestPromptInjectionDetectorTrueNegative(t *testing.T) {
 	findings, err := PromptInjectionDetector{}.Detect(context.Background(), "what is the weather like in Paris today")
 	if err != nil {

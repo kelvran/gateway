@@ -58,8 +58,24 @@ func buildInjectionPhrases() []string {
 // known attack vectors: zero-width characters, bidirectional-control
 // characters, and Unicode tag characters — none of which have any
 // legitimate reason to appear in ordinary chat input.
+//
+// Widened 2026-09-20, by this repo's own end-to-end research round
+// (docs/upgrade-research/ai-security-hardening-tier1-2026-09-20.md):
+// the OWASP GenAI LLM Top 10 2026 edition names two further ranges as a
+// live, real-world-cited smuggling technique this list was missing --
+// U+2060 (WORD JOINER, adjacent to but not covered by the 200B-200D
+// zero-width range above) and the full U+FE00-FE0F variation-selector
+// block. Per that same research's own finding, this widening closes a
+// concrete gap but is not itself a strong defense: OWASP's 2026 edition
+// explicitly documents that no input-side detector, regex or ML,
+// reliably stops an adaptive attacker (cites Nasr et al. 2025: static
+// defenses ~0%, adaptive >90% success against 12 recent defenses) --
+// this list stays a real, cheap, disclosed mitigation for the known,
+// already-published vectors it covers, not a claim of completeness.
 var hiddenUnicodeRanges = [][2]rune{
 	{0x200B, 0x200D},   // zero-width space/non-joiner/joiner
+	{0x2060, 0x2060},   // word joiner
+	{0xFE00, 0xFE0F},   // variation selectors
 	{0xFEFF, 0xFEFF},   // zero-width no-break space (BOM)
 	{0x202A, 0x202E},   // bidirectional control
 	{0xE0020, 0xE007F}, // Unicode tag characters
