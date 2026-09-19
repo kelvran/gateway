@@ -21,6 +21,20 @@ func hashStickyKey(key string) uint64 {
 	return h.Sum64() % stickyHashBuckets
 }
 
+// hashWithinSideKey hashes key into the raw (unmodulused -- the caller
+// takes % sideWeight itself, since sideWeight varies by call) value
+// stickyPick's within-side pick uses, once the side itself
+// (hashStickyKey) has already been decided. A DIFFERENT hash domain
+// (an appended suffix, not just a different modulus of the same sum) so
+// the side decision and the within-side decision are statistically
+// independent even for adversarially-chosen keys.
+func hashWithinSideKey(key string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	_, _ = h.Write([]byte("|within"))
+	return h.Sum64()
+}
+
 // stickyPick chooses a deployment from ms's group for stickyKey,
 // splitting the group into its Sticky-flagged ("canary") and
 // non-flagged ("stable") members by weight, then bucketing stickyKey
@@ -47,12 +61,47 @@ func hashStickyKey(key string) uint64 {
 // Returns ("", false) if stickyKey's side has no real split to make
 // (nobody in the group is Sticky, or everybone is — the same reason
 // SelectSticky checks stickyGroups before ever calling this) or if
-// ms.sumW is 0 (an empty group; ms.next() already handles that itself).
+// ms.sumW is 0 (an empty group).
 //
 // Does NOT check exclude/health/cost-tier — SelectSticky applies those
 // to whatever this returns, falling through to plain selectHealthy on
 // any rejection, so a sticky pick can never bypass this package's
 // existing health/ramp safety.
+//
+// **Fixed, a real bug found via a live -race reproduction**: the
+// within-side pick used to walk ms's own shared WRR cursor (ms.next(),
+// the exact same mutex-protected sequence plain Select/selectHealthy use
+// for every OTHER concurrent caller of this model, including the
+// fallback/re-pick call sites for THIS SAME model per SelectSticky's own
+// doc comment). A bounded "up to sumW calls" scan against that cursor
+// only actually visits every distinct group member when it runs as an
+// unbroken sequence — true for a single goroutine in isolation, but not
+// under real concurrency: another goroutine's own next() call (a plain
+// Select, or a DIFFERENT key's stickyPick) can land between any two of
+// THIS call's own iterations, consuming a slot in the global sequence
+// without this call ever seeing it. A live 50-goroutine burst of
+// concurrent Select calls interleaved with SelectSticky calls for known
+// canary-hashing keys reproduced this directly: stickyPick's loop
+// occasionally exhausted all sumW iterations without ever landing on a
+// canary-side name, even though the group unambiguously had one —
+// breaking this feature's own core promise ("the SAME key
+// deterministically prefers the same side... on every call") under
+// exactly the concurrent traffic this feature exists for.
+//
+// Fixed by making the within-side pick a second, independent pure hash
+// (hashWithinSideKey, a different domain from the side-selection hash)
+// bucketed via cumulative weight among the chosen side's own members —
+// zero shared mutable state consulted at all, so there is no cursor left
+// to race on. This is a STRONGER guarantee than the old design ever
+// actually delivered even in the race-free case: the specific deployment
+// within a side is now itself fully deterministic per key (not merely
+// "some member of the correct side, WRR-distributed across calls"),
+// still respecting each member's relative weight statistically across
+// many distinct keys. Not required to be monotonic under a SetWeight
+// change to one member's own weight (only the SIDE split has that
+// requirement — see hashStickyKey's own doc comment); a key can
+// legitimately move to a different canary among 2+ canaries after a
+// weight edit, same as before this fix.
 func (r *Router) stickyPick(ms *modelState, stickyKey string) (name string, ok bool) {
 	if ms.sumW == 0 {
 		return "", false
@@ -71,27 +120,25 @@ func (r *Router) stickyPick(ms *modelState, stickyKey string) (name string, ok b
 	threshold := uint64(stickyWeight) * stickyHashBuckets / uint64(ms.sumW)
 	wantSticky := hashStickyKey(stickyKey) < threshold
 
-	// WITHIN the matching side, still walk the group's own shared WRR
-	// cursor (ms.next(), the exact same one plain Select uses) rather
-	// than a flat first-match — preserving proportional distribution
-	// across however many deployments share that side, exactly mirroring
-	// selectHealthy's own "scan up to sumW offers, skip non-matching"
-	// shape (health.go). This is also why a group with 3+ Sticky-flagged
-	// deployments doesn't get independent monotonic boundaries between
-	// them specifically: the threshold hash only ever decides sticky-side
-	// membership as a whole, and the within-side WRR walk (like
-	// selectHealthy's own health/tier skip) is not itself monotonic under
-	// a weight change to one member of that side — an accepted v1 scope
-	// limit for the N>2 case, disclosed, not silently glossed over.
-	for i := 0; i < ms.sumW; i++ {
-		name, ok = ms.next()
-		if !ok {
-			return "", false
+	sideWeight := stickyWeight
+	if !wantSticky {
+		sideWeight = ms.sumW - stickyWeight
+	}
+	pos := hashWithinSideKey(stickyKey) % uint64(sideWeight)
+	var cumulative uint64
+	for _, d := range ms.deps {
+		if r.stickyDeployments[d.name] != wantSticky {
+			continue
 		}
-		if r.stickyDeployments[name] == wantSticky {
-			return name, true
+		cumulative += uint64(d.weight)
+		if pos < cumulative {
+			return d.name, true
 		}
 	}
+	// Unreachable: sideWeight is exactly the sum of this side's own
+	// weights, and pos < sideWeight by construction (% above), so
+	// cumulative must reach/exceed pos before this loop runs out of
+	// members.
 	return "", false
 }
 

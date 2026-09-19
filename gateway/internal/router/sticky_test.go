@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -282,5 +283,136 @@ func TestSelectStickyNeverDoubleChargesRampCreditOnATierRejectedCandidate(t *tes
 	r.healthMu.Unlock()
 	if gotRampCredit != 1 {
 		t.Errorf("canary.rampCredit = %d after one SelectSticky call, want exactly 1 (RecoveryRampInitialPercent) -- selectHealthy's own scan double-charged it", gotRampCredit)
+	}
+}
+
+// TestStickyPickWithinSideDistributionApproximatesRelativeWeightAmongMultipleMembers
+// proves the within-side pick still respects each side member's own
+// relative weight, statistically, across many distinct keys -- the
+// property stickyPick's own doc comment used to get from walking the
+// shared WRR cursor, now from hashWithinSideKey's cumulative-weight
+// bucketing instead. Needs a side with 2+ members to be meaningful at
+// all -- every other test in this file uses exactly one deployment per
+// side.
+func TestStickyPickWithinSideDistributionApproximatesRelativeWeightAmongMultipleMembers(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "stable", Model: "gpt-4o", Weight: 4},
+		{Name: "canary-a", Model: "gpt-4o", Weight: 3, Sticky: true},
+		{Name: "canary-b", Model: "gpt-4o", Weight: 1, Sticky: true},
+	}, HealthConfig{})
+
+	const totalKeys = 20000
+	canaryACount, canaryBCount := 0, 0
+	for i := 0; i < totalKeys; i++ {
+		key := fmt.Sprintf("tenant-%d", i)
+		name, ok := r.stickyPick(r.models["gpt-4o"], key)
+		if !ok {
+			t.Fatalf("stickyPick(%q): ok=false, want a real pick (stable or canary)", key)
+		}
+		if name == "stable" {
+			continue // this key landed on the stable side -- not this test's concern.
+		}
+		switch name {
+		case "canary-a":
+			canaryACount++
+		case "canary-b":
+			canaryBCount++
+		default:
+			t.Fatalf("stickyPick returned unexpected name %q", name)
+		}
+	}
+
+	total := canaryACount + canaryBCount
+	if total == 0 {
+		t.Fatal("no key landed on the canary side at all -- test setup is broken")
+	}
+	// canary-a:canary-b are weighted 3:1 -- want ~75% for canary-a,
+	// generous +/-5 percentage point tolerance for hash-distribution
+	// noise at this sample size.
+	gotPercent := float64(canaryACount) / float64(total) * 100
+	if gotPercent < 70 || gotPercent > 80 {
+		t.Errorf("canary-a share of the canary side = %.2f%% (%d/%d), want approximately 75%% (weight 3 vs canary-b's weight 1)", gotPercent, canaryACount, total)
+	}
+}
+
+// TestSelectStickyNeverLosesStickinessUnderConcurrentSelectInterleaving is
+// the regression proof for a real bug found via a live -race
+// reproduction (see stickyPick's own doc comment): the within-side pick
+// used to walk ms's own shared WRR cursor, the SAME cursor plain Select
+// calls for this model (e.g. a same-model fallback re-pick, per
+// SelectSticky's own doc comment) mutate concurrently. A bounded "up to
+// sumW iterations" scan against that cursor is only actually guaranteed
+// to visit every distinct group member as an unbroken sequence -- true
+// for one goroutine in isolation, but not under real concurrent
+// interleaving from unrelated Select/SelectSticky calls, which can make
+// the scan exhaust without ever finding a same-side candidate that
+// genuinely exists, silently losing the sticky guarantee for that one
+// call.
+//
+// Hammers SelectSticky (many known canary-hashing keys) concurrently with
+// plain Select (the same model's fallback-retry path) under -race. Every
+// single SelectSticky call for a canary-hashing key must land on a
+// canary-side deployment -- the whole point of "sticky," and now a pure
+// function of the key with zero shared state involved, so this must hold
+// with zero tolerance, not just "rarely."
+func TestSelectStickyNeverLosesStickinessUnderConcurrentSelectInterleaving(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "stable-a", Model: "gpt-4o", Weight: 3},
+		{Name: "stable-b", Model: "gpt-4o", Weight: 1},
+		{Name: "canary-a", Model: "gpt-4o", Weight: 3, Sticky: true},
+		{Name: "canary-b", Model: "gpt-4o", Weight: 1, Sticky: true},
+	}, HealthConfig{})
+
+	var canaryKeys []string
+	for i := 0; i < 2000 && len(canaryKeys) < 200; i++ {
+		key := fmt.Sprintf("tenant-%d", i)
+		if hashStickyKey(key) < 5000 { // 50% split: stickyWeight(4) * 10000 / sumW(8).
+			canaryKeys = append(canaryKeys, key)
+		}
+	}
+	if len(canaryKeys) == 0 {
+		t.Fatal("no canary-hashing keys found -- test setup is broken")
+	}
+
+	const perturbers = 50
+	const stickyCallers = 50
+	const itersPerGoroutine = 500
+
+	var wg sync.WaitGroup
+	for g := 0; g < perturbers; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < itersPerGoroutine; i++ {
+				r.Select("gpt-4o", nil)
+			}
+		}()
+	}
+
+	var mu sync.Mutex
+	var failures []string
+	for g := 0; g < stickyCallers; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < itersPerGoroutine; i++ {
+				key := canaryKeys[(g*itersPerGoroutine+i)%len(canaryKeys)]
+				name, ok := r.SelectSticky("gpt-4o", nil, key)
+				if !ok || (name != "canary-a" && name != "canary-b") {
+					mu.Lock()
+					failures = append(failures, fmt.Sprintf("key=%q got=(%q, %v)", key, name, ok))
+					mu.Unlock()
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	if len(failures) > 0 {
+		max := 5
+		if len(failures) < max {
+			max = len(failures)
+		}
+		t.Errorf("%d/%d SelectSticky calls for a canary-hashing key lost stickiness under concurrent Select interleaving, e.g.: %v", len(failures), stickyCallers*itersPerGoroutine, failures[:max])
 	}
 }
