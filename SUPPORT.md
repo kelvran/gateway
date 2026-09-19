@@ -14,7 +14,7 @@ Open a GitHub issue including: affected component (Gateway/Cache/Evals/MCP-A2A �
 
 ## Response Time Expectations
 
-Best-effort, no SLA, at the current solo-maintainer stage. `SECURITY.md`'s acknowledgement/resolution targets are the one place with numeric targets, and those are explicitly marked aspirational until the project's first real release — this document points there rather than inventing separate numbers.
+Best-effort, no SLA, at the current solo-maintainer stage. `SECURITY.md`'s acknowledgement/resolution targets are the one place with numeric targets — **corrected 2026-09-20** (found stale by an end-to-end research round, `docs/upgrade-research/ga-readiness-tier1-2026-09-20.md`): those targets have been real and contractual since `gateway/v0.1.0`/`evals/v0.1.0` (tagged 2026-09-03; see `SECURITY.md`'s own `2026-09-05` correction), not aspirational — this line describing them as still-aspirational was itself never updated when that changed. This document still points there rather than inventing separate numbers.
 
 ## Commercial/Enterprise Support
 

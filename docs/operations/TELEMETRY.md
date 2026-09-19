@@ -47,7 +47,7 @@ None of these have concrete target numbers yet — those get set once there's re
 
 ## Alerting Guidance
 
-Starting-point thresholds only, explicitly **not** an SLA (see `SECURITY.md`'s acknowledgement/resolution targets, which are similarly marked aspirational pre-release): alert on error-rate spikes per provider, alert on cache correctness metrics degrading (not just hit rate dropping), alert on eval judge-score drift crossing a threshold without a corresponding model/prompt change logged in `DECISIONS.md`.
+Starting-point thresholds only, explicitly **not** an SLA. **Corrected 2026-09-20** (found stale by an end-to-end research round, `docs/upgrade-research/ga-readiness-tier1-2026-09-20.md`): this line used to point at `SECURITY.md`'s own acknowledgement/resolution targets as "similarly marked aspirational pre-release" — those targets have in fact been real and contractual since `gateway/v0.1.0`/`evals/v0.1.0` (tagged 2026-09-03), so that comparison was itself stale, not just imprecise; removed rather than re-pointed, since these alerting thresholds have no numeric-target counterpart in `SECURITY.md` to meaningfully compare against either way. Alert on error-rate spikes per provider, alert on cache correctness metrics degrading (not just hit rate dropping), alert on eval judge-score drift crossing a threshold without a corresponding model/prompt change logged in `DECISIONS.md`.
 
 ## Privacy & Redaction
 
