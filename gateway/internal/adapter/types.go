@@ -495,6 +495,20 @@ type EmbeddingRequest struct {
 	// across a batch, mirroring OpenAI's own real "input: string |
 	// string[]" contract.
 	Input []string `json:"input"`
+	// Dimensions optionally requests a reduced output embedding size —
+	// both real providers this package supports accept this today:
+	// OpenAI's text-embedding-3-* models truncate/re-normalize their
+	// native dimensionality on request (confirmed against OpenAI's own
+	// current API reference), and Bedrock Titan V2 accepts one of
+	// {256, 512, 1024} (confirmed live; see bedrock.EmbeddingRequest's
+	// own doc comment, which used to hardcode this to 1024 with no
+	// caller-facing knob at all). Zero means "unset" — each provider
+	// adapter falls back to its own existing default (1024 for Titan,
+	// the model's native dimensionality for OpenAI, via omitempty)
+	// rather than a value this package invents, so a caller that never
+	// sets this sees byte-identical behavior to before this field
+	// existed.
+	Dimensions int `json:"dimensions,omitempty"`
 }
 
 // EmbeddingResponse is the canonical, provider-agnostic embeddings

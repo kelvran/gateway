@@ -9,8 +9,10 @@ import (
 
 // TestBedrockToEmbeddingProviderTranslatesSingleInput proves the
 // canonical EmbeddingRequest's single-entry Input maps onto Titan's
-// native inputText field, with the fixed dimensions/normalize values
-// this repo's own existing script already uses.
+// native inputText field, defaulting Dimensions to 1024 (Normalize
+// stays fixed true) when the caller leaves the canonical Dimensions
+// field unset -- byte-identical to this adapter's behavior before that
+// field existed.
 func TestBedrockToEmbeddingProviderTranslatesSingleInput(t *testing.T) {
 	a := New()
 	native, err := a.ToEmbeddingProvider(adapter.EmbeddingRequest{
@@ -29,6 +31,30 @@ func TestBedrockToEmbeddingProviderTranslatesSingleInput(t *testing.T) {
 	}
 	if req.Dimensions != 1024 || !req.Normalize {
 		t.Errorf("Dimensions/Normalize = %d/%v, want 1024/true", req.Dimensions, req.Normalize)
+	}
+}
+
+// TestBedrockToEmbeddingProviderThreadsCallerRequestedDimensions proves
+// a caller-set canonical Dimensions overrides the 1024 default -- the
+// real gap an audit found: this adapter used to hardcode 1024
+// unconditionally, with no way for a caller to request Titan V2's other
+// two supported sizes (256, 512).
+func TestBedrockToEmbeddingProviderThreadsCallerRequestedDimensions(t *testing.T) {
+	a := New()
+	native, err := a.ToEmbeddingProvider(adapter.EmbeddingRequest{
+		Model:      "amazon.titan-embed-text-v2:0",
+		Input:      []string{"hello world"},
+		Dimensions: 512,
+	})
+	if err != nil {
+		t.Fatalf("ToEmbeddingProvider: %v", err)
+	}
+	req, ok := native.(*EmbeddingRequest)
+	if !ok {
+		t.Fatalf("native = %T, want *EmbeddingRequest", native)
+	}
+	if req.Dimensions != 512 {
+		t.Errorf("Dimensions = %d, want 512 (the caller-requested value, not the 1024 default)", req.Dimensions)
 	}
 }
 

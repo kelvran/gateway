@@ -30,6 +30,29 @@ func TestOpenAIToEmbeddingProviderTranslatesInputArray(t *testing.T) {
 	}
 }
 
+// TestOpenAIToEmbeddingProviderThreadsCallerRequestedDimensions proves a
+// caller-set canonical Dimensions is forwarded onto OpenAI's native
+// dimensions field -- omitted entirely (via omitempty) when left unset,
+// matching this adapter's behavior before that field existed.
+func TestOpenAIToEmbeddingProviderThreadsCallerRequestedDimensions(t *testing.T) {
+	a := New()
+	native, err := a.ToEmbeddingProvider(adapter.EmbeddingRequest{
+		Model:      "text-embedding-3-small",
+		Input:      []string{"hello"},
+		Dimensions: 256,
+	})
+	if err != nil {
+		t.Fatalf("ToEmbeddingProvider: %v", err)
+	}
+	req, ok := native.(*EmbeddingRequest)
+	if !ok {
+		t.Fatalf("native = %T, want *EmbeddingRequest", native)
+	}
+	if req.Dimensions != 256 {
+		t.Errorf("Dimensions = %d, want 256", req.Dimensions)
+	}
+}
+
 // TestOpenAIToEmbeddingProviderRejectsEmptyInput proves an empty Input
 // is a real, typed error rather than a silent zero-length upstream call.
 func TestOpenAIToEmbeddingProviderRejectsEmptyInput(t *testing.T) {

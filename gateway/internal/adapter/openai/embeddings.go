@@ -16,6 +16,12 @@ import (
 type EmbeddingRequest struct {
 	Model string   `json:"model"`
 	Input []string `json:"input"`
+	// Dimensions is threaded from the canonical
+	// adapter.EmbeddingRequest.Dimensions -- omitempty so a caller that
+	// never sets it gets OpenAI's own default (the model's native
+	// dimensionality), byte-identical to this adapter's behavior before
+	// this field existed.
+	Dimensions int `json:"dimensions,omitempty"`
 }
 
 // EmbeddingResponseWire is OpenAI's native /v1/embeddings response shape.
@@ -52,7 +58,7 @@ func (a *Adapter) ToEmbeddingProvider(req adapter.EmbeddingRequest) (any, error)
 	if len(req.Input) == 0 {
 		return nil, fmt.Errorf("openai: embedding request has no input")
 	}
-	return &EmbeddingRequest{Model: req.Model, Input: req.Input}, nil
+	return &EmbeddingRequest{Model: req.Model, Input: req.Input, Dimensions: req.Dimensions}, nil
 }
 
 // FromEmbeddingProvider converts OpenAI's native embeddings response back
