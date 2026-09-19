@@ -201,6 +201,17 @@ linters:
         linters:
           - gosec
         text: "G204"
+      # containerID is container.GetContainerID() -- a real Docker
+      # container this SAME test created via testcontainers a few lines
+      # earlier, never attacker-reachable input, the identical rationale
+      # as configpropagation_test.go's exclusion just above. "docker
+      # pause"/"docker unpause" simulate a real network partition against
+      # that container to prove the active-health-probing circuit breaker
+      # both trips and recovers.
+      - path: cmd/gateway/chaos_partition_test\.go
+        linters:
+          - gosec
+        text: "G204"
 
 formatters:
   enable:
