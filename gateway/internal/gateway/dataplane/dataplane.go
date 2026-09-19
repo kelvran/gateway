@@ -1280,14 +1280,15 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 // bucket — a key with no PerModel entries behaves exactly as if this
 // parameter didn't exist.
 //
-// tpmReserved/tpmReservedTokens are ReserveTPM's own return values,
-// per docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md: the
-// caller MUST thread both through to finalize's ReconcileTPM call on
-// every return path (including error), or a granted TPM reservation
-// leaks permanently. Both are the harmless zero values whenever no real
-// reservation was made — TPM not configured for vk, or the RPM check
-// above already rejected the request before ReserveTPM was ever called.
-func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) (ok bool, failedOpen bool, tpmReserved bool, tpmReservedTokens float64) {
+// tpmReserved/tpmReservedTokens/tpmReservationEpoch are ReserveTPM's own
+// return values, per docs/rfcs/2026-09-08-gateway-budget-ratelimit-
+// toctou-fix.md: the caller MUST thread all three through to finalize's
+// ReconcileTPM call on every return path (including error), or a
+// granted TPM reservation leaks permanently. All are the harmless zero
+// values whenever no real reservation was made — TPM not configured for
+// vk, or the RPM check above already rejected the request before
+// ReserveTPM was ever called.
+func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) (ok bool, failedOpen bool, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64) {
 	allowed, err := p.limiter.AllowForModel(ctx, vk.ID, model)
 	if err != nil {
 		p.logger.Warn("ratelimit_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", err.Error())...)
@@ -1298,10 +1299,10 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 		// "how many times has this happened recently" without scanning
 		// every log line or trace.
 		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
-		return true, true, false, 0
+		return true, true, false, 0, 0
 	}
 	if !allowed {
-		return false, false, false, 0
+		return false, false, false, 0, 0
 	}
 	// TPM dimension, per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md,
 	// now via ReserveTPM (docs/rfcs/2026-09-08-gateway-budget-ratelimit-
@@ -1312,8 +1313,8 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 	// RPM-exhausted request is always rejected for that reason first,
 	// matching this codebase's own existing check-ordering discipline
 	// (model-allowed before rate-limit before budget).
-	ok, tpmReserved, tpmReservedTokens = p.limiter.ReserveTPM(vk.ID, model)
-	return ok, false, tpmReserved, tpmReservedTokens
+	ok, tpmReserved, tpmReservedTokens, tpmReservationEpoch = p.limiter.ReserveTPM(vk.ID, model)
+	return ok, false, tpmReserved, tpmReservedTokens, tpmReservationEpoch
 }
 
 // checkFallbackTargetRateLimit reports whether a fallback_chains hop to
@@ -2067,13 +2068,15 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// the exact token a StateNew Claim granted (see idempotency.Token's
 		// own doc comment for why a bare key-only Complete/Fail is unsafe).
 		idempotencyToken idempotency.Token
-		// tpmReserved/tpmReservedTokens and budgetReserved/
-		// budgetReservedUSD are checkRateLimit's/budget.Reserve's own
-		// return values, threaded through to finalize's ReconcileTPM/
-		// Reconcile calls on every return path — including error — per
+		// tpmReserved/tpmReservedTokens/tpmReservationEpoch and
+		// budgetReserved/budgetReservedUSD/budgetReservationEpoch are
+		// checkRateLimit's/budget.Reserve's own return values, threaded
+		// through to finalize's ReconcileTPM/Reconcile calls on every
+		// return path — including error — per
 		// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
 		tpmReserved            bool
 		tpmReservedTokens      float64
+		tpmReservationEpoch    int64
 		budgetReserved         bool
 		budgetReservedUSD      decimal.Decimal
 		budgetReservationEpoch int64
@@ -2103,7 +2106,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// costEstimated is always false on the buffered path — see
 		// finalize's own doc comment; only HandleChatCompletionStream ever
 		// estimates, via estimateOrRealUsage (streaming.go).
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, false, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, cacheAttempted, false, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -2140,7 +2143,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	}
 
 	var rateLimitOK bool
-	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens = p.checkRateLimit(ctx, vk, req.Model)
+	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens, tpmReservationEpoch = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {
 		err = ErrRateLimited
 		return
@@ -2752,7 +2755,7 @@ func realServingModel(dep Deployment, fallbackModel string) string {
 // itself (cost is computed from resp.Usage exactly the same way whether
 // that usage is real or estimated), only whether ChatCompletionResult/
 // GatewayDecisionEvent flag the resulting cost as an estimate.
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, cacheAttempted bool, costEstimated bool, err error, duration time.Duration) {
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64, cacheAttempted bool, costEstimated bool, err error, duration time.Duration) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too. The gate is
@@ -2826,7 +2829,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			realTokens = &rt
 		}
 		if tpmReserved || realTokens != nil {
-			p.limiter.ReconcileTPM(vk.ID, req.Model, tpmReservedTokens, realTokens)
+			p.limiter.ReconcileTPM(vk.ID, req.Model, tpmReservedTokens, tpmReservationEpoch, realTokens)
 		}
 	}
 

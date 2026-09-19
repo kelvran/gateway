@@ -37,7 +37,7 @@ func TestConcurrentReserveTPMBoundsAdmissionAgainstCapacityOneBucket(t *testing.
 		go func() {
 			defer wg.Done()
 
-			allowed, reservedTokens := b.ReserveTPM()
+			allowed, reservedTokens, reservationEpoch := b.ReserveTPM()
 			reserveDone.Done()
 
 			// The real upstream-call gap: nothing reconciles until every
@@ -47,7 +47,7 @@ func TestConcurrentReserveTPMBoundsAdmissionAgainstCapacityOneBucket(t *testing.
 			if allowed {
 				passedCount.Add(1)
 				realTokens := 1.0
-				b.ReconcileTPM(reservedTokens, &realTokens)
+				b.ReconcileTPM(reservedTokens, reservationEpoch, &realTokens)
 			}
 		}()
 	}
@@ -80,13 +80,13 @@ func TestConcurrentReserveTPMReproducibleAcrossManyRuns(t *testing.T) {
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				defer wg.Done()
-				allowed, reservedTokens := b.ReserveTPM()
+				allowed, reservedTokens, reservationEpoch := b.ReserveTPM()
 				reserveDone.Done()
 				proceedToReconcile.Wait()
 				if allowed {
 					passedCount.Add(1)
 					realTokens := 1.0
-					b.ReconcileTPM(reservedTokens, &realTokens)
+					b.ReconcileTPM(reservedTokens, reservationEpoch, &realTokens)
 				}
 			}()
 		}

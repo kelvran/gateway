@@ -135,6 +135,10 @@ type midStreamReservation struct {
 	// stale pre-stream one.
 	budgetReservationEpoch *int64
 	tpmReservedTokens      *float64
+	// tpmReservationEpoch mirrors budgetReservationEpoch's identical
+	// closed-over-pointer shape, for the TPM dimension's own epoch
+	// contract — see TokenBucket.resetEpoch's field comment.
+	tpmReservationEpoch *int64
 }
 
 // checkMidStreamReservationTopup is the mid-stream reservation top-up
@@ -180,8 +184,9 @@ func (p *Pipeline) checkMidStreamReservationTopup(dep Deployment, req adapter.Ch
 	estimatedTokens := float64(accumulatedChars) / float64(streamRunawayCharsPerToken)
 
 	if estimatedTokens > *msr.tpmReservedTokens {
-		allowed, applied := p.limiter.IncreaseReservationTPM(msr.vk.ID, req.Model, *msr.tpmReservedTokens, estimatedTokens)
+		allowed, applied, newEpoch := p.limiter.IncreaseReservationTPM(msr.vk.ID, req.Model, *msr.tpmReservedTokens, estimatedTokens, *msr.tpmReservationEpoch)
 		*msr.tpmReservedTokens = applied
+		*msr.tpmReservationEpoch = newEpoch
 		if !allowed {
 			return false
 		}

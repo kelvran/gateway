@@ -45,6 +45,26 @@ type TokenBucket struct {
 	// times.
 	billedTokens float64
 	billedCount  int64
+
+	// resetEpoch mirrors budget.Tracker.periodEpoch's own contract
+	// exactly, one epoch counter per bucket rather than per key: bumped
+	// every Reset call, and threaded out of ReserveTPM/IncreaseReservation
+	// as reservationEpoch for ReconcileTPM/IncreaseReservation's own
+	// later call to compare against. Closes a real bug an audit found in
+	// Reset's own first version: unconditionally force-setting
+	// tokens = burstCapacity discarded any outstanding reservation's
+	// already-taken debit, so a later ReconcileTPM call for that
+	// reservation added reservedTokens back on top of the freshly-reset
+	// full balance — silently granting free extra capacity that
+	// refillLocked's own math.Min then clamped away, un-billing whatever
+	// real usage the same call also tried to debit. When resetEpoch no
+	// longer matches reservationEpoch, the reservation being reconciled
+	// is against a balance that no longer exists (Reset already
+	// overwrote it), so ReconcileTPM skips re-adding reservedTokens
+	// (never driving the fresh balance up by a phantom amount) and
+	// applies realTokens, if any, fresh against the current balance
+	// instead — see ReconcileTPM's own doc comment.
+	resetEpoch int64
 }
 
 // NewTokenBucket constructs a TokenBucket at full capacity using the real
@@ -91,6 +111,7 @@ func (b *TokenBucket) Reset(burstCapacity, refillPerSecond float64) {
 	b.lastRefill = b.now()
 	b.billedTokens = 0
 	b.billedCount = 0
+	b.resetEpoch++
 }
 
 // Allow attempts to consume one token. It returns true (and consumes a
@@ -150,16 +171,20 @@ func (b *TokenBucket) Debit(n float64) {
 // ReconcileTPM call, even on an error/timeout path — see ReconcileTPM's
 // own doc comment for why a leaked, never-reconciled reservation
 // permanently shrinks the bucket's effective remaining balance.
-func (b *TokenBucket) ReserveTPM() (allowed bool, reservedTokens float64) {
+// reservationEpoch MUST be threaded through to that same ReconcileTPM
+// call (and any IncreaseReservation call in between) unchanged — never
+// re-derived — mirroring budget.Tracker.Reserve's own epoch contract;
+// see resetEpoch's field comment for why.
+func (b *TokenBucket) ReserveTPM() (allowed bool, reservedTokens float64, reservationEpoch int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.refillLocked()
 	if b.tokens <= 0 {
-		return false, 0
+		return false, 0, b.resetEpoch
 	}
 	reservedTokens = b.reservationAmountLocked()
 	b.tokens -= reservedTokens
-	return true, reservedTokens
+	return true, reservedTokens, b.resetEpoch
 }
 
 // reservationAmountLocked mirrors
@@ -200,11 +225,23 @@ func (b *TokenBucket) reservationAmountLocked() float64 {
 // capacity leak: every ReserveTPM that returns allowed == true MUST
 // eventually reach a matching ReconcileTPM call, on every return path
 // (including error).
-func (b *TokenBucket) ReconcileTPM(reservedTokens float64, realTokens *float64) {
+//
+// reservationEpoch MUST be the exact value ReserveTPM (or the latest
+// IncreaseReservation call for this same reservation) returned — see
+// resetEpoch's own field comment. When it no longer matches b.resetEpoch,
+// a Reset happened since this reservation was taken, so the reservedTokens
+// debit this call would otherwise undo no longer exists in the current
+// balance (Reset already overwrote it to full capacity) — skipping the
+// addition here is what prevents driving that fresh balance up by a
+// phantom amount that refillLocked's own capacity clamp would then
+// silently eat, un-billing whatever realTokens this same call debits.
+func (b *TokenBucket) ReconcileTPM(reservedTokens float64, reservationEpoch int64, realTokens *float64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.refillLocked()
-	b.tokens += reservedTokens
+	if b.resetEpoch == reservationEpoch {
+		b.tokens += reservedTokens
+	}
 	if realTokens != nil {
 		b.tokens -= *realTokens
 		b.billedTokens += *realTokens
@@ -225,20 +262,42 @@ func (b *TokenBucket) ReconcileTPM(reservedTokens float64, realTokens *float64) 
 // newReservedTokens); if it doesn't fit, b.tokens is left completely
 // unchanged and this returns (false, currentReservedTokens) — mirroring
 // ReserveTPM's own "insufficient balance" outcome exactly.
-func (b *TokenBucket) IncreaseReservation(currentReservedTokens, newReservedTokens float64) (allowed bool, appliedTokens float64) {
+//
+// reservationEpoch/newReservationEpoch mirror
+// budget.Tracker.IncreaseReservation's own epoch contract exactly (see
+// resetEpoch's field comment): a long-running stream's original
+// ReserveTPM call and its later, possibly-repeated top-ups here can
+// straddle a Reset call triggered by any concurrent Register. When the
+// epoch has rolled over, currentReservedTokens no longer represents a
+// real outstanding debit against the (already-reset) current balance,
+// so this reserves newReservedTokens FRESH against that balance instead
+// of computing a delta against a stale amount. The caller MUST thread
+// whichever epoch this returns into its eventual ReconcileTPM call,
+// mirroring ReserveTPM's own contract, never the original pre-topup
+// epoch.
+func (b *TokenBucket) IncreaseReservation(currentReservedTokens, newReservedTokens float64, reservationEpoch int64) (allowed bool, appliedTokens float64, newReservationEpoch int64) {
 	if newReservedTokens <= currentReservedTokens {
-		return true, currentReservedTokens
+		return true, currentReservedTokens, reservationEpoch
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.refillLocked()
+
+	if b.resetEpoch != reservationEpoch {
+		if b.tokens < newReservedTokens {
+			return false, 0, b.resetEpoch
+		}
+		b.tokens -= newReservedTokens
+		return true, newReservedTokens, b.resetEpoch
+	}
+
 	delta := newReservedTokens - currentReservedTokens
 	if b.tokens < delta {
-		return false, currentReservedTokens
+		return false, currentReservedTokens, b.resetEpoch
 	}
 	b.tokens -= delta
-	return true, newReservedTokens
+	return true, newReservedTokens, b.resetEpoch
 }
 
 // refillLocked adds tokens for elapsed time since the last refill, capped

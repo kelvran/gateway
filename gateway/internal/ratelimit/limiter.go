@@ -428,15 +428,15 @@ func (l *KeyLimiter) RecordTokens(keyID string, tokens int) {
 // error/timeout path — model must be the SAME value passed to the
 // ReserveTPM call being reconciled, so the reconciliation lands on the
 // exact bucket the reservation was actually taken from.
-func (l *KeyLimiter) ReserveTPM(keyID, model string) (allowed bool, reserved bool, reservedTokens float64) {
+func (l *KeyLimiter) ReserveTPM(keyID, model string) (allowed bool, reserved bool, reservedTokens float64, reservationEpoch int64) {
 	l.mu.RLock()
 	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
 	if bucket == nil {
-		return true, false, 0
+		return true, false, 0, 0
 	}
-	allowed, reservedTokens = bucket.ReserveTPM()
-	return allowed, allowed, reservedTokens
+	allowed, reservedTokens, reservationEpoch = bucket.ReserveTPM()
+	return allowed, allowed, reservedTokens, reservationEpoch
 }
 
 // ReconcileTPM undoes a previous ReserveTPM call's provisional debit and,
@@ -445,19 +445,38 @@ func (l *KeyLimiter) ReserveTPM(keyID, model string) (allowed bool, reserved boo
 // behavior, when TPM isn't configured for keyID/model (including a
 // Redis-mode KeyLimiter, where TPM is a deliberate v1 no-op per
 // docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md) — safe to call
-// unconditionally with whatever reservedTokens a prior ReserveTPM call
-// returned, even 0, since ReconcileTPM(0, nil) against a real bucket is
-// itself a genuine no-op (tokens += 0). model MUST be the exact value
-// passed to the ReserveTPM call this reconciles — see that method's own
-// doc comment.
-func (l *KeyLimiter) ReconcileTPM(keyID, model string, reservedTokens float64, realTokens *float64) {
+// unconditionally with whatever reservedTokens/reservationEpoch a prior
+// ReserveTPM call returned, even 0, since ReconcileTPM(0, epoch, nil)
+// against a real bucket is itself a genuine no-op (tokens += 0). model
+// MUST be the exact value passed to the ReserveTPM call this reconciles
+// — see that method's own doc comment. reservationEpoch MUST be the
+// exact value that same call (or the latest IncreaseReservationTPM call
+// for this reservation) returned — see TokenBucket.resetEpoch's own
+// field comment for why.
+//
+// Disclosed, not fixed, remaining gap: reservationEpoch only protects
+// against a Reset call on the SAME bucket object ReserveTPM resolved to.
+// If, between this reservation's ReserveTPM call and this ReconcileTPM
+// call, an admin Register call removes model's per-model override
+// entirely (or drops its TPMCapacity to <=0), resolveTPMBucket below
+// falls through to keyID's key-level default bucket instead — a
+// DIFFERENT object with its own, unrelated resetEpoch — so this still
+// misapplies the reservation's credit/debit there rather than safely
+// no-op'ing. Fully closing this needs retaining a removed per-model
+// bucket object (a tombstone) long enough for any reservation already
+// taken against it to reconcile, a disproportionately larger change
+// than this narrow (an admin must edit exactly the model a request is
+// mid-flight against), self-healing (the leaked credit is bounded and
+// absorbed by the default bucket's own capacity clamp) race justifies
+// for this pass.
+func (l *KeyLimiter) ReconcileTPM(keyID, model string, reservedTokens float64, reservationEpoch int64, realTokens *float64) {
 	l.mu.RLock()
 	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
 	if bucket == nil {
 		return
 	}
-	bucket.ReconcileTPM(reservedTokens, realTokens)
+	bucket.ReconcileTPM(reservedTokens, reservationEpoch, realTokens)
 }
 
 // IncreaseReservationTPM is ReserveTPM's mid-stream top-up sibling — see
@@ -467,15 +486,17 @@ func (l *KeyLimiter) ReconcileTPM(keyID, model string, reservedTokens float64, r
 // value the original ReserveTPM call for this reservation used, exactly
 // like ReconcileTPM's own contract. A no-op, always allowed, when TPM
 // isn't configured for keyID/model at all (nil bucket), mirroring
-// ReserveTPM's own "no entry means unlimited" behavior.
-func (l *KeyLimiter) IncreaseReservationTPM(keyID, model string, currentReservedTokens, newReservedTokens float64) (allowed bool, appliedTokens float64) {
+// ReserveTPM's own "no entry means unlimited" behavior. reservationEpoch/
+// newReservationEpoch mirror ReconcileTPM's own epoch contract — thread
+// whichever epoch this returns into the eventual ReconcileTPM call.
+func (l *KeyLimiter) IncreaseReservationTPM(keyID, model string, currentReservedTokens, newReservedTokens float64, reservationEpoch int64) (allowed bool, appliedTokens float64, newReservationEpoch int64) {
 	l.mu.RLock()
 	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
 	if bucket == nil {
-		return true, currentReservedTokens
+		return true, currentReservedTokens, reservationEpoch
 	}
-	return bucket.IncreaseReservation(currentReservedTokens, newReservedTokens)
+	return bucket.IncreaseReservation(currentReservedTokens, newReservedTokens, reservationEpoch)
 }
 
 // resolveTPMBucket resolves keyID's TPM bucket for model — its own

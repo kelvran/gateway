@@ -174,27 +174,27 @@ func TestDebitRecoversViaOrdinaryRefill(t *testing.T) {
 // reservation-gap-2026-09-09.md.
 func TestIncreaseReservationAppliesWhenDeltaFitsBalance(t *testing.T) {
 	b := NewTokenBucket(100, 0)
-	allowed, reserved := b.ReserveTPM() // fresh bucket, no history: reserves the full 100
+	allowed, reserved, epoch := b.ReserveTPM() // fresh bucket, no history: reserves the full 100
 	if !allowed || reserved != 100 {
 		t.Fatalf("setup ReserveTPM() = (%v, %v), want (true, 100)", allowed, reserved)
 	}
 	// b.tokens is now 0. Topping up FROM 100 (the current reservation) TO
 	// 100 (no real increase) must be a no-op regardless of balance.
-	allowed2, applied2 := b.IncreaseReservation(100, 100)
+	allowed2, applied2, _ := b.IncreaseReservation(100, 100, epoch)
 	if !allowed2 || applied2 != 100 {
 		t.Fatalf("IncreaseReservation(100 -> 100, no change) = (%v, %v), want (true, 100)", allowed2, applied2)
 	}
 
 	// A bucket with real remaining balance: reserve 2, top up to 5.
 	b2 := NewTokenBucket(100, 0)
-	b2.ReserveTPM() // reserves the full 100, tokens now 0
+	_, _, epoch2 := b2.ReserveTPM() // reserves the full 100, tokens now 0
 	realTokens := 2.0
-	b2.ReconcileTPM(100, &realTokens) // tokens back to 100 - 2 = 98, billedCount=1
-	_, small := b2.ReserveTPM()       // historical average 2/1=2; tokens now 98-2=96
+	b2.ReconcileTPM(100, epoch2, &realTokens) // tokens back to 100 - 2 = 98, billedCount=1
+	_, small, epoch3 := b2.ReserveTPM()       // historical average 2/1=2; tokens now 98-2=96
 	if small != 2 {
 		t.Fatalf("second ReserveTPM() reservation = %v, want 2 (historical average)", small)
 	}
-	allowed3, applied3 := b2.IncreaseReservation(small, 50)
+	allowed3, applied3, _ := b2.IncreaseReservation(small, 50, epoch3)
 	if !allowed3 || applied3 != 50 {
 		t.Fatalf("IncreaseReservation(2 -> 50) = (%v, %v), want (true, 50) — 48 more delta fits comfortably in the 96-token balance", allowed3, applied3)
 	}
@@ -209,7 +209,7 @@ func TestIncreaseReservationRejectsWhenDeltaExceedsBalance(t *testing.T) {
 	b.Debit(9) // balance now 1 — as if a small reservation already reduced it
 	current := 1.0
 
-	allowed, applied := b.IncreaseReservation(current, 5)
+	allowed, applied, _ := b.IncreaseReservation(current, 5, 0)
 	if allowed {
 		t.Fatal("IncreaseReservation(1 -> 5) against a balance of only 1 = true, want false")
 	}
@@ -233,12 +233,65 @@ func TestIncreaseReservationNoOpWhenNotActuallyIncreasing(t *testing.T) {
 	current := 5.0
 
 	for _, newAmount := range []float64{5, 3, 0} {
-		allowed, applied := b.IncreaseReservation(current, newAmount)
+		allowed, applied, _ := b.IncreaseReservation(current, newAmount, 0)
 		if !allowed || applied != current {
 			t.Errorf("IncreaseReservation(5 -> %v) = (%v, %v), want (true, 5) — not an increase, must be a no-op even with near-zero real balance left", newAmount, allowed, applied)
 		}
 	}
 	if diff := b.tokens - 0.01; diff > 1e-9 || diff < -1e-9 {
 		t.Errorf("b.tokens after only no-op calls = %v, want ~0.01 — unchanged", b.tokens)
+	}
+}
+
+// TestReconcileTPMSkipsStaleReservationCreditAfterAnInterveningReset is
+// the regression proof for a real bug an audit found in Reset's own
+// first version: force-setting tokens = burstCapacity discarded an
+// outstanding reservation's already-taken debit with no way for a later
+// ReconcileTPM call to know the balance it's crediting back against no
+// longer reflects that debit, producing an over-capacity balance that
+// refillLocked's own math.Min clamp then silently ate — un-billing the
+// real usage the same ReconcileTPM call tried to apply. Fixed via
+// resetEpoch: reproduces the exact numbers the audit's own verification
+// used (1000-capacity bucket, reserve the full 1000, Reset mid-flight,
+// reconcile with a real cost of 300) and proves the resulting balance
+// stays within capacity with the real cost correctly billed, instead of
+// overshooting to 1700 and being clamped back to a full, un-billed 1000.
+func TestReconcileTPMSkipsStaleReservationCreditAfterAnInterveningReset(t *testing.T) {
+	b := NewTokenBucket(1000, 0)
+	_, reservedTokens, reservationEpoch := b.ReserveTPM()
+	if reservedTokens != 1000 || b.tokens != 0 {
+		t.Fatalf("setup ReserveTPM() reserved %v, tokens now %v -- want (1000, 0)", reservedTokens, b.tokens)
+	}
+
+	// An admin Register() call lands mid-flight, resetting the SAME
+	// object to full capacity while R1's reservation is still open.
+	b.Reset(1000, 0)
+	if b.tokens != 1000 {
+		t.Fatalf("setup Reset(1000, 0) left tokens = %v, want 1000", b.tokens)
+	}
+
+	realTokens := 300.0
+	b.ReconcileTPM(reservedTokens, reservationEpoch, &realTokens)
+
+	if b.tokens != 700 {
+		t.Errorf("tokens after ReconcileTPM(1000, staleEpoch, realTokens=300) = %v, want 700 (1000 - 300, the stale reservedTokens credit correctly skipped) -- 1700 would mean the stale credit was wrongly re-applied, silently granting free capacity that refill's own capacity clamp would then un-bill", b.tokens)
+	}
+	if b.billedCount != 1 || b.billedTokens != 300 {
+		t.Errorf("billedCount/billedTokens = %d/%v, want 1/300 -- the real cost must still be billed even though the stale reservation credit was skipped", b.billedCount, b.billedTokens)
+	}
+}
+
+// TestReconcileTPMStillCreditsBackWhenNoResetHappened is the
+// no-regression companion to the test above: the common case (no Reset
+// between Reserve and Reconcile) must still credit reservedTokens back
+// exactly as before.
+func TestReconcileTPMStillCreditsBackWhenNoResetHappened(t *testing.T) {
+	b := NewTokenBucket(1000, 0)
+	_, reservedTokens, reservationEpoch := b.ReserveTPM()
+	realTokens := 300.0
+	b.ReconcileTPM(reservedTokens, reservationEpoch, &realTokens)
+
+	if b.tokens != 700 {
+		t.Errorf("tokens after a same-epoch ReconcileTPM(1000, realTokens=300) = %v, want 700 (1000 - 1000 + 1000 - 300)", b.tokens)
 	}
 }

@@ -106,6 +106,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// per docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
 		tpmReserved            bool
 		tpmReservedTokens      float64
+		tpmReservationEpoch    int64
 		budgetReserved         bool
 		budgetReservedUSD      decimal.Decimal
 		budgetReservationEpoch int64
@@ -128,7 +129,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		if idempotencyOwned {
 			p.completeIdempotency(ctx, vk.ID, idempotencyKey, idempotencyToken, resp, err)
 		}
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, cacheAttempted, costEstimated, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, cacheAttempted, costEstimated, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -174,7 +175,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 	var rateLimitOK bool
-	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens = p.checkRateLimit(ctx, vk, req.Model)
+	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens, tpmReservationEpoch = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {
 		err = ErrRateLimited
 		return
@@ -256,7 +257,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 	dep = p.rerouteToCapableDeploymentIfNeeded(dep, req, vk)
 
-	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens}
+	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens, tpmReservationEpoch: &tpmReservationEpoch}
 	var blocked bool
 	var firstChunkSent bool
 	resp, dep, fallback, blocked, costEstimated, firstChunkSent, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
