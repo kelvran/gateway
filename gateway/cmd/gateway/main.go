@@ -285,9 +285,20 @@ func main() {
 	}
 }
 
-// shutdownServersConcurrently calls Shutdown on every non-nil server in
-// servers, CONCURRENTLY, all against the same ctx -- so a slow drain on
-// one server never starves another's share of that same deadline.
+// namedServer pairs a *http.Server with a human-readable name, purely so
+// shutdownServersConcurrently's own returned error can say WHICH server
+// failed to drain — see that function's own doc comment for why this
+// matters. The name is never used for anything else (no lookup, no
+// routing) — it exists only to be embedded in an error string.
+type namedServer struct {
+	name string
+	srv  *http.Server
+}
+
+// shutdownServersConcurrently calls Shutdown on every server in servers
+// whose srv is non-nil, CONCURRENTLY, all against the same ctx -- so a
+// slow drain on one server never starves another's share of that same
+// deadline.
 //
 // Corrected, a real bug an audit found: shutdownBoth previously called
 // server.Shutdown(shutdownCtx) and adminServer.Shutdown(shutdownCtx)
@@ -305,18 +316,32 @@ func main() {
 // admin mux"). Extracted into its own function, rather than left as an
 // inline closure, specifically so this concurrency property is
 // directly unit-testable against real *http.Server instances.
-func shutdownServersConcurrently(ctx context.Context, servers ...*http.Server) error {
+//
+// Corrected again, a second real gap the same audit found: net/http's
+// own Server.Shutdown returns only the bare context error (e.g.
+// context.DeadlineExceeded, a fixed, unattributed error value) with no
+// listener/address identity baked in -- when both servers time out
+// against the shared deadline concurrently, the plain errors.Join
+// result used to read as two textually IDENTICAL "context deadline
+// exceeded" lines, giving an operator reading the "gateway exited" log
+// line no way to tell whether the client server, the admin server, or
+// both actually failed to drain. Each per-server error is now wrapped
+// with its own name before joining, so the log line names exactly which
+// server(s) failed.
+func shutdownServersConcurrently(ctx context.Context, servers ...namedServer) error {
 	errs := make([]error, len(servers))
 	var wg sync.WaitGroup
-	for i, srv := range servers {
-		if srv == nil {
+	for i, ns := range servers {
+		if ns.srv == nil {
 			continue
 		}
 		wg.Add(1)
-		go func(i int, srv *http.Server) {
+		go func(i int, ns namedServer) {
 			defer wg.Done()
-			errs[i] = srv.Shutdown(ctx)
-		}(i, srv)
+			if err := ns.srv.Shutdown(ctx); err != nil {
+				errs[i] = fmt.Errorf("%s: %w", ns.name, err)
+			}
+		}(i, ns)
 	}
 	wg.Wait()
 	return errors.Join(errs...)
@@ -506,7 +531,10 @@ func run(configPath string, logger *slog.Logger) error {
 	shutdownBoth := func() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
 		defer cancel()
-		return shutdownServersConcurrently(shutdownCtx, server, adminServer)
+		return shutdownServersConcurrently(shutdownCtx,
+			namedServer{name: "client server", srv: server},
+			namedServer{name: "admin server", srv: adminServer},
+		)
 	}
 
 	select {

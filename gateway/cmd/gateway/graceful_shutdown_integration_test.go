@@ -463,7 +463,10 @@ func TestShutdownServersConcurrentlyClosesBothListenersImmediately(t *testing.T)
 
 	shutdownDone := make(chan error, 1)
 	go func() {
-		shutdownDone <- shutdownServersConcurrently(ctx, srvA, srvB)
+		shutdownDone <- shutdownServersConcurrently(ctx,
+			namedServer{name: "A", srv: srvA},
+			namedServer{name: "B", srv: srvB},
+		)
 	}()
 
 	// The load-bearing assertion: B's listener must reject a brand-new
@@ -483,8 +486,80 @@ func TestShutdownServersConcurrentlyClosesBothListenersImmediately(t *testing.T)
 	close(aReleased)
 	<-aReqDone
 	select {
-	case <-shutdownDone:
+	case err := <-shutdownDone:
+		// The load-bearing assertion an audit found missing: both
+		// servers drained cleanly well within shutdownTimeout (A's
+		// request was released immediately above), so the returned
+		// error must be nil — a regression that made
+		// shutdownServersConcurrently spuriously return a non-nil
+		// error on an otherwise-clean concurrent shutdown would
+		// previously have gone undetected by this test, since it only
+		// checked for receipt before a timeout, never the value itself.
+		if err != nil {
+			t.Errorf("shutdownServersConcurrently returned %v, want nil for a clean shutdown of both servers", err)
+		}
 	case <-time.After(shutdownTimeout + time.Second):
 		t.Fatal("shutdownServersConcurrently never returned")
+	}
+}
+
+// TestShutdownServersConcurrentlyAttributesEachTimeoutToItsOwnServer is
+// the regression proof for a second real gap the same audit found:
+// net/http's own Server.Shutdown returns only the bare context error
+// (context.DeadlineExceeded, a fixed, unattributed value) with no
+// listener identity baked in — a plain errors.Join over both servers'
+// raw errors used to read as two textually IDENTICAL "context deadline
+// exceeded" lines, giving an operator no way to tell which server(s)
+// actually failed to drain. Both servers here hold a request open past
+// a short shutdown deadline, so both Shutdown calls genuinely time out —
+// the returned error must name BOTH servers, distinguishably.
+func TestShutdownServersConcurrentlyAttributesEachTimeoutToItsOwnServer(t *testing.T) {
+	blockForever := make(chan struct{})
+	defer close(blockForever)
+
+	newBlockingServer := func(t *testing.T) (*http.Server, net.Listener) {
+		t.Helper()
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("net.Listen: %v", err)
+		}
+		srv := &http.Server{
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				<-blockForever
+			}),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() { _ = srv.Serve(ln) }()
+		return srv, ln
+	}
+
+	srvA, lnA := newBlockingServer(t)
+	srvB, lnB := newBlockingServer(t)
+
+	for _, addr := range []string{lnA.Addr().String(), lnB.Addr().String()} {
+		go func(addr string) {
+			resp, err := http.Get("http://" + addr + "/")
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+		}(addr)
+	}
+	time.Sleep(20 * time.Millisecond) // let both requests genuinely reach their handlers first.
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := shutdownServersConcurrently(ctx,
+		namedServer{name: "server-A", srv: srvA},
+		namedServer{name: "server-B", srv: srvB},
+	)
+	if err == nil {
+		t.Fatal("shutdownServersConcurrently returned nil, want a timeout error from both servers")
+	}
+	if !strings.Contains(err.Error(), "server-A") {
+		t.Errorf("error %q does not name server-A", err.Error())
+	}
+	if !strings.Contains(err.Error(), "server-B") {
+		t.Errorf("error %q does not name server-B", err.Error())
 	}
 }
