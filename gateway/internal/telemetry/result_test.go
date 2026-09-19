@@ -126,7 +126,7 @@ func TestRecordChatCompletionResultSkipsEmptyOptionalFields(t *testing.T) {
 		AttrGenAIUsageInputTokens,
 		AttrGenAIUsageOutputTokens,
 		AttrGenAIUsageCacheReadInputTokens,
-		AttrGenAIUsageCacheCreationInputTokens,
+		AttrGenAIUsageCacheWriteInputTokens,
 		AttrKelvranPromptID,
 		AttrKelvranPromptVersion,
 		AttrKelvranResponseFormatRequestedNotEnforced,
@@ -199,8 +199,8 @@ func TestRecordChatCompletionResultEmitsCacheTokenAttributesOnlyWhenPositive(t *
 	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIUsageCacheReadInputTokens)); !ok || v.AsInt64() != 1800 {
 		t.Errorf("%s = %v, ok=%v, want 1800", AttrGenAIUsageCacheReadInputTokens, v, ok)
 	}
-	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIUsageCacheCreationInputTokens)); !ok || v.AsInt64() != 248 {
-		t.Errorf("%s = %v, ok=%v, want 248", AttrGenAIUsageCacheCreationInputTokens, v, ok)
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIUsageCacheWriteInputTokens)); !ok || v.AsInt64() != 248 {
+		t.Errorf("%s = %v, ok=%v, want 248", AttrGenAIUsageCacheWriteInputTokens, v, ok)
 	}
 }
 

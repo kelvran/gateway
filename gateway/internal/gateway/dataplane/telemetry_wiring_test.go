@@ -307,6 +307,55 @@ func TestHandleChatCompletionStreamEmitsSpanOnSuccessAndCacheHit(t *testing.T) {
 	}
 }
 
+// TestGenAIRequestStreamDistinguishesBufferedFromStreamingCalls is the
+// regression proof for a real gap this repo's own end-to-end research
+// round found (docs/upgrade-research/llm-observability-apm-tier1-2026-
+// 09-20.md): gen_ai.request.stream was declared as a span-attribute
+// constant but never actually set on any span. Proves it's now set,
+// correctly, on BOTH real call paths -- false for HandleChatCompletion,
+// true for HandleChatCompletionStream -- always present (never omitted
+// the way a "only set when true" boolean attribute would be), mirroring
+// AttrKelvranCacheHit's own identical always-set convention.
+func TestGenAIRequestStreamDistinguishesBufferedFromStreamingCalls(t *testing.T) {
+	before := len(spanRecorder.Ended())
+
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, ""); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+
+	bufferedSpans := spansSince(before)
+	if len(bufferedSpans) != 1 {
+		t.Fatalf("len(bufferedSpans) = %d, want 1", len(bufferedSpans))
+	}
+	if v, ok := spanAttr(t, bufferedSpans[0].Attributes(), telemetry.AttrGenAIRequestStream); !ok || v.AsBool() != false {
+		t.Errorf("buffered call's %s = %v, ok=%v, want false (and always present)", telemetry.AttrGenAIRequestStream, v, ok)
+	}
+
+	before = len(spanRecorder.Ended())
+	sp := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, nil, adapter.Registry{"openai": openai.New()})
+	rec := httptest.NewRecorder()
+	if err := sp.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, rec, ""); err != nil {
+		t.Fatalf("HandleChatCompletionStream: %v", err)
+	}
+
+	streamingSpans := spansSince(before)
+	if len(streamingSpans) != 1 {
+		t.Fatalf("len(streamingSpans) = %d, want 1", len(streamingSpans))
+	}
+	if v, ok := spanAttr(t, streamingSpans[0].Attributes(), telemetry.AttrGenAIRequestStream); !ok || v.AsBool() != true {
+		t.Errorf("streaming call's %s = %v, ok=%v, want true", telemetry.AttrGenAIRequestStream, v, ok)
+	}
+}
+
 // TestHandleChatCompletionEmitsCacheReadAndCreationTokenSpanAttributes
 // closes a real backlog-audit finding: resp.Usage.CacheReadTokens/
 // CacheCreationTokens are already computed by cost accounting on every
@@ -357,7 +406,7 @@ func TestHandleChatCompletionEmitsCacheReadAndCreationTokenSpanAttributes(t *tes
 	if v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrGenAIUsageCacheReadInputTokens); !ok || v.AsInt64() != 1800 {
 		t.Errorf("%s = %v, ok=%v, want 1800", telemetry.AttrGenAIUsageCacheReadInputTokens, v, ok)
 	}
-	if v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrGenAIUsageCacheCreationInputTokens); !ok || v.AsInt64() != 248 {
-		t.Errorf("%s = %v, ok=%v, want 248", telemetry.AttrGenAIUsageCacheCreationInputTokens, v, ok)
+	if v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrGenAIUsageCacheWriteInputTokens); !ok || v.AsInt64() != 248 {
+		t.Errorf("%s = %v, ok=%v, want 248", telemetry.AttrGenAIUsageCacheWriteInputTokens, v, ok)
 	}
 }

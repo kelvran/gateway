@@ -129,7 +129,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		if idempotencyOwned {
 			p.completeIdempotency(ctx, vk.ID, idempotencyKey, idempotencyToken, resp, err)
 		}
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, cacheAttempted, costEstimated, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, cacheAttempted, costEstimated, true, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)

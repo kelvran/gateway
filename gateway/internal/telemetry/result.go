@@ -18,16 +18,22 @@ import (
 // implementation and will need a follow-up pass if/when that spec
 // stabilizes and renames anything.
 const (
-	AttrGenAIOperationName         = "gen_ai.operation.name"
-	AttrGenAIProviderName          = "gen_ai.provider.name"
-	AttrGenAIRequestModel          = "gen_ai.request.model"
+	AttrGenAIOperationName = "gen_ai.operation.name"
+	AttrGenAIProviderName  = "gen_ai.provider.name"
+	AttrGenAIRequestModel  = "gen_ai.request.model"
+	// AttrGenAIRequestStream: found declared but never actually set on
+	// any span by this repo's own end-to-end research round
+	// (docs/upgrade-research/llm-observability-apm-tier1-2026-09-20.md)
+	// -- fixed below via ChatCompletionResult.Streaming, always set
+	// (true/false is always meaningful, mirroring AttrKelvranCacheHit's
+	// own "never omit a boolean that's always known" convention).
 	AttrGenAIRequestStream         = "gen_ai.request.stream"
 	AttrGenAIResponseModel         = "gen_ai.response.model"
 	AttrGenAIResponseID            = "gen_ai.response.id"
 	AttrGenAIResponseFinishReasons = "gen_ai.response.finish_reasons"
 	AttrGenAIUsageInputTokens      = "gen_ai.usage.input_tokens"
 	AttrGenAIUsageOutputTokens     = "gen_ai.usage.output_tokens"
-	// AttrGenAIUsageCacheReadInputTokens/CacheCreationInputTokens are
+	// AttrGenAIUsageCacheReadInputTokens/CacheWriteInputTokens are
 	// real GenAI semantic-convention attributes, added in the spec's
 	// v1.40.0 (Feb 2026) — confirmed directly against
 	// open-telemetry/semantic-conventions-genai, not assumed. Round-4
@@ -47,8 +53,19 @@ const (
 	// enum value neither this file nor its research grounding actually
 	// confirmed is worse than a narrower, honestly-scoped fix — named
 	// here as a real, disclosed gap rather than guessed at.
-	AttrGenAIUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
-	AttrGenAIUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
+	AttrGenAIUsageCacheReadInputTokens = "gen_ai.usage.cache_read.input_tokens"
+	// AttrGenAIUsageCacheWriteInputTokens: renamed from
+	// gen_ai.usage.cache_creation.input_tokens upstream (semantic-
+	// conventions-genai, PR merged 2026-08-20) -- found by this repo's
+	// own end-to-end research round (docs/upgrade-research/llm-
+	// observability-apm-tier1-2026-09-20.md): Kelvran had been emitting
+	// the OLD, already-renamed name since before that rename landed, and
+	// nothing in this codebase had re-checked the live spec since. Fixed
+	// to the current name; the Go const identifier is renamed to match
+	// (no wire-compatibility concern -- this is an OTel span attribute
+	// key, not a versioned API contract with external consumers pinned
+	// to the old string).
+	AttrGenAIUsageCacheWriteInputTokens = "gen_ai.usage.cache_write.input_tokens"
 	// AttrGenAIRequestModel is defined above but was previously never set
 	// on the span — RecordChatCompletionMetrics now sets it on the two
 	// new GenAI Metrics histograms (see telemetry.go), per
@@ -105,6 +122,21 @@ const (
 	// version produced it from any span. Only set when req.PromptID !=
 	// "" — every request that doesn't use server-side prompt management
 	// (the common case) emits neither attribute, never a fabricated "".
+	//
+	// Disclosed 2026-09-20, by this repo's own end-to-end research round
+	// (docs/upgrade-research/llm-observability-apm-tier1-2026-09-20.md):
+	// a spec-native gen_ai.prompt.name/.version/.variable attribute
+	// family has existed upstream since 2026-06-23 — neither side knew
+	// about the other when these kelvran.* attributes were added. NOT
+	// migrated to the spec-native family in this pass, deliberately: the
+	// GenAI semantic conventions remain Development stability (see this
+	// file's own package doc comment on why unstable spec surface is
+	// pinned as local string constants rather than depended on
+	// directly), and this repo has not independently confirmed the
+	// spec-native family's exact variable-substitution semantics closely
+	// enough to migrate onto it without risking a second rename later.
+	// Named here as a known, deliberate divergence for a future pass,
+	// not silently left as an accidental collision.
 	AttrKelvranPromptID      = "kelvran.prompt.id"
 	AttrKelvranPromptVersion = "kelvran.prompt.version"
 	// AttrKelvranResponseFormatRequestedNotEnforced is per
@@ -222,6 +254,13 @@ type ChatCompletionResult struct {
 	InputTokens    int
 	OutputTokens   int
 	CacheHit       bool
+	// Streaming is true for a HandleChatCompletionStream call, false for
+	// HandleChatCompletion — see AttrGenAIRequestStream's own doc
+	// comment for why this exists: the spec attribute was declared but
+	// never actually set on any span until this field was added. Always
+	// meaningful (never "unknown"), so RecordChatCompletionResult always
+	// emits it, mirroring CacheHit's own identical convention.
+	Streaming bool
 	// CacheLayer is "L1"/"L2"/"L3", or "" when CacheHit is false. Set
 	// unconditionally by the caller (never inferred here) so this package
 	// stays a dependency-free leaf with zero cache-layer knowledge of its
@@ -400,7 +439,7 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 		attrs = append(attrs, attribute.Int(AttrGenAIUsageCacheReadInputTokens, r.CacheReadTokens))
 	}
 	if r.CacheCreationTokens > 0 {
-		attrs = append(attrs, attribute.Int(AttrGenAIUsageCacheCreationInputTokens, r.CacheCreationTokens))
+		attrs = append(attrs, attribute.Int(AttrGenAIUsageCacheWriteInputTokens, r.CacheCreationTokens))
 	}
 	if r.AgentRunID != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranAgentRunID, r.AgentRunID))
@@ -414,15 +453,16 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	if r.ResponseFormatRequestedNotEnforced {
 		attrs = append(attrs, attribute.Bool(AttrKelvranResponseFormatRequestedNotEnforced, true))
 	}
-	// kelvran.cache.hit and kelvran.cost.usd are always meaningful (false/
-	// "0" are real values, not "unknown"), so these are always set.
-	// AttrKelvranCostUSD is a string attribute (see CostUSD's doc comment
-	// above) — never attribute.Float64, which would reintroduce the exact
-	// precision loss docs/rfcs/2026-09-02-decimal-cost-accounting.md exists
-	// to remove.
+	// kelvran.cache.hit, kelvran.cost.usd, and gen_ai.request.stream are
+	// always meaningful (false/"0" are real values, not "unknown"), so
+	// these are always set. AttrKelvranCostUSD is a string attribute
+	// (see CostUSD's doc comment above) — never attribute.Float64, which
+	// would reintroduce the exact precision loss
+	// docs/rfcs/2026-09-02-decimal-cost-accounting.md exists to remove.
 	attrs = append(attrs,
 		attribute.Bool(AttrKelvranCacheHit, r.CacheHit),
 		attribute.String(AttrKelvranCostUSD, r.CostUSD),
+		attribute.Bool(AttrGenAIRequestStream, r.Streaming),
 	)
 	if r.CostEstimated {
 		attrs = append(attrs, attribute.Bool(AttrKelvranCostEstimated, true))

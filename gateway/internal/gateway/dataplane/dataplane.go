@@ -2174,8 +2174,10 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		}
 		// costEstimated is always false on the buffered path — see
 		// finalize's own doc comment; only HandleChatCompletionStream ever
-		// estimates, via estimateOrRealUsage (streaming.go).
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, cacheAttempted, false, err, time.Since(start))
+		// estimates, via estimateOrRealUsage (streaming.go). streaming is
+		// also always false here — this is HandleChatCompletion, never
+		// HandleChatCompletionStream.
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, cacheAttempted, false, false, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -2824,7 +2826,7 @@ func realServingModel(dep Deployment, fallbackModel string) string {
 // itself (cost is computed from resp.Usage exactly the same way whether
 // that usage is real or estimated), only whether ChatCompletionResult/
 // GatewayDecisionEvent flag the resulting cost as an estimate.
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64, cacheAttempted bool, costEstimated bool, err error, duration time.Duration) {
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64, cacheAttempted bool, costEstimated bool, streaming bool, err error, duration time.Duration) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too. The gate is
@@ -2988,6 +2990,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		InputTokens:     resp.Usage.PromptTokens,
 		OutputTokens:    resp.Usage.CompletionTokens,
 		CacheHit:        cacheInfo.Hit(),
+		Streaming:       streaming,
 		CacheLayer:      cacheInfo.Layer,
 		CacheSimilarity: cacheInfo.Similarity,
 		CacheAgeMs:      cacheInfo.AgeMs,
