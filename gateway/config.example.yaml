@@ -370,12 +370,35 @@ telemetry:
 # docs/upgrade-research/state-durability-operational-recovery-2026-09-15.md
 # Finding 4 for the full design rationale, including why this
 # deliberately isn't defaulted to "reset".
+# backup_dir, if set, enables POST /admin/backup: a live bbolt backup of
+# every configured, persist_path-backed durable store, written to this
+# directory. Empty (the default, omitted here) disables the route
+# entirely -- mirrors every other optional admin capability's
+# "off unless configured" posture. enable_audit_log (default true when
+# the whole "admin" section is present but this key is unset, or absent
+# entirely) gates every admin-route audit-log line behind a single
+# config field -- set to false only to explicitly opt OUT, e.g. because
+# a separate compliance pipeline already captures the same audit trail.
 # admin:
 #   listen_addr: "127.0.0.1:8081"
 #   token_env: "KELVRAN_ADMIN_TOKEN"
 #   viewer_token_env: "KELVRAN_ADMIN_VIEWER_TOKEN"
 #   enable_pprof: false
 #   on_corrupt_store: "fail"
+#   backup_dir: "/var/lib/kelvran/backups"
+#   enable_audit_log: true
+
+# Push-based cross-instance admin-mutation propagation (deployment
+# weight changes today), via Redis pub/sub -- see
+# gateway/internal/configpropagation's own package doc. Optional: omit
+# this whole section (the default) for every admin mutation staying
+# single-instance-only, exactly as before this feature existed.
+# redis_addr is deliberately its own field, not a reuse of
+# rate_limit.redis_addr above -- an operator may want distributed rate
+# limiting without config propagation (or vice versa) against two
+# entirely different Redis deployments.
+# config_propagation:
+#   redis_addr: "localhost:6379"
 
 # Active/synthetic health-probing: a background loop that issues a
 # lightweight, real chat-completion request to every configured
