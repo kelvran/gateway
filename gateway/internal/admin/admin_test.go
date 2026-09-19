@@ -1780,6 +1780,23 @@ func TestEraseCacheEntryHandlerRejectsMalformedBody(t *testing.T) {
 	}
 }
 
+// TestEraseCacheEntryHandlerRejectsUnknownVirtualKeyID is the regression
+// proof for a real gap an audit found: virtual_key_id used to only be
+// checked for non-empty, never validated against any real configured
+// virtual key -- unlike getVirtualKeySpendHandler's own GetVirtualKey/404
+// pattern. A typo'd ID used to silently report a successful 200 with
+// both found flags false, indistinguishable from "this key genuinely has
+// nothing cached" -- a real false-negative risk for a GDPR Article 17
+// erasure request specifically.
+func TestEraseCacheEntryHandlerRejectsUnknownVirtualKeyID(t *testing.T) {
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	rec := doRequest(t, h, http.MethodPost, "/admin/cache/erase", fakeAdminCredential(),
+		`{"virtual_key_id":"does-not-exist","model":"gpt-4o","messages":[{"role":"user","content":"anything"}]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("POST /admin/cache/erase with an unknown virtual_key_id: status = %d, want 404, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestEraseCacheEntryHandlerOnNeverCachedEntryStillReturns200 proves a
 // never-cached request shape is a real, successful response
 // (both found flags false), never a 404 -- matching

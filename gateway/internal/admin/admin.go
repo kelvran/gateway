@@ -729,9 +729,25 @@ func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger auditLog
 // dataplane.Pipeline.EraseCacheEntry -- see that method's own doc
 // comment for the exact scope (L1+L2 only, never L3, and the caller
 // must already know the original request's own defining fields). Never
-// 404s -- Delete is an idempotent no-op on an already-absent key, so
-// "nothing was found" is a real, successful 200 response
-// (l1_found/l2_found both false), not an error.
+// 404s for a KNOWN virtual key with no matching cache entry -- Delete is
+// an idempotent no-op on an already-absent key, so "nothing was found"
+// is a real, successful 200 response (l1_found/l2_found both false),
+// not an error.
+//
+// **Fixed, a real gap an audit found**: virtual_key_id was only checked
+// for non-empty, never validated against any REAL configured virtual
+// key -- unlike getVirtualKeySpendHandler's own GetVirtualKey/404
+// pattern. Since virtualKeyID is purely a cache-key namespace component
+// (see EraseCacheEntry's own implementation), a typo'd ID could never
+// erase another tenant's real entry, but it DID silently report a
+// successful 200 with l1_found/l2_found both false -- indistinguishable
+// from "this key genuinely has nothing cached" from the exact same
+// typo an operator has no other signal to catch. For a GDPR Article 17
+// erasure request specifically, that false-negative ("we said we
+// erased it, but the real target's data was never touched") is a real
+// operational safety gap, not a cosmetic one. Now validated the same
+// way every other admin route names/keys by virtual key ID already
+// does: 404 if virtual_key_id doesn't match any configured key at all.
 func eraseCacheEntryHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req eraseCacheEntryRequest
@@ -741,6 +757,10 @@ func eraseCacheEntryHandler(pipeline *dataplane.Pipeline, logger auditLogger) ht
 		}
 		if req.VirtualKeyID == "" {
 			http.Error(w, "virtual_key_id is required", http.StatusBadRequest)
+			return
+		}
+		if _, ok := pipeline.GetVirtualKey(req.VirtualKeyID); !ok {
+			http.Error(w, fmt.Sprintf("virtual key %q not found", req.VirtualKeyID), http.StatusNotFound)
 			return
 		}
 
