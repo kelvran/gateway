@@ -1955,17 +1955,44 @@ var ErrNotAnEmbeddingDeployment = errors.New("dataplane: requested model is not 
 // (auth, per-key RPM rate-limiting, budget reserve/reconcile, guardrail
 // scanning, cost accounting) and does NOT thread through cache,
 // idempotency, the per-identity concurrency cap, fallback chains, or
-// telemetry spans — none of which this pass has a real, demonstrated
-// need for yet on an embeddings-shaped request; named future work if
-// that changes, not a silent gap.
-func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader string, req adapter.EmbeddingRequest) (adapter.EmbeddingResponse, error) {
-	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
+// telemetry SPANS/GatewayDecisionEvent — none of which this pass has a
+// real, demonstrated need for yet on an embeddings-shaped request;
+// named future work if that changes (GatewayDecisionEvent specifically
+// touches api/, the cross-language contract both deployables share —
+// per AGENTS.md's "Ask first" boundary, that needs explicit confirmation
+// before it's built, not a silent addition here), not a silent gap.
+//
+// **Fixed, a real completeness gap found during an end-to-end audit**:
+// this function used to have NO completion-outcome logging at all —
+// neither a success nor a failure log line, and no cost/spend metric —
+// unlike every rejection/success path HandleChatCompletion has always
+// had. An operator had no way to tell from logs/metrics whether any
+// embeddings traffic was succeeding, failing, or what it cost, short of
+// inferring it from budget/rate-limit side effects. Closed with a
+// single structured "embeddings" log line (mirrors logRequest's
+// "chat_completion" shape, scoped to this function's own real fields)
+// on every return path via defer, plus the existing
+// telemetry.RecordLLMSpend counter on success — deliberately NOT a new
+// OTel span or GatewayDecisionEvent, matching the scope boundary above.
+func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader string, req adapter.EmbeddingRequest) (resp adapter.EmbeddingResponse, err error) {
+	start := time.Now()
+	var vk *identity.VirtualKey
+	var dep Deployment
+	var cost decimal.Decimal
+	defer func() {
+		p.logEmbeddingsRequest(ctx, vk, req, dep, resp, cost, err, time.Since(start))
+	}()
+
+	var verifyErr error
+	vk, verifyErr = p.verifier.Load().Verify(authorizationHeader)
 	if verifyErr != nil {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: auth: %w", verifyErr)
+		err = fmt.Errorf("dataplane: auth: %w", verifyErr)
+		return
 	}
 
 	if !isModelAllowed(vk, req.Model) {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
+		err = fmt.Errorf("%w: %q", ErrModelNotAllowed, req.Model)
+		return
 	}
 
 	// RPM only -- no TPM reservation/reconciliation: unlike chat
@@ -1981,12 +2008,14 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 		p.logger.Warn("embeddings_ratelimit_backend_unavailable", "key_id", vk.ID, "error", rlErr.Error())
 		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
 	} else if !allowed {
-		return adapter.EmbeddingResponse{}, ErrRateLimited
+		err = ErrRateLimited
+		return
 	}
 
 	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch := p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
 	if !budgetOK {
-		return adapter.EmbeddingResponse{}, ErrBudgetExceeded
+		err = ErrBudgetExceeded
+		return
 	}
 	var realCost *decimal.Decimal
 	defer func() {
@@ -1997,46 +2026,86 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 
 	for _, text := range req.Input {
 		if verdict := p.guardrails.Check(ctx, text); verdict.Blocked {
-			return adapter.EmbeddingResponse{}, ErrGuardrailBlocked
+			err = ErrGuardrailBlocked
+			return
 		}
 	}
 
-	dep, found := p.nextDeployment(req.Model, nil)
+	var found bool
+	dep, found = p.nextDeployment(req.Model, nil)
 	if !found {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
+		err = fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
+		return
 	}
 	if dep.Kind != "embedding" {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: deployment %q", ErrNotAnEmbeddingDeployment, dep.Name)
+		err = fmt.Errorf("%w: deployment %q", ErrNotAnEmbeddingDeployment, dep.Name)
+		return
 	}
 
 	av, ok := p.adapters[dep.Provider].(adapter.EmbeddingAdapter)
 	if !ok || p.embeddingUpstream == nil {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: provider %q", ErrEmbeddingsNotConfigured, dep.Provider)
+		err = fmt.Errorf("%w: provider %q", ErrEmbeddingsNotConfigured, dep.Provider)
+		return
 	}
 
-	providerReq, err := av.ToEmbeddingProvider(req)
-	if err != nil {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: translating embedding request for deployment %q: %w", dep.Name, err)
+	providerReq, toErr := av.ToEmbeddingProvider(req)
+	if toErr != nil {
+		err = fmt.Errorf("dataplane: translating embedding request for deployment %q: %w", dep.Name, toErr)
+		return
 	}
-	providerResp, err := p.embeddingUpstream(ctx, dep, providerReq)
-	if err != nil {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: embedding upstream call failed for deployment %q: %w", dep.Name, err)
+	providerResp, upstreamErr := p.embeddingUpstream(ctx, dep, providerReq)
+	if upstreamErr != nil {
+		err = fmt.Errorf("dataplane: embedding upstream call failed for deployment %q: %w", dep.Name, upstreamErr)
+		return
 	}
-	resp, err := av.FromEmbeddingProvider(providerResp)
+	resp, err = av.FromEmbeddingProvider(providerResp)
 	if err != nil {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: translating embedding response for deployment %q: %w", dep.Name, err)
+		err = fmt.Errorf("dataplane: translating embedding response for deployment %q: %w", dep.Name, err)
+		return
 	}
 	// Echo back the client-facing canonical model name, matching
 	// callDeployment's identical convention for chat completions.
 	resp.Model = req.Model
 
-	cost := p.costCalc.Calculate(dep.Model, costaccounting.Usage{
+	cost = p.costCalc.Calculate(dep.Model, costaccounting.Usage{
 		PromptTokens: resp.Usage.PromptTokens,
 		TotalTokens:  resp.Usage.TotalTokens,
 	})
 	realCost = &cost
+	spendUSD, _ := cost.Float64()
+	telemetry.RecordLLMSpend(ctx, spendUSD)
 
 	return resp, nil
+}
+
+// logEmbeddingsRequest is HandleEmbeddings' own completion-outcome log
+// line — mirrors logRequest's "chat_completion" shape (traceLogFields,
+// bounded model name, virtual_key_id, usage/cost on success, error on
+// failure) scoped to this function's own real fields. Deliberately no
+// gatewayevents_v1 field (see HandleEmbeddings' own doc comment on why a
+// GatewayDecisionEvent is out of scope here).
+func (p *Pipeline) logEmbeddingsRequest(ctx context.Context, vk *identity.VirtualKey, req adapter.EmbeddingRequest, dep Deployment, resp adapter.EmbeddingResponse, cost decimal.Decimal, err error, elapsed time.Duration) {
+	fields := append(traceLogFields(ctx),
+		"model", boundedModelForTelemetry(req.Model),
+		"input_count", len(req.Input),
+		"duration_ms", elapsed.Milliseconds(),
+	)
+	if vk != nil {
+		fields = append(fields, "virtual_key_id", vk.ID)
+	}
+	if dep.Name != "" {
+		fields = append(fields, "deployment", dep.Name)
+	}
+	if err != nil {
+		p.logger.Error("embeddings", append(fields, "error", err.Error())...)
+		return
+	}
+	fields = append(fields,
+		"prompt_tokens", resp.Usage.PromptTokens,
+		"total_tokens", resp.Usage.TotalTokens,
+		"cost_usd", cost.String(),
+	)
+	p.logger.Info("embeddings", fields...)
 }
 
 // HandleChatCompletion runs the full request pipeline for one canonical

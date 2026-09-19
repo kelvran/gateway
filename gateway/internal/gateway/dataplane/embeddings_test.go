@@ -1,8 +1,11 @@
 package dataplane
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -239,6 +242,118 @@ func TestHandleEmbeddingsEmitsCostAccountingEvent(t *testing.T) {
 	want := decimal.RequireFromString("0.1") // 100 tokens * 0.001/token
 	if !spent.Equal(want) {
 		t.Errorf("SpentUSD = %v, want %v (100 prompt tokens * 0.001/token)", spent, want)
+	}
+}
+
+// embeddingTestPipelineWithLogger mirrors newEmbeddingTestPipeline, but
+// with a caller-supplied logger -- a small, parallel constructor (same
+// rationale as newEmbeddingTestPipeline's own doc comment) rather than
+// growing that helper's signature for the two log-assertion tests below.
+func embeddingTestPipelineWithLogger(t *testing.T, embeddingUpstream UpstreamCaller, deployments []Deployment, priceTable costaccounting.PriceTable, logger *slog.Logger) *Pipeline {
+	t.Helper()
+	keys := []identity.VirtualKey{
+		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("1000")},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	if priceTable == nil {
+		priceTable = costaccounting.PriceTable{}
+	}
+	p, err := NewPipeline(Config{
+		Verifier:   verifier,
+		Limiter:    ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:     budget.NewTracker(),
+		Cache:      inprocess.New(0),
+		CacheL2:    inprocess.New(0),
+		CacheL3:    inprocess.NewLexicalCache(0),
+		Guardrails: guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters: adapter.Registry{
+			"openai":  openai.New(),
+			"bedrock": bedrock.New(),
+		},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(priceTable),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("chat Upstream should never be called by an embeddings test")
+			return nil, nil
+		},
+		EmbeddingUpstream: embeddingUpstream,
+		Logger:            logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+	return p
+}
+
+// TestHandleEmbeddingsLogsACompletionLineWithUsageAndCostOnSuccess is
+// the regression proof for a real completeness gap an end-to-end audit
+// found: HandleEmbeddings used to have NO completion logging at all --
+// success or failure. This proves the success path now logs a real
+// "embeddings" line carrying the model, deployment, usage, and cost --
+// the same shape logRequest's "chat_completion" line has always had.
+func TestHandleEmbeddingsLogsACompletionLineWithUsageAndCostOnSuccess(t *testing.T) {
+	var logBuf bytes.Buffer
+	deployments := []Deployment{{Name: "emb1", Model: "text-embedding-3-small", Provider: "openai", UpstreamModel: "text-embedding-3-small", BaseURL: "http://unused", Kind: "embedding"}}
+	priceTable := costaccounting.PriceTable{
+		"text-embedding-3-small": costaccounting.ModelPrice{PromptPerToken: decimal.RequireFromString("0.001")},
+	}
+	p := embeddingTestPipelineWithLogger(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return &openai.EmbeddingResponseWire{
+			Data:  []openai.EmbeddingDataWire{{Index: 0, Embedding: []float64{0.1}}},
+			Usage: openai.EmbeddingUsageWire{PromptTokens: 100, TotalTokens: 100},
+		}, nil
+	}, deployments, priceTable, slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	if _, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", adapter.EmbeddingRequest{
+		Model: "text-embedding-3-small", Input: []string{"hello"},
+	}); err != nil {
+		t.Fatalf("HandleEmbeddings: %v", err)
+	}
+
+	got := logBuf.String()
+	for _, want := range []string{
+		`"msg":"embeddings"`,
+		`"model":"text-embedding-3-small"`,
+		`"deployment":"emb1"`,
+		`"virtual_key_id":"test-key"`,
+		`"prompt_tokens":100`,
+		`"total_tokens":100`,
+		`"cost_usd":"0.1"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log output missing %s, got: %s", want, got)
+		}
+	}
+}
+
+// TestHandleEmbeddingsLogsAnErrorLineOnUpstreamFailure is the failure-
+// path half of the same regression proof: a request that fails must
+// also be logged (not silently swallowed), carrying the error.
+func TestHandleEmbeddingsLogsAnErrorLineOnUpstreamFailure(t *testing.T) {
+	var logBuf bytes.Buffer
+	deployments := []Deployment{{Name: "emb1", Model: "text-embedding-3-small", Provider: "openai", UpstreamModel: "text-embedding-3-small", BaseURL: "http://unused", Kind: "embedding"}}
+	upstreamErr := errors.New("upstream boom")
+	p := embeddingTestPipelineWithLogger(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return nil, upstreamErr
+	}, deployments, nil, slog.New(slog.NewJSONHandler(&logBuf, nil)))
+
+	_, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", adapter.EmbeddingRequest{
+		Model: "text-embedding-3-small", Input: []string{"hello"},
+	})
+	if err == nil {
+		t.Fatal("HandleEmbeddings: got nil error, want the upstream failure surfaced")
+	}
+
+	got := logBuf.String()
+	if !strings.Contains(got, `"level":"ERROR"`) || !strings.Contains(got, `"msg":"embeddings"`) {
+		t.Errorf("log output missing an ERROR-level embeddings line, got: %s", got)
+	}
+	if !strings.Contains(got, "upstream boom") {
+		t.Errorf("log output missing the underlying upstream error text, got: %s", got)
 	}
 }
 
