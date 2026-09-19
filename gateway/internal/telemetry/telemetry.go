@@ -498,6 +498,41 @@ func RecordPersistenceFailed(ctx context.Context, storeKind, keyID string) {
 	))
 }
 
+// configPropagationSubscribeStoppedCounter is a real gap an end-to-end
+// audit found: cmd/gateway's config-propagation subscriber goroutine had
+// a Warn-log-only call site (configpropagation_subscribe_stopped) for
+// its own Subscribe loop returning a non-context-cancellation error, with
+// no paired metric at all -- exactly the class RecordPersistenceFailed
+// above already closed for the two older persistence call sites. In
+// practice this should be rare: go-redis v9's own PubSub.Channel()
+// backing goroutine retries forever on any Receive error except an
+// explicit Close()-set sentinel, and a background ~3s health-check ping
+// silently reconnects on failure, so a real network partition should
+// never reach this call site at all (see
+// gateway/internal/configpropagation's own TestSubscribeSurvivesA-
+// RealRedisPartitionAndDeliversEventsAfterRecovery, which proves this
+// directly against a real, paused Redis container) -- but "rare" is
+// exactly the case a dashboard/alert needs a queryable signal for, not
+// just a log line an operator has to already be tailing.
+var configPropagationSubscribeStoppedCounter = mustInt64Counter(
+	meter,
+	"kelvran.configpropagation.subscribe_stopped",
+	metric.WithDescription("Config-propagation Subscribe loops that returned a non-context-cancellation error, by instance."),
+	metric.WithUnit("{event}"),
+)
+
+// RecordConfigPropagationSubscribeStopped increments the subscribe-
+// stopped counter for this instance. The caller (cmd/gateway's
+// subscriber goroutine) calls this at the exact same point it already
+// logs configpropagation_subscribe_stopped -- an additional, aggregate-
+// friendly signal, not a replacement for that log line, mirroring
+// RecordRateLimitFailOpen's own identical convention.
+func RecordConfigPropagationSubscribeStopped(ctx context.Context) {
+	configPropagationSubscribeStoppedCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(AttrKelvranInstanceID, InstanceID),
+	))
+}
+
 // Config selects how spans are exported.
 type Config struct {
 	// Exporter is "stdout", "otlp", or "none". "" defaults to "stdout" —

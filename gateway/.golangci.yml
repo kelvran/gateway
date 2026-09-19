@@ -190,6 +190,17 @@ linters:
         linters:
           - gosec
         text: "G404"
+      # containerID is redisContainer.GetContainerID() -- a real Docker
+      # container this SAME test created via testcontainers a few lines
+      # earlier in TestMain, never attacker-reachable input, the same
+      # rationale as graceful_shutdown_second_signal_test.go's identical
+      # exclusion above. "docker pause"/"docker unpause" simulate a real
+      # network partition against that container to prove Subscribe's
+      # own reconnect behavior.
+      - path: internal/configpropagation/configpropagation_test\.go
+        linters:
+          - gosec
+        text: "G204"
 
 formatters:
   enable:

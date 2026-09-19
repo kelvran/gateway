@@ -503,6 +503,7 @@ func run(configPath string, logger *slog.Logger) error {
 			})
 			if err != nil && ctx.Err() == nil {
 				logger.Warn("configpropagation_subscribe_stopped", "error", err)
+				telemetry.RecordConfigPropagationSubscribeStopped(ctx)
 			}
 		}()
 	}

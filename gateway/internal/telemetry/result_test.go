@@ -422,12 +422,13 @@ func cacheL3TelemetryMetricsReaderForTest() *sdkmetric.ManualReader {
 // cacheL3TelemetryMetricsReaderForTest's doc comment for why an absolute
 // reading is not safe to assert against.
 type cacheL3TelemetrySnapshot struct {
-	gateOutcomeCounts            map[[2]string]int64
-	savingsByLayer               map[string]float64
-	lookupCounts                 map[[2]string]int64
-	totalSpendUSD                float64
-	persistenceFailedByStoreKind map[string]int64
-	durationSumByModel           map[string]float64
+	gateOutcomeCounts                      map[[2]string]int64
+	savingsByLayer                         map[string]float64
+	lookupCounts                           map[[2]string]int64
+	totalSpendUSD                          float64
+	persistenceFailedByStoreKind           map[string]int64
+	configPropagationSubscribeStoppedTotal int64
+	durationSumByModel                     map[string]float64
 	// durationErrorTypeByModel is intentionally NOT diffed by its caller —
 	// whether error.type is set on a given model's data point is a static
 	// property of that attribute set, not a cumulative value, so reading
@@ -481,6 +482,14 @@ func snapshotCacheL3Telemetry(t *testing.T, rm metricdata.ResourceMetrics) cache
 				for _, dp := range sum.DataPoints {
 					storeKind, _ := dp.Attributes.Value(attribute.Key(AttrKelvranPersistenceStoreKind))
 					snap.persistenceFailedByStoreKind[storeKind.AsString()] += dp.Value
+				}
+			case "kelvran.configpropagation.subscribe_stopped":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.configpropagation.subscribe_stopped data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					snap.configPropagationSubscribeStoppedTotal += dp.Value
 				}
 			case "kelvran.cache.l3.gate_outcome":
 				sum, ok := m.Data.(metricdata.Sum[int64])
@@ -607,6 +616,11 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	RecordPersistenceFailed(ctx, "budget", "team-budget-persist-failure")
 	RecordPersistenceFailed(ctx, "identity", "team-identity-persist-failure")
 	RecordPersistenceFailed(ctx, "identity", "team-identity-persist-failure")
+
+	// kelvran.configpropagation.subscribe_stopped -- same "must share
+	// this function's one delegation" constraint.
+	RecordConfigPropagationSubscribeStopped(ctx)
+	RecordConfigPropagationSubscribeStopped(ctx)
 
 	// Three RecordChatCompletionMetrics scenarios, each given a unique
 	// RequestModel so their attribute sets never collide into the same
@@ -751,5 +765,9 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	}
 	if got := afterSnap.persistenceFailedByStoreKind["identity"] - beforeSnap.persistenceFailedByStoreKind["identity"]; got != 2 {
 		t.Errorf("kelvran.persistence.failed[store_kind=identity] delta = %d, want 2", got)
+	}
+
+	if got := afterSnap.configPropagationSubscribeStoppedTotal - beforeSnap.configPropagationSubscribeStoppedTotal; got != 2 {
+		t.Errorf("kelvran.configpropagation.subscribe_stopped delta = %d, want 2", got)
 	}
 }
