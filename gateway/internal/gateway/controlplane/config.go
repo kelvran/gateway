@@ -831,6 +831,10 @@ func Load(path string) (*Config, error) {
 	// Sort for deterministic ordering (map iteration order is random).
 	sort.Slice(cfg.Deployments, func(i, j int) bool { return cfg.Deployments[i].Name < cfg.Deployments[j].Name })
 
+	if err := validateEmbeddingModelGroupsAreProviderConsistent(cfg.Deployments); err != nil {
+		return nil, err
+	}
+
 	if telemetryRaw, ok := getMap(root, "telemetry"); ok {
 		cfg.Telemetry.Exporter, _ = getString(telemetryRaw, "exporter")
 		cfg.Telemetry.OTLPEndpoint, _ = getString(telemetryRaw, "otlp_endpoint")
@@ -1392,5 +1396,58 @@ func parseDeploymentRateLimit(deploymentName string, rl map[string]any, dep *Dep
 		return err
 	}
 	dep.MaxConcurrentRequests, _ = getInt(rl, "max_concurrent_requests")
+	return nil
+}
+
+// validateEmbeddingModelGroupsAreProviderConsistent rejects a config
+// where two Kind=="embedding" deployments share one canonical Model
+// name but have a different (Provider, UpstreamModel) pair -- a real
+// gap an audit found: router.Select/nextDeployment pick among a
+// canonical model's deployments purely by weight/health, with zero
+// concept of "these two deployments might not actually produce
+// comparable output." For embeddings specifically, that's a real
+// correctness hazard two callers of an otherwise-identical chat model
+// group would never hit: Bedrock's InvokeModel embeddings endpoint
+// accepts exactly one input per call and defaults to 1024 output
+// dimensions unless the request overrides Dimensions (see
+// bedrock.EmbeddingRequest's own doc comment), while OpenAI accepts an
+// arbitrary batch size and whatever native dimensionality the specific
+// upstream model returns (1536 for text-embedding-3-small, 3072 for
+// -large, etc.) -- so a WRR pick landing on one vs. the other for the
+// SAME canonical model name could silently return vectors of a
+// different size, or reject a batch request that just succeeded a
+// moment earlier against a sibling deployment.
+//
+// Deliberately does NOT try to hardcode a per-model dimensionality
+// table (fragile against new upstream models, and provider-specific
+// knowledge this package has no other reason to carry) -- pinning
+// (Provider, UpstreamModel) identical across a shared canonical
+// embedding model name is what actually guarantees consistent output
+// shape, since it's then genuinely the same real upstream model/API on
+// every pick. This still leaves real degrees of freedom for redundancy
+// (different regions, different credentials/API keys, different
+// weights, health-based failover, sticky/canary routing) -- exactly the
+// legitimate reasons to have more than one deployment per canonical
+// model in the first place.
+func validateEmbeddingModelGroupsAreProviderConsistent(deployments []DeploymentConfig) error {
+	type providerUpstream struct {
+		provider, upstreamModel string
+	}
+	seen := map[string]providerUpstream{}
+	seenDeploymentName := map[string]string{}
+	for _, dep := range deployments {
+		if dep.Kind != "embedding" {
+			continue
+		}
+		pu := providerUpstream{provider: dep.Provider, upstreamModel: dep.UpstreamModel}
+		if existing, ok := seen[dep.Model]; ok && existing != pu {
+			return fmt.Errorf(
+				"controlplane: embedding model %q is shared by deployments %q (provider %q, upstream_model %q) and %q (provider %q, upstream_model %q) -- every deployment sharing one canonical embedding model name must use the same provider and upstream_model, or output shape (dimensionality, batch support) can silently differ depending on which one a request is routed to",
+				dep.Model, seenDeploymentName[dep.Model], existing.provider, existing.upstreamModel, dep.Name, pu.provider, pu.upstreamModel,
+			)
+		}
+		seen[dep.Model] = pu
+		seenDeploymentName[dep.Model] = dep.Name
+	}
 	return nil
 }

@@ -10,7 +10,10 @@
 // unknown-field preservation.
 package adapter
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Message is one turn in a canonical chat conversation. Its JSON shape is
 // Kelvran's own client-facing wire format — OpenAI Chat-Completions-shaped,
@@ -493,7 +496,16 @@ type EmbeddingRequest struct {
 	// Input is one or more texts to embed. A single string is the
 	// common case; multiple strings amortize one upstream round trip
 	// across a batch, mirroring OpenAI's own real "input: string |
-	// string[]" contract.
+	// string[]" contract. The Go field is always []string (multiple
+	// entries is the more general shape every EmbeddingAdapter and
+	// dataplane.Pipeline.HandleEmbeddings already iterate over) --
+	// UnmarshalJSON below is what actually accepts a bare JSON string on
+	// the wire and normalizes it into a single-element slice, closing a
+	// real gap an audit found: this field's own doc comment already
+	// claimed the dual "string | string[]" contract, but before
+	// UnmarshalJSON existed, a bare JSON string was rejected outright
+	// with a raw "cannot unmarshal string into []string" error, never
+	// reaching this package's translation logic at all.
 	Input []string `json:"input"`
 	// Dimensions optionally requests a reduced output embedding size —
 	// both real providers this package supports accept this today:
@@ -509,6 +521,46 @@ type EmbeddingRequest struct {
 	// sets this sees byte-identical behavior to before this field
 	// existed.
 	Dimensions int `json:"dimensions,omitempty"`
+}
+
+// embeddingRequestWire mirrors EmbeddingRequest's own JSON tags, except
+// Input stays raw here so UnmarshalJSON can try both real shapes before
+// deciding which one the wire payload actually used.
+type embeddingRequestWire struct {
+	Model      string          `json:"model"`
+	Input      json.RawMessage `json:"input"`
+	Dimensions int             `json:"dimensions,omitempty"`
+}
+
+// UnmarshalJSON accepts Input as either a bare JSON string or a JSON
+// array of strings -- see Input's own doc comment for why this exists.
+// An array is tried first (the more common multi-entry case for this
+// package's own callers); a bare string is normalized into a single-
+// element slice. Anything else (a number, object, array of non-strings,
+// etc.) is a real error, not silently coerced.
+func (r *EmbeddingRequest) UnmarshalJSON(data []byte) error {
+	var wire embeddingRequestWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	r.Model = wire.Model
+	r.Dimensions = wire.Dimensions
+
+	if len(wire.Input) == 0 {
+		r.Input = nil
+		return nil
+	}
+	var asSlice []string
+	if err := json.Unmarshal(wire.Input, &asSlice); err == nil {
+		r.Input = asSlice
+		return nil
+	}
+	var asString string
+	if err := json.Unmarshal(wire.Input, &asString); err != nil {
+		return fmt.Errorf("adapter: EmbeddingRequest.Input must be a string or an array of strings: %w", err)
+	}
+	r.Input = []string{asString}
+	return nil
 }
 
 // EmbeddingResponse is the canonical, provider-agnostic embeddings

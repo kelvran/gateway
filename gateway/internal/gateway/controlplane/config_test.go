@@ -1067,6 +1067,84 @@ func TestLoadRejectsAnthropicDeploymentConfiguredWithEmbeddingKind(t *testing.T)
 	}
 }
 
+// TestLoadRejectsEmbeddingDeploymentsSharingAModelWithDifferentProviders
+// is the regression proof for a real gap an audit found: two Kind==
+// "embedding" deployments sharing one canonical Model name but pointing
+// at different providers (here openai vs. bedrock) can silently produce
+// different output shape (dimensionality, batch support) depending on
+// which one a WRR pick lands on -- rejected at config-load time, per
+// validateEmbeddingModelGroupsAreProviderConsistent's own doc comment.
+func TestLoadRejectsEmbeddingDeploymentsSharingAModelWithDifferentProviders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"shared-embed\"\n    provider: \"openai\"\n    upstream_model: \"text-embedding-3-small\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n    kind: \"embedding\"\n" +
+		"  d2:\n" +
+		"    model: \"shared-embed\"\n    provider: \"bedrock\"\n    upstream_model: \"amazon.titan-embed-text-v2:0\"\n    base_url: \"https://y\"\n    access_key_id_env: \"A\"\n    secret_access_key_env: \"S\"\n    region: \"us-east-1\"\n    kind: \"embedding\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with two embedding deployments sharing a model but different providers: got nil error, want a real error")
+	}
+}
+
+// TestLoadRejectsEmbeddingDeploymentsSharingAModelWithDifferentUpstreamModels
+// mirrors the provider-mismatch proof for the same-provider,
+// different-upstream_model case (e.g. two distinct OpenAI embedding
+// models with different native dimensionality sharing one canonical
+// name) -- the same real hazard, a different specific cause.
+func TestLoadRejectsEmbeddingDeploymentsSharingAModelWithDifferentUpstreamModels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"shared-embed\"\n    provider: \"openai\"\n    upstream_model: \"text-embedding-3-small\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n    kind: \"embedding\"\n" +
+		"  d2:\n" +
+		"    model: \"shared-embed\"\n    provider: \"openai\"\n    upstream_model: \"text-embedding-3-large\"\n    base_url: \"https://y\"\n    api_key_env: \"Y\"\n    kind: \"embedding\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with two embedding deployments sharing a model but different upstream_model: got nil error, want a real error")
+	}
+}
+
+// TestLoadAllowsEmbeddingDeploymentsSharingAModelWithIdenticalProviderAndUpstreamModel
+// is the negative proof: real redundancy (same provider, same
+// upstream_model, different region/credentials/weight) across a shared
+// canonical embedding model name must keep working -- this validation
+// must never reject the legitimate case it's not about.
+func TestLoadAllowsEmbeddingDeploymentsSharingAModelWithIdenticalProviderAndUpstreamModel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"shared-embed\"\n    provider: \"bedrock\"\n    upstream_model: \"amazon.titan-embed-text-v2:0\"\n    base_url: \"https://x\"\n    access_key_id_env: \"A\"\n    secret_access_key_env: \"S\"\n    region: \"us-east-1\"\n    kind: \"embedding\"\n    weight: 3\n" +
+		"  d2:\n" +
+		"    model: \"shared-embed\"\n    provider: \"bedrock\"\n    upstream_model: \"amazon.titan-embed-text-v2:0\"\n    base_url: \"https://y\"\n    access_key_id_env: \"A\"\n    secret_access_key_env: \"S\"\n    region: \"us-west-2\"\n    kind: \"embedding\"\n    weight: 1\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with two identical-provider/upstream_model embedding deployments: %v", err)
+	}
+	if len(cfg.Deployments) != 2 {
+		t.Fatalf("len(cfg.Deployments) = %d, want 2", len(cfg.Deployments))
+	}
+}
+
 // TestLoadRejectsUnknownDeploymentKind proves an unrecognized kind value
 // is a real config error, not silently treated as "chat."
 func TestLoadRejectsUnknownDeploymentKind(t *testing.T) {

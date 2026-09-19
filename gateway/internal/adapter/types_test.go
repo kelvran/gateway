@@ -147,3 +147,76 @@ func TestChatRequestDisableCacheControlAutoPopulateIsWireUnreachable(t *testing.
 		t.Errorf("marshaled ChatRequest leaks DisableCacheControlAutoPopulate onto the wire: %s", b)
 	}
 }
+
+// TestEmbeddingRequestUnmarshalJSONAcceptsABareString is the regression
+// proof for a real gap an audit found: EmbeddingRequest.Input's own doc
+// comment already claimed OpenAI's real "input: string | string[]"
+// contract, but before UnmarshalJSON existed, a bare JSON string was
+// rejected outright with a raw "cannot unmarshal string into []string"
+// error from the default encoding/json behavior, never reaching this
+// package's translation logic at all.
+func TestEmbeddingRequestUnmarshalJSONAcceptsABareString(t *testing.T) {
+	var req EmbeddingRequest
+	wire := `{"model":"text-embedding-3-small","input":"the quick brown fox"}`
+	if err := json.Unmarshal([]byte(wire), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if req.Model != "text-embedding-3-small" {
+		t.Errorf("Model = %q, want text-embedding-3-small", req.Model)
+	}
+	if len(req.Input) != 1 || req.Input[0] != "the quick brown fox" {
+		t.Errorf("Input = %v, want a single-element slice [\"the quick brown fox\"]", req.Input)
+	}
+}
+
+// TestEmbeddingRequestUnmarshalJSONAcceptsAnArrayOfStrings proves the
+// pre-existing, more common shape still works unchanged.
+func TestEmbeddingRequestUnmarshalJSONAcceptsAnArrayOfStrings(t *testing.T) {
+	var req EmbeddingRequest
+	wire := `{"model":"text-embedding-3-small","input":["hello","world"],"dimensions":256}`
+	if err := json.Unmarshal([]byte(wire), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(req.Input) != 2 || req.Input[0] != "hello" || req.Input[1] != "world" {
+		t.Errorf("Input = %v, want [hello world]", req.Input)
+	}
+	if req.Dimensions != 256 {
+		t.Errorf("Dimensions = %d, want 256", req.Dimensions)
+	}
+}
+
+// TestEmbeddingRequestUnmarshalJSONRejectsANonStringArrayEntry proves an
+// array containing a non-string entry is a real, reported error, not
+// silently coerced (e.g. a number stringified) or a panic.
+func TestEmbeddingRequestUnmarshalJSONRejectsANonStringArrayEntry(t *testing.T) {
+	var req EmbeddingRequest
+	wire := `{"model":"text-embedding-3-small","input":["hello", 42]}`
+	if err := json.Unmarshal([]byte(wire), &req); err == nil {
+		t.Fatal("Unmarshal with a non-string array entry: got nil error, want a real error")
+	}
+}
+
+// TestEmbeddingRequestUnmarshalJSONRejectsANumberInput mirrors the
+// array-entry proof for the top-level input field itself.
+func TestEmbeddingRequestUnmarshalJSONRejectsANumberInput(t *testing.T) {
+	var req EmbeddingRequest
+	wire := `{"model":"text-embedding-3-small","input":42}`
+	if err := json.Unmarshal([]byte(wire), &req); err == nil {
+		t.Fatal("Unmarshal with input=42: got nil error, want a real error")
+	}
+}
+
+// TestEmbeddingRequestUnmarshalJSONWithNoInputLeavesItNil proves omitting
+// input entirely leaves Input nil, matching the plain struct-tag default
+// this custom UnmarshalJSON replaced -- callers (e.g. cmd/gateway's own
+// "input is required and must be non-empty" check) rely on this.
+func TestEmbeddingRequestUnmarshalJSONWithNoInputLeavesItNil(t *testing.T) {
+	var req EmbeddingRequest
+	wire := `{"model":"text-embedding-3-small"}`
+	if err := json.Unmarshal([]byte(wire), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if req.Input != nil {
+		t.Errorf("Input = %v, want nil", req.Input)
+	}
+}
