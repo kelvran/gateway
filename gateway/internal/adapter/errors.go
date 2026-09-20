@@ -31,3 +31,28 @@ import "errors"
 // sentinel lets classifyFallbackError recognize the condition via
 // errors.Is instead of errors.As-ing for *UpstreamHTTPError.
 var ErrProviderContentPolicyBlocked = errors.New("adapter: upstream blocked the request for content-policy/safety reasons")
+
+// ErrStructuredOutputUnsupported is a sentinel error dataplane.Pipeline
+// wraps when a request sets ChatRequest.ResponseFormat but the
+// deployment it would be sent to cannot enforce it (per
+// adapter.SupportsStructuredOutput) -- and, for the first-pick call
+// sites (dataplane.go's runMissPath, streaming.go's
+// HandleChatCompletionStream), rerouteToCapableDeploymentIfNeeded's own
+// best-effort search already failed to find a capable deployment
+// elsewhere in the same pool.
+//
+// Closes a real gap: bedrock.additionalModelRequestFieldsFor's own
+// documented behavior for a non-whitelisted model is to silently omit
+// output_config.format entirely -- no error, no signal -- so a request
+// reaching that deployment would otherwise proceed upstream with
+// ResponseFormat silently dropped. AWS's own real behavior for a
+// genuinely unsupported Converse request is a loud ValidationException,
+// confirmed against AWS's official API reference -- Kelvran's prior
+// silent-strip was strictly MORE silent than AWS itself would be.
+//
+// This sentinel only ever fires on the first-pick path when no capable
+// deployment exists anywhere in the pool; attemptFallbackChain's own
+// capabilityOK gate (fallback.go) already prevents the identical silent
+// strip during a fallback hop by skipping an incapable target outright,
+// and stays untouched by this sentinel's introduction.
+var ErrStructuredOutputUnsupported = errors.New("adapter: response_format is not supported by this model and no capable deployment was found")

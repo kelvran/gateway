@@ -284,6 +284,29 @@ func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
 // unchanged: never a hard error, only ever a best-effort improvement
 // before the first real upstream call happens.
 //
+// checkResponseFormatEnforceable returns adapter.ErrStructuredOutputUnsupported
+// (wrapped with dep/req context) when req.ResponseFormat is set and dep
+// -- the deployment rerouteToCapableDeploymentIfNeeded just returned --
+// still cannot enforce it, i.e. that function's own best-effort search
+// found no capable deployment anywhere in the pool. Called immediately
+// after rerouteToCapableDeploymentIfNeeded at both real first-pick call
+// sites (runMissPath here; streaming.go's HandleChatCompletionStream),
+// closing the one case that function's own "never a hard error"
+// contract deliberately leaves open for a caller to detect: without this
+// check, a request would silently proceed to a deployment that (per
+// bedrock.additionalModelRequestFieldsFor's own documented behavior)
+// drops ResponseFormat entirely with no error and no signal. Never
+// called from attemptFallbackChain's own capabilityOK gate (fallback.go)
+// -- that gate already prevents the identical silent strip during a
+// fallback hop by skipping an incapable target outright, before ever
+// calling it.
+func checkResponseFormatEnforceable(dep Deployment, req adapter.ChatRequest) error {
+	if req.ResponseFormat == nil || capabilityOKForRequest(dep, req) {
+		return nil
+	}
+	return fmt.Errorf("%w: model %s", adapter.ErrStructuredOutputUnsupported, dep.Model)
+}
+
 // Closes the "first attempt" half of two real, deliberately-accepted v1
 // scope limits, both the identical shape: capabilityOKForRequest and
 // isRegionAllowed already gate every FALLBACK hop
@@ -2527,6 +2550,9 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			return nil, fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		}
 		dep = p.rerouteToCapableDeploymentIfNeeded(dep, req, vk)
+		if err := checkResponseFormatEnforceable(dep, req); err != nil {
+			return nil, err
+		}
 
 		resp, err := p.callDeploymentWithCapacityCheck(ctx, dep, req)
 		var fallback fallbackInfo

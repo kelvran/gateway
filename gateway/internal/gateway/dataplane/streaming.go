@@ -256,6 +256,9 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 	dep = p.rerouteToCapableDeploymentIfNeeded(dep, req, vk)
+	if err = checkResponseFormatEnforceable(dep, req); err != nil {
+		return
+	}
 
 	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens, tpmReservationEpoch: &tpmReservationEpoch}
 	var blocked bool
