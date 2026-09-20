@@ -391,10 +391,47 @@ func (r *Router) activeCostTier(ms *modelState) (tier int, filterActive bool) {
 // internal/ratelimit's Redis-backend-error path) — a known-bad or
 // momentarily-throttled deployment is still a better answer than "no
 // deployment configured for this model at all," which would otherwise
-// incorrectly surface as dataplane.ErrNoDeployment. In practice this
-// fail-open ramp case is rare and self-correcting: rampCredit persists
-// across calls, so a rejected offer only delays, never permanently
-// denies, that deployment's eventual admission.
+// incorrectly surface as dataplane.ErrNoDeployment. For a group with two
+// or more deployments where at least one OTHER candidate is both healthy
+// and admitted, this fail-open ramp case is rare and self-correcting:
+// rampCredit persists across calls, so a rejected offer only delays,
+// never permanently denies, that deployment's eventual admission, while
+// the healthy alternative absorbs the traffic share the ramp withheld.
+//
+// **Deliberately NOT rare for a single-deployment group with no healthy
+// alternative at all** — ms.sumW's whole cycle is that one deployment
+// (see TestSelectServesFullShareFromSoleRecoveringDeploymentThroughoutRamp):
+// there, this fail-open path fires deterministically on every
+// ramp-rejected offer, for the entire ramp window, and the ramping
+// deployment ends up serving 100% of traffic throughout — never the
+// throttled percentage admitTurn computes. This is intentional, not a
+// missed case: the ramp's whole purpose is to withhold a share of
+// traffic FROM a just-recovered deployment so a healthier alternative
+// can absorb it. When there is no alternative, there is nothing for that
+// withheld share to be redirected to — the only other option is
+// outright rejecting those requests, which would reduce availability
+// with no compensating protection (the deployment already passed
+// HealthyThreshold consecutive successful probes before ramping even
+// started, and rejecting user requests doesn't make it recover faster).
+// Serving from the sole viable deployment, exactly as if it had already
+// completed its ramp, is the correct choice here, per this same
+// paragraph's own fail-open precedent above.
+//
+// **A multi-deployment group where every OTHER deployment also happens
+// to be unhealthy is a DIFFERENT, messier case — deliberately NOT the
+// same guarantee as the single-deployment case above.** lastAdmissible
+// is overwritten to whichever non-excluded candidate ms.next() offers
+// LAST in a given call's bounded cycle, unconditionally of that
+// candidate's own health (it is set before admitTurn is ever consulted,
+// a few lines below). So when the genuinely-unhealthy, non-ramping
+// deployment happens to be that last offer in a particular call, this
+// fail-open path returns THAT unhealthy deployment, not the ramping one
+// — see TestSelectFailOpenCanReturnAGenuinelyUnhealthyDeploymentInAnAllUnhealthyGroup,
+// which proves this with a real, exact, nonzero count. This is a real,
+// disclosed rough edge, not a guarantee this codebase makes: a
+// single-deployment group has only one non-excluded candidate to ever
+// offer, so it cannot exhibit this; an all-unhealthy multi-deployment
+// group can, and does.
 func (r *Router) selectHealthy(ms *modelState, exclude map[string]bool) (string, bool) {
 	tier, tierFilterActive := r.activeCostTier(ms)
 

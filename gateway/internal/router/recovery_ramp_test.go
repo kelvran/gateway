@@ -180,6 +180,139 @@ func TestSelectRampResetsToInitialPercentOnSubThresholdFlapFailure(t *testing.T)
 	}
 }
 
+// TestSelectServesFullShareFromSoleRecoveringDeploymentThroughoutRamp is
+// the regression proof for a real gap in this file's own suite: every
+// existing recovery-ramp test above uses a 2-deployment group, so none
+// of them ever exercised the single-deployment case — the single most
+// common real-world topology (one deployment per model) — at all.
+//
+// Decision (see health.go's selectHealthy doc comment, same paragraph
+// this test is named from): a just-recovered deployment that is the
+// SOLE deployment in its group has no healthy alternative to absorb the
+// traffic share its ramp would otherwise withhold, so selectHealthy's
+// existing fail-open path deliberately serves it 100% of the time
+// throughout the entire ramp window — never the throttled percentage
+// admitTurn computes for a multi-deployment group. This is intentional:
+// rejecting a fraction of requests outright would only reduce
+// availability, with no deployment anywhere actually protected by it.
+// This test proves that is exactly what happens today, so any future
+// change to this behavior is a deliberate, reviewed decision, not an
+// accidental regression.
+func TestSelectServesFullShareFromSoleRecoveringDeploymentThroughoutRamp(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "a", Model: "gpt-4o"},
+	}, HealthConfig{UnhealthyThreshold: 1, HealthyThreshold: 2, RecoveryRampSteps: 4, RecoveryRampInitialPercent: 20})
+
+	r.ReportProbeResult("a", false)                    // ejects "a" (UnhealthyThreshold=1)
+	r.ReportProbeResult("a", true)                     // 1 of 2 required successes
+	healthy, changed := r.ReportProbeResult("a", true) // 2 of 2 -> recovers, ramp starts at rampStep=0 (20%)
+	if !healthy || !changed {
+		t.Fatalf("setup: ReportProbeResult on the 2nd recovery success = (healthy=%v, changed=%v), want (true, true)", healthy, changed)
+	}
+
+	// At the ramp's most-throttled stage (20%), a 2-deployment group
+	// would send "a" only ~1 in 6 calls (see
+	// TestSelectGrantsReducedShareImmediatelyAfterRecovery). With no
+	// second deployment to send the other calls to, every single call
+	// must still return ("a", true) — the sole deployment is the only
+	// possible answer regardless of admitTurn's own internal ramp-reject
+	// decision.
+	const totalCalls = 600
+	for i := 0; i < totalCalls; i++ {
+		name, ok := r.Select("gpt-4o", nil)
+		if !ok {
+			t.Fatalf("call %d (ramp stage 0, 20%%): Select returned ok=false, want true — the sole deployment must fail open, never reject outright", i)
+		}
+		if name != "a" {
+			t.Fatalf("call %d (ramp stage 0, 20%%): Select returned %q, want \"a\" (the only deployment configured for this model)", i, name)
+		}
+	}
+
+	// Same must hold at every later ramp stage, and after the ramp
+	// completes entirely — "a" stays the only possible answer the whole
+	// way through.
+	for stage := 0; stage < defaultRecoveryRampSteps; stage++ {
+		r.ReportProbeResult("a", true) // advance one ramp stage (or complete it, on the last iteration)
+		for i := 0; i < totalCalls; i++ {
+			name, ok := r.Select("gpt-4o", nil)
+			if !ok {
+				t.Fatalf("ramp stage %d, call %d: Select returned ok=false, want true", stage+1, i)
+			}
+			if name != "a" {
+				t.Fatalf("ramp stage %d, call %d: Select returned %q, want \"a\"", stage+1, i, name)
+			}
+		}
+	}
+}
+
+// TestSelectFailOpenCanReturnAGenuinelyUnhealthyDeploymentInAnAllUnhealthyGroup
+// is the regression proof for a real gap an independent adversarial
+// review found in this file's own sole-deployment test above (and its
+// matching health.go doc-comment paragraph): that paragraph originally
+// also claimed a multi-deployment group where every OTHER deployment is
+// unhealthy behaves the same way as the sole-deployment case -- "the
+// ramping deployment ends up serving 100% of traffic throughout." That
+// claim is FALSE. lastAdmissible (health.go's selectHealthy) is set to
+// whichever non-excluded candidate ms.next() offers LAST in a given
+// call's bounded cycle, unconditionally of that candidate's own health --
+// it is updated BEFORE admitTurn is ever consulted. So when the
+// genuinely-unhealthy (non-ramping) deployment happens to be that last
+// offer in a particular call, selectHealthy's fail-open path returns
+// THAT unhealthy deployment, not the ramping one -- something a
+// single-deployment group can never exhibit at all, since there is only
+// ever one non-excluded candidate to offer. This test proves the real,
+// messier behavior with an exact count, so health.go's doc comment can
+// describe it accurately instead of asserting a clean guarantee that
+// does not actually hold.
+func TestSelectFailOpenCanReturnAGenuinelyUnhealthyDeploymentInAnAllUnhealthyGroup(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "a", Model: "gpt-4o"},
+		{Name: "b", Model: "gpt-4o"},
+	}, HealthConfig{UnhealthyThreshold: 1, HealthyThreshold: 2, RecoveryRampSteps: 4, RecoveryRampInitialPercent: 20})
+
+	r.ReportProbeResult("b", false) // ejects "b" -- stays unhealthy for the rest of this test, never recovered
+	r.ReportProbeResult("a", false) // ejects "a" (UnhealthyThreshold=1)
+	r.ReportProbeResult("a", true)  // 1 of 2 required successes
+	healthy, changed := r.ReportProbeResult("a", true)
+	if !healthy || !changed {
+		t.Fatalf("setup: ReportProbeResult on \"a\"'s 2nd recovery success = (healthy=%v, changed=%v), want (true, true)", healthy, changed)
+	}
+	if r.IsHealthy("b") {
+		t.Fatal("setup: \"b\" must still be unhealthy")
+	}
+
+	const totalCalls = 600
+	counts := map[string]int{}
+	for i := 0; i < totalCalls; i++ {
+		name, ok := r.Select("gpt-4o", nil)
+		if !ok {
+			t.Fatalf("call %d: Select returned ok=false, want true -- a group with a ramping deployment must still fail open", i)
+		}
+		counts[name]++
+	}
+
+	// Exact, deterministic counts (the WRR cursor + rampCredit
+	// accumulator have no randomness) -- pinned by running the real
+	// implementation once, per this file's own "exact count, not
+	// statistical tolerance" convention. The load-bearing assertion is
+	// counts["b"] > 0: the genuinely unhealthy deployment IS returned by
+	// the fail-open path a real, nonzero number of times -- disproving
+	// the "ramping deployment serves 100%" claim this test was written
+	// to correct.
+	if counts["b"] == 0 {
+		t.Fatal(`counts["b"] = 0, want > 0 -- the fail-open path must be able to return a genuinely unhealthy deployment in an all-unhealthy-alternative group, not just the ramping one`)
+	}
+	if got, want := counts["a"]+counts["b"], totalCalls; got != want {
+		t.Fatalf("counts[\"a\"]+counts[\"b\"] = %d, want %d -- Select must never return anything other than a or b for this model", got, want)
+	}
+	if got, want := counts["a"], 596; got != want {
+		t.Errorf(`counts["a"] = %d, want %d`, got, want)
+	}
+	if got, want := counts["b"], 4; got != want {
+		t.Errorf(`counts["b"] = %d, want %d`, got, want)
+	}
+}
+
 // defaultRecoveryRampInitialPercentPlusStage is a tiny formatting helper
 // purely for this test file's own failure messages — mirrors
 // health.go's admitRampedTurn percent formula so a failing assertion's
