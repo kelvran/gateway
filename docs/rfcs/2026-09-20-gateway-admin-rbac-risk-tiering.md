@@ -1,6 +1,6 @@
 # RFC: Admin API risk-tiered `Operator` role
 
-- **Status**: Proposed — recommended for near-term implementation. This is deliberately **not** framed as "design-only, deferred pending its own named trigger," unlike this repo's other 2026-09-20 Tier-2 RFCs: those defer on a genuinely external, not-yet-fired trigger (a multi-tenant customer, a real MCP client). This item's own trigger already exists today, inside the codebase itself — the admin surface's blast radius has grown materially since the last time its authorization model was reviewed, and `THREAT_MODEL.md`'s own 2026-09-20 correction (below) already recommends exactly this build.
+- **Status**: Accepted, implemented 2026-09-20 (same day this RFC was written). `internal/admin.Credentials` gained the `Operator` field; `requireAdminOrOperatorBearerToken` gates the three routes named below; `controlplane.AdminConfig.OperatorTokenEnv` (`admin.operator_token_env`) wires it through `cmd/gateway/main.go`'s existing startup-guard convention. `THREAT_MODEL.md`'s Gateway Elevation-of-Privilege row has its own matching "Implemented, same day" correction.
 - **Date**: 2026-09-20
 - **Author(s)**: Session agent (Claude Code), per `docs/upgrade-research/multitenancy-rbac-tier1-2026-09-20.md` Finding 5, and `THREAT_MODEL.md`'s Gateway Elevation-of-Privilege row's own 2026-09-20 correction, which names this exact RFC as its own recommended follow-up.
 
@@ -84,5 +84,5 @@ Zero required change for any existing deployment. `OperatorTokenEnv` is optional
 ## Unresolved Questions
 
 - Should `POST /admin/deployments/{name}/weight` require the `Operator` credential to also present the deployment `name` as part of some future finer-grained per-resource scoping, or is "any named deployment" an acceptable grant at this tier? This RFC proposes the latter (matching `CostViewer`'s own precedent of a route-level, not resource-level, grant) but does not close the door on resource-level scoping if a real future need for it appears.
-- Once implemented, `THREAT_MODEL.md`'s Elevation-of-Privilege row needs a follow-up update crediting the new tier split — intentionally left to the implementation PR, not this design doc, matching this repo's own convention of updating `THREAT_MODEL.md` when a feature ships, not when it's merely designed.
+- ~~Once implemented, `THREAT_MODEL.md`'s Elevation-of-Privilege row needs a follow-up update crediting the new tier split~~ — **done**, same day: see that row's own "Implemented, same day" correction.
 - Should `Operator` be able to read the routes it can write to (e.g., `GET /admin/deployments` if such a route existed) without a separate `Viewer` credential also being presented? No such GET route currently exists for deployments, so this is moot today, but worth resolving before/if one is added.

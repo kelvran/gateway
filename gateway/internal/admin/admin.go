@@ -44,22 +44,31 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
 
-// Credentials holds the admin surface's three credential tiers. Admin is
+// Credentials holds the admin surface's four credential tiers. Admin is
 // required (callers must enforce this is non-empty before constructing a
-// Handler at all, same as the pre-existing single-token contract). Viewer
-// and CostViewer are both optional — an empty value means that tier isn't
-// configured. Viewer, per docs/rfcs/2026-09-09-gateway-admin-viewer-role.md,
+// Handler at all, same as the pre-existing single-token contract). Viewer,
+// CostViewer, and Operator are all optional — an empty value means that
+// tier isn't configured. Viewer, per docs/rfcs/2026-09-09-gateway-admin-viewer-role.md,
 // is full read access (GET /admin/config, prompts) but never a write.
 // CostViewer, per docs/upgrade-research/multi-tenancy-access-control-2026-09-14.md's
 // narrow-third-tier recommendation, is narrower still: it authenticates
 // ONLY GET /admin/virtual_keys/{name}/spend, never config, prompts, or any
 // write route — a credential an operator can hand to a billing/finance
 // consumer without granting it any visibility into deployment topology,
-// prompt content, or model/rate-limit configuration.
+// prompt content, or model/rate-limit configuration. Operator, per
+// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md, is the one
+// write-capable tier narrower than Admin: it authenticates ONLY the
+// reversible, single-named-resource write routes (virtual-key rotate,
+// deployment reweight, cache erase) — every other write route (virtual-key
+// create/delete, prompt CRUD/promote/rollback, backup, pprof) stays
+// Admin-only, since each is either irreversible, cross-tenant, or a
+// secret-disclosure primitive. Admin remains a strict superset of every
+// other tier.
 type Credentials struct {
 	Admin      string
 	Viewer     string
 	CostViewer string
+	Operator   string
 }
 
 // virtualKeyRequest is the POST /admin/virtual_keys/{name} request body.
@@ -169,7 +178,7 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	mux.Handle("GET /admin/virtual_keys", requireEitherBearerToken(creds, listVirtualKeysHandler(pipeline, audit)))
 	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, audit)))
 	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, audit)))
-	mux.Handle("POST /admin/virtual_keys/{name}/rotate", requireBearerToken(creds.Admin, rotateVirtualKeyHandler(pipeline, audit)))
+	mux.Handle("POST /admin/virtual_keys/{name}/rotate", requireAdminOrOperatorBearerToken(creds, rotateVirtualKeyHandler(pipeline, audit)))
 	// Deliberately its own middleware call, not requireEitherBearerToken:
 	// this is the one route CostViewer authenticates, alongside Admin and
 	// Viewer (both of which already see strictly more elsewhere on this
@@ -207,12 +216,17 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	// indistinguishable from a typo'd path.
 	mux.Handle("POST /admin/backup", requireBearerToken(creds.Admin, backupHandler(cfg, pipeline, audit)))
 	// Deployment weight live-mutation, per
-	// docs/upgrade-research/admin-operator-experience-2026-09-14.md --
-	// admin-only, same tier as every other write route on this mux: a
+	// docs/upgrade-research/admin-operator-experience-2026-09-14.md -- a
 	// deployment's routing weight is an operational lever, not read-only
-	// reporting.
-	mux.Handle("POST /admin/deployments/{name}/weight", requireBearerToken(creds.Admin, updateDeploymentWeightHandler(pipeline, audit)))
-	mux.Handle("POST /admin/cache/erase", requireBearerToken(creds.Admin, eraseCacheEntryHandler(pipeline, audit)))
+	// reporting. Admin-or-Operator, per
+	// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md: reversible
+	// (re-set the weight) and scoped to a single named deployment.
+	mux.Handle("POST /admin/deployments/{name}/weight", requireAdminOrOperatorBearerToken(creds, updateDeploymentWeightHandler(pipeline, audit)))
+	// Admin-or-Operator, same RFC as above: a cache erasure is reversible
+	// in the sense that it only removes a cached entry (never mutates
+	// live traffic routing/budget/identity state) and is scoped to a
+	// single named virtual-key+request combination.
+	mux.Handle("POST /admin/cache/erase", requireAdminOrOperatorBearerToken(creds, eraseCacheEntryHandler(pipeline, audit)))
 	// pprof, per cfg.Admin.EnablePprof's own doc comment — off by
 	// default, admin-credential-gated (never the viewer tier: profiling
 	// data is a stronger information-disclosure/DoS-surface signal than
@@ -330,6 +344,23 @@ func requireAnyBearerToken(next http.Handler, pairs ...tokenTier) http.Handler {
 		}
 		http.Error(w, "invalid admin token", http.StatusUnauthorized)
 	})
+}
+
+// requireAdminOrOperatorBearerToken wraps next so a request authenticates
+// with EITHER creds.Admin OR, when configured (non-empty), creds.Operator
+// — used for the three write routes scoped to the Operator tier (virtual-
+// key rotate, deployment reweight, cache erase), per
+// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md. Built directly
+// on requireAnyBearerToken (already a generic N-tier matcher with the
+// identical tier-stashing-for-audit semantics this needs) rather than a
+// new bespoke comparison function — there is no behavior a third
+// comparison implementation would add that requireAnyBearerToken doesn't
+// already provide.
+func requireAdminOrOperatorBearerToken(creds Credentials, next http.Handler) http.Handler {
+	return requireAnyBearerToken(next,
+		tokenTier{creds.Admin, "admin"},
+		tokenTier{creds.Operator, "operator"},
+	)
 }
 
 // credentialTierContextKey is a private type so no other package can
@@ -607,7 +638,7 @@ func rotateVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 		err := pipeline.RotateVirtualKey(name, req.NewKeyHash, gracePeriod)
 		switch {
 		case err == nil:
-			logger.Info("admin_virtual_key_rotated", "name", name, "grace_period_seconds", req.GracePeriodSeconds, "authorized_by", "admin")
+			logger.Info("admin_virtual_key_rotated", "name", name, "grace_period_seconds", req.GracePeriodSeconds, "authorized_by", credentialTierFromContext(r.Context()))
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, dataplane.ErrVirtualKeyNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -716,7 +747,7 @@ func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger auditLog
 		err := pipeline.UpdateDeploymentWeight(r.Context(), name, req.Weight)
 		switch {
 		case err == nil:
-			logger.Info("admin_deployment_weight_updated", "name", name, "weight", req.Weight, "authorized_by", "admin")
+			logger.Info("admin_deployment_weight_updated", "name", name, "weight", req.Weight, "authorized_by", credentialTierFromContext(r.Context()))
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, dataplane.ErrDeploymentNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -769,7 +800,7 @@ func eraseCacheEntryHandler(pipeline *dataplane.Pipeline, logger auditLogger) ht
 		result, err := pipeline.EraseCacheEntry(r.Context(), req.VirtualKeyID, req.ChatRequest)
 		switch {
 		case err == nil:
-			logger.Info("admin_cache_entry_erased", "virtual_key_id", req.VirtualKeyID, "model", req.Model, "l1_found", result.L1Found, "l2_found", result.L2Found, "authorized_by", "admin")
+			logger.Info("admin_cache_entry_erased", "virtual_key_id", req.VirtualKeyID, "model", req.Model, "l1_found", result.L1Found, "l2_found", result.L2Found, "authorized_by", credentialTierFromContext(r.Context()))
 			writeJSONResponse(w, eraseCacheEntryResponse{L1Found: result.L1Found, L2Found: result.L2Found, L3Skipped: true})
 		case errors.Is(err, dataplane.ErrPromptAndMessagesBothSet),
 			errors.Is(err, dataplane.ErrPromptLabelAndVersionBothSet),

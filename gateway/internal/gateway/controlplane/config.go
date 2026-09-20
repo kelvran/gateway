@@ -553,6 +553,19 @@ type AdminConfig struct {
 	// ViewerTokenEnv's own "never run with an unauthenticated surface"
 	// rule.
 	CostViewerTokenEnv string
+	// OperatorTokenEnv is the name of the environment variable holding an
+	// optional, write-capable-but-narrower-than-Admin credential, per
+	// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md. An operator
+	// token authenticates ONLY the reversible, single-named-resource write
+	// routes (POST /admin/virtual_keys/{name}/rotate, POST
+	// /admin/deployments/{name}/weight, POST /admin/cache/erase) — never
+	// virtual-key create/delete, prompt CRUD/promote/rollback, backup, or
+	// pprof, all of which stay Admin-only. Empty means no operator tier is
+	// configured — those three routes then require the admin token exactly
+	// as they always have. If set but the named env var resolves empty,
+	// cmd/gateway fails startup, mirroring ViewerTokenEnv's own "never run
+	// with an unauthenticated surface" rule.
+	OperatorTokenEnv string
 	// PersistPath is the file path for the bbolt-backed virtual-key store,
 	// per docs/upgrade-research/admin-operator-experience-2026-09-14.md
 	// Finding 2 — mirrors BudgetConfig.PersistPath's identical shape and
@@ -915,6 +928,7 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.TokenEnv, _ = getString(adminRaw, "token_env")
 		cfg.Admin.ViewerTokenEnv, _ = getString(adminRaw, "viewer_token_env")
 		cfg.Admin.CostViewerTokenEnv, _ = getString(adminRaw, "cost_viewer_token_env")
+		cfg.Admin.OperatorTokenEnv, _ = getString(adminRaw, "operator_token_env")
 		cfg.Admin.PersistPath, _ = getString(adminRaw, "persist_path")
 		cfg.Admin.EnablePprof, _ = getBool(adminRaw, "enable_pprof")
 		cfg.Admin.BackupDir, _ = getString(adminRaw, "backup_dir")

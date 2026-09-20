@@ -379,10 +379,21 @@ telemetry:
 # entirely) gates every admin-route audit-log line behind a single
 # config field -- set to false only to explicitly opt OUT, e.g. because
 # a separate compliance pipeline already captures the same audit trail.
+# operator_token_env (added 2026-09-20, per
+# docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md) is an optional,
+# write-capable-but-narrower-than-admin credential tier: an operator
+# credential authenticates ONLY the reversible, single-named-resource
+# write routes (virtual-key rotate, deployment reweight, cache erase) --
+# never virtual-key create/delete, prompt CRUD/promote/rollback, backup,
+# or pprof, all of which stay admin-only. Same "must resolve non-empty or
+# refuse to start" rule as token_env/viewer_token_env. Omit it for the
+# pre-existing behavior (those three routes require the admin token
+# exactly as they always have).
 # admin:
 #   listen_addr: "127.0.0.1:8081"
 #   token_env: "KELVRAN_ADMIN_TOKEN"
 #   viewer_token_env: "KELVRAN_ADMIN_VIEWER_TOKEN"
+#   operator_token_env: "KELVRAN_ADMIN_OPERATOR_TOKEN"
 #   enable_pprof: false
 #   on_corrupt_store: "fail"
 #   backup_dir: "/var/lib/kelvran/backups"
