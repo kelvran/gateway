@@ -127,7 +127,7 @@ func TestL2HitPromotesIntoL1(t *testing.T) {
 	l2Key := "some-l2-key"
 	l1Key := "some-l1-key"
 	value := []byte(`{"id":"resp-1"}`)
-	if err := l2.Put(ctx, l2Key, value, time.Hour); err != nil {
+	if err := l2.Put(ctx, "tenant-1", l2Key, value, time.Hour); err != nil {
 		t.Fatalf("l2.Put: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestL2HitPromotesIntoL1(t *testing.T) {
 	}
 
 	// L1 must now be populated under l1Key — the promotion.
-	promoted, _, ok, err := l1.Get(ctx, l1Key)
+	promoted, _, ok, err := l1.Get(ctx, "tenant-1", l1Key)
 	if err != nil || !ok {
 		t.Fatalf("L1 was not populated after an L2 hit: ok=%v err=%v", ok, err)
 	}
@@ -171,10 +171,10 @@ func TestWriteCacheWritesBothLayers(t *testing.T) {
 	value := []byte(`{"id":"resp-1"}`)
 	p.writeCache(ctx, "team-alpha", "l1key", "l2key", []uint64{1, 2, 3}, nil, "gpt-4o", "", "", nil, "", value)
 
-	if _, _, ok, _ := l1.Get(ctx, "l1key"); !ok {
+	if _, _, ok, _ := l1.Get(ctx, "team-alpha", "l1key"); !ok {
 		t.Error("writeCache did not populate L1")
 	}
-	if _, _, ok, _ := l2.Get(ctx, "l2key"); !ok {
+	if _, _, ok, _ := l2.Get(ctx, "team-alpha", "l2key"); !ok {
 		t.Error("writeCache did not populate L2")
 	}
 	if candidates, _ := l3.Search(ctx, "team-alpha", []uint64{1, 2, 3}, 5); len(candidates) == 0 {

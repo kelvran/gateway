@@ -26,7 +26,7 @@ func BenchmarkPut(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		key := "bench-key-" + strconv.Itoa(i%1000)
-		if err := c.Put(ctx, key, value, time.Minute); err != nil {
+		if err := c.Put(ctx, "bench-tenant", key, value, time.Minute); err != nil {
 			b.Fatalf("Put: %v", err)
 		}
 	}
@@ -41,7 +41,7 @@ func BenchmarkGetHit(b *testing.B) {
 
 	const numKeys = 1000
 	for i := 0; i < numKeys; i++ {
-		if err := c.Put(ctx, "bench-key-"+strconv.Itoa(i), value, time.Hour); err != nil {
+		if err := c.Put(ctx, "bench-tenant", "bench-key-"+strconv.Itoa(i), value, time.Hour); err != nil {
 			b.Fatalf("Put: %v", err)
 		}
 	}
@@ -49,7 +49,7 @@ func BenchmarkGetHit(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		key := "bench-key-" + strconv.Itoa(i%numKeys)
-		if _, _, ok, err := c.Get(ctx, key); err != nil || !ok {
+		if _, _, ok, err := c.Get(ctx, "bench-tenant", key); err != nil || !ok {
 			b.Fatalf("Get(%q): ok=%v err=%v", key, ok, err)
 		}
 	}
@@ -64,7 +64,7 @@ func BenchmarkGetMiss(b *testing.B) {
 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if _, _, ok, err := c.Get(ctx, "never-set-key"); err != nil || ok {
+		if _, _, ok, err := c.Get(ctx, "bench-tenant", "never-set-key"); err != nil || ok {
 			b.Fatalf("Get: ok=%v err=%v, want a miss", ok, err)
 		}
 	}

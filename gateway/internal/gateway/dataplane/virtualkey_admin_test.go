@@ -7,7 +7,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
@@ -105,6 +108,72 @@ func TestUpsertVirtualKeyReplacesAnExistingKeysBudget(t *testing.T) {
 
 	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); !errors.Is(err, ErrModelNotAllowed) {
 		t.Fatalf("HandleChatCompletion after restricting AllowedModels = %v, want ErrModelNotAllowed", err)
+	}
+}
+
+// TestUpsertVirtualKeyClearsStaleBudgetStateForAGenuinelyNewID is the
+// regression proof for the phantom-spend resurrection gap named in
+// DeleteVirtualKey's own doc comment: DeleteVirtualKey deliberately never
+// fails a key revocation over a budget-cleanup error, so a prior
+// deletion's budget.Tracker.Delete call can leave a key's spend history
+// orphaned on disk. If that same ID is later reused for a brand-new
+// tenant, UpsertVirtualKey must not let the new tenant silently inherit
+// the old spend total. Simulates the orphaned-state-survives-a-deletion
+// scenario directly via the tracker's own Record call, rather than by
+// forcing a real Store.Delete failure -- the observable hazard (stale
+// spend recorded against an ID with no corresponding live key) is
+// identical either way, and this is far simpler to construct
+// deterministically.
+func TestUpsertVirtualKeyClearsStaleBudgetStateForAGenuinelyNewID(t *testing.T) {
+	tracker := budget.NewTracker()
+	// Simulate a prior tenant's real spend under this exact ID, orphaned
+	// by a DeleteVirtualKey call whose budget cleanup silently failed (or
+	// a crash between the identity delete and the budget delete) --
+	// "resurrected-key" is deliberately absent from the seed key set
+	// below, mirroring a key that identity has already forgotten while
+	// budget has not.
+	tracker.Record("resurrected-key", decimal.NewFromInt(50), 0)
+
+	p := newTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, defaultTestVirtualKeys(), tracker)
+
+	if err := p.UpsertVirtualKey(
+		identity.VirtualKey{ID: "resurrected-key", KeyHash: testHashOf("resurrected-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
+		ratelimit.KeyConfig{ID: "resurrected-key", Capacity: 100, RefillPerSecond: 100},
+	); err != nil {
+		t.Fatalf("UpsertVirtualKey: %v", err)
+	}
+
+	if spent := p.SpentUSD("resurrected-key", 0); !spent.IsZero() {
+		t.Fatalf("SpentUSD(resurrected-key) = %s, want 0 -- the new tenant inherited a prior tenant's orphaned spend", spent)
+	}
+}
+
+// TestUpsertVirtualKeyUpdatingAnExistingKeyPreservesItsBudgetSpend proves
+// the fix above is scoped to genuinely NEW IDs only: an update of an
+// already-live key (replaced == true in UpsertVirtualKey's own loop) must
+// never have its real, legitimately-accumulated spend wiped out just
+// because an operator issued an unrelated config change (e.g. a new
+// rate limit) via the same UpsertVirtualKey call.
+func TestUpsertVirtualKeyUpdatingAnExistingKeyPreservesItsBudgetSpend(t *testing.T) {
+	tracker := budget.NewTracker()
+	tracker.Record("test-key", decimal.NewFromInt(10), 0)
+
+	p := newTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, defaultTestVirtualKeys(), tracker)
+
+	if err := p.UpsertVirtualKey(
+		identity.VirtualKey{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 200, RateLimitRefill: 200},
+		ratelimit.KeyConfig{ID: "test-key", Capacity: 200, RefillPerSecond: 200},
+	); err != nil {
+		t.Fatalf("UpsertVirtualKey: %v", err)
+	}
+
+	want := decimal.NewFromInt(10)
+	if spent := p.SpentUSD("test-key", 0); !spent.Equal(want) {
+		t.Fatalf("SpentUSD(test-key) after updating an existing key = %s, want %s -- an unrelated config update must never reset real spend", spent, want)
 	}
 }
 

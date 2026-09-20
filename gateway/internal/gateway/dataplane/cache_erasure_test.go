@@ -66,10 +66,10 @@ func TestEraseCacheEntryRemovesARealCacheHit(t *testing.T) {
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
 	l1Key := cache.Key("test-key", req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "")
 	l2Key := cache.NormalizedKey("test-key", req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "")
-	if _, _, ok, _ := p.cache.Get(context.Background(), l1Key); ok {
+	if _, _, ok, _ := p.cache.Get(context.Background(), "test-key", l1Key); ok {
 		t.Error("L1 entry still present after EraseCacheEntry")
 	}
-	if _, _, ok, _ := p.cacheL2.Get(context.Background(), l2Key); ok {
+	if _, _, ok, _ := p.cacheL2.Get(context.Background(), "test-key", l2Key); ok {
 		t.Error("L2 entry still present after EraseCacheEntry")
 	}
 }

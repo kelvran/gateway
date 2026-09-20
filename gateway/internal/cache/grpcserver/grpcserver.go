@@ -48,16 +48,16 @@ func New() *Server {
 }
 
 // Get is the server-side handler for a Cache.Get RPC. Not implemented.
-func (s *Server) Get(_ context.Context, _ string) ([]byte, time.Time, bool, error) {
+func (s *Server) Get(_ context.Context, _, _ string) ([]byte, time.Time, bool, error) {
 	return nil, time.Time{}, false, errNotImplemented
 }
 
 // Put is the server-side handler for a Cache.Put RPC. Not implemented.
-func (s *Server) Put(_ context.Context, _ string, _ []byte, _ time.Duration) error {
+func (s *Server) Put(_ context.Context, _, _ string, _ []byte, _ time.Duration) error {
 	return errNotImplemented
 }
 
 // Delete is the server-side handler for a Cache.Delete RPC. Not implemented.
-func (s *Server) Delete(_ context.Context, _ string) error {
+func (s *Server) Delete(_ context.Context, _, _ string) error {
 	return errNotImplemented
 }

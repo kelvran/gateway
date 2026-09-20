@@ -36,16 +36,16 @@ func New() *Client {
 }
 
 // Get implements cache.Cache. Not implemented.
-func (c *Client) Get(_ context.Context, _ string) ([]byte, time.Time, bool, error) {
+func (c *Client) Get(_ context.Context, _, _ string) ([]byte, time.Time, bool, error) {
 	return nil, time.Time{}, false, errNotImplemented
 }
 
 // Put implements cache.Cache. Not implemented.
-func (c *Client) Put(_ context.Context, _ string, _ []byte, _ time.Duration) error {
+func (c *Client) Put(_ context.Context, _, _ string, _ []byte, _ time.Duration) error {
 	return errNotImplemented
 }
 
 // Delete implements cache.Cache. Not implemented.
-func (c *Client) Delete(_ context.Context, _ string) error {
+func (c *Client) Delete(_ context.Context, _, _ string) error {
 	return errNotImplemented
 }

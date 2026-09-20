@@ -800,6 +800,16 @@ var ErrVirtualKeyNotFound = errors.New("dataplane: virtual key not found")
 // docs/rfcs/2026-09-05-gateway-admin-api.md's Design section requires
 // (register before an ID becomes resolvable) is satisfied identically
 // whether the very first CAS wins or a later retry does.
+//
+// A genuinely NEW ID (current has no key with vk.ID, i.e. !replaced) also
+// clears any leftover budget.Tracker state for that ID as part of this
+// same CAS success — never for an update of an already-existing ID, which
+// must keep its accumulated spend untouched. See the CAS-success branch's
+// own comment for why: DeleteVirtualKey's budget cleanup is deliberately
+// non-fatal on failure, so a previously-deleted key's spend can survive
+// on disk; without this, reusing that same ID for a brand-new tenant
+// would silently inherit the old tenant's spend on the next
+// budget.NewTrackerWithStore load.
 func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.KeyConfig) error {
 	p.virtualKeyMutationMu.Lock()
 	defer p.virtualKeyMutationMu.Unlock()
@@ -827,6 +837,26 @@ func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.
 		}
 
 		if p.verifier.CompareAndSwap(old, newVerifier) {
+			if !replaced {
+				// Defensively clear any stale leftover budget state for a
+				// genuinely NEW key ID (never !replaced for an update --
+				// see the loop above) -- closes the phantom-spend
+				// resurrection gap named in
+				// DeleteVirtualKey's own doc comment: that method's
+				// budget-cleanup call is deliberately non-fatal on
+				// failure, so a prior deletion of this same ID can leave
+				// orphaned spend on disk that budget.NewTrackerWithStore
+				// would otherwise silently reload the NEXT time this ID
+				// is reused, handing a brand-new tenant someone else's
+				// old spend total. budget.Tracker.Delete is a no-op for
+				// an ID with no leftover state, so this is free in the
+				// overwhelmingly common case of an ID that really is
+				// brand new.
+				if err := p.budget.Delete(vk.ID); err != nil {
+					telemetry.RecordPersistenceFailed(context.Background(), "budget", vk.ID)
+					p.logger.Warn("budget_persist_failed", "key_id", vk.ID, "error", err.Error())
+				}
+			}
 			p.persistVirtualKeyIfStoreConfigured(vk)
 			return nil
 		}
@@ -1116,16 +1146,16 @@ func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, req
 	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP)
 
 	var result EraseCacheEntryResult
-	if _, _, ok, _ := p.cache.Get(ctx, l1Key); ok {
+	if _, _, ok, _ := p.cache.Get(ctx, virtualKeyID, l1Key); ok {
 		result.L1Found = true
 	}
-	if err := p.cache.Delete(ctx, l1Key); err != nil {
+	if err := p.cache.Delete(ctx, virtualKeyID, l1Key); err != nil {
 		return result, fmt.Errorf("deleting L1 cache entry: %w", err)
 	}
-	if _, _, ok, _ := p.cacheL2.Get(ctx, l2Key); ok {
+	if _, _, ok, _ := p.cacheL2.Get(ctx, virtualKeyID, l2Key); ok {
 		result.L2Found = true
 	}
-	if err := p.cacheL2.Delete(ctx, l2Key); err != nil {
+	if err := p.cacheL2.Delete(ctx, virtualKeyID, l2Key); err != nil {
 		return result, fmt.Errorf("deleting L2 cache entry: %w", err)
 	}
 	return result, nil
@@ -1547,7 +1577,7 @@ func (c cacheProvenance) Hit() bool { return c.Layer != "" }
 // about whether the key was really present, so it must never be
 // misreported as a definite miss.
 func (p *Pipeline) checkCache(ctx context.Context, tenantID, l1Key, l2Key string) (cached []byte, layer string, writtenAt time.Time, hit bool) {
-	l1Cached, l1WrittenAt, l1OK, l1Err := p.cache.Get(ctx, l1Key)
+	l1Cached, l1WrittenAt, l1OK, l1Err := p.cache.Get(ctx, tenantID, l1Key)
 	if l1Err == nil {
 		p.logCacheCrossInstanceCheck(ctx, tenantID, l1Key, "L1", l1OK, p.cacheTTL)
 	}
@@ -1555,12 +1585,12 @@ func (p *Pipeline) checkCache(ctx context.Context, tenantID, l1Key, l2Key string
 		return l1Cached, "L1", l1WrittenAt, true
 	}
 
-	l2Cached, l2WrittenAt, l2OK, l2Err := p.cacheL2.Get(ctx, l2Key)
+	l2Cached, l2WrittenAt, l2OK, l2Err := p.cacheL2.Get(ctx, tenantID, l2Key)
 	if l2Err == nil {
 		p.logCacheCrossInstanceCheck(ctx, tenantID, l2Key, "L2", l2OK, p.cacheL2TTL)
 	}
 	if l2Err == nil && l2OK {
-		_ = p.cache.Put(ctx, l1Key, l2Cached, p.cacheTTL)
+		_ = p.cache.Put(ctx, tenantID, l1Key, l2Cached, p.cacheTTL)
 		return l2Cached, "L2", l2WrittenAt, true
 	}
 
@@ -1601,8 +1631,8 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
 func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, encoded []byte) {
-	_ = p.cache.Put(ctx, l1Key, encoded, p.cacheTTL)
-	_ = p.cacheL2.Put(ctx, l2Key, encoded, p.cacheL2TTL)
+	_ = p.cache.Put(ctx, tenantID, l1Key, encoded, p.cacheTTL)
+	_ = p.cacheL2.Put(ctx, tenantID, l2Key, encoded, p.cacheL2TTL)
 	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, p.cacheL3TTL)
 }
 
