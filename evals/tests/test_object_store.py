@@ -117,7 +117,9 @@ def test_list_object_keys_flattens_multiple_pages_s3(monkeypatch):
         {"Contents": [{"Key": "c.jsonl"}]},
     ]
     fake_client = _FakeS3Client(pages, objects={})
-    monkeypatch.setattr(object_store.boto3, "client", lambda service: fake_client)
+    monkeypatch.setattr(
+        object_store.boto3, "client", lambda service, region_name=None: fake_client
+    )
 
     keys = object_store.list_object_keys("s3", "my-bucket", "gatewayevents/v1/")
 
@@ -128,7 +130,9 @@ def test_list_object_keys_handles_a_page_with_no_contents_key_s3(monkeypatch):
     # A real ListObjectsV2 response omits "Contents" entirely for an empty
     # prefix -- must not raise a KeyError.
     fake_client = _FakeS3Client([{}], objects={})
-    monkeypatch.setattr(object_store.boto3, "client", lambda service: fake_client)
+    monkeypatch.setattr(
+        object_store.boto3, "client", lambda service, region_name=None: fake_client
+    )
 
     assert object_store.list_object_keys("s3", "my-bucket", "empty-prefix/") == []
 
@@ -154,10 +158,54 @@ def test_list_object_keys_rejects_unsupported_scheme():
         object_store.list_object_keys("ftp", "my-bucket", "prefix/")
 
 
+def test_list_object_keys_resolves_region_from_aws_region_env_var_s3(monkeypatch):
+    # Real bug (mirrors evals.judge.providers.make_bedrock_call_model's own
+    # 2026-09-08 fix, per DECISIONS.md): this project's pinned botocore only
+    # honors AWS_DEFAULT_REGION for a bare boto3.client(region_name=None)
+    # call, NOT AWS_REGION alone. An operator who sets only AWS_REGION (per
+    # evals/.env.example) must not hit botocore.exceptions.NoRegionError --
+    # list_object_keys("s3", ...) must resolve AWS_REGION itself and pass a
+    # real value to boto3.client, never leave region_name=None for
+    # botocore's own (unreliable, for this pinned version) env-var scan.
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    fake_client = _FakeS3Client([{}], objects={})
+    captured = {}
+
+    def fake_boto3_client(service, region_name=None):
+        captured["region_name"] = region_name
+        return fake_client
+
+    monkeypatch.setattr(object_store.boto3, "client", fake_boto3_client)
+
+    object_store.list_object_keys("s3", "my-bucket", "prefix/")
+
+    assert captured["region_name"] == "eu-west-1"
+
+
+def test_list_object_keys_falls_back_to_aws_default_region_env_var_s3(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-1")
+    fake_client = _FakeS3Client([{}], objects={})
+    captured = {}
+
+    def fake_boto3_client(service, region_name=None):
+        captured["region_name"] = region_name
+        return fake_client
+
+    monkeypatch.setattr(object_store.boto3, "client", fake_boto3_client)
+
+    object_store.list_object_keys("s3", "my-bucket", "prefix/")
+
+    assert captured["region_name"] == "ap-southeast-1"
+
+
 def test_iter_object_lines_reads_plain_text_s3(monkeypatch):
     body = b'{"a": 1}\n{"b": 2}\n'
     fake_client = _FakeS3Client([], objects={"plain.jsonl": body})
-    monkeypatch.setattr(object_store.boto3, "client", lambda service: fake_client)
+    monkeypatch.setattr(
+        object_store.boto3, "client", lambda service, region_name=None: fake_client
+    )
 
     lines = list(object_store.iter_object_lines("s3", "my-bucket", "plain.jsonl"))
 
@@ -168,7 +216,9 @@ def test_iter_object_lines_transparently_gunzips_gz_suffixed_keys_s3(monkeypatch
     raw = b'{"a": 1}\n{"b": 2}\n'
     compressed = gzip.compress(raw)
     fake_client = _FakeS3Client([], objects={"compressed.jsonl.gz": compressed})
-    monkeypatch.setattr(object_store.boto3, "client", lambda service: fake_client)
+    monkeypatch.setattr(
+        object_store.boto3, "client", lambda service, region_name=None: fake_client
+    )
 
     lines = list(
         object_store.iter_object_lines("s3", "my-bucket", "compressed.jsonl.gz")
@@ -180,11 +230,49 @@ def test_iter_object_lines_transparently_gunzips_gz_suffixed_keys_s3(monkeypatch
 def test_iter_object_lines_skips_blank_lines_s3(monkeypatch):
     body = b'{"a": 1}\n\n   \n{"b": 2}\n'
     fake_client = _FakeS3Client([], objects={"with-blanks.jsonl": body})
-    monkeypatch.setattr(object_store.boto3, "client", lambda service: fake_client)
+    monkeypatch.setattr(
+        object_store.boto3, "client", lambda service, region_name=None: fake_client
+    )
 
     lines = list(object_store.iter_object_lines("s3", "my-bucket", "with-blanks.jsonl"))
 
     assert lines == ['{"a": 1}', '{"b": 2}']
+
+
+def test_iter_object_lines_resolves_region_from_aws_region_env_var_s3(monkeypatch):
+    # Same real bug as list_object_keys's own region-resolution test above,
+    # for _get_object_bytes_s3's boto3.client("s3") call.
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    fake_client = _FakeS3Client([], objects={"plain.jsonl": b'{"a": 1}\n'})
+    captured = {}
+
+    def fake_boto3_client(service, region_name=None):
+        captured["region_name"] = region_name
+        return fake_client
+
+    monkeypatch.setattr(object_store.boto3, "client", fake_boto3_client)
+
+    list(object_store.iter_object_lines("s3", "my-bucket", "plain.jsonl"))
+
+    assert captured["region_name"] == "eu-west-1"
+
+
+def test_iter_object_lines_falls_back_to_aws_default_region_env_var_s3(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-1")
+    fake_client = _FakeS3Client([], objects={"plain.jsonl": b'{"a": 1}\n'})
+    captured = {}
+
+    def fake_boto3_client(service, region_name=None):
+        captured["region_name"] = region_name
+        return fake_client
+
+    monkeypatch.setattr(object_store.boto3, "client", fake_boto3_client)
+
+    list(object_store.iter_object_lines("s3", "my-bucket", "plain.jsonl"))
+
+    assert captured["region_name"] == "ap-southeast-1"
 
 
 def test_iter_object_lines_reads_plain_text_gs(monkeypatch):

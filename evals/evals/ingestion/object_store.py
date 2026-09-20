@@ -17,6 +17,7 @@ job, called separately by whoever consumes this module (see evals.cli's
 from __future__ import annotations
 
 import gzip
+import os
 from collections.abc import Iterator
 from urllib.parse import urlsplit
 
@@ -24,6 +25,27 @@ import boto3
 from google.cloud import storage as gcs_storage
 
 _SUPPORTED_SCHEMES = frozenset({"s3", "gs"})
+
+
+def _resolve_aws_region() -> str | None:
+    """Resolve the AWS region for this module's own `boto3.client("s3")`
+    calls the same way `make_bedrock_call_model`
+    (evals.judge.providers) does, per DECISIONS.md's 2026-09-08 finding:
+    this project's pinned botocore version only honors `AWS_DEFAULT_REGION`
+    for a bare `boto3.client(region_name=None)` call, NOT `AWS_REGION`
+    alone, despite `AWS_REGION` being the name `evals/.env.example`
+    documents and the more common cross-SDK convention. That fix only
+    covered the Bedrock client; this module's S3 client has the exact
+    same `boto3.client(...)` call shape and the exact same gap -- an
+    operator who sets only `AWS_REGION` (per `.env.example`) hit
+    `botocore.exceptions.NoRegionError` on `evals ingest --source s3://...`
+    in a clean environment. `AWS_REGION` is checked first, falling back
+    to `AWS_DEFAULT_REGION` -- resolved here explicitly and passed to
+    `boto3.client(...)` as a real value, never left as `None` for
+    botocore's own (unreliable, for this pinned version) env-var scan to
+    find.
+    """
+    return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
 
 
 def parse_object_storage_uri(source: str) -> tuple[str, str, str]:
@@ -70,7 +92,7 @@ def list_object_keys(scheme: str, bucket: str, prefix: str) -> list[str]:
 
 
 def _list_object_keys_s3(bucket: str, prefix: str) -> list[str]:
-    client = boto3.client("s3")
+    client = boto3.client("s3", region_name=_resolve_aws_region())
     paginator = client.get_paginator("list_objects_v2")
     keys: list[str] = []
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
@@ -112,7 +134,7 @@ def iter_object_lines(scheme: str, bucket: str, key: str) -> Iterator[str]:
 
 
 def _get_object_bytes_s3(bucket: str, key: str) -> bytes:
-    client = boto3.client("s3")
+    client = boto3.client("s3", region_name=_resolve_aws_region())
     return client.get_object(Bucket=bucket, Key=key)["Body"].read()
 
 
