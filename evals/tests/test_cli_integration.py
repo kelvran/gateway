@@ -720,6 +720,99 @@ def test_run_with_llm_judge_scores_via_real_wiring_using_a_fake_provider(
     assert persisted[0].cost_usd is None
 
 
+def test_run_with_llm_judge_provider_anthropic_calls_the_anthropic_factory(
+    tmp_path, monkeypatch
+):
+    """--llm-judge-provider anthropic must dispatch to
+    make_anthropic_call_model, never touching make_bedrock_call_model --
+    the real regression proof that cli.py's own dead-code gap
+    (make_anthropic_call_model/make_openai_call_model fully implemented
+    and unit-tested in evals.judge.providers, but never wired into any
+    CLI flag) is now closed for the single-judge path.
+    """
+    responses = iter(
+        [
+            "REASONING: matches exactly.\nVERDICT: PASS\n",
+            "REASONING: does not match.\nVERDICT: FAIL\n",
+        ]
+    )
+
+    async def fake_call_model(prompt: str) -> str:
+        return next(responses)
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "make_anthropic_call_model",
+        lambda model_id, **kwargs: (calls.append(model_id), fake_call_model)[1],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda *a, **kw: pytest.fail("make_bedrock_call_model must not be called"),
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--llm-judge-provider",
+            "anthropic",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+
+
+def test_run_with_llm_judge_provider_openai_calls_the_openai_factory(
+    tmp_path, monkeypatch
+):
+    """Mirror of the anthropic proof above, for --llm-judge-provider
+    openai."""
+
+    async def fake_call_model(prompt: str) -> str:
+        return "REASONING: matches exactly.\nVERDICT: PASS\n"
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "make_openai_call_model",
+        lambda model_id, **kwargs: (calls.append(model_id), fake_call_model)[1],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "make_bedrock_call_model",
+        lambda *a, **kw: pytest.fail("make_bedrock_call_model must not be called"),
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--llm-judge-provider",
+            "openai",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+
+
 def test_run_with_llm_judge_passes_a_generous_max_tokens_to_every_bedrock_call_site(
     tmp_path, monkeypatch
 ):

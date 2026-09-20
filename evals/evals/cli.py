@@ -65,7 +65,11 @@ from evals.judge.llm_judge import (
 from evals.judge.providers import (
     BEDROCK_HAIKU_4_5_MODEL_ID,
     BEDROCK_SONNET_5_MODEL_ID,
+    DEFAULT_JUDGE_MODEL,
+    OPENAI_DEFAULT_JUDGE_MODEL,
+    make_anthropic_call_model,
     make_bedrock_call_model,
+    make_openai_call_model,
 )
 from evals.models import EvalCase, PanelVote, Run, Score, Span, TrendSnapshot
 from evals.results_store import (
@@ -101,6 +105,29 @@ _ENV_FILE_PATH = Path(__file__).resolve().parent.parent / ".env"
 # been propagated to the judge/panel call sites by a later backlog audit.
 # 8192 mirrors that same already-live-verified value.
 _JUDGE_MAX_TOKENS = 8192
+
+
+def _resolve_judge_call_model(provider: str) -> Callable[[str], Awaitable[str]]:
+    """Build a single-judge `call_model` callable for --llm-judge, per the
+    requested `provider` ("bedrock", "anthropic", or "openai" -- enforced
+    by --llm-judge-provider's own click.Choice).
+
+    make_anthropic_call_model/make_openai_call_model were fully
+    implemented and unit-tested (evals.judge.providers, tests/
+    test_providers.py) since this project's very first judge-provider
+    RFC, but cli.py only ever wired make_bedrock_call_model once Bedrock
+    became the --llm-judge-panel pair on 2026-09-08 -- this is the wiring
+    that closes that gap. "bedrock" reproduces today's exact call
+    (BEDROCK_HAIKU_4_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS), the
+    default when --llm-judge-provider is omitted.
+    """
+    if provider == "anthropic":
+        return make_anthropic_call_model(DEFAULT_JUDGE_MODEL)
+    if provider == "openai":
+        return make_openai_call_model(OPENAI_DEFAULT_JUDGE_MODEL)
+    return make_bedrock_call_model(
+        BEDROCK_HAIKU_4_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
+    )
 
 
 def _load_env_file(path: Path = _ENV_FILE_PATH) -> None:
@@ -1146,6 +1173,19 @@ def main() -> None:
     ),
 )
 @click.option(
+    "--llm-judge-provider",
+    type=click.Choice(["bedrock", "anthropic", "openai"]),
+    default="bedrock",
+    show_default=True,
+    help=(
+        "Which provider --llm-judge's single-judge call uses. Only "
+        "meaningful together with --llm-judge -- --llm-judge-panel stays "
+        "Bedrock-only (mixing providers in a panel needs its own "
+        "per-panelist selector syntax, out of scope here). Default "
+        "'bedrock' reproduces today's exact behavior when unset."
+    ),
+)
+@click.option(
     "--llm-judge-panel",
     is_flag=True,
     default=False,
@@ -1206,6 +1246,7 @@ def run_cmd(
     suite_path: Path,
     scores_path: Path,
     llm_judge: bool,
+    llm_judge_provider: str,
     llm_judge_panel: bool,
     use_score_cache: bool,
     judge_axes: str | None,
@@ -1219,13 +1260,7 @@ def run_cmd(
         )
 
     cases = _load_cases(suite_path)
-    call_model = (
-        make_bedrock_call_model(
-            BEDROCK_HAIKU_4_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
-        )
-        if llm_judge
-        else None
-    )
+    call_model = _resolve_judge_call_model(llm_judge_provider) if llm_judge else None
     panel: PanelSpec | None = None
     cached_scores = None
     cached_votes = None
@@ -1814,6 +1849,18 @@ def cost_report_cmd(source: str, agent_run_id: str) -> None:
     ),
 )
 @click.option(
+    "--llm-judge-provider",
+    type=click.Choice(["bedrock", "anthropic", "openai"]),
+    default="bedrock",
+    show_default=True,
+    help=(
+        "Which provider --llm-judge's single-judge call uses. Only "
+        "meaningful together with --llm-judge -- --llm-judge-panel stays "
+        "Bedrock-only. Default 'bedrock' reproduces today's exact "
+        "behavior when unset."
+    ),
+)
+@click.option(
     "--llm-judge-panel",
     is_flag=True,
     default=False,
@@ -1920,6 +1967,7 @@ def rollout_cmd(
     scores_path: Path,
     traces_path: Path,
     llm_judge: bool,
+    llm_judge_provider: str,
     llm_judge_panel: bool,
     confidence: float,
     use_cache: bool,
@@ -1945,13 +1993,7 @@ def rollout_cmd(
         )
 
     cases = _load_cases(suite_path)
-    call_model = (
-        make_bedrock_call_model(
-            BEDROCK_HAIKU_4_5_MODEL_ID, max_tokens=_JUDGE_MAX_TOKENS
-        )
-        if llm_judge
-        else None
-    )
+    call_model = _resolve_judge_call_model(llm_judge_provider) if llm_judge else None
     panel: PanelSpec | None = None
     cached_scores = None
     cached_votes = None
