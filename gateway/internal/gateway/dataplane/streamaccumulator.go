@@ -27,17 +27,34 @@ type streamAccumulator struct {
 }
 
 type accumulatingChoice struct {
-	role          string
-	content       strings.Builder
-	toolCalls     map[int]*accumulatingToolCall
-	toolCallOrder []int // tool-call indices in first-seen order, within this choice
-	finishReason  string
+	role            string
+	content         strings.Builder
+	toolCalls       map[int]*accumulatingToolCall
+	toolCallOrder   []int // tool-call indices in first-seen order, within this choice
+	reasoningBlocks map[int]*accumulatingReasoningBlock
+	reasoningOrder  []int // reasoning-block indices in first-seen order, within this choice
+	finishReason    string
 }
 
 type accumulatingToolCall struct {
 	id   string
 	name string
 	args strings.Builder
+}
+
+// accumulatingReasoningBlock folds a sequence of streaming.ReasoningDelta
+// fragments (all sharing one Index) back into one reconstructed
+// adapter.ReasoningBlock, per streaming.ReasoningDelta's own doc comment:
+// Text fragments concatenate in arrival order (Anthropic's thinking_delta,
+// sent repeatedly), while Redacted/Signature/Data each arrive whole on a
+// single delta (or content-block-start event, for a redacted block) —
+// never fragmented — so those three are plain last-write-wins fields, not
+// builders.
+type accumulatingReasoningBlock struct {
+	redacted  bool
+	text      strings.Builder
+	signature string
+	data      string
 }
 
 func newStreamAccumulator() *streamAccumulator {
@@ -71,12 +88,12 @@ func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 	for _, cc := range chunk.Choices {
 		c, ok := acc.choices[cc.Index]
 		if !ok {
-			c = &accumulatingChoice{toolCalls: map[int]*accumulatingToolCall{}}
+			c = &accumulatingChoice{toolCalls: map[int]*accumulatingToolCall{}, reasoningBlocks: map[int]*accumulatingReasoningBlock{}}
 			acc.choices[cc.Index] = c
 			acc.order = append(acc.order, cc.Index)
 		}
 
-		if c.finishReason != "" && (cc.Delta.Content != "" || cc.Delta.Role != "" || len(cc.Delta.ToolCalls) > 0) {
+		if c.finishReason != "" && (cc.Delta.Content != "" || cc.Delta.Role != "" || len(cc.Delta.ToolCalls) > 0 || len(cc.Delta.ReasoningBlocks) > 0) {
 			acc.duplicateAfterFinishIndices = append(acc.duplicateAfterFinishIndices, cc.Index)
 		}
 
@@ -105,6 +122,34 @@ func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 			}
 			if tcd.ArgumentsJSON != "" {
 				tc.args.WriteString(tcd.ArgumentsJSON)
+			}
+		}
+
+		// See accumulatingReasoningBlock's own doc comment for why Text is
+		// concatenated but Redacted/Signature/Data are last-write-wins —
+		// each individual field is only written when the delta actually
+		// carries it, exactly mirroring the ToolCalls loop above, so a
+		// fragment that legitimately carries only one of these fields
+		// (e.g. a bare signature_delta) never clobbers what an earlier
+		// fragment at the same Index already set.
+		for _, rbd := range cc.Delta.ReasoningBlocks {
+			rb, ok := c.reasoningBlocks[rbd.Index]
+			if !ok {
+				rb = &accumulatingReasoningBlock{}
+				c.reasoningBlocks[rbd.Index] = rb
+				c.reasoningOrder = append(c.reasoningOrder, rbd.Index)
+			}
+			if rbd.Redacted {
+				rb.redacted = true
+			}
+			if rbd.Text != "" {
+				rb.text.WriteString(rbd.Text)
+			}
+			if rbd.Signature != "" {
+				rb.signature = rbd.Signature
+			}
+			if rbd.Data != "" {
+				rb.data = rbd.Data
 			}
 		}
 	}
@@ -175,6 +220,46 @@ func (acc *streamAccumulator) build(usage adapter.Usage) adapter.ChatResponse {
 			})
 		}
 
+		// reasoningOrder is sorted the same way toolCallOrder is above --
+		// every decoder that emits ReasoningDelta.Index (Anthropic/Bedrock's
+		// contentBlockIndex, Gemini's part position) uses the exact same
+		// per-message position index space for ToolCallDelta.Index, per
+		// each of those stream.go's own doc comments read before writing
+		// this. That lets Sequence be reconstructed here exactly like every
+		// provider's own buffered FromProvider already computes it --
+		// "immediately before the next tool_use/functionCall block" --
+		// without this provider-agnostic accumulator needing to know which
+		// provider actually produced the chunks: count how many tool calls
+		// (in final build order) had a lower position index than this
+		// reasoning block. openaicompat's decoder hardcodes ReasoningDelta.
+		// Index to 0 (it has no per-block index concept at all, per
+		// reasoningBlocksFromNative's own doc comment: "the only ordering
+		// this model supports" is Sequence 0) -- since no tool-call index
+		// can be negative, the count below is always 0 for it too, so the
+		// single generic formula also reproduces that provider's own
+		// hardcoded convention correctly.
+		reasoningOrder := append([]int(nil), c.reasoningOrder...)
+		sort.Ints(reasoningOrder)
+		var reasoningBlocks []adapter.ReasoningBlock
+		if len(reasoningOrder) > 0 {
+			toolsBefore := 0
+			ti := 0
+			for _, rIdx := range reasoningOrder {
+				for ti < len(toolCallOrder) && toolCallOrder[ti] < rIdx {
+					toolsBefore++
+					ti++
+				}
+				rb := c.reasoningBlocks[rIdx]
+				reasoningBlocks = append(reasoningBlocks, adapter.ReasoningBlock{
+					Sequence:  toolsBefore,
+					Redacted:  rb.redacted,
+					Text:      rb.text.String(),
+					Signature: rb.signature,
+					Data:      rb.data,
+				})
+			}
+		}
+
 		role := c.role
 		if role == "" {
 			role = "assistant"
@@ -183,9 +268,10 @@ func (acc *streamAccumulator) build(usage adapter.Usage) adapter.ChatResponse {
 		choices = append(choices, adapter.Choice{
 			Index: idx,
 			Message: adapter.Message{
-				Role:      role,
-				Content:   c.content.String(),
-				ToolCalls: toolCalls,
+				Role:            role,
+				Content:         c.content.String(),
+				ToolCalls:       toolCalls,
+				ReasoningBlocks: reasoningBlocks,
 			},
 			FinishReason: c.finishReason,
 		})

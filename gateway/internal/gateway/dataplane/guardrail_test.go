@@ -537,6 +537,110 @@ func TestHandleChatCompletionStreamPostCallAuditLogsToolCallArguments(t *testing
 	}
 }
 
+// sseAnthropicStreamWithThinkingAndText builds a minimal, genuine
+// Anthropic streaming response (real event sequence, confirmed against
+// anthropic/testdata/stream_thinking_and_tool_call.txt) whose only
+// sensitive content lives inside a "thinking" block's Text — visible
+// Content (the following text block) stays clean. The streaming
+// counterpart of TestPostCallGuardrailScansPlaintextReasoningBlocks'
+// buffered-path fixture, used to prove streamAccumulator.build (via
+// finishStreamedResponse's shared serializeResponse call) now
+// reconstructs Message.ReasoningBlocks from the decoder's
+// ReasoningBlocks deltas instead of silently dropping them.
+func sseAnthropicStreamWithThinkingAndText(thinkingText, text string) string {
+	encodedThinking, _ := json.Marshal(thinkingText)
+	encodedText, _ := json.Marshal(text)
+	return "" +
+		"event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_thinking_leak","model":"claude-opus-4","usage":{"input_tokens":10}}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":` + string(encodedThinking) + `}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_abc123"}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":` + string(encodedText) + `}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":1}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+}
+
+// TestHandleChatCompletionStreamPostCallScansPlaintextReasoningBlocks is
+// the streaming counterpart to TestPostCallGuardrailScansPlaintextReasoningBlocks
+// and closes the real gap this fix exists for:
+// streamaccumulator.go's accumulatingChoice previously had no field for
+// reasoning blocks at all, so finishStreamedResponse's post-call check
+// scanned a resp that structurally could never carry reasoning content —
+// blind to a Block-tier trigger hidden ONLY inside a streamed thinking
+// block (visible Content is clean). Proves both halves of the fix: (a)
+// the reconstructed response actually carries the thinking block's text
+// (via the audit log's finding, which can only fire if
+// serializeResponse's ReasoningBlocks loop had something to scan), and
+// (b) the post-call check is reached and flags it, exactly like the
+// buffered path already does.
+func TestHandleChatCompletionStreamPostCallScansPlaintextReasoningBlocks(t *testing.T) {
+	keys := defaultTestVirtualKeys()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "claude-opus-4", Provider: "anthropic", UpstreamModel: "claude-opus-4", BaseURL: "http://unused"}}
+	stream := sseAnthropicStreamWithThinkingAndText("the customer's card number is "+fakeCreditCardNumber, "I can help with that.")
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"anthropic": anthropic.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("non-streaming Upstream should never be called by a streaming test")
+			return nil, nil
+		},
+		UpstreamStream: func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+			return nopCloserReader{strings.NewReader(stream)}, nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := adapter.ChatRequest{Model: "claude-opus-4", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "how do I process this refund?"}}}
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec, ""); err != nil {
+		t.Fatalf("expected the stream to complete successfully (audit-only, never blocked), got: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), fakeCreditCardNumber) {
+		t.Errorf("body does not contain the thinking block's text — it must be delivered in full, audit-only: %s", rec.Body.String())
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "guardrail_blocked_postcall_streaming_audit_only") {
+		t.Errorf("expected the audit-only guardrail log line — a Block-tier trigger hidden only inside a streamed thinking block (visible Content is clean) must still be caught post-call; got log output: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "finding_count=0") {
+		t.Errorf("expected a nonzero finding_count — the trigger is a real Block-tier credit-card number inside the thinking block; got log output: %s", logOutput)
+	}
+}
+
 // TestCacheHitsAreForcedMissesAfterGuardrailPolicyVersionChanges is the
 // load-bearing proof for all three cache layers of the RFC's cache-hit
 // safety mechanism: an entry written under one guardrail policy version

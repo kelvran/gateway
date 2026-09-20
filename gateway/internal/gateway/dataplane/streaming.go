@@ -316,9 +316,10 @@ func writeFakeStream(sw *streaming.Writer, resp adapter.ChatResponse) error {
 			Choices: []streaming.ChunkChoice{{
 				Index: c.Index,
 				Delta: streaming.MessageDelta{
-					Role:      c.Message.Role,
-					Content:   c.Message.Content,
-					ToolCalls: toChunkToolCallDeltas(c.Message.ToolCalls),
+					Role:            c.Message.Role,
+					Content:         c.Message.Content,
+					ToolCalls:       toChunkToolCallDeltas(c.Message.ToolCalls),
+					ReasoningBlocks: toChunkReasoningDeltas(c.Message.ReasoningBlocks),
 				},
 				FinishReason: &finishReason,
 			}},
@@ -349,6 +350,35 @@ func toChunkToolCallDeltas(toolCalls []adapter.ToolCall) []streaming.ToolCallDel
 			ID:            tc.ID,
 			Name:          tc.Name,
 			ArgumentsJSON: tc.ArgumentsJSON,
+		})
+	}
+	return deltas
+}
+
+// toChunkReasoningDeltas converts a cached/idempotency-replayed response's
+// already-complete ReasoningBlocks into the single-fragment-per-block
+// ReasoningDeltas writeFakeStream forwards to the client. Without this, a
+// cache-hit (or idempotency-replayed) streamed response would silently
+// degrade further than the original miss that populated the cache: the
+// accumulated response written by streamAccumulator.build already carries
+// ReasoningBlocks correctly (see that type's own doc comments), but
+// replaying it as a synthetic stream previously dropped them again right
+// here, on every subsequent hit. Each block is forwarded whole in a single
+// delta — matching this function's own synthesis-not-replay contract
+// (writeFakeStream's doc comment): there is no original per-chunk timing
+// to reproduce, so there is nothing to fragment Text across.
+func toChunkReasoningDeltas(reasoningBlocks []adapter.ReasoningBlock) []streaming.ReasoningDelta {
+	if len(reasoningBlocks) == 0 {
+		return nil
+	}
+	deltas := make([]streaming.ReasoningDelta, 0, len(reasoningBlocks))
+	for i, rb := range reasoningBlocks {
+		deltas = append(deltas, streaming.ReasoningDelta{
+			Index:     i,
+			Text:      rb.Text,
+			Signature: rb.Signature,
+			Redacted:  rb.Redacted,
+			Data:      rb.Data,
 		})
 	}
 	return deltas
