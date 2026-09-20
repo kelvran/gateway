@@ -13,7 +13,7 @@
 | evals/ingestion/\_\_init\_\_.py  |        0 |        0 |    100% |           |
 | evals/ingestion/decode.py        |        5 |        0 |    100% |           |
 | evals/ingestion/mapping.py       |       10 |        0 |    100% |           |
-| evals/ingestion/object\_store.py |       49 |        0 |    100% |           |
+| evals/ingestion/object\_store.py |       52 |        0 |    100% |           |
 | evals/judge/\_\_init\_\_.py      |        0 |        0 |    100% |           |
 | evals/judge/cache.py             |       11 |        0 |    100% |           |
 | evals/judge/deterministic.py     |        6 |        0 |    100% |           |
@@ -29,7 +29,7 @@
 | evals/tracing.py                 |       32 |        0 |    100% |           |
 | evals/trend\_alert.py            |       63 |        1 |     98% |       191 |
 | evals/webhook.py                 |       48 |        2 |     96% |   152-153 |
-| **TOTAL**                        | **1707** |   **84** | **95%** |           |
+| **TOTAL**                        | **1710** |   **84** | **95%** |           |
 
 
 ## Setup coverage badge
