@@ -54,10 +54,25 @@ const TypeDeploymentWeight = "deployment_weight"
 // subscriber skip an event it itself originated — the instance that
 // made the mutation already applied it locally before ever publishing,
 // so re-applying its own echo would be redundant, not merely harmless.
+//
+// PublishedAtUnixNano, added 2026-09-20, is a cross-cutting last-writer-
+// wins ordering token (the publishing instance's own wall-clock time,
+// nanosecond resolution, at the moment the mutation was decided) —
+// deliberately placed on this generic envelope, not duplicated inside
+// each Type's own payload, mirroring OriginInstanceID's own placement:
+// both are properties of "when/where this mutation happened," equally
+// applicable to whichever Type a future mutation kind adds, not specific
+// to deployment-weight payloads. Closes a real gap found by this
+// session's own end-to-end audit: without ANY ordering token, two
+// concurrent mutations to the same target could leave different
+// instances converged on different final values, with zero detection —
+// see dataplane.Pipeline.applyWeightIfNewer, this token's one real
+// consumer today.
 type MutationEvent struct {
-	Type             string          `json:"type"`
-	OriginInstanceID string          `json:"origin_instance_id"`
-	Payload          json.RawMessage `json:"payload"`
+	Type                string          `json:"type"`
+	OriginInstanceID    string          `json:"origin_instance_id"`
+	PublishedAtUnixNano int64           `json:"published_at_unix_nano"`
+	Payload             json.RawMessage `json:"payload"`
 }
 
 // DeploymentWeightPayload is MutationEvent.Payload's shape when Type ==

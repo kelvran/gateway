@@ -498,7 +498,7 @@ func run(configPath string, logger *slog.Logger) error {
 						logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
 						return
 					}
-					if err := pipeline.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight); err != nil {
+					if err := pipeline.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight, event.PublishedAtUnixNano); err != nil {
 						logger.Warn("configpropagation_apply_failed", "type", event.Type, "deployment", payload.DeploymentName, "error", err)
 					}
 				default:

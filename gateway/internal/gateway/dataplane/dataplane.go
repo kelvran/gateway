@@ -568,12 +568,31 @@ type Pipeline struct {
 	upstream          UpstreamCaller
 	embeddingUpstream UpstreamCaller
 	configPublisher   configpropagation.Publisher
-	alertNotifier     alerting.Notifier
-	upstreamStream    UpstreamStreamCaller
-	logger            *slog.Logger
-	cacheTTL          time.Duration
-	cacheL2TTL        time.Duration
-	cacheL3TTL        time.Duration
+	// weightVersionsMu/weightVersions implement last-writer-wins
+	// convergence for cross-instance deployment-weight propagation --
+	// added 2026-09-20, a real gap this session's own end-to-end audit
+	// found: MutationEvent/DeploymentWeightPayload carried no ordering
+	// token at all, so two concurrent weight updates to the SAME
+	// deployment (e.g. an admin API call landing on two different
+	// instances, or two overlapping calls to the same one) could have
+	// their local SetWeight calls and their Publish calls scheduled in
+	// different relative orders -- Redis pub/sub only guarantees
+	// per-publisher delivery order, never a total order across multiple
+	// publishers -- letting the publishing instance's own final local
+	// state diverge from what its subscribers end up applying, and
+	// letting different subscribers converge to DIFFERENT final values
+	// depending on delivery timing, with zero detection. Keyed by
+	// (model, deploymentName); the value is the UnixNano timestamp of
+	// the most recently APPLIED update for that key -- see
+	// applyWeightIfNewer.
+	weightVersionsMu sync.Mutex
+	weightVersions   map[weightVersionKey]int64
+	alertNotifier    alerting.Notifier
+	upstreamStream   UpstreamStreamCaller
+	logger           *slog.Logger
+	cacheTTL         time.Duration
+	cacheL2TTL       time.Duration
+	cacheL3TTL       time.Duration
 	// missGroup deduplicates concurrent identical cache misses — see
 	// runMissPath's own doc comment. Zero value is ready to use, per
 	// golang.org/x/sync/singleflight's own documented contract; no
@@ -680,6 +699,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		upstream:              cfg.Upstream,
 		embeddingUpstream:     cfg.EmbeddingUpstream,
 		configPublisher:       cfg.ConfigPublisher,
+		weightVersions:        map[weightVersionKey]int64{},
 		alertNotifier:         cfg.AlertNotifier,
 		upstreamStream:        cfg.UpstreamStream,
 		logger:                logger,
@@ -1030,7 +1050,14 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrDeploymentNotFound, name)
 	}
-	if err := p.router.SetWeight(dep.Model, name, weight); err != nil {
+
+	// Generated ONCE and reused for both the local apply below and the
+	// published event's own ordering token, so this instance's own
+	// local state and what it broadcasts to every other instance always
+	// carry the IDENTICAL version -- see applyWeightIfNewer's own doc
+	// comment for why this matters.
+	publishedAtUnixNano := p.now().UnixNano()
+	if err := p.applyWeightIfNewer(dep.Model, name, weight, publishedAtUnixNano); err != nil {
 		return err
 	}
 
@@ -1041,7 +1068,17 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 	// mirrors internal/ratelimit/redislimiter's own established
 	// fail-open posture -- a down Redis is a propagation-latency
 	// problem for OTHER instances, never a reason to fail a request
-	// that already succeeded locally on THIS one.
+	// that already succeeded locally on THIS one. Published
+	// unconditionally, even if applyWeightIfNewer above determined this
+	// specific update lost to a concurrently-newer one locally --
+	// every receiver (including this instance's own future events)
+	// independently applies the identical last-writer-wins rule, so a
+	// "losing" publish is harmless: it either gets correctly ignored
+	// everywhere a newer value already arrived, or correctly applied
+	// wherever it's still the newest value seen so far. Skipping the
+	// publish here would instead risk NO instance ever learning about
+	// an update that, from some other instance's perspective, is in
+	// fact still the latest one.
 	if p.configPublisher != nil {
 		payload, err := json.Marshal(configpropagation.DeploymentWeightPayload{
 			Model:          dep.Model,
@@ -1053,9 +1090,10 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 			return nil
 		}
 		event := configpropagation.MutationEvent{
-			Type:             configpropagation.TypeDeploymentWeight,
-			OriginInstanceID: telemetry.InstanceID,
-			Payload:          payload,
+			Type:                configpropagation.TypeDeploymentWeight,
+			OriginInstanceID:    telemetry.InstanceID,
+			PublishedAtUnixNano: publishedAtUnixNano,
+			Payload:             payload,
 		}
 		if err := p.configPublisher.Publish(ctx, event); err != nil {
 			p.logger.Warn("configpropagation_publish_failed", "deployment", name, "error", err)
@@ -1073,8 +1111,71 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 // at the subscriber level already prevents from looping back to THIS
 // instance, but would still cost every OTHER instance a redundant,
 // pointless re-delivery.
-func (p *Pipeline) ApplyDeploymentWeightFromEvent(model, deploymentName string, weight int) error {
-	return p.router.SetWeight(model, deploymentName, weight)
+//
+// publishedAtUnixNano is the ORIGIN instance's own ordering token
+// (MutationEvent.PublishedAtUnixNano), carried through unchanged — never
+// a freshly generated timestamp here, since that would defeat the whole
+// point: this call must lose to a genuinely newer update this instance
+// may have already seen (from any source), and win over a genuinely
+// older one, using the SAME clock reading every other instance is
+// comparing against. See applyWeightIfNewer.
+func (p *Pipeline) ApplyDeploymentWeightFromEvent(model, deploymentName string, weight int, publishedAtUnixNano int64) error {
+	return p.applyWeightIfNewer(model, deploymentName, weight, publishedAtUnixNano)
+}
+
+// weightVersionKey identifies one (model, deploymentName) pair's own
+// independent last-writer-wins version track.
+type weightVersionKey struct {
+	model, deploymentName string
+}
+
+// applyWeightIfNewer is the single choke point BOTH UpdateDeploymentWeight
+// (a local admin-API call) and ApplyDeploymentWeightFromEvent (a
+// remote, event-driven apply) go through, closing a real cross-instance
+// config-propagation gap this session's own end-to-end audit found: with
+// no ordering token at all, two concurrent weight updates to the same
+// deployment could leave different instances converged on different
+// final values, with zero detection.
+//
+// publishedAtUnixNano is compared against the most recently APPLIED
+// timestamp already recorded for this exact (model, deploymentName)
+// pair (zero, i.e. "never applied," if this is the first update ever
+// seen for it). An incoming update strictly OLDER than what's already
+// recorded is a real, detected reordering — silently discarded (never
+// an error: from this instance's own perspective, its locally-applied
+// value is already correct and newer, so there's nothing to fix) rather
+// than blindly overwriting a newer value with a stale one. An incoming
+// update at least as new is applied via router.SetWeight and recorded
+// as the new latest. This is deliberately last-writer-wins by wall-clock
+// timestamp, not a distributed consensus protocol — the correct,
+// proportionate choice for a human-driven, low-frequency admin
+// operation, matching every other cross-instance mechanism in this
+// codebase's own established fail-open/eventually-consistent posture
+// (redislimiter, configpropagation's own already-disclosed fire-and-
+// forget delivery).
+func (p *Pipeline) applyWeightIfNewer(model, deploymentName string, weight int, publishedAtUnixNano int64) error {
+	key := weightVersionKey{model: model, deploymentName: deploymentName}
+
+	p.weightVersionsMu.Lock()
+	defer p.weightVersionsMu.Unlock()
+
+	if publishedAtUnixNano < p.weightVersions[key] {
+		return nil
+	}
+	// The version is recorded only AFTER SetWeight actually succeeds —
+	// recording it first (or unconditionally) would incorrectly "consume"
+	// this version slot even when no real state change happened (e.g. an
+	// unknown deployment), wrongly causing a LATER, genuinely valid
+	// update with an older timestamp than this failed one to be rejected
+	// as stale. Held across the SetWeight call (a separate, inner lock
+	// on *router.Router, never acquired in the reverse order anywhere in
+	// this codebase) so the check-then-act sequence stays atomic against
+	// a concurrent caller of this same function.
+	if err := p.router.SetWeight(model, deploymentName, weight); err != nil {
+		return err
+	}
+	p.weightVersions[key] = publishedAtUnixNano
+	return nil
 }
 
 // EraseCacheEntryResult reports what an EraseCacheEntry call actually

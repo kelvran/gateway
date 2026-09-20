@@ -142,7 +142,7 @@ func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *test
 				t.Errorf("unmarshaling received payload: %v", err)
 				return
 			}
-			if err := pipelineB.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight); err != nil {
+			if err := pipelineB.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight, event.PublishedAtUnixNano); err != nil {
 				t.Errorf("ApplyDeploymentWeightFromEvent: %v", err)
 			}
 		})
@@ -189,5 +189,101 @@ func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *test
 	}
 	if afterB < wantMin || afterB > wantMax {
 		t.Errorf("pipelineB's canary count after A's mutation = %d/%d, want ~33.6%% (%d-%d) -- cross-instance propagation did not converge within 5s", afterB, samples, wantMin, wantMax)
+	}
+}
+
+// TestApplyDeploymentWeightFromEventDiscardsAnOutOfOrderStaleUpdate is
+// the regression proof for a real gap this session's own end-to-end
+// audit found: neither MutationEvent nor DeploymentWeightPayload carried
+// any ordering token at all, so a message delivered out of order (Redis
+// pub/sub only guarantees per-publisher order, never a total order
+// across multiple publishers/admin calls) could silently overwrite a
+// genuinely NEWER weight with a genuinely OLDER one, with zero
+// detection. Deliberately a fast, in-process unit test of
+// applyWeightIfNewer's own ordering logic — no real Redis needed at
+// all, unlike TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub
+// above, which proves the real end-to-end pub/sub wiring but never
+// exercised out-of-order delivery (Redis pub/sub delivers a single
+// publisher's own messages in order, so that test alone could never
+// have caught this).
+func TestApplyDeploymentWeightFromEventDiscardsAnOutOfOrderStaleUpdate(t *testing.T) {
+	deployments := []router.Deployment{
+		{Name: "stable", Model: "gpt-4o", Weight: 99},
+		{Name: "canary", Model: "gpt-4o", Weight: 1},
+	}
+	p := newConfigPropagationTestPipeline(t, deployments, nil)
+
+	const samples = 1000
+	newer := int64(2000)
+	older := int64(1000)
+
+	// A genuinely newer update (weight=50, timestamp=2000) applies.
+	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 50, newer); err != nil {
+		t.Fatalf("ApplyDeploymentWeightFromEvent(weight=50, t=%d): %v", newer, err)
+	}
+	afterNewer := countStableVsCanary(p, "gpt-4o", "canary", samples)
+
+	// A STALE, out-of-order update (weight=1, timestamp=1000 — earlier
+	// than the 2000 already applied above) must be silently discarded,
+	// never overwriting the genuinely newer weight=50 state with this
+	// older one.
+	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 1, older); err != nil {
+		t.Fatalf("ApplyDeploymentWeightFromEvent(weight=1, t=%d) [stale]: %v", older, err)
+	}
+	afterStale := countStableVsCanary(p, "gpt-4o", "canary", samples)
+
+	// Generous +/-8 percentage point band for sampling noise, matching
+	// this file's own established convention above.
+	const wantMin, wantMax = 250, 420
+	if afterNewer < wantMin || afterNewer > wantMax {
+		t.Fatalf("setup: canary count after the genuinely newer weight=50 update = %d/%d, want ~33.6%% (%d-%d)", afterNewer, samples, wantMin, wantMax)
+	}
+	if afterStale < wantMin || afterStale > wantMax {
+		t.Errorf("canary count after a STALE, out-of-order weight=1 update = %d/%d, want it UNCHANGED at ~33.6%% (%d-%d) -- the stale update must be discarded, not applied", afterStale, samples, wantMin, wantMax)
+	}
+}
+
+// TestApplyDeploymentWeightFromEventFailedApplyNeverConsumesTheVersionSlot
+// proves a narrower, easy-to-miss correctness property of
+// applyWeightIfNewer: an update whose router.SetWeight call itself
+// FAILS (e.g. an unknown deployment name) must NOT be recorded as the
+// latest-applied version for that key — recording it regardless (or
+// recording it BEFORE calling SetWeight, rather than after a confirmed
+// success) would incorrectly "consume" that version slot despite no
+// real state change ever happening, wrongly causing a LATER, genuinely
+// valid update with an OLDER timestamp than the failed attempt to be
+// rejected as stale even though it's actually the first real update
+// this key has ever seen.
+func TestApplyDeploymentWeightFromEventFailedApplyNeverConsumesTheVersionSlot(t *testing.T) {
+	deployments := []router.Deployment{
+		{Name: "stable", Model: "gpt-4o", Weight: 99},
+		{Name: "canary", Model: "gpt-4o", Weight: 1},
+	}
+	p := newConfigPropagationTestPipeline(t, deployments, nil)
+
+	// A high-timestamp update against an UNKNOWN deployment name --
+	// router.SetWeight itself must return an error for this, and that
+	// error must propagate back out.
+	const highTimestamp = int64(9_000_000_000)
+	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "does-not-exist", 50, highTimestamp); err == nil {
+		t.Fatal("ApplyDeploymentWeightFromEvent against an unknown deployment name returned nil error, want a real error")
+	}
+
+	// A genuinely real, valid update against "canary" -- at a LOWER
+	// timestamp than the failed attempt above -- must still apply. If
+	// the failed attempt above had wrongly consumed canary's own version
+	// slot, this would be incorrectly rejected as "stale" relative to
+	// a timestamp that was never really associated with canary's state
+	// at all.
+	const lowTimestamp = int64(1000)
+	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 50, lowTimestamp); err != nil {
+		t.Fatalf("ApplyDeploymentWeightFromEvent(canary, weight=50, t=%d): %v", lowTimestamp, err)
+	}
+
+	const samples = 1000
+	const wantMin, wantMax = 250, 420
+	got := countStableVsCanary(p, "gpt-4o", "canary", samples)
+	if got < wantMin || got > wantMax {
+		t.Errorf("canary count after its own first real update = %d/%d, want ~33.6%% (%d-%d) -- the earlier FAILED update (against a different, unknown deployment) must never have consumed canary's own version slot", got, samples, wantMin, wantMax)
 	}
 }
