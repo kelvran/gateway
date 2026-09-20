@@ -116,8 +116,18 @@ type ModelRateLimit struct {
 // this, mirroring internal/budget.Store's relationship to
 // internal/budget/boltstore: the interface lives here, in the consumer
 // package, and the implementation package does not import this one.
+//
+// AllowTPM/AdjustTPM close a real, previously-disclosed v1 scope limit:
+// TPM used to be genuinely in-memory-only (a Redis-mode KeyLimiter had
+// no TPM enforcement at all — every ReserveTPM call was an unconditional
+// no-op). key is whatever Redis key suffix the caller chooses (a plain
+// keyID, or a perModelBackendKey variant) — mirroring Allow's own key
+// parameter, just under redislimiter's own separate "ratelimit:tpm:"
+// namespace so the two dimensions never collide.
 type RedisBackend interface {
 	Allow(ctx context.Context, keyID string, capacity, refillPerSecond float64) (bool, error)
+	AllowTPM(ctx context.Context, key string, burst, rate, periodSec, cost float64) (allowed bool, retryAfterSec float64, err error)
+	AdjustTPM(ctx context.Context, key string, deltaIncrement float64) error
 	Close() error
 }
 
@@ -428,15 +438,69 @@ func (l *KeyLimiter) RecordTokens(keyID string, tokens int) {
 // error/timeout path — model must be the SAME value passed to the
 // ReserveTPM call being reconciled, so the reconciliation lands on the
 // exact bucket the reservation was actually taken from.
-func (l *KeyLimiter) ReserveTPM(keyID, model string) (allowed bool, reserved bool, reservedTokens float64, reservationEpoch int64) {
+//
+// In Redis mode (backend != nil), this now genuinely enforces TPM via
+// GCRA (RedisBackend.AllowTPM) instead of the prior unconditional no-op
+// — see resolveTPMRedisParams's own doc comment for the reservation
+// estimate this uses, and reservationEpoch's own note below for why
+// Redis mode never needs the in-memory dimension's reset-epoch guard. A
+// Redis error fails open (err is logged by the caller, per Allow's own
+// identical policy for the RPM dimension) — returned via err here so
+// checkRateLimit's caller can apply that exact policy itself, rather
+// than this package baking one caller's choice in.
+func (l *KeyLimiter) ReserveTPM(ctx context.Context, keyID, model string) (allowed bool, reserved bool, reservedTokens float64, reservationEpoch int64, err error) {
 	l.mu.RLock()
+	if l.backend != nil {
+		cfg := l.configs[keyID]
+		l.mu.RUnlock()
+		burst, rate, key := resolveTPMRedisParams(keyID, model, cfg)
+		if burst <= 0 {
+			return true, false, 0, 0, nil
+		}
+		// Cold-start-conservative estimate: reserve the full configured
+		// burst, mirroring TokenBucket.reservationAmountLocked's own
+		// "no usage history yet" fallback. Redis mode does not track a
+		// historical per-key running average the way the in-memory
+		// bucket's billedTokens/billedCount does — a disclosed,
+		// deliberate v1 simplification: this only affects estimate
+		// QUALITY (a systematically-too-large estimate under-utilizes
+		// burst capacity across concurrent requests; AdjustTPM's later
+		// real-cost delta always corrects the stored TAT to the true
+		// value regardless), never CORRECTNESS.
+		estimate := burst
+		allowedRedis, _, tpmErr := l.backend.AllowTPM(ctx, key, burst, rate, 1.0, estimate)
+		if tpmErr != nil {
+			return true, false, 0, 0, tpmErr
+		}
+		if !allowedRedis {
+			return false, false, 0, 0, nil
+		}
+		return true, true, estimate, 0, nil
+	}
 	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
 	if bucket == nil {
-		return true, false, 0, 0
+		return true, false, 0, 0, nil
 	}
 	allowed, reservedTokens, reservationEpoch = bucket.ReserveTPM()
-	return allowed, allowed, reservedTokens, reservationEpoch
+	return allowed, allowed, reservedTokens, reservationEpoch, nil
+}
+
+// resolveTPMRedisParams resolves keyID's TPM burst/rate for model in
+// Redis mode — its own per-model override (cfg.PerModel[model], if
+// configured with a positive TPMCapacity) or keyID's key-level default,
+// mirroring resolveTPMBucket's identical per-model-then-default order
+// for the in-memory dimension. key is the Redis key SUFFIX
+// AllowTPM/AdjustTPM should use (perModelBackendKey's tagged form for a
+// per-model override, plain keyID otherwise) — mirrors allow()'s
+// identical choice for the RPM dimension.
+func resolveTPMRedisParams(keyID, model string, cfg KeyConfig) (burst, rate float64, key string) {
+	if model != "" {
+		if override, ok := cfg.PerModel[model]; ok && override.TPMCapacity > 0 {
+			return override.TPMCapacity, override.TPMRefillPerSecond, perModelBackendKey(keyID, model)
+		}
+	}
+	return cfg.TPMCapacity, cfg.TPMRefillPerSecond, keyID
 }
 
 // ReconcileTPM undoes a previous ReserveTPM call's provisional debit and,
@@ -469,8 +533,57 @@ func (l *KeyLimiter) ReserveTPM(keyID, model string) (allowed bool, reserved boo
 // mid-flight against), self-healing (the leaked credit is bounded and
 // absorbed by the default bucket's own capacity clamp) race justifies
 // for this pass.
-func (l *KeyLimiter) ReconcileTPM(keyID, model string, reservedTokens float64, reservationEpoch int64, realTokens *float64) {
+// In Redis mode, reservationEpoch is always 0 (see ReserveTPM) and is
+// never checked here: unlike the in-memory bucket, which can have its
+// entire object replaced wholesale by a concurrent Register/Reset call
+// (orphaning any in-flight reservation's reference to the OLD object),
+// Redis mode's "bucket" is just a key string that persists unchanged
+// across Register calls — there is no analogous reset event to guard
+// against. AdjustTPM's delta-based design (always ADDING onto whatever
+// the current TAT is, never a snapshot compare-and-swap) is safe under
+// arbitrary concurrent interleaving by construction. A Redis error here
+// is a disclosed best-effort no-op (never surfaced to this method's
+// caller, which has no error return to give it to) — see AdjustTPM's
+// own doc comment: the stored TAT simply keeps reflecting the
+// ESTIMATE rather than the real cost for this one reservation, which
+// self-heals on the key's own next real request regardless.
+func (l *KeyLimiter) ReconcileTPM(ctx context.Context, keyID, model string, reservedTokens float64, reservationEpoch int64, realTokens *float64) {
 	l.mu.RLock()
+	if l.backend != nil {
+		cfg := l.configs[keyID]
+		l.mu.RUnlock()
+		burst, rate, key := resolveTPMRedisParams(keyID, model, cfg)
+		if burst <= 0 {
+			return
+		}
+		// effectiveRealTokens is 0 for a release-with-no-replacement
+		// (realTokens == nil) — the SAME unified formula covers both
+		// cases: releasing reservedTokens (moving the TAT backward by
+		// emissionInterval*reservedTokens) and, when realTokens is
+		// known, simultaneously re-debiting the real cost, exactly
+		// mirroring the in-memory bucket's own two-step
+		// "tokens += reservedTokens; tokens -= *realTokens" net effect
+		// (there, increasing tokens = decreasing TAT here, and vice
+		// versa). Omitting this call entirely when realTokens is nil
+		// would leak the full reservation's capacity permanently — the
+		// exact bug ReconcileTPM's own doc comment above warns every
+		// true `reserved` return from ReserveTPM must avoid.
+		var effectiveRealTokens float64
+		if realTokens != nil {
+			effectiveRealTokens = *realTokens
+		}
+		// 1000.0/rate, not 1.0/rate: the period ReserveTPM's own AllowTPM
+		// call always passes is 1.0 SECOND, but the stored TAT this
+		// delta adjusts is in MILLISECONDS -- matching
+		// tpmLuaSrc's own required *1000 conversion exactly. Getting
+		// this wrong (as an earlier draft of this fix did) makes every
+		// adjustment negligibly small, silently defeating GCRA's own
+		// admission math entirely.
+		emissionInterval := 1000.0 / rate
+		deltaIncrement := emissionInterval * (effectiveRealTokens - reservedTokens)
+		_ = l.backend.AdjustTPM(ctx, key, deltaIncrement)
+		return
+	}
 	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
 	if bucket == nil {
@@ -489,14 +602,42 @@ func (l *KeyLimiter) ReconcileTPM(keyID, model string, reservedTokens float64, r
 // ReserveTPM's own "no entry means unlimited" behavior. reservationEpoch/
 // newReservationEpoch mirror ReconcileTPM's own epoch contract — thread
 // whichever epoch this returns into the eventual ReconcileTPM call.
-func (l *KeyLimiter) IncreaseReservationTPM(keyID, model string, currentReservedTokens, newReservedTokens float64, reservationEpoch int64) (allowed bool, appliedTokens float64, newReservationEpoch int64) {
+// In Redis mode, this tops up the reservation by issuing a fresh
+// AllowTPM admission check for exactly the delta (newReservedTokens -
+// currentReservedTokens) — GCRA's TAT-advance IS the reservation, so
+// "reserve more" is just another AllowTPM call for the additional
+// amount, atomically checked against the SAME key's current TAT. A
+// Redis error fails open (err logged by the caller, mirroring
+// ReserveTPM's identical policy).
+func (l *KeyLimiter) IncreaseReservationTPM(ctx context.Context, keyID, model string, currentReservedTokens, newReservedTokens float64, reservationEpoch int64) (allowed bool, appliedTokens float64, newReservationEpoch int64, err error) {
+	if newReservedTokens <= currentReservedTokens {
+		return true, currentReservedTokens, reservationEpoch, nil
+	}
 	l.mu.RLock()
+	if l.backend != nil {
+		cfg := l.configs[keyID]
+		l.mu.RUnlock()
+		burst, rate, key := resolveTPMRedisParams(keyID, model, cfg)
+		if burst <= 0 {
+			return true, currentReservedTokens, reservationEpoch, nil
+		}
+		delta := newReservedTokens - currentReservedTokens
+		allowedRedis, _, tpmErr := l.backend.AllowTPM(ctx, key, burst, rate, 1.0, delta)
+		if tpmErr != nil {
+			return true, currentReservedTokens, reservationEpoch, tpmErr
+		}
+		if !allowedRedis {
+			return false, currentReservedTokens, reservationEpoch, nil
+		}
+		return true, newReservedTokens, 0, nil
+	}
 	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
 	if bucket == nil {
-		return true, currentReservedTokens, reservationEpoch
+		return true, currentReservedTokens, reservationEpoch, nil
 	}
-	return bucket.IncreaseReservation(currentReservedTokens, newReservedTokens, reservationEpoch)
+	allowed, appliedTokens, newReservationEpoch = bucket.IncreaseReservation(currentReservedTokens, newReservedTokens, reservationEpoch)
+	return allowed, appliedTokens, newReservationEpoch, nil
 }
 
 // resolveTPMBucket resolves keyID's TPM bucket for model — its own

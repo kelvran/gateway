@@ -1,6 +1,8 @@
 package dataplane
 
 import (
+	"context"
+
 	"github.com/shopspring/decimal"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -180,13 +182,24 @@ type midStreamReservation struct {
 // upstreamCtx and finish gracefully via finishStreamedResponse, never as
 // an error, since this request already legitimately passed its own
 // initial admission check before the stream ever started.
-func (p *Pipeline) checkMidStreamReservationTopup(dep Deployment, req adapter.ChatRequest, accumulatedChars int, msr midStreamReservation) bool {
+func (p *Pipeline) checkMidStreamReservationTopup(ctx context.Context, dep Deployment, req adapter.ChatRequest, accumulatedChars int, msr midStreamReservation) bool {
 	estimatedTokens := float64(accumulatedChars) / float64(streamRunawayCharsPerToken)
 
 	if estimatedTokens > *msr.tpmReservedTokens {
-		allowed, applied, newEpoch := p.limiter.IncreaseReservationTPM(msr.vk.ID, req.Model, *msr.tpmReservedTokens, estimatedTokens, *msr.tpmReservationEpoch)
+		allowed, applied, newEpoch, tpmErr := p.limiter.IncreaseReservationTPM(ctx, msr.vk.ID, req.Model, *msr.tpmReservedTokens, estimatedTokens, *msr.tpmReservationEpoch)
 		*msr.tpmReservedTokens = applied
 		*msr.tpmReservationEpoch = newEpoch
+		if tpmErr != nil {
+			// Fail open, mirroring ReserveTPM's identical Redis-error
+			// policy: on error, IncreaseReservationTPM already returns
+			// applied/newEpoch UNCHANGED (currentReservedTokens/
+			// reservationEpoch) rather than pretending a real top-up
+			// happened — this stream simply keeps its prior reservation
+			// floor and continues rather than being cut off for a
+			// Redis-reachability problem, never for a real, decided
+			// TPM-exhaustion rejection.
+			return true
+		}
 		if !allowed {
 			return false
 		}

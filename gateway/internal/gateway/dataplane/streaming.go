@@ -620,7 +620,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		// reserved, which a concurrent sibling on the same key would
 		// otherwise never see. Same non-error, graceful-truncation
 		// treatment on trip.
-		if !p.checkMidStreamReservationTopup(dep, req, accumulatedChars, msr) {
+		if !p.checkMidStreamReservationTopup(ctx, dep, req, accumulatedChars, msr) {
 			p.logger.Warn("streaming_midstream_reservation_topup_exhausted", append(traceLogFields(ctx),
 				"key_id", keyID,
 				"deployment", dep.Name,
@@ -778,7 +778,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 		}
 		// See streamDeployment's identical mid-stream reservation
 		// top-up guard comment/rationale.
-		if !p.checkMidStreamReservationTopup(dep, req, accumulatedChars, msr) {
+		if !p.checkMidStreamReservationTopup(ctx, dep, req, accumulatedChars, msr) {
 			p.logger.Warn("streaming_midstream_reservation_topup_exhausted", append(traceLogFields(ctx),
 				"key_id", keyID,
 				"deployment", dep.Name,

@@ -1478,14 +1478,20 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 	}
 	// TPM dimension, per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md,
 	// now via ReserveTPM (docs/rfcs/2026-09-08-gateway-budget-ratelimit-
-	// toctou-fix.md) rather than the old non-reserving AllowTPM: a plain,
-	// non-erroring result — ReserveTPM never touches a backend in v1
-	// (in-memory-only), so there's no fail-open case to handle here,
-	// unlike Allow above. Checked only after the RPM check passes, so an
+	// toctou-fix.md). Checked only after the RPM check passes, so an
 	// RPM-exhausted request is always rejected for that reason first,
 	// matching this codebase's own existing check-ordering discipline
-	// (model-allowed before rate-limit before budget).
-	ok, tpmReserved, tpmReservedTokens, tpmReservationEpoch = p.limiter.ReserveTPM(vk.ID, model)
+	// (model-allowed before rate-limit before budget). ReserveTPM can now
+	// genuinely fail open on a Redis-mode backend error (closing the
+	// prior "TPM is unconditionally a no-op in Redis mode" gap) — treated
+	// identically to the RPM dimension's own fail-open policy above.
+	var tpmErr error
+	ok, tpmReserved, tpmReservedTokens, tpmReservationEpoch, tpmErr = p.limiter.ReserveTPM(ctx, vk.ID, model)
+	if tpmErr != nil {
+		p.logger.Warn("ratelimit_tpm_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", tpmErr.Error())...)
+		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
+		return true, true, false, 0, 0
+	}
 	return ok, false, tpmReserved, tpmReservedTokens, tpmReservationEpoch
 }
 
@@ -3118,7 +3124,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			realTokens = &rt
 		}
 		if tpmReserved || realTokens != nil {
-			p.limiter.ReconcileTPM(vk.ID, req.Model, tpmReservedTokens, tpmReservationEpoch, realTokens)
+			p.limiter.ReconcileTPM(ctx, vk.ID, req.Model, tpmReservedTokens, tpmReservationEpoch, realTokens)
 		}
 	}
 

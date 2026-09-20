@@ -158,6 +158,163 @@ func TestTwoLimitersShareOneBucket(t *testing.T) {
 	}
 }
 
+// TestAllowTPMWithinBurstSucceedsThenRejects proves the core GCRA
+// admission math for a variable, non-1 cost: burst=10, rate=10
+// tokens/sec, cost=3 per call — floor(10/3) = 3 calls admitted, the 4th
+// rejected, since burst_offset (1000ms) is exhausted once the stored TAT
+// advances past now+1000ms (3*300ms = 900ms fits, a 4th call's own
+// +300ms would push it to 1200ms, past the 1000ms offset).
+func TestAllowTPMWithinBurstSucceedsThenRejects(t *testing.T) {
+	l, err := Open(redisAddr)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	ctx := context.Background()
+	key := uniqueKey(t)
+
+	for i := 0; i < 3; i++ {
+		allowed, _, err := l.AllowTPM(ctx, key, 10, 10, 1, 3)
+		if err != nil {
+			t.Fatalf("AllowTPM() #%d error = %v", i+1, err)
+		}
+		if !allowed {
+			t.Fatalf("AllowTPM() #%d = false, want true (within burst)", i+1)
+		}
+	}
+
+	allowed, retryAfterSec, err := l.AllowTPM(ctx, key, 10, 10, 1, 3)
+	if err != nil {
+		t.Fatalf("AllowTPM() error = %v", err)
+	}
+	if allowed {
+		t.Fatal("AllowTPM() succeeded after burst exhausted")
+	}
+	if retryAfterSec <= 0 {
+		t.Errorf("retryAfterSec = %v, want > 0 when rejected", retryAfterSec)
+	}
+}
+
+// TestAllowTPMRejectsASingleCostExceedingBurst proves GCRA's real
+// behavior for a single request whose own cost exceeds the entire
+// configured burst: rejected outright, on the very first call — this
+// implementation deliberately does not support partial admission
+// (clamping cost down to whatever headroom remains), unlike
+// redis_rate's own AllowAtMost variant.
+func TestAllowTPMRejectsASingleCostExceedingBurst(t *testing.T) {
+	l, err := Open(redisAddr)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	ctx := context.Background()
+	key := uniqueKey(t)
+
+	allowed, _, err := l.AllowTPM(ctx, key, 10, 10, 1, 15)
+	if err != nil {
+		t.Fatalf("AllowTPM() error = %v", err)
+	}
+	if allowed {
+		t.Fatal("AllowTPM() with cost (15) exceeding burst (10) succeeded, want rejected")
+	}
+}
+
+// TestAdjustTPMReconcilesEstimateDownToRealCost proves the reserve-then-
+// reconcile flow: reserving a conservative estimate (8) then adjusting
+// down to a smaller real cost (2) frees up exactly the difference —
+// a subsequent call for the remaining headroom (7, filling burst=10 to
+// 2+7=9) must now succeed, which it would NOT have if the original
+// 8-token reservation had never been reconciled down.
+func TestAdjustTPMReconcilesEstimateDownToRealCost(t *testing.T) {
+	l, err := Open(redisAddr)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	ctx := context.Background()
+	key := uniqueKey(t)
+	const burst, rate, period = 10.0, 10.0, 1.0
+	const estimate, realCost = 8.0, 2.0
+
+	allowed, _, err := l.AllowTPM(ctx, key, burst, rate, period, estimate)
+	if err != nil {
+		t.Fatalf("AllowTPM(estimate) error = %v", err)
+	}
+	if !allowed {
+		t.Fatal("AllowTPM(estimate=8) against an empty burst=10 key was rejected, want allowed")
+	}
+
+	emissionInterval := 1000.0 * period / rate // milliseconds, matching tpmLuaSrc's own units
+	deltaIncrement := emissionInterval * (realCost - estimate)
+	if err := l.AdjustTPM(ctx, key, deltaIncrement); err != nil {
+		t.Fatalf("AdjustTPM() error = %v", err)
+	}
+
+	allowed, _, err = l.AllowTPM(ctx, key, burst, rate, period, 7)
+	if err != nil {
+		t.Fatalf("AllowTPM(cost=7) error = %v", err)
+	}
+	if !allowed {
+		t.Fatal("AllowTPM(cost=7) after reconciling the estimate down to 2 was rejected, want allowed (2+7=9 <= burst=10)")
+	}
+}
+
+// TestAdjustTPMClampPreventsManufacturingCapacityFromExcessiveRelease is
+// the regression proof for tpmAdjustLuaSrc's own "clamp so TAT can never
+// be pushed before now" contract: releasing far more than was ever
+// reserved (a real caller bug, or simply realTokens=0 combined with an
+// unusually large estimate) must not push the stored TAT deep into the
+// past, which would otherwise let MANY MORE than one burst's worth of
+// full-cost calls all succeed rapid-fire before TAT caught back up to
+// real time — "manufacturing capacity from the past."
+func TestAdjustTPMClampPreventsManufacturingCapacityFromExcessiveRelease(t *testing.T) {
+	l, err := Open(redisAddr)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	ctx := context.Background()
+	key := uniqueKey(t)
+	const burst, rate, period = 10.0, 10.0, 1.0
+
+	allowed, _, err := l.AllowTPM(ctx, key, burst, rate, period, 1)
+	if err != nil {
+		t.Fatalf("AllowTPM(cost=1) error = %v", err)
+	}
+	if !allowed {
+		t.Fatal("AllowTPM(cost=1) against an empty burst=10 key was rejected, want allowed")
+	}
+
+	// A wildly excessive release -- far beyond what the single cost=1
+	// reservation above could ever justify.
+	if err := l.AdjustTPM(ctx, key, -1_000_000); err != nil {
+		t.Fatalf("AdjustTPM() error = %v", err)
+	}
+
+	// Immediately after: exactly ONE full-burst call may succeed (the
+	// clamp pinned TAT back to "now", not deep in the past) — a SECOND
+	// one, right after, must be rejected.
+	allowed, _, err = l.AllowTPM(ctx, key, burst, rate, period, burst)
+	if err != nil {
+		t.Fatalf("AllowTPM(cost=burst) #1 error = %v", err)
+	}
+	if !allowed {
+		t.Fatal("AllowTPM(cost=burst) #1 immediately after the clamp was rejected, want allowed (full capacity restored)")
+	}
+
+	allowed, _, err = l.AllowTPM(ctx, key, burst, rate, period, burst)
+	if err != nil {
+		t.Fatalf("AllowTPM(cost=burst) #2 error = %v", err)
+	}
+	if allowed {
+		t.Fatal("AllowTPM(cost=burst) #2 immediately after #1 succeeded, want rejected -- the excessive release must not have manufactured a SECOND full burst's worth of capacity from the past")
+	}
+}
+
 func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
 	// A port nothing is listening on. Open must still succeed — go-redis
 	// dials lazily, and this RFC's fail-open policy depends on Open

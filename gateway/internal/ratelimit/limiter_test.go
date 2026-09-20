@@ -12,9 +12,11 @@ import (
 // dependency-direction discipline internal/budget's own tests use
 // against a fake budget.Store, rather than boltstore.
 type fakeBackend struct {
-	allowFunc func(ctx context.Context, keyID string, capacity, refillPerSecond float64) (bool, error)
-	closeErr  error
-	closed    bool
+	allowFunc     func(ctx context.Context, keyID string, capacity, refillPerSecond float64) (bool, error)
+	allowTPMFunc  func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error)
+	adjustTPMFunc func(ctx context.Context, key string, deltaIncrement float64) error
+	closeErr      error
+	closed        bool
 
 	// recorded captures the last call's arguments, so tests can assert
 	// KeyLimiter passed the right per-key Capacity/RefillPerSecond
@@ -22,6 +24,10 @@ type fakeBackend struct {
 	recordedKeyID           string
 	recordedCapacity        float64
 	recordedRefillPerSecond float64
+	// recordedAdjustDelta captures AdjustTPM's last deltaIncrement
+	// argument, so tests can assert ReconcileTPM computed the right
+	// value, not just that AdjustTPM was called at all.
+	recordedAdjustDelta float64
 }
 
 func (f *fakeBackend) Allow(ctx context.Context, keyID string, capacity, refillPerSecond float64) (bool, error) {
@@ -32,6 +38,21 @@ func (f *fakeBackend) Allow(ctx context.Context, keyID string, capacity, refillP
 		return f.allowFunc(ctx, keyID, capacity, refillPerSecond)
 	}
 	return true, nil
+}
+
+func (f *fakeBackend) AllowTPM(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
+	if f.allowTPMFunc != nil {
+		return f.allowTPMFunc(ctx, key, burst, rate, periodSec, cost)
+	}
+	return true, 0, nil
+}
+
+func (f *fakeBackend) AdjustTPM(ctx context.Context, key string, deltaIncrement float64) error {
+	f.recordedAdjustDelta = deltaIncrement
+	if f.adjustTPMFunc != nil {
+		return f.adjustTPMFunc(ctx, key, deltaIncrement)
+	}
+	return nil
 }
 
 func (f *fakeBackend) Close() error {
@@ -417,11 +438,11 @@ func TestReserveTPMUsesItsOwnPerModelBucketSeparateFromTheDefault(t *testing.T) 
 		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}},
 	}})
 
-	allowed, reserved, tokens, _ := l.ReserveTPM("team-alpha", "gpt-4o")
+	allowed, reserved, tokens, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o")
 	if !allowed || !reserved || tokens != 10 {
 		t.Fatalf("first ReserveTPM(gpt-4o) = (%v, %v, %v), want (true, true, 10) — gpt-4o's own fresh 10-token bucket has no billing history yet, so TokenBucket.reservationAmountLocked's own \"no history\" fallback reserves its ENTIRE current balance in one call", allowed, reserved, tokens)
 	}
-	if allowed, _, _, _ := l.ReserveTPM("team-alpha", "gpt-4o"); allowed {
+	if allowed, _, _, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o"); allowed {
 		t.Fatal("second ReserveTPM(gpt-4o) = true, want false — the first call already reserved gpt-4o's entire 10-token balance")
 	}
 	// The default bucket (1000 tokens) must be completely untouched by
@@ -432,7 +453,7 @@ func TestReserveTPMUsesItsOwnPerModelBucketSeparateFromTheDefault(t *testing.T) 
 	// the entire remaining balance on a bucket with no billing history
 	// yet" semantics means a second, separate call against the default
 	// bucket here would itself drain it, corrupting a later check.
-	if allowed, _, tokens, _ := l.ReserveTPM("team-alpha", "claude-opus-4"); !allowed || tokens != 1000 {
+	if allowed, _, tokens, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "claude-opus-4"); !allowed || tokens != 1000 {
 		t.Fatalf("ReserveTPM(claude-opus-4) = (%v, _, %v), want (true, 1000) — an unconfigured model must fall back to the FULL, untouched shared default TPM bucket, unaffected by gpt-4o's own override", allowed, tokens)
 	}
 }
@@ -452,7 +473,7 @@ func TestReserveTPMByteIdenticalToKeyLevelWhenNoPerModelTPMConfigured(t *testing
 	// First reservation, via the model-qualified entry point, drains the
 	// shared default bucket entirely — a fresh bucket with no billing
 	// history yet reserves its full current balance in one call.
-	allowed, _, tokens, _ := l.ReserveTPM("team-alpha", "gpt-4o")
+	allowed, _, tokens, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o")
 	if !allowed || tokens != 1000 {
 		t.Fatalf("ReserveTPM(gpt-4o) with an RPM-only override (no TPM override) = (%v, _, %v), want (true, 1000) — falls through to the shared default TPM bucket", allowed, tokens)
 	}
@@ -460,7 +481,7 @@ func TestReserveTPMByteIdenticalToKeyLevelWhenNoPerModelTPMConfigured(t *testing
 	// bucket — proving both entry points share one bucket when no
 	// PerModel TPM override exists, mirroring AllowForModel/Allow's own
 	// identical byte-identical proof.
-	if allowed, _, _, _ := l.ReserveTPM("team-alpha", ""); allowed {
+	if allowed, _, _, _, _ := l.ReserveTPM(context.Background(), "team-alpha", ""); allowed {
 		t.Fatal("ReserveTPM(\"\") = true after gpt-4o's own call (no TPM override) drained the shared default bucket, want false")
 	}
 }
@@ -474,7 +495,7 @@ func TestReserveTPMPerModelEntryWithNonPositiveCapacityTreatedAsAbsent(t *testin
 		TPMCapacity: 1000, TPMRefillPerSecond: 0,
 		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 5, RefillPerSecond: 1, TPMCapacity: 0, TPMRefillPerSecond: 10}},
 	}})
-	allowed, _, tokens, _ := l.ReserveTPM("team-alpha", "gpt-4o")
+	allowed, _, tokens, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o")
 	if !allowed || tokens <= 0 {
 		t.Fatalf("ReserveTPM(gpt-4o) = (%v, _, %v), want (true, >0) — a TPMCapacity<=0 override must fall through to the default TPM bucket, not an always-zero bucket", allowed, tokens)
 	}
@@ -492,23 +513,23 @@ func TestReconcileTPMCreditsBackTheSamePerModelBucketItReservedFrom(t *testing.T
 		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}},
 	}})
 
-	_, reserved, reservedTokens, reservationEpoch := l.ReserveTPM("team-alpha", "gpt-4o")
+	_, reserved, reservedTokens, reservationEpoch, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o")
 	if !reserved {
 		t.Fatal("setup: ReserveTPM(gpt-4o) did not reserve anything")
 	}
 	realTokens := 1.0
-	l.ReconcileTPM("team-alpha", "gpt-4o", reservedTokens, reservationEpoch, &realTokens)
+	l.ReconcileTPM(context.Background(), "team-alpha", "gpt-4o", reservedTokens, reservationEpoch, &realTokens)
 
 	// The default bucket must be entirely untouched by this reserve+
 	// reconcile cycle against gpt-4o's own bucket.
-	if allowed, _, tokens, _ := l.ReserveTPM("team-alpha", ""); !allowed || tokens <= 0 {
+	if allowed, _, tokens, _, _ := l.ReserveTPM(context.Background(), "team-alpha", ""); !allowed || tokens <= 0 {
 		t.Errorf("ReserveTPM(\"\") after reconciling gpt-4o's own bucket = (%v, _, %v), want the default bucket's full, untouched reservation", allowed, tokens)
 	}
 	// gpt-4o's own bucket, having reconciled down to a real cost of only
 	// 1 token (far below its reserved amount), should have most of its
 	// 10-token capacity available again — provably not the same as
 	// having been left at its exhausted, still-reserved balance.
-	if allowed, _, _, _ := l.ReserveTPM("team-alpha", "gpt-4o"); !allowed {
+	if allowed, _, _, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o"); !allowed {
 		t.Error("ReserveTPM(gpt-4o) after reconciling down to a 1-token real cost = false, want true — the reconciliation should have credited most of the reservation back")
 	}
 }
@@ -526,21 +547,21 @@ func TestIncreaseReservationTPMResolvesTheSamePerModelBucketAsReserveTPM(t *test
 		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 10, TPMRefillPerSecond: 0}},
 	}})
 
-	_, _, reservedTokens, reservationEpoch := l.ReserveTPM("team-alpha", "gpt-4o") // reserves the full 10, tokens now 0
+	_, _, reservedTokens, reservationEpoch, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o") // reserves the full 10, tokens now 0
 	if reservedTokens != 10 {
 		t.Fatalf("setup: ReserveTPM(gpt-4o) reserved %v, want 10", reservedTokens)
 	}
 	// gpt-4o's own bucket has 0 tokens left — a top-up beyond its reserved
 	// 10 must be rejected, while the DEFAULT bucket (1000 tokens, entirely
 	// separate) must stay completely unaffected.
-	allowed, applied, _ := l.IncreaseReservationTPM("team-alpha", "gpt-4o", reservedTokens, 20, reservationEpoch)
+	allowed, applied, _, _ := l.IncreaseReservationTPM(context.Background(), "team-alpha", "gpt-4o", reservedTokens, 20, reservationEpoch)
 	if allowed {
 		t.Fatal("IncreaseReservationTPM(gpt-4o, 10 -> 20) against an exhausted 10-token bucket = true, want false")
 	}
 	if applied != reservedTokens {
 		t.Errorf("appliedTokens on rejection = %v, want the original 10, unchanged", applied)
 	}
-	if allowed, _, tokens, _ := l.ReserveTPM("team-alpha", ""); !allowed || tokens != 1000 {
+	if allowed, _, tokens, _, _ := l.ReserveTPM(context.Background(), "team-alpha", ""); !allowed || tokens != 1000 {
 		t.Errorf("ReserveTPM(\"\") after gpt-4o's own rejected top-up = (%v, _, %v), want (true, 1000) — the default bucket must be untouched", allowed, tokens)
 	}
 }
@@ -549,7 +570,7 @@ func TestIncreaseReservationTPMResolvesTheSamePerModelBucketAsReserveTPM(t *test
 // ReconcileTPM's own "no TPM configured" no-op convention.
 func TestIncreaseReservationTPMNoOpWhenTPMNotConfigured(t *testing.T) {
 	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}})
-	allowed, applied, _ := l.IncreaseReservationTPM("team-alpha", "gpt-4o", 0, 1000, 0)
+	allowed, applied, _, _ := l.IncreaseReservationTPM(context.Background(), "team-alpha", "gpt-4o", 0, 1000, 0)
 	if !allowed || applied != 0 {
 		t.Errorf("IncreaseReservationTPM with TPM unconfigured = (%v, %v), want (true, 0)", allowed, applied)
 	}
@@ -562,7 +583,7 @@ func TestIncreaseReservationTPMNoOpWhenTPMNotConfigured(t *testing.T) {
 func TestReconcileTPMNoOpWhenPerModelTPMNotConfigured(t *testing.T) {
 	l := NewInMemoryKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}})
 	realTokens := 5.0
-	l.ReconcileTPM("team-alpha", "gpt-4o", 0, 0, &realTokens) // must not panic
+	l.ReconcileTPM(context.Background(), "team-alpha", "gpt-4o", 0, 0, &realTokens) // must not panic
 }
 
 // TestRegisterDisablingPerModelTPMRemovesTheStaleBucket mirrors
@@ -575,17 +596,17 @@ func TestRegisterDisablingPerModelTPMRemovesTheStaleBucket(t *testing.T) {
 		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 100, RefillPerSecond: 100, TPMCapacity: 1, TPMRefillPerSecond: 0}},
 	}})
 
-	allowed, _, tokens, _ := l.ReserveTPM("team-alpha", "gpt-4o")
+	allowed, _, tokens, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o")
 	if !allowed || tokens != 1 {
 		t.Fatalf("first ReserveTPM(gpt-4o) = (%v, _, %v), want (true, 1) — a fresh 1-token bucket reserves its entire balance in one call", allowed, tokens)
 	}
-	if allowed, _, _, _ := l.ReserveTPM("team-alpha", "gpt-4o"); allowed {
+	if allowed, _, _, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o"); allowed {
 		t.Fatal("setup: gpt-4o's 1-token override bucket should now be exhausted")
 	}
 
 	l.Register(KeyConfig{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100, TPMCapacity: 1000, TPMRefillPerSecond: 0}) // PerModel omitted = disabled
 
-	if allowed, _, _, _ := l.ReserveTPM("team-alpha", "gpt-4o"); !allowed {
+	if allowed, _, _, _, _ := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o"); !allowed {
 		t.Fatal("ReserveTPM(gpt-4o) = false after Register() disabled the override, want true — gpt-4o should now fall through to the fresh default TPM bucket, not a stale exhausted override")
 	}
 }
@@ -628,7 +649,7 @@ func TestRegisterReusesTheExistingTPMBucketObjectRatherThanReplacingIt(t *testin
 	// Exhaust part of the default bucket first, mirroring an in-flight
 	// reservation an admin update might race — Reset (called via
 	// Register below) must still bring it back to full capacity.
-	if _, reserved, _, _ := l.ReserveTPM("team-alpha", ""); !reserved {
+	if _, reserved, _, _, _ := l.ReserveTPM(context.Background(), "team-alpha", ""); !reserved {
 		t.Fatal("setup: ReserveTPM did not reserve anything")
 	}
 
@@ -653,8 +674,204 @@ func TestRegisterReusesTheExistingTPMBucketObjectRatherThanReplacingIt(t *testin
 	// proven by a fresh ReserveTPM reserving the FULL configured
 	// capacity again, not the partially-exhausted balance from before
 	// Register ran.
-	if _, _, reservedTokens, _ := l.ReserveTPM("team-alpha", ""); reservedTokens != 100 {
+	if _, _, reservedTokens, _, _ := l.ReserveTPM(context.Background(), "team-alpha", ""); reservedTokens != 100 {
 		t.Errorf("ReserveTPM after Register reserved %v tokens, want 100 (full capacity) — Register must still reset the reused object to full capacity", reservedTokens)
+	}
+}
+
+// TestReserveTPMRedisModeGenuinelyEnforcesTPM is the direct regression
+// proof for the real, previously-disclosed bug this fix closes: before
+// it, a Redis-mode KeyLimiter's ReserveTPM was an UNCONDITIONAL no-op
+// (tpmBuckets is only ever populated by NewInMemoryKeyLimiter), so every
+// call silently returned "allowed" regardless of the backend's own
+// decision. Now it must genuinely call backend.AllowTPM and honor a
+// rejection.
+func TestReserveTPMRedisModeGenuinelyEnforcesTPM(t *testing.T) {
+	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
+		return false, 2.5, nil
+	}}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 50,
+	}}, backend)
+
+	allowed, reserved, tokens, _, err := l.ReserveTPM(context.Background(), "team-alpha", "")
+	if err != nil {
+		t.Fatalf("ReserveTPM() error = %v", err)
+	}
+	if allowed || reserved || tokens != 0 {
+		t.Fatalf("ReserveTPM() = (%v, %v, %v), want (false, false, 0) — a Redis-mode TPM rejection must be genuinely honored, not silently overridden to allowed", allowed, reserved, tokens)
+	}
+}
+
+// TestReserveTPMRedisModeUsesTheFullBurstAsItsColdStartEstimate proves
+// the disclosed Redis-mode estimate strategy (no historical-average
+// tracking, unlike the in-memory bucket's billedTokens/billedCount):
+// every reservation's cost argument to AllowTPM is the key's own
+// configured TPM burst, and a successful reservation reports that same
+// value as reservedTokens.
+func TestReserveTPMRedisModeUsesTheFullBurstAsItsColdStartEstimate(t *testing.T) {
+	var gotCost float64
+	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
+		gotCost = cost
+		return true, 0, nil
+	}}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 50,
+	}}, backend)
+
+	allowed, reserved, tokens, _, err := l.ReserveTPM(context.Background(), "team-alpha", "")
+	if err != nil {
+		t.Fatalf("ReserveTPM() error = %v", err)
+	}
+	if !allowed || !reserved || tokens != 1000 {
+		t.Fatalf("ReserveTPM() = (%v, %v, %v), want (true, true, 1000)", allowed, reserved, tokens)
+	}
+	if gotCost != 1000 {
+		t.Errorf("AllowTPM's own cost argument = %v, want 1000 (the full configured burst, the cold-start-conservative estimate)", gotCost)
+	}
+}
+
+// TestReserveTPMRedisModeNotConfiguredIsUnconditionalAllow mirrors
+// ReserveTPM's in-memory "no TPM configured" contract exactly: a key
+// with TPMCapacity <= 0 never even calls the backend.
+func TestReserveTPMRedisModeNotConfiguredIsUnconditionalAllow(t *testing.T) {
+	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
+		t.Fatal("AllowTPM must not be called when TPM isn't configured for this key")
+		return false, 0, nil
+	}}
+	l := NewRedisKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}}, backend)
+
+	allowed, reserved, tokens, _, err := l.ReserveTPM(context.Background(), "team-alpha", "")
+	if err != nil {
+		t.Fatalf("ReserveTPM() error = %v", err)
+	}
+	if !allowed || reserved || tokens != 0 {
+		t.Fatalf("ReserveTPM() = (%v, %v, %v), want (true, false, 0) — TPM unconfigured means unconditionally allowed and nothing reserved", allowed, reserved, tokens)
+	}
+}
+
+// TestReserveTPMRedisModeFailsOpenOnBackendError mirrors Allow's own
+// established "pass the error through unchanged, let the caller decide
+// fail-open policy" contract for the RPM dimension, applied to TPM.
+func TestReserveTPMRedisModeFailsOpenOnBackendError(t *testing.T) {
+	wantErr := errors.New("boom")
+	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
+		return false, 0, wantErr
+	}}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 50,
+	}}, backend)
+
+	allowed, reserved, _, _, err := l.ReserveTPM(context.Background(), "team-alpha", "")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ReserveTPM() error = %v, want %v", err, wantErr)
+	}
+	if !allowed || reserved {
+		t.Fatalf("ReserveTPM() = (%v, %v), want (true, false) — the caller decides fail-open policy from the returned error, this method must not reject on a backend failure itself", allowed, reserved)
+	}
+}
+
+// TestReserveTPMRedisModeUsesPerModelOverrideKey mirrors
+// TestReserveTPMUsesItsOwnPerModelBucketSeparateFromTheDefault exactly,
+// for Redis mode: a model with its own TPM override reserves against a
+// perModelBackendKey-tagged Redis key, distinct from the key's own
+// default.
+func TestReserveTPMRedisModeUsesPerModelOverrideKey(t *testing.T) {
+	var gotKey string
+	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
+		gotKey = key
+		return true, 0, nil
+	}}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 50,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {TPMCapacity: 10, TPMRefillPerSecond: 1}},
+	}}, backend)
+
+	if _, _, _, _, err := l.ReserveTPM(context.Background(), "team-alpha", "gpt-4o"); err != nil {
+		t.Fatalf("ReserveTPM() error = %v", err)
+	}
+	if want := perModelBackendKey("team-alpha", "gpt-4o"); gotKey != want {
+		t.Errorf("AllowTPM's own key argument = %q, want %q", gotKey, want)
+	}
+
+	if _, _, _, _, err := l.ReserveTPM(context.Background(), "team-alpha", "claude-opus-4"); err != nil {
+		t.Fatalf("ReserveTPM() error = %v", err)
+	}
+	if gotKey != "team-alpha" {
+		t.Errorf("an unconfigured model's AllowTPM key argument = %q, want the plain key ID %q (the shared default)", gotKey, "team-alpha")
+	}
+}
+
+// TestReconcileTPMRedisModeComputesTheCorrectDelta proves ReconcileTPM's
+// Redis-mode math: releasing an 8-token estimate and re-debiting a real
+// cost of 2 must compute deltaIncrement = 1000/rate * (2 - 8), the exact
+// value that moves the stored TAT backward by the freed difference.
+func TestReconcileTPMRedisModeComputesTheCorrectDelta(t *testing.T) {
+	backend := &fakeBackend{}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 50,
+	}}, backend)
+
+	realTokens := 2.0
+	l.ReconcileTPM(context.Background(), "team-alpha", "", 8, 0, &realTokens)
+
+	wantDelta := (1000.0 / 50.0) * (2.0 - 8.0)
+	if backend.recordedAdjustDelta != wantDelta {
+		t.Errorf("AdjustTPM's own deltaIncrement argument = %v, want %v", backend.recordedAdjustDelta, wantDelta)
+	}
+}
+
+// TestReconcileTPMRedisModeReleasesFullReservationWhenRealTokensIsNil is
+// the direct regression proof for the capacity-leak bug caught during
+// this fix's own implementation: releasing a reservation with no
+// replacement (realTokens == nil, e.g. an errored/non-billable request)
+// must still call AdjustTPM with a real, non-zero (fully negative)
+// delta — never skip the call entirely, which would leak the whole
+// reservation's capacity permanently.
+func TestReconcileTPMRedisModeReleasesFullReservationWhenRealTokensIsNil(t *testing.T) {
+	backend := &fakeBackend{}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 50,
+	}}, backend)
+
+	l.ReconcileTPM(context.Background(), "team-alpha", "", 8, 0, nil)
+
+	wantDelta := (1000.0 / 50.0) * (0.0 - 8.0)
+	if backend.recordedAdjustDelta != wantDelta {
+		t.Errorf("AdjustTPM's own deltaIncrement argument = %v, want %v (a full release, no replacement)", backend.recordedAdjustDelta, wantDelta)
+	}
+}
+
+// TestIncreaseReservationTPMRedisModeIssuesAFreshAllowTPMForTheDelta
+// proves the mid-stream top-up's Redis-mode mechanism: GCRA's TAT-advance
+// IS the reservation, so "reserve more" is just another AllowTPM call
+// for exactly the ADDITIONAL amount, not the new total.
+func TestIncreaseReservationTPMRedisModeIssuesAFreshAllowTPMForTheDelta(t *testing.T) {
+	var gotCost float64
+	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
+		gotCost = cost
+		return true, 0, nil
+	}}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
+		TPMCapacity: 1000, TPMRefillPerSecond: 50,
+	}}, backend)
+
+	allowed, applied, _, err := l.IncreaseReservationTPM(context.Background(), "team-alpha", "", 100, 150, 0)
+	if err != nil {
+		t.Fatalf("IncreaseReservationTPM() error = %v", err)
+	}
+	if !allowed || applied != 150 {
+		t.Fatalf("IncreaseReservationTPM() = (%v, %v), want (true, 150)", allowed, applied)
+	}
+	if gotCost != 50 {
+		t.Errorf("AllowTPM's own cost argument = %v, want 50 (the DELTA, 150-100, not the new total 150)", gotCost)
 	}
 }
 
