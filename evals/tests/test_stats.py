@@ -1,11 +1,15 @@
 import math
+import random
 
 import pytest
 
 from evals.stats import (
+    beta_binomial_prob_a_beats_b,
+    bootstrap_paired_pvalue,
     cohens_kappa,
     confusion_matrix,
     mixture_sprt_early_stop,
+    pass_at_k,
     wilson_interval,
 )
 
@@ -253,3 +257,141 @@ def test_relative_mixing_variance_changes_detection_speed_not_the_decision_rule(
     )
     assert tight is False
     assert default is True
+
+
+def test_pass_at_1_equals_the_raw_pass_rate():
+    # A well-known algebraic identity: pass@1 always equals the raw
+    # pass rate c/n exactly, since C(n-c,1)/C(n,1) == (n-c)/n.
+    assert math.isclose(pass_at_k(5, 3, 1), 0.6, abs_tol=1e-12)
+
+
+def test_pass_at_k_hand_computed_reference():
+    # n=5, c=3, k=2: C(2,2)/C(5,2) = 1/10, so pass@2 = 1 - 0.1 = 0.9.
+    assert math.isclose(pass_at_k(5, 3, 2), 0.9, abs_tol=1e-12)
+
+
+def test_pass_at_k_returns_one_when_failures_are_fewer_than_k():
+    # Only 1 failing sample (n-c=1) but k=2: any 2-sample subset must
+    # include a passing one, by pigeonhole -- must be exactly 1.0, not
+    # merely close to it.
+    assert pass_at_k(5, 4, 2) == 1.0
+
+
+def test_pass_at_k_stays_in_range_for_large_n():
+    # A large n where the raw binomial-coefficient ratio C(9500,500)/
+    # C(10000,500) would be computed from astronomically large integers
+    # if done directly -- the running-product form must still return a
+    # sane value in [0, 1] rather than overflowing.
+    result = pass_at_k(10_000, 9_500, 500)
+    assert 0.0 <= result <= 1.0
+
+
+def test_pass_at_k_rejects_k_greater_than_n():
+    with pytest.raises(ValueError):
+        pass_at_k(5, 3, 6)
+
+
+def test_pass_at_k_rejects_non_positive_n():
+    with pytest.raises(ValueError):
+        pass_at_k(0, 0, 1)
+
+
+def test_pass_at_k_rejects_c_out_of_range():
+    with pytest.raises(ValueError):
+        pass_at_k(5, 6, 1)
+
+
+def test_bootstrap_paired_pvalue_recentered_is_more_conservative_than_naive():
+    # The core correctness proof: when observed_delta > 0, the correct
+    # re-centered test (count resampled_delta > 2*observed_delta) is
+    # provably at least as conservative as a naive zero-centered test
+    # (count resampled_delta > 0), since {> 2*observed_delta} is a
+    # SUBSET of {> 0} whenever observed_delta > 0 -- a naive test can
+    # never show LOWER significance than the correct one here. Data has
+    # real per-case variance so the two thresholds produce genuinely
+    # different counts, not a degenerate equality.
+    seed = 12345
+    n_resamples = 5000
+    baseline = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+    candidate = [1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+
+    correct_p = bootstrap_paired_pvalue(
+        baseline, candidate, n_resamples=n_resamples, rng=random.Random(seed)
+    )
+
+    # Naive zero-centered p-value, computed inline using an INDEPENDENT
+    # rng seeded identically -- proving the two thresholds diverge on
+    # the same resample draws, not merely on different random draws.
+    naive_rng = random.Random(seed)
+    n = len(baseline)
+    naive_exceed = 0
+    for _ in range(n_resamples):
+        sample = naive_rng.choices(range(n), k=n)
+        resampled_delta = sum(candidate[i] - baseline[i] for i in sample) / n
+        if resampled_delta > 0:
+            naive_exceed += 1
+    naive_p = naive_exceed / n_resamples
+
+    assert correct_p < naive_p
+
+
+def test_bootstrap_paired_pvalue_is_near_one_when_candidate_is_worse():
+    # candidate scores worse than baseline on average (observed_delta <
+    # 0) -- there is no evidence for the "candidate is better" direction
+    # this one-sided test checks, so the p-value must be high.
+    baseline = [1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0]
+    candidate = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    p = bootstrap_paired_pvalue(
+        baseline, candidate, n_resamples=2000, rng=random.Random(1)
+    )
+    assert p > 0.9
+
+
+def test_bootstrap_paired_pvalue_length_mismatch_raises():
+    with pytest.raises(ValueError):
+        bootstrap_paired_pvalue([1.0, 0.0], [1.0])
+
+
+def test_bootstrap_paired_pvalue_empty_raises():
+    with pytest.raises(ValueError):
+        bootstrap_paired_pvalue([], [])
+
+
+def test_bootstrap_paired_pvalue_rejects_non_positive_n_resamples():
+    with pytest.raises(ValueError):
+        bootstrap_paired_pvalue([1.0], [0.0], n_resamples=0)
+
+
+def test_beta_binomial_prob_a_beats_b_is_near_half_when_arms_are_identical():
+    p = beta_binomial_prob_a_beats_b(
+        50, 100, 50, 100, n_samples=50_000, rng=random.Random(7)
+    )
+    assert math.isclose(p, 0.5, abs_tol=0.03)
+
+
+def test_beta_binomial_prob_a_beats_b_is_near_one_when_a_is_clearly_better():
+    p = beta_binomial_prob_a_beats_b(
+        90, 100, 10, 100, n_samples=50_000, rng=random.Random(7)
+    )
+    assert p > 0.99
+
+
+def test_beta_binomial_prob_a_beats_b_flips_when_arms_are_swapped():
+    seed = 42
+    p_a_beats_b = beta_binomial_prob_a_beats_b(
+        80, 100, 20, 100, n_samples=50_000, rng=random.Random(seed)
+    )
+    p_b_beats_a = beta_binomial_prob_a_beats_b(
+        20, 100, 80, 100, n_samples=50_000, rng=random.Random(seed)
+    )
+    assert math.isclose(p_a_beats_b + p_b_beats_a, 1.0, abs_tol=0.03)
+
+
+def test_beta_binomial_prob_a_beats_b_rejects_non_positive_trials():
+    with pytest.raises(ValueError):
+        beta_binomial_prob_a_beats_b(0, 0, 5, 10)
+
+
+def test_beta_binomial_prob_a_beats_b_rejects_non_positive_prior():
+    with pytest.raises(ValueError):
+        beta_binomial_prob_a_beats_b(5, 10, 5, 10, prior_alpha=0)

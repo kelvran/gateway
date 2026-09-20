@@ -10,6 +10,8 @@ near 0 or 1, both regimes where the normal approximation breaks down.
 from __future__ import annotations
 
 import math
+import random
+from collections.abc import Sequence
 from statistics import NormalDist
 from typing import NamedTuple
 
@@ -275,3 +277,191 @@ def cohens_kappa(judge_verdicts: list[bool], human_verdicts: list[bool]) -> floa
         )
 
     return (p_observed - p_expected) / (1 - p_expected)
+
+
+def pass_at_k(n: int, c: int, k: int) -> float:
+    """Return the unbiased pass@k estimate (Chen et al. 2021, the
+    Codex/HumanEval paper) for one task: given `n` total samples with `c`
+    of them correct, the probability that at least one of a random
+    k-sized subset (drawn without replacement from the n samples) is
+    correct.
+
+    Computed via the numerically-stable running-product form the paper's
+    own reference implementation uses — `1 - prod_{i=n-c+1}^{n} (1 -
+    k/i)` — never the raw binomial-coefficient ratio `C(n-c,k)/C(n,k)`
+    directly, which overflows/underflows for large `n`. To report the
+    real pass@k metric across a suite, call this once per task and
+    average the results — this function is deliberately single-task,
+    mirroring `wilson_interval`'s own single-proportion scope.
+
+    Args:
+        n: total number of samples generated for this task. Must be > 0.
+        c: number of those samples that passed (0 <= c <= n).
+        k: the k in pass@k. Must satisfy 1 <= k <= n.
+
+    Returns:
+        The unbiased pass@k estimate for this task, in [0, 1]. Returns
+        exactly 1.0 when there are fewer than `k` failing samples (`n -
+        c < k`) — at least one of any k-sized subset must then be
+        correct, by pigeonhole, without needing the product formula at
+        all.
+
+    Raises:
+        ValueError: if `n` is not positive, `c` is out of `[0, n]`, or
+            `k` is out of `[1, n]`.
+    """
+    if n <= 0:
+        raise ValueError("n must be > 0")
+    if not 0 <= c <= n:
+        raise ValueError("c must satisfy 0 <= c <= n")
+    if not 1 <= k <= n:
+        raise ValueError("k must satisfy 1 <= k <= n")
+
+    if n - c < k:
+        return 1.0
+    return 1.0 - math.prod(1.0 - k / i for i in range(n - c + 1, n + 1))
+
+
+def bootstrap_paired_pvalue(
+    baseline: Sequence[float],
+    candidate: Sequence[float],
+    *,
+    n_resamples: int = 10_000,
+    rng: random.Random | None = None,
+) -> float:
+    """One-sided paired-bootstrap significance test (Berg-Kirkpatrick,
+    Burkett & Klein, EMNLP 2012) for whether `candidate` is genuinely
+    better than `baseline` on the SAME set of paired cases (e.g. per-case
+    pass/fail scores from two judge providers, or two rounds, on
+    identical cases).
+
+    A naive test that just counts how many resampled deltas fall below
+    zero is subtly wrong for a paired comparison: the bootstrap resample
+    distribution of delta is centered on the OBSERVED delta, not zero, so
+    a plain "count below zero" test is only valid under conditions (a
+    linear-decomposing metric and a symmetric bootstrap distribution,
+    which the central limit theorem only guarantees for large samples) a
+    small eval corpus won't reliably satisfy. This test instead
+    re-centers correctly: it counts how often a resampled delta exceeds
+    TWICE the observed delta — exactly as extreme, in the null
+    (delta=0) frame, as falling below zero would be.
+
+    Args:
+        baseline: per-case scores for the baseline arm (e.g. 1.0/0.0 per
+            case, or any real-valued per-case score).
+        candidate: per-case scores for the candidate arm — SAME length
+            and SAME case order as `baseline`; this is a PAIRED test.
+        n_resamples: number of bootstrap resamples to draw.
+        rng: injectable for deterministic tests; defaults to a fresh
+            `random.Random()`.
+
+    Returns:
+        A one-sided p-value: the probability, under the null hypothesis
+        that baseline and candidate are equivalent, of observing a delta
+        at least as extreme as the one actually observed. Small values
+        (e.g. < 0.05) support "candidate is genuinely better than
+        baseline." If the observed delta itself favors baseline (is <=
+        0), this correctly returns a p-value near 1.0 — there is no
+        evidence for the "candidate is better" direction this test
+        checks.
+
+    Raises:
+        ValueError: if `baseline`/`candidate` have different lengths or
+            are empty, or `n_resamples` is not positive.
+    """
+    if len(baseline) != len(candidate):
+        raise ValueError(
+            "baseline and candidate must be the same length (paired), "
+            f"got {len(baseline)} and {len(candidate)}"
+        )
+    if len(baseline) == 0:
+        raise ValueError("baseline/candidate must be non-empty")
+    if n_resamples <= 0:
+        raise ValueError("n_resamples must be > 0")
+
+    if rng is None:
+        rng = random.Random()  # noqa: S311 -- Monte Carlo simulation, never cryptographic material
+
+    n = len(baseline)
+    observed_delta = (sum(candidate) - sum(baseline)) / n
+    indices = range(n)
+
+    exceed_count = 0
+    for _ in range(n_resamples):
+        sample = rng.choices(indices, k=n)
+        resampled_delta = sum(candidate[i] - baseline[i] for i in sample) / n
+        if resampled_delta > 2 * observed_delta:
+            exceed_count += 1
+
+    return exceed_count / n_resamples
+
+
+def beta_binomial_prob_a_beats_b(
+    successes_a: int,
+    trials_a: int,
+    successes_b: int,
+    trials_b: int,
+    *,
+    prior_alpha: float = 1.0,
+    prior_beta: float = 1.0,
+    n_samples: int = 100_000,
+    rng: random.Random | None = None,
+) -> float:
+    """Monte Carlo estimate of P(A's true pass rate > B's true pass rate)
+    under a Beta-Binomial Bayesian model — for comparing two eval pass
+    rates (e.g. two judge providers, or two rounds' corpus results).
+
+    Each arm's posterior is `Beta(prior_alpha + successes, prior_beta +
+    trials - successes)` — the standard Beta-Binomial conjugate update.
+    `random.betavariate` samples this posterior directly; no
+    `scipy.stats.beta` is needed. P(A beats B) is estimated as the
+    fraction of paired posterior-sample draws where A's draw exceeds B's.
+
+    Args:
+        successes_a: A's observed successes (0 <= successes_a <=
+            trials_a).
+        trials_a: A's observed trial count. Must be > 0.
+        successes_b: B's observed successes (0 <= successes_b <=
+            trials_b).
+        trials_b: B's observed trial count. Must be > 0.
+        prior_alpha: the shared Beta prior's alpha shape parameter.
+            Default 1.0 (paired with the default `prior_beta` below)
+            gives the uniform prior over [0, 1] — a real, common,
+            uninformative default, not an arbitrary placeholder.
+        prior_beta: the shared Beta prior's beta shape parameter.
+            Default 1.0.
+        n_samples: number of Monte Carlo posterior-pair draws.
+        rng: injectable for deterministic tests; defaults to a fresh
+            `random.Random()`.
+
+    Returns:
+        Estimated P(A beats B), in [0, 1].
+
+    Raises:
+        ValueError: if either trial count is non-positive, either
+            successes count is out of range, or either prior parameter
+            is <= 0.
+    """
+    if trials_a <= 0 or trials_b <= 0:
+        raise ValueError("trials_a and trials_b must both be > 0")
+    if not 0 <= successes_a <= trials_a:
+        raise ValueError("successes_a must satisfy 0 <= successes_a <= trials_a")
+    if not 0 <= successes_b <= trials_b:
+        raise ValueError("successes_b must satisfy 0 <= successes_b <= trials_b")
+    if prior_alpha <= 0 or prior_beta <= 0:
+        raise ValueError("prior_alpha and prior_beta must both be > 0")
+
+    if rng is None:
+        rng = random.Random()  # noqa: S311 -- Monte Carlo simulation, never cryptographic material
+
+    alpha_a = prior_alpha + successes_a
+    beta_a = prior_beta + (trials_a - successes_a)
+    alpha_b = prior_alpha + successes_b
+    beta_b = prior_beta + (trials_b - successes_b)
+
+    a_wins = 0
+    for _ in range(n_samples):
+        if rng.betavariate(alpha_a, beta_a) > rng.betavariate(alpha_b, beta_b):
+            a_wins += 1
+
+    return a_wins / n_samples
