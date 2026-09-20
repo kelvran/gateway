@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -590,7 +591,9 @@ func TestToProviderMultiModalContentPartsMapToImageAndDocumentBlocks(t *testing.
 // TestToProviderURLBasedContentPartFailsLoudly proves the real,
 // deliberate scope limit: Converse has no generic-URL image/document
 // source (only inline bytes or an s3Location), so a URL-based part must
-// return a real, typed error rather than a silently wrong mapping.
+// return a real, typed error rather than a silently wrong mapping --
+// specifically adapter.ErrBedrockURLContentUnsupported, a real exported
+// sentinel (not a bare fmt.Errorf) a caller can errors.Is-detect.
 func TestToProviderURLBasedContentPartFailsLoudly(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -599,8 +602,26 @@ func TestToProviderURLBasedContentPartFailsLoudly(t *testing.T) {
 		},
 	}
 
-	if _, err := New().ToProvider(req); err == nil {
-		t.Fatal("ToProvider with a URL-based image part returned nil error, want an error")
+	_, err := New().ToProvider(req)
+	if !errors.Is(err, adapter.ErrBedrockURLContentUnsupported) {
+		t.Fatalf("ToProvider with a URL-based image part: err = %v, want errors.Is(err, adapter.ErrBedrockURLContentUnsupported)", err)
+	}
+}
+
+// TestToProviderURLBasedDocumentPartFailsLoudly is the document-part
+// mirror of the image-part proof above -- contentPartToBlock's "document"
+// case wraps the identical sentinel.
+func TestToProviderURLBasedDocumentPartFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "user", Parts: []adapter.ContentPart{{Type: "document", MediaType: "application/pdf", URL: "https://example.com/doc.pdf"}}},
+		},
+	}
+
+	_, err := New().ToProvider(req)
+	if !errors.Is(err, adapter.ErrBedrockURLContentUnsupported) {
+		t.Fatalf("ToProvider with a URL-based document part: err = %v, want errors.Is(err, adapter.ErrBedrockURLContentUnsupported)", err)
 	}
 }
 

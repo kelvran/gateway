@@ -818,7 +818,7 @@ func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
 		return ContentBlock{Text: p.Text}, nil
 	case "image":
 		if p.Data == "" {
-			return ContentBlock{}, fmt.Errorf("bedrock: image part has no Data set (URL-based image parts are not supported — Converse has no generic-URL source, only inline bytes or an s3Location)")
+			return ContentBlock{}, fmt.Errorf("%w: image part has no Data set", adapter.ErrBedrockURLContentUnsupported)
 		}
 		return ContentBlock{Image: &ImageBlock{
 			Format: mediaTypeToFormat(p.MediaType),
@@ -826,7 +826,7 @@ func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
 		}}, nil
 	case "document":
 		if p.Data == "" {
-			return ContentBlock{}, fmt.Errorf("bedrock: document part has no Data set (URL-based document parts are not supported — Converse has no generic-URL source, only inline bytes or an s3Location)")
+			return ContentBlock{}, fmt.Errorf("%w: document part has no Data set", adapter.ErrBedrockURLContentUnsupported)
 		}
 		return ContentBlock{Document: &DocumentBlock{
 			Format: mediaTypeToFormat(p.MediaType),

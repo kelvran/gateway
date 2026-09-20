@@ -56,3 +56,17 @@ var ErrProviderContentPolicyBlocked = errors.New("adapter: upstream blocked the 
 // strip during a fallback hop by skipping an incapable target outright,
 // and stays untouched by this sentinel's introduction.
 var ErrStructuredOutputUnsupported = errors.New("adapter: response_format is not supported by this model and no capable deployment was found")
+
+// ErrBedrockURLContentUnsupported is a sentinel error the Bedrock adapter
+// wraps when a request includes a URL-based image or document
+// ContentPart. This is a permanent AWS API constraint, not a Kelvran
+// gap: confirmed against AWS's own current API reference, Bedrock's
+// ImageSource/DocumentSource union types have exactly bytes/s3Location
+// (plus content/text for documents) as valid members -- no generic-URL
+// member exists for any model. Every other adapter (openai, anthropic,
+// gemini, openaicompat) passes ContentPart.URL straight through to the
+// provider verbatim; only Bedrock's own API has no equivalent to pass
+// it to. Exported as a sentinel (rather than a bare fmt.Errorf, this
+// error's prior shape) so a caller can errors.Is-detect this specific
+// condition, matching ErrProviderContentPolicyBlocked's own convention.
+var ErrBedrockURLContentUnsupported = errors.New("adapter: bedrock does not support URL-based image/document content; provide inline base64 data instead")
