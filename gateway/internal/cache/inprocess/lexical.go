@@ -119,6 +119,17 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 	}
 
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].sim > candidates[j].sim })
+	// k <= 0 is a degenerate request for "zero results," not an error —
+	// mirrors this package's own Get/Delete convention of returning a
+	// safe empty/no-op result rather than panicking. Guarded explicitly
+	// because candidates[:k] with a negative k panics ("slice bounds out
+	// of range"); the only current caller (dataplane.l3SearchK) always
+	// passes a hardcoded positive constant, but nothing in
+	// cache.LexicalCache's own interface doc enforces k >= 0, so this is
+	// a real landmine for any future caller that computes k dynamically.
+	if k <= 0 {
+		return nil, nil
+	}
 	if len(candidates) > k {
 		candidates = candidates[:k]
 	}

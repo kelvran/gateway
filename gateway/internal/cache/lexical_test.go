@@ -113,6 +113,24 @@ func TestJaccardEstimateMismatchedLengthReturnsNotOK(t *testing.T) {
 	}
 }
 
+// TestMinHashSignaturePermutationCoefficientAIsAlwaysOdd is a property
+// test for the x -> a*x+b mod 2^64 permutation's own bijection
+// requirement: a must be odd, or the permutation collapses shingles onto
+// each other by construction rather than by genuine hash collision,
+// silently corrupting the Jaccard-approximation guarantee this whole
+// package relies on. Calls permutationCoefficientA directly — the exact
+// function MinHashSignature itself uses — so reverting its `|= 1` fix
+// fails this test, not just a reimplementation of it.
+func TestMinHashSignaturePermutationCoefficientAIsAlwaysOdd(t *testing.T) {
+	const n = 256 // a reasonable number of hash functions to sweep, per the audit finding — not a statistical collision test.
+	for i := 0; i < n; i++ {
+		a := permutationCoefficientA(i)
+		if a&1 == 0 {
+			t.Errorf("permutation coefficient a for hash function %d = %d, want odd (required for x -> a*x+b mod 2^64 to be a bijection)", i, a)
+		}
+	}
+}
+
 func TestMinHashSignatureEmptyShinglesIsAllZeroAndNeverPanics(t *testing.T) {
 	sig := MinHashSignature(nil, 64)
 	if len(sig) != 64 {

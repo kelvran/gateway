@@ -48,6 +48,23 @@ func splitmix64(x uint64) uint64 {
 	return z ^ (z >> 31)
 }
 
+// permutationCoefficientA derives MinHashSignature's i-th hash
+// permutation's "a" coefficient in x -> a*x+b mod 2^64. a must be odd for
+// that map to be a true bijection — the property MinHash's
+// Jaccard-approximation guarantee relies on — but splitmix64's raw output
+// isn't forced odd, so without the explicit `|= 1` below, roughly half of
+// the permutation coefficients would be non-bijective, letting two
+// DIFFERENT shingles collide on the same minimum value by construction
+// rather than genuine overlap. Standard technique for this exact
+// multiplicative-hash requirement; essentially zero-cost. Factored out of
+// MinHashSignature's loop so this invariant has its own direct test
+// (TestMinHashSignaturePermutationCoefficientAIsAlwaysOdd) rather than
+// only being exercised indirectly.
+func permutationCoefficientA(i int) uint64 {
+	a := splitmix64(uint64(i)*2 + 1)
+	return a | 1
+}
+
 // baseShingleHash is the single real hash function every one of
 // MinHashSignature's N permutations is derived from — FNV-64a, stdlib,
 // no external dependency.
@@ -69,7 +86,7 @@ func MinHashSignature(shingles []string, n int) []uint64 {
 		return sig
 	}
 	for i := range sig {
-		a := splitmix64(uint64(i)*2 + 1)
+		a := permutationCoefficientA(i)
 		b := splitmix64(uint64(i)*2 + 2)
 		min := ^uint64(0) // max uint64
 		for _, s := range shingles {

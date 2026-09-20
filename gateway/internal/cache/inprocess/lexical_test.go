@@ -166,6 +166,30 @@ func TestLexicalSearchAtExactExpiryInstantStillReturnsCandidate(t *testing.T) {
 	}
 }
 
+// TestLexicalSearchNonPositiveKReturnsEmptyNotPanic proves k <= 0 is a
+// safe degenerate request (zero results, no error) rather than a panic:
+// before the fix, len(candidates) > k was true for any k < 0 too, so
+// candidates[:k] with a negative k paniced with "slice bounds out of
+// range". Covers both k == 0 and k < 0.
+func TestLexicalSearchNonPositiveKReturnsEmptyNotPanic(t *testing.T) {
+	c := NewLexicalCache(0)
+	ctx := context.Background()
+
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	for _, k := range []int{0, -1} {
+		candidates, err := c.Search(ctx, "team-alpha", sig(1, 2, 3), k)
+		if err != nil {
+			t.Fatalf("Search(k=%d) returned error: %v", k, err)
+		}
+		if len(candidates) != 0 {
+			t.Errorf("Search(k=%d) = %d candidates, want 0", k, len(candidates))
+		}
+	}
+}
+
 // TestLexicalCacheTenantCountIsUnbounded documents a currently-accepted
 // gap rather than proving a bug: c.tenants (the per-tenant bucket map)
 // has no cap of its own, unlike maxEntries bounding each tenant's OWN

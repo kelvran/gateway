@@ -179,6 +179,20 @@ linters:
         linters:
           - gosec
         text: "G115"
+      # permutationCoefficientA's own i parameter is always a `range sig`
+      # index (sig a fixed-length slice built via make([]uint64, n)) at
+      # its one real call site (MinHashSignature) -- structurally never
+      # negative, so this int->uint64 conversion can't actually
+      # underflow/overflow the way G115 is written to catch. Only started
+      # firing once this expression was hoisted out of MinHashSignature's
+      # own loop into its own named function (2026-09-20) -- gosec's
+      # static analysis apparently judged the inlined form provably safe
+      # but not this standalone one, even though the value is identical
+      # either way.
+      - path: internal/cache/lexical\.go
+        linters:
+          - gosec
+        text: "G115"
       # Retry-backoff jitter timing, never a security-sensitive value
       # (no key/token/ID derives from it, unlike newEventID's own
       # crypto/rand-sourced 16 bytes in this same file) -- math/rand/v2's
