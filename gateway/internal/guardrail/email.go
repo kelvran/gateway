@@ -18,10 +18,20 @@ type EmailDetector struct{}
 
 func (EmailDetector) Name() string       { return "email" }
 func (EmailDetector) Category() Category { return CategoryContactInfo }
+
+// Detect matches against stripHiddenUnicode(text)'s stripped copy, not text
+// directly — emailPattern's local-part/domain character classes are each a
+// contiguous run with no tolerance for an injected zero-width character
+// mid-run, the same evasion class documented against CreditCardDetector by
+// regcorpus-guardrail-23. Every reported Finding.Start/End is remapped back
+// to the ORIGINAL text via remapMatch, per that field's own documented
+// offset contract.
 func (EmailDetector) Detect(_ context.Context, text string) ([]Finding, error) {
+	stripped, origOffsets := stripHiddenUnicode(text)
 	var findings []Finding
-	for _, loc := range emailPattern.FindAllStringIndex(text, -1) {
-		findings = append(findings, Finding{Category: CategoryContactInfo, Detector: "email", Start: loc[0], End: loc[1]})
+	for _, loc := range emailPattern.FindAllStringIndex(stripped, -1) {
+		start, end := remapMatch(origOffsets, loc[0], loc[1])
+		findings = append(findings, Finding{Category: CategoryContactInfo, Detector: "email", Start: start, End: end})
 	}
 	return findings, nil
 }
