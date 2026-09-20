@@ -76,6 +76,32 @@ type messageStartEvent struct {
 // contentBlockStartEvent is the real "contentBlockStart" event payload.
 // toolUse carries no "input" yet -- that arrives only via subsequent
 // contentBlockDelta events.
+//
+// Confirmed 2026-09-20 against AWS's own generated Bedrock Runtime API
+// reference (the ContentBlockStart union shape, shared verbatim across
+// every AWS SDK's generated code since all are compiled from the same
+// service model): ContentBlockStart has exactly three members --
+// image (ImageBlockStart), toolResult (ToolResultBlockStart), and
+// toolUse (ToolUseBlockStart). There is no reasoningContent member at
+// all. This closes a real, previously-disclosed open question from this
+// session's own 2026-09-19 audit (see DECISIONS.md's 2026-09-20 entry):
+// unlike Anthropic's Messages API, where a whole redacted_thinking
+// block's entire payload arrives on content_block_start with no
+// corresponding delta event, Bedrock's reasoning content (including its
+// own redactedContent case) can ONLY ever arrive incrementally via
+// contentBlockDelta's ReasoningContentBlockDelta (see
+// contentBlockDeltaEvent below, already handled) -- there is no
+// whole-block reasoning case on contentBlockStart to handle, confirmed
+// absent rather than merely unobserved.
+//
+// image/toolResult are real union members this decoder does not
+// currently branch on -- both fall through to contentBlockStart's own
+// "no client-visible delta of its own" default path below, same as a
+// plain text block's start. Whether a real Converse response can ever
+// stream a model-generated image or tool-result content block (as
+// opposed to a request-side ToolResultBlock, which never appears in a
+// model's own output) is a distinct, out-of-scope question from the one
+// this comment closes -- named here for a future pass, not fixed blind.
 type contentBlockStartEvent struct {
 	ContentBlockIndex int `json:"contentBlockIndex"`
 	Start             struct {
