@@ -301,6 +301,18 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			if !ok {
 				return nil, fmt.Errorf("gemini: tool message references unknown tool_call_id %q", m.ToolCallID)
 			}
+			// FunctionResponse.Response must be a JSON object (hazard
+			// #5) -- there is no confirmed, documented mechanism on
+			// Gemini's generateContent/streamGenerateContent API (the
+			// API this adapter targets, per the package doc) for
+			// attaching multimodal content (e.g. an image) to a
+			// function response, so a non-empty Parts here must fail
+			// loudly rather than silently drop the part, same
+			// convention as contentPartToPart's own unsupported-part-
+			// type error below.
+			if len(m.Parts) > 0 {
+				return nil, fmt.Errorf("gemini: tool result message (tool_call_id %q) has non-empty Parts, which FunctionResponse.Response (a JSON object) cannot represent", m.ToolCallID)
+			}
 			contents = append(contents, Content{
 				Role: "user",
 				Parts: []Part{

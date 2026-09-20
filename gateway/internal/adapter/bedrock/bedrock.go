@@ -521,6 +521,15 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			systemBlocks = appendSystemCachePointIfNeeded(systemBlocks, effectiveSystemCacheControl(m.CacheControl, req.DisableCacheControlAutoPopulate), req.Model)
 			continue
 		case "tool":
+			// ToolResultContent is text only, this pass (see its own doc
+			// comment) -- it cannot represent m.Parts (e.g. a tool
+			// returning an image), so a non-empty Parts here must fail
+			// loudly rather than silently drop the part, same convention
+			// as contentPartToBlock's own unsupported-part-type error
+			// below.
+			if len(m.Parts) > 0 {
+				return nil, fmt.Errorf("bedrock: tool result message (tool_call_id %q) has non-empty Parts, which ToolResultContent (text only, this pass) cannot represent", m.ToolCallID)
+			}
 			blocks := []ContentBlock{
 				{
 					ToolResult: &ToolResult{

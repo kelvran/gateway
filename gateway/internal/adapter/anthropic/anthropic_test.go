@@ -286,6 +286,33 @@ func TestToProviderToolResultMessage(t *testing.T) {
 	}
 }
 
+// TestToProviderToolResultWithPartsFailsLoudly proves a role:"tool"
+// message carrying non-empty Parts (e.g. a screenshot/OCR tool
+// returning an image, with Content left empty) returns a real, typed
+// error instead of silently succeeding with an empty tool_result block
+// -- ContentBlock.Content is a plain Go string, structurally unable to
+// represent Anthropic's real tool_result array-of-blocks wire shape.
+func TestToProviderToolResultWithPartsFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-opus-4",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "call the tool"},
+			{Role: "assistant", ToolCalls: []adapter.ToolCall{
+				{ID: "toolu_1", Name: "take_screenshot"},
+			}},
+			{
+				Role:       "tool",
+				ToolCallID: "toolu_1",
+				Parts:      []adapter.ContentPart{{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="}},
+			},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with a tool-result message carrying non-empty Parts returned nil error, want an error")
+	}
+}
+
 func TestName(t *testing.T) {
 	if got := New().Name(); got != "anthropic" {
 		t.Errorf("Name() = %q, want %q", got, "anthropic")

@@ -172,6 +172,32 @@ func TestToProviderToolMessageWithUnknownToolCallIDFails(t *testing.T) {
 	}
 }
 
+// TestToProviderToolResultWithPartsFailsLoudly proves a role:"tool"
+// message carrying non-empty Parts (e.g. a screenshot/OCR tool
+// returning an image, with Content left empty) returns a real, typed
+// error instead of silently succeeding with an empty FunctionResponse
+// -- FunctionResponse.Response (a JSON object) cannot represent it.
+func TestToProviderToolResultWithPartsFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "gemini-2.5-flash",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "call the tool"},
+			{Role: "assistant", ToolCalls: []adapter.ToolCall{
+				{ID: "call_1", Name: "take_screenshot"},
+			}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_1",
+				Parts:      []adapter.ContentPart{{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="}},
+			},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with a tool-result message carrying non-empty Parts returned nil error, want an error")
+	}
+}
+
 func TestToProviderInvalidToolArguments(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "gemini-2.5-flash",

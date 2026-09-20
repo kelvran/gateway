@@ -203,6 +203,28 @@ func TestToProviderToolResultMessageNeedsNoNameLookup(t *testing.T) {
 	}
 }
 
+// TestToProviderToolResultWithPartsFailsLoudly proves a role:"tool"
+// message carrying non-empty Parts (e.g. a screenshot/OCR tool
+// returning an image, with Content left empty) returns a real, typed
+// error instead of silently succeeding with an empty toolResult content
+// -- ToolResultContent is text only, this pass, and cannot represent it.
+func TestToProviderToolResultWithPartsFailsLoudly(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{
+				Role:       "tool",
+				ToolCallID: "tooluse_1",
+				Parts:      []adapter.ContentPart{{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="}},
+			},
+		},
+	}
+
+	if _, err := New().ToProvider(req); err == nil {
+		t.Fatal("ToProvider with a tool-result message carrying non-empty Parts returned nil error, want an error")
+	}
+}
+
 func TestToProviderInvalidToolArguments(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",

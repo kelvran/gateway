@@ -335,6 +335,19 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		case "tool":
 			// Anthropic has no "tool" role: a tool result is sent as a
 			// "user" message carrying a tool_result content block.
+			//
+			// ContentBlock.Content (this block's own field, above) is a
+			// plain Go string -- structurally unable to hold Anthropic's
+			// real tool_result array-of-blocks wire shape, so a non-empty
+			// m.Parts here (e.g. a tool returning an image) cannot be
+			// represented and must fail loudly rather than silently drop
+			// the part, same convention as contentPartToBlock's own
+			// unsupported-part-type error below. Widening
+			// ContentBlock.Content to a real block array is a bigger
+			// wire-format change, out of scope for this fix.
+			if len(m.Parts) > 0 {
+				return nil, fmt.Errorf("anthropic: tool result message (tool_call_id %q) has non-empty Parts, which this adapter's plain-string tool_result content cannot represent", m.ToolCallID)
+			}
 			block := ContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content}
 			if m.CacheControl != nil {
 				block.CacheControl = cacheControlWire(m.CacheControl)
