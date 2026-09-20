@@ -324,6 +324,37 @@ func TestHandleChatCompletionPostCallBlockedResponseNeverCached(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionPostCallBlockedResponseStillBillsTheRealUpstreamCall
+// is the regression proof for a real, 2026-09-20 end-to-end-audit-found
+// billing bypass: by the time the post-call guardrail check runs, Kelvran
+// has already paid the upstream provider for a full completion — refusing
+// to deliver that response to the client must never also mean refusing to
+// bill for it, or a tenant could trip this guardrail repeatedly to drive
+// unbounded real spend with BudgetUSD never engaging. Before the fix,
+// runMissPath set billable=true unconditionally at the top of its
+// singleflight closure, then its own caller unconditionally overwrote it
+// back to false on ANY error return (including ErrGuardrailBlocked) —
+// this test's own sanity-check-by-breaking (reverting either half of the
+// fix) reproduces exactly that: SpentUSD stays at 0 after a blocked call.
+func TestHandleChatCompletionPostCallBlockedResponseStillBillsTheRealUpstreamCall(t *testing.T) {
+	tracker := budget.NewTracker()
+	p := pricedTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponseWithContent("gpt-4o", "sure, here it is: "+fakeCreditCardNumber), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, tracker)
+
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "give me a test card number"}}}
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err == nil {
+		t.Fatal("expected the request to be blocked post-call")
+	} else if !errors.Is(err, ErrGuardrailBlocked) {
+		t.Fatalf("err = %v, want ErrGuardrailBlocked", err)
+	}
+
+	spent := tracker.SpentUSD("test-key", 0)
+	if spent.IsZero() {
+		t.Fatal("SpentUSD after a post-call-blocked response = 0, want a real nonzero charge — the upstream call already happened and was already paid for, regardless of whether the response was delivered")
+	}
+}
+
 // TestHandleChatCompletionPostCallScansToolCallArguments proves the
 // post-call guardrail check catches a Block-tier finding hidden only
 // inside a tool call's arguments — not just Content — per

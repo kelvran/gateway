@@ -2340,10 +2340,32 @@ type cacheMissOutcome struct {
 // closure, never shared across goroutines — singleflight.Group.Do simply
 // never invokes a follower's closure at all, so a follower's billable
 // stays false with no synchronization needed.
+//
+// Set true only once a real upstream completion has actually been
+// obtained (right before the post-call guardrail check below), never
+// unconditionally at the top of the closure — a real, 2026-09-20
+// end-to-end-audit-found bug: this used to be set true at the very top,
+// then the doErr != nil branch below unconditionally returned a literal
+// false, discarding it. That made a post-call guardrail BLOCK (returned
+// as ErrGuardrailBlocked, a doErr) permanently non-billable even though
+// the real, paid upstream call had already completed by that point --
+// a tenant could trip the guardrail repeatedly to drive unbounded real
+// spend with BudgetUSD never engaging. Every OTHER doErr path (pre-call
+// guardrail block, no-deployment-found, a genuine upstream/fallback
+// failure) returns before a real completion is ever obtained, so moving
+// this assignment to just after the upstream call succeeds leaves all of
+// those correctly non-billable while fixing the one that wasn't.
 func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key, l2Key string, l3Signature []uint64, promptFP string) (resp adapter.ChatResponse, dep Deployment, fallback fallbackInfo, billable bool, err error) {
+	// blockedResp/blockedDep capture the real, already-paid-for response
+	// and deployment for the one doErr path that's billable (a post-call
+	// guardrail block) — the closure's own resp/dep locals below shadow
+	// this function's named returns, so they can't be written to
+	// directly from inside a branch that returns an error; this pair is
+	// the side channel that carries them out instead. Left at their zero
+	// value (and unused) on every OTHER doErr path.
+	var blockedResp adapter.ChatResponse
+	var blockedDep Deployment
 	result, doErr, _ := p.missGroup.Do(l1Key, func() (any, error) {
-		billable = true
-
 		// Guardrail pre-call: after L1/L2/L3 all miss, before the router — per
 		// docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md, matching
 		// gateway/ARCHITECTURE.md's Request Lifecycle exactly. A cache hit
@@ -2415,11 +2437,25 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			return nil, fmt.Errorf("dataplane: upstream call failed for model %q: %w", req.Model, err)
 		}
 
+		// A real, unshared upstream completion has now genuinely been
+		// obtained (and paid for) — billable from this point on, even if
+		// the post-call guardrail check just below blocks the response.
+		// See this function's own doc comment for why this assignment's
+		// exact position matters.
+		billable = true
+
 		// Guardrail post-call, buffered path: resp is guaranteed fully
 		// populated here and nothing downstream (cache write, return to
-		// client) has happened yet — a Block verdict can still refuse both.
+		// client) has happened yet — a Block verdict can still refuse
+		// DELIVERY, but never the billing for the real call already made.
 		if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
 			p.logger.Warn("guardrail_blocked_postcall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(postVerdict.Findings))...)
+			// Captured via the side channel, not the shadowed local resp/
+			// dep, so finalize's cost calculation (keyed on the real
+			// Usage/dep that were just obtained) still runs correctly on
+			// this billable-but-errored path — see blockedResp/blockedDep's
+			// own doc comment above.
+			blockedResp, blockedDep = resp, dep
 			return nil, ErrGuardrailBlocked
 		}
 
@@ -2432,7 +2468,14 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		return cacheMissOutcome{resp: resp, dep: dep, fallback: fallback}, nil
 	})
 	if doErr != nil {
-		return adapter.ChatResponse{}, Deployment{}, fallbackInfo{}, false, doErr
+		// billable, not a hardcoded false: the closure may have already
+		// set it true (a post-call guardrail block) before returning this
+		// error. Every other error path leaves it at its zero value
+		// (false), unchanged. blockedResp/blockedDep carry the real,
+		// already-billable response/deployment for that one path — zero
+		// values (harmless, since finalize's cost math on zero Usage is
+		// zero) on every other doErr path.
+		return blockedResp, blockedDep, fallbackInfo{}, billable, doErr
 	}
 	outcome := result.(cacheMissOutcome)
 	return outcome.resp, outcome.dep, outcome.fallback, billable, nil
