@@ -50,6 +50,15 @@ func FuzzLoad(f *testing.F) {
 	f.Add([]byte("nul\x00byte: value\n"))
 	f.Add([]byte("listen_addr: \":8080\"\napi_key_env: \"K\"\nprice_table:\n  m:\n    prompt_per_token: \"not-a-number\"\n"))
 	f.Add([]byte("listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n    budget_usd: 10.0\n    rate_limit:\n      burst: 5\n      refill_per_second: 1\n    allowed_models:\n      gpt-4o: true\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"))
+	// Non-canonical YAML 1.1 boolean spelling on a security-relevant
+	// field -- real bug (getBool used to silently resolve this to
+	// false, indistinguishable from the key being absent at all); now
+	// a load-time error. Fuzz target only asserts "no panic", but this
+	// seed keeps the interesting shape in the corpus for mutation.
+	f.Add([]byte("listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n    shared_across_tenants: yes\n"))
+	// Quoted mapping key containing a colon -- real bug (the
+	// pre-quote-awareness colon search split inside the quotes).
+	f.Add([]byte("listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  \"my:deployment\":\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		dir := t.TempDir()

@@ -812,9 +812,15 @@ func Load(path string) (*Config, error) {
 			}
 			dep.FallbackChains = chains
 		}
-		dep.DisableCacheControlAutoPopulate, _ = getBool(depMap, "disable_cache_control_auto_populate")
-		dep.SharedAcrossTenants, _ = getBool(depMap, "shared_across_tenants")
-		dep.Sticky, _ = getBool(depMap, "sticky")
+		if err := assignBool(&dep.DisableCacheControlAutoPopulate, depMap, "disable_cache_control_auto_populate", fmt.Sprintf("controlplane: deployment %q disable_cache_control_auto_populate", name)); err != nil {
+			return nil, err
+		}
+		if err := assignBool(&dep.SharedAcrossTenants, depMap, "shared_across_tenants", fmt.Sprintf("controlplane: deployment %q shared_across_tenants", name)); err != nil {
+			return nil, err
+		}
+		if err := assignBool(&dep.Sticky, depMap, "sticky", fmt.Sprintf("controlplane: deployment %q sticky", name)); err != nil {
+			return nil, err
+		}
 		dep.Kind, _ = getString(depMap, "kind")
 		switch dep.Kind {
 		case "", "chat":
@@ -930,10 +936,12 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.CostViewerTokenEnv, _ = getString(adminRaw, "cost_viewer_token_env")
 		cfg.Admin.OperatorTokenEnv, _ = getString(adminRaw, "operator_token_env")
 		cfg.Admin.PersistPath, _ = getString(adminRaw, "persist_path")
-		cfg.Admin.EnablePprof, _ = getBool(adminRaw, "enable_pprof")
+		if err := assignBool(&cfg.Admin.EnablePprof, adminRaw, "enable_pprof", "controlplane: admin.enable_pprof"); err != nil {
+			return nil, err
+		}
 		cfg.Admin.BackupDir, _ = getString(adminRaw, "backup_dir")
-		if v, present := getBool(adminRaw, "enable_audit_log"); present {
-			cfg.Admin.EnableAuditLog = v
+		if err := assignBool(&cfg.Admin.EnableAuditLog, adminRaw, "enable_audit_log", "controlplane: admin.enable_audit_log"); err != nil {
+			return nil, err
 		}
 		if v, present := getString(adminRaw, "on_corrupt_store"); present {
 			switch v {
@@ -1062,7 +1070,7 @@ func parseYAMLMini(data []byte) (map[string]any, error) {
 		}
 		parent := stack[len(stack)-1].m
 
-		colonIdx := strings.Index(content, ":")
+		colonIdx := findKeyColon(content)
 		if colonIdx < 0 {
 			return nil, fmt.Errorf("line %d: expected \"key: value\" or \"key:\", got %q", i+1, content)
 		}
@@ -1107,6 +1115,50 @@ func stripYAMLComment(line string) string {
 		return line[:idx]
 	}
 	return line
+}
+
+// findKeyColon returns the index of the colon separating a line's key
+// from its value (or marking the start of a nested mapping), or -1 if
+// no separating colon exists at all (mirroring strings.Index's own
+// contract, so the caller's existing "no colon at all" error path is
+// unaffected).
+//
+// **Fixed 2026-09-20, real bug**: the previous implementation was a
+// bare strings.Index(content, ":") with no quote-awareness at all, so
+// a quoted key that itself contains a colon (e.g. "my:deployment":
+// chat -- a real deployment/virtual-key name is an arbitrary operator
+// string, not guaranteed colon-free) split on the colon INSIDE the
+// quotes instead of the one actually separating key from value,
+// producing a garbage key/value pair. unquoteYAMLScalar is applied to
+// the extracted key immediately after this call specifically to
+// support quoted keys -- that support was incomplete without this fix,
+// since the colon search itself never protected a quoted span. Only
+// the KEY side needs protecting here: an unquoted key followed by a
+// quoted value containing its own colon (e.g. key: "http://x:8080")
+// already worked correctly before this fix, because the first colon
+// in that line occurs before any quote at all -- this function
+// preserves that path exactly (falls straight through to the original
+// plain Index) and only changes behavior when the line's first
+// non-space content byte is itself a quote character.
+func findKeyColon(content string) int {
+	if len(content) == 0 || (content[0] != '"' && content[0] != '\'') {
+		return strings.Index(content, ":")
+	}
+	quote := content[0]
+	closeRelIdx := strings.IndexByte(content[1:], quote)
+	if closeRelIdx < 0 {
+		// Unterminated quote -- not this fix's concern (no other
+		// unterminated-quote handling exists in this parser either);
+		// fall back to the original plain search so this malformed-input
+		// case degrades exactly as it did before this fix.
+		return strings.Index(content, ":")
+	}
+	afterQuote := 1 + closeRelIdx + 1
+	relIdx := strings.Index(content[afterQuote:], ":")
+	if relIdx < 0 {
+		return -1
+	}
+	return afterQuote + relIdx
 }
 
 // unquoteYAMLScalar strips a single layer of matching quotes, if present.
@@ -1274,15 +1326,58 @@ func getDecimal(m map[string]any, key string) (decimal.Decimal, bool) {
 
 // getBool reads key as a bool, per parseYAMLScalar's own explicit
 // true/false literal matching (never strconv.ParseBool — see that
-// function's doc comment for why). Mirrors getString/getFloat/getInt's
-// existing (value, ok) shape.
-func getBool(m map[string]any, key string) (bool, bool) {
+// function's doc comment for why). Unlike getString/getFloat/getInt/
+// getDecimal's plain (value, ok) shape, this returns a third err value
+// -- present is true only when key exists in m at all; err is non-nil
+// only when key exists but its value is a string that parseYAMLScalar
+// did NOT recognize as a boolean literal.
+//
+// **Fixed 2026-09-20, real bug**: the previous implementation did a
+// bare v.(bool) type assertion and returned (false, false) whenever
+// that assertion failed -- identical to the "key not present" case.
+// parseYAMLScalar only recognizes true/True/TRUE/false/False/FALSE;
+// every other legal YAML 1.1 boolean spelling (yes/no/on/off/1/0 as a
+// bare scalar) is deliberately left as a raw string (see that
+// function's own doc comment for why: widening the boolean set to
+// include 1/0 would collide with genuinely numeric fields exactly like
+// the budget_usd bug that comment already documents fixing). That
+// leaves a config typo -- e.g. shared_across_tenants: yes, meant to
+// enable this deployment's cross-tenant cache-pollution protection --
+// completely indistinguishable from the key never being set, with zero
+// error, on several security-relevant fields (shared_across_tenants,
+// sticky, disable_cache_control_auto_populate). Callers now use
+// assignBool below, which turns "present but unparseable" into a
+// load-time config error instead of a silent, wrong default.
+func getBool(m map[string]any, key string) (value bool, present bool, err error) {
 	v, ok := m[key]
 	if !ok {
-		return false, false
+		return false, false, nil
 	}
 	b, ok := v.(bool)
-	return b, ok
+	if !ok {
+		return false, true, fmt.Errorf("%q has value %v, which is not a recognized boolean (want true/false)", key, v)
+	}
+	return b, true, nil
+}
+
+// assignBool writes getBool's parsed value into *dst when key is
+// present in m, leaving *dst untouched (preserving its existing
+// zero-value default) when key is absent -- mirroring every other
+// optional-field convention in this file (getString/getFloat/getInt's
+// call sites each apply their own default via the same "leave alone
+// when not ok" pattern). Returns a load-time error, wrapped with
+// context, when key is present but not a recognized boolean -- see
+// getBool's own doc comment for why this must be a loud error rather
+// than a silent fall-through to *dst's default.
+func assignBool(dst *bool, m map[string]any, key, context string) error {
+	v, present, err := getBool(m, key)
+	if err != nil {
+		return fmt.Errorf("%s: %w", context, err)
+	}
+	if present {
+		*dst = v
+	}
+	return nil
 }
 
 func getMap(m map[string]any, key string) (map[string]any, bool) {

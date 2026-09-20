@@ -2377,3 +2377,75 @@ func TestLoadAlertingSectionParsesWebhookURLEnvAndSigningSecretEnv(t *testing.T)
 		t.Errorf("Alerting.SigningSecretEnv = %q, want %q", cfg.Alerting.SigningSecretEnv, "KELVRAN_ALERT_WEBHOOK_SECRET")
 	}
 }
+
+// TestLoadRejectsNonCanonicalBooleanSpellingForSharedAcrossTenants is a
+// real-bug regression test, per a full-codebase audit: parseYAMLScalar
+// only recognizes true/True/TRUE/false/False/FALSE as booleans (see its
+// own doc comment for why the set deliberately excludes yes/no/on/off/
+// 1/0 -- widening it would reintroduce the budget_usd-collides-with-bool
+// bug that comment already documents fixing). Before the fix, getBool
+// did a bare v.(bool) assertion and returned (false, false) for a
+// string value that fell through that set -- IDENTICAL to "key not
+// present" -- so a typo'd/non-canonical spelling on a security-relevant
+// field like shared_across_tenants (this deployment's cross-tenant
+// cache-pollution protection, per SharedAcrossTenants' own doc comment)
+// silently and undetectably resolved to false with zero error. Load
+// must now fail loudly instead, distinguishing "key absent" (fine,
+// resolves to the false default) from "key present with an unparseable
+// value" (a config error, not a silent misconfiguration).
+func TestLoadRejectsNonCanonicalBooleanSpellingForSharedAcrossTenants(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := minimalDeploymentConfig("    shared_across_tenants: yes\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load with shared_across_tenants: yes returned nil error, want a loud config error -- \"yes\" must never silently resolve to false")
+	}
+	if !strings.Contains(err.Error(), "shared_across_tenants") {
+		t.Errorf("Load error = %v, want it to mention shared_across_tenants", err)
+	}
+}
+
+// TestLoadParsesQuotedDeploymentKeyContainingColon is a real-bug
+// regression test, per the same audit: the line-parsing code found the
+// first colon in a raw line via a plain strings.Index BEFORE any
+// quote-awareness, so a quoted key containing a colon (e.g.
+// "my:deployment":) split on the colon INSIDE the quotes, producing a
+// garbage key ("\"my, with the leading quote still attached) and a
+// garbage value (the tail of the real key plus its closing quote).
+// unquoteYAMLScalar is applied to every extracted key specifically to
+// support quoted keys -- that support was incomplete without
+// findKeyColon's quote-aware search.
+func TestLoadParsesQuotedDeploymentKeyContainingColon(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  \"my:deployment\":\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Deployments) != 1 {
+		t.Fatalf("len(Deployments) = %d, want 1", len(cfg.Deployments))
+	}
+	if got := cfg.Deployments[0].Name; got != "my:deployment" {
+		t.Errorf("Deployments[0].Name = %q, want %q (quoted key's colon must not be mistaken for the key/value separator)", got, "my:deployment")
+	}
+}
