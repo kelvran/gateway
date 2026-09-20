@@ -17,6 +17,7 @@ components:
   costaccounting:    { in: costaccounting }
   guardrail:         { in: guardrail }
   bedrockguard:      { in: guardrail/bedrockguard }
+  embedsim:          { in: guardrail/embedsim }
   telemetry:         { in: telemetry }
   cache-correlation: { in: telemetry/cachecorrelation }
   spend-velocity:    { in: telemetry/spendvelocity }
@@ -89,6 +90,9 @@ deps:
     mayDependOn:
       - cache
   bedrockguard:
+    mayDependOn:
+      - guardrail
+  embedsim:
     mayDependOn:
       - guardrail
   idempotency-inprocess:

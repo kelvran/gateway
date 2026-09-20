@@ -529,6 +529,89 @@ func TestLoadBedrockGuardrailsMissingRequiredFieldErrors(t *testing.T) {
 	}
 }
 
+// TestLoadGuardrailsEmbedSimSectionParsesAllFields proves the optional
+// guardrails.embed_sim: sub-section, when present, is parsed correctly,
+// mirroring TestLoadGuardrailsBedrockGuardrailsSectionParsesAllFields.
+func TestLoadGuardrailsEmbedSimSectionParsesAllFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  embed_sim:\n    region: \"us-east-1\"\n    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\n    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n    similarity_threshold: 0.9\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a guardrails.embed_sim section: %v", err)
+	}
+	es := cfg.Guardrails.EmbedSim
+	if es == nil {
+		t.Fatal("Guardrails.EmbedSim = nil, want a populated *EmbedSimConfig")
+	}
+	if es.Region != "us-east-1" || es.AccessKeyIDEnv != "AWS_ACCESS_KEY_ID" || es.SecretAccessKeyEnv != "AWS_SECRET_ACCESS_KEY" || es.SimilarityThreshold != 0.9 {
+		t.Errorf("EmbedSim = %+v, want all 4 fields populated from YAML", es)
+	}
+}
+
+// TestLoadGuardrailsEmbedSimDefaultsSimilarityThresholdWhenUnset proves
+// SimilarityThreshold resolves to the documented 0.82 default when the
+// YAML omits it, rather than the zero-value 0 (which would report a
+// Finding on every possible input).
+func TestLoadGuardrailsEmbedSimDefaultsSimilarityThresholdWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  embed_sim:\n    region: \"us-east-1\"\n    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\n    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with an embed_sim section omitting similarity_threshold: %v", err)
+	}
+	if cfg.Guardrails.EmbedSim == nil || cfg.Guardrails.EmbedSim.SimilarityThreshold != 0.82 {
+		t.Errorf("EmbedSim.SimilarityThreshold = %v, want the 0.82 default", cfg.Guardrails.EmbedSim)
+	}
+}
+
+// TestLoadWithoutEmbedSimSubsectionLeavesItNil proves the "genuinely
+// optional" half: a guardrails: section present but without its own
+// embed_sim: sub-key leaves EmbedSim nil, reproducing today's behavior
+// exactly.
+func TestLoadWithoutEmbedSimSubsectionLeavesItNil(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  policy_version: \"v2\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load without an embed_sim sub-section: %v", err)
+	}
+	if cfg.Guardrails.EmbedSim != nil {
+		t.Errorf("Guardrails.EmbedSim = %+v, want nil", cfg.Guardrails.EmbedSim)
+	}
+}
+
+// TestLoadEmbedSimMissingRequiredFieldErrors proves a partially-specified
+// embed_sim: section fails loudly at load time, never silently
+// constructing a Detector that can only ever error on every real call.
+func TestLoadEmbedSimMissingRequiredFieldErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// Missing secret_access_key_env.
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  embed_sim:\n    region: \"us-east-1\"\n    access_key_id_env: \"AWS_ACCESS_KEY_ID\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a missing secret_access_key_env returned nil error, want an error")
+	}
+}
+
 // TestLoadRateLimitSectionParsesRedisAddr proves the rate_limit: section,
 // when present, is parsed correctly — the mirror-image proof to
 // TestLoadWithoutTelemetrySectionDefaultsToZeroValue's "genuinely

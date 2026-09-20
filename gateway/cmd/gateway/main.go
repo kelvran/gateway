@@ -59,6 +59,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/guardrail/bedrockguard"
+	"github.com/kelvran/gateway/gateway/internal/guardrail/embedsim"
 	idempotencyinprocess "github.com/kelvran/gateway/gateway/internal/idempotency/inprocess"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
@@ -827,7 +828,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 
 	upstreamTransport := newUpstreamTransport()
 
-	guardrailEngine := newGuardrailEngine(cfg.Guardrails, logger)
+	guardrailEngine, err := newGuardrailEngine(cfg.Guardrails, logger)
+	if err != nil {
+		return nil, fmt.Errorf("constructing guardrail engine: %w", err)
+	}
 
 	return dataplane.NewPipeline(dataplane.Config{
 		Verifier:      verifier,
@@ -1219,7 +1223,7 @@ const guardrailDefaultPolicyVersion = "v1"
 // or action string is logged and skipped, never silently ignored and
 // never a fatal startup error — a config typo should not take down the
 // gateway, but it must be visible.
-func newGuardrailEngine(cfg controlplane.GuardrailsConfig, logger *slog.Logger) *guardrail.Engine {
+func newGuardrailEngine(cfg controlplane.GuardrailsConfig, logger *slog.Logger) (*guardrail.Engine, error) {
 	version := cfg.PolicyVersion
 	if version == "" {
 		version = guardrailDefaultPolicyVersion
@@ -1258,8 +1262,25 @@ func newGuardrailEngine(cfg controlplane.GuardrailsConfig, logger *slog.Logger) 
 		}, nil))
 		logger.Info("guardrail_bedrock_guardrails_enabled", "guardrail_id", bg.GuardrailID, "guardrail_version", bg.GuardrailVersion)
 	}
+	if es := cfg.EmbedSim; es != nil {
+		embedder := embedsim.NewBedrockEmbedder(embedsim.BedrockEmbedderConfig{
+			Region:          es.Region,
+			AccessKeyID:     os.Getenv(es.AccessKeyIDEnv),
+			SecretAccessKey: os.Getenv(es.SecretAccessKeyEnv),
+			SessionToken:    envOrEmpty(es.SessionTokenEnv),
+		}, nil)
+		det, err := embedsim.New(embedsim.Config{
+			SimilarityThreshold: es.SimilarityThreshold,
+			CorpusPath:          es.CorpusPath,
+		}, embedder, logger)
+		if err != nil {
+			return nil, fmt.Errorf("constructing embedsim detector: %w", err)
+		}
+		detectors = append(detectors, det)
+		logger.Info("guardrail_embedsim_enabled", "similarity_threshold", es.SimilarityThreshold)
+	}
 
-	return guardrail.NewEngine(detectors, policy, version, logger)
+	return guardrail.NewEngine(detectors, policy, version, logger), nil
 }
 
 // envOrEmpty returns os.Getenv(name), or "" if name itself is empty --

@@ -6,6 +6,7 @@ require (
 	github.com/KimMachineGun/automemlimit v1.0.0
 	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20
+	github.com/philippgille/chromem-go v0.7.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/shopspring/decimal v1.4.0
 	github.com/testcontainers/testcontainers-go v0.44.0

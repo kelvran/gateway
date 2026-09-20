@@ -495,6 +495,29 @@ type GuardrailsConfig struct {
 	// docs/rfcs/2026-09-13-gateway-bedrock-guardrails-ml-detector-design.md.
 	// nil (the default) reproduces today's regex-only behavior exactly.
 	BedrockGuardrails *BedrockGuardrailsConfig
+	// EmbedSim, when non-nil, opts this deployment into the
+	// embedding-similarity prompt-injection detector (internal/guardrail/
+	// embedsim) as an additional (never a replacement) backend, catching
+	// paraphrases the regex detector misses. nil (the default) reproduces
+	// today's behavior exactly.
+	EmbedSim *EmbedSimConfig
+}
+
+// EmbedSimConfig configures the optional embedding-similarity
+// prompt-injection detector. Region/AccessKeyIDEnv/SecretAccessKeyEnv are
+// required once this section is present at all, mirroring
+// BedrockGuardrailsConfig's own "no zero-value-safe default" convention.
+type EmbedSimConfig struct {
+	Region             string
+	AccessKeyIDEnv     string
+	SecretAccessKeyEnv string
+	SessionTokenEnv    string
+	// SimilarityThreshold is the minimum cosine similarity required to
+	// report a Finding. <= 0 (absent) resolves to a real default of 0.82.
+	SimilarityThreshold float64
+	// CorpusPath, when non-empty, overrides embedsim's bundled default
+	// corpus with a JSON file at this path.
+	CorpusPath string
 }
 
 // BedrockGuardrailsConfig configures the optional AWS Bedrock Guardrails
@@ -918,6 +941,22 @@ func Load(path string) (*Config, error) {
 				return nil, fmt.Errorf("controlplane: guardrails.bedrock_guardrails is missing one of region/access_key_id_env/secret_access_key_env/guardrail_id/guardrail_version")
 			}
 			cfg.Guardrails.BedrockGuardrails = bg
+		}
+		if esRaw, ok := getMap(guardrailsRaw, "embed_sim"); ok {
+			es := &EmbedSimConfig{}
+			es.Region, _ = getString(esRaw, "region")
+			es.AccessKeyIDEnv, _ = getString(esRaw, "access_key_id_env")
+			es.SecretAccessKeyEnv, _ = getString(esRaw, "secret_access_key_env")
+			es.SessionTokenEnv, _ = getString(esRaw, "session_token_env")
+			es.SimilarityThreshold, _ = getFloat(esRaw, "similarity_threshold")
+			es.CorpusPath, _ = getString(esRaw, "corpus_path")
+			if es.Region == "" || es.AccessKeyIDEnv == "" || es.SecretAccessKeyEnv == "" {
+				return nil, fmt.Errorf("controlplane: guardrails.embed_sim is missing one of region/access_key_id_env/secret_access_key_env")
+			}
+			if es.SimilarityThreshold <= 0 {
+				es.SimilarityThreshold = 0.82
+			}
+			cfg.Guardrails.EmbedSim = es
 		}
 	}
 
