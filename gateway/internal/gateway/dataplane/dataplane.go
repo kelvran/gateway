@@ -4045,62 +4045,59 @@ func reasoningBlocksFingerprint(messages []adapter.Message) string {
 	return string(b)
 }
 
-// messageHasRedactedReasoning reports whether m carries at least one
-// Redacted ReasoningBlock — guardrailScanMessages' own cheap pre-check
-// so the common case (no reasoning content at all, or only plaintext
-// blocks) never allocates a sanitized copy.
-func messageHasRedactedReasoning(m adapter.Message) bool {
-	for _, rb := range m.ReasoningBlocks {
-		if rb.Redacted {
-			return true
-		}
-	}
-	return false
-}
-
 // guardrailScanMessages returns the exact string handed to the
-// guardrail engine for the pre-call check, per
+// guardrail engine for the pre-call check. Extracts plain text only
+// (Content, Parts[Type=="text"].Text, ToolCalls[].ArgumentsJSON,
+// plaintext ReasoningBlocks.Text), newline-joined — mirroring
+// serializeResponse's own identical extraction shape for the post-call
+// side, rather than a full JSON re-encoding of the message slice.
+//
+// Fixed 2026-09-21, closing a real accuracy finding from this session's
+// own end-to-end production audit: this function used to just return
+// serializeMessages(messages) (a full json.Marshal of the whole slice)
+// — structurally correct for serializeMessages' own real purpose (a
+// deterministic cache-key input, where every byte of structure must
+// round-trip), but wrong for guardrail SCANNING, which reasons about
+// natural-language text. JSON structural noise (quotes, braces, key
+// names like "role":"user" interleaved with actual content) measurably
+// degrades BOTH detectors that consume this string: independently
+// recomputed against real Bedrock Titan embeddings this session, a
+// known-attack phrase's cosine similarity against embedsim's corpus
+// dropped from 0.8096 (raw text) to 0.6929 (JSON-wrapped) — enough to
+// fall below embedsim's own configured threshold and silently miss a
+// real match; separately, promptinjection.go's ALWAYS-ON regex
+// detector (internal/guardrail's only mandatory-tier check, unlike
+// embedsim's opt-in one) can have a multi-word attack phrase's own word
+// boundaries split or repositioned by interleaved JSON syntax, the same
+// underlying mechanism, arguably more consequential since that
+// detector isn't optional. Plaintext ReasoningBlocks (Redacted ==
+// false) are included per
 // docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
-// guardrail-scanning decision: a plaintext ReasoningBlock (Redacted ==
-// false) is scanned identically to visible text, since it's already
-// covered by serializeMessages' own full-message marshal below — but a
-// Redacted block's Data is ciphertext by definition (the provider
-// explicitly withholds the plaintext it encrypts), so scanning it can
-// only waste compute or produce a meaningless false positive, never
-// protect anything. This is the ONLY difference from serializeMessages:
-// every other field (Content, Parts, ToolCalls, plaintext
-// ReasoningBlocks.Text) is scanned exactly as serializeMessages would
-// already include it — this function exists solely to strip Data
-// before that shared marshal, never to narrow scanning coverage
-// further.
+// guardrail-scanning decision — a model's reasoning trace can carry
+// injected content that never surfaces in visible Content; a Redacted
+// block's Data is never read at all here (ciphertext by definition,
+// mirroring serializeResponse's identical exclusion), so no separate
+// sanitizing pass is needed the way the old json.Marshal-based
+// implementation required.
 func guardrailScanMessages(messages []adapter.Message) string {
-	needsSanitizing := false
+	contents := make([]string, 0, len(messages))
 	for _, m := range messages {
-		if messageHasRedactedReasoning(m) {
-			needsSanitizing = true
-			break
-		}
-	}
-	if !needsSanitizing {
-		return serializeMessages(messages)
-	}
-
-	sanitized := make([]adapter.Message, len(messages))
-	copy(sanitized, messages)
-	for i, m := range messages {
-		if !messageHasRedactedReasoning(m) {
-			continue
-		}
-		blocks := make([]adapter.ReasoningBlock, len(m.ReasoningBlocks))
-		copy(blocks, m.ReasoningBlocks)
-		for j := range blocks {
-			if blocks[j].Redacted {
-				blocks[j].Data = ""
+		contents = append(contents, m.Content)
+		for _, part := range m.Parts {
+			if part.Type == "text" {
+				contents = append(contents, part.Text)
 			}
 		}
-		sanitized[i].ReasoningBlocks = blocks
+		for _, tc := range m.ToolCalls {
+			contents = append(contents, tc.ArgumentsJSON)
+		}
+		for _, rb := range m.ReasoningBlocks {
+			if !rb.Redacted {
+				contents = append(contents, rb.Text)
+			}
+		}
 	}
-	return serializeMessages(sanitized)
+	return strings.Join(contents, "\n")
 }
 
 // responseFormatFingerprint computes the cache-key fold value for
