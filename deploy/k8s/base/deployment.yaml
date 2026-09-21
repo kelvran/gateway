@@ -97,15 +97,16 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
-          # Pinned to the real, currently-published gateway/v0.12.0
-          # release by digest (independently re-verified via `docker
-          # buildx imagetools inspect`, not assumed) -- closes 2 real
-          # Checkov findings (CKV_K8S_14 "Image Tag should be fixed",
-          # CKV_K8S_43 "Image should use digest"). Re-pin this to
-          # whatever the current release is before applying -- this
-          # value goes stale the moment a newer version ships, same as
-          # any other pinned dependency.
-          image: ghcr.io/kelvran/gateway:v0.12.0@sha256:810357492928a1750b0317f9895ef7269999c14f464dd4039ed85ecff84144f4
+          # Pinned to the real, currently-published gateway/v0.14.0
+          # release by digest (independently re-verified via `cosign
+          # verify`/`cosign verify-attestation` against the real
+          # published image, not assumed) -- closes 2 real Checkov
+          # findings (CKV_K8S_14 "Image Tag should be fixed", CKV_K8S_43
+          # "Image should use digest"). Re-pin this to whatever the
+          # current release is before applying -- this value goes stale
+          # the moment a newer version ships, same as any other pinned
+          # dependency.
+          image: ghcr.io/kelvran/gateway:v0.14.0@sha256:171baaa2cf6d9ba64494eb9ec9c3255a7b7584daec2889c274e4d5d0b0c81478
           # Container-level securityContext, distinct from the pod-level
           # block above (Checkov's own CKV_K8S_30 checks for this
           # specifically) -- closes CKV_K8S_20 (no privilege escalation),
