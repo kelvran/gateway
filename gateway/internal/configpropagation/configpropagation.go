@@ -42,12 +42,25 @@
 // holds this package's Publisher/Subscriber interfaces (and does the
 // VirtualKey/KeyConfig <-> payload conversion at its own call sites),
 // never the other way around.
+//
+// Every MutationEvent is HMAC-signed and verified with a shared secret
+// (see MutationEvent.Signature) — Publish/Subscribe both refuse to run
+// without one. This closes a CRITICAL gap this package originally
+// shipped with: the channel carries live virtual-key mutation authority
+// (a forged event can mint/hijack/delete any tenant's credential), but
+// had no authentication at all until this was fixed, since Redis
+// network access alone was sufficient to publish an event every
+// subscribed instance would apply unconditionally.
 package configpropagation
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -85,11 +98,56 @@ const TypeDeploymentWeight = "deployment_weight"
 // instances converged on different final values, with zero detection —
 // see dataplane.Pipeline.applyWeightIfNewer, this token's one real
 // consumer today.
+// Signature is an HMAC-SHA256 MAC over
+// Type+"."+OriginInstanceID+"."+PublishedAtUnixNano+"."+Payload, computed
+// and verified with a shared secret every gateway instance holds — see
+// signEvent/verifyEvent. Format ("v1,<base64>") deliberately reuses
+// internal/alerting's own Standard-Webhooks-style convention
+// (signPayload) rather than inventing a fresh one.
+//
+// Added 2026-09-21 closing a CRITICAL finding from this session's own
+// end-to-end production audit: this channel previously carried
+// TypeVirtualKeyUpsert/TypeVirtualKeyDelete mutations with ZERO
+// authentication — any process with network access to the shared Redis
+// (no AUTH/TLS existed on any Redis-backed subsystem at the time) could
+// publish a forged MutationEvent and have every OTHER instance apply it
+// via applyVirtualKeyUpsert's last-writer-wins merge, fully bypassing
+// every admin.go bearer-token tier. Open/Publish/Subscribe below now all
+// treat a missing signing secret as a hard error rather than a silently
+// degraded posture — unlike internal/alerting's OWN "signing optional"
+// stance, an unsigned receiver here is never a legitimate choice, since
+// the only subscriber is this same codebase, not a third-party endpoint
+// with no verification concept of its own.
 type MutationEvent struct {
 	Type                string          `json:"type"`
 	OriginInstanceID    string          `json:"origin_instance_id"`
 	PublishedAtUnixNano int64           `json:"published_at_unix_nano"`
 	Payload             json.RawMessage `json:"payload"`
+	Signature           string          `json:"signature,omitempty"`
+}
+
+// signingInput returns the exact byte sequence signEvent/verifyEvent MAC
+// over — every field of event EXCEPT Signature itself, joined with "."
+// separators, mirroring internal/alerting.signPayload's identical
+// "id.timestamp.body" canonicalization.
+func signingInput(event MutationEvent) []byte {
+	return []byte(event.Type + "." + event.OriginInstanceID + "." + strconv.FormatInt(event.PublishedAtUnixNano, 10) + "." + string(event.Payload))
+}
+
+func signEvent(secret []byte, event MutationEvent) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(signingInput(event))
+	return "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// verifyEvent reports whether event.Signature is a valid MAC for its own
+// content under secret. hmac.Equal (constant-time) guards against a
+// timing side-channel on the comparison itself.
+func verifyEvent(secret []byte, event MutationEvent) bool {
+	if event.Signature == "" {
+		return false
+	}
+	return hmac.Equal([]byte(signEvent(secret, event)), []byte(event.Signature))
 }
 
 // DeploymentWeightPayload is MutationEvent.Payload's shape when Type ==
@@ -105,9 +163,9 @@ type DeploymentWeightPayload struct {
 // dataplane.Pipeline.UpsertVirtualKey and RotateVirtualKey, since a
 // rotation's net effect on the receiving end is identical to an
 // upsert: "this ID's virtual key now looks exactly like this," never a
-// distinct operation a remote replica needs to replay semantically
-// (see VirtualKeyPayload.RateLimitConfig's own doc comment for the one
-// real difference between the two origins).
+// distinct operation a remote replica needs to replay semantically —
+// see VirtualKeyPayload.RateLimitConfig's own doc comment for why both
+// origins send it non-nil.
 const TypeVirtualKeyUpsert = "virtual_key_upsert"
 
 // TypeVirtualKeyDelete is MutationEvent.Type's value for a live
@@ -171,14 +229,25 @@ type KeyConfigPayload struct {
 type VirtualKeyUpsertPayload struct {
 	VirtualKey VirtualKeyPayload `json:"virtual_key"`
 	// RateLimitConfig, when non-nil, is the FULL rate-limit config to
-	// register on every OTHER instance — present for a real
-	// UpsertVirtualKey-originated event, nil for a RotateVirtualKey-
-	// originated one. Rotation never changes rate-limit config; a
-	// remote replica that has already converged on this key (the
-	// overwhelmingly common case, since rotation only ever targets an
-	// EXISTING key) must not have its real, already-registered config
-	// silently overwritten by a stale/zero-value guess this instance
-	// has no way to reconstruct on its own.
+	// register on every OTHER instance. Both a real UpsertVirtualKey-
+	// originated event AND a RotateVirtualKey-originated one now send
+	// this non-nil (RotateVirtualKey reads back its own currently-
+	// registered config via ratelimit.KeyLimiter.Config before
+	// publishing — rotation never changes rate-limit config, so the
+	// originating instance's own copy is always the authoritative
+	// current value). Fixed 2026-09-21 closing a real gap this session's
+	// own end-to-end audit found: a receiving replica that never
+	// independently learned about this key ID (configpropagation's
+	// pub/sub is fire-and-forget with no replay) had NO rate-limit
+	// registration to fall back on when a rotation-originated event
+	// carried nil, and ratelimit.KeyLimiter.Allow's own nil-bucket/
+	// zero-capacity branch cannot distinguish "never registered" from
+	// "registered with Capacity 0" — every request from that key was
+	// silently denied on that one replica, despite authenticating fine.
+	// Nil is still a valid, handled input on the receiving end
+	// (applyVirtualKeyUpsert never overwrites an already-registered
+	// config with nil) — kept as a defensive property, not because any
+	// current publisher still sends it.
 	RateLimitConfig *KeyConfigPayload `json:"rate_limit_config,omitempty"`
 }
 
@@ -220,7 +289,8 @@ type Subscriber interface {
 // PubSub implements both Publisher and Subscriber over a single
 // shared *redis.Client.
 type PubSub struct {
-	client *redis.Client
+	client        *redis.Client
+	signingSecret []byte
 }
 
 // Open constructs a Publisher/Subscriber pair against the Redis server
@@ -230,8 +300,17 @@ type PubSub struct {
 // TestOpenNeverFailsOnUnreachableAddr — so an unreachable addr does not
 // make Open itself fail; the first real connection attempt happens on
 // the first Publish/Subscribe call.
-func Open(addr string) *PubSub {
-	return &PubSub{client: redis.NewClient(&redis.Options{Addr: addr})}
+//
+// signingSecret is the shared HMAC key every MutationEvent is signed
+// and verified with (see MutationEvent.Signature's own doc comment). An
+// empty signingSecret is accepted here (Open, like the rest of this
+// constructor family, never fails) but makes both Publish and Subscribe
+// refuse to run — cmd/gateway's own startup validation is the intended
+// place a misconfiguration is caught, mirroring AdminConfig.TokenEnv's
+// established "resolves empty -> fail startup" convention; this
+// in-package refusal is defense-in-depth for any other caller.
+func Open(addr, signingSecret string) *PubSub {
+	return &PubSub{client: redis.NewClient(&redis.Options{Addr: addr}), signingSecret: []byte(signingSecret)}
 }
 
 // Close releases the underlying *redis.Client's own resources, mirroring
@@ -240,8 +319,18 @@ func (r *PubSub) Close() error {
 	return r.client.Close()
 }
 
-// Publish marshals event as JSON and publishes it on channelName.
+// Publish signs event with signingSecret, marshals it as JSON, and
+// publishes it on channelName. Refuses (without touching Redis at all)
+// when signingSecret is empty — see Open's own doc comment for why an
+// unsigned publish is never an accepted degraded mode for this channel;
+// per Publisher's own doc comment, this error is expected to be logged
+// by the caller, never treated as a reason to fail the LOCAL mutation
+// that triggered it.
 func (r *PubSub) Publish(ctx context.Context, event MutationEvent) error {
+	if len(r.signingSecret) == 0 {
+		return fmt.Errorf("configpropagation: refusing to publish an unsigned mutation event -- no signing secret configured")
+	}
+	event.Signature = signEvent(r.signingSecret, event)
 	body, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("configpropagation: marshaling event: %w", err)
@@ -257,6 +346,9 @@ func (r *PubSub) Publish(ctx context.Context, event MutationEvent) error {
 // doc comment for the fire-and-forget/no-replay contract this
 // implements.
 func (r *PubSub) Subscribe(ctx context.Context, onEvent func(MutationEvent)) error {
+	if len(r.signingSecret) == 0 {
+		return fmt.Errorf("configpropagation: refusing to subscribe without a signing secret -- would apply unauthenticated remote mutations")
+	}
 	sub := r.client.Subscribe(ctx, channelName)
 	defer func() { _ = sub.Close() }()
 
@@ -271,6 +363,17 @@ func (r *PubSub) Subscribe(ctx context.Context, onEvent func(MutationEvent)) err
 			}
 			var event MutationEvent
 			if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
+				continue
+			}
+			// An invalid/missing signature is treated exactly like a
+			// malformed/undecodable message (skipped, not applied) --
+			// this is the actual fix for the CRITICAL finding this
+			// field exists to close: a forged event with no valid MAC
+			// under this instance's shared secret must never reach
+			// onEvent, since onEvent's real callers (dataplane.go's
+			// applyVirtualKeyUpsert/applyVirtualKeyDelete) apply it with
+			// full admin authority.
+			if !verifyEvent(r.signingSecret, event) {
 				continue
 			}
 			onEvent(event)

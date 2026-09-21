@@ -1372,7 +1372,32 @@ func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Du
 		return err
 	}
 	if rotated.ID != "" {
-		p.publishVirtualKeyUpsert(rotated, nil, publishedAtUnixNano)
+		// Publish the REAL, currently-registered rate-limit config for
+		// this ID, not nil — closing a real gap this session's own
+		// end-to-end audit found: a receiving replica that never
+		// independently learned about this key (configpropagation's
+		// pub/sub is fire-and-forget with no replay, so a replica that
+		// missed the original TypeVirtualKeyUpsert event, or joined the
+		// shared Redis afterward, has NO local rate-limit registration
+		// for this ID at all) would previously add the rotated key to
+		// its identity.Verifier (so it authenticates) while leaving
+		// p.limiter with zero registration for it — and
+		// ratelimit.KeyLimiter.Allow's own nil-bucket/zero-capacity
+		// branch cannot distinguish "never registered" from "registered
+		// with Capacity 0," so every request from that key was silently
+		// denied on that one replica. p.limiter.Config reads back
+		// exactly what's registered locally (nothing about a rotation
+		// changes rate limits, so this instance's own copy is always
+		// the authoritative current value); an unregistered ID (should
+		// never happen for a key this instance itself just rotated, but
+		// checked rather than assumed) falls back to nil, preserving
+		// applyVirtualKeyUpsert's own "nil never overwrites an
+		// already-converged replica's real config" property.
+		var rateLimit *ratelimit.KeyConfig
+		if cfg, ok := p.limiter.Config(rotated.ID); ok {
+			rateLimit = &cfg
+		}
+		p.publishVirtualKeyUpsert(rotated, rateLimit, publishedAtUnixNano)
 	}
 	return nil
 }

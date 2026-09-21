@@ -731,6 +731,23 @@ func (l *KeyLimiter) Register(cfg KeyConfig) {
 	}
 }
 
+// Config returns the currently-registered KeyConfig for keyID, and
+// whether one exists at all — exposes the same l.configs lookup
+// allow/AllowForModel already do internally, for a caller that needs to
+// read back a key's REAL, currently-effective rate-limit config (e.g.
+// dataplane.Pipeline.RotateVirtualKey's own publish path, which must
+// republish the real config rather than guessing or omitting it — see
+// that method's own doc comment). Always backed by the in-memory
+// l.configs map, even in Redis mode (Redis only stores token-bucket
+// STATE; the config itself lives here regardless — see allow's own
+// l.backend != nil branch), so this is accurate in either mode.
+func (l *KeyLimiter) Config(keyID string) (KeyConfig, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	cfg, ok := l.configs[keyID]
+	return cfg, ok
+}
+
 // Close releases the backend's resources, if any. A no-op in in-memory
 // mode (TokenBucket owns nothing that needs closing).
 func (l *KeyLimiter) Close() error {

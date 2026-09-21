@@ -11,6 +11,8 @@ package dataplane
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -29,6 +31,22 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/router"
 )
+
+// testConfigPropagationSigningSecret generates a fresh random HMAC
+// secret for one test's own pub/sub pair -- configpropagation.Open now
+// refuses to Publish/Subscribe without one (see
+// configpropagation.MutationEvent.Signature's own doc comment); every
+// Open call in a single test that must talk to EACH OTHER needs the
+// SAME secret, so callers generate one and pass it to every Open in
+// that test, never a package-wide shared constant.
+func testConfigPropagationSigningSecret(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("generating test signing secret: %v", err)
+	}
+	return hex.EncodeToString(b)
+}
 
 // newConfigPropagationTestPipeline builds a *Pipeline with a real
 // weighted router and, when publisher is non-nil, wires it as
@@ -115,7 +133,8 @@ func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *test
 		{Name: "canary", Model: "gpt-4o", Weight: 1},
 	}
 
-	pubA := configpropagation.Open(redisAddr)
+	signingSecret := testConfigPropagationSigningSecret(t)
+	pubA := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newConfigPropagationTestPipeline(t, deployments, pubA)
 
@@ -128,7 +147,7 @@ func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *test
 	// ApplyDeploymentWeightFromEvent -- mirrors cmd/gateway/main.go's
 	// real subscriber closure exactly, so this proves the same code
 	// path production wiring uses, not a test-only shortcut.
-	subB := configpropagation.Open(redisAddr)
+	subB := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)

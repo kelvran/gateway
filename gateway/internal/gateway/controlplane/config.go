@@ -434,6 +434,19 @@ type ConfigPropagationConfig struct {
 	// without config propagation (or vice versa) against two entirely
 	// different Redis deployments. Empty means no propagation.
 	RedisAddr string
+	// SigningSecretEnv is the name of the environment variable holding
+	// the shared HMAC secret every instance signs/verifies
+	// configpropagation.MutationEvent with (see that package's own
+	// MutationEvent.Signature doc comment). REQUIRED when RedisAddr is
+	// set — cmd/gateway fails startup if RedisAddr != "" and this
+	// resolves empty, mirroring AdminConfig.TokenEnv's own "never run an
+	// unauthenticated surface" convention. Unlike AlertingConfig's
+	// SigningSecretEnv (genuinely optional, since some webhook receivers
+	// have no verification concept at all), an unsigned propagation
+	// channel is never an accepted configuration: its only subscriber is
+	// this same codebase, and it carries live virtual-key mutation
+	// authority.
+	SigningSecretEnv string
 }
 
 // CacheL2Config configures the L2 (normalized-match) cache layer, per
@@ -931,6 +944,7 @@ func Load(path string) (*Config, error) {
 
 	if configPropagationRaw, ok := getMap(root, "config_propagation"); ok {
 		cfg.ConfigPropagation.RedisAddr, _ = getString(configPropagationRaw, "redis_addr")
+		cfg.ConfigPropagation.SigningSecretEnv, _ = getString(configPropagationRaw, "signing_secret_env")
 	}
 
 	if cacheRaw, ok := getMap(root, "cache"); ok {

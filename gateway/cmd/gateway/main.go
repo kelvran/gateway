@@ -483,7 +483,11 @@ func run(configPath string, logger *slog.Logger) error {
 	// is canceled, exactly like RunHealthProbeLoop, so it needs no
 	// separate stop mechanism either.
 	if cfg.ConfigPropagation.RedisAddr != "" {
-		subscriber := configpropagation.Open(cfg.ConfigPropagation.RedisAddr)
+		configPropagationSecret, err := resolveConfigPropagationSigningSecret(cfg.ConfigPropagation)
+		if err != nil {
+			return err
+		}
+		subscriber := configpropagation.Open(cfg.ConfigPropagation.RedisAddr, configPropagationSecret)
 		go func() {
 			err := subscriber.Subscribe(ctx, func(event configpropagation.MutationEvent) {
 				if event.OriginInstanceID == telemetry.InstanceID {
@@ -867,7 +871,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	// subscriber goroutine opens below (see newConfigPublisher's own
 	// doc comment for why) -- both lightweight, both fail-open on an
 	// unreachable address exactly like newKeyLimiter's Redis backend.
-	configPublisher := newConfigPublisher(cfg.ConfigPropagation)
+	configPublisher, err := newConfigPublisher(cfg.ConfigPropagation)
+	if err != nil {
+		return nil, err
+	}
 	alertNotifier := newAlertNotifier(cfg.Alerting, logger)
 
 	upstreamTransport := newUpstreamTransport()
@@ -1235,15 +1242,38 @@ func newKeyLimiter(cfg controlplane.RateLimitConfig, keys []ratelimit.KeyConfig)
 // pointer — the classic Go typed-nil trap dataplane.Pipeline's own
 // "p.configPublisher != nil" check depends on being avoided here) when
 // cfg.RedisAddr is empty, matching newKeyLimiter's identical "unset
-// means the feature doesn't exist" convention. configpropagation.Open
-// never fails on an unreachable address (go-redis dials lazily,
-// mirroring redislimiter.Open's own identical contract) so this never
-// returns an error.
-func newConfigPublisher(cfg controlplane.ConfigPropagationConfig) configpropagation.Publisher {
+// means the feature doesn't exist" convention. Now returns an error
+// when RedisAddr is set but SigningSecretEnv resolves empty — see that
+// field's own doc comment for why this channel's signing is mandatory,
+// not optional, mirroring AdminConfig.TokenEnv's own fail-startup
+// convention. configpropagation.Open itself still never fails on an
+// unreachable address (go-redis dials lazily, mirroring
+// redislimiter.Open's own identical contract).
+func newConfigPublisher(cfg controlplane.ConfigPropagationConfig) (configpropagation.Publisher, error) {
 	if cfg.RedisAddr == "" {
-		return nil
+		return nil, nil
 	}
-	return configpropagation.Open(cfg.RedisAddr)
+	secret, err := resolveConfigPropagationSigningSecret(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return configpropagation.Open(cfg.RedisAddr, secret), nil
+}
+
+// resolveConfigPropagationSigningSecret resolves and validates
+// cfg.SigningSecretEnv, shared by both newConfigPublisher (the
+// publish side, in buildPipeline) and run()'s own subscriber-goroutine
+// setup — both must fail startup identically rather than one enforcing
+// the requirement and the other silently trusting an unsigned channel.
+func resolveConfigPropagationSigningSecret(cfg controlplane.ConfigPropagationConfig) (string, error) {
+	if cfg.SigningSecretEnv == "" {
+		return "", fmt.Errorf("config_propagation.redis_addr is set but signing_secret_env is missing — refusing to run an unauthenticated cross-instance mutation channel")
+	}
+	secret := os.Getenv(cfg.SigningSecretEnv)
+	if secret == "" {
+		return "", fmt.Errorf("config_propagation.signing_secret_env %q is set but resolves to an empty environment variable — refusing to run an unauthenticated cross-instance mutation channel", cfg.SigningSecretEnv)
+	}
+	return secret, nil
 }
 
 // newAlertNotifier builds the optional direct-from-Go webhook push, per

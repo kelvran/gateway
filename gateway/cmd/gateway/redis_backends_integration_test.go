@@ -13,6 +13,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -54,6 +56,26 @@ func openTestRedisForMain(t *testing.T) string {
 	return strings.TrimPrefix(connStr, "redis://")
 }
 
+// testConfigPropagationSigningSecretForMain generates a fresh random
+// HMAC secret for one test's own config-propagation setup — mirrors
+// internal/gateway/dataplane's identical testConfigPropagationSigningSecret
+// helper, duplicated here rather than exported cross-package for the
+// same "cmd/gateway tests stay self-contained package main" reason
+// openTestRedisForMain's own doc comment gives. configpropagation.Open
+// now refuses to Publish/Subscribe without one (see
+// configpropagation.MutationEvent.Signature's own doc comment), and
+// buildPipeline's newConfigPublisher fails startup entirely when
+// ConfigPropagation.RedisAddr is set but the resolved secret is empty —
+// every call to newRedisBackedIntegrationServer below needs a real one.
+func testConfigPropagationSigningSecretForMain(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("generating test signing secret: %v", err)
+	}
+	return hex.EncodeToString(b)
+}
+
 // newRedisBackedIntegrationServer builds the same real buildPipeline +
 // chatCompletionsHandler wiring as newIntegrationServerWithBudgetPersistence
 // (budget_persistence_integration_test.go), but with Budget/Admin/
@@ -61,10 +83,15 @@ func openTestRedisForMain(t *testing.T) string {
 // and buildPipeline's own identity-store construction branch genuinely
 // route through internal/budget/redisbudget and internal/identity/
 // redisstore, via the exact config fields an operator would set, not a
-// lower-level constructor call.
-func newRedisBackedIntegrationServer(t *testing.T, upstreamURL, upstreamKeyEnvVar, redisAddr string, keys []controlplane.VirtualKeyConfig) (*httptest.Server, *dataplane.Pipeline) {
+// lower-level constructor call. signingSecret is the config-propagation
+// HMAC secret — callers that need two instances to interoperate (e.g.
+// a real cross-instance convergence test) must pass the SAME value to
+// both; callers that don't care can pass independently generated ones.
+func newRedisBackedIntegrationServer(t *testing.T, upstreamURL, upstreamKeyEnvVar, redisAddr, signingSecret string, keys []controlplane.VirtualKeyConfig) (*httptest.Server, *dataplane.Pipeline) {
 	t.Helper()
 	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
+	signingSecretEnvVar := upstreamKeyEnvVar + "_CFGPROP_SECRET"
+	t.Setenv(signingSecretEnvVar, signingSecret)
 
 	cfg := &controlplane.Config{
 		ListenAddr:  ":0",
@@ -84,7 +111,7 @@ func newRedisBackedIntegrationServer(t *testing.T, upstreamURL, upstreamKeyEnvVa
 		},
 		Budget:            controlplane.BudgetConfig{RedisAddr: redisAddr},
 		Admin:             controlplane.AdminConfig{RedisAddr: redisAddr},
-		ConfigPropagation: controlplane.ConfigPropagationConfig{RedisAddr: redisAddr},
+		ConfigPropagation: controlplane.ConfigPropagationConfig{RedisAddr: redisAddr, SigningSecretEnv: signingSecretEnvVar},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -169,7 +196,7 @@ func TestIntegrationBudgetPersistsAcrossRestartViaRedis(t *testing.T) {
 		{Name: "team-durable", KeyHash: testKeyHash("durable-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("0.00001")},
 	}
 
-	gw1, pipeline1 := newRedisBackedIntegrationServer(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_REDIS1", redisAddr, keys)
+	gw1, pipeline1 := newRedisBackedIntegrationServer(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_REDIS1", redisAddr, testConfigPropagationSigningSecretForMain(t), keys)
 	status1, body1 := doChatRequest(t, gw1, "durable-secret")
 	if status1 != http.StatusOK {
 		t.Fatalf("instance #1 request status = %d, want 200; body: %s", status1, body1)
@@ -186,7 +213,7 @@ func TestIntegrationBudgetPersistsAcrossRestartViaRedis(t *testing.T) {
 		t.Fatalf("pipeline1.Close(): %v", err)
 	}
 
-	gw2, pipeline2 := newRedisBackedIntegrationServer(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_REDIS2", redisAddr, keys)
+	gw2, pipeline2 := newRedisBackedIntegrationServer(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_REDIS2", redisAddr, testConfigPropagationSigningSecretForMain(t), keys)
 	t.Cleanup(func() { _ = pipeline2.Close() })
 
 	status2, body2 := doChatRequest(t, gw2, "durable-secret")
@@ -224,9 +251,9 @@ func TestIntegrationTwoLiveReplicasShareRedisBackedBudgetAcrossConcurrentInstanc
 	// Instance A and instance B are built independently and stay open
 	// side by side for the rest of this test -- neither is ever closed
 	// before the other's request runs.
-	gwA, pipelineA := newRedisBackedIntegrationServer(t, upstreamA.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_REPLICA_A", redisAddr, keys)
+	gwA, pipelineA := newRedisBackedIntegrationServer(t, upstreamA.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_REPLICA_A", redisAddr, testConfigPropagationSigningSecretForMain(t), keys)
 	t.Cleanup(func() { _ = pipelineA.Close() })
-	gwB, pipelineB := newRedisBackedIntegrationServer(t, upstreamB.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_REPLICA_B", redisAddr, keys)
+	gwB, pipelineB := newRedisBackedIntegrationServer(t, upstreamB.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_REPLICA_B", redisAddr, testConfigPropagationSigningSecretForMain(t), keys)
 	t.Cleanup(func() { _ = pipelineB.Close() })
 
 	statusA, bodyA := doChatRequest(t, gwA, "shared-secret")
@@ -266,13 +293,14 @@ func TestIntegrationTwoLiveReplicasConvergeOnVirtualKeyUpsertViaConfigPropagatio
 		{Name: "team-shared", KeyHash: testKeyHash("shared-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
 	}
 
-	_, pipelineA := newRedisBackedIntegrationServer(t, upstreamA.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_PROP_A", redisAddr, keys)
+	signingSecret := testConfigPropagationSigningSecretForMain(t)
+	_, pipelineA := newRedisBackedIntegrationServer(t, upstreamA.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_PROP_A", redisAddr, signingSecret, keys)
 	t.Cleanup(func() { _ = pipelineA.Close() })
-	gwB, pipelineB := newRedisBackedIntegrationServer(t, upstreamB.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_PROP_B", redisAddr, keys)
+	gwB, pipelineB := newRedisBackedIntegrationServer(t, upstreamB.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_PROP_B", redisAddr, signingSecret, keys)
 	t.Cleanup(func() { _ = pipelineB.Close() })
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	subB := configpropagation.Open(redisAddr)
+	subB := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)

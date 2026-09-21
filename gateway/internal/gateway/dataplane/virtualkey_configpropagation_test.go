@@ -133,12 +133,13 @@ func TestIntegrationTwoPipelinesConvergeOnVirtualKeyUpsertViaRedisPubSub(t *test
 	redisAddr := openTestRedis(t)
 	keys := []identity.VirtualKey{{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100}}
 
-	pubA := configpropagation.Open(redisAddr)
+	signingSecret := testConfigPropagationSigningSecret(t)
+	pubA := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newVirtualKeyPropagationTestPipeline(t, keys, pubA)
 	pipelineB := newVirtualKeyPropagationTestPipeline(t, keys, nil)
 
-	subB := configpropagation.Open(redisAddr)
+	subB := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)
@@ -183,12 +184,13 @@ func TestIntegrationTwoPipelinesConvergeOnVirtualKeyDeleteViaRedisPubSub(t *test
 		{ID: "team-doomed", KeyHash: testHashOf("doomed-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
 	}
 
-	pubA := configpropagation.Open(redisAddr)
+	signingSecret := testConfigPropagationSigningSecret(t)
+	pubA := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newVirtualKeyPropagationTestPipeline(t, keys, pubA)
 	pipelineB := newVirtualKeyPropagationTestPipeline(t, keys, nil)
 
-	subB := configpropagation.Open(redisAddr)
+	subB := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)
@@ -227,12 +229,13 @@ func TestIntegrationTwoPipelinesConvergeOnVirtualKeyRotateViaRedisPubSub(t *test
 		{ID: "team-rotating", KeyHash: testHashOf("old-secret"), RateLimitBurst: 100, RateLimitRefill: 100},
 	}
 
-	pubA := configpropagation.Open(redisAddr)
+	signingSecret := testConfigPropagationSigningSecret(t)
+	pubA := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newVirtualKeyPropagationTestPipeline(t, keys, pubA)
 	pipelineB := newVirtualKeyPropagationTestPipeline(t, keys, nil)
 
-	subB := configpropagation.Open(redisAddr)
+	subB := configpropagation.Open(redisAddr, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)
@@ -255,6 +258,66 @@ func TestIntegrationTwoPipelinesConvergeOnVirtualKeyRotateViaRedisPubSub(t *test
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("pipelineB never converged to accept A's rotated key's new secret within 5s")
+}
+
+// TestRotateVirtualKeyConvergesOnAReplicaThatNeverSawTheOriginalUpsert
+// closes a real gap this session's own end-to-end production audit
+// found: unlike the test above (where instance B already has
+// "team-rotating" registered from its own initial key set), instance B
+// here starts with NO knowledge of "team-rotating" at all — simulating
+// a replica that missed the original TypeVirtualKeyUpsert event
+// entirely (configpropagation's pub/sub is fire-and-forget with no
+// replay) or joined the shared Redis afterward. Before RotateVirtualKey
+// was fixed to publish the real, currently-registered rate-limit config
+// instead of nil, this instance would accept the new secret (identity
+// resolution succeeds) but silently deny EVERY request from it — a nil
+// rateLimit skips ratelimit.KeyLimiter.Register entirely, and Allow's
+// own nil-bucket/zero-capacity branch cannot distinguish "never
+// registered" from "registered with Capacity 0" (see that method's own
+// doc comment). canAuthenticate below calls the FULL request pipeline
+// (HandleChatCompletion), so it only returns true once BOTH identity
+// AND the rate-limit check succeed — exactly the property this test
+// needs. Break this by reverting RotateVirtualKey's own p.limiter.Config
+// lookup back to publishing nil: this test starts timing out because
+// canAuthenticate never becomes true.
+func TestRotateVirtualKeyConvergesOnAReplicaThatNeverSawTheOriginalUpsert(t *testing.T) {
+	redisAddr := openTestRedis(t)
+	rotatingKey := identity.VirtualKey{ID: "team-rotating", KeyHash: testHashOf("old-secret"), RateLimitBurst: 1, RateLimitRefill: 0}
+	// unrelatedKey exists only to satisfy identity.NewVerifier's own
+	// "at least one key" requirement for pipelineB's initial set —
+	// pipelineB must start with ZERO knowledge of "team-rotating"
+	// itself, which is the whole point of this test.
+	unrelatedKey := identity.VirtualKey{ID: "team-unrelated", KeyHash: testHashOf("unrelated-secret"), RateLimitBurst: 100, RateLimitRefill: 100}
+
+	signingSecret := testConfigPropagationSigningSecret(t)
+	pubA := configpropagation.Open(redisAddr, signingSecret)
+	t.Cleanup(func() { _ = pubA.Close() })
+	pipelineA := newVirtualKeyPropagationTestPipeline(t, []identity.VirtualKey{rotatingKey}, pubA)
+	pipelineB := newVirtualKeyPropagationTestPipeline(t, []identity.VirtualKey{unrelatedKey}, nil)
+
+	subB := configpropagation.Open(redisAddr, signingSecret)
+	t.Cleanup(func() { _ = subB.Close() })
+	subCtx, cancelSub := context.WithCancel(context.Background())
+	t.Cleanup(cancelSub)
+	go subscribeVirtualKeyEvents(subCtx, subB, pipelineB, func(err error) { t.Errorf("subscriber apply error: %v", err) })
+	time.Sleep(100 * time.Millisecond)
+
+	if canAuthenticate(pipelineB, "new-secret") {
+		t.Fatal("setup: pipelineB already authenticates the not-yet-issued new secret")
+	}
+
+	if err := pipelineA.RotateVirtualKey("team-rotating", testHashOf("new-secret"), time.Hour); err != nil {
+		t.Fatalf("RotateVirtualKey on instance A: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if canAuthenticate(pipelineB, "new-secret") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("pipelineB never converged to a WORKING (authenticating AND rate-limit-allowed) registration for the rotated key within 5s -- a replica that never saw the original upsert would be silently deny-all'd forever")
 }
 
 // TestApplyVirtualKeyUpsertFromEventDiscardsAnOutOfOrderStaleUpdate
@@ -335,14 +398,18 @@ func TestApplyVirtualKeyDeleteFromEventDiscardsAnOutOfOrderStaleUpdate(t *testin
 }
 
 // TestRotateVirtualKeyPropagatedEventNeverRegistersARateLimit is the
-// direct regression proof for TypeVirtualKeyUpsert's own doc comment:
-// a rotation-originated apply must pass rateLimit=nil, never
-// overwriting a remote replica's own, already-registered rate-limit
-// config with a reconstructed guess. Proven here by driving
-// ApplyVirtualKeyUpsertFromEvent directly with RateLimitConfig
-// deliberately nil (exactly what RotateVirtualKey's own publish call
-// produces) against a key with a DIFFERENT, already-registered
-// Capacity, and confirming that registration survives unchanged.
+// direct regression proof for applyVirtualKeyUpsert's own defensive
+// property: an apply with RateLimitConfig == nil must never overwrite a
+// remote replica's own, already-registered rate-limit config with a
+// reconstructed guess. RotateVirtualKey itself no longer actually sends
+// nil (it now looks up and republishes the real, currently-registered
+// config via p.limiter.Config — see that method's own doc comment and
+// TestRotateVirtualKeyConvergesOnAReplicaThatNeverSawTheOriginalUpsert
+// above, which proves THAT fix); this test still drives
+// ApplyVirtualKeyUpsertFromEvent directly with RateLimitConfig nil,
+// since the nil case itself is still a real, reachable input (e.g. a
+// future event type, or an older gateway version's event during a
+// rolling deploy) that must keep this exact "never overwrite" contract.
 func TestRotateVirtualKeyPropagatedEventNeverRegistersARateLimit(t *testing.T) {
 	keys := []identity.VirtualKey{
 		{ID: "team-gamma", KeyHash: testHashOf("gamma-secret"), RateLimitBurst: 1, RateLimitRefill: 0}, // capacity 1, zero refill: exhausts after one call
@@ -352,7 +419,7 @@ func TestRotateVirtualKeyPropagatedEventNeverRegistersARateLimit(t *testing.T) {
 	rotatedVK := identity.VirtualKey{ID: "team-gamma", KeyHash: testHashOf("rotated-secret"), RateLimitBurst: 1, RateLimitRefill: 0}
 	if err := p.ApplyVirtualKeyUpsertFromEvent(configpropagation.VirtualKeyUpsertPayload{
 		VirtualKey:      virtualKeyToPayload(rotatedVK),
-		RateLimitConfig: nil, // exactly what RotateVirtualKey's own publish call sends
+		RateLimitConfig: nil,
 	}, 1000); err != nil {
 		t.Fatalf("ApplyVirtualKeyUpsertFromEvent(rateLimit=nil): %v", err)
 	}
