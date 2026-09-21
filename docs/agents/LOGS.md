@@ -2999,3 +2999,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** None new — this was a release-process round, not a fix round. The transient `go-test-coverage` proxy error above was investigated and confirmed to be infrastructure flakiness, not a real coverage regression, before re-running rather than being dismissed unverified.
 
 **Next steps / resume point:** `gateway/v0.14.0` is tagged, released, published to GHCR (signed + attested + independently verified), and `deploy/k8s/base/deployment.yaml` now correctly points at it. `evals/changelog/unreleased.md` has its own, structurally identical backlog (8 real commits since `evals/v0.9.0`, none logged) — a real, named candidate for a future `evals` release round, not yet authorized or started. No other work is in flight.
+
+## [2026-09-21] main — direct working-tree commit `5f10a753` + `evals/v0.10.0` tag/release
+
+**Files touched:** `evals/changelog/0.10.0.md` (new); this entry + a matching `DECISIONS.md` entry.
+
+**Intent/summary:** User asked for "next ideal steps" again; the prior entry had already named `evals`'s own identical unreleased-changelog gap (7 real commits since `evals/v0.9.0`, none logged) as the concrete candidate, so proceeded directly rather than re-proposing it.
+
+**Decisions made:** SemVer bump chosen as MINOR (`0.9.0` → `0.10.0`), not PATCH — the range includes genuine new backward-compatible functionality (`--llm-judge-provider`, the three new `evals.stats` functions, `evals.online.sampler`), not just fixes, matching `gateway/v0.14.0`'s own identical reasoning one entry up. Confirmed before tagging that `evals/v0.10.0` triggers no CI job at all beyond the ordinary push-triggered `CI` workflow (`ci.yml`'s own `on.push.tags` filter is `["gateway/v*"]` only — no PyPI-publish job exists yet, matching `RELEASE.md`'s own "PyPI blocked pending trademark clearance, tag/Release not blocked" distinction and the identical precedent already set for `evals/v0.9.0`), so no risk of an accidental blocked-publish attempt.
+
+**Verification performed:** Backfilled `evals/changelog/0.10.0.md` from each of the 7 real commits' own full body (not subject lines) since `evals/v0.9.0`, one of which (`feat(api): add FinishReason to GatewayDecisionEvent`) is a shared `api/` contract change already also logged under `gateway/v0.14.0` — deliberately double-logged in both changelogs since it's genuinely shared, not a duplication mistake. Tagged and pushed `evals/v0.10.0`; confirmed the ordinary push-triggered `CI` run (gateway/api/evals jobs + `publish gateway image to GHCR`) went fully green before creating the release. Created a real GitHub Release (`gh release create evals/v0.10.0`) with the changelog as its notes.
+
+**Bugs found:** None — release-process round only.
+
+**Next steps / resume point:** Both deployables now have a real, tagged, released version with an accurate changelog and no unlogged backlog. PyPI publish of `kelvran-evals` remains blocked on USPTO trademark clearance (`RELEASE.md`'s own disclosed pre-flight blocker) — not actioned, not in scope. No further work is in flight; a future "what's next" session should not find either `unreleased.md` non-empty relative to this point without new work having landed first.
