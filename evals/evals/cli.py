@@ -25,12 +25,18 @@ Given `--suite`/`--results` too, each decoded event is also mapped (via
 `promote` reads from every other source, closing that RFC's own
 "Unresolved Questions" entry: live-sampled data feeds `evals promote`
 the same as any other run source, no separate review path.
+`--sample-rate`/`--filter-rules` (per `evals.online.sampler`'s own
+package doc comment) let `ingest` double as the real "online eval"
+sampling/filtering half of a continuous production stream — LLM-judge
+SCORING of a sampled event is explicitly out of scope, since
+`GatewayDecisionEvent` carries no prompt/completion content to judge.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import random
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -72,6 +78,11 @@ from evals.judge.providers import (
     make_openai_call_model,
 )
 from evals.models import EvalCase, PanelVote, Run, Score, Span, TrendSnapshot
+from evals.online.sampler import (
+    DEFAULT_RULE_FILTERS,
+    passes_rule_filters,
+    should_sample,
+)
 from evals.results_store import (
     append_runs,
     append_scores,
@@ -1623,11 +1634,56 @@ def flag_candidates_cmd(
         "--suite."
     ),
 )
+@click.option(
+    "--sample-rate",
+    "sample_rate",
+    default=1.0,
+    type=float,
+    help=(
+        "Online-eval sampling rate (evals.online.sampler.should_sample), "
+        "applied to every decoded event before it is written to --out/"
+        "--suite/--results — 1.0 (the default) ingests every event, "
+        "byte-identical to this command's behavior before this option "
+        "existed. A value below 1.0 is a uniform-random per-event "
+        "sample, real production usage with no reproducibility "
+        "guarantee unless --sample-seed is also given."
+    ),
+)
+@click.option(
+    "--sample-seed",
+    "sample_seed",
+    default=None,
+    type=int,
+    help=(
+        "Seeds --sample-rate's own random.Random instance for a "
+        "reproducible dry run (e.g. auditing what a given rate WOULD "
+        "have selected against an already-ingested batch). Omitted "
+        "(the default): each run samples independently, matching real "
+        "production usage."
+    ),
+)
+@click.option(
+    "--filter-rules/--no-filter-rules",
+    "filter_rules",
+    default=False,
+    help=(
+        "Additionally require every event to pass "
+        "evals.online.sampler.DEFAULT_RULE_FILTERS (today: at least one "
+        "of the same 4 gateway-failure outcomes "
+        "evals.auto_flag.DEFAULT_RULES already flags) before it is "
+        "written to --out/--suite/--results — ANDed with --sample-rate, "
+        "never a substitute for it. Default false: no rule constraint, "
+        "matching this command's pre-existing behavior."
+    ),
+)
 def ingest_cmd(
     source: str,
     out_path: Path,
     suite_path: Path | None,
     results_path: Path | None,
+    sample_rate: float,
+    sample_seed: int | None,
+    filter_rules: bool,
 ) -> None:
     """List and decode gatewayevents_v1 objects from object storage.
 
@@ -1650,6 +1706,17 @@ def ingest_cmd(
     for exactly what is/isn't honestly derivable from a
     `GatewayDecisionEvent`. Omitting both reproduces the original
     decode-only behavior exactly.
+
+    `--sample-rate`/`--filter-rules` (per `evals.online.sampler`'s own
+    doc comment for why LLM-judge scoring of a sampled event is NOT
+    part of this command, or built anywhere yet) apply AFTER a
+    successful decode but BEFORE a decoded event is written anywhere
+    (`--out`/`--suite`/`--results`) — a sampled-out or filtered-out
+    event still counts toward `decoded_count` in this command's own
+    summary line (it WAS a real, successfully-decoded event), just not
+    toward the separately-reported sampled-in count. Omitting both
+    options reproduces this command's original "ingest everything"
+    behavior exactly.
     """
     if (suite_path is None) != (results_path is None):
         raise click.UsageError("--suite and --results must be given together.")
@@ -1662,8 +1729,16 @@ def ingest_cmd(
     if not keys:
         raise click.ClickException(f"no objects found under {source}")
 
+    sample_rng = (
+        random.Random(sample_seed)  # noqa: S311 -- online-eval sampling, never cryptographic material
+        if sample_seed is not None
+        else None
+    )
+    rule_filters = DEFAULT_RULE_FILTERS if filter_rules else ()
+
     decoded_count = 0
     error_count = 0
+    sampled_count = 0
     new_cases: list[EvalCase] = []
     new_runs: list[Run] = []
     try:
@@ -1676,6 +1751,11 @@ def ingest_cmd(
                         error_count += 1
                         continue
                     decoded_count += 1
+                    if not should_sample(event, sample_rate, sample_rng):
+                        continue
+                    if not passes_rule_filters(event, rule_filters):
+                        continue
+                    sampled_count += 1
                     # indent=None -- a single compact line, matching the
                     # newline-delimited-JSON shape the object-storage body
                     # itself already uses (never a pretty-printed, multi-line
@@ -1709,11 +1789,27 @@ def ingest_cmd(
                 "promotable cases",
                 lambda: _append_cases_to_suite(new_cases, suite_path),
             )
-        _try_persist("runs", lambda: append_runs(new_runs, results_path))
+        # Real, pre-existing gap found while implementing --sample-rate/
+        # --filter-rules above (unconditional even on the ORIGINAL
+        # decode-only invocation shape, independent of either new
+        # option): unlike its "promotable cases" sibling immediately
+        # above, this call had no `if results_path is not None:` guard
+        # at all -- every plain `evals ingest --source ... --out ...`
+        # call (the common case, no --suite/--results) reached
+        # `append_runs(new_runs, results_path)` with results_path=None,
+        # which _try_persist caught and printed as a spurious "warning:
+        # failed to persist runs: 'NoneType' object has no attribute
+        # 'open'" -- harmless (new_runs is always [] in that shape, so no
+        # real data loss), but a confusing, incorrect warning on every
+        # such invocation.
+        if results_path is not None:
+            _try_persist("runs", lambda: append_runs(new_runs, results_path))
 
     click.echo(
         f"ingested {len(keys)} object(s) from {source}: "
-        f"{decoded_count} decoded, {error_count} failed to decode"
+        f"{decoded_count} decoded, {error_count} failed to decode, "
+        f"{sampled_count} sampled in (sample_rate={sample_rate}, "
+        f"filter_rules={filter_rules})"
     )
     if suite_path is not None:
         click.echo(
