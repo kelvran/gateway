@@ -83,7 +83,7 @@ func TestHandleChatCompletionCacheHitDoesNotRechargeBudget(t *testing.T) {
 	if upstreamCalls != 1 {
 		t.Fatalf("upstreamCalls after first call = %d, want 1", upstreamCalls)
 	}
-	spentAfterMiss := tracker.SpentUSD("test-key", 0)
+	spentAfterMiss := tracker.SpentUSD(context.Background(), "test-key", 0)
 	if spentAfterMiss.IsZero() {
 		t.Fatal("spentAfterMiss = 0, want a real nonzero cost — the price table fixture is broken")
 	}
@@ -94,7 +94,7 @@ func TestHandleChatCompletionCacheHitDoesNotRechargeBudget(t *testing.T) {
 	if upstreamCalls != 1 {
 		t.Fatalf("upstreamCalls after second (cache-hit) call = %d, want still 1", upstreamCalls)
 	}
-	spentAfterHit := tracker.SpentUSD("test-key", 0)
+	spentAfterHit := tracker.SpentUSD(context.Background(), "test-key", 0)
 	if !spentAfterHit.Equal(spentAfterMiss) {
 		t.Errorf("spentAfterHit = %s, want unchanged from spentAfterMiss = %s — a cache hit must never re-charge budget", spentAfterHit, spentAfterMiss)
 	}
@@ -164,7 +164,7 @@ func TestHandleChatCompletionCoalescedFollowerDoesNotRechargeBudget(t *testing.T
 		}
 	}
 
-	spent := tracker.SpentUSD("test-key", 0)
+	spent := tracker.SpentUSD(context.Background(), "test-key", 0)
 	if spent.IsZero() {
 		t.Fatal("spent = 0, want a real nonzero cost — the price table fixture is broken")
 	}

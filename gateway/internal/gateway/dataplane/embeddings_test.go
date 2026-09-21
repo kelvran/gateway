@@ -238,7 +238,7 @@ func TestHandleEmbeddingsEmitsCostAccountingEvent(t *testing.T) {
 		t.Fatalf("HandleEmbeddings: %v", err)
 	}
 
-	spent := p.budget.SpentUSD("test-key", 0)
+	spent := p.budget.SpentUSD(context.Background(), "test-key", 0)
 	want := decimal.RequireFromString("0.1") // 100 tokens * 0.001/token
 	if !spent.Equal(want) {
 		t.Errorf("SpentUSD = %v, want %v (100 prompt tokens * 0.001/token)", spent, want)

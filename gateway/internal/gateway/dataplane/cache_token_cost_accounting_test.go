@@ -113,7 +113,7 @@ func TestCallDeploymentCacheTokensFoldIntoCostAndTPM(t *testing.T) {
 	// rate falls back to promptRate) + cacheCreation(248, same fallback)
 	// + completion(1)*completionRate.
 	wantSpent := decimal.NewFromInt(5 + 1800 + 248).Mul(promptRate).Add(decimal.NewFromInt(1).Mul(completionRate))
-	gotSpent := budgetTracker.SpentUSD("test-key", 0)
+	gotSpent := budgetTracker.SpentUSD(context.Background(), "test-key", 0)
 	if !gotSpent.Equal(wantSpent) {
 		t.Errorf("budget.SpentUSD after one cache-bearing call = %v, want %v (cache-inclusive PromptTokens priced at the fallback prompt rate)", gotSpent, wantSpent)
 	}

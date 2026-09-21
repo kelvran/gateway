@@ -64,6 +64,16 @@ type State struct {
 // Store persists budget spend durably across process restarts. Optional —
 // a Tracker constructed via NewTracker (no store) is unchanged: pure
 // in-memory. See internal/budget/boltstore for the real implementation.
+//
+// Store alone is NOT sufficient for correct multi-replica enforcement:
+// Load runs once, at construction, and every decision afterward
+// (Reserve/Reconcile/IncreaseReservation/SpentUSD/
+// CheckAndMarkBudgetAlertBucket) is made against this Tracker's own LOCAL
+// in-memory maps, never re-consulting Store — two replicas each backed by
+// the same Store never see each other's spend in real time. RedisBackend
+// below (via NewRedisTracker) is the actual cross-replica fix: the
+// admission decision itself runs inside Redis, atomically, per
+// internal/budget/redisbudget's own doc comment.
 type Store interface {
 	Load(ctx context.Context) (map[string]State, error)
 	Save(ctx context.Context, keyID string, state State) error
@@ -73,6 +83,86 @@ type Store interface {
 	// A no-op, not an error, for a keyID with no persisted entry.
 	Delete(ctx context.Context, keyID string) error
 	Close() error
+}
+
+// RedisBackend is the cross-replica-consistent alternative to Store,
+// implemented by internal/budget/redisbudget.Backend — a Tracker
+// constructed via NewRedisTracker uses this exclusively (see each
+// Tracker method's own Redis-mode branch) instead of the local in-memory
+// maps NewTracker/NewTrackerWithStore populate. Per the same
+// interface-lives-in-the-consumer idiom internal/ratelimit's own
+// RedisBackend interface establishes, this package deliberately does not
+// import internal/budget/redisbudget — *redisbudget.Backend satisfies
+// this interface structurally.
+//
+// Every method takes capNanoUSD/deltaNanoUSD/newHighest amounts as
+// integer NANO-USD (see usdToNanoUSD/nanoUSDToUSD) or a raw float64
+// (MarkAlertBucket's newHighest, a percentage, never a currency amount) —
+// never a decimal.Decimal directly, since that type cannot cross the Lua
+// boundary redisbudget's scripts run inside.
+type RedisBackend interface {
+	// Reserve atomically reserves the FULL remaining headroom under
+	// capNanoUSD for keyID (Redis mode's unconditional cold-start
+	// reservation strategy — see redisbudget's own doc comment for why),
+	// starting a fresh resetIntervalMs-TTL'd window if keyID has no
+	// existing entry. resetIntervalMs <= 0 means no expiry (a
+	// lifetime-of-the-key cap, mirroring the in-memory Tracker's own
+	// resetInterval<=0 convention).
+	Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (allowed bool, reservedNanoUSD int64, err error)
+	// ReserveFixed atomically admits exactly deltaNanoUSD (not "everything
+	// remaining") against capNanoUSD — IncreaseReservation's mid-stream
+	// top-up shape.
+	ReserveFixed(ctx context.Context, keyID string, capNanoUSD, deltaNanoUSD, resetIntervalMs int64) (allowed bool, err error)
+	// Adjust reconciles a prior Reserve/ReserveFixed reservation with a
+	// signed deltaNanoUSD (realCost − reservedUSD, in nano-USD) — a silent
+	// no-op if keyID's window already expired, mirroring the in-memory
+	// epoch guard's identical "the reservation's own window no longer
+	// exists, nothing to correct" behavior.
+	Adjust(ctx context.Context, keyID string, deltaNanoUSD int64) error
+	// SpentNanoUSD reads keyID's current cumulative spend — a plain read,
+	// no atomicity requirement of its own (mirrors SpentUSD's identical
+	// in-memory read-only contract).
+	SpentNanoUSD(ctx context.Context, keyID string) (int64, error)
+	// MarkAlertBucket is CheckAndMarkBudgetAlertBucket's Redis-mode
+	// equivalent: newHighest (a percentage, e.g. 0.75) is recorded only if
+	// it exceeds whatever bucket is already marked for keyID.
+	MarkAlertBucket(ctx context.Context, keyID string, newHighest float64, resetIntervalMs int64) (marked bool, err error)
+	// Delete purges keyID's spend and alert-bucket state entirely — GDPR/
+	// CCPA erasure, mirroring Store.Delete's identical contract.
+	Delete(ctx context.Context, keyID string) error
+	// Close closes the underlying Redis client.
+	Close() error
+}
+
+// nanoUSDPerUSD is the fixed-point scale usdToNanoUSD/nanoUSDToUSD convert
+// through: 9 decimal digits of USD precision, comfortably inside the
+// range Lua/Redis's float64-based number type represents every integer
+// exactly (up to 2^53, i.e. USD amounts up to roughly 9,000,000) — see
+// internal/budget/redisbudget's own package doc comment for why crossing
+// the Lua boundary as a float64 USD amount directly would silently
+// reintroduce the exact drift decimal.Decimal was chosen to prevent.
+const nanoUSDPerUSD = 9
+
+// usdToNanoUSD converts a USD decimal.Decimal amount to an integer
+// nano-USD scalar for a RedisBackend call. Rounds to the nearest whole
+// nano-USD (sub-nano-USD precision does not exist anywhere else in this
+// package either) — Shift(9) then Round(0) then IntPart() is an EXACT
+// integer conversion at that point, never a lossy float64 round-trip.
+func usdToNanoUSD(usd decimal.Decimal) int64 {
+	return usd.Shift(nanoUSDPerUSD).Round(0).IntPart()
+}
+
+// nanoUSDToUSD converts a RedisBackend integer nano-USD scalar back to a
+// USD decimal.Decimal — the exact inverse of usdToNanoUSD.
+func nanoUSDToUSD(nano int64) decimal.Decimal {
+	return decimal.New(nano, -nanoUSDPerUSD)
+}
+
+// resetIntervalToMs converts resetInterval to the millisecond TTL a
+// RedisBackend call expects — 0 preserves resetInterval<=0's existing
+// "no expiry" meaning exactly (time.Duration(0).Milliseconds() == 0).
+func resetIntervalToMs(resetInterval time.Duration) int64 {
+	return resetInterval.Milliseconds()
 }
 
 // Tracker enforces a per-key cumulative USD spending cap. The zero value
@@ -120,8 +210,18 @@ type Tracker struct {
 	highestAlertedBucket map[string]float64
 	highestAlertedEpoch  map[string]int64
 	store                Store // nil = pure in-memory, unchanged from before this RFC
-	logger               *slog.Logger
-	now                  func() time.Time // real clock in production; overridden directly by white-box tests
+	// backend, when non-nil, routes every enforcement-relevant method
+	// (Reserve/Reconcile/IncreaseReservation/SpentUSD/
+	// CheckAndMarkBudgetAlertBucket/Delete/Store/Close) to Redis instead
+	// of the local in-memory maps/store above — see NewRedisTracker and
+	// each method's own Redis-mode branch. Mutually exclusive with store:
+	// a Tracker constructed via NewRedisTracker never populates spent/
+	// periodStart/periodEpoch/billedCount/store at all, since Redis's own
+	// key expiration replaces resetIfNeeded's epoch-based window tracking
+	// entirely (see RedisBackend's own doc comment).
+	backend RedisBackend
+	logger  *slog.Logger
+	now     func() time.Time // real clock in production; overridden directly by white-box tests
 }
 
 // NewTracker constructs an empty, pure in-memory Tracker.
@@ -168,6 +268,22 @@ func NewTrackerWithStore(ctx context.Context, store Store, logger *slog.Logger) 
 		}
 	}
 	return &Tracker{spent: spent, periodStart: periodStart, periodEpoch: periodEpoch, billedCount: billedCount, highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
+}
+
+// NewRedisTracker constructs a Tracker whose enforcement decisions run
+// atomically inside Redis via backend, giving correct cap-check-and-debit
+// behavior across any number of gateway replicas sharing one Redis
+// instance — unlike NewTrackerWithStore, which only ever provides
+// single-process restart-durability (see Store's own doc comment).
+// logger defaults to slog.Default() if nil, mirroring
+// NewTrackerWithStore's identical convention — used only to report a
+// Redis backend error on a fail-open (never enforcement-fatal) path; see
+// each method's own Redis-mode branch.
+func NewRedisTracker(backend RedisBackend, logger *slog.Logger) *Tracker {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Tracker{backend: backend, logger: logger, now: time.Now}
 }
 
 // resetIfNeeded resets keyID's spend to zero and starts a fresh window,
@@ -273,7 +389,21 @@ func (t *Tracker) Allow(keyID string, capUSD decimal.Decimal, resetInterval time
 // docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md's
 // budget-spend-at-decision-time field), never part of the enforcement
 // decision itself, which Allow alone still makes correctly.
-func (t *Tracker) SpentUSD(keyID string, resetInterval time.Duration) decimal.Decimal {
+//
+// In Redis mode (t.backend != nil), reads straight through to
+// backend.SpentNanoUSD — a backend error fails open exactly like
+// Reserve's own fail-open contract, logged and reported as zero spend,
+// since this is an observability read that must never itself block a
+// request. ctx is only ever consulted in Redis mode.
+func (t *Tracker) SpentUSD(ctx context.Context, keyID string, resetInterval time.Duration) decimal.Decimal {
+	if t.backend != nil {
+		nano, err := t.backend.SpentNanoUSD(ctx, keyID)
+		if err != nil {
+			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "spent_usd", "error", err.Error())
+			return decimal.Zero
+		}
+		return nanoUSDToUSD(nano)
+	}
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
 		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
@@ -349,22 +479,46 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 // unchanged — never re-derived or refreshed by the caller — so Reconcile
 // can detect whether a rolling-window reset happened for this key, by
 // ANY caller, between this Reserve call and that Reconcile call.
-func (t *Tracker) Reserve(keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal, reservationEpoch int64) {
+//
+// In Redis mode (t.backend != nil), ctx is used for the real Redis call
+// and err is non-nil exactly when that call itself failed (network error,
+// timeout, script error) — callers must fail OPEN on a non-nil err
+// (allowed=true, treated as if reserved=false, nothing to Reconcile),
+// mirroring internal/ratelimit's identical "fail-open, not fail-closed"
+// policy; err is always nil in in-memory mode. reservationEpoch is always
+// 0 in Redis mode — Redis's own key expiration replaces the epoch-based
+// window-reset detection entirely (see RedisBackend's own doc comment),
+// so Reconcile's Redis-mode branch never consults it.
+func (t *Tracker) Reserve(ctx context.Context, keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal, reservationEpoch int64, err error) {
+	if t.backend != nil {
+		if capUSD.Sign() <= 0 {
+			return true, false, decimal.Zero, 0, nil
+		}
+		allowedRedis, reservedNano, redisErr := t.backend.Reserve(ctx, keyID, usdToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
+		if redisErr != nil {
+			return false, false, decimal.Zero, 0, redisErr
+		}
+		if !allowedRedis {
+			return false, false, decimal.Zero, 0, nil
+		}
+		return true, true, nanoUSDToUSD(reservedNano), 0, nil
+	}
+
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
 		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
 	if capUSD.Sign() <= 0 {
-		return true, false, decimal.Zero, 0
+		return true, false, decimal.Zero, 0, nil
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.spent[keyID].LessThan(capUSD) {
-		return false, false, decimal.Zero, 0
+		return false, false, decimal.Zero, 0, nil
 	}
 	reservedUSD = t.reservationAmountLocked(keyID, capUSD)
 	t.spent[keyID] = t.spent[keyID].Add(reservedUSD)
-	return true, true, reservedUSD, t.periodEpoch[keyID]
+	return true, true, reservedUSD, t.periodEpoch[keyID], nil
 }
 
 // reservationAmountLocked computes keyID's Reserve reservation amount:
@@ -438,7 +592,34 @@ func (t *Tracker) reservationAmountLocked(keyID string, capUSD decimal.Decimal) 
 // cross-caller case entirely — see
 // TestReconcileDoesNotUndercountAcrossAConcurrentlyTriggeredReset for a
 // concrete, 100%-reproducible demonstration of the resulting money-leak.
-func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, reservationEpoch int64, realCost *decimal.Decimal, resetInterval time.Duration) {
+//
+// In Redis mode (t.backend != nil), reservationEpoch is ignored entirely —
+// Redis's own key expiration is the window-reset signal (see
+// RedisBackend's own doc comment): a call against an already-expired
+// window is a silent no-op inside backend.Adjust itself, the exact same
+// "nothing to correct" outcome the epoch check produces in-memory, just
+// obtained for free rather than via an explicit comparison. The delta
+// applied is realCost−reservedUSD when billed, or −reservedUSD on a
+// release-only call — the same net effect the in-memory branch's
+// subtract-then-add achieves via two decimal operations. A Redis backend
+// error here is logged and swallowed, never propagated: Reconcile is a
+// cleanup call with no caller left to fail open FOR — the in-memory
+// spend/enforcement path has already run its course by the time this is
+// called, exactly as a Store.Save persistence failure is already
+// non-fatal here today.
+func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decimal.Decimal, reservationEpoch int64, realCost *decimal.Decimal, resetInterval time.Duration) {
+	if t.backend != nil {
+		billed := realCost != nil && realCost.Sign() >= 0
+		delta := decimal.Zero.Sub(reservedUSD)
+		if billed {
+			delta = realCost.Sub(reservedUSD)
+		}
+		if err := t.backend.Adjust(ctx, keyID, usdToNanoUSD(delta)); err != nil {
+			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "reconcile", "error", err.Error())
+		}
+		return
+	}
+
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
 		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
@@ -521,12 +702,38 @@ func (t *Tracker) Reconcile(keyID string, reservedUSD decimal.Decimal, reservati
 // instead of computing a delta at all. The caller MUST thread whichever
 // epoch this returns into its eventual Reconcile call, mirroring
 // Reserve's own contract — never the original pre-stream epoch.
-func (t *Tracker) IncreaseReservation(keyID string, capUSD, currentReservedUSD, newReservedUSD decimal.Decimal, reservationEpoch int64, resetInterval time.Duration) (allowed bool, appliedUSD decimal.Decimal, newReservationEpoch int64) {
+//
+// In Redis mode (t.backend != nil), reservationEpoch is accepted but
+// never consulted (see Reconcile's own Redis-mode doc comment) and
+// newReservationEpoch is always returned unchanged — Redis has no
+// epoch-rollover case to detect a top-up against. A backend error fails
+// OPEN exactly like checkMidStreamReservationTopup's own established
+// policy for the TPM dimension's IncreaseReservationTPM: err is non-nil,
+// allowed is true, and appliedUSD/newReservationEpoch are returned
+// UNCHANGED (currentReservedUSD/reservationEpoch) — the caller must
+// treat a non-nil err as "no top-up happened, but don't cut off the
+// stream for a Redis-reachability problem."
+func (t *Tracker) IncreaseReservation(ctx context.Context, keyID string, capUSD, currentReservedUSD, newReservedUSD decimal.Decimal, reservationEpoch int64, resetInterval time.Duration) (allowed bool, appliedUSD decimal.Decimal, newReservationEpoch int64, err error) {
+	if t.backend != nil {
+		if capUSD.Sign() <= 0 || !newReservedUSD.GreaterThan(currentReservedUSD) {
+			return true, currentReservedUSD, reservationEpoch, nil
+		}
+		delta := newReservedUSD.Sub(currentReservedUSD)
+		allowedRedis, redisErr := t.backend.ReserveFixed(ctx, keyID, usdToNanoUSD(capUSD), usdToNanoUSD(delta), resetIntervalToMs(resetInterval))
+		if redisErr != nil {
+			return true, currentReservedUSD, reservationEpoch, redisErr
+		}
+		if !allowedRedis {
+			return false, currentReservedUSD, reservationEpoch, nil
+		}
+		return true, newReservedUSD, reservationEpoch, nil
+	}
+
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
 		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
 	if capUSD.Sign() <= 0 || !newReservedUSD.GreaterThan(currentReservedUSD) {
-		return true, currentReservedUSD, reservationEpoch
+		return true, currentReservedUSD, reservationEpoch, nil
 	}
 
 	t.mu.Lock()
@@ -540,18 +747,18 @@ func (t *Tracker) IncreaseReservation(keyID string, capUSD, currentReservedUSD, 
 			// is genuinely zero, never the stale currentReservedUSD
 			// (which would otherwise make Reconcile subtract a phantom
 			// amount a second time in this new window).
-			return false, decimal.Zero, currentEpoch
+			return false, decimal.Zero, currentEpoch, nil
 		}
 		t.spent[keyID] = t.spent[keyID].Add(newReservedUSD)
-		return true, newReservedUSD, currentEpoch
+		return true, newReservedUSD, currentEpoch, nil
 	}
 
 	delta := newReservedUSD.Sub(currentReservedUSD)
 	if t.spent[keyID].Add(delta).GreaterThan(capUSD) {
-		return false, currentReservedUSD, currentEpoch
+		return false, currentReservedUSD, currentEpoch, nil
 	}
 	t.spent[keyID] = t.spent[keyID].Add(delta)
-	return true, newReservedUSD, currentEpoch
+	return true, newReservedUSD, currentEpoch, nil
 }
 
 // BudgetAlertBuckets is the fixed percent-of-cap ladder
@@ -578,7 +785,39 @@ var BudgetAlertBuckets = []float64{0.5, 0.75, 0.9, 1.0}
 // every bucket skipped over by one large jump in spend — this is a
 // "how close are we now" signal, not an audit trail of every threshold a
 // request happened to leap past.
-func (t *Tracker) CheckAndMarkBudgetAlertBucket(keyID string, percentUsed float64) (bucket float64, crossed bool) {
+//
+// In Redis mode (t.backend != nil), the dedup lives in
+// backend.MarkAlertBucket (a compare-and-set against its own
+// resetInterval-TTL'd key) rather than highestAlertedBucket/
+// highestAlertedEpoch — resetInterval is only ever consulted in this
+// mode, to size that key's TTL the same way Reserve sizes the spend
+// key's own. A backend error is logged and treated as "not crossed" —
+// this is an alert-dedup signal, never an enforcement decision, so
+// failing open (never alerting, in the worst case) is the correct
+// default, not failing the request.
+func (t *Tracker) CheckAndMarkBudgetAlertBucket(ctx context.Context, keyID string, percentUsed float64, resetInterval time.Duration) (bucket float64, crossed bool) {
+	newHighest := 0.0
+	for _, b := range BudgetAlertBuckets {
+		if percentUsed >= b && b > newHighest {
+			newHighest = b
+		}
+	}
+	if newHighest <= 0 {
+		return 0, false
+	}
+
+	if t.backend != nil {
+		marked, err := t.backend.MarkAlertBucket(ctx, keyID, newHighest, resetIntervalToMs(resetInterval))
+		if err != nil {
+			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "check_alert_bucket", "error", err.Error())
+			return 0, false
+		}
+		if !marked {
+			return 0, false
+		}
+		return newHighest, true
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -586,13 +825,6 @@ func (t *Tracker) CheckAndMarkBudgetAlertBucket(keyID string, percentUsed float6
 	alreadyAlerted := 0.0
 	if t.highestAlertedEpoch[keyID] == currentEpoch {
 		alreadyAlerted = t.highestAlertedBucket[keyID]
-	}
-
-	newHighest := alreadyAlerted
-	for _, b := range BudgetAlertBuckets {
-		if percentUsed >= b && b > newHighest {
-			newHighest = b
-		}
 	}
 	if newHighest <= alreadyAlerted {
 		return 0, false
@@ -611,7 +843,16 @@ func (t *Tracker) CheckAndMarkBudgetAlertBucket(keyID string, percentUsed float6
 // new standalone one — a key's budget spend has no independent lawful
 // purpose once the key itself is deleted. A no-op, not an error, for a
 // keyID with no recorded state at all.
+//
+// In Redis mode (t.backend != nil), routes straight to backend.Delete
+// with a background context — mirrors Store.Delete's own
+// context.Background() convention for this same non-hot-path,
+// admin-mutation call (UpsertVirtualKey/DeleteVirtualKey neither thread
+// a request-scoped ctx of their own).
 func (t *Tracker) Delete(keyID string) error {
+	if t.backend != nil {
+		return t.backend.Delete(context.Background(), keyID)
+	}
 	t.mu.Lock()
 	delete(t.spent, keyID)
 	delete(t.periodStart, keyID)
@@ -627,8 +868,10 @@ func (t *Tracker) Delete(keyID string) error {
 }
 
 // Store returns the underlying durable Store, or nil if this Tracker was
-// constructed via NewTracker (no store) — an escape hatch for a caller
-// that needs to reach the concrete implementation (e.g.
+// constructed via NewTracker (no store) or NewRedisTracker (a Redis-mode
+// Tracker has nothing bbolt-backed to back up at all — Redis handles its
+// own durability/replication) — an escape hatch for a caller that needs
+// to reach the concrete implementation (e.g.
 // dataplane.Pipeline.BackupStores type-asserting for a bbolt backup
 // primitive), since Tracker itself has no backup-shaped method of its
 // own; it only ever calls Load/Save/Delete/Close on this value.
@@ -636,9 +879,13 @@ func (t *Tracker) Store() Store {
 	return t.store
 }
 
-// Close releases the underlying store, if any. Safe to call even on a
-// Tracker constructed via NewTracker (no store).
+// Close releases the underlying store or Redis backend, if any. Safe to
+// call even on a Tracker constructed via NewTracker (no store, no
+// backend).
 func (t *Tracker) Close() error {
+	if t.backend != nil {
+		return t.backend.Close()
+	}
 	if t.store == nil {
 		return nil
 	}

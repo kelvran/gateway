@@ -636,7 +636,7 @@ func TestDeleteVirtualKeyViaHTTPAlsoErasesItsBudgetSpend(t *testing.T) {
 	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
-	if spent := pipeline.SpentUSD("test-key", 0); spent.IsZero() {
+	if spent := pipeline.SpentUSD(context.Background(), "test-key", 0); spent.IsZero() {
 		t.Fatal("setup: SpentUSD is 0 after a real request — nothing was billed to erase")
 	}
 
@@ -646,7 +646,7 @@ func TestDeleteVirtualKeyViaHTTPAlsoErasesItsBudgetSpend(t *testing.T) {
 		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
 	}
 
-	if spent := pipeline.SpentUSD("test-key", 0); !spent.IsZero() {
+	if spent := pipeline.SpentUSD(context.Background(), "test-key", 0); !spent.IsZero() {
 		t.Errorf("SpentUSD after DELETE = %s, want 0 — the deleted key's real spend must not survive deletion", spent)
 	}
 }

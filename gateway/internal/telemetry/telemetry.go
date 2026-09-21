@@ -99,6 +99,28 @@ var rateLimitFailOpenCounter = mustInt64Counter(
 	metric.WithUnit("{request}"),
 )
 
+// budgetFailOpenCounter counts every request allowed through despite a
+// Redis-backed budget.Tracker backend error (fail-open) — the budget
+// dimension's own equivalent of rateLimitFailOpenCounter above, needed
+// once budget.Tracker gained a genuine Redis-mode (see
+// internal/budget/redisbudget) that can itself fail, unlike the
+// always-in-memory Tracker this counter's absence previously reflected.
+var budgetFailOpenCounter = mustInt64Counter(
+	meter,
+	"kelvran.budget.fail_open",
+	metric.WithDescription("Requests allowed through despite a budget-tracker backend error (fail-open)."),
+	metric.WithUnit("{request}"),
+)
+
+// RecordBudgetFailOpen increments the fail-open counter for keyID. Callers
+// (dataplane's budget-reservation call sites) call this at the exact same
+// point they already log a budget_backend_unavailable warning — an
+// additional, aggregate-friendly signal, not a replacement for that log
+// line, mirroring RecordRateLimitFailOpen's identical convention.
+func RecordBudgetFailOpen(ctx context.Context, keyID string) {
+	budgetFailOpenCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
+}
+
 func mustInt64Counter(m metric.Meter, name string, opts ...metric.Int64CounterOption) metric.Int64Counter {
 	counter, err := m.Int64Counter(name, opts...)
 	if err != nil {

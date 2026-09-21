@@ -30,7 +30,7 @@ func TestResetIntervalZeroNeverResetsEvenAcrossLargeTimeGaps(t *testing.T) {
 	clock.advance(365 * 24 * time.Hour)
 	tr.Record("team-alpha", d("5"), 0)
 
-	if got := tr.SpentUSD("team-alpha", 0); !got.Equal(d("15")) {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", 0); !got.Equal(d("15")) {
 		t.Errorf("SpentUSD = %s, want 15 (resetInterval=0 must never reset, regardless of elapsed time)", got)
 	}
 }
@@ -47,7 +47,7 @@ func TestFirstAccessStartsWindowWithoutResettingExistingSpend(t *testing.T) {
 	// The very first Allow/SpentUSD call for this key starts its window
 	// now -- it must NOT treat "never seen a periodStart before" as "the
 	// window already elapsed."
-	if got := tr.SpentUSD("team-alpha", time.Hour); !got.Equal(d("42")) {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", time.Hour); !got.Equal(d("42")) {
 		t.Errorf("SpentUSD = %s, want 42 (a freshly-loaded key's real spend must survive its first access)", got)
 	}
 }
@@ -65,7 +65,7 @@ func TestSpendResetsAfterWindowElapses(t *testing.T) {
 
 	clock.advance(window + time.Minute) // past the boundary
 
-	if got := tr.SpentUSD("team-alpha", window); !got.IsZero() {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", window); !got.IsZero() {
 		t.Errorf("SpentUSD after the window elapsed = %s, want 0 (a real reset, not a stale total)", got)
 	}
 	if !tr.Allow("team-alpha", d("1"), window) {
@@ -88,7 +88,7 @@ func TestSpendResetsExactlyAtWindowBoundary(t *testing.T) {
 	tr.Record("team-alpha", d("10"), window) // starts the window
 	clock.advance(window)                    // now.Sub(start) == resetInterval, exactly
 
-	if got := tr.SpentUSD("team-alpha", window); !got.IsZero() {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", window); !got.IsZero() {
 		t.Errorf("SpentUSD exactly at the window boundary = %s, want 0 (>= triggers a reset, not just strictly >)", got)
 	}
 	if !tr.Allow("team-alpha", d("1"), window) {
@@ -105,7 +105,7 @@ func TestSpendDoesNotResetBeforeWindowElapses(t *testing.T) {
 	tr.Record("team-alpha", d("10"), window)
 	clock.advance(window - time.Minute) // still inside the window
 
-	if got := tr.SpentUSD("team-alpha", window); !got.Equal(d("10")) {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", window); !got.Equal(d("10")) {
 		t.Errorf("SpentUSD one minute before the window elapses = %s, want 10 (must not reset early)", got)
 	}
 }
@@ -120,7 +120,7 @@ func TestRecordAfterResetAccumulatesOnFreshZeroNotStaleTotal(t *testing.T) {
 	clock.advance(window + time.Second)
 	tr.Record("team-alpha", d("3"), window)
 
-	if got := tr.SpentUSD("team-alpha", window); !got.Equal(d("3")) {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", window); !got.Equal(d("3")) {
 		t.Errorf("SpentUSD after a post-reset Record = %s, want 3 (must accumulate on the fresh zero, not the stale 100)", got)
 	}
 }
@@ -154,9 +154,9 @@ func TestResetTriggeredBySpentUSDPersistsZeroToStore(t *testing.T) {
 	tr.now = clock.now
 	const window = time.Hour
 
-	tr.SpentUSD("team-alpha", window) // starts the window
+	tr.SpentUSD(context.Background(), "team-alpha", window) // starts the window
 	clock.advance(window + time.Second)
-	tr.SpentUSD("team-alpha", window) // crosses the boundary
+	tr.SpentUSD(context.Background(), "team-alpha", window) // crosses the boundary
 
 	if got, ok := store.data["team-alpha"]; !ok || !got.Spent.IsZero() {
 		t.Errorf("store.data[team-alpha] = %v (present=%v), want 0 -- SpentUSD's own reset must durably persist too", got, ok)
@@ -173,10 +173,10 @@ func TestKeysWithDifferentResetIntervalsAreIndependent(t *testing.T) {
 
 	clock.advance(time.Hour + time.Minute) // past team-hourly's window, well inside team-daily's
 
-	if got := tr.SpentUSD("team-hourly", time.Hour); !got.IsZero() {
+	if got := tr.SpentUSD(context.Background(), "team-hourly", time.Hour); !got.IsZero() {
 		t.Errorf("team-hourly SpentUSD = %s, want 0 (its hourly window elapsed)", got)
 	}
-	if got := tr.SpentUSD("team-daily", 24*time.Hour); !got.Equal(d("5")) {
+	if got := tr.SpentUSD(context.Background(), "team-daily", 24*time.Hour); !got.Equal(d("5")) {
 		t.Errorf("team-daily SpentUSD = %s, want 5 (its daily window has not elapsed yet)", got)
 	}
 }

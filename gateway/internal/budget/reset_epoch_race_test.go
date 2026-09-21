@@ -1,6 +1,7 @@
 package budget
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -24,15 +25,15 @@ func TestReconcileDoesNotUndercountAcrossAConcurrentlyTriggeredReset(t *testing.
 
 	// Establish billing history so the reservation amount isn't "full
 	// headroom" (which would make the race harder to see clearly).
-	allowed, reserved, reservedUSD, epoch := tr.Reserve("k", capUSD, window)
+	allowed, reserved, reservedUSD, epoch, _ := tr.Reserve(context.Background(), "k", capUSD, window)
 	if !allowed || !reserved {
 		t.Fatalf("first reserve: allowed=%v reserved=%v", allowed, reserved)
 	}
 	cost1 := d("10")
-	tr.Reconcile("k", reservedUSD, epoch, &cost1, window)
+	tr.Reconcile(context.Background(), "k", reservedUSD, epoch, &cost1, window)
 
 	// R1's own reservation, still within the same window.
-	allowed, reserved, r1Reserved, r1Epoch := tr.Reserve("k", capUSD, window)
+	allowed, reserved, r1Reserved, r1Epoch, _ := tr.Reserve(context.Background(), "k", capUSD, window)
 	if !allowed || !reserved {
 		t.Fatalf("second reserve: allowed=%v reserved=%v", allowed, reserved)
 	}
@@ -40,13 +41,13 @@ func TestReconcileDoesNotUndercountAcrossAConcurrentlyTriggeredReset(t *testing.
 	// A DIFFERENT concurrent caller crosses the reset boundary while R1's
 	// own upstream call is still in flight.
 	clock.advance(window + time.Second)
-	tr.SpentUSD("k", window) // triggers the reset on R1's behalf
+	tr.SpentUSD(context.Background(), "k", window) // triggers the reset on R1's behalf
 
 	// R1 now finishes and reconciles its (window-crossed) reservation.
 	cost2 := d("12")
-	tr.Reconcile("k", r1Reserved, r1Epoch, &cost2, window)
+	tr.Reconcile(context.Background(), "k", r1Reserved, r1Epoch, &cost2, window)
 
-	got := tr.SpentUSD("k", window)
+	got := tr.SpentUSD(context.Background(), "k", window)
 	if !got.Equal(cost2) {
 		t.Errorf("spent after R1's reconcile across a concurrent reset = %s, want %s -- R1's real cost must land fully in the new window, not be undercounted by its own stale, already-reset reservation (%s)", got, cost2, r1Reserved)
 	}
@@ -71,14 +72,14 @@ func TestIncreaseReservationDoesNotUndercountAcrossAConcurrentlyTriggeredReset(t
 	// (historical-average-sized, $10) rather than "full headroom" —
 	// otherwise a $80 top-up would never exceed currentReservedUSD and
 	// the no-op fast path would trigger regardless of epoch.
-	allowed, reserved, reservedUSD, epoch := tr.Reserve("k", capUSD, window)
+	allowed, reserved, reservedUSD, epoch, _ := tr.Reserve(context.Background(), "k", capUSD, window)
 	if !allowed || !reserved {
 		t.Fatalf("first reserve: allowed=%v reserved=%v", allowed, reserved)
 	}
 	cost1 := d("10")
-	tr.Reconcile("k", reservedUSD, epoch, &cost1, window)
+	tr.Reconcile(context.Background(), "k", reservedUSD, epoch, &cost1, window)
 
-	allowed, reserved, r1Reserved, r1Epoch := tr.Reserve("k", capUSD, window)
+	allowed, reserved, r1Reserved, r1Epoch, _ := tr.Reserve(context.Background(), "k", capUSD, window)
 	if !allowed || !reserved || !r1Reserved.Equal(d("10")) {
 		t.Fatalf("second reserve: allowed=%v reserved=%v r1Reserved=%v, want (true, true, 10)", allowed, reserved, r1Reserved)
 	}
@@ -86,23 +87,23 @@ func TestIncreaseReservationDoesNotUndercountAcrossAConcurrentlyTriggeredReset(t
 	// A DIFFERENT concurrent caller crosses the reset boundary while R1's
 	// own stream is still in flight.
 	clock.advance(window + time.Second)
-	tr.SpentUSD("k", window) // triggers the reset on R1's behalf
+	tr.SpentUSD(context.Background(), "k", window) // triggers the reset on R1's behalf
 
 	// R1's stream grew past its original $10 reservation and tries to
 	// top up to $80, still carrying its now-stale r1Epoch.
-	allowedTopup, applied, newEpoch := tr.IncreaseReservation("k", capUSD, r1Reserved, d("80"), r1Epoch, window)
+	allowedTopup, applied, newEpoch, _ := tr.IncreaseReservation(context.Background(), "k", capUSD, r1Reserved, d("80"), r1Epoch, window)
 	if !allowedTopup {
 		t.Fatalf("IncreaseReservation across a concurrent reset = allowed=false, want true (the fresh window has full $100 headroom)")
 	}
 
-	got := tr.SpentUSD("k", window)
+	got := tr.SpentUSD(context.Background(), "k", window)
 	if !got.Equal(d("80")) {
 		t.Errorf("spent after a stale-epoch top-up = %s, want 80 — the top-up must reserve newReservedUSD fresh against the new window (0 + 80), never compute a delta (80-10=70) against the old, already-reset reservation", got)
 	}
 
 	finalCost := d("70")
-	tr.Reconcile("k", applied, newEpoch, &finalCost, window)
-	if got := tr.SpentUSD("k", window); !got.Equal(finalCost) {
+	tr.Reconcile(context.Background(), "k", applied, newEpoch, &finalCost, window)
+	if got := tr.SpentUSD(context.Background(), "k", window); !got.Equal(finalCost) {
 		t.Errorf("spent after Reconcile = %s, want %s", got, finalCost)
 	}
 }

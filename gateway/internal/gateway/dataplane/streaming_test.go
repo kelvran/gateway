@@ -566,7 +566,7 @@ func TestHandleChatCompletionStreamDisconnectAfterRealContentStillBillsIt(t *tes
 	// error path meant real cost was left at $0, silently discarding 60
 	// real, already-delivered, provider-billed characters' worth of
 	// content.
-	got := tracker.SpentUSD("test-key", 0)
+	got := tracker.SpentUSD(context.Background(), "test-key", 0)
 	want := decimal.NewFromFloat(0.15)
 	if !got.Equal(want) {
 		t.Errorf("SpentUSD after the disconnect = %s, want %s — real content delivered before a client disconnect must still be billed", got, want)

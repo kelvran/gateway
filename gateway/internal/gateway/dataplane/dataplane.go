@@ -1321,8 +1321,8 @@ func (p *Pipeline) ListVirtualKeys() []identity.VirtualKey {
 // exposed so admin.go (which has no access to Pipeline's private budget
 // field) can serve the new GET /admin/virtual_keys/{name}/spend route
 // without duplicating budget.Tracker's own logic.
-func (p *Pipeline) SpentUSD(keyID string, resetInterval time.Duration) decimal.Decimal {
-	return p.budget.SpentUSD(keyID, resetInterval)
+func (p *Pipeline) SpentUSD(ctx context.Context, keyID string, resetInterval time.Duration) decimal.Decimal {
+	return p.budget.SpentUSD(ctx, keyID, resetInterval)
 }
 
 // UpsertPrompt creates a NEW version of id from messages, live -- see
@@ -1439,10 +1439,12 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 // docs/rfcs/2026-09-03-distributed-rate-limiting.md's "Fail-open, not
 // fail-closed" section for why that's the right default specifically for
 // Kelvran: internal/budget.Tracker's per-key USD cap is a second,
-// independent control that never touches Redis, so a rate-limiter
-// outage alone does not remove every spending control at once. In
-// in-memory mode, p.limiter.AllowForModel never returns an error at all,
-// so this fail-open path is only ever exercised when a Redis backend is
+// independent control against a SEPARATE Redis backend/instance (see
+// internal/budget/redisbudget) when the deployment is configured that
+// way, so an outage of the rate-limiter's own Redis backend alone does
+// not necessarily remove every spending control at once. In in-memory
+// mode, p.limiter.AllowForModel never returns an error at all, so this
+// fail-open path is only ever exercised when a Redis backend is
 // configured.
 //
 // model is threaded through to AllowForModel so a virtual key's own
@@ -1519,7 +1521,8 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 // unrelated to its real rate-limit status — the same "fail-open, not
 // fail-closed" policy checkRateLimit's own doc comment documents for the
 // identical reason (internal/budget.Tracker's per-key USD cap is a
-// second, independent control that never touches Redis).
+// second, independent control against a separate Redis backend/instance
+// when configured — see checkRateLimit's own updated doc comment).
 func (p *Pipeline) checkFallbackTargetRateLimit(ctx context.Context, keyID, model string) bool {
 	allowed, err := p.limiter.AllowForModel(ctx, keyID, model)
 	if err != nil {
@@ -2190,7 +2193,12 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 		return
 	}
 
-	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch := p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch, budgetErr := p.budget.Reserve(ctx, vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	if budgetErr != nil {
+		p.logger.Warn("budget_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", budgetErr.Error())...)
+		telemetry.RecordBudgetFailOpen(ctx, vk.ID)
+		budgetOK, budgetReserved = true, false
+	}
 	if !budgetOK {
 		err = ErrBudgetExceeded
 		return
@@ -2198,7 +2206,7 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	var realCost *decimal.Decimal
 	defer func() {
 		if budgetReserved {
-			p.budget.Reconcile(vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
+			p.budget.Reconcile(ctx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
 		}
 	}()
 
@@ -2412,9 +2420,15 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	}
 	defer p.releaseConcurrency(vk)
 
-	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
+	budgetSpentAtDecision = p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
 	var budgetOK bool
-	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	var budgetErr error
+	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch, budgetErr = p.budget.Reserve(ctx, vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	if budgetErr != nil {
+		p.logger.Warn("budget_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", budgetErr.Error())...)
+		telemetry.RecordBudgetFailOpen(ctx, vk.ID)
+		budgetOK, budgetReserved = true, false
+	}
 	if !budgetOK {
 		err = ErrBudgetExceeded
 		return
@@ -3111,7 +3125,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			realCost = &cost
 		}
 		if budgetReserved || realCost != nil {
-			p.budget.Reconcile(vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
+			p.budget.Reconcile(ctx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
 		}
 		if realCost != nil {
 			p.checkBudgetWarnThreshold(ctx, vk)
@@ -3359,7 +3373,7 @@ func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.Vi
 	if vk.BudgetWarnPercent <= 0 || !vk.BudgetUSD.IsPositive() {
 		return
 	}
-	spent := p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
+	spent := p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
 	warnAt := vk.BudgetUSD.Mul(decimal.NewFromFloat(vk.BudgetWarnPercent))
 	if spent.GreaterThanOrEqual(warnAt) {
 		p.logger.Warn("budget_warn_threshold_crossed", append(traceLogFields(ctx),
@@ -3385,9 +3399,9 @@ func (p *Pipeline) checkBudgetAlertLadder(ctx context.Context, vk *identity.Virt
 	if !vk.BudgetUSD.IsPositive() {
 		return
 	}
-	spent := p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
+	spent := p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
 	percentUsed, _ := spent.Div(vk.BudgetUSD).Float64()
-	bucket, crossed := p.budget.CheckAndMarkBudgetAlertBucket(vk.ID, percentUsed)
+	bucket, crossed := p.budget.CheckAndMarkBudgetAlertBucket(ctx, vk.ID, percentUsed, vk.BudgetResetInterval)
 	if !crossed {
 		return
 	}

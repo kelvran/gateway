@@ -12,6 +12,7 @@ components:
   identity-boltstore: { in: identity/boltstore }
   budget:            { in: budget }
   budget-boltstore:  { in: budget/boltstore }
+  budget-redisbudget: { in: budget/redisbudget }
   ratelimit:         { in: [ratelimit, ratelimit/**] }
   router:            { in: router }
   costaccounting:    { in: costaccounting }
@@ -43,7 +44,7 @@ components:
 # Components deliberately absent from `deps:` below (identity,
 # ratelimit, router, costaccounting, guardrail, telemetry,
 # cache-correlation, cache, adapter, controlplane, backup, idempotency,
-# configpropagation, alerting) are pure leaves per
+# configpropagation, alerting, budget-redisbudget) are pure leaves per
 # gateway/ARCHITECTURE.md's dependency direction rules: a component with
 # no entry here may depend on nothing else in this project (verified
 # against go-arch-lint's own source -- checker_imports.go denies any
@@ -67,6 +68,15 @@ components:
 # go-arch-lint never grants implicit same-component self-import rights --
 # each is a genuinely separate Go package that imports the base `cache`
 # package's interface types, and needs to say so explicitly.
+#
+# budget-redisbudget (budget/redisbudget), unlike its sibling
+# budget-boltstore right above, deliberately does NOT import `budget` at
+# all -- it satisfies budget.RedisBackend structurally, the same
+# interface-lives-in-the-consumer idiom ratelimit/redislimiter already
+# establishes (see redisbudget.go's own package doc comment) -- hence its
+# absence from `deps:` below is a real pure-leaf property, not an
+# oversight to reconcile with budget-boltstore's real `mayDependOn:
+# [budget]` entry.
 deps:
   identity-boltstore:
     mayDependOn:

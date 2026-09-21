@@ -1,6 +1,7 @@
 package budget
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -73,7 +74,7 @@ func TestAllowPastCapRejected(t *testing.T) {
 // relies on, checked here for the new getter directly.
 func TestSpentUSDNeverRecordedKeyReturnsZero(t *testing.T) {
 	tr := NewTracker()
-	got := tr.SpentUSD("never-seen", 0)
+	got := tr.SpentUSD(context.Background(), "never-seen", 0)
 	if !got.IsZero() {
 		t.Errorf("SpentUSD for a never-recorded key = %s, want 0", got)
 	}
@@ -83,7 +84,7 @@ func TestSpentUSDReflectsRecordedSpendExactly(t *testing.T) {
 	tr := NewTracker()
 	tr.Record("team-alpha", d("3"), 0)
 	tr.Record("team-alpha", d("4"), 0)
-	got := tr.SpentUSD("team-alpha", 0)
+	got := tr.SpentUSD(context.Background(), "team-alpha", 0)
 	if !got.Equal(d("7")) {
 		t.Errorf("SpentUSD after recording 3+4 = %s, want 7", got)
 	}
@@ -94,8 +95,8 @@ func TestSpentUSDReflectsRecordedSpendExactly(t *testing.T) {
 func TestSpentUSDIsReadOnly(t *testing.T) {
 	tr := NewTracker()
 	tr.Record("team-alpha", d("5"), 0)
-	first := tr.SpentUSD("team-alpha", 0)
-	second := tr.SpentUSD("team-alpha", 0)
+	first := tr.SpentUSD(context.Background(), "team-alpha", 0)
+	second := tr.SpentUSD(context.Background(), "team-alpha", 0)
 	if !first.Equal(second) {
 		t.Errorf("SpentUSD called twice in a row returned different values: %s then %s", first, second)
 	}
@@ -203,7 +204,7 @@ func TestReserveBoundaryExactlyAtCapRejectsAndReservesNothing(t *testing.T) {
 	tr := NewTracker()
 	tr.Record("team-alpha", d("10"), 0)
 
-	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("10"), 0)
+	allowed, reserved, reservedUSD, epoch, _ := tr.Reserve(context.Background(), "team-alpha", d("10"), 0)
 	if allowed || reserved {
 		t.Errorf("Reserve with spend == cap = (allowed=%v, reserved=%v), want (false, false)", allowed, reserved)
 	}
@@ -232,9 +233,9 @@ func TestIncreaseReservationAppliesWhenDeltaLandsExactlyAtCap(t *testing.T) {
 	tr := NewTracker()
 	capUSD := d("10")
 	realCost := d("1")
-	tr.Reconcile("team-alpha", d("0"), 0, &realCost, 0) // seeds billedCount=1, spent=1
+	tr.Reconcile(context.Background(), "team-alpha", d("0"), 0, &realCost, 0) // seeds billedCount=1, spent=1
 
-	allowed, reserved, currentReservedUSD, epoch := tr.Reserve("team-alpha", capUSD, 0)
+	allowed, reserved, currentReservedUSD, epoch, _ := tr.Reserve(context.Background(), "team-alpha", capUSD, 0)
 	if !allowed || !reserved {
 		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
 	}
@@ -246,7 +247,7 @@ func TestIncreaseReservationAppliesWhenDeltaLandsExactlyAtCap(t *testing.T) {
 	// 8, so newReservedUSD = currentReservedUSD + 8 lands exactly at the
 	// cap.
 	newReservedUSD := currentReservedUSD.Add(d("8"))
-	ok, applied, newEpoch := tr.IncreaseReservation("team-alpha", capUSD, currentReservedUSD, newReservedUSD, epoch, 0)
+	ok, applied, newEpoch, _ := tr.IncreaseReservation(context.Background(), "team-alpha", capUSD, currentReservedUSD, newReservedUSD, epoch, 0)
 	if !ok {
 		t.Fatalf("IncreaseReservation with a delta landing exactly at the cap = false, want true (a top-up that exactly fills remaining headroom must be applied, not rejected)")
 	}
@@ -260,16 +261,16 @@ func TestIncreaseReservationAppliesWhenDeltaLandsExactlyAtCap(t *testing.T) {
 
 func TestReconcileNilRealCostReleasesReservationWithNoReplacement(t *testing.T) {
 	tr := NewTracker()
-	preReserveSpent := tr.SpentUSD("team-alpha", 0)
+	preReserveSpent := tr.SpentUSD(context.Background(), "team-alpha", 0)
 
-	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("100"), 0)
+	allowed, reserved, reservedUSD, epoch, _ := tr.Reserve(context.Background(), "team-alpha", d("100"), 0)
 	if !allowed || !reserved {
 		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
 	}
 
-	tr.Reconcile("team-alpha", reservedUSD, epoch, nil, 0)
+	tr.Reconcile(context.Background(), "team-alpha", reservedUSD, epoch, nil, 0)
 
-	if got := tr.SpentUSD("team-alpha", 0); !got.Equal(preReserveSpent) {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", 0); !got.Equal(preReserveSpent) {
 		t.Errorf("SpentUSD after a nil-realCost Reconcile = %v, want the pre-Reserve total %v", got, preReserveSpent)
 	}
 	if got := tr.billedCount["team-alpha"]; got != 0 {
@@ -284,17 +285,17 @@ func TestReconcileNilRealCostReleasesReservationWithNoReplacement(t *testing.T) 
 // TestRecordNegativeCostIgnored precedent for the sibling method.
 func TestReconcileNegativeRealCostTreatedAsReleaseOnly(t *testing.T) {
 	tr := NewTracker()
-	preReserveSpent := tr.SpentUSD("team-alpha", 0)
+	preReserveSpent := tr.SpentUSD(context.Background(), "team-alpha", 0)
 
-	allowed, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("100"), 0)
+	allowed, reserved, reservedUSD, epoch, _ := tr.Reserve(context.Background(), "team-alpha", d("100"), 0)
 	if !allowed || !reserved {
 		t.Fatalf("Reserve = (allowed=%v, reserved=%v), want (true, true)", allowed, reserved)
 	}
 
 	negativeCost := d("-5")
-	tr.Reconcile("team-alpha", reservedUSD, epoch, &negativeCost, 0)
+	tr.Reconcile(context.Background(), "team-alpha", reservedUSD, epoch, &negativeCost, 0)
 
-	if got := tr.SpentUSD("team-alpha", 0); !got.Equal(preReserveSpent) {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", 0); !got.Equal(preReserveSpent) {
 		t.Errorf("SpentUSD after a negative-realCost Reconcile = %v, want the pre-Reserve total %v (release-only, not a negative charge)", got, preReserveSpent)
 	}
 	if got := tr.billedCount["team-alpha"]; got != 0 {

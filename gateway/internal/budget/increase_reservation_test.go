@@ -5,42 +5,45 @@ package budget
 // per docs/upgrade-research/gateway-streaming-concurrent-sibling-
 // reservation-gap-2026-09-09.md.
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestIncreaseReservationAppliesWhenDeltaFitsUnderCap(t *testing.T) {
 	tr := NewTracker()
-	allowed, reserved, initial, initialEpoch := tr.Reserve("team-alpha", d("10"), 0)
+	allowed, reserved, initial, initialEpoch, _ := tr.Reserve(context.Background(), "team-alpha", d("10"), 0)
 	if !allowed || !reserved || !initial.Equal(d("10")) {
 		t.Fatalf("setup Reserve = (%v, %v, %v), want (true, true, 10) — cold start reserves full headroom", allowed, reserved, initial)
 	}
 
 	// Top up beyond the original reservation, but still within the same
 	// $10 cap (nothing else has been recorded against this key).
-	allowed2, applied, _ := tr.IncreaseReservation("team-alpha", d("10"), initial, d("10"), initialEpoch, 0)
+	allowed2, applied, _, _ := tr.IncreaseReservation(context.Background(), "team-alpha", d("10"), initial, d("10"), initialEpoch, 0)
 	if !allowed2 || !applied.Equal(d("10")) {
 		t.Fatalf("IncreaseReservation(10 -> 10, no real change) = (%v, %v), want (true, 10)", allowed2, applied)
 	}
 
 	// A genuinely larger key with real headroom: reserve 2, top up to 5.
 	tr2 := NewTracker()
-	_, _, r2, r2Epoch := tr2.Reserve("team-beta", d("100"), 0) // cold start: reserves the full 100
+	_, _, r2, r2Epoch, _ := tr2.Reserve(context.Background(), "team-beta", d("100"), 0) // cold start: reserves the full 100
 	// Simulate a smaller ORIGINAL reservation (as a historical-average
 	// case would produce) by reconciling down to a small real cost first.
 	realCost := d("2")
-	tr2.Reconcile("team-beta", r2, r2Epoch, &realCost, 0)
+	tr2.Reconcile(context.Background(), "team-beta", r2, r2Epoch, &realCost, 0)
 	// Now billedCount > 0, so the NEXT Reserve sizes off the historical
 	// average (2/1 = 2), not the full 98 remaining headroom.
-	allowed3, reserved3, small, smallEpoch := tr2.Reserve("team-beta", d("100"), 0)
+	allowed3, reserved3, small, smallEpoch, _ := tr2.Reserve(context.Background(), "team-beta", d("100"), 0)
 	if !allowed3 || !reserved3 || !small.Equal(d("2")) {
 		t.Fatalf("second Reserve = (%v, %v, %v), want (true, true, 2) — historical average from the single $2 reconciled call", allowed3, reserved3, small)
 	}
 
-	allowed4, applied4, _ := tr2.IncreaseReservation("team-beta", d("100"), small, d("50"), smallEpoch, 0)
+	allowed4, applied4, _, _ := tr2.IncreaseReservation(context.Background(), "team-beta", d("100"), small, d("50"), smallEpoch, 0)
 	if !allowed4 || !applied4.Equal(d("50")) {
 		t.Fatalf("IncreaseReservation(2 -> 50) = (%v, %v), want (true, 50) — 48 more delta fits comfortably under the remaining headroom", allowed4, applied4)
 	}
 	// Spent so far: 2 (real, reconciled) + 50 (topped-up reservation) = 52.
-	if spent := tr2.SpentUSD("team-beta", 0); !spent.Equal(d("52")) {
+	if spent := tr2.SpentUSD(context.Background(), "team-beta", 0); !spent.Equal(d("52")) {
 		t.Errorf("SpentUSD(team-beta) after top-up = %s, want 52", spent)
 	}
 }
@@ -56,14 +59,14 @@ func TestIncreaseReservationRejectsWhenDeltaExceedsCap(t *testing.T) {
 	tr.Record("team-alpha", d("0.90"), 0)
 	current := d("0.10")
 
-	allowed, applied, _ := tr.IncreaseReservation("team-alpha", d("1"), current, d("0.50"), 0, 0)
+	allowed, applied, _, _ := tr.IncreaseReservation(context.Background(), "team-alpha", d("1"), current, d("0.50"), 0, 0)
 	if allowed {
 		t.Fatal("IncreaseReservation(0.10 -> 0.50) against only $0.10 of real headroom = true, want false")
 	}
 	if !applied.Equal(current) {
 		t.Errorf("appliedUSD on rejection = %s, want the ORIGINAL current reservation (0.10), unchanged", applied)
 	}
-	if spent := tr.SpentUSD("team-alpha", 0); !spent.Equal(d("0.90")) {
+	if spent := tr.SpentUSD(context.Background(), "team-alpha", 0); !spent.Equal(d("0.90")) {
 		t.Errorf("SpentUSD after a REJECTED top-up = %s, want 0.90 — spent must be completely untouched by a rejected delta", spent)
 	}
 }
@@ -79,12 +82,12 @@ func TestIncreaseReservationNoOpWhenNotActuallyIncreasing(t *testing.T) {
 	current := d("0.50")
 
 	for _, newAmount := range []string{"0.50", "0.30", "0"} {
-		allowed, applied, _ := tr.IncreaseReservation("team-alpha", d("1"), current, d(newAmount), 0, 0)
+		allowed, applied, _, _ := tr.IncreaseReservation(context.Background(), "team-alpha", d("1"), current, d(newAmount), 0, 0)
 		if !allowed || !applied.Equal(current) {
 			t.Errorf("IncreaseReservation(0.50 -> %s) = (%v, %v), want (true, 0.50) — not an increase, must be a no-op even with near-zero real headroom left", newAmount, allowed, applied)
 		}
 	}
-	if spent := tr.SpentUSD("team-alpha", 0); !spent.Equal(d("0.99")) {
+	if spent := tr.SpentUSD(context.Background(), "team-alpha", 0); !spent.Equal(d("0.99")) {
 		t.Errorf("SpentUSD after only no-op calls = %s, want 0.99 — unchanged", spent)
 	}
 }
@@ -99,7 +102,7 @@ func TestIncreaseReservationUnlimitedKeyAlwaysAllowed(t *testing.T) {
 	// returns reservedUSD=decimal.Zero for one), so IncreaseReservation
 	// correctly returns the UNCHANGED current value here, not
 	// newReservedUSD — there is nothing to reconcile against later.
-	allowed, applied, _ := tr.IncreaseReservation("team-alpha", d("0"), d("0"), d("999999"), 0, 0)
+	allowed, applied, _, _ := tr.IncreaseReservation(context.Background(), "team-alpha", d("0"), d("0"), d("999999"), 0, 0)
 	if !allowed || !applied.Equal(d("0")) {
 		t.Errorf("IncreaseReservation with capUSD<=0 = (%v, %v), want (true, 0) — unlimited, unchanged", allowed, applied)
 	}

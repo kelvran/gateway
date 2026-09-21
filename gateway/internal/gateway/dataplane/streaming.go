@@ -190,9 +190,15 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 	defer p.releaseConcurrency(vk)
 
-	budgetSpentAtDecision = p.budget.SpentUSD(vk.ID, vk.BudgetResetInterval)
+	budgetSpentAtDecision = p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
 	var budgetOK bool
-	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch = p.budget.Reserve(vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	var budgetErr error
+	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch, budgetErr = p.budget.Reserve(ctx, vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	if budgetErr != nil {
+		p.logger.Warn("budget_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", budgetErr.Error())...)
+		telemetry.RecordBudgetFailOpen(ctx, vk.ID)
+		budgetOK, budgetReserved = true, false
+	}
 	if !budgetOK {
 		err = ErrBudgetExceeded
 		return

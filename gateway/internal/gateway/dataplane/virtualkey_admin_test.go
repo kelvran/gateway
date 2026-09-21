@@ -145,7 +145,7 @@ func TestUpsertVirtualKeyClearsStaleBudgetStateForAGenuinelyNewID(t *testing.T) 
 		t.Fatalf("UpsertVirtualKey: %v", err)
 	}
 
-	if spent := p.SpentUSD("resurrected-key", 0); !spent.IsZero() {
+	if spent := p.SpentUSD(context.Background(), "resurrected-key", 0); !spent.IsZero() {
 		t.Fatalf("SpentUSD(resurrected-key) = %s, want 0 -- the new tenant inherited a prior tenant's orphaned spend", spent)
 	}
 }
@@ -172,7 +172,7 @@ func TestUpsertVirtualKeyUpdatingAnExistingKeyPreservesItsBudgetSpend(t *testing
 	}
 
 	want := decimal.NewFromInt(10)
-	if spent := p.SpentUSD("test-key", 0); !spent.Equal(want) {
+	if spent := p.SpentUSD(context.Background(), "test-key", 0); !spent.Equal(want) {
 		t.Fatalf("SpentUSD(test-key) after updating an existing key = %s, want %s -- an unrelated config update must never reset real spend", spent, want)
 	}
 }

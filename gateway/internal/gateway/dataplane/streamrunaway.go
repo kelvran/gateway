@@ -209,9 +209,17 @@ func (p *Pipeline) checkMidStreamReservationTopup(ctx context.Context, dep Deplo
 		CompletionTokens: int(estimatedTokens),
 	})
 	if estimatedCostUSD.GreaterThan(*msr.budgetReservedUSD) {
-		allowed, applied, newEpoch := p.budget.IncreaseReservation(msr.vk.ID, msr.vk.BudgetUSD, *msr.budgetReservedUSD, estimatedCostUSD, *msr.budgetReservationEpoch, msr.vk.BudgetResetInterval)
+		allowed, applied, newEpoch, budgetErr := p.budget.IncreaseReservation(ctx, msr.vk.ID, msr.vk.BudgetUSD, *msr.budgetReservedUSD, estimatedCostUSD, *msr.budgetReservationEpoch, msr.vk.BudgetResetInterval)
 		*msr.budgetReservedUSD = applied
 		*msr.budgetReservationEpoch = newEpoch
+		if budgetErr != nil {
+			// Fail open, mirroring the TPM branch's identical Redis-error
+			// policy above: IncreaseReservation already returns applied/
+			// newEpoch UNCHANGED on error, so this stream simply keeps its
+			// prior reservation floor and continues rather than being cut
+			// off for a Redis-reachability problem.
+			return true
+		}
 		if !allowed {
 			return false
 		}

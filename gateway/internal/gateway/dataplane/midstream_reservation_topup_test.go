@@ -145,13 +145,13 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 	// $0.01/token) establishes billedCount=1, so the TARGET request's own
 	// Reserve call below sizes off that small historical average ($0.05)
 	// rather than grabbing the full $100 cap outright.
-	_, reserved, primingReservation, primingEpoch := tracker.Reserve("topup-key", capUSD, 0)
+	_, reserved, primingReservation, primingEpoch, _ := tracker.Reserve(context.Background(), "topup-key", capUSD, 0)
 	if !reserved {
 		t.Fatal("setup: priming Reserve did not reserve anything")
 	}
 	primingRealCost := decimal.NewFromFloat(0.05)
-	tracker.Reconcile("topup-key", primingReservation, primingEpoch, &primingRealCost, 0)
-	if spent := tracker.SpentUSD("topup-key", 0); !spent.Equal(decimal.NewFromFloat(0.05)) {
+	tracker.Reconcile(context.Background(), "topup-key", primingReservation, primingEpoch, &primingRealCost, 0)
+	if spent := tracker.SpentUSD(context.Background(), "topup-key", 0); !spent.Equal(decimal.NewFromFloat(0.05)) {
 		t.Fatalf("setup: SpentUSD after priming = %s, want 0.05", spent)
 	}
 
@@ -192,7 +192,7 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 	// = $1.05 total tracked spend — MORE than the target's own tiny
 	// initial reservation would show, exactly the concurrent-sibling-
 	// visible signal this fix exists to produce.
-	gotSpent := tracker.SpentUSD("topup-key", 0)
+	gotSpent := tracker.SpentUSD(context.Background(), "topup-key", 0)
 	wantSpent := decimal.NewFromFloat(1.05)
 	if !gotSpent.Equal(wantSpent) {
 		t.Fatalf("SpentUSD while the stream is held open mid-flight = %s, want %s — the mid-stream top-up should have raised the reservation to reflect real, growing output", gotSpent, wantSpent)
@@ -217,7 +217,7 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 	// tokens — the exact bug
 	// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md
 	// names and this fix closes.
-	finalSpent := tracker.SpentUSD("topup-key", 0)
+	finalSpent := tracker.SpentUSD(context.Background(), "topup-key", 0)
 	if !finalSpent.Equal(decimal.NewFromFloat(1.05)) {
 		t.Fatalf("final SpentUSD after the stream completed = %s, want 1.05 — the real, estimated cost of the 100 tokens actually delivered must be billed, not discarded to $0", finalSpent)
 	}
@@ -232,12 +232,12 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 func TestHandleChatCompletionStreamMidStreamTopupExhaustionGracefullyTruncatesStream(t *testing.T) {
 	tracker := budget.NewTracker()
 	capUSD := decimal.NewFromFloat(1.00) // deliberately tight — this test proves the REJECTION boundary
-	_, reserved, primingReservation, primingEpoch := tracker.Reserve("topup-key", capUSD, 0)
+	_, reserved, primingReservation, primingEpoch, _ := tracker.Reserve(context.Background(), "topup-key", capUSD, 0)
 	if !reserved {
 		t.Fatal("setup: priming Reserve did not reserve anything")
 	}
 	primingRealCost := decimal.NewFromFloat(0.05)
-	tracker.Reconcile("topup-key", primingReservation, primingEpoch, &primingRealCost, 0)
+	tracker.Reconcile(context.Background(), "topup-key", primingReservation, primingEpoch, &primingRealCost, 0)
 
 	const chunkChars = 40 // 10 estimated tokens/frame -> $0.10 estimated cost/frame
 	// An upstream willing to stream far more than the budget allows —
@@ -287,7 +287,7 @@ func TestHandleChatCompletionStreamMidStreamTopupExhaustionGracefullyTruncatesSt
 	// cost for this request, plus priming's $0.05 = $1.05 total — never
 	// $0 the way a missing usage frame used to silently produce before
 	// this fix.
-	finalSpent := tracker.SpentUSD("topup-key", 0)
+	finalSpent := tracker.SpentUSD(context.Background(), "topup-key", 0)
 	if !finalSpent.Equal(decimal.NewFromFloat(1.05)) {
 		t.Fatalf("SpentUSD after the guard tripped = %s, want 1.05 — the real, estimated cost of content already generated before the guard tripped must be billed, even though it exceeds the nominal $1.00 cap", finalSpent)
 	}

@@ -567,7 +567,7 @@ func TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend(t *testing.T) {
 	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-budget", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
-	wantSpent := p.budget.SpentUSD("team-budget", 0)
+	wantSpent := p.budget.SpentUSD(context.Background(), "team-budget", 0)
 	if wantSpent.IsZero() {
 		t.Fatal("expected nonzero spend recorded after the first request")
 	}
@@ -944,8 +944,8 @@ func TestBudgetReserveAndReconcileAreUnaffectedByBillingSubjectIDField(t *testin
 	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill3", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion (without BillingSubjectID): %v", err)
 	}
-	spentWith := p.budget.SpentUSD("team-bill2", 0)
-	spentWithout := p.budget.SpentUSD("team-bill3", 0)
+	spentWith := p.budget.SpentUSD(context.Background(), "team-bill2", 0)
+	spentWithout := p.budget.SpentUSD(context.Background(), "team-bill3", 0)
 	if spentWith.IsZero() {
 		t.Fatal("expected nonzero spend recorded for the key with BillingSubjectID set")
 	}

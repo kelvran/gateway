@@ -1,6 +1,7 @@
 package budget
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -10,7 +11,7 @@ import (
 // must never report a crossing.
 func TestCheckAndMarkBudgetAlertBucketBelowLowestBucketDoesNotFire(t *testing.T) {
 	tr := NewTracker()
-	if _, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.2); crossed {
+	if _, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.2, 0); crossed {
 		t.Error("CheckAndMarkBudgetAlertBucket at 20%% used = crossed, want no crossing")
 	}
 }
@@ -22,34 +23,34 @@ func TestCheckAndMarkBudgetAlertBucketBelowLowestBucketDoesNotFire(t *testing.T)
 func TestCheckAndMarkBudgetAlertBucketFiresEachBucketExactlyOnce(t *testing.T) {
 	tr := NewTracker()
 
-	bucket, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.5)
+	bucket, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.5, 0)
 	if !crossed || bucket != 0.5 {
 		t.Fatalf("first crossing at 50%% used: got (bucket=%v, crossed=%v), want (0.5, true)", bucket, crossed)
 	}
 
 	// Staying within the 50% bucket (e.g. a second request at 60% used,
 	// still below the next 75% rung) must not re-fire.
-	if _, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.6); crossed {
+	if _, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.6, 0); crossed {
 		t.Error("CheckAndMarkBudgetAlertBucket at 60%% used, after already alerting 50%%, = crossed, want no crossing")
 	}
 
-	bucket, crossed = tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.75)
+	bucket, crossed = tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.75, 0)
 	if !crossed || bucket != 0.75 {
 		t.Fatalf("crossing at 75%% used: got (bucket=%v, crossed=%v), want (0.75, true)", bucket, crossed)
 	}
 
-	bucket, crossed = tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.9)
+	bucket, crossed = tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.9, 0)
 	if !crossed || bucket != 0.9 {
 		t.Fatalf("crossing at 90%% used: got (bucket=%v, crossed=%v), want (0.9, true)", bucket, crossed)
 	}
 
-	bucket, crossed = tr.CheckAndMarkBudgetAlertBucket("team-alpha", 1.0)
+	bucket, crossed = tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 1.0, 0)
 	if !crossed || bucket != 1.0 {
 		t.Fatalf("crossing at 100%% used: got (bucket=%v, crossed=%v), want (1.0, true)", bucket, crossed)
 	}
 
 	// Nothing left to cross past 100%.
-	if _, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 1.0); crossed {
+	if _, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 1.0, 0); crossed {
 		t.Error("CheckAndMarkBudgetAlertBucket at 100%% used a second time = crossed, want no crossing")
 	}
 }
@@ -61,7 +62,7 @@ func TestCheckAndMarkBudgetAlertBucketFiresEachBucketExactlyOnce(t *testing.T) {
 // trail of every threshold a request happened to leap past.
 func TestCheckAndMarkBudgetAlertBucketOneLargeJumpFiresOnlyHighestBucket(t *testing.T) {
 	tr := NewTracker()
-	bucket, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.95)
+	bucket, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.95, 0)
 	if !crossed || bucket != 0.9 {
 		t.Fatalf("jump straight to 95%% used: got (bucket=%v, crossed=%v), want (0.9, true)", bucket, crossed)
 	}
@@ -71,10 +72,10 @@ func TestCheckAndMarkBudgetAlertBucketOneLargeJumpFiresOnlyHighestBucket(t *test
 // alert state never leaks into another's.
 func TestCheckAndMarkBudgetAlertBucketKeysTrackIndependently(t *testing.T) {
 	tr := NewTracker()
-	if _, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.9); !crossed {
+	if _, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.9, 0); !crossed {
 		t.Fatal("team-alpha at 90%% used = no crossing, want crossing")
 	}
-	bucket, crossed := tr.CheckAndMarkBudgetAlertBucket("team-beta", 0.5)
+	bucket, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-beta", 0.5, 0)
 	if !crossed || bucket != 0.5 {
 		t.Fatalf("team-beta at 50%% used: got (bucket=%v, crossed=%v), want (0.5, true) -- team-alpha's alert state must not leak", bucket, crossed)
 	}
@@ -91,10 +92,10 @@ func TestCheckAndMarkBudgetAlertBucketRefiresAfterWindowReset(t *testing.T) {
 
 	// Establish the window and alert the top bucket.
 	tr.Record("team-alpha", d("1"), window)
-	if _, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 1.0); !crossed {
+	if _, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 1.0, 0); !crossed {
 		t.Fatal("first-window crossing at 100%% used = no crossing, want crossing")
 	}
-	if _, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 1.0); crossed {
+	if _, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 1.0, 0); crossed {
 		t.Fatal("repeat check within the same window at 100%% used = crossed, want no crossing (already alerted)")
 	}
 
@@ -102,7 +103,7 @@ func TestCheckAndMarkBudgetAlertBucketRefiresAfterWindowReset(t *testing.T) {
 	clock.advance(2 * window)
 	tr.Record("team-alpha", d("0.01"), window) // triggers resetIfNeeded, bumping periodEpoch
 
-	bucket, crossed := tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.5)
+	bucket, crossed := tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.5, 0)
 	if !crossed || bucket != 0.5 {
 		t.Fatalf("post-reset crossing at 50%% used: got (bucket=%v, crossed=%v), want (0.5, true) -- a new window must re-alert from scratch", bucket, crossed)
 	}

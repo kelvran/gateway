@@ -349,7 +349,7 @@ func TestHandleChatCompletionPostCallBlockedResponseStillBillsTheRealUpstreamCal
 		t.Fatalf("err = %v, want ErrGuardrailBlocked", err)
 	}
 
-	spent := tracker.SpentUSD("test-key", 0)
+	spent := tracker.SpentUSD(context.Background(), "test-key", 0)
 	if spent.IsZero() {
 		t.Fatal("SpentUSD after a post-call-blocked response = 0, want a real nonzero charge — the upstream call already happened and was already paid for, regardless of whether the response was delivered")
 	}

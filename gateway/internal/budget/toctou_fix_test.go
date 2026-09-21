@@ -1,6 +1,7 @@
 package budget
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -41,7 +42,7 @@ func TestConcurrentReserveReconcileBoundsAdmissionAgainstNearExhaustedCap(t *tes
 		go func() {
 			defer wg.Done()
 
-			allowed, reserved, reservedUSD, _ := tr.Reserve("team-race", capUSD, 0)
+			allowed, reserved, reservedUSD, _, _ := tr.Reserve(context.Background(), "team-race", capUSD, 0)
 			reserveDone.Done()
 
 			// The real upstream-call gap: nothing reconciles until every
@@ -52,7 +53,7 @@ func TestConcurrentReserveReconcileBoundsAdmissionAgainstNearExhaustedCap(t *tes
 				allowedCount.Add(1)
 			}
 			if reserved {
-				tr.Reconcile("team-race", reservedUSD, 0, &cost, 0)
+				tr.Reconcile(context.Background(), "team-race", reservedUSD, 0, &cost, 0)
 			}
 		}()
 	}
@@ -64,7 +65,7 @@ func TestConcurrentReserveReconcileBoundsAdmissionAgainstNearExhaustedCap(t *tes
 	if got := allowedCount.Load(); got != 1 {
 		t.Fatalf("allowedCount = %d, want exactly 1 -- at most 1 of %d concurrent requests should be allowed when only one request's worth of budget headroom remains", got, goroutines)
 	}
-	finalSpent := tr.SpentUSD("team-race", 0)
+	finalSpent := tr.SpentUSD(context.Background(), "team-race", 0)
 	if !finalSpent.Equal(cost) {
 		t.Fatalf("finalSpent = %s, want exactly %s -- recorded spend should never exceed the configured cap", finalSpent, cost)
 	}
@@ -92,14 +93,14 @@ func TestConcurrentReserveReconcileReproducibleAcrossManyRuns(t *testing.T) {
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				defer wg.Done()
-				allowed, reserved, reservedUSD, _ := tr.Reserve("team-race", capUSD, 0)
+				allowed, reserved, reservedUSD, _, _ := tr.Reserve(context.Background(), "team-race", capUSD, 0)
 				reserveDone.Done()
 				proceedToReconcile.Wait()
 				if allowed {
 					allowedCount.Add(1)
 				}
 				if reserved {
-					tr.Reconcile("team-race", reservedUSD, 0, &cost, 0)
+					tr.Reconcile(context.Background(), "team-race", reservedUSD, 0, &cost, 0)
 				}
 			}()
 		}
@@ -110,7 +111,7 @@ func TestConcurrentReserveReconcileReproducibleAcrossManyRuns(t *testing.T) {
 		if got := allowedCount.Load(); got != 1 {
 			t.Fatalf("run %d: allowedCount = %d, want exactly 1", run, got)
 		}
-		if spent := tr.SpentUSD("team-race", 0); !spent.Equal(cost) {
+		if spent := tr.SpentUSD(context.Background(), "team-race", 0); !spent.Equal(cost) {
 			t.Fatalf("run %d: finalSpent = %s, want exactly %s", run, spent, cost)
 		}
 	}
@@ -165,7 +166,7 @@ func TestConcurrentAllowRecordStillRacesIfCalledDirectly(t *testing.T) {
 	if got := allowedCount.Load(); got != goroutines {
 		t.Fatalf("allowedCount = %d, want %d -- Allow/Record used directly (bypassing Reserve/Reconcile) must still reproduce the original TOCTOU race; if this now fails, either Allow/Record's own locking changed (it must not — every other Allow/Record test in this package depends on it staying as-is) or this test's own barrier technique is no longer exercising the race", got, goroutines)
 	}
-	finalSpent := tr.SpentUSD("team-race-unsafe", 0)
+	finalSpent := tr.SpentUSD(context.Background(), "team-race-unsafe", 0)
 	want := decimal.NewFromInt(goroutines).Mul(cost)
 	if !finalSpent.Equal(want) {
 		t.Fatalf("finalSpent = %s, want exactly %s (%d x %s) -- Allow/Record's known-unsafe overspend shape", finalSpent, want, goroutines, cost)

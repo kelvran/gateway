@@ -902,7 +902,7 @@ func getVirtualKeySpendHandler(pipeline *dataplane.Pipeline, logger auditLogger)
 			http.Error(w, fmt.Sprintf("virtual key %q not found", name), http.StatusNotFound)
 			return
 		}
-		spent := pipeline.SpentUSD(vk.ID, vk.BudgetResetInterval)
+		spent := pipeline.SpentUSD(r.Context(), vk.ID, vk.BudgetResetInterval)
 		var percentUsed float64
 		if vk.BudgetUSD.IsPositive() {
 			percentUsed, _ = spent.Div(vk.BudgetUSD).Float64()

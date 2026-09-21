@@ -131,7 +131,7 @@ func TestHandleChatCompletionBillsCrossModelFallbackAtServedModelPrice(t *testin
 		t.Fatalf("calls = %v, want [primary-cheap fallback-expensive]", calls)
 	}
 
-	spent := tracker.SpentUSD("test-key", 0)
+	spent := tracker.SpentUSD(context.Background(), "test-key", 0)
 	wantServedPrice := decimal.NewFromFloat(0.0000425)    // 5*0.0000025 + 3*0.00001, gpt-4o's real price
 	wantRequestedPrice := decimal.NewFromFloat(0.0000017) // 5*0.0000001 + 3*0.0000004, gpt-4o-mini's price — the pre-fix bug
 	if spent.Equal(wantRequestedPrice) {

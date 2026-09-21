@@ -112,7 +112,7 @@ func TestNewTrackerWithStoreHydratesPeriodStartAndEpochAcrossRestart(t *testing.
 		t.Fatalf("NewTrackerWithStore: %v", err)
 	}
 
-	_, reserved, _, reservationEpoch := tr.Reserve("team-alpha", d("100"), 24*time.Hour)
+	_, reserved, _, reservationEpoch, _ := tr.Reserve(context.Background(), "team-alpha", d("100"), 24*time.Hour)
 	if !reserved {
 		t.Fatal("Reserve did not grant a reservation")
 	}
@@ -133,7 +133,7 @@ func TestNewTrackerWithStoreLegacyEntryStartsAFreshWindowNotAFabricatedOne(t *te
 		t.Fatalf("NewTrackerWithStore: %v", err)
 	}
 
-	_, reserved, _, reservationEpoch := tr.Reserve("team-alpha", d("100"), 24*time.Hour)
+	_, reserved, _, reservationEpoch, _ := tr.Reserve(context.Background(), "team-alpha", d("100"), 24*time.Hour)
 	if !reserved {
 		t.Fatal("Reserve did not grant a reservation")
 	}
@@ -195,12 +195,12 @@ func TestRecordPersistsFullStateIncludingPeriodBookkeeping(t *testing.T) {
 	// Establish a real window (first Record call starts periodStart) and
 	// one real Reconcile'd cost so billedCount is non-zero.
 	tr.Record("team-alpha", d("1"), 24*time.Hour)
-	_, reserved, reservedUSD, reservationEpoch := tr.Reserve("team-alpha", d("100"), 24*time.Hour)
+	_, reserved, reservedUSD, reservationEpoch, _ := tr.Reserve(context.Background(), "team-alpha", d("100"), 24*time.Hour)
 	if !reserved {
 		t.Fatal("Reserve did not grant a reservation")
 	}
 	realCost := d("2")
-	tr.Reconcile("team-alpha", reservedUSD, reservationEpoch, &realCost, 24*time.Hour)
+	tr.Reconcile(context.Background(), "team-alpha", reservedUSD, reservationEpoch, &realCost, 24*time.Hour)
 
 	last := store.saveCalls[len(store.saveCalls)-1].state
 	if last.BilledCount != 1 {
@@ -359,25 +359,25 @@ func TestCloseOnPlainTrackerIsANoOp(t *testing.T) {
 func TestDeletePurgesAllInMemoryState(t *testing.T) {
 	tr := NewTracker()
 	tr.Record("team-alpha", d("5"), time.Hour) // seeds spent + periodStart + periodEpoch
-	_, reserved, reservedUSD, epoch := tr.Reserve("team-alpha", d("100"), time.Hour)
+	_, reserved, reservedUSD, epoch, _ := tr.Reserve(context.Background(), "team-alpha", d("100"), time.Hour)
 	if !reserved {
 		t.Fatal("setup: Reserve did not reserve anything")
 	}
 	realCost := d("1")
-	tr.Reconcile("team-alpha", reservedUSD, epoch, &realCost, time.Hour) // seeds billedCount
-	tr.CheckAndMarkBudgetAlertBucket("team-alpha", 0.9)                  // seeds highestAlertedBucket/Epoch
+	tr.Reconcile(context.Background(), "team-alpha", reservedUSD, epoch, &realCost, time.Hour) // seeds billedCount
+	tr.CheckAndMarkBudgetAlertBucket(context.Background(), "team-alpha", 0.9, 0)               // seeds highestAlertedBucket/Epoch
 
 	if err := tr.Delete("team-alpha"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if got := tr.SpentUSD("team-alpha", 0); !got.IsZero() {
+	if got := tr.SpentUSD(context.Background(), "team-alpha", 0); !got.IsZero() {
 		t.Errorf("SpentUSD after Delete = %s, want 0", got)
 	}
 	// A fresh Reserve for the same ID must behave like a brand-new key
 	// (full-headroom cold-start reservation, epoch 0) -- not carry over
 	// any of the purged state.
-	_, reserved, reservedUSD, epoch = tr.Reserve("team-alpha", d("100"), time.Hour)
+	_, reserved, reservedUSD, epoch, _ = tr.Reserve(context.Background(), "team-alpha", d("100"), time.Hour)
 	if !reserved {
 		t.Fatal("Reserve after Delete did not reserve anything")
 	}
