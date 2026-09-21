@@ -23,13 +23,13 @@
 | evals/results\_store.py          |       29 |        0 |    100% |           |
 | evals/rollout/\_\_init\_\_.py    |        0 |        0 |    100% |           |
 | evals/rollout/cache.py           |        7 |        0 |    100% |           |
-| evals/rollout/sandbox.py         |       51 |       26 |     49% |98-102, 111-118, 170-208, 217 |
+| evals/rollout/sandbox.py         |       54 |       12 |     78% |118-122, 131-138, 176-177, 268-269, 278 |
 | evals/rollout/scheduler.py       |       69 |        0 |    100% |           |
 | evals/stats.py                   |      124 |        4 |     97% |383, 448, 450, 455 |
 | evals/tracing.py                 |       32 |        0 |    100% |           |
 | evals/trend\_alert.py            |       63 |        1 |     98% |       191 |
 | evals/webhook.py                 |       48 |        2 |     96% |   152-153 |
-| **TOTAL**                        | **1769** |   **88** | **95%** |           |
+| **TOTAL**                        | **1772** |   **74** | **96%** |           |
 
 
 ## Setup coverage badge
