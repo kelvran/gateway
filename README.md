@@ -7,7 +7,7 @@
 | evals/\_\_init\_\_.py            |        1 |        0 |    100% |           |
 | evals/audit\_corpus.py           |       32 |        0 |    100% |           |
 | evals/auto\_flag.py              |       30 |        0 |    100% |           |
-| evals/cli.py                     |      806 |       41 |     95% |203, 255, 259, 263, 287, 337, 412, 527-528, 606, 649, 720-743, 766-767, 818-834, 839-840, 957, 1462, 1770-1771, 1774, 1983, 2056-2057, 2060, 2074-2075, 3065, 3139 |
+| evals/cli.py                     |      820 |       41 |     95% |214, 266, 270, 274, 298, 348, 423, 538-539, 617, 660, 731-754, 777-778, 829-845, 850-851, 968, 1473, 1866-1867, 1870, 2079, 2152-2153, 2156, 2170-2171, 3161, 3235 |
 | evals/corpus\_staleness.py       |       72 |        8 |     89% |155-156, 173-174, 179, 211, 217, 223 |
 | evals/field\_swap\_lint.py       |       17 |        1 |     94% |        77 |
 | evals/ingestion/\_\_init\_\_.py  |        0 |        0 |    100% |           |
@@ -20,6 +20,8 @@
 | evals/judge/llm\_judge.py        |      100 |        3 |     97% |464, 474-479 |
 | evals/judge/providers.py         |      100 |        2 |     98% |   370-371 |
 | evals/models.py                  |      104 |        0 |    100% |           |
+| evals/online/\_\_init\_\_.py     |        0 |        0 |    100% |           |
+| evals/online/sampler.py          |       22 |        0 |    100% |           |
 | evals/results\_store.py          |       29 |        0 |    100% |           |
 | evals/rollout/\_\_init\_\_.py    |        0 |        0 |    100% |           |
 | evals/rollout/cache.py           |        7 |        0 |    100% |           |
@@ -29,7 +31,7 @@
 | evals/tracing.py                 |       32 |        0 |    100% |           |
 | evals/trend\_alert.py            |       63 |        1 |     98% |       191 |
 | evals/webhook.py                 |       48 |        2 |     96% |   152-153 |
-| **TOTAL**                        | **1772** |   **74** | **96%** |           |
+| **TOTAL**                        | **1808** |   **74** | **96%** |           |
 
 
 ## Setup coverage badge
