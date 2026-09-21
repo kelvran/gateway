@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
 	"github.com/shopspring/decimal"
@@ -300,7 +301,7 @@ func TestIntegrationTwoLiveReplicasConvergeOnVirtualKeyUpsertViaConfigPropagatio
 	t.Cleanup(func() { _ = pipelineB.Close() })
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	subB := configpropagation.Open(redisAddr, signingSecret)
+	subB := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)

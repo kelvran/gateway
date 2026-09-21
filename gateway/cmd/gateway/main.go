@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -39,6 +40,7 @@ import (
 	"time"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
+	"github.com/redis/go-redis/v9"
 	berrors "go.etcd.io/bbolt/errors"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -487,7 +489,7 @@ func run(configPath string, logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		subscriber := configpropagation.Open(cfg.ConfigPropagation.RedisAddr, configPropagationSecret)
+		subscriber := configpropagation.Open(redisOptions(cfg.ConfigPropagation.RedisAddr, cfg.ConfigPropagation.Redis), configPropagationSecret)
 		go func() {
 			err := subscriber.Subscribe(ctx, func(event configpropagation.MutationEvent) {
 				if event.OriginInstanceID == telemetry.InstanceID {
@@ -735,7 +737,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		if cfg.Admin.PersistPath != "" {
 			logger.Warn("identity_redis_addr_and_persist_path_both_set", "redis_addr", cfg.Admin.RedisAddr, "persist_path", cfg.Admin.PersistPath)
 		}
-		store, err := identityredisstore.Open(cfg.Admin.RedisAddr)
+		store, err := identityredisstore.Open(redisOptions(cfg.Admin.RedisAddr, cfg.Admin.Redis))
 		if err != nil {
 			return nil, fmt.Errorf("opening redis virtual-key store at %q: %w", cfg.Admin.RedisAddr, err)
 		}
@@ -1173,7 +1175,7 @@ func newBudgetTracker(cfg controlplane.BudgetConfig, onCorruptStore string, logg
 		if cfg.PersistPath != "" {
 			logger.Warn("budget_redis_addr_and_persist_path_both_set", "redis_addr", cfg.RedisAddr, "persist_path", cfg.PersistPath)
 		}
-		backend, err := redisbudget.Open(cfg.RedisAddr)
+		backend, err := redisbudget.Open(redisOptions(cfg.RedisAddr, cfg.Redis))
 		if err != nil {
 			return nil, fmt.Errorf("opening redis budget backend at %q: %w", cfg.RedisAddr, err)
 		}
@@ -1230,7 +1232,7 @@ func newKeyLimiter(cfg controlplane.RateLimitConfig, keys []ratelimit.KeyConfig)
 	if cfg.RedisAddr == "" {
 		return ratelimit.NewInMemoryKeyLimiter(keys), nil
 	}
-	backend, err := redislimiter.Open(cfg.RedisAddr)
+	backend, err := redislimiter.Open(redisOptions(cfg.RedisAddr, cfg.Redis))
 	if err != nil {
 		return nil, fmt.Errorf("opening redis rate limiter at %q: %w", cfg.RedisAddr, err)
 	}
@@ -1257,7 +1259,7 @@ func newConfigPublisher(cfg controlplane.ConfigPropagationConfig) (configpropaga
 	if err != nil {
 		return nil, err
 	}
-	return configpropagation.Open(cfg.RedisAddr, secret), nil
+	return configpropagation.Open(redisOptions(cfg.RedisAddr, cfg.Redis), secret), nil
 }
 
 // resolveConfigPropagationSigningSecret resolves and validates
@@ -1274,6 +1276,29 @@ func resolveConfigPropagationSigningSecret(cfg controlplane.ConfigPropagationCon
 		return "", fmt.Errorf("config_propagation.signing_secret_env %q is set but resolves to an empty environment variable — refusing to run an unauthenticated cross-instance mutation channel", cfg.SigningSecretEnv)
 	}
 	return secret, nil
+}
+
+// redisOptions builds a redis.Options for addr from cfg, resolving
+// PasswordEnv via os.Getenv and constructing a minimal *tls.Config when
+// cfg.TLS is set — the single call site every one of this file's own
+// four Redis-backed subsystem constructors (newBudgetTracker,
+// newKeyLimiter, identity's redisstore.Open, newConfigPublisher/run's
+// own subscriber setup) routes through, closing a real MEDIUM-severity
+// gap this session's own end-to-end audit found: every one of those
+// constructors used to build a bare redis.Options{Addr: addr} with no
+// way to authenticate or encrypt the connection at all. See
+// controlplane.RedisAuthConfig's own doc comment for the full
+// rationale and scope (no custom CA/mTLS support — a plain TLS-enabled
+// toggle only, matching the common managed-Redis-provider case).
+func redisOptions(addr string, cfg controlplane.RedisAuthConfig) redis.Options {
+	opts := redis.Options{Addr: addr, Username: cfg.Username}
+	if cfg.PasswordEnv != "" {
+		opts.Password = os.Getenv(cfg.PasswordEnv)
+	}
+	if cfg.TLS {
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	return opts
 }
 
 // newAlertNotifier builds the optional direct-from-Go webhook push, per

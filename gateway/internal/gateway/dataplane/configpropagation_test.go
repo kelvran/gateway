@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -134,7 +135,7 @@ func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *test
 	}
 
 	signingSecret := testConfigPropagationSigningSecret(t)
-	pubA := configpropagation.Open(redisAddr, signingSecret)
+	pubA := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newConfigPropagationTestPipeline(t, deployments, pubA)
 
@@ -147,7 +148,7 @@ func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *test
 	// ApplyDeploymentWeightFromEvent -- mirrors cmd/gateway/main.go's
 	// real subscriber closure exactly, so this proves the same code
 	// path production wiring uses, not a test-only shortcut.
-	subB := configpropagation.Open(redisAddr, signingSecret)
+	subB := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)

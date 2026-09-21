@@ -248,13 +248,15 @@ type Backend struct {
 	alertScript   *redis.Script
 }
 
-// Open constructs a Backend against the Redis server at addr
-// ("host:port"). go-redis dials lazily, mirroring
-// internal/ratelimit/redislimiter.Open's identical "never fails on an
-// unreachable addr" contract — the gateway itself must still be able to
+// Open constructs a Backend against the Redis server described by opts
+// (go-redis's own canonical connection-options type) — see
+// internal/ratelimit/redislimiter.Open's identical doc comment for why
+// this takes the full redis.Options (AUTH/TLS support) rather than a
+// bare addr string, and for the "never fails on an unreachable addr"
+// contract this mirrors — the gateway itself must still be able to
 // start even when Redis is briefly unreachable.
-func Open(addr string) (*Backend, error) {
-	client := redis.NewClient(&redis.Options{Addr: addr})
+func Open(opts redis.Options) (*Backend, error) {
+	client := redis.NewClient(&opts)
 	return &Backend{
 		client:        client,
 		reserveScript: redis.NewScript(budgetReserveLuaSrc),
