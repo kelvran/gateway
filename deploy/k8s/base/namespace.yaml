@@ -1,0 +1,17 @@
+# A real, applied Namespace object -- kustomization.yaml's own
+# top-level `namespace:` field only STAMPS this name onto every other
+# resource here; it never creates the Namespace itself. Without this
+# file, `kubectl apply -k base/` against a namespace that doesn't
+# already exist fails outright with "namespaces \"kelvran\" not found"
+# -- confirmed directly against a real kind cluster during this
+# session's own end-to-end production dry run, reproducing exactly the
+# documented `kubectl apply -k base/` workflow in ../README.md against a
+# genuinely fresh cluster. Listed first in kustomization.yaml's
+# `resources:` so a single `kubectl apply -k base/` against a brand-new
+# cluster creates it before any namespaced resource that depends on it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kelvran
+  labels:
+    app.kubernetes.io/name: kelvran-gateway

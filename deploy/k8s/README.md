@@ -59,7 +59,35 @@ cp ../../.env.example .env                          # fill in real API keys
 #    own real traffic before applying anything to a live cluster.
 
 kubectl apply -k base/
+
+# 3. Turn step 1's .env into the REAL gateway-upstream-credentials Secret
+#    -- base/secret-placeholder.yaml (what step 2 just applied) is an
+#    EMPTY stringData stub kept only so kustomize has something to
+#    reference without erroring; on its own it ships an empty Secret,
+#    and every upstream provider call fails auth. On every cluster type
+#    OTHER than EKS (see "Secrets management" below for the
+#    EKS/ExternalSecrets path):
+kubectl create secret generic gateway-upstream-credentials \
+  --namespace kelvran --from-env-file=.env \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 4. envFrom is read only at container START -- the Pods `kubectl apply
+#    -k base/` already created came up against the still-empty
+#    placeholder, so they need a restart to pick up step 3's real values.
+kubectl rollout restart deployment/gateway -n kelvran
 ```
+
+**Confirmed by direct testing against a real cluster, not assumed: re-running
+`kubectl apply -k base/` AFTER step 3 silently wipes the real Secret's data
+back to empty again** — `secret-placeholder.yaml`'s own `stringData: {}`
+always wins the 3-way merge against whatever step 3 wrote, regardless of
+which command ran more recently. There is no ordering that makes this safe
+once both objects share the same name — every time you re-apply `base/`
+(a config change, an upgrade, CI re-running the same command), redo step 3
+immediately afterward, then step 4. If you already have real credentials
+under management (ESO, Vault, a script), delete `secret-placeholder.yaml`
+from `kustomization.yaml`'s `resources:` list entirely rather than fighting
+this footgun on every re-apply.
 
 ## Real, disclosed limitations — read before applying to a live cluster
 

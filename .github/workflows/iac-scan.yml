@@ -201,7 +201,9 @@ jobs:
             deploy/k8s/base/deployment.yaml \
             deploy/k8s/base/service.yaml \
             deploy/k8s/base/secret-placeholder.yaml \
-            deploy/k8s/base/serviceaccount.yaml
+            deploy/k8s/base/serviceaccount.yaml \
+            deploy/k8s/base/namespace.yaml \
+            deploy/k8s/base/poddisruptionbudget.yaml
       - name: kubeconform (ExternalSecrets Operator CRDs, via the real external-secrets.io schema catalog)
         # -ignore-missing-schemas: if the CRDs-catalog project's own schema
         # for a resource is ever missing/renamed upstream, this degrades

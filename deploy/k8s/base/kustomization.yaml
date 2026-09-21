@@ -11,11 +11,13 @@ kind: Kustomization
 namespace: kelvran
 
 resources:
+  - namespace.yaml
   - deployment.yaml
   - service.yaml
   - secret-placeholder.yaml
   - serviceaccount.yaml
   - networkpolicy.yaml
+  - poddisruptionbudget.yaml
 
 # Generates the gateway-config ConfigMap deployment.yaml mounts, from a
 # LOCAL, gitignored config.yaml -- see ../README.md's Usage section

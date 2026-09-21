@@ -1,0 +1,26 @@
+# Without this, a voluntary disruption (kubectl drain, or a cluster
+# autoscaler scaling down a node) can evict BOTH of deployment.yaml's
+# replicas at once -- Kubernetes' own eviction API only respects a
+# minAvailable budget when one actually exists; replicas: 2 alone buys
+# nothing against a coordinated drain. minAvailable: 1 mirrors
+# ingress-nginx's own real production default (its Helm chart only
+# creates a PDB at all once replicaCount > 1, with minAvailable: 1) --
+# confirmed via this session's own /deep-research pass against that
+# project's real chart source, not assumed. unhealthyPodEvictionPolicy:
+# AlwaysAllow is the Kubernetes docs' own explicit recommendation
+# (stable since 1.27): without it, a genuinely broken replica can block
+# a drain indefinitely while the scheduler waits for it to become
+# healthy, which it never will.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+  namespace: kelvran
+  labels:
+    app.kubernetes.io/name: kelvran-gateway
+spec:
+  minAvailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kelvran-gateway

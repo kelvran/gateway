@@ -42,6 +42,34 @@ spec:
       labels:
         app.kubernetes.io/name: kelvran-gateway
     spec:
+      # 60s = comfortably above the 45s worst-case graceful-shutdown
+      # budget cmd/gateway/main.go's own gracefulShutdownTimeout (30s) +
+      # postShutdownDrainGrace (15s) constants document, plus headroom
+      # for the preStop hook below -- K8s' own default of 30s is LESS
+      # than that 45s budget on its own, meaning a rolling update or
+      # scale-down could SIGKILL the process mid-drain, before its own
+      # graceful-shutdown logic ever finishes. Confirmed against K8s'
+      # own docs (this session's own /deep-research pass): preStop-hook
+      # time and the container's own post-SIGTERM shutdown time share
+      # this SAME budget, so it must be set larger than their sum, never
+      # left at the default.
+      terminationGracePeriodSeconds: 60
+      # Preferred (not required) anti-affinity: with only 2 replicas,
+      # requiring distinct nodes would leave the Deployment unable to
+      # schedule a 2nd replica at all on a single-node cluster (this
+      # session's own kind-cluster dry run used exactly one) -- the
+      # preferred form still lets the scheduler spread replicas across
+      # nodes whenever capacity allows, without ever blocking scheduling
+      # when it doesn't.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kelvran-gateway
+                topologyKey: kubernetes.io/hostname
       # See serviceaccount.yaml's own comment for why a dedicated
       # ServiceAccount exists at all (IRSA needs one to attach a trust
       # policy to) and why it's safe across every cluster type.
@@ -96,6 +124,20 @@ spec:
             capabilities:
               drop:
                 - ALL
+          # The native Sleep lifecycle action (KEP-3960, not an exec
+          # command) -- this image is FROM scratch (gateway/Dockerfile),
+          # with no shell at all, so an `exec: ["sh", "-c", "sleep 5"]`
+          # hook would simply fail to run (and K8s does not block
+          # termination on a failed preStop hook, so it would achieve
+          # nothing, silently). This delay gives the Service's own
+          # EndpointSlice controller time to mark this Pod not-ready and
+          # propagate that to kube-proxy/any ingress BEFORE SIGTERM is
+          # sent, so in-flight and imminent connections are not routed
+          # to a Pod that's already begun terminating.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           ports:
             - name: http
               containerPort: 8080
