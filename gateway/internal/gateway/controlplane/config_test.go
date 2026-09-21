@@ -633,6 +633,84 @@ func TestLoadRateLimitSectionParsesRedisAddr(t *testing.T) {
 	}
 }
 
+// TestLoadRateLimitSectionParsesRedisAuthConfig is the direct proof for
+// a real MEDIUM-severity finding from this session's own end-to-end
+// audit: every Redis-backed subsystem now supports optional AUTH/TLS
+// (RedisAuthConfig), and this proves rate_limit's own section actually
+// parses all three fields correctly, not just redis_addr.
+func TestLoadRateLimitSectionParsesRedisAuthConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nrate_limit:\n  redis_addr: \"localhost:6379\"\n  redis_password_env: \"REDIS_PW\"\n  redis_username: \"myuser\"\n  redis_tls: true\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a rate_limit AUTH/TLS section: %v", err)
+	}
+	if cfg.RateLimit.Redis.PasswordEnv != "REDIS_PW" {
+		t.Errorf("RateLimit.Redis.PasswordEnv = %q, want %q", cfg.RateLimit.Redis.PasswordEnv, "REDIS_PW")
+	}
+	if cfg.RateLimit.Redis.Username != "myuser" {
+		t.Errorf("RateLimit.Redis.Username = %q, want %q", cfg.RateLimit.Redis.Username, "myuser")
+	}
+	if !cfg.RateLimit.Redis.TLS {
+		t.Error("RateLimit.Redis.TLS = false, want true")
+	}
+}
+
+// TestLoadRateLimitSectionRejectsNonBooleanRedisTLS proves
+// assignRedisAuthConfig's own redis_tls parsing inherits assignBool's
+// loud-error-on-wrong-type contract, rather than silently falling back
+// to false.
+func TestLoadRateLimitSectionRejectsNonBooleanRedisTLS(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nrate_limit:\n  redis_addr: \"localhost:6379\"\n  redis_tls: \"yes\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with rate_limit.redis_tls: \"yes\" (a string, not a bool) succeeded, want an error")
+	}
+}
+
+// TestLoadBudgetAdminConfigPropagationSectionsParseRedisAuthConfig
+// proves the three OTHER Redis-backed sections (budget, admin,
+// config_propagation) each actually route through
+// assignRedisAuthConfig too, not just rate_limit above -- each call
+// site is a real, separate wiring point that could individually be
+// missing.
+func TestLoadBudgetAdminConfigPropagationSectionsParseRedisAuthConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n" +
+		"budget:\n  redis_addr: \"localhost:6379\"\n  redis_password_env: \"REDIS_BUDGET_PW\"\n" +
+		"admin:\n  token_env: \"T\"\n  redis_addr: \"localhost:6379\"\n  redis_password_env: \"REDIS_ADMIN_PW\"\n" +
+		"config_propagation:\n  redis_addr: \"localhost:6379\"\n  signing_secret_env: \"SIG\"\n  redis_password_env: \"REDIS_CFGPROP_PW\"\n" +
+		"deployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Budget.Redis.PasswordEnv != "REDIS_BUDGET_PW" {
+		t.Errorf("Budget.Redis.PasswordEnv = %q, want %q", cfg.Budget.Redis.PasswordEnv, "REDIS_BUDGET_PW")
+	}
+	if cfg.Admin.Redis.PasswordEnv != "REDIS_ADMIN_PW" {
+		t.Errorf("Admin.Redis.PasswordEnv = %q, want %q", cfg.Admin.Redis.PasswordEnv, "REDIS_ADMIN_PW")
+	}
+	if cfg.ConfigPropagation.Redis.PasswordEnv != "REDIS_CFGPROP_PW" {
+		t.Errorf("ConfigPropagation.Redis.PasswordEnv = %q, want %q", cfg.ConfigPropagation.Redis.PasswordEnv, "REDIS_CFGPROP_PW")
+	}
+}
+
 // TestLoadBudgetSectionParsesPersistPath proves the budget: section, when
 // present, is parsed correctly — the mirror-image proof to
 // TestLoadWithoutTelemetrySectionDefaultsToZeroValue's "genuinely

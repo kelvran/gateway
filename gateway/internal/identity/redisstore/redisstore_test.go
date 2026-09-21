@@ -53,7 +53,7 @@ func freshStore(t *testing.T) *Store {
 	}
 	_ = client.Close()
 
-	s, err := Open(redisAddr)
+	s, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open(): %v", err)
 	}
@@ -168,7 +168,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 
 	ctx := context.Background()
 
-	s1, err := Open(redisAddr)
+	s1, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open (first): %v", err)
 	}
@@ -185,7 +185,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	// A brand-new Store, opened later, against the same Redis address --
 	// simulating the gateway process restarting (or a second replica
 	// starting up for the first time).
-	s2, err := Open(redisAddr)
+	s2, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open (second, simulating a restart): %v", err)
 	}
@@ -225,7 +225,7 @@ func TestLoadRejectsCorruptValue(t *testing.T) {
 }
 
 func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
-	s, err := Open("127.0.0.1:1")
+	s, err := Open(redis.Options{Addr: "127.0.0.1:1"})
 	if err != nil {
 		t.Fatalf("Open() on an unreachable address returned an error = %v, want nil (dialing is lazy)", err)
 	}

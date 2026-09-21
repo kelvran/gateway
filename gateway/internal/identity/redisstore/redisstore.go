@@ -55,12 +55,15 @@ type Store struct {
 	client *redis.Client
 }
 
-// Open constructs a Store against the Redis server at addr
-// ("host:port"). go-redis dials lazily, mirroring
+// Open constructs a Store against the Redis server described by opts
+// (go-redis's own canonical connection-options type — see
+// internal/ratelimit/redislimiter.Open's identical doc comment for why
+// AUTH/TLS support lives here as the full redis.Options, not a bare
+// addr string). go-redis dials lazily, mirroring
 // internal/budget/redisbudget.Open's identical "never fails on an
 // unreachable addr" contract.
-func Open(addr string) (*Store, error) {
-	return &Store{client: redis.NewClient(&redis.Options{Addr: addr})}, nil
+func Open(opts redis.Options) (*Store, error) {
+	return &Store{client: redis.NewClient(&opts)}, nil
 }
 
 // Load implements identity.Store, decoding every field in the shared

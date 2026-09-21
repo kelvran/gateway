@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
@@ -48,7 +49,7 @@ func uniqueKey(t *testing.T) string {
 const usdScale = 1_000_000_000 // nano-USD per USD, mirrors budget.go's usdToNanoUSD
 
 func TestReserveColdStartReservesFullHeadroomThenRejects(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -94,7 +95,7 @@ func TestReserveColdStartReservesFullHeadroomThenRejects(t *testing.T) {
 // type-assertion error on results[1], not a wrong reserved amount --
 // go-redis receives a Lua string, not the int64 Reserve now expects.
 func TestReserveHandlesCapsAtAndAboveTheOldScientificNotationCliff(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -125,7 +126,7 @@ func TestReserveHandlesCapsAtAndAboveTheOldScientificNotationCliff(t *testing.T)
 }
 
 func TestAdjustReconcilesReservationDownToRealCost(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -171,7 +172,7 @@ func TestAdjustReconcilesReservationDownToRealCost(t *testing.T) {
 // negative, which would otherwise manufacture free extra headroom for
 // the NEXT reservation.
 func TestAdjustClampPreventsNegativeSpend(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -218,7 +219,7 @@ func TestAdjustClampPreventsNegativeSpend(t *testing.T) {
 // epoch) finds nothing to correct, and must not error or fabricate a
 // negative-spend key from scratch.
 func TestAdjustOnAnAlreadyExpiredKeyIsANoOp(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -241,7 +242,7 @@ func TestAdjustOnAnAlreadyExpiredKeyIsANoOp(t *testing.T) {
 }
 
 func TestReserveFixedAdmitsExactDeltaThenRejectsOverflow(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -293,7 +294,7 @@ func TestReserveFixedAdmitsExactDeltaThenRejectsOverflow(t *testing.T) {
 // this test starts failing because SpentNanoUSD("alert:foo") reflects
 // the OTHER key's alert-bucket write.
 func TestSpendAndAlertKeysDoNotCollideForAColonContainingKeyID(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -327,7 +328,7 @@ func TestSpendAndAlertKeysDoNotCollideForAColonContainingKeyID(t *testing.T) {
 }
 
 func TestMarkAlertBucketOnlyRecordsANewHighest(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -362,7 +363,7 @@ func TestMarkAlertBucketOnlyRecordsANewHighest(t *testing.T) {
 }
 
 func TestDeletePurgesSpendAndAlertKeys(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -421,7 +422,7 @@ func TestDeletePurgesSpendAndAlertKeys(t *testing.T) {
 // the in-memory Tracker's resetIfNeeded's own rolling-window behavior,
 // just obtained here via TTL rather than an epoch counter.
 func TestReserveWindowExpiresViaRedisTTL(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -482,7 +483,7 @@ func TestReserveWindowExpiresViaRedisTTL(t *testing.T) {
 // this test starts failing because window #2's spend reflects the
 // stale Adjust's delta.
 func TestAdjustDoesNotCorruptALaterWindowThatReplacedTheOneItWasReservedAgainst(t *testing.T) {
-	b, err := Open(redisAddr)
+	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -540,7 +541,7 @@ func TestAdjustDoesNotCorruptALaterWindowThatReplacedTheOneItWasReservedAgainst(
 }
 
 func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
-	b, err := Open("127.0.0.1:1")
+	b, err := Open(redis.Options{Addr: "127.0.0.1:1"})
 	if err != nil {
 		t.Fatalf("Open() on an unreachable address returned an error = %v, want nil (dialing is lazy)", err)
 	}

@@ -158,15 +158,25 @@ type Limiter struct {
 	tpmAdjustScript *redis.Script
 }
 
-// Open constructs a Limiter against the Redis server at addr
-// ("host:port"). go-redis dials lazily — the first real connection
-// attempt happens on the first Allow call, not here — so an unreachable
-// addr does not make Open itself fail; this is confirmed by
-// TestOpenNeverFailsOnUnreachableAddr, not merely assumed, since it's the
-// property this RFC's fail-open policy depends on (Open must succeed
-// even if Redis is down, so the gateway itself can still start).
-func Open(addr string) (*Limiter, error) {
-	client := redis.NewClient(&redis.Options{Addr: addr})
+// Open constructs a Limiter against the Redis server described by opts
+// (go-redis's own canonical connection-options type — Addr is the only
+// required field; Username/Password/TLSConfig are this package's real
+// closes-a-real-finding AUTH/TLS support, added 2026-09-21: every
+// Redis-backed subsystem in this codebase used to construct a bare
+// redis.Options{Addr: addr} with no way to authenticate or encrypt the
+// connection at all, meaning Redis network access alone was sufficient
+// to read/corrupt rate-limit state — a real gap this session's own
+// end-to-end audit found, compounding the (separately fixed)
+// configpropagation auth-bypass finding by leaving no network-layer
+// mitigation available even after that fix). go-redis dials lazily —
+// the first real connection attempt happens on the first Allow call,
+// not here — so an unreachable addr does not make Open itself fail;
+// this is confirmed by TestOpenNeverFailsOnUnreachableAddr, not merely
+// assumed, since it's the property this RFC's fail-open policy depends
+// on (Open must succeed even if Redis is down, so the gateway itself
+// can still start).
+func Open(opts redis.Options) (*Limiter, error) {
+	client := redis.NewClient(&opts)
 	return &Limiter{
 		client:          client,
 		script:          redis.NewScript(luaSrc),

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -134,12 +135,12 @@ func TestIntegrationTwoPipelinesConvergeOnVirtualKeyUpsertViaRedisPubSub(t *test
 	keys := []identity.VirtualKey{{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100}}
 
 	signingSecret := testConfigPropagationSigningSecret(t)
-	pubA := configpropagation.Open(redisAddr, signingSecret)
+	pubA := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newVirtualKeyPropagationTestPipeline(t, keys, pubA)
 	pipelineB := newVirtualKeyPropagationTestPipeline(t, keys, nil)
 
-	subB := configpropagation.Open(redisAddr, signingSecret)
+	subB := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)
@@ -185,12 +186,12 @@ func TestIntegrationTwoPipelinesConvergeOnVirtualKeyDeleteViaRedisPubSub(t *test
 	}
 
 	signingSecret := testConfigPropagationSigningSecret(t)
-	pubA := configpropagation.Open(redisAddr, signingSecret)
+	pubA := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newVirtualKeyPropagationTestPipeline(t, keys, pubA)
 	pipelineB := newVirtualKeyPropagationTestPipeline(t, keys, nil)
 
-	subB := configpropagation.Open(redisAddr, signingSecret)
+	subB := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)
@@ -230,12 +231,12 @@ func TestIntegrationTwoPipelinesConvergeOnVirtualKeyRotateViaRedisPubSub(t *test
 	}
 
 	signingSecret := testConfigPropagationSigningSecret(t)
-	pubA := configpropagation.Open(redisAddr, signingSecret)
+	pubA := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newVirtualKeyPropagationTestPipeline(t, keys, pubA)
 	pipelineB := newVirtualKeyPropagationTestPipeline(t, keys, nil)
 
-	subB := configpropagation.Open(redisAddr, signingSecret)
+	subB := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)
@@ -290,12 +291,12 @@ func TestRotateVirtualKeyConvergesOnAReplicaThatNeverSawTheOriginalUpsert(t *tes
 	unrelatedKey := identity.VirtualKey{ID: "team-unrelated", KeyHash: testHashOf("unrelated-secret"), RateLimitBurst: 100, RateLimitRefill: 100}
 
 	signingSecret := testConfigPropagationSigningSecret(t)
-	pubA := configpropagation.Open(redisAddr, signingSecret)
+	pubA := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = pubA.Close() })
 	pipelineA := newVirtualKeyPropagationTestPipeline(t, []identity.VirtualKey{rotatingKey}, pubA)
 	pipelineB := newVirtualKeyPropagationTestPipeline(t, []identity.VirtualKey{unrelatedKey}, nil)
 
-	subB := configpropagation.Open(redisAddr, signingSecret)
+	subB := configpropagation.Open(redis.Options{Addr: redisAddr}, signingSecret)
 	t.Cleanup(func() { _ = subB.Close() })
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)

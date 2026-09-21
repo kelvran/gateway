@@ -294,7 +294,10 @@ type PubSub struct {
 }
 
 // Open constructs a Publisher/Subscriber pair against the Redis server
-// at addr ("host:port"). go-redis dials lazily — mirroring
+// described by opts (go-redis's own canonical connection-options type —
+// see internal/ratelimit/redislimiter.Open's identical doc comment for
+// why AUTH/TLS support lives here as the full redis.Options, not a bare
+// addr string). go-redis dials lazily — mirroring
 // internal/ratelimit/redislimiter.Open's own identical "never fails on
 // an unreachable addr" contract, confirmed by that package's own
 // TestOpenNeverFailsOnUnreachableAddr — so an unreachable addr does not
@@ -309,8 +312,8 @@ type PubSub struct {
 // place a misconfiguration is caught, mirroring AdminConfig.TokenEnv's
 // established "resolves empty -> fail startup" convention; this
 // in-package refusal is defense-in-depth for any other caller.
-func Open(addr, signingSecret string) *PubSub {
-	return &PubSub{client: redis.NewClient(&redis.Options{Addr: addr}), signingSecret: []byte(signingSecret)}
+func Open(opts redis.Options, signingSecret string) *PubSub {
+	return &PubSub{client: redis.NewClient(&opts), signingSecret: []byte(signingSecret)}
 }
 
 // Close releases the underlying *redis.Client's own resources, mirroring

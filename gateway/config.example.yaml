@@ -265,6 +265,12 @@ telemetry:
 # of them.
 # rate_limit:
 #   redis_addr: "localhost:6379"
+#   # AUTH/TLS for the Redis connection above -- all optional, all
+#   # independently off by default (a plain, unauthenticated connection,
+#   # matching every deployment's behavior before these existed).
+#   # redis_password_env: "REDIS_RATE_LIMIT_PASSWORD"
+#   # redis_username: "default"
+#   # redis_tls: true
 
 # Budget hot-state persistence/backend — see
 # internal/budget/redisbudget's own package doc. Optional: omit this
@@ -281,6 +287,9 @@ telemetry:
 # budget:
 #   persist_path: "/var/lib/kelvran/budget.db"
 #   # redis_addr: "localhost:6379"
+#   # redis_password_env: "REDIS_BUDGET_PASSWORD"
+#   # redis_username: "default"
+#   # redis_tls: true
 
 # Direct-from-Go webhook push for operational signals the gateway
 # already computes but never delivers anywhere (a budget-threshold
@@ -424,6 +433,9 @@ telemetry:
 #   enable_audit_log: true
 #   persist_path: "/var/lib/kelvran/identity.db"
 #   # redis_addr: "localhost:6379"
+#   # redis_password_env: "REDIS_ADMIN_PASSWORD"
+#   # redis_username: "default"
+#   # redis_tls: true
 
 # Push-based cross-instance admin-mutation propagation (deployment
 # weight changes, and virtual-key upsert/delete/rotate), via Redis
@@ -438,9 +450,18 @@ telemetry:
 # redis_addr is deliberately its own field, not a reuse of
 # rate_limit.redis_addr above -- an operator may want distributed rate
 # limiting without config propagation (or vice versa) against two
-# entirely different Redis deployments.
+# entirely different Redis deployments. signing_secret_env is REQUIRED
+# once redis_addr is set (cmd/gateway fails startup otherwise, per
+# configpropagation.MutationEvent.Signature's own doc comment) -- every
+# instance signs/verifies mutation events with this shared HMAC secret,
+# closing what would otherwise be a full, unauthenticated admin-API
+# bypass over the pub/sub channel.
 # config_propagation:
 #   redis_addr: "localhost:6379"
+#   signing_secret_env: "KELVRAN_CONFIG_PROPAGATION_SIGNING_SECRET"
+#   # redis_password_env: "REDIS_CONFIG_PROPAGATION_PASSWORD"
+#   # redis_username: "default"
+#   # redis_tls: true
 
 # Active/synthetic health-probing: a background loop that issues a
 # lightweight, real chat-completion request to every configured

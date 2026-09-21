@@ -2,12 +2,16 @@ package redislimiter
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+	"github.com/testcontainers/testcontainers-go"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
@@ -45,7 +49,7 @@ func uniqueKey(t *testing.T) string {
 }
 
 func TestAllowWithinCapacitySucceedsThenRejects(t *testing.T) {
-	l, err := Open(redisAddr)
+	l, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -85,7 +89,7 @@ func TestAllowWithinCapacitySucceedsThenRejects(t *testing.T) {
 // url.QueryEscape calls: this test starts failing with a WRONGTYPE
 // error from AllowTPM, not a wrong admission decision.
 func TestAllowAndAllowTPMDoNotCollideForATPMPrefixedKeyID(t *testing.T) {
-	l, err := Open(redisAddr)
+	l, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -111,7 +115,7 @@ func TestAllowAndAllowTPMDoNotCollideForATPMPrefixedKeyID(t *testing.T) {
 }
 
 func TestAllowRefillsOverTime(t *testing.T) {
-	l, err := Open(redisAddr)
+	l, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -162,13 +166,13 @@ func TestAllowRefillsOverTime(t *testing.T) {
 // in-memory ratelimit.TokenBucket cannot provide, and the entire reason
 // this package exists.
 func TestTwoLimitersShareOneBucket(t *testing.T) {
-	l1, err := Open(redisAddr)
+	l1, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() #1 error = %v", err)
 	}
 	defer func() { _ = l1.Close() }()
 
-	l2, err := Open(redisAddr)
+	l2, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() #2 error = %v", err)
 	}
@@ -204,7 +208,7 @@ func TestTwoLimitersShareOneBucket(t *testing.T) {
 // advances past now+1000ms (3*300ms = 900ms fits, a 4th call's own
 // +300ms would push it to 1200ms, past the 1000ms offset).
 func TestAllowTPMWithinBurstSucceedsThenRejects(t *testing.T) {
-	l, err := Open(redisAddr)
+	l, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -242,7 +246,7 @@ func TestAllowTPMWithinBurstSucceedsThenRejects(t *testing.T) {
 // (clamping cost down to whatever headroom remains), unlike
 // redis_rate's own AllowAtMost variant.
 func TestAllowTPMRejectsASingleCostExceedingBurst(t *testing.T) {
-	l, err := Open(redisAddr)
+	l, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -267,7 +271,7 @@ func TestAllowTPMRejectsASingleCostExceedingBurst(t *testing.T) {
 // 2+7=9) must now succeed, which it would NOT have if the original
 // 8-token reservation had never been reconciled down.
 func TestAdjustTPMReconcilesEstimateDownToRealCost(t *testing.T) {
-	l, err := Open(redisAddr)
+	l, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -310,7 +314,7 @@ func TestAdjustTPMReconcilesEstimateDownToRealCost(t *testing.T) {
 // full-cost calls all succeed rapid-fire before TAT caught back up to
 // real time — "manufacturing capacity from the past."
 func TestAdjustTPMClampPreventsManufacturingCapacityFromExcessiveRelease(t *testing.T) {
-	l, err := Open(redisAddr)
+	l, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -358,7 +362,7 @@ func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
 	// A port nothing is listening on. Open must still succeed — go-redis
 	// dials lazily, and this RFC's fail-open policy depends on Open
 	// itself never failing on a bad/unreachable address, only Allow.
-	l, err := Open("127.0.0.1:1")
+	l, err := Open(redis.Options{Addr: "127.0.0.1:1"})
 	if err != nil {
 		t.Fatalf("Open() on an unreachable address returned an error = %v, want nil (dialing is lazy)", err)
 	}
@@ -370,4 +374,81 @@ func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
 	if _, err := l.Allow(ctx, "any-key", 1, 1); err == nil {
 		t.Fatal("Allow() against an unreachable Redis address succeeded, want an error")
 	}
+}
+
+// TestOpenAuthenticatesAgainstARealPasswordProtectedRedis is the direct
+// regression proof for a real MEDIUM-severity finding from this
+// session's own end-to-end production audit: Open used to construct a
+// bare redis.Options{Addr: addr}, with no way to supply a credential at
+// all -- against a real Redis instance requiring AUTH, every call would
+// fail with a real NOAUTH error, and there was no way to fix that
+// short of running Redis with no credential. Proven here against a
+// REAL Redis container started with --requirepass, not a mock: Open
+// with the correct credential succeeds; Open with no credential (or a
+// wrong one) fails on the very first real command with a real
+// authentication error from Redis itself.
+func TestOpenAuthenticatesAgainstARealPasswordProtectedRedis(t *testing.T) {
+	ctx := context.Background()
+	credentialBytes := make([]byte, 16)
+	if _, err := rand.Read(credentialBytes); err != nil {
+		t.Fatalf("generating test credential: %v", err)
+	}
+	realCredential := hex.EncodeToString(credentialBytes)
+	container, err := tcredis.Run(ctx, "redis:7-alpine",
+		testcontainers.WithCmd("redis-server", "--requirepass", realCredential))
+	if err != nil {
+		t.Fatalf("starting credential-protected test Redis container: %v", err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+
+	host, err := container.Host(ctx)
+	if err != nil {
+		t.Fatalf("getting container host: %v", err)
+	}
+	port, err := container.MappedPort(ctx, "6379")
+	if err != nil {
+		t.Fatalf("getting mapped port: %v", err)
+	}
+	addr := host + ":" + port.Port()
+
+	t.Run("correct credential succeeds", func(t *testing.T) {
+		opts := redis.Options{Addr: addr}
+		opts.Password = realCredential
+		l, err := Open(opts)
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+		defer func() { _ = l.Close() }()
+		if _, err := l.Allow(ctx, "any-key", 3, 1); err != nil {
+			t.Fatalf("Allow() with the correct credential = error %v, want nil", err)
+		}
+	})
+
+	t.Run("wrong credential fails with a real auth error", func(t *testing.T) {
+		wrongBytes := make([]byte, 16)
+		if _, err := rand.Read(wrongBytes); err != nil {
+			t.Fatalf("generating wrong credential: %v", err)
+		}
+		opts := redis.Options{Addr: addr}
+		opts.Password = hex.EncodeToString(wrongBytes)
+		l, err := Open(opts)
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+		defer func() { _ = l.Close() }()
+		if _, err := l.Allow(ctx, "any-key", 3, 1); err == nil {
+			t.Fatal("Allow() with a wrong credential succeeded, want a real authentication error")
+		}
+	})
+
+	t.Run("no credential fails with a real auth error", func(t *testing.T) {
+		l, err := Open(redis.Options{Addr: addr})
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+		defer func() { _ = l.Close() }()
+		if _, err := l.Allow(ctx, "any-key", 3, 1); err == nil {
+			t.Fatal("Allow() with no credential against a credential-protected Redis succeeded, want a real authentication error")
+		}
+	})
 }

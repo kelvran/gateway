@@ -348,6 +348,43 @@ type TelemetryConfig struct {
 	OTLPEndpoint string
 }
 
+// RedisAuthConfig holds optional AUTH/TLS settings for a Redis
+// connection, embedded (as a `Redis` field) alongside a RedisAddr field
+// in each Redis-backed subsystem's own config struct (BudgetConfig,
+// RateLimitConfig, AdminConfig, ConfigPropagationConfig). Added
+// 2026-09-21, closing a real MEDIUM-severity gap this session's own
+// end-to-end audit found: every one of those subsystems constructed a
+// bare redis.Options{Addr: addr} with no way to authenticate or
+// encrypt the connection at all, meaning Redis network access alone
+// was sufficient to read/corrupt rate-limit/budget/identity state —
+// and, before configpropagation's own signing fix, made that finding's
+// unauthenticated pub/sub bypass impossible to mitigate even at the
+// network layer. Every field is independently zero-valued-safe (no
+// AUTH/TLS at all, matching every existing deployment's current
+// behavior exactly) — this is additive, never a required migration.
+type RedisAuthConfig struct {
+	// PasswordEnv is the name of the environment variable holding the
+	// Redis AUTH password (or an ACL user's password, when Username is
+	// also set). Empty means no password — the plain, unauthenticated
+	// connection every existing deployment already uses.
+	PasswordEnv string
+	// Username is the Redis ACL username (Redis 6+), sent alongside the
+	// password resolved from PasswordEnv. Never a secret itself —
+	// usernames are not credentials — so this is a plain config value,
+	// not an *_env indirection, mirroring DeploymentConfig's own
+	// Name/Model fields' identical plain-value convention.
+	Username string
+	// TLS enables TLS with the system's default CA trust store and
+	// standard certificate verification — the common case for a managed
+	// Redis provider (AWS ElastiCache, Redis Cloud, Upstash, etc.) that
+	// fronts Redis with a publicly-trusted certificate. A custom CA
+	// bundle or mutual-TLS client certificate is deliberately NOT
+	// supported here — no current deployment target needs either; add
+	// real fields for them if and when one does, rather than
+	// speculatively building the capability now.
+	TLS bool
+}
+
 // BudgetConfig configures restart-durable budget-spend persistence, per
 // docs/rfcs/2026-09-03-budget-persistence.md. Optional — a zero-valued
 // BudgetConfig (PersistPath == "") means pure in-memory budget tracking,
@@ -369,6 +406,10 @@ type BudgetConfig struct {
 	// default) means budget stays exactly as it was before this option
 	// existed: pure in-memory, or bbolt-backed if PersistPath is set.
 	RedisAddr string
+	// Redis holds RedisAddr's optional AUTH/TLS settings — see
+	// RedisAuthConfig's own doc comment. Meaningless when RedisAddr is
+	// empty.
+	Redis RedisAuthConfig
 }
 
 // PromptConfig configures restart-durable prompt-template persistence,
@@ -391,6 +432,10 @@ type RateLimitConfig struct {
 	// RedisAddr is the Redis server address ("host:port"). Empty means
 	// no distributed rate limiting.
 	RedisAddr string
+	// Redis holds RedisAddr's optional AUTH/TLS settings — see
+	// RedisAuthConfig's own doc comment. Meaningless when RedisAddr is
+	// empty.
+	Redis RedisAuthConfig
 }
 
 // AlertingConfig configures a direct-from-Go webhook push for signals
@@ -447,6 +492,10 @@ type ConfigPropagationConfig struct {
 	// this same codebase, and it carries live virtual-key mutation
 	// authority.
 	SigningSecretEnv string
+	// Redis holds RedisAddr's optional AUTH/TLS settings — see
+	// RedisAuthConfig's own doc comment. Meaningless when RedisAddr is
+	// empty.
+	Redis RedisAuthConfig
 }
 
 // CacheL2Config configures the L2 (normalized-match) cache layer, per
@@ -638,6 +687,10 @@ type AdminConfig struct {
 	// before this option existed: pure in-memory, or bbolt-backed if
 	// PersistPath is set.
 	RedisAddr string
+	// Redis holds RedisAddr's optional AUTH/TLS settings — see
+	// RedisAuthConfig's own doc comment. Meaningless when RedisAddr is
+	// empty.
+	Redis RedisAuthConfig
 	// EnablePprof mounts net/http/pprof's standard handler set on this
 	// same admin mux (under /admin/debug/pprof/), behind the same bearer
 	// -token middleware as every other admin route, when true. Default
@@ -927,6 +980,9 @@ func Load(path string) (*Config, error) {
 	if budgetRaw, ok := getMap(root, "budget"); ok {
 		cfg.Budget.PersistPath, _ = getString(budgetRaw, "persist_path")
 		cfg.Budget.RedisAddr, _ = getString(budgetRaw, "redis_addr")
+		if err := assignRedisAuthConfig(&cfg.Budget.Redis, budgetRaw, "controlplane: budget"); err != nil {
+			return nil, err
+		}
 	}
 
 	if promptRaw, ok := getMap(root, "prompt"); ok {
@@ -935,6 +991,9 @@ func Load(path string) (*Config, error) {
 
 	if rateLimitRaw, ok := getMap(root, "rate_limit"); ok {
 		cfg.RateLimit.RedisAddr, _ = getString(rateLimitRaw, "redis_addr")
+		if err := assignRedisAuthConfig(&cfg.RateLimit.Redis, rateLimitRaw, "controlplane: rate_limit"); err != nil {
+			return nil, err
+		}
 	}
 
 	if alertingRaw, ok := getMap(root, "alerting"); ok {
@@ -945,6 +1004,9 @@ func Load(path string) (*Config, error) {
 	if configPropagationRaw, ok := getMap(root, "config_propagation"); ok {
 		cfg.ConfigPropagation.RedisAddr, _ = getString(configPropagationRaw, "redis_addr")
 		cfg.ConfigPropagation.SigningSecretEnv, _ = getString(configPropagationRaw, "signing_secret_env")
+		if err := assignRedisAuthConfig(&cfg.ConfigPropagation.Redis, configPropagationRaw, "controlplane: config_propagation"); err != nil {
+			return nil, err
+		}
 	}
 
 	if cacheRaw, ok := getMap(root, "cache"); ok {
@@ -1020,6 +1082,9 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.OperatorTokenEnv, _ = getString(adminRaw, "operator_token_env")
 		cfg.Admin.PersistPath, _ = getString(adminRaw, "persist_path")
 		cfg.Admin.RedisAddr, _ = getString(adminRaw, "redis_addr")
+		if err := assignRedisAuthConfig(&cfg.Admin.Redis, adminRaw, "controlplane: admin"); err != nil {
+			return nil, err
+		}
 		if err := assignBool(&cfg.Admin.EnablePprof, adminRaw, "enable_pprof", "controlplane: admin.enable_pprof"); err != nil {
 			return nil, err
 		}
@@ -1462,6 +1527,18 @@ func assignBool(dst *bool, m map[string]any, key, context string) error {
 		*dst = v
 	}
 	return nil
+}
+
+// assignRedisAuthConfig parses "redis_password_env"/"redis_username"/
+// "redis_tls" into dst — the single call site each of the four
+// Redis-backed subsystems' own section-parsing block below routes
+// through, so RedisAuthConfig's own field set (see its doc comment) is
+// parsed identically everywhere, never duplicated four times with a
+// chance to drift.
+func assignRedisAuthConfig(dst *RedisAuthConfig, m map[string]any, context string) error {
+	dst.PasswordEnv, _ = getString(m, "redis_password_env")
+	dst.Username, _ = getString(m, "redis_username")
+	return assignBool(&dst.TLS, m, "redis_tls", context)
 }
 
 func getMap(m map[string]any, key string) (map[string]any, bool) {

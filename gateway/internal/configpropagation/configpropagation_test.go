@@ -91,9 +91,9 @@ func waitForEvent(t *testing.T, got func() *MutationEvent, timeout time.Duration
 // a real Subscribe call -- not just that Publish/Subscribe each succeed
 // in isolation.
 func TestPublishDeploymentWeightEventOverRealRedis(t *testing.T) {
-	pub := Open(redisAddr, testSigningSecret)
+	pub := Open(redis.Options{Addr: redisAddr}, testSigningSecret)
 	defer func() { _ = pub.Close() }()
-	sub := Open(redisAddr, testSigningSecret)
+	sub := Open(redis.Options{Addr: redisAddr}, testSigningSecret)
 	defer func() { _ = sub.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,7 +138,7 @@ func TestPublishDeploymentWeightEventOverRealRedis(t *testing.T) {
 // once its ctx is canceled -- the same shutdown contract
 // RunHealthProbeLoop's own goroutine relies on.
 func TestSubscribeReturnsWhenContextCanceled(t *testing.T) {
-	sub := Open(redisAddr, testSigningSecret)
+	sub := Open(redis.Options{Addr: redisAddr}, testSigningSecret)
 	defer func() { _ = sub.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -168,7 +168,7 @@ func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
 	// Open has no error return at all (unlike redislimiter.Open, which
 	// keeps one only for interface-shape symmetry) -- this test proves
 	// the stronger claim directly: it doesn't even panic or block.
-	pub := Open("127.0.0.1:1", testSigningSecret)
+	pub := Open(redis.Options{Addr: "127.0.0.1:1"}, testSigningSecret)
 	defer func() { _ = pub.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -187,7 +187,7 @@ func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
 // len(r.signingSecret) == 0 guard: this test starts failing because
 // Publish instead succeeds and silently emits an unsigned event.
 func TestPublishRefusesWithoutSigningSecret(t *testing.T) {
-	pub := Open(redisAddr, "")
+	pub := Open(redis.Options{Addr: redisAddr}, "")
 	defer func() { _ = pub.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -202,7 +202,7 @@ func TestPublishRefusesWithoutSigningSecret(t *testing.T) {
 // verify ANY received event, so it must refuse to run at all rather
 // than silently trusting everything.
 func TestSubscribeRefusesWithoutSigningSecret(t *testing.T) {
-	sub := Open(redisAddr, "")
+	sub := Open(redis.Options{Addr: redisAddr}, "")
 	defer func() { _ = sub.Close() }()
 	err := sub.Subscribe(context.Background(), func(MutationEvent) {})
 	if err == nil {
@@ -219,7 +219,7 @@ func TestSubscribeRefusesWithoutSigningSecret(t *testing.T) {
 // reverting Subscribe's own verifyEvent check: this test starts failing
 // because the forged event reaches onEvent.
 func TestSubscribeDropsEventWithForgedOrMissingSignature(t *testing.T) {
-	sub := Open(redisAddr, testSigningSecret)
+	sub := Open(redis.Options{Addr: redisAddr}, testSigningSecret)
 	defer func() { _ = sub.Close() }()
 	raw := redisRawClientForTest(t, redisAddr)
 	defer func() { _ = raw.Close() }()
@@ -247,7 +247,7 @@ func TestSubscribeDropsEventWithForgedOrMissingSignature(t *testing.T) {
 	// A genuine, correctly-signed event published right after must still
 	// arrive -- proving this instance's Subscribe loop is alive and
 	// working, not just coincidentally never receiving anything.
-	pub := Open(redisAddr, testSigningSecret)
+	pub := Open(redis.Options{Addr: redisAddr}, testSigningSecret)
 	defer func() { _ = pub.Close() }()
 	genuinePayload, err := json.Marshal(DeploymentWeightPayload{Model: "gpt-4o", DeploymentName: "real-deployment", Weight: 3})
 	if err != nil {
@@ -310,7 +310,7 @@ func redisRawClientForTest(t *testing.T, addr string) *redis.Client {
 func TestSubscribeSurvivesARealRedisPartitionAndDeliversEventsAfterRecovery(t *testing.T) {
 	containerID := redisContainer.GetContainerID()
 
-	sub := Open(redisAddr, testSigningSecret)
+	sub := Open(redis.Options{Addr: redisAddr}, testSigningSecret)
 	defer func() { _ = sub.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -362,7 +362,7 @@ func TestSubscribeSurvivesARealRedisPartitionAndDeliversEventsAfterRecovery(t *t
 	// partition has cleared, and a single attempt landing in that exact
 	// window would otherwise flake this test on an unrelated timing
 	// detail this test isn't about.
-	pub := Open(redisAddr, testSigningSecret)
+	pub := Open(redis.Options{Addr: redisAddr}, testSigningSecret)
 	defer func() { _ = pub.Close() }()
 	payload, err := json.Marshal(DeploymentWeightPayload{Model: "gpt-4o", DeploymentName: "post-partition", Weight: 7})
 	if err != nil {
