@@ -63,20 +63,54 @@ kubectl apply -k base/
 
 ## Real, disclosed limitations — read before applying to a live cluster
 
-- **`replicas: 1` is deliberate, not a placeholder.** `gateway` is otherwise
-  stateless per request, except for one file: `budget.persist_path`
-  (bbolt), when configured. A Deployment bound to a single ReadWriteOnce
-  PVC forces `replicas: 1` and `strategy: Recreate` — a rolling update
-  can't work with an RWO volume mounted to only one Pod at a time. This
-  base manifest does **not** mount a PVC at all (`budget.persist_path`
-  is left unset in `config.example.yaml`, so budget state is in-memory-only
-  and resets on every restart) — add one yourself, matching the
-  `Recreate` strategy already set here, if you need persistence. Scaling
-  to 2+ replicas with real cross-replica budget consistency needs a
-  shared store (e.g. extending the existing Redis-backed rate limiter to
-  budgets too) — not built here; a StatefulSet with per-pod
-  `volumeClaimTemplates` gives each replica its own **separate** bbolt
-  file, not a merged/consistent one.
+- **Multi-replica deployment (`replicas: 2`, this manifest's own
+  default) needs Redis for budget AND identity to stay correct — set
+  BOTH knobs, not just one.** `gateway` is otherwise stateless per
+  request. Three subsystems have their own hot state, each independently
+  gated by its own config knob:
+  - `budget.redis_addr` (`internal/budget/redisbudget`) — a virtual
+    key's cumulative spend/cap enforcement runs atomically inside Redis
+    via Lua, genuinely consistent across every replica sharing that
+    Redis instance. Unset (the default): budget is in-memory-only per
+    replica, or bbolt-backed at `budget.persist_path` (single-process
+    restart durability ONLY — a second replica never sees the first
+    one's spend at all; see below).
+  - `admin.redis_addr` (`internal/identity/redisstore`) — persists
+    admin-API-created/rotated virtual keys to a shared Redis Hash rather
+    than a single-process bbolt file, so a freshly-started (or
+    restarted) replica loads the same key set every other replica
+    already has.
+  - `config_propagation.redis_addr` (`internal/configpropagation`) —
+    a SEPARATE, complementary mechanism: a Redis pub/sub channel that
+    pushes a LIVE admin mutation (virtual-key upsert/delete/rotate,
+    deployment-weight change) to every OTHER already-running replica,
+    closing the gap `admin.redis_addr` alone cannot: two replicas each
+    holding their own already-built in-memory `Verifier`/router state
+    never re-consult a Store mid-flight, so without this, a stale
+    replica keeps authenticating a revoked/rotated credential (or
+    rejecting a brand-new one) until its own restart. Set this
+    alongside `admin.redis_addr`, not instead of it.
+
+  **If you scale past `replicas: 1` without setting all three:** budget
+  enforcement silently degrades to per-replica-independent tracking (a
+  virtual key's real cap becomes `N × BudgetUSD` in effect, split
+  unevenly across whichever replica each request happens to land on),
+  and a live admin mutation on one replica is invisible to the others
+  until they each individually restart. This base manifest ships
+  `replicas: 2` as its own default specifically to make this a decision
+  you have to engage with (via `config.example.yaml`'s commented-out
+  `redis_addr` lines) rather than something 1-replica silently masked.
+
+  `budget.persist_path`/`admin.persist_path` (bbolt) remain
+  single-process-only by design — this base manifest does not mount a
+  PVC for either at all. If you add one, drop `deployment.yaml`'s
+  `replicas` back to 1 and restore `strategy: { type: Recreate }` (an
+  RWO volume can only ever be mounted by one Pod at a time — a rolling
+  update would deadlock waiting for the old Pod to release it); a
+  StatefulSet with per-pod `volumeClaimTemplates` instead gives each
+  replica its own **separate** bbolt file, still not a merged/consistent
+  one, so it does not substitute for the Redis knobs above if your goal
+  is genuine cross-replica consistency.
 - **Secrets management: bring your own ExternalSecrets (or your own
   Secret objects) — EXCEPT on EKS, where a real ESO wiring now exists.**
   Plain Kubernetes Secrets are only base64-encoded, not encrypted, and

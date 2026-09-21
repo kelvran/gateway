@@ -1,6 +1,10 @@
-# See ../README.md before applying this to a live cluster -- replicas: 1
-# and the resource sizing below are both deliberate, disclosed choices,
-# not placeholders.
+# See ../README.md before applying this to a live cluster -- the
+# resource sizing below is illustrative, not measured against real
+# traffic. replicas: 2 assumes budget/identity are Redis-backed
+# (config.yaml's budget.redis_addr/admin.redis_addr) -- see the
+# "Multi-replica deployment" bullet under ../README.md's own "Real,
+# disclosed limitations" section for what each knob buys you and what
+# happens if you scale past 1 replica WITHOUT setting them.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,16 +21,19 @@ metadata:
   labels:
     app.kubernetes.io/name: kelvran-gateway
 spec:
-  replicas: 1
-  # Recreate, not the apps/v1 default RollingUpdate -- if you add a PVC
-  # for budget.persist_path (see ../README.md), an RWO volume can only
-  # ever be mounted by one Pod at a time, so a rolling update would
-  # deadlock waiting for the old Pod to release it. Harmless when no PVC
-  # is mounted (the default here) -- kept consistent regardless, so
-  # adding persistence later doesn't also require remembering to change
-  # this.
-  strategy:
-    type: Recreate
+  # 2, not 1: no PVC is mounted here at all (this manifest's own
+  # in-memory-only default, or Redis via config.yaml's budget.redis_addr/
+  # admin.redis_addr/config_propagation.redis_addr — see
+  # internal/budget/redisbudget, internal/identity/redisstore, and
+  # internal/configpropagation's own doc comments), so there is no
+  # per-replica-exclusive volume to force replicas: 1 the way an RWO PVC
+  # would. If you instead add a PVC for a bbolt persist_path (still
+  # single-process-only by design, per identity.Store/budget.Store's own
+  # doc comments), drop this back to 1 and add `strategy: { type:
+  # Recreate }` — an RWO volume can only ever be mounted by one Pod at a
+  # time, and a rolling update would deadlock waiting for the old Pod to
+  # release it.
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: kelvran-gateway

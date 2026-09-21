@@ -52,6 +52,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/alerting"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/budget/boltstore"
+	"github.com/kelvran/gateway/gateway/internal/budget/redisbudget"
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/gateway/internal/configpropagation"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
@@ -63,6 +64,7 @@ import (
 	idempotencyinprocess "github.com/kelvran/gateway/gateway/internal/idempotency/inprocess"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
+	identityredisstore "github.com/kelvran/gateway/gateway/internal/identity/redisstore"
 	"github.com/kelvran/gateway/gateway/internal/prompt"
 	promptboltstore "github.com/kelvran/gateway/gateway/internal/prompt/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
@@ -708,14 +710,38 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			MaxInFlight: vk.MaxConcurrentRequests,
 		})
 	}
-	// identityStore is nil unless cfg.Admin.PersistPath is set — see
-	// dataplane.Config.IdentityStore's own doc comment. Opened here,
-	// before identity.NewVerifier, so a persisted virtual key's own
-	// overlay (mergePersistedVirtualKeys) is part of the FIRST Verifier
-	// this process ever constructs, not something that only takes effect
-	// after the first live admin mutation.
+	// identityStore is nil unless cfg.Admin.RedisAddr or
+	// cfg.Admin.PersistPath is set — see dataplane.Config.IdentityStore's
+	// own doc comment. Opened here, before identity.NewVerifier, so a
+	// persisted virtual key's own overlay (mergePersistedVirtualKeys) is
+	// part of the FIRST Verifier this process ever constructs, not
+	// something that only takes effect after the first live admin
+	// mutation. RedisAddr is checked FIRST and wins if an operator sets
+	// both by mistake (logged, never fatal), mirroring
+	// newBudgetTracker's identical precedence rule — a Redis-backed
+	// identity.Store (internal/identity/redisstore) is what actually
+	// stays correct across more than one gateway replica; PersistPath's
+	// bbolt file only ever provides single-process restart durability.
+	// Opening a redisstore.Store never fails on an unreachable address
+	// (go-redis dials lazily), mirroring newKeyLimiter/newBudgetTracker's
+	// identical rationale.
 	var identityStore identity.Store
-	if cfg.Admin.PersistPath != "" {
+	switch {
+	case cfg.Admin.RedisAddr != "":
+		if cfg.Admin.PersistPath != "" {
+			logger.Warn("identity_redis_addr_and_persist_path_both_set", "redis_addr", cfg.Admin.RedisAddr, "persist_path", cfg.Admin.PersistPath)
+		}
+		store, err := identityredisstore.Open(cfg.Admin.RedisAddr)
+		if err != nil {
+			return nil, fmt.Errorf("opening redis virtual-key store at %q: %w", cfg.Admin.RedisAddr, err)
+		}
+		identityStore = store
+		virtualKeys, keyConfigs, concurrencyConfigs, err = mergePersistedVirtualKeys(virtualKeys, keyConfigs, concurrencyConfigs, store, logger)
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("hydrating virtual keys from redis at %q: %w", cfg.Admin.RedisAddr, err)
+		}
+	case cfg.Admin.PersistPath != "":
 		store, err := openPersistStoreWithRecovery(cfg.Admin.PersistPath, cfg.Admin.OnCorruptStore, logger, identityboltstore.Open)
 		if err != nil {
 			return nil, fmt.Errorf("opening virtual-key store at %q: %w", cfg.Admin.PersistPath, err)
@@ -1122,7 +1148,30 @@ func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []r
 // immediately, so a restart resumes exactly where it left off.
 // onCorruptStore ("fail"/"reset") is forwarded straight to
 // openPersistStoreWithRecovery — see that function's own doc comment.
+// newBudgetTracker constructs a pure in-memory budget.Tracker when
+// neither cfg.RedisAddr nor cfg.PersistPath is set (the default — a bare
+// config.yaml with no budget: section behaves identically to before this
+// RFC existed), a bbolt-backed one (single-process restart durability
+// only) when just cfg.PersistPath is set, or a Redis-backed one
+// (genuinely cross-replica-consistent enforcement, per
+// internal/budget/redisbudget's own doc comment) when cfg.RedisAddr is
+// set — checked FIRST, so it wins if an operator sets both by mistake
+// (logged as a warning, never a fatal misconfiguration: the two knobs
+// aren't literally incompatible to parse, just redundant). Opening a
+// redisbudget.Backend never fails on an unreachable address (go-redis
+// dials lazily), mirroring newKeyLimiter's identical rationale — gateway
+// startup should not fail-closed on Redis being down.
 func newBudgetTracker(cfg controlplane.BudgetConfig, onCorruptStore string, logger *slog.Logger) (*budget.Tracker, error) {
+	if cfg.RedisAddr != "" {
+		if cfg.PersistPath != "" {
+			logger.Warn("budget_redis_addr_and_persist_path_both_set", "redis_addr", cfg.RedisAddr, "persist_path", cfg.PersistPath)
+		}
+		backend, err := redisbudget.Open(cfg.RedisAddr)
+		if err != nil {
+			return nil, fmt.Errorf("opening redis budget backend at %q: %w", cfg.RedisAddr, err)
+		}
+		return budget.NewRedisTracker(backend, logger), nil
+	}
 	if cfg.PersistPath == "" {
 		return budget.NewTracker(), nil
 	}

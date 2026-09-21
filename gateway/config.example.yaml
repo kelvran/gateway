@@ -266,6 +266,22 @@ telemetry:
 # rate_limit:
 #   redis_addr: "localhost:6379"
 
+# Budget hot-state persistence/backend — see
+# internal/budget/redisbudget's own package doc. Optional: omit this
+# whole section for the pre-existing pure in-memory behavior (spend
+# resets on every restart). persist_path is single-process-only restart
+# durability (bbolt) — a second gateway instance pointed at the same
+# persist_path never sees the first one's spend; redis_addr is the
+# genuinely cross-replica-consistent alternative (the cap-check-and-debit
+# decision itself runs atomically inside Redis), needed once you run
+# more than one gateway instance and want a virtual key's real cap
+# enforced correctly across all of them, not per-replica. Set at most
+# one — if both are set, redis_addr wins and a warning is logged at
+# startup.
+# budget:
+#   persist_path: "/var/lib/kelvran/budget.db"
+#   # redis_addr: "localhost:6379"
+
 # Direct-from-Go webhook push for operational signals the gateway
 # already computes but never delivers anywhere (a budget-threshold
 # crossing today) -- see
@@ -388,7 +404,15 @@ telemetry:
 # or pprof, all of which stay admin-only. Same "must resolve non-empty or
 # refuse to start" rule as token_env/viewer_token_env. Omit it for the
 # pre-existing behavior (those three routes require the admin token
-# exactly as they always have).
+# exactly as they always have). redis_addr is identity's own equivalent
+# of budget.redis_addr above (internal/identity/redisstore) -- placed
+# here, alongside persist_path, rather than a dedicated top-level
+# section, since identity's persistence knobs have always lived under
+# admin. Same mutual-exclusivity/precedence rule as budget.redis_addr:
+# it only answers "what does a freshly (re)started replica load" --
+# pair it with config_propagation.redis_addr below for a LIVE admin
+# mutation (virtual-key upsert/delete/rotate) to reach an
+# already-running replica without that replica restarting.
 # admin:
 #   listen_addr: "127.0.0.1:8081"
 #   token_env: "KELVRAN_ADMIN_TOKEN"
@@ -398,12 +422,19 @@ telemetry:
 #   on_corrupt_store: "fail"
 #   backup_dir: "/var/lib/kelvran/backups"
 #   enable_audit_log: true
+#   persist_path: "/var/lib/kelvran/identity.db"
+#   # redis_addr: "localhost:6379"
 
 # Push-based cross-instance admin-mutation propagation (deployment
-# weight changes today), via Redis pub/sub -- see
-# gateway/internal/configpropagation's own package doc. Optional: omit
-# this whole section (the default) for every admin mutation staying
-# single-instance-only, exactly as before this feature existed.
+# weight changes, and virtual-key upsert/delete/rotate), via Redis
+# pub/sub -- see gateway/internal/configpropagation's own package doc.
+# Optional: omit this whole section (the default) for every admin
+# mutation staying single-instance-only, exactly as before this feature
+# existed. Pair with admin.redis_addr above for virtual-key mutations
+# specifically -- that field alone only makes a freshly (re)started
+# replica load the right key set; this is what makes an
+# ALREADY-RUNNING replica learn about another instance's live mutation
+# without restarting.
 # redis_addr is deliberately its own field, not a reuse of
 # rate_limit.redis_addr above -- an operator may want distributed rate
 # limiting without config propagation (or vice versa) against two

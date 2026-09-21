@@ -355,8 +355,20 @@ type TelemetryConfig struct {
 // must behave identically to before this feature existed.
 type BudgetConfig struct {
 	// PersistPath is the file path for the bbolt-backed budget store.
-	// Empty means no persistence.
+	// Empty means no persistence. Mutually exclusive with RedisAddr in
+	// intent (single-process-only vs. shared-across-replicas) — if both
+	// are set, RedisAddr wins and a warning is logged, per
+	// newBudgetTracker's own doc comment.
 	PersistPath string
+	// RedisAddr is the Redis server address ("host:port") for a
+	// cross-replica-consistent budget backend, per
+	// internal/budget/redisbudget's own doc comment — the atomic-Lua
+	// alternative to PersistPath's single-process bbolt file, needed for
+	// budget.Tracker's own enforcement decision (Reserve/Reconcile) to
+	// stay correct across more than one gateway replica. Empty (the
+	// default) means budget stays exactly as it was before this option
+	// existed: pure in-memory, or bbolt-backed if PersistPath is set.
+	RedisAddr string
 }
 
 // PromptConfig configures restart-durable prompt-template persistence,
@@ -594,8 +606,25 @@ type AdminConfig struct {
 	// Finding 2 — mirrors BudgetConfig.PersistPath's identical shape and
 	// optionality. Empty means no persistence: an admin-created/rotated
 	// virtual key reverts to whatever this config declares on the next
-	// restart, exactly as before this feature existed.
+	// restart, exactly as before this feature existed. Mutually
+	// exclusive with RedisAddr in intent, mirroring
+	// BudgetConfig.RedisAddr's identical precedence rule — if both are
+	// set, RedisAddr wins and a warning is logged.
 	PersistPath string
+	// RedisAddr is the Redis server address ("host:port") for a
+	// cross-replica-consistent identity store, per
+	// internal/identity/redisstore's own doc comment — placed here,
+	// alongside PersistPath, rather than a dedicated IdentityConfig
+	// section, since identity's persistence knobs have always lived
+	// under admin (this same struct) even though PersistPath itself
+	// only ever answers "what does a freshly (re)started replica
+	// load" — live cross-replica convergence of an admin mutation
+	// while every replica keeps running is a SEPARATE concern, handled
+	// by ConfigPropagationConfig.RedisAddr below, not this field. Empty
+	// (the default) means identity persistence stays exactly as it was
+	// before this option existed: pure in-memory, or bbolt-backed if
+	// PersistPath is set.
+	RedisAddr string
 	// EnablePprof mounts net/http/pprof's standard handler set on this
 	// same admin mux (under /admin/debug/pprof/), behind the same bearer
 	// -token middleware as every other admin route, when true. Default
@@ -884,6 +913,7 @@ func Load(path string) (*Config, error) {
 
 	if budgetRaw, ok := getMap(root, "budget"); ok {
 		cfg.Budget.PersistPath, _ = getString(budgetRaw, "persist_path")
+		cfg.Budget.RedisAddr, _ = getString(budgetRaw, "redis_addr")
 	}
 
 	if promptRaw, ok := getMap(root, "prompt"); ok {
@@ -975,6 +1005,7 @@ func Load(path string) (*Config, error) {
 		cfg.Admin.CostViewerTokenEnv, _ = getString(adminRaw, "cost_viewer_token_env")
 		cfg.Admin.OperatorTokenEnv, _ = getString(adminRaw, "operator_token_env")
 		cfg.Admin.PersistPath, _ = getString(adminRaw, "persist_path")
+		cfg.Admin.RedisAddr, _ = getString(adminRaw, "redis_addr")
 		if err := assignBool(&cfg.Admin.EnablePprof, adminRaw, "enable_pprof", "controlplane: admin.enable_pprof"); err != nil {
 			return nil, err
 		}

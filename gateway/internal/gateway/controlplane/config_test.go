@@ -654,6 +654,48 @@ func TestLoadBudgetSectionParsesPersistPath(t *testing.T) {
 	}
 }
 
+// TestLoadBudgetSectionParsesRedisAddr mirrors
+// TestLoadRateLimitSectionParsesRedisAddr's identical proof, for
+// budget's own cross-replica-consistent Redis backend (Phase 9's own
+// unblock -- internal/budget/redisbudget).
+func TestLoadBudgetSectionParsesRedisAddr(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nbudget:\n  redis_addr: \"localhost:6379\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a budget.redis_addr section: %v", err)
+	}
+	if cfg.Budget.RedisAddr != "localhost:6379" {
+		t.Errorf("Budget.RedisAddr = %q, want %q", cfg.Budget.RedisAddr, "localhost:6379")
+	}
+}
+
+// TestLoadAdminSectionParsesRedisAddr mirrors the identical proof for
+// identity's own cross-replica-consistent Redis backend
+// (internal/identity/redisstore) — placed under admin:, alongside
+// persist_path, per AdminConfig.RedisAddr's own doc comment.
+func TestLoadAdminSectionParsesRedisAddr(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  redis_addr: \"localhost:6379\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with an admin.redis_addr section: %v", err)
+	}
+	if cfg.Admin.RedisAddr != "localhost:6379" {
+		t.Errorf("Admin.RedisAddr = %q, want %q", cfg.Admin.RedisAddr, "localhost:6379")
+	}
+}
+
 func TestLoadMissingRequiredField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

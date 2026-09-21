@@ -51,10 +51,16 @@ services:
     # gateway reaches it over the internal Compose network at
     # "redis:6379" (no host port needed for that — only the service
     # name has to resolve, and it does, by default, with zero
-    # additional config). Only useful once config.yaml sets
-    # rate_limit.redis_addr: redis:6379
-    # (gateway/internal/gateway/controlplane/config.go's RateLimitConfig)
-    # — per docs/rfcs/2026-09-03-distributed-rate-limiting.md. Started only
+    # additional config). Only useful once config.yaml sets one or more
+    # of rate_limit.redis_addr (distributed rate limiting, per
+    # docs/rfcs/2026-09-03-distributed-rate-limiting.md), budget.redis_addr
+    # (cross-replica budget enforcement, internal/budget/redisbudget),
+    # admin.redis_addr (shared virtual-key persistence,
+    # internal/identity/redisstore), or config_propagation.redis_addr
+    # (live cross-instance admin-mutation propagation,
+    # internal/configpropagation) to redis:6379 — each is its own,
+    # independently optional knob (gateway/internal/gateway/controlplane/
+    # config.go), so an operator may enable any subset. Started only
     # with `docker compose --profile redis up`, never by a bare `up`.
     profiles: ["redis"]
 
@@ -64,10 +70,14 @@ services:
   # and docs/rfcs/2026-09-11-gateway-redis-backed-cache-design.md both
   # need before either can be tested against real cross-instance
   # traffic, rather than reasoned about in the abstract. Requires the
-  # redis profile too, and config.yaml's rate_limit.redis_addr pointed at
-  # "redis:6379" (see that service's own comment above) for distributed
-  # rate-limiting to actually engage across both instances. Gated behind
-  # its own profile since ordinary local dev needs exactly one instance.
+  # redis profile too, and config.yaml's rate_limit.redis_addr/
+  # budget.redis_addr/admin.redis_addr/config_propagation.redis_addr (any
+  # subset) pointed at "redis:6379" (see that service's own comment
+  # above) for the corresponding subsystem's cross-instance behavior to
+  # actually engage across both instances -- deploy/k8s/base/deployment.yaml's
+  # own real multi-replica default (replicas: 2) mirrors exactly this
+  # same precondition. Gated behind its own profile since ordinary local
+  # dev needs exactly one instance.
   # Never started by a bare `docker compose up`; only via
   # `docker compose --profile multi-instance --profile redis up`.
   gateway2:
