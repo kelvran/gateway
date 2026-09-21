@@ -10,6 +10,7 @@ excludeFiles:
 components:
   identity:          { in: identity }
   identity-boltstore: { in: identity/boltstore }
+  identity-redisstore: { in: identity/redisstore }
   budget:            { in: budget }
   budget-boltstore:  { in: budget/boltstore }
   budget-redisbudget: { in: budget/redisbudget }
@@ -77,8 +78,19 @@ components:
 # absence from `deps:` below is a real pure-leaf property, not an
 # oversight to reconcile with budget-boltstore's real `mayDependOn:
 # [budget]` entry.
+#
+# identity-redisstore (identity/redisstore) is the OPPOSITE shape from
+# budget-redisbudget above -- it DOES import `identity` directly, exactly
+# like identity-boltstore right below, because identity.Store's own
+# interface signature requires the concrete VirtualKey type; there is no
+# primitive-only shape to satisfy structurally the way
+# budget.RedisBackend/ratelimit.RedisBackend were deliberately designed
+# to allow.
 deps:
   identity-boltstore:
+    mayDependOn:
+      - identity
+  identity-redisstore:
     mayDependOn:
       - identity
   prompt-boltstore:

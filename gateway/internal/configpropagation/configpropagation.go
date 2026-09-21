@@ -16,25 +16,42 @@
 // lower propagation latency over the poll design's own eventual-
 // consistency guarantee.
 //
-// v1 scope: only deployment-weight mutations (TypeDeploymentWeight) —
-// the envelope (MutationEvent) is deliberately generic enough that
-// virtual-key/prompt-mutation propagation is a natural, disclosed
-// follow-on (same channel, new Type cases, same apply-via-existing-
-// local-function shape), not a redesign.
+// v1 scope named deployment-weight mutations (TypeDeploymentWeight) as
+// the only real Type — the envelope (MutationEvent) was deliberately
+// generic enough that virtual-key-mutation propagation would be a
+// natural, disclosed follow-on (same channel, new Type cases, same
+// apply-via-existing-local-function shape), not a redesign. That
+// follow-on is now real: TypeVirtualKeyUpsert/TypeVirtualKeyDelete close
+// the identical live cross-instance gap for
+// dataplane.Pipeline.UpsertVirtualKey/DeleteVirtualKey/RotateVirtualKey
+// — found necessary (not merely nice-to-have) while migrating identity's
+// own hot state to Redis: identity.Store (see internal/identity/
+// redisstore) only ever answers "what does a freshly (re)started
+// replica load," never "how does an already-running replica learn about
+// another instance's live admin mutation" — the Verify hot path resolves
+// against a purely LOCAL, already-built *identity.Verifier per
+// instance, so a stale replica would keep authenticating against a
+// revoked/rotated credential, or keep rejecting a brand-new one, until
+// its own restart. Prompt-mutation propagation remains the one
+// still-undone piece of the original follow-on note.
 //
-// This package never imports gateway/internal/gateway/dataplane — the
-// same interface-lives-in-the-consumer idiom internal/ratelimit/
-// redislimiter and internal/idempotency/inprocess already establish:
-// dataplane.Pipeline holds this package's Publisher/Subscriber
-// interfaces, never the other way around.
+// This package never imports gateway/internal/gateway/dataplane,
+// internal/identity, or internal/ratelimit — the same interface-lives-
+// in-the-consumer idiom internal/ratelimit/redislimiter and
+// internal/idempotency/inprocess already establish: dataplane.Pipeline
+// holds this package's Publisher/Subscriber interfaces (and does the
+// VirtualKey/KeyConfig <-> payload conversion at its own call sites),
+// never the other way around.
 package configpropagation
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/shopspring/decimal"
 )
 
 // channelName is the single, fixed Redis pub/sub channel every gateway
@@ -81,6 +98,94 @@ type DeploymentWeightPayload struct {
 	Model          string `json:"model"`
 	DeploymentName string `json:"deployment_name"`
 	Weight         int    `json:"weight"`
+}
+
+// TypeVirtualKeyUpsert is MutationEvent.Type's value for a live
+// virtual-key create/update — published by BOTH
+// dataplane.Pipeline.UpsertVirtualKey and RotateVirtualKey, since a
+// rotation's net effect on the receiving end is identical to an
+// upsert: "this ID's virtual key now looks exactly like this," never a
+// distinct operation a remote replica needs to replay semantically
+// (see VirtualKeyPayload.RateLimitConfig's own doc comment for the one
+// real difference between the two origins).
+const TypeVirtualKeyUpsert = "virtual_key_upsert"
+
+// TypeVirtualKeyDelete is MutationEvent.Type's value for a live
+// virtual-key deletion.
+const TypeVirtualKeyDelete = "virtual_key_delete"
+
+// VirtualKeyPayload mirrors identity.VirtualKey's own field set
+// structurally — this package deliberately never imports
+// internal/identity (see this package's own doc comment); dataplane.go
+// converts to/from the real type at its own call sites. decimal.Decimal/
+// time.Duration/time.Time are vendor/stdlib types, not a project-
+// internal dependency, so using them here directly (rather than
+// re-encoding as a plain string/int64) loses no precision and needs no
+// extra conversion step of its own.
+//
+// AllowedModels/AllowedRegions are []string here, not
+// identity.VirtualKey's own map[string]struct{} — a set's membership,
+// not its Go representation, is what needs to cross the wire; dataplane.go
+// converts between the two shapes at its own call sites.
+type VirtualKeyPayload struct {
+	ID                       string          `json:"id"`
+	KeyHash                  string          `json:"key_hash"`
+	BudgetUSD                decimal.Decimal `json:"budget_usd"`
+	BudgetResetInterval      time.Duration   `json:"budget_reset_interval"`
+	BudgetWarnPercent        float64         `json:"budget_warn_percent"`
+	AllowedModels            []string        `json:"allowed_models,omitempty"`
+	AllowedRegions           []string        `json:"allowed_regions,omitempty"`
+	RateLimitBurst           float64         `json:"rate_limit_burst"`
+	RateLimitRefill          float64         `json:"rate_limit_refill"`
+	MaxConcurrentRequests    int             `json:"max_concurrent_requests"`
+	PreviousKeyHash          string          `json:"previous_key_hash,omitempty"`
+	PreviousKeyHashExpiresAt time.Time       `json:"previous_key_hash_expires_at,omitempty"`
+	BillingSubjectID         string          `json:"billing_subject_id,omitempty"`
+}
+
+// ModelRateLimitPayload mirrors ratelimit.ModelRateLimit's own field set
+// structurally, for the identical never-import-the-consumer-package
+// reason VirtualKeyPayload's own doc comment gives.
+type ModelRateLimitPayload struct {
+	Capacity           float64 `json:"capacity"`
+	RefillPerSecond    float64 `json:"refill_per_second"`
+	TPMCapacity        float64 `json:"tpm_capacity"`
+	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
+}
+
+// KeyConfigPayload mirrors ratelimit.KeyConfig's own field set
+// structurally, for the identical reason. ID is deliberately omitted —
+// VirtualKeyUpsertPayload.VirtualKey.ID is already the same value
+// ratelimit.KeyConfig.ID must carry; dataplane.go's own conversion
+// reuses it rather than encoding it twice.
+type KeyConfigPayload struct {
+	Capacity           float64                          `json:"capacity"`
+	RefillPerSecond    float64                          `json:"refill_per_second"`
+	TPMCapacity        float64                          `json:"tpm_capacity"`
+	TPMRefillPerSecond float64                          `json:"tpm_refill_per_second"`
+	PerModel           map[string]ModelRateLimitPayload `json:"per_model,omitempty"`
+}
+
+// VirtualKeyUpsertPayload is MutationEvent.Payload's shape when Type ==
+// TypeVirtualKeyUpsert.
+type VirtualKeyUpsertPayload struct {
+	VirtualKey VirtualKeyPayload `json:"virtual_key"`
+	// RateLimitConfig, when non-nil, is the FULL rate-limit config to
+	// register on every OTHER instance — present for a real
+	// UpsertVirtualKey-originated event, nil for a RotateVirtualKey-
+	// originated one. Rotation never changes rate-limit config; a
+	// remote replica that has already converged on this key (the
+	// overwhelmingly common case, since rotation only ever targets an
+	// EXISTING key) must not have its real, already-registered config
+	// silently overwritten by a stale/zero-value guess this instance
+	// has no way to reconstruct on its own.
+	RateLimitConfig *KeyConfigPayload `json:"rate_limit_config,omitempty"`
+}
+
+// VirtualKeyDeletePayload is MutationEvent.Payload's shape when Type ==
+// TypeVirtualKeyDelete.
+type VirtualKeyDeletePayload struct {
+	ID string `json:"id"`
 }
 
 // Publisher publishes a MutationEvent for every other subscribed

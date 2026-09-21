@@ -539,6 +539,17 @@ type Pipeline struct {
 	// inside each method is kept as-is (defense-in-depth against any
 	// future caller that forgets to hold this lock), not removed.
 	virtualKeyMutationMu sync.Mutex
+	// virtualKeyVersions implements the identical last-writer-wins
+	// convergence weightVersions provides for deployment-weight
+	// propagation, keyed by virtual key ID instead of
+	// (model, deploymentName) — see UpsertVirtualKey/DeleteVirtualKey/
+	// RotateVirtualKey's own shared applyVirtualKeyUpsert/
+	// applyVirtualKeyDelete choke points. Guarded by virtualKeyMutationMu
+	// itself (no separate mutex, unlike weightVersionsMu) — every real
+	// access already happens while that lock is held for the surrounding
+	// CAS-retry-then-persist sequence anyway, so a second lock would only
+	// add ordering complexity with no additional safety.
+	virtualKeyVersions map[string]int64
 	// identityStore is nil unless Config.IdentityStore was set — see that
 	// field's own doc comment. Read only by Upsert/Delete/RotateVirtualKey,
 	// after their own CompareAndSwap has already committed the in-memory
@@ -723,6 +734,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		embeddingUpstream:     cfg.EmbeddingUpstream,
 		configPublisher:       cfg.ConfigPublisher,
 		weightVersions:        map[weightVersionKey]int64{},
+		virtualKeyVersions:    map[string]int64{},
 		alertNotifier:         cfg.AlertNotifier,
 		upstreamStream:        cfg.UpstreamStream,
 		logger:                logger,
@@ -854,9 +866,51 @@ var ErrVirtualKeyNotFound = errors.New("dataplane: virtual key not found")
 // would silently inherit the old tenant's spend on the next
 // budget.NewTrackerWithStore load.
 func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.KeyConfig) error {
+	// Generated ONCE and reused for both the local apply below and the
+	// published event's own ordering token — mirrors
+	// UpdateDeploymentWeight's identical rationale (applyWeightIfNewer's
+	// own doc comment) exactly.
+	publishedAtUnixNano := p.now().UnixNano()
+	if err := p.applyVirtualKeyUpsert(vk, &rateLimit, publishedAtUnixNano); err != nil {
+		return err
+	}
+	p.publishVirtualKeyUpsert(vk, &rateLimit, publishedAtUnixNano)
+	return nil
+}
+
+// applyVirtualKeyUpsert is the single choke point BOTH UpsertVirtualKey
+// (a local admin-API call) and ApplyVirtualKeyUpsertFromEvent (a remote,
+// event-driven apply, including one originating from ANOTHER instance's
+// RotateVirtualKey call — see TypeVirtualKeyUpsert's own doc comment for
+// why rotation reuses this same event shape) go through — mirrors
+// applyWeightIfNewer's identical role for deployment-weight propagation.
+//
+// publishedAtUnixNano is compared against the most recently APPLIED
+// timestamp already recorded for vk.ID (zero, i.e. "never applied," for
+// a genuinely new ID) — an incoming update strictly OLDER than what's
+// already recorded is silently discarded (last-writer-wins by wall-clock
+// timestamp, never a distributed consensus protocol, matching
+// applyWeightIfNewer's own identical, deliberate choice for this
+// codebase's human-driven, low-frequency admin-mutation class).
+//
+// rateLimit is a pointer, not a value: nil means "do not touch the rate
+// limiter's registration for this ID at all" — the correct choice for a
+// rotation-originated apply (rotation never changes rate-limit config;
+// a replica that has already converged on this key must not have its
+// real, already-registered config overwritten by a stale/zero-value
+// guess), non-nil for a genuine Upsert, which must always register
+// vk.ID's own rate-limit config, exactly like the pre-propagation
+// UpsertVirtualKey body always did.
+func (p *Pipeline) applyVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ratelimit.KeyConfig, publishedAtUnixNano int64) error {
 	p.virtualKeyMutationMu.Lock()
 	defer p.virtualKeyMutationMu.Unlock()
-	p.limiter.Register(rateLimit)
+
+	if publishedAtUnixNano < p.virtualKeyVersions[vk.ID] {
+		return nil
+	}
+	if rateLimit != nil {
+		p.limiter.Register(*rateLimit)
+	}
 	for {
 		old := p.verifier.Load()
 		current := old.Keys()
@@ -876,7 +930,7 @@ func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.
 
 		newVerifier, err := identity.NewVerifier(updated)
 		if err != nil {
-			return fmt.Errorf("dataplane: UpsertVirtualKey: %w", err)
+			return fmt.Errorf("dataplane: applyVirtualKeyUpsert: %w", err)
 		}
 
 		if p.verifier.CompareAndSwap(old, newVerifier) {
@@ -901,10 +955,194 @@ func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.
 				}
 			}
 			p.persistVirtualKeyIfStoreConfigured(vk)
+			p.virtualKeyVersions[vk.ID] = publishedAtUnixNano
 			return nil
 		}
 		// Lost the race to a concurrent writer -- retry against fresh state.
 	}
+}
+
+// publishVirtualKeyUpsert pushes vk (and, if rateLimit is non-nil, its
+// paired rate-limit config) to every OTHER instance sharing the same
+// Redis address, per internal/configpropagation's own doc comment — a
+// nil p.configPublisher (Redis unconfigured, the default) is a
+// guaranteed no-op. A Publish failure is logged, never returned: mirrors
+// UpdateDeploymentWeight's own established fail-open posture exactly —
+// a down Redis is a propagation-latency problem for OTHER instances,
+// never a reason to fail an admin call that already succeeded locally
+// on THIS one. Published unconditionally, even if applyVirtualKeyUpsert
+// determined this specific update lost to a concurrently-newer one
+// locally, mirroring publishVirtualKeyUpsert's own "every receiver
+// independently applies the identical last-writer-wins rule" rationale
+// (see UpdateDeploymentWeight's identical comment).
+func (p *Pipeline) publishVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ratelimit.KeyConfig, publishedAtUnixNano int64) {
+	if p.configPublisher == nil {
+		return
+	}
+	payload := configpropagation.VirtualKeyUpsertPayload{VirtualKey: virtualKeyToPayload(vk)}
+	if rateLimit != nil {
+		payload.RateLimitConfig = keyConfigToPayload(*rateLimit)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		p.logger.Warn("configpropagation_marshal_failed", "key_id", vk.ID, "error", err.Error())
+		return
+	}
+	event := configpropagation.MutationEvent{
+		Type:                configpropagation.TypeVirtualKeyUpsert,
+		OriginInstanceID:    telemetry.InstanceID,
+		PublishedAtUnixNano: publishedAtUnixNano,
+		Payload:             body,
+	}
+	if err := p.configPublisher.Publish(context.Background(), event); err != nil {
+		p.logger.Warn("configpropagation_publish_failed", "key_id", vk.ID, "error", err.Error())
+	}
+}
+
+// ApplyVirtualKeyUpsertFromEvent applies payload LOCALLY ONLY — never
+// publishes, unlike UpsertVirtualKey — for cmd/gateway's own subscriber
+// loop to call when a configpropagation.MutationEvent of Type
+// TypeVirtualKeyUpsert arrives from ANOTHER instance. Mirrors
+// ApplyDeploymentWeightFromEvent's identical role, but takes the whole
+// decoded payload struct rather than field-by-field primitives — unlike
+// DeploymentWeightPayload's 3 fields, VirtualKeyPayload's field count
+// makes an unpacked parameter list unwieldy; the payload<->domain-type
+// conversion (payloadToVirtualKey/payloadToKeyConfig) happens here,
+// inside dataplane.go, exactly where it already lives for the publish
+// side (virtualKeyToPayload/keyConfigToPayload) — cmd/gateway only ever
+// decodes the JSON envelope, never touches identity/ratelimit shapes
+// directly.
+func (p *Pipeline) ApplyVirtualKeyUpsertFromEvent(payload configpropagation.VirtualKeyUpsertPayload, publishedAtUnixNano int64) error {
+	vk := payloadToVirtualKey(payload.VirtualKey)
+	rateLimit := payloadToKeyConfig(vk.ID, payload.RateLimitConfig)
+	return p.applyVirtualKeyUpsert(vk, rateLimit, publishedAtUnixNano)
+}
+
+// virtualKeyToPayload/payloadToVirtualKey convert between
+// identity.VirtualKey and configpropagation.VirtualKeyPayload — the
+// project-internal <-> wire-shape translation configpropagation's own
+// doc comment says belongs here, in the consumer, never in that leaf
+// package itself. Set<->slice conversion for AllowedModels/
+// AllowedRegions is the only real shape change; every other field is a
+// direct copy.
+func virtualKeyToPayload(vk identity.VirtualKey) configpropagation.VirtualKeyPayload {
+	return configpropagation.VirtualKeyPayload{
+		ID:                       vk.ID,
+		KeyHash:                  vk.KeyHash,
+		BudgetUSD:                vk.BudgetUSD,
+		BudgetResetInterval:      vk.BudgetResetInterval,
+		BudgetWarnPercent:        vk.BudgetWarnPercent,
+		AllowedModels:            stringSetToSlice(vk.AllowedModels),
+		AllowedRegions:           stringSetToSlice(vk.AllowedRegions),
+		RateLimitBurst:           vk.RateLimitBurst,
+		RateLimitRefill:          vk.RateLimitRefill,
+		MaxConcurrentRequests:    vk.MaxConcurrentRequests,
+		PreviousKeyHash:          vk.PreviousKeyHash,
+		PreviousKeyHashExpiresAt: vk.PreviousKeyHashExpiresAt,
+		BillingSubjectID:         vk.BillingSubjectID,
+	}
+}
+
+func payloadToVirtualKey(p configpropagation.VirtualKeyPayload) identity.VirtualKey {
+	return identity.VirtualKey{
+		ID:                       p.ID,
+		KeyHash:                  p.KeyHash,
+		BudgetUSD:                p.BudgetUSD,
+		BudgetResetInterval:      p.BudgetResetInterval,
+		BudgetWarnPercent:        p.BudgetWarnPercent,
+		AllowedModels:            stringSliceToSet(p.AllowedModels),
+		AllowedRegions:           stringSliceToSet(p.AllowedRegions),
+		RateLimitBurst:           p.RateLimitBurst,
+		RateLimitRefill:          p.RateLimitRefill,
+		MaxConcurrentRequests:    p.MaxConcurrentRequests,
+		PreviousKeyHash:          p.PreviousKeyHash,
+		PreviousKeyHashExpiresAt: p.PreviousKeyHashExpiresAt,
+		BillingSubjectID:         p.BillingSubjectID,
+	}
+}
+
+// keyConfigToPayload/payloadToKeyConfig convert between
+// ratelimit.KeyConfig and configpropagation.KeyConfigPayload — id is
+// supplied/returned separately, since KeyConfigPayload deliberately
+// omits it (see that type's own doc comment): the caller already has
+// VirtualKey.ID for this exact purpose.
+func keyConfigToPayload(cfg ratelimit.KeyConfig) *configpropagation.KeyConfigPayload {
+	var perModel map[string]configpropagation.ModelRateLimitPayload
+	if len(cfg.PerModel) > 0 {
+		perModel = make(map[string]configpropagation.ModelRateLimitPayload, len(cfg.PerModel))
+		for model, mrl := range cfg.PerModel {
+			perModel[model] = configpropagation.ModelRateLimitPayload{
+				Capacity:           mrl.Capacity,
+				RefillPerSecond:    mrl.RefillPerSecond,
+				TPMCapacity:        mrl.TPMCapacity,
+				TPMRefillPerSecond: mrl.TPMRefillPerSecond,
+			}
+		}
+	}
+	return &configpropagation.KeyConfigPayload{
+		Capacity:           cfg.Capacity,
+		RefillPerSecond:    cfg.RefillPerSecond,
+		TPMCapacity:        cfg.TPMCapacity,
+		TPMRefillPerSecond: cfg.TPMRefillPerSecond,
+		PerModel:           perModel,
+	}
+}
+
+func payloadToKeyConfig(id string, p *configpropagation.KeyConfigPayload) *ratelimit.KeyConfig {
+	if p == nil {
+		return nil
+	}
+	var perModel map[string]ratelimit.ModelRateLimit
+	if len(p.PerModel) > 0 {
+		perModel = make(map[string]ratelimit.ModelRateLimit, len(p.PerModel))
+		for model, mrl := range p.PerModel {
+			perModel[model] = ratelimit.ModelRateLimit{
+				Capacity:           mrl.Capacity,
+				RefillPerSecond:    mrl.RefillPerSecond,
+				TPMCapacity:        mrl.TPMCapacity,
+				TPMRefillPerSecond: mrl.TPMRefillPerSecond,
+			}
+		}
+	}
+	return &ratelimit.KeyConfig{
+		ID:                 id,
+		Capacity:           p.Capacity,
+		RefillPerSecond:    p.RefillPerSecond,
+		TPMCapacity:        p.TPMCapacity,
+		TPMRefillPerSecond: p.TPMRefillPerSecond,
+		PerModel:           perModel,
+	}
+}
+
+// stringSetToSlice/stringSliceToSet convert between
+// identity.VirtualKey.AllowedModels/AllowedRegions's own
+// map[string]struct{} set shape and a JSON-friendly []string — a set's
+// membership, not its Go representation, is what needs to cross the
+// wire. nil in either direction round-trips to nil (never an empty,
+// non-nil collection), preserving "no constraint" vs. "explicitly
+// empty" — though VirtualKey's own fields never distinguish the two
+// today (see AllowedModels/AllowedRegions's own doc comments: "empty or
+// nil means unrestricted").
+func stringSetToSlice(set map[string]struct{}) []string {
+	if set == nil {
+		return nil
+	}
+	slice := make([]string, 0, len(set))
+	for s := range set {
+		slice = append(slice, s)
+	}
+	return slice
+}
+
+func stringSliceToSet(slice []string) map[string]struct{} {
+	if slice == nil {
+		return nil
+	}
+	set := make(map[string]struct{}, len(slice))
+	for _, s := range slice {
+		set[s] = struct{}{}
+	}
+	return set
 }
 
 // persistVirtualKeyIfStoreConfigured durably saves vk via p.identityStore,
@@ -958,8 +1196,35 @@ func (p *Pipeline) deletePersistedVirtualKeyIfStoreConfigured(id string) {
 // in the Verifier because a concurrent write silently overwrote the
 // removal.
 func (p *Pipeline) DeleteVirtualKey(name string) error {
+	publishedAtUnixNano := p.now().UnixNano()
+	if err := p.applyVirtualKeyDelete(name, publishedAtUnixNano); err != nil {
+		return err
+	}
+	p.publishVirtualKeyDelete(name, publishedAtUnixNano)
+	return nil
+}
+
+// applyVirtualKeyDelete is the single choke point BOTH DeleteVirtualKey
+// (a local admin-API call) and ApplyVirtualKeyDeleteFromEvent (a
+// remote, event-driven apply) go through — mirrors
+// applyVirtualKeyUpsert's identical role for the upsert/rotate side.
+// See that function's own doc comment for the version-check/last-
+// writer-wins rationale, identical here.
+//
+// A remote-triggered call returning ErrVirtualKeyNotFound/
+// ErrCannotDeleteLastVirtualKey (this replica never received an earlier
+// Upsert for name at all, e.g. via configpropagation's own disclosed
+// fire-and-forget/no-replay delivery gap) is expected to happen
+// occasionally and is treated as non-fatal by cmd/gateway's own
+// subscriber loop (logged, never crashes) — exactly like
+// ApplyDeploymentWeightFromEvent's identical error-handling contract.
+func (p *Pipeline) applyVirtualKeyDelete(name string, publishedAtUnixNano int64) error {
 	p.virtualKeyMutationMu.Lock()
 	defer p.virtualKeyMutationMu.Unlock()
+
+	if publishedAtUnixNano < p.virtualKeyVersions[name] {
+		return nil
+	}
 	for {
 		old := p.verifier.Load()
 		current := old.Keys()
@@ -993,10 +1258,41 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 				telemetry.RecordPersistenceFailed(context.Background(), "budget", name)
 				p.logger.Warn("budget_persist_failed", "key_id", name, "error", err.Error())
 			}
+			p.virtualKeyVersions[name] = publishedAtUnixNano
 			return nil
 		}
 		// Lost the race to a concurrent writer -- retry against fresh state.
 	}
+}
+
+// publishVirtualKeyDelete mirrors publishVirtualKeyUpsert's identical
+// fail-open-and-log posture, for a virtual-key deletion.
+func (p *Pipeline) publishVirtualKeyDelete(name string, publishedAtUnixNano int64) {
+	if p.configPublisher == nil {
+		return
+	}
+	body, err := json.Marshal(configpropagation.VirtualKeyDeletePayload{ID: name})
+	if err != nil {
+		p.logger.Warn("configpropagation_marshal_failed", "key_id", name, "error", err.Error())
+		return
+	}
+	event := configpropagation.MutationEvent{
+		Type:                configpropagation.TypeVirtualKeyDelete,
+		OriginInstanceID:    telemetry.InstanceID,
+		PublishedAtUnixNano: publishedAtUnixNano,
+		Payload:             body,
+	}
+	if err := p.configPublisher.Publish(context.Background(), event); err != nil {
+		p.logger.Warn("configpropagation_publish_failed", "key_id", name, "error", err.Error())
+	}
+}
+
+// ApplyVirtualKeyDeleteFromEvent applies name's deletion LOCALLY ONLY —
+// never publishes, unlike DeleteVirtualKey — for cmd/gateway's own
+// subscriber loop to call when a configpropagation.MutationEvent of
+// Type TypeVirtualKeyDelete arrives from ANOTHER instance.
+func (p *Pipeline) ApplyVirtualKeyDeleteFromEvent(name string, publishedAtUnixNano int64) error {
+	return p.applyVirtualKeyDelete(name, publishedAtUnixNano)
 }
 
 // RotateVirtualKey issues a new secret for the virtual key identified by
@@ -1011,40 +1307,74 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 // remaining grace period abandoned) — a deliberate single-generation-back
 // limit, not a bug: supporting an unbounded chain of still-valid old
 // hashes has no real operational need this feature was built to serve.
+//
+// Unlike UpsertVirtualKey/DeleteVirtualKey, this method's own CAS-retry
+// loop is NOT factored into a shared apply* choke point: each retry
+// attempt must recompute PreviousKeyHash/PreviousKeyHashExpiresAt from a
+// FRESH read of the CURRENT k.KeyHash, since a concurrent Upsert to this
+// same ID could otherwise be silently clobbered by a rotation computed
+// against stale, pre-race data. It still participates in the identical
+// virtualKeyVersions last-writer-wins scheme (see applyVirtualKeyUpsert's
+// own doc comment) and, on success, publishes via the EXACT SAME
+// TypeVirtualKeyUpsert event shape UpsertVirtualKey does — a remote
+// replica has no need to know this originated from a rotation rather
+// than a real upsert; it only needs to converge to the resulting
+// VirtualKey state this instance already correctly computed under its
+// own lock. rateLimit is nil in that published event (see
+// TypeVirtualKeyUpsert's own doc comment): rotation never touches
+// rate-limit config, and a remote replica that has already converged on
+// this key must not have its real registration overwritten by a
+// reconstructed guess this method has no way to make correctly.
 func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Duration) error {
+	publishedAtUnixNano := p.now().UnixNano()
+
 	p.virtualKeyMutationMu.Lock()
-	defer p.virtualKeyMutationMu.Unlock()
-	for {
-		old := p.verifier.Load()
-		current := old.Keys()
-		updated := make([]identity.VirtualKey, 0, len(current))
-		found := false
-		var rotated identity.VirtualKey
-		for _, k := range current {
-			if k.ID == name {
-				k.PreviousKeyHash = k.KeyHash
-				k.PreviousKeyHashExpiresAt = time.Now().Add(gracePeriod)
-				k.KeyHash = newKeyHash
-				found = true
-				rotated = k
-			}
-			updated = append(updated, k)
-		}
-		if !found {
-			return fmt.Errorf("%w: %q", ErrVirtualKeyNotFound, name)
-		}
+	var rotated identity.VirtualKey
+	err := func() error {
+		defer p.virtualKeyMutationMu.Unlock()
 
-		newVerifier, err := identity.NewVerifier(updated)
-		if err != nil {
-			return fmt.Errorf("dataplane: RotateVirtualKey: %w", err)
-		}
-
-		if p.verifier.CompareAndSwap(old, newVerifier) {
-			p.persistVirtualKeyIfStoreConfigured(rotated)
+		if publishedAtUnixNano < p.virtualKeyVersions[name] {
 			return nil
 		}
-		// Lost the race to a concurrent writer -- retry against fresh state.
+		for {
+			old := p.verifier.Load()
+			current := old.Keys()
+			updated := make([]identity.VirtualKey, 0, len(current))
+			found := false
+			for _, k := range current {
+				if k.ID == name {
+					k.PreviousKeyHash = k.KeyHash
+					k.PreviousKeyHashExpiresAt = time.Now().Add(gracePeriod)
+					k.KeyHash = newKeyHash
+					found = true
+					rotated = k
+				}
+				updated = append(updated, k)
+			}
+			if !found {
+				return fmt.Errorf("%w: %q", ErrVirtualKeyNotFound, name)
+			}
+
+			newVerifier, err := identity.NewVerifier(updated)
+			if err != nil {
+				return fmt.Errorf("dataplane: RotateVirtualKey: %w", err)
+			}
+
+			if p.verifier.CompareAndSwap(old, newVerifier) {
+				p.persistVirtualKeyIfStoreConfigured(rotated)
+				p.virtualKeyVersions[name] = publishedAtUnixNano
+				return nil
+			}
+			// Lost the race to a concurrent writer -- retry against fresh state.
+		}
+	}()
+	if err != nil {
+		return err
 	}
+	if rotated.ID != "" {
+		p.publishVirtualKeyUpsert(rotated, nil, publishedAtUnixNano)
+	}
+	return nil
 }
 
 // ErrDeploymentNotFound is returned by UpdateDeploymentWeight when name

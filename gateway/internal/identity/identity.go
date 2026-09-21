@@ -140,8 +140,21 @@ type VirtualKey struct {
 // Finding 2 — mirrors budget.Store's own shape and optionality. Without
 // one configured, an admin-created or -rotated virtual key reverts to
 // whatever config.yaml declares on the next restart, exactly as before
-// this feature existed. See internal/identity/boltstore for the real
-// implementation.
+// this feature existed. See internal/identity/boltstore (single-process)
+// and internal/identity/redisstore (shared across replicas) for the two
+// real implementations.
+//
+// Store alone answers "what does a freshly (re)started replica load,"
+// never "how does an already-running replica learn about another
+// instance's live admin mutation" — even with a shared redisstore, two
+// replicas each holding their own already-built *Verifier never
+// re-consult Store mid-flight; Verify resolves purely against that
+// LOCAL, in-memory structure. dataplane.Pipeline's own
+// internal/configpropagation wiring (TypeVirtualKeyUpsert/
+// TypeVirtualKeyDelete) is the separate, complementary mechanism that
+// closes THAT gap — without it, a stale replica would keep
+// authenticating a revoked/rotated credential, or keep rejecting a
+// brand-new one, until its own restart.
 //
 // Deliberately scoped to VirtualKey alone, not the paired
 // ratelimit.KeyConfig a live Upsert/Rotate call also carries — identity

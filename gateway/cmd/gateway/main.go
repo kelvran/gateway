@@ -502,6 +502,24 @@ func run(configPath string, logger *slog.Logger) error {
 					if err := pipeline.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight, event.PublishedAtUnixNano); err != nil {
 						logger.Warn("configpropagation_apply_failed", "type", event.Type, "deployment", payload.DeploymentName, "error", err)
 					}
+				case configpropagation.TypeVirtualKeyUpsert:
+					var payload configpropagation.VirtualKeyUpsertPayload
+					if err := json.Unmarshal(event.Payload, &payload); err != nil {
+						logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
+						return
+					}
+					if err := pipeline.ApplyVirtualKeyUpsertFromEvent(payload, event.PublishedAtUnixNano); err != nil {
+						logger.Warn("configpropagation_apply_failed", "type", event.Type, "key_id", payload.VirtualKey.ID, "error", err)
+					}
+				case configpropagation.TypeVirtualKeyDelete:
+					var payload configpropagation.VirtualKeyDeletePayload
+					if err := json.Unmarshal(event.Payload, &payload); err != nil {
+						logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
+						return
+					}
+					if err := pipeline.ApplyVirtualKeyDeleteFromEvent(payload.ID, event.PublishedAtUnixNano); err != nil {
+						logger.Warn("configpropagation_apply_failed", "type", event.Type, "key_id", payload.ID, "error", err)
+					}
 				default:
 					// Forward-compatible: an event type this build
 					// doesn't know about yet (e.g. published by a newer
