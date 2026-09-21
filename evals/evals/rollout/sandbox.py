@@ -46,6 +46,26 @@ own doc comment) has no field to opt out of these limits either, matching
 `--network=none`'s own "no allowlist, no opt-out" posture rather than
 `timeout_s`'s per-case-configurable one — these are hard resource ceilings,
 not a tunable knob a case author is expected to reach for.
+
+Real gap closed 2026-09-21: the `TimeoutError`/`BaseException` cleanup
+branches below each ran their own `_read_cidfile`/`_docker_kill`/
+`process.kill()`/`process.wait()` sequence directly inside the `except`
+block — an unexpected failure ANYWHERE in that sequence (the `docker`
+binary vanishing mid-run, a transient `OSError` reading the cidfile)
+propagated straight out, REPLACING the original timeout/cancellation
+signal with an unrelated teardown exception. On the timeout path this
+meant a caller could see a raised exception where `run_in_sandbox`'s own
+docstring promises a normal `SandboxResult(timed_out=True)` return value
+instead; on the cancellation path it meant the real interruption
+(`asyncio.CancelledError`, or whatever else this function was unwinding
+from) was silently masked by whatever the cleanup itself happened to
+raise. Latent in already-shipped code, real today even at the current
+concurrency level of 1 (a single sandboxed run can still be interrupted
+mid-flight) — independent of whether a future Sandbox Pool ever exists.
+Fixed by `_cleanup_after_interruption`, shared by both branches: every
+step of the cleanup sequence is now caught and swallowed (never logged —
+see that function's own doc comment for why), so the caller always sees
+the ORIGINAL signal, never a teardown artifact.
 """
 
 from __future__ import annotations
@@ -118,6 +138,53 @@ async def _docker_kill(container_id: str) -> None:
     await proc.wait()
 
 
+async def _cleanup_after_interruption(
+    cid_path: str, process: asyncio.subprocess.Process
+) -> str | None:
+    """Best-effort teardown shared by both the `TimeoutError` and
+    `BaseException` branches below: read the cidfile, kill the real
+    container, then kill+wait the local `docker run` CLI process.
+
+    Real gap closed 2026-09-21: every step here already has its OWN
+    best-effort posture (see `_docker_kill`'s docstring for the
+    container-already-exited race) — but an UNEXPECTED failure anywhere
+    in this sequence (the `docker` binary vanishing mid-run, a transient
+    `OSError` reading the cidfile, `process.kill()` racing an
+    already-reaped process) previously propagated straight out of the
+    `except` block it ran inside, REPLACING the original
+    timeout/cancellation signal the caller was already unwinding with —
+    silently hiding that a timeout/cancellation ever happened at all.
+    Every exception here is now caught and swallowed, never logged: this
+    module has no logging dependency anywhere else (this codebase's own
+    observability mechanism is `evals/tracing.py`'s OTel spans, built one
+    layer above this function, around the whole `run_in_sandbox()` call —
+    not inside it), and the caller's own `TimeoutError`-derived
+    `SandboxResult`/re-raised original exception is already the
+    complete, correct signal; a teardown failure adds no information a
+    caller could act on differently.
+
+    Deliberately `except Exception`, not `except BaseException` — a
+    FRESH `asyncio.CancelledError`/`KeyboardInterrupt` raised DURING this
+    cleanup itself is a genuinely NEW interruption, not the masking bug
+    this closes, and must still propagate normally.
+    """
+    container_id = None
+    try:
+        container_id = _read_cidfile(cid_path)
+        if container_id is not None:
+            await _docker_kill(container_id)
+        process.kill()
+        await process.wait()
+    # Deliberate silent swallow, not a logging omission -- see this
+    # function's own doc comment: this module has no logging dependency
+    # anywhere else, and the caller's own TimeoutError-derived result/
+    # re-raised original exception is already the complete signal: a
+    # teardown failure adds nothing actionable to it.
+    except Exception:  # noqa: S110
+        pass
+    return container_id
+
+
 async def run_in_sandbox(
     image: str, command: list[str], timeout_s: int
 ) -> SandboxResult:
@@ -172,11 +239,7 @@ async def run_in_sandbox(
                 process.communicate(), timeout=timeout_s
             )
         except TimeoutError:
-            container_id = _read_cidfile(cid_path)
-            if container_id is not None:
-                await _docker_kill(container_id)
-            process.kill()
-            await process.wait()
+            container_id = await _cleanup_after_interruption(cid_path, process)
             return SandboxResult(
                 exit_code=-1,
                 stdout="",
@@ -196,12 +259,10 @@ async def run_in_sandbox(
             # -- not just a genuine timeout. Mirrors the TimeoutError
             # branch's own real docker-kill cleanup, then re-raises
             # unchanged (never swallowed) so the caller still sees the
-            # real interruption/error.
-            container_id = _read_cidfile(cid_path)
-            if container_id is not None:
-                await _docker_kill(container_id)
-            process.kill()
-            await process.wait()
+            # real interruption/error -- see _cleanup_after_interruption's
+            # own doc comment for why a teardown failure specifically
+            # must never override THIS re-raise.
+            await _cleanup_after_interruption(cid_path, process)
             raise
 
         exit_code = process.returncode if process.returncode is not None else -1
