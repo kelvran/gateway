@@ -107,18 +107,30 @@ type RedisBackend interface {
 	// starting a fresh resetIntervalMs-TTL'd window if keyID has no
 	// existing entry. resetIntervalMs <= 0 means no expiry (a
 	// lifetime-of-the-key cap, mirroring the in-memory Tracker's own
-	// resetInterval<=0 convention).
-	Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (allowed bool, reservedNanoUSD int64, err error)
+	// resetInterval<=0 convention). epoch identifies the WINDOW this
+	// reservation was taken against — the exact value that must be
+	// threaded back through the matching Adjust call, unchanged, the
+	// same way the in-memory branch's reservationEpoch already must be
+	// (see Reserve's own doc comment below and
+	// redisbudget.budgetReserveLuaSrc's doc comment for why this is a
+	// real correctness requirement in Redis mode too, not merely an
+	// in-memory-mode concept).
+	Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (allowed bool, reservedNanoUSD int64, epoch int64, err error)
 	// ReserveFixed atomically admits exactly deltaNanoUSD (not "everything
 	// remaining") against capNanoUSD — IncreaseReservation's mid-stream
-	// top-up shape.
+	// top-up shape. Never takes/needs an epoch: unlike Reserve+Adjust's
+	// deferred reconciliation, each ReserveFixed call is immediate and
+	// self-correcting (it re-reads current spend fresh every time).
 	ReserveFixed(ctx context.Context, keyID string, capNanoUSD, deltaNanoUSD, resetIntervalMs int64) (allowed bool, err error)
-	// Adjust reconciles a prior Reserve/ReserveFixed reservation with a
-	// signed deltaNanoUSD (realCost − reservedUSD, in nano-USD) — a silent
-	// no-op if keyID's window already expired, mirroring the in-memory
-	// epoch guard's identical "the reservation's own window no longer
-	// exists, nothing to correct" behavior.
-	Adjust(ctx context.Context, keyID string, deltaNanoUSD int64) error
+	// Adjust reconciles a prior Reserve reservation with a signed
+	// deltaNanoUSD (realCost − reservedUSD, in nano-USD) — a silent no-op
+	// if keyID's window already expired, OR if a DIFFERENT, newer window
+	// has since started under this same keyID (epoch no longer matches
+	// what this reservation was taken against) — see
+	// redisbudget.budgetAdjustLuaSrc's own doc comment for why both
+	// cases matter, not just the first. epoch must be exactly the value
+	// the matching Reserve call returned.
+	Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error
 	// SpentNanoUSD reads keyID's current cumulative spend — a plain read,
 	// no atomicity requirement of its own (mirrors SpentUSD's identical
 	// in-memory read-only contract).
@@ -485,23 +497,27 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 // timeout, script error) — callers must fail OPEN on a non-nil err
 // (allowed=true, treated as if reserved=false, nothing to Reconcile),
 // mirroring internal/ratelimit's identical "fail-open, not fail-closed"
-// policy; err is always nil in in-memory mode. reservationEpoch is always
-// 0 in Redis mode — Redis's own key expiration replaces the epoch-based
-// window-reset detection entirely (see RedisBackend's own doc comment),
-// so Reconcile's Redis-mode branch never consults it.
+// policy; err is always nil in in-memory mode. reservationEpoch in Redis
+// mode is whatever RedisBackend.Reserve returned — a real per-window
+// value (see that method's own doc comment), not the always-0
+// placeholder this used to be before this session's own end-to-end
+// audit found the cross-window corruption that elided value allowed —
+// it MUST still be threaded through to Reconcile unchanged, exactly
+// like the in-memory branch's value, since Reconcile's Redis-mode
+// branch now genuinely consults it too.
 func (t *Tracker) Reserve(ctx context.Context, keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal, reservationEpoch int64, err error) {
 	if t.backend != nil {
 		if capUSD.Sign() <= 0 {
 			return true, false, decimal.Zero, 0, nil
 		}
-		allowedRedis, reservedNano, redisErr := t.backend.Reserve(ctx, keyID, usdToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
+		allowedRedis, reservedNano, epoch, redisErr := t.backend.Reserve(ctx, keyID, usdToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
 		if redisErr != nil {
 			return false, false, decimal.Zero, 0, redisErr
 		}
 		if !allowedRedis {
 			return false, false, decimal.Zero, 0, nil
 		}
-		return true, true, nanoUSDToUSD(reservedNano), 0, nil
+		return true, true, nanoUSDToUSD(reservedNano), epoch, nil
 	}
 
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
@@ -593,14 +609,21 @@ func (t *Tracker) reservationAmountLocked(keyID string, capUSD decimal.Decimal) 
 // TestReconcileDoesNotUndercountAcrossAConcurrentlyTriggeredReset for a
 // concrete, 100%-reproducible demonstration of the resulting money-leak.
 //
-// In Redis mode (t.backend != nil), reservationEpoch is ignored entirely —
-// Redis's own key expiration is the window-reset signal (see
-// RedisBackend's own doc comment): a call against an already-expired
-// window is a silent no-op inside backend.Adjust itself, the exact same
-// "nothing to correct" outcome the epoch check produces in-memory, just
-// obtained for free rather than via an explicit comparison. The delta
-// applied is realCost−reservedUSD when billed, or −reservedUSD on a
-// release-only call — the same net effect the in-memory branch's
+// In Redis mode (t.backend != nil), reservationEpoch IS consulted —
+// passed straight through to RedisBackend.Adjust, which no-ops both
+// when keyID's window already expired (key absent) AND when a
+// DIFFERENT, newer window has since started under this same keyID
+// (epoch field no longer matches), covering the exact cross-window
+// corruption case the in-memory epoch check above exists for. This
+// used to be elided entirely (reservationEpoch was always hardcoded 0
+// in Redis mode, and Adjust had no epoch concept at all) — a real
+// HIGH-severity gap this session's own end-to-end audit found: a
+// reservation that outlived its own window's TTL could have its stale
+// delta applied to an unrelated LATER window that happened to reuse the
+// same Redis key, since "key absent" alone cannot distinguish "this
+// window is gone" from "this window was REPLACED by a newer one." The
+// delta applied is realCost−reservedUSD when billed, or −reservedUSD on
+// a release-only call — the same net effect the in-memory branch's
 // subtract-then-add achieves via two decimal operations. A Redis backend
 // error here is logged and swallowed, never propagated: Reconcile is a
 // cleanup call with no caller left to fail open FOR — the in-memory
@@ -614,7 +637,7 @@ func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decim
 		if billed {
 			delta = realCost.Sub(reservedUSD)
 		}
-		if err := t.backend.Adjust(ctx, keyID, usdToNanoUSD(delta)); err != nil {
+		if err := t.backend.Adjust(ctx, keyID, usdToNanoUSD(delta), reservationEpoch); err != nil {
 			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "reconcile", "error", err.Error())
 		}
 		return
@@ -704,9 +727,14 @@ func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decim
 // Reserve's own contract — never the original pre-stream epoch.
 //
 // In Redis mode (t.backend != nil), reservationEpoch is accepted but
-// never consulted (see Reconcile's own Redis-mode doc comment) and
-// newReservationEpoch is always returned unchanged — Redis has no
-// epoch-rollover case to detect a top-up against. A backend error fails
+// never consulted here — unlike Reconcile's own Redis-mode branch
+// (which now genuinely checks it, see that method's own doc comment),
+// ReserveFixed's admission decision is immediate and self-correcting on
+// every call, so there is no deferred delta here that could land in the
+// wrong window. newReservationEpoch is always returned unchanged, since
+// a top-up never creates a new window — the SAME epoch value must still
+// reach the eventual Reconcile call this reservation is paired with. A
+// backend error fails
 // OPEN exactly like checkMidStreamReservationTopup's own established
 // policy for the TPM dimension's IncreaseReservationTPM: err is non-nil,
 // allowed is true, and appliedUSD/newReservationEpoch are returned

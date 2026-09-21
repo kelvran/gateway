@@ -14,6 +14,7 @@ package redislimiter
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -183,7 +184,21 @@ func Open(addr string) (*Limiter, error) {
 // docs/rfcs/2026-09-03-distributed-rate-limiting.md's "Fail-open, not
 // fail-closed" section for why that's the right default for Kelvran.
 func (l *Limiter) Allow(ctx context.Context, keyID string, capacity, refillPerSecond float64) (bool, error) {
-	key := "ratelimit:" + keyID
+	// url.QueryEscape closes a real HIGH-severity finding from this
+	// session's own end-to-end audit: keyID has no charset restriction
+	// anywhere, and this key used to be "ratelimit:" + keyID raw --
+	// AllowTPM's own "ratelimit:tpm:" + key convention (see that
+	// method's own doc comment) meant a keyID like "tpm:foo" produced
+	// the IDENTICAL Redis key ("ratelimit:tpm:foo") as
+	// AllowTPM("foo", ...) — but Allow's key is a Hash (HMGET/HSET) and
+	// AllowTPM's is a String (GET/SET), an incompatible-type collision
+	// that fails outright with a Redis WRONGTYPE error the first time
+	// both dimensions touch the aliased key. QueryEscape encodes every
+	// ':' as "%3A" (not in its unreserved charset), so an escaped keyID
+	// can never contain a raw ':' — meaning this key can never
+	// coincidentally start with "ratelimit:tpm:" the way a raw keyID
+	// could.
+	key := "ratelimit:" + url.QueryEscape(keyID)
 	now := time.Now().UnixMilli()
 
 	val, err := l.script.Run(ctx, l.client, []string{key}, capacity, refillPerSecond, now).Result()
@@ -217,7 +232,10 @@ func (l *Limiter) Allow(ctx context.Context, keyID string, capacity, refillPerSe
 // itself failed; callers should treat that the same fail-open way
 // Allow's own doc comment already establishes.
 func (l *Limiter) AllowTPM(ctx context.Context, key string, burst, rate, periodSec, cost float64) (allowed bool, retryAfterSec float64, err error) {
-	redisKey := "ratelimit:tpm:" + key
+	// url.QueryEscape here for the identical reason Allow's own call
+	// site now escapes keyID — see that comment for the full
+	// Hash-vs-String collision this closes on both sides.
+	redisKey := "ratelimit:tpm:" + url.QueryEscape(key)
 	val, err := l.tpmScript.Run(ctx, l.client, []string{redisKey}, burst, rate, periodSec, cost).Result()
 	if err != nil {
 		return false, 0, fmt.Errorf("redislimiter: running TPM script for key %q: %w", key, err)
@@ -248,7 +266,7 @@ func (l *Limiter) AllowTPM(ctx context.Context, key string, burst, rate, periodS
 // (realCost - estimatedCost)) the caller computes, not the real cost
 // itself.
 func (l *Limiter) AdjustTPM(ctx context.Context, key string, deltaIncrement float64) error {
-	redisKey := "ratelimit:tpm:" + key
+	redisKey := "ratelimit:tpm:" + url.QueryEscape(key)
 	if _, err := l.tpmAdjustScript.Run(ctx, l.client, []string{redisKey}, deltaIncrement).Result(); err != nil {
 		return fmt.Errorf("redislimiter: running TPM adjust script for key %q: %w", key, err)
 	}

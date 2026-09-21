@@ -71,6 +71,45 @@ func TestAllowWithinCapacitySucceedsThenRejects(t *testing.T) {
 	}
 }
 
+// TestAllowAndAllowTPMDoNotCollideForATPMPrefixedKeyID is the direct
+// regression proof for a real HIGH-severity finding from this session's
+// own end-to-end audit: keyID has no charset restriction anywhere, and
+// Allow's own "ratelimit:" + keyID key used to collide byte-for-byte
+// with AllowTPM("ratelimit:tpm:" + key) whenever keyID itself was
+// "tpm:<suffix>" — but Allow's key is a Hash (HMGET/HSET) and AllowTPM's
+// is a String (GET/SET), an incompatible-type collision. Proven here by
+// exercising Allow first (creating the Hash), then AllowTPM against the
+// key that used to alias it (which would fail outright with a Redis
+// WRONGTYPE error if the collision still existed) — both must succeed
+// independently. Break this by reverting Allow/AllowTPM/AdjustTPM's own
+// url.QueryEscape calls: this test starts failing with a WRONGTYPE
+// error from AllowTPM, not a wrong admission decision.
+func TestAllowAndAllowTPMDoNotCollideForATPMPrefixedKeyID(t *testing.T) {
+	l, err := Open(redisAddr)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	ctx := context.Background()
+	suffix := uniqueKey(t)
+	rpmKeyID := "tpm:" + suffix // Allow("tpm:"+suffix) used to alias AllowTPM(suffix)'s own key.
+
+	if allowed, err := l.Allow(ctx, rpmKeyID, 3, 1); err != nil {
+		t.Fatalf("Allow(%q) error = %v", rpmKeyID, err)
+	} else if !allowed {
+		t.Fatalf("Allow(%q) = false, want true (within burst capacity)", rpmKeyID)
+	}
+
+	allowed, _, err := l.AllowTPM(ctx, suffix, 10, 10, 1, 3)
+	if err != nil {
+		t.Fatalf("AllowTPM(%q) error = %v -- want no error, since a real collision would surface as a Redis WRONGTYPE error here", suffix, err)
+	}
+	if !allowed {
+		t.Fatalf("AllowTPM(%q) = false, want true (well within its own separate burst)", suffix)
+	}
+}
+
 func TestAllowRefillsOverTime(t *testing.T) {
 	l, err := Open(redisAddr)
 	if err != nil {

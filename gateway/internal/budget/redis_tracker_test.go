@@ -22,9 +22,9 @@ import (
 )
 
 type fakeRedisBudgetBackend struct {
-	reserveFunc         func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, error)
+	reserveFunc         func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error)
 	reserveFixedFunc    func(ctx context.Context, keyID string, capNanoUSD, deltaNanoUSD, resetIntervalMs int64) (bool, error)
-	adjustFunc          func(ctx context.Context, keyID string, deltaNanoUSD int64) error
+	adjustFunc          func(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error
 	spentNanoUSDFunc    func(ctx context.Context, keyID string) (int64, error)
 	markAlertBucketFunc func(ctx context.Context, keyID string, newHighest float64, resetIntervalMs int64) (bool, error)
 	deleteFunc          func(ctx context.Context, keyID string) error
@@ -37,20 +37,21 @@ type fakeRedisBudgetBackend struct {
 	lastFixedDeltaNano   int64
 	adjustCalls          int
 	lastAdjustDeltaNano  int64
+	lastAdjustEpoch      int64
 	markAlertCalls       int
 	lastMarkAlertHighest float64
 	deleteCalls          int
 	closeCalls           int
 }
 
-func (f *fakeRedisBudgetBackend) Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, error) {
+func (f *fakeRedisBudgetBackend) Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error) {
 	f.reserveCalls++
 	f.lastReserveCapNano = capNanoUSD
 	f.lastReserveResetMs = resetIntervalMs
 	if f.reserveFunc != nil {
 		return f.reserveFunc(ctx, keyID, capNanoUSD, resetIntervalMs)
 	}
-	return true, capNanoUSD, nil
+	return true, capNanoUSD, 0, nil
 }
 
 func (f *fakeRedisBudgetBackend) ReserveFixed(ctx context.Context, keyID string, capNanoUSD, deltaNanoUSD, resetIntervalMs int64) (bool, error) {
@@ -62,11 +63,12 @@ func (f *fakeRedisBudgetBackend) ReserveFixed(ctx context.Context, keyID string,
 	return true, nil
 }
 
-func (f *fakeRedisBudgetBackend) Adjust(ctx context.Context, keyID string, deltaNanoUSD int64) error {
+func (f *fakeRedisBudgetBackend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error {
 	f.adjustCalls++
 	f.lastAdjustDeltaNano = deltaNanoUSD
+	f.lastAdjustEpoch = epoch
 	if f.adjustFunc != nil {
-		return f.adjustFunc(ctx, keyID, deltaNanoUSD)
+		return f.adjustFunc(ctx, keyID, deltaNanoUSD, epoch)
 	}
 	return nil
 }
@@ -136,8 +138,8 @@ const usdScaleForTest = 1_000_000_000
 
 func TestReserveRedisModeConvertsUnitsCorrectly(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{
-		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, error) {
-			return true, capNanoUSD, nil
+		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error) {
+			return true, capNanoUSD, 777, nil
 		},
 	}
 	tr := NewRedisTracker(backend, nil)
@@ -158,8 +160,12 @@ func TestReserveRedisModeConvertsUnitsCorrectly(t *testing.T) {
 	if !reservedUSD.Equal(d("12.5")) {
 		t.Errorf("reservedUSD = %s, want 12.5 (nano-USD converted back exactly)", reservedUSD.String())
 	}
-	if epoch != 0 {
-		t.Errorf("reservationEpoch = %d, want 0 -- Redis mode never uses epochs", epoch)
+	// epoch must be threaded straight through from the backend, unchanged
+	// -- Reconcile's Redis-mode branch now genuinely depends on the exact
+	// value RedisBackend.Reserve returned (see that method's own doc
+	// comment for the cross-window corruption this closes).
+	if epoch != 777 {
+		t.Errorf("reservationEpoch = %d, want 777 (passed straight through from the backend)", epoch)
 	}
 }
 
@@ -178,8 +184,8 @@ func TestReserveRedisModeUnlimitedCapNeverCallsBackend(t *testing.T) {
 
 func TestReserveRedisModeRejectionAppliesNoReservation(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{
-		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, error) {
-			return false, 0, nil
+		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error) {
+			return false, 0, 0, nil
 		},
 	}
 	tr := NewRedisTracker(backend, nil)
@@ -200,8 +206,8 @@ func TestReserveRedisModeRejectionAppliesNoReservation(t *testing.T) {
 func TestReserveRedisModeBackendErrorReturnsAllowedFalse(t *testing.T) {
 	wantErr := errors.New("simulated redis outage")
 	backend := &fakeRedisBudgetBackend{
-		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, error) {
-			return false, 0, wantErr
+		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error) {
+			return false, 0, 0, wantErr
 		},
 	}
 	tr := NewRedisTracker(backend, nil)
@@ -246,27 +252,39 @@ func TestReconcileRedisModeReleaseOnlyAppliesNegativeReservedDelta(t *testing.T)
 	}
 }
 
-// TestReconcileRedisModeIgnoresReservationEpoch proves the Redis-mode
-// epoch-elision this package's own doc comments claim is real: an
-// arbitrary, clearly-stale-looking reservationEpoch must not suppress
-// the Adjust call the way the in-memory branch's epoch check would --
-// Redis's own key expiration is the only window-reset signal in this
-// mode.
-func TestReconcileRedisModeIgnoresReservationEpoch(t *testing.T) {
+// TestReconcileRedisModePassesReservationEpochThroughToBackend is the
+// direct regression proof for a real HIGH-severity finding from this
+// session's own end-to-end audit: Reconcile's Redis-mode branch used to
+// hardcode/ignore reservationEpoch entirely (Adjust had no epoch
+// parameter at all) -- meaning a stale reservation that outlived its
+// own window's TTL could have its delta applied to an unrelated LATER
+// window that happened to reuse the same Redis key, since "key absent"
+// alone can't distinguish "this window is gone" from "this window was
+// REPLACED." Reconcile now threads reservationEpoch straight through to
+// backend.Adjust unchanged -- proven here at the Tracker level (the
+// actual epoch-mismatch enforcement itself is redisbudget's own Lua
+// script, proven separately against real Redis in that package's test
+// file). Break this by reverting Reconcile's own call site back to
+// t.backend.Adjust(ctx, keyID, usdToNanoUSD(delta)) (dropping
+// reservationEpoch): this test starts failing on lastAdjustEpoch.
+func TestReconcileRedisModePassesReservationEpochThroughToBackend(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{}
 	tr := NewRedisTracker(backend, nil)
 
 	realCost := d("1")
-	tr.Reconcile(context.Background(), "k", d("5"), 999_999, &realCost, 0)
+	tr.Reconcile(context.Background(), "k", d("5"), 123_456, &realCost, 0)
 
 	if backend.adjustCalls != 1 {
-		t.Fatalf("backend.Adjust called %d times for an arbitrary reservationEpoch, want 1 -- Redis mode must never gate on epoch", backend.adjustCalls)
+		t.Fatalf("backend.Adjust called %d times, want 1", backend.adjustCalls)
+	}
+	if backend.lastAdjustEpoch != 123_456 {
+		t.Errorf("backend.Adjust received epoch = %d, want 123456 (reservationEpoch passed straight through unchanged)", backend.lastAdjustEpoch)
 	}
 }
 
 func TestReconcileRedisModeLogsAndSwallowsBackendError(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{
-		adjustFunc: func(ctx context.Context, keyID string, deltaNanoUSD int64) error {
+		adjustFunc: func(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error {
 			return errors.New("simulated redis outage")
 		},
 	}
@@ -298,7 +316,7 @@ func TestIncreaseReservationRedisModeUsesReserveFixedWithTheDelta(t *testing.T) 
 		t.Errorf("appliedUSD = %s, want 8 (the new reservation)", applied.String())
 	}
 	if epoch != 42 {
-		t.Errorf("newReservationEpoch = %d, want 42 (returned unchanged -- Redis mode never uses epochs)", epoch)
+		t.Errorf("newReservationEpoch = %d, want 42 (returned unchanged -- a top-up never creates a new window, so the same epoch must still reach the eventual Reconcile call)", epoch)
 	}
 	wantDelta := usdToNanoUSD(d("3")) // 8 - 5
 	if backend.lastFixedDeltaNano != wantDelta {
