@@ -93,6 +93,53 @@ def test_timeout_cleanup_failure_does_not_mask_timed_out_result(monkeypatch):
     assert result.container_id == "fake-container-id"
 
 
+class _ImmediateProcess:
+    """A fake `asyncio.subprocess.Process` whose `communicate()` resolves
+    right away -- the success path, unlike `_HangingProcess` above."""
+
+    returncode: int | None = 0
+
+    async def communicate(self):
+        return b"hi\n", b""
+
+
+def test_read_cidfile_failure_on_the_success_path_does_not_mask_a_good_result(
+    monkeypatch,
+):
+    """Real gap closed 2026-09-21, the success-path half of the same
+    masking-bug class the two tests above already cover for the
+    timeout/cancellation branches: `run_in_sandbox`'s success path used
+    to call `_read_cidfile` directly, with no try/except of its own — an
+    unexpected failure there (a permission error, a transient I/O
+    error) would raise OUT of `run_in_sandbox` entirely, turning a
+    genuinely SUCCESSFUL command run into an exception. `container_id`
+    is purely incidental observability metadata (see
+    `_read_cidfile_best_effort`'s own doc comment); losing it must never
+    cost the caller an otherwise-complete, correct `SandboxResult`.
+    Break this by reverting `run_in_sandbox`'s own call back to bare
+    `_read_cidfile(cid_path)`: this test starts failing with the
+    simulated OSError propagating instead of a normal result.
+    """
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        return _ImmediateProcess()
+
+    def _raise_reading_cidfile(path):
+        raise OSError("simulated permission error reading the cidfile")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr("evals.rollout.sandbox._read_cidfile", _raise_reading_cidfile)
+
+    result = asyncio.run(
+        run_in_sandbox(image="alpine:3.20", command=["echo", "hi"], timeout_s=5)
+    )
+
+    assert result.timed_out is False
+    assert result.exit_code == 0
+    assert result.stdout == "hi\n"
+    assert result.container_id is None
+
+
 def test_cancellation_cleanup_failure_does_not_mask_original_cancellation(monkeypatch):
     """The identical proof for the BaseException/cancellation branch: a
     teardown failure during cancellation cleanup must never replace the

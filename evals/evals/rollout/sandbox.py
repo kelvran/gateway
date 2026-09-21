@@ -138,6 +138,30 @@ async def _docker_kill(container_id: str) -> None:
     await proc.wait()
 
 
+def _read_cidfile_best_effort(path: str) -> str | None:
+    """`_read_cidfile`, but an UNEXPECTED failure (a permission error, a
+    transient I/O error -- anything beyond the "file doesn't exist yet"
+    case `_read_cidfile` already handles) degrades to `None` rather than
+    propagating.
+
+    Real gap closed 2026-09-21, the success-path half of the same
+    masking-bug class `_cleanup_after_interruption` below already closed
+    for the timeout/cancellation branches: `run_in_sandbox`'s success
+    path calls `_read_cidfile` directly, with no try/except of its own —
+    an unexpected failure there would raise OUT of `run_in_sandbox`
+    entirely, turning a genuinely SUCCESSFUL command run (a real
+    `exit_code`/`stdout`/`stderr` already in hand) into an exception.
+    `container_id` is purely incidental observability metadata (an OTel
+    span attribute, per `scheduler.py`'s own only consumer) — never used
+    for any correctness/control-flow decision — so losing it must never
+    cost the caller an otherwise-complete, correct `SandboxResult`.
+    """
+    try:
+        return _read_cidfile(path)
+    except Exception:  # noqa: S110
+        return None
+
+
 async def _cleanup_after_interruption(
     cid_path: str, process: asyncio.subprocess.Process
 ) -> str | None:
@@ -271,7 +295,7 @@ async def run_in_sandbox(
             stdout=stdout_bytes.decode(errors="replace"),
             stderr=stderr_bytes.decode(errors="replace"),
             timed_out=False,
-            container_id=_read_cidfile(cid_path),
+            container_id=_read_cidfile_best_effort(cid_path),
         )
     finally:
         if os.path.exists(cid_path):
