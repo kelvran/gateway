@@ -545,12 +545,22 @@ def quote_is_grounded(quote: str, output: str, reference: str) -> bool:
 
 
 def parse_judge_response(raw_response: str) -> ParsedJudgeResponse:
-    verdict_match = _VERDICT_PATTERN.search(raw_response)
-    if verdict_match is None:
+    # The LAST match, never the first: the prompt template mandates
+    # VERDICT: appear as the final line, after REASONING/QUOTE -- but
+    # REASONING is free-form judge text that can itself quote or discuss
+    # the literal phrase "VERDICT: PASS"/"VERDICT: FAIL" (the template's
+    # own instructions use exactly that phrase, so a judge explaining the
+    # format, or reasoning about a candidate output that contains that
+    # substring, can easily reproduce it). .search() finding the leftmost
+    # occurrence silently locked onto that earlier, non-final text
+    # instead of the judge's real, formatted verdict -- found by a fresh
+    # audit sweep, reproduced directly against this exact function.
+    verdict_matches = list(_VERDICT_PATTERN.finditer(raw_response))
+    if not verdict_matches:
         raise ValueError(
             f"judge response missing a VERDICT: PASS|FAIL line: {raw_response!r}"
         )
-    passed = verdict_match.group(1).upper() == "PASS"
+    passed = verdict_matches[-1].group(1).upper() == "PASS"
 
     reasoning_match = _REASONING_PATTERN.search(raw_response)
     rationale = reasoning_match.group(1).strip() if reasoning_match else ""

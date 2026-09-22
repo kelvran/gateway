@@ -212,6 +212,35 @@ def test_judge_verdict_is_case_insensitive():
     assert result.passed is True
 
 
+def test_judge_uses_the_final_verdict_line_not_the_first_verdict_substring():
+    """Direct regression proof for a real HIGH-severity finding from a
+    fresh audit sweep: parse_judge_response used _VERDICT_PATTERN.search(),
+    which returns the LEFTMOST match anywhere in the response. The prompt
+    template's own instructions literally contain the phrase
+    "VERDICT: <PASS or FAIL>", so a judge's free-form REASONING that
+    discusses or quotes that phrase (as this fixture deliberately does)
+    can contain an earlier VERDICT: PASS substring than the judge's real,
+    final, formatted verdict -- silently flipping a real FAIL to a
+    recorded PASS with no error. Break this by reverting
+    parse_judge_response back to _VERDICT_PATTERN.search(raw_response):
+    this test starts failing because result.passed becomes True instead
+    of the correct False.
+    """
+    fake_response = (
+        "REASONING: the instructions say to emit a line reading "
+        "VERDICT: PASS whenever the candidate is fully correct, but this "
+        "candidate has a factual error.\n"
+        "QUOTE: some verbatim span.\n"
+        "VERDICT: FAIL\n"
+    )
+    result = asyncio.run(
+        judge(
+            output="x", reference="x", call_model=_make_fake_call_model(fake_response)
+        )
+    )
+    assert result.passed is False
+
+
 def test_judge_raises_on_malformed_response_missing_verdict():
     fake_response = "REASONING: I have thoughts but no verdict.\n"
     with pytest.raises(ValueError):
