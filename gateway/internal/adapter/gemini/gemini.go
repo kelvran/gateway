@@ -138,13 +138,26 @@ type FunctionDeclaration struct {
 //
 // ResponseMimeType/ResponseSchema are Gemini's real structured-output
 // fields. Fidelity caveat, not silently glossed over: Gemini's own
-// response_schema uses an OpenAPI-3.0-SUBSET schema dialect, not full
-// JSON Schema (e.g. no "$ref"/"$defs", a narrower keyword set) -- this
-// adapter passes the canonical adapter.JSONSchema.Schema through
+// response_schema supports only a SUBSET of the JSON Schema
+// specification, a narrower keyword set than OpenAI's/Bedrock's dialects
+// -- this adapter passes the canonical adapter.JSONSchema.Schema through
 // verbatim, unparsed and unvalidated, never attempting to translate or
 // validate dialect differences between the two, per this feature's own
 // v1 scope (request-shape normalization only, no schema-validation
 // library in this module).
+//
+// Corrected 2026-09-22: this comment previously claimed Gemini's dialect
+// has no "$ref"/"$defs" support at all -- independently re-verified as
+// stale against Google's own current docs (ai.google.dev/gemini-api/docs/
+// structured-output), whose own "Recursive Structures" example shows
+// "$ref"-style self-reference working (a Pydantic forward-reference
+// converted to JSON Schema and accepted). Also has no separate
+// "strict"-style toggle on this path: the docs describe an unconditional
+// subset-of-JSON-Schema guarantee (with a disclosed limitation that "very
+// large or deeply nested schemas may be rejected"), not a strict/
+// non-strict mode choice -- so adapter.JSONSchema.Strict has nothing to
+// forward here, same reasoning as Anthropic's and Bedrock's response-
+// format paths.
 type GenerationConfig struct {
 	Temperature      *float64       `json:"temperature,omitempty"`
 	MaxOutputTokens  *int           `json:"maxOutputTokens,omitempty"`

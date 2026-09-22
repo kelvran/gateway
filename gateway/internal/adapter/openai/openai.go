@@ -134,10 +134,16 @@ type Tool struct {
 }
 
 // FunctionDef describes a callable function's name/description/schema.
+// Strict mirrors adapter.ToolDef.Strict -- OpenAI's real Structured
+// Outputs feature (2024) does support a per-function "strict" flag here,
+// sibling of name/description/parameters; this was previously a named v1
+// scope limit (see ToolDef's own doc comment) but is now wired since the
+// wire field genuinely exists on OpenAI's API.
 type FunctionDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      bool            `json:"strict,omitempty"`
 }
 
 // ToolChoiceWire is OpenAI's native tool_choice field, per
@@ -297,6 +303,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 					Name:        t.Name,
 					Description: t.Description,
 					Parameters:  params,
+					Strict:      t.Strict,
 				},
 			})
 		}

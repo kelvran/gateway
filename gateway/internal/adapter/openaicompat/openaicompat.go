@@ -163,10 +163,16 @@ type Tool struct {
 }
 
 // FunctionDef describes a callable function's name/description/schema.
+// Strict mirrors adapter.ToolDef.Strict and openai.FunctionDef.Strict --
+// most OpenAI-compatible self-hosted runtimes (vLLM, TGI) implement the
+// same per-function "strict" flag from OpenAI's Structured Outputs
+// feature; wired here on the same "unset/false is a silent no-op"
+// convention, so runtimes that don't support it simply ignore it.
 type FunctionDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      bool            `json:"strict,omitempty"`
 }
 
 // ToolChoiceWire mirrors internal/adapter/openai.ToolChoiceWire's real
@@ -342,6 +348,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 					Name:        t.Name,
 					Description: t.Description,
 					Parameters:  params,
+					Strict:      t.Strict,
 				},
 			})
 		}

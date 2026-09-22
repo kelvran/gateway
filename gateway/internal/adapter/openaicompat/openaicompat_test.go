@@ -648,3 +648,33 @@ func TestToProviderToolChoiceRejectsUnknownMode(t *testing.T) {
 		t.Fatal("ToProvider: want an error for an unknown tool_choice mode, got nil")
 	}
 }
+
+// TestToProviderToolDefStrictForwardsToNativeFunctionDef mirrors
+// openai's own test -- most self-hosted OpenAI-compatible runtimes
+// implement the same per-function "strict" wire field.
+func TestToProviderToolDefStrictForwardsToNativeFunctionDef(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "llama-3",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+		Tools: []adapter.ToolDef{
+			{Name: "strict_tool", ParametersJSON: `{"type":"object"}`, Strict: true},
+			{Name: "loose_tool", ParametersJSON: `{"type":"object"}`, Strict: false},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.Tools) != 2 {
+		t.Fatalf("len(native.Tools) = %d, want 2", len(native.Tools))
+	}
+	if !native.Tools[0].Function.Strict {
+		t.Error("strict_tool: native.Tools[0].Function.Strict = false, want true")
+	}
+	if native.Tools[1].Function.Strict {
+		t.Error("loose_tool: native.Tools[1].Function.Strict = true, want false")
+	}
+}

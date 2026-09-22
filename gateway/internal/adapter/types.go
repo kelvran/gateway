@@ -230,13 +230,19 @@ type ToolDef struct {
 	// strict grammar-backed validation. Anthropic's own docs confirm this
 	// shares the same grammar mechanism as
 	// ChatRequest.ResponseFormat's output_config.format, and is an
-	// independently-composable per-tool flag, not a global one. Read only
-	// by the Anthropic and Bedrock adapters (both translate it onto their
-	// native Tool's own sibling "strict" key, mirroring CacheControl's
-	// placement); OpenAI/openaicompat/Gemini never read this field at all
-	// in v1, a named scope limit (OpenAI's own per-tool "strict" flag is
-	// deliberately deferred, not wired). False (the default) is a silent
-	// no-op for every adapter.
+	// independently-composable per-tool flag, not a global one. Read by
+	// the Anthropic, OpenAI, openaicompat, AND Bedrock adapters (each
+	// translates it onto their native tool definition's own sibling
+	// "strict" key). Corrected 2026-09-22: two prior "deliberately
+	// deferred, not wired" scope limits are now closed. OpenAI's real
+	// Structured Outputs feature genuinely has a per-function "strict"
+	// wire field (confirmed against OpenAI's own API), wired in both
+	// openai.FunctionDef and openaicompat.FunctionDef. Bedrock Converse's
+	// toolSpec also genuinely has a "strict" sibling key (confirmed
+	// against AWS's own ML blog and the AWS SDK for Python/Ruby's
+	// ToolSpecification type reference), wired in bedrock.ToolSpec. Only
+	// Gemini never reads this field at all. False (the default) is a
+	// silent no-op for every adapter.
 	Strict bool
 }
 

@@ -66,6 +66,15 @@ type OutputConfig struct {
 // Anthropic's own real shape carries no "name" field at all -- the
 // canonical adapter.JSONSchema.Name has no Anthropic wire counterpart, a
 // named scope limit, not an oversight.
+//
+// Also deliberately has no Strict field, for a different reason than the
+// "name" gap above: adapter.JSONSchema.Strict has no equivalent to
+// forward here because Anthropic's structured-output guarantee for
+// output_config.format is unconditional once type=="json_schema" is set
+// -- there is no separate strict/non-strict toggle on this path. The
+// "strict" concept only exists on Anthropic's TOOL-USE path (see
+// Tool.Strict below), a genuinely different mechanism for a genuinely
+// different feature, not an alternate name for the same one.
 type OutputFormat struct {
 	Type   string         `json:"type"`
 	Schema map[string]any `json:"schema,omitempty"`

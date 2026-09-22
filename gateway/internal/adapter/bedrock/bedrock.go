@@ -339,21 +339,25 @@ func appendToolCachePointIfNeeded(tools []Tool, cc *adapter.CacheControl, model 
 // ToolSpec describes one callable tool. InputSchema.JSON is a parsed JSON
 // Schema object, not a string, same as Anthropic's InputSchema.
 //
-// Deliberately has no Strict field: unlike Anthropic's direct Messages
-// API (see anthropic.Tool.Strict), no per-tool "strict" wire shape for
-// Converse's toolSpec is confirmed real -- this session's live
-// verification covered only the request-level additionalModelRequestFields/
-// output_config escape hatch above, not a per-tool grammar flag. Given
-// AWS's OWN demonstrated behavior of hard-rejecting unrecognized fields
-// (the very output_config.format ValidationException that motivated this
-// feature), guessing at an unconfirmed field here risks a real, breaking
-// AWS error rather than a silent no-op. adapter.ToolDef.Strict is
-// therefore read only by the Anthropic adapter in v1; Bedrock is a named
-// scope limit, not an oversight.
+// Corrected 2026-09-22: the prior "deliberately has no Strict field"
+// scope limit is closed. Converse's toolSpec DOES have a real "strict"
+// sibling key -- confirmed against AWS's own Bedrock ML blog (a working
+// boto3 example setting toolSpec.strict) and against the AWS SDK for
+// Python's and Ruby's own ToolSpecification type references (both list
+// a documented, optional "strict: bool" attribute, "Flag to enable
+// structured output enforcement on a tool usage response"). Kelvran
+// builds Converse's wire format by hand rather than via a typed AWS SDK
+// (no aws-sdk-go-v2/service/bedrockruntime dependency exists in go.mod),
+// so this field was previously left unwired only because its existence
+// hadn't been independently reconfirmed since the last live-verification
+// pass -- it now has been. adapter.ToolDef.Strict is read by the
+// Anthropic, OpenAI, openaicompat, AND Bedrock adapters as of this
+// change; only Gemini never reads it.
 type ToolSpec struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description,omitempty"`
 	InputSchema InputSchema `json:"inputSchema"`
+	Strict      bool        `json:"strict,omitempty"`
 }
 
 // InputSchema wraps a tool's parsed JSON Schema under Converse's real
@@ -602,6 +606,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 					Name:        t.Name,
 					Description: t.Description,
 					InputSchema: InputSchema{JSON: schema},
+					Strict:      t.Strict,
 				},
 			})
 			// A tool-definition-level CacheControl appends a trailing
@@ -669,6 +674,29 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 // attemptFallbackChain capabilityOK gate skips an incapable fallback
 // TARGET before ever calling it -- not the first-attempt router pick,
 // per this feature's own v1 design.
+//
+// No Strict-equivalent field exists to forward on this path: AWS's own
+// Bedrock ML blog's structured-outputs example (2026) shows the
+// guarantee for output_config.format.type=="json_schema" is
+// unconditional -- "The response conforms to your schema, no additional
+// validation required" -- with no separate strict/non-strict toggle
+// anywhere in that shape. adapter.JSONSchema.Strict is therefore a
+// correct, deliberate no-op here, not a silent gap.
+//
+// KNOWN DISCREPANCY, NOT YET LIVE-RE-VERIFIED (flagged 2026-09-22,
+// research-only finding): the same AWS blog's real Converse example sends
+// this data via a TOP-LEVEL, camelCase "outputConfig.textFormat" request
+// field (nested under "structure.jsonSchema.{schema,name,description}"),
+// structurally different from the snake_case "output_config.format"
+// shape this function still sends through the generic
+// additionalModelRequestFields escape hatch below -- last live-verified
+// 2026-09-13, before this discrepancy was found. Both may currently work
+// (a preview-era escape-hatch shape AWS still honors alongside its newer
+// promoted top-level field), or the escape-hatch shape may have stopped
+// being honored -- this needs one real Converse call against a live
+// Bedrock endpoint to resolve either way before migrating; guessing here
+// risks the same kind of breaking AWS rejection this function's own
+// design already goes out of its way to avoid elsewhere.
 func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (map[string]any, error) {
 	if rf == nil {
 		return nil, nil

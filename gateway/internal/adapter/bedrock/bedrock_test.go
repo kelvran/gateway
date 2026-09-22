@@ -242,6 +242,39 @@ func TestToProviderInvalidToolArguments(t *testing.T) {
 	}
 }
 
+// TestToProviderToolDefStrictForwardsToNativeToolSpec proves
+// adapter.ToolDef.Strict reaches Converse's native toolSpec.strict field
+// -- previously a named v1 scope limit (no confirmed wire field existed
+// for Bedrock's tool path), now wired since AWS's own docs confirm one.
+func TestToProviderToolDefStrictForwardsToNativeToolSpec(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []adapter.Message{
+			{Role: "user", Content: "hi"},
+		},
+		Tools: []adapter.ToolDef{
+			{Name: "strict_tool", ParametersJSON: `{"type":"object"}`, Strict: true},
+			{Name: "loose_tool", ParametersJSON: `{"type":"object"}`, Strict: false},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if native.ToolConfig == nil || len(native.ToolConfig.Tools) != 2 {
+		t.Fatalf("native.ToolConfig.Tools = %+v, want 2 tools", native.ToolConfig)
+	}
+	if !native.ToolConfig.Tools[0].ToolSpec.Strict {
+		t.Error("strict_tool: native.ToolConfig.Tools[0].ToolSpec.Strict = false, want true")
+	}
+	if native.ToolConfig.Tools[1].ToolSpec.Strict {
+		t.Error("loose_tool: native.ToolConfig.Tools[1].ToolSpec.Strict = true, want false")
+	}
+}
+
 // TestFromProviderMalformedToolUseReturnsError proves the model's own
 // broken tool-use machinery surfaces as a real, typed error rather than
 // a fake successful Choice.

@@ -385,6 +385,37 @@ func TestToProviderInvalidToolArguments(t *testing.T) {
 	}
 }
 
+// TestToProviderToolDefStrictForwardsToNativeFunctionDef proves
+// adapter.ToolDef.Strict reaches OpenAI's native tools[].function.strict
+// field -- previously a named v1 scope limit (no wire field existed),
+// now wired since OpenAI's real Structured Outputs feature has one.
+func TestToProviderToolDefStrictForwardsToNativeFunctionDef(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+		Tools: []adapter.ToolDef{
+			{Name: "strict_tool", ParametersJSON: `{"type":"object"}`, Strict: true},
+			{Name: "loose_tool", ParametersJSON: `{"type":"object"}`, Strict: false},
+		},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+
+	if len(native.Tools) != 2 {
+		t.Fatalf("len(native.Tools) = %d, want 2", len(native.Tools))
+	}
+	if !native.Tools[0].Function.Strict {
+		t.Error("strict_tool: native.Tools[0].Function.Strict = false, want true")
+	}
+	if native.Tools[1].Function.Strict {
+		t.Error("loose_tool: native.Tools[1].Function.Strict = true, want false")
+	}
+}
+
 // TestToProviderCacheControlKeySetsPromptCacheKey is the load-bearing
 // proof for docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md's
 // OpenAI wiring: a CacheControl.Key set on a message must become the
