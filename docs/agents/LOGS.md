@@ -3055,3 +3055,17 @@ Every real gap above was verified against Kelvran's actual current code (direct 
 **Bugs found:** 1 real, previously-disclosed gap closed — OpenAI/openaicompat's streaming path never forwarded a mid-stream refusal fragment (the buffered path already had it), confirmed real against OpenAI's own openai-openapi spec (`ChatCompletionStreamResponseDelta` genuinely carries `refusal`). 1 confirmed scanner false positive (`GO-2026-5932`, module-presence-only, zero real reachability). 1 real documentation gap closed, not a code bug: a repo-authored, falsifiable RFC trigger condition had objectively fired with no compensating decision record for 5 days and three intervening backlog rounds.
 
 **Next steps / resume point:** The 37 stale local branches remain undeleted at the user's own explicit instruction ("leave the branch") — not forgotten, not blocked on anything technical, just deliberately left. Everything else from this sweep is closed: 9 deferrals correctly reaffirmed with no new trigger, 1 external blocker unchanged, 1 accepted risk left as-is, 3 real gaps fixed and shipped, all disclosed-alert housekeeping done. No further work from this round is authorized or in flight.
+
+## [2026-09-22] main — direct working-tree commit `b7aea22` + `gateway/v0.14.2` tag/release
+
+**Files touched:** `gateway/changelog/0.14.2.md` (new); `deploy/k8s/base/deployment.yaml`; this entry.
+
+**Intent/summary:** User asked for the next ideal step again; checked live state directly (unreleased.md gaps, open PRs/issues/Dependabot/code-scanning alerts, CI status) rather than guessing and found the identical gap a fourth time this session — 2 real fixed commits since `gateway/v0.14.1` (the refusal-streaming fix, the osv-scanner.toml suppression), none logged; `evals` had nothing new. Proceeded directly given the same playbook had already been explicitly approved three times this session and the user's own phrasing ("go ahead with nxt ideal steps") was itself the go-ahead.
+
+**Decisions made:** PATCH bump (`0.14.1`→`0.14.2`) — both commits are fixes, no new functionality. Left the RFC re-examination commit (docs-only, zero code/behavior change) out of the changelog, matching this project's own precedent of not logging design-record-only changes.
+
+**Verification performed:** Backfilled the changelog from both commits' full bodies. Confirmed CI green on the changelog push before tagging. Watched the tag-triggered CI run to completion — full green including `publish gateway image to GHCR`. Colima/docker had stopped since the last round's cluster teardown — restarted it before pulling. Pulled the real image, verified its SLSA-provenance attestation against its actual digest (payload correctly names `refs/tags/gateway/v0.14.2` and the real release commit `b7aea223`), re-pinned `deployment.yaml`, confirmed CI green on the re-pin, then re-verified LIVE against a fresh `kind` cluster: both real replicas reached `1/1 Ready` on the new digest and answered a real `/healthz` `200` through the real Service; the 3rd (rollout-restart transient) pod stayed `Pending` on the same already-disclosed single-node CPU ceiling, not a new defect. Cluster and local scratch files torn down afterward. Real GitHub Release created with the changelog as its notes.
+
+**Bugs found:** None — release-process round only.
+
+**Next steps / resume point:** `gateway/v0.14.2` is tagged, released, published, cosign-verified, and `deployment.yaml` points at the correct digest. `evals` has nothing unreleased. No further work is in flight.
