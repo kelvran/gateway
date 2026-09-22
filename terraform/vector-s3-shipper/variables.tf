@@ -23,6 +23,16 @@ variable "key_prefix" {
   description = "The one S3 key prefix Vector ever writes under and the only prefix the shipper IAM user's write-only policy is scoped to -- matches vector-gatewayevents-s3-compose.yaml's own aws_s3 sink key_prefix (\"gatewayevents/v1/dt=...\") down to its static leading segment."
   type        = string
   default     = "gatewayevents/v1/"
+
+  # An empty (or whitespace-only) value collapses
+  # shipper_write_only's resource pattern
+  # ("${bucket_arn}/${key_prefix}*") to "${bucket_arn}/*" -- bucket-wide
+  # PutObject access instead of the one intended prefix. Found by a
+  # fresh audit sweep.
+  validation {
+    condition     = length(trimspace(var.key_prefix)) > 0
+    error_message = "key_prefix must not be empty or whitespace-only -- an empty value collapses the shipper IAM policy's resource pattern to bucket-wide access (\"<bucket_arn>/*\") instead of the intended prefix."
+  }
 }
 
 variable "retention_days" {
