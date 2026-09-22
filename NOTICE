@@ -1,0 +1,23 @@
+Kelvran
+Copyright 2026 Kelvran Authors
+
+This product is licensed under the Apache License, Version 2.0 (see
+LICENSE). It includes the following third-party software under a
+different license:
+
+  github.com/philippgille/chromem-go
+  Copyright (c) chromem-go contributors
+  Licensed under the Mozilla Public License, Version 2.0 (MPL-2.0)
+  https://github.com/philippgille/chromem-go/blob/main/LICENSE
+
+  Used unmodified as a Go module dependency of
+  gateway/internal/guardrail/embedsim (an in-memory embedding-similarity
+  store for prompt-injection detection) -- Kelvran does not vendor or
+  modify chromem-go's own source. Per MPL-2.0 Section 3.3
+  ("Distribution of a Larger Work"), combining an unmodified MPL-2.0
+  file into a differently-licensed Larger Work does not require the
+  Larger Work itself to be MPL-licensed; only modifications to
+  chromem-go's own Covered Software would trigger MPL-2.0's
+  file-level copyleft. If Kelvran ever vendors and patches
+  chromem-go directly, revisit this disclosure and MPL-2.0's own
+  requirements for that case.
