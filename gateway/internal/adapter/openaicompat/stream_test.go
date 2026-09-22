@@ -395,3 +395,35 @@ func TestDecodeAfterDoneReturnsError(t *testing.T) {
 		t.Fatal("second Decode call after [DONE] returned nil error, want an error")
 	}
 }
+
+// TestDecodeMidStreamErrorFrameReturnsRealError is the direct regression
+// proof for a real HIGH-severity finding from a fresh audit sweep,
+// mirroring openai/stream.go's identical fix (this file is documented as
+// "a near-verbatim copy" of it): a real vLLM (or TGI/llama.cpp/Ollama/
+// LocalAI) mid-generation fault sends a bare
+// `{"error":{"message":...,"type":...}}` frame with no id/model/choices/
+// usage at all, confirmed against vLLM's own serving code. Decode used to
+// silently unmarshal that into a zero-valued chunk and return no error --
+// the very next [DONE] then looked like a clean stream end. Break this by
+// removing nativeStreamChunk's own Error field (or the native.Error !=
+// nil check in Decode): this test starts failing because Decode returns a
+// nil error for a payload that is, in reality, a real upstream failure.
+func TestDecodeMidStreamErrorFrameReturnsRealError(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, done, usage, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"error":{"message":"CUDA out of memory","type":"server_error","param":null,"code":null}}`,
+	})
+	if err == nil {
+		t.Fatal("Decode(mid-stream error frame) returned nil error, want a real error")
+	}
+	if len(chunks) != 0 {
+		t.Errorf("chunks = %+v, want none", chunks)
+	}
+	if done {
+		t.Error("done = true, want false -- an error frame is not the [DONE] sentinel")
+	}
+	if usage != nil {
+		t.Errorf("usage = %+v, want nil", usage)
+	}
+}

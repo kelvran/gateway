@@ -314,3 +314,36 @@ func TestDecodeAfterDoneReturnsError(t *testing.T) {
 		t.Fatal("second Decode call after [DONE] returned nil error, want an error")
 	}
 }
+
+// TestDecodeMidStreamErrorFrameReturnsRealError is the direct regression
+// proof for a real HIGH-severity finding from a fresh audit sweep:
+// OpenAI's real mid-stream failure shape is a bare
+// `{"error":{"message":...,"type":...}}` frame with no id/model/choices/
+// usage at all (confirmed against OpenAI's own official Python SDK). Decode
+// used to silently unmarshal that into a zero-valued chunk (encoding/json
+// ignores the unrecognized "error" key) and return no error -- the very
+// next [DONE] then looked like a clean stream end, and a failed
+// generation got billed and cached as a normal, truncated-but-successful
+// completion. Break this by removing nativeStreamChunk's own Error field
+// (or the native.Error != nil check in Decode): this test starts failing
+// because Decode returns a nil error for a payload that is, in reality, a
+// real upstream failure.
+func TestDecodeMidStreamErrorFrameReturnsRealError(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, done, usage, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"error":{"message":"the model produced invalid content","type":"server_error","code":null}}`,
+	})
+	if err == nil {
+		t.Fatal("Decode(mid-stream error frame) returned nil error, want a real error")
+	}
+	if len(chunks) != 0 {
+		t.Errorf("chunks = %+v, want none", chunks)
+	}
+	if done {
+		t.Error("done = true, want false -- an error frame is not the [DONE] sentinel")
+	}
+	if usage != nil {
+		t.Errorf("usage = %+v, want nil", usage)
+	}
+}

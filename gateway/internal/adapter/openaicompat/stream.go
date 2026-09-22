@@ -22,6 +22,20 @@ const doneSentinel = "[DONE]"
 // streaming counterpart to Response in openaicompat.go. It reuses the
 // existing Usage type since the final chunk's usage object has the exact
 // same shape as the non-streaming response's.
+//
+// Error captures a real mid-stream failure frame, confirmed against
+// vLLM's own serving code (create_streaming_error_response, wired into
+// every exception handler on the streaming chat-completion path,
+// including an aborted generation surfacing as finish_reason=="error")
+// and its ErrorResponse/ErrorInfo pydantic models — a bare
+// `data: {"error":{"message":...,"type":...,"param":...,"code":...}}`
+// frame with no id/model/choices/usage at all, typically followed by
+// `data: [DONE]`. Mirrors openai/stream.go's identical fix (this file is
+// documented as "a near-verbatim copy" of it) — before this field
+// existed, Decode silently unmarshaled that payload into a zero-valued
+// chunk and returned no error, so a mid-generation fault (CUDA OOM, a
+// tokenizer/parser exception) was billed and cached as a normal,
+// truncated-but-successful completion.
 type nativeStreamChunk struct {
 	ID      string               `json:"id"`
 	Model   string               `json:"model"`
@@ -30,7 +44,15 @@ type nativeStreamChunk struct {
 	// stream_options.include_usage:true — see the ASSUMPTION note on
 	// streamDecoder below for why this decoder assumes that flag is
 	// always set by the gateway.
-	Usage *Usage `json:"usage,omitempty"`
+	Usage *Usage             `json:"usage,omitempty"`
+	Error *nativeStreamError `json:"error,omitempty"`
+}
+
+// nativeStreamError is the real mid-stream error payload shape — see
+// nativeStreamChunk.Error's own doc comment.
+type nativeStreamError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
 }
 
 // nativeStreamChoice is one candidate's incremental delta within a native
@@ -138,6 +160,9 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 	var native nativeStreamChunk
 	if err := json.Unmarshal([]byte(raw.Data), &native); err != nil {
 		return nil, false, nil, fmt.Errorf("openaicompat: decoding stream chunk: %w", err)
+	}
+	if native.Error != nil {
+		return nil, false, nil, fmt.Errorf("openaicompat: upstream stream error (%s): %s", native.Error.Type, native.Error.Message)
 	}
 
 	chunk := streaming.ChatCompletionChunk{
