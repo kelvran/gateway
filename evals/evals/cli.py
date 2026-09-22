@@ -141,6 +141,30 @@ def _resolve_judge_call_model(provider: str) -> Callable[[str], Awaitable[str]]:
     )
 
 
+def _judge_scorer_id_for_provider(provider: str) -> str:
+    """The real model id `_resolve_judge_call_model(provider)` actually
+    invokes -- the single-judge `Score.scorer_id`/cache-key value that
+    must accompany it.
+
+    Fixed 2026-09-22, a real HIGH-severity finding from a fresh audit
+    sweep: every single-judge call site used to pass the hardcoded
+    constant `BEDROCK_HAIKU_4_5_MODEL_ID` as `scorer_id` regardless of
+    `--llm-judge-provider`, so (1) every persisted Score falsely claimed
+    the Bedrock model produced a verdict that anthropic/openai actually
+    produced, and (2) `--use-score-cache` computed an identical cache key
+    across providers for the same case/axis, so re-running with a
+    DIFFERENT provider silently reused the FIRST provider's cached
+    verdict as if it were a fresh judgment from the new one. Mirrors
+    `_resolve_judge_call_model`'s own provider dispatch exactly, so the
+    two can never drift out of sync with each other.
+    """
+    if provider == "anthropic":
+        return DEFAULT_JUDGE_MODEL
+    if provider == "openai":
+        return OPENAI_DEFAULT_JUDGE_MODEL
+    return BEDROCK_HAIKU_4_5_MODEL_ID
+
+
 def _load_env_file(path: Path = _ENV_FILE_PATH) -> None:
     """Populate `os.environ` from `path` if it exists, without overriding
     any variable already set. A no-op, not an error, when `path` doesn't
@@ -897,6 +921,7 @@ async def _judge_all_axes(
     panel: PanelSpec | None = None,
     cached_votes: dict[str, PanelVote] | None = None,
     debias: bool = False,
+    single_judge_scorer_id: str = BEDROCK_HAIKU_4_5_MODEL_ID,
 ) -> list[_JudgeOutcome] | None:
     """Judge `output` against `reference` once per configured axis (or
     once, holistically, if `axes` is `None`) — one call per axis, per
@@ -909,6 +934,17 @@ async def _judge_all_axes(
     active up front from the mutually-exclusive `--llm-judge`/
     `--llm-judge-panel` flags, per docs/rfcs/2026-09-08-evals-judge-
     panel-reducer.md.
+
+    `single_judge_scorer_id` MUST be the real model id `call_model` was
+    built from (`_judge_scorer_id_for_provider(llm_judge_provider)`) —
+    never left at its default when `call_model` is anthropic/openai-
+    backed. It is meaningless when `panel` is set (the panel branch
+    below never reads it). Fixed 2026-09-22: this used to be hardcoded to
+    `BEDROCK_HAIKU_4_5_MODEL_ID` unconditionally, so both the cache-key
+    computed by `_judge_with_cache` and the persisted `Score.scorer_id`
+    falsely claimed Bedrock produced every single-judge verdict
+    regardless of `--llm-judge-provider`, AND `--use-score-cache` runs
+    against different providers collided on an identical cache key.
 
     `debias` (per docs/rfcs/2026-09-09-evals-judge-debiasing-position-
     swap.md) is threaded straight through to whichever of
@@ -930,7 +966,7 @@ async def _judge_all_axes(
         return await _judge_with_cache(
             output,
             reference,
-            BEDROCK_HAIKU_4_5_MODEL_ID,
+            single_judge_scorer_id,
             call_model,
             cached_scores,
             axis=axis,
@@ -957,11 +993,15 @@ def _judge_case(
     panel: PanelSpec | None = None,
     cached_votes: dict[str, PanelVote] | None = None,
     debias: bool = False,
+    single_judge_scorer_id: str = BEDROCK_HAIKU_4_5_MODEL_ID,
 ) -> list[_JudgeOutcome] | None:
     """`run_cmd`'s own entry point into `_judge_all_axes` — synchronous,
     since `run_cmd` itself never runs inside an event loop (unlike
     `rollout_cmd`'s `_score_and_record`, which awaits `_judge_all_axes`
     directly), so wrapping it in `asyncio.run()` here is safe.
+
+    `single_judge_scorer_id` — see `_judge_all_axes`'s own doc comment;
+    forwarded straight through unchanged.
     """
     output = case.task_spec.get("output")
     if output is None:
@@ -980,6 +1020,7 @@ def _judge_case(
             panel=panel,
             cached_votes=cached_votes,
             debias=debias,
+            single_judge_scorer_id=single_judge_scorer_id,
         )
     )
 
@@ -1272,6 +1313,7 @@ def run_cmd(
 
     cases = _load_cases(suite_path)
     call_model = _resolve_judge_call_model(llm_judge_provider) if llm_judge else None
+    single_judge_scorer_id = _judge_scorer_id_for_provider(llm_judge_provider)
     panel: PanelSpec | None = None
     cached_scores = None
     cached_votes = None
@@ -1312,6 +1354,7 @@ def run_cmd(
                     panel=panel,
                     cached_votes=cached_votes,
                     debias=judge_debias,
+                    single_judge_scorer_id=single_judge_scorer_id,
                 )
                 if outcomes is None:
                     click.echo(f"{case.id}: JUDGE_ERROR")
@@ -1325,7 +1368,7 @@ def run_cmd(
                 scorer_id = (
                     "panel:" + "+".join(sid for sid, _ in panel)
                     if llm_judge_panel
-                    else BEDROCK_HAIKU_4_5_MODEL_ID
+                    else single_judge_scorer_id
                 )
                 for outcome in outcomes:
                     scores.append(
@@ -2090,6 +2133,7 @@ def rollout_cmd(
 
     cases = _load_cases(suite_path)
     call_model = _resolve_judge_call_model(llm_judge_provider) if llm_judge else None
+    single_judge_scorer_id = _judge_scorer_id_for_provider(llm_judge_provider)
     panel: PanelSpec | None = None
     cached_scores = None
     cached_votes = None
@@ -2165,6 +2209,7 @@ def rollout_cmd(
                 panel=panel,
                 cached_votes=cached_votes,
                 debias=judge_debias,
+                single_judge_scorer_id=single_judge_scorer_id,
             )
             if outcomes is None:
                 click.echo(f"{case.id}: JUDGE_ERROR")
@@ -2177,7 +2222,7 @@ def rollout_cmd(
             scorer_id = (
                 "panel:" + "+".join(sid for sid, _ in panel)
                 if llm_judge_panel
-                else BEDROCK_HAIKU_4_5_MODEL_ID
+                else single_judge_scorer_id
             )
             for outcome in outcomes:
                 scores.append(

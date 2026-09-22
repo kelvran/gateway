@@ -813,6 +813,134 @@ def test_run_with_llm_judge_provider_openai_calls_the_openai_factory(
     assert len(calls) == 1
 
 
+def test_run_with_llm_judge_provider_anthropic_persists_the_real_model_as_scorer_id(
+    tmp_path, monkeypatch
+):
+    """Direct regression proof for a real HIGH-severity finding from a
+    fresh audit sweep: every single-judge call site used to persist
+    `Score.scorer_id` (and compute its score-cache key) from the
+    hardcoded `BEDROCK_HAIKU_4_5_MODEL_ID` constant regardless of
+    `--llm-judge-provider`, so a run against the anthropic provider
+    falsely recorded a Bedrock model as the scorer. Break this by
+    reverting `_judge_scorer_id_for_provider` to unconditionally return
+    `BEDROCK_HAIKU_4_5_MODEL_ID`: this test starts failing because
+    `persisted[0].scorer_id` becomes the Bedrock constant instead of
+    `DEFAULT_JUDGE_MODEL`.
+    """
+
+    async def fake_call_model(prompt: str) -> str:
+        return "REASONING: matches exactly.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_anthropic_call_model",
+        lambda model_id, **kwargs: fake_call_model,
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--llm-judge-provider",
+            "anthropic",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    persisted = load_scores(scores_path)
+    assert persisted[0].scorer_id == cli_module.DEFAULT_JUDGE_MODEL
+    assert persisted[0].scorer_id != cli_module.BEDROCK_HAIKU_4_5_MODEL_ID
+
+
+def test_run_use_score_cache_does_not_collide_across_different_llm_judge_providers(
+    tmp_path, monkeypatch
+):
+    """The cache-key half of the same finding: `--use-score-cache` must
+    never reuse a score cached under one `--llm-judge-provider` for a
+    later run under a DIFFERENT provider on the identical case -- the
+    two providers' real judgments could genuinely differ, and reusing
+    one for the other silently mislabels whichever provider it was
+    reused for. Break this by hardcoding `single_judge_scorer_id` back
+    to `BEDROCK_HAIKU_4_5_MODEL_ID` in `run_cmd`: this test starts
+    failing because the second (openai) invocation makes zero new judge
+    calls, wrongly treating the anthropic-scored cache entry as its own.
+    """
+    anthropic_calls = {"n": 0}
+    openai_calls = {"n": 0}
+
+    async def fake_anthropic_call_model(prompt: str) -> str:
+        anthropic_calls["n"] += 1
+        return "REASONING: matches exactly.\nVERDICT: PASS\n"
+
+    async def fake_openai_call_model(prompt: str) -> str:
+        openai_calls["n"] += 1
+        return "REASONING: matches exactly.\nVERDICT: PASS\n"
+
+    monkeypatch.setattr(
+        cli_module,
+        "make_anthropic_call_model",
+        lambda model_id, **kwargs: fake_anthropic_call_model,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "make_openai_call_model",
+        lambda model_id, **kwargs: fake_openai_call_model,
+    )
+
+    scores_path = tmp_path / "scores.jsonl"
+    runner = CliRunner()
+
+    first = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--llm-judge-provider",
+            "anthropic",
+            "--use-score-cache",
+        ],
+    )
+    assert first.exit_code == 0, first.output
+    assert anthropic_calls["n"] == 2
+
+    second = runner.invoke(
+        main,
+        [
+            "run",
+            "--suite",
+            "tests/fixtures/llm_judge_example.json",
+            "--scores",
+            str(scores_path),
+            "--llm-judge",
+            "--llm-judge-provider",
+            "openai",
+            "--use-score-cache",
+        ],
+    )
+    assert second.exit_code == 0, second.output
+    # A different provider must never reuse the first provider's cache
+    # entries -- real, fresh judge calls happen again.
+    assert openai_calls["n"] == 2
+
+    persisted = load_scores(scores_path)
+    openai_scores = [
+        s for s in persisted if s.scorer_id == cli_module.OPENAI_DEFAULT_JUDGE_MODEL
+    ]
+    assert len(openai_scores) == 2
+    assert all(s.from_cache is False for s in openai_scores)
+
+
 def test_run_with_llm_judge_passes_a_generous_max_tokens_to_every_bedrock_call_site(
     tmp_path, monkeypatch
 ):
