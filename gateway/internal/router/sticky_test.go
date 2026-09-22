@@ -335,6 +335,46 @@ func TestStickyPickWithinSideDistributionApproximatesRelativeWeightAmongMultiple
 	}
 }
 
+// TestStickyPickNeverStarvesALowWeightCanaryOfEveryKey is the direct
+// regression proof for a real MEDIUM-severity finding from a fresh audit
+// sweep: threshold's integer division (stickyWeight * stickyHashBuckets /
+// sumW) truncates to 0 whenever the sticky side's share of sumW is below
+// 1/stickyHashBuckets (1/10000) -- e.g. a canary weighted 1 against a
+// stable weighted 1,000,000. hashStickyKey returns an unsigned value, so
+// "hash < 0" is never true, meaning the canary side would never be picked
+// for ANY key, permanently starving it of all sticky-routed traffic with
+// no error or log, even though stickyWeight is genuinely nonzero (already
+// checked above threshold's computation). Break this by reverting the
+// `if threshold == 0 { threshold = 1 }` clamp in stickyPick: this test
+// starts failing because canaryCount stays exactly 0 across every key.
+func TestStickyPickNeverStarvesALowWeightCanaryOfEveryKey(t *testing.T) {
+	r := New([]Deployment{
+		{Name: "stable", Model: "gpt-4o", Weight: 1000000},
+		{Name: "canary", Model: "gpt-4o", Weight: 1, Sticky: true},
+	}, HealthConfig{})
+
+	// threshold = 1*10000/1000001 = 0 under naive integer division --
+	// stickyWeight's real share of sumW is far below 1/stickyHashBuckets.
+	const totalKeys = 200000
+	canaryCount := 0
+	for i := 0; i < totalKeys; i++ {
+		name, ok := r.stickyPick(r.models["gpt-4o"], fmt.Sprintf("tenant-%d", i))
+		if !ok {
+			t.Fatalf("stickyPick(tenant-%d): ok=false, want a real pick", i)
+		}
+		if name == "canary" {
+			canaryCount++
+		}
+	}
+
+	// Expected ~20 hits (200000 keys * 1/stickyHashBuckets) once threshold
+	// is correctly clamped to a minimum of 1 -- zero tolerance on the
+	// actual regression (canaryCount == 0), since that's the exact bug.
+	if canaryCount == 0 {
+		t.Fatal("canaryCount = 0 across 200000 keys -- the low-weight canary was never picked at all, the exact starvation bug this test guards against")
+	}
+}
+
 // TestSelectStickyNeverLosesStickinessUnderConcurrentSelectInterleaving is
 // the regression proof for a real bug found via a live -race
 // reproduction (see stickyPick's own doc comment): the within-side pick

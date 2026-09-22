@@ -118,6 +118,19 @@ func (r *Router) stickyPick(ms *modelState, stickyKey string) (name string, ok b
 	}
 
 	threshold := uint64(stickyWeight) * stickyHashBuckets / uint64(ms.sumW)
+	if threshold == 0 {
+		// stickyWeight > 0 is already guaranteed above, but integer
+		// division truncates threshold to 0 whenever the sticky side's
+		// share of sumW is below 1/stickyHashBuckets -- hashStickyKey
+		// returns an unsigned value, so "hash < 0" is never true, which
+		// would silently starve this canary of every single key. Found
+		// by a fresh audit sweep. Clamping to 1 preserves the monotonic-
+		// threshold guarantee this function's own doc comment requires:
+		// the real (unclamped) quotient is already non-decreasing in
+		// stickyWeight, and a floor of 1 only ever raises values that
+		// would otherwise be 0, never lowers a value that's already >= 1.
+		threshold = 1
+	}
 	wantSticky := hashStickyKey(stickyKey) < threshold
 
 	sideWeight := stickyWeight
