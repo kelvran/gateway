@@ -4,6 +4,18 @@
 
 Proposed (research/design record only — no implementation authorized by this RFC), 2026-09-07.
 
+**Corrected 2026-09-22**: this RFC's own path-matching trigger ("Kelvran has more than one HTTP
+route") fired on 2026-09-17 when `POST /v1/embeddings` shipped — confirmed it calls
+`checkRateLimit(ctx, vk, req.Model)` with the identical signature `/v1/chat/completions` uses, no
+path differentiation. Revisited per this RFC's own instruction below ("revisit this design fresh at
+that point") rather than left to go silently stale. Found the underlying concern the path dimension
+exists to address — a shared per-key bucket letting embeddings traffic contend with chat-completion
+traffic — is already solvable today via the already-shipped `PerModel` override (see the prior
+`2026-09-07-gateway-multi-dimensional-rate-limits.md` RFC), keyed on the embedding model's own name,
+with zero new code. The general N-dimension design below therefore remains correctly unbuilt, now
+for a re-verified reason rather than an unexamined stale trigger. Full reasoning in `DECISIONS.md`'s
+2026-09-22 entry; `gateway/ARCHITECTURE.md`'s own `/internal/ratelimit` row updated to match.
+
 ## Context
 
 ### What already shipped, and what's still named as the gap

@@ -212,8 +212,19 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              a request — the concrete design (what new data checkRateLimit would need, how
                              it would thread through dataplane.Pipeline, per-dimension matching semantics,
                              and an honest effort estimate/recommendation) is now written up in
-                             docs/rfcs/2026-09-07-gateway-ratelimit-provider-header-path-dimensions.md;
-                             this is a design record only — nothing below this line has changed. Hierarchical
+                             docs/rfcs/2026-09-07-gateway-ratelimit-provider-header-path-dimensions.md.
+                             **Corrected 2026-09-22**: that RFC's own path-matching trigger ("Kelvran has
+                             more than one HTTP route") DID fire — POST /v1/embeddings shipped 2026-09-17
+                             and calls checkRateLimit with the identical (vk, model) signature chat
+                             completions uses, no path differentiation. Re-examined per the RFC's own
+                             instruction to "revisit this design fresh" rather than left silently stale —
+                             found the underlying concern (a shared bucket letting embeddings traffic
+                             contend with chat-completion traffic) is already addressable today via the
+                             already-shipped PerModel override, keyed on the embedding model's own name,
+                             with zero new code — see DECISIONS.md's 2026-09-22 entry. The general
+                             N-dimension path/header/provider matching machinery therefore remains
+                             deliberately unbuilt, now for a stronger, re-verified reason than "no second
+                             route yet." Hierarchical
                              scope resolution (org/team/user/session) remains
                              target-only, same boundary as identity's own scope deferral below
 /internal/cache            — Cache's public interface — see "Cache Subsystem" below; this is the ONLY
