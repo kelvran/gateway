@@ -47,6 +47,18 @@ variable "trusted_principal_arns" {
     condition     = !var.create_role || length(var.trusted_principal_arns) > 0
     error_message = "trusted_principal_arns must be non-empty when create_role is true."
   }
+
+  # A bare "*" or an account-root ARN in a condition-free Principal list
+  # (this module's assume_role statement has no Condition block) grants
+  # trust to literally any AWS principal, or to every principal in that
+  # entire account, respectively -- a real, AWS-documented anti-pattern
+  # for exactly this shape of trust policy, found by a fresh audit sweep.
+  validation {
+    condition = alltrue([
+      for arn in var.trusted_principal_arns : arn != "*" && !can(regex("^arn:aws:iam::[0-9]{12}:root$", arn))
+    ])
+    error_message = "trusted_principal_arns must not contain \"*\" or an account-root ARN (arn:aws:iam::<account>:root) -- both trust every principal in scope, not just the intended one. Name the specific role/user ARN instead."
+  }
 }
 
 variable "name_prefix" {
