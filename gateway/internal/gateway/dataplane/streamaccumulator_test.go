@@ -47,6 +47,44 @@ func TestStreamAccumulatorTextOnly(t *testing.T) {
 	}
 }
 
+// TestStreamAccumulatorRefusalFragmentsConcatenate is the direct
+// regression proof for a real, previously-disclosed gap: streaming.
+// MessageDelta.Refusal fragments (now forwarded by openai/openaicompat's
+// decoders) must concatenate into the final Message.Refusal exactly like
+// Content does -- OpenAI streams a refusal message incrementally, the
+// same way it streams ordinary content. Break this by removing the
+// c.refusal.WriteString(cc.Delta.Refusal) call in add() (or the
+// Refusal: c.refusal.String() line in build()): this test starts failing
+// because Message.Refusal comes back empty or truncated.
+func TestStreamAccumulatorRefusalFragmentsConcatenate(t *testing.T) {
+	acc := newStreamAccumulator()
+	acc.add(streaming.ChatCompletionChunk{ID: "resp-1", Model: "gpt-4o", Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{Role: "assistant"}},
+	}})
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{Refusal: "I cannot "}},
+	}})
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{Refusal: "help with that."}},
+	}})
+	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{
+		{Index: 0, Delta: streaming.MessageDelta{}, FinishReason: strPtr("content_filter")},
+	}})
+
+	got := acc.build(adapter.Usage{})
+
+	if len(got.Choices) != 1 {
+		t.Fatalf("len(Choices) = %d, want 1", len(got.Choices))
+	}
+	c := got.Choices[0]
+	if c.Message.Refusal != "I cannot help with that." {
+		t.Errorf("Refusal = %q, want %q", c.Message.Refusal, "I cannot help with that.")
+	}
+	if c.Message.Content != "" {
+		t.Errorf("Content = %q, want empty -- refusal must not leak into Content", c.Message.Content)
+	}
+}
+
 func TestStreamAccumulatorToolCallArgumentsConcatenateInOrder(t *testing.T) {
 	acc := newStreamAccumulator()
 	acc.add(streaming.ChatCompletionChunk{Choices: []streaming.ChunkChoice{{

@@ -61,6 +61,15 @@ type MessageDelta struct {
 	// leaves every chunk's ReasoningBlocks nil, byte-identical to before
 	// this field existed.
 	ReasoningBlocks []ReasoningDelta `json:"reasoning_blocks,omitempty"`
+	// Refusal is an incremental fragment of the model's own refusal
+	// message, streamed the same way Content is -- OpenAI's real
+	// ChatCompletionStreamResponseDelta schema carries this as a field
+	// SIBLING to Content/Role/ToolCalls (confirmed against the official
+	// openai-openapi spec), mirroring adapter.Message.Refusal's own
+	// buffered-path shape and doc comment. Only openai/openaicompat ever
+	// populate this; every other adapter leaves it permanently empty,
+	// matching that field's own established convention.
+	Refusal string `json:"refusal,omitempty"`
 }
 
 // ToolCallDelta is one incremental fragment of a single tool call within a

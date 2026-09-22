@@ -63,9 +63,18 @@ type nativeStreamChoice struct {
 }
 
 // nativeStreamDelta is OpenAI's native incremental message fragment.
+//
+// Refusal mirrors Response's own Message.Refusal (openai.go) exactly --
+// OpenAI's real ChatCompletionStreamResponseDelta schema carries it as a
+// field sibling to Content/Role/ToolCalls (confirmed against the official
+// openai-openapi spec's own schema definition), streamed incrementally the
+// same way Content is. Never wired into streaming.MessageDelta before
+// this — a real, previously-known gap named when the buffered-path fix
+// shipped.
 type nativeStreamDelta struct {
 	Role      string                `json:"role,omitempty"`
 	Content   string                `json:"content,omitempty"`
+	Refusal   string                `json:"refusal,omitempty"`
 	ToolCalls []nativeToolCallDelta `json:"tool_calls,omitempty"`
 }
 
@@ -180,6 +189,7 @@ func toCanonicalDelta(d nativeStreamDelta) streaming.MessageDelta {
 	delta := streaming.MessageDelta{
 		Role:    d.Role,
 		Content: d.Content,
+		Refusal: d.Refusal,
 	}
 	if len(d.ToolCalls) == 0 {
 		return delta

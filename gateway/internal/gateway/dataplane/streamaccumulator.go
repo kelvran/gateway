@@ -34,6 +34,11 @@ type accumulatingChoice struct {
 	reasoningBlocks map[int]*accumulatingReasoningBlock
 	reasoningOrder  []int // reasoning-block indices in first-seen order, within this choice
 	finishReason    string
+	// refusal concatenates streaming.MessageDelta.Refusal fragments the
+	// same way content does above -- OpenAI streams a refusal message
+	// incrementally just like ordinary content, per
+	// ChatCompletionStreamResponseDelta's own schema.
+	refusal strings.Builder
 }
 
 type accumulatingToolCall struct {
@@ -93,7 +98,7 @@ func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 			acc.order = append(acc.order, cc.Index)
 		}
 
-		if c.finishReason != "" && (cc.Delta.Content != "" || cc.Delta.Role != "" || len(cc.Delta.ToolCalls) > 0 || len(cc.Delta.ReasoningBlocks) > 0) {
+		if c.finishReason != "" && (cc.Delta.Content != "" || cc.Delta.Role != "" || len(cc.Delta.ToolCalls) > 0 || len(cc.Delta.ReasoningBlocks) > 0 || cc.Delta.Refusal != "") {
 			acc.duplicateAfterFinishIndices = append(acc.duplicateAfterFinishIndices, cc.Index)
 		}
 
@@ -102,6 +107,9 @@ func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 		}
 		if cc.Delta.Content != "" {
 			c.content.WriteString(cc.Delta.Content)
+		}
+		if cc.Delta.Refusal != "" {
+			c.refusal.WriteString(cc.Delta.Refusal)
 		}
 		if cc.FinishReason != nil && *cc.FinishReason != "" {
 			c.finishReason = *cc.FinishReason
@@ -272,6 +280,7 @@ func (acc *streamAccumulator) build(usage adapter.Usage) adapter.ChatResponse {
 				Content:         c.content.String(),
 				ToolCalls:       toolCalls,
 				ReasoningBlocks: reasoningBlocks,
+				Refusal:         c.refusal.String(),
 			},
 			FinishReason: c.finishReason,
 		})

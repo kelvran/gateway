@@ -75,8 +75,15 @@ type nativeStreamDelta struct {
 	Reasoning string `json:"reasoning,omitempty"`
 	// ReasoningContent mirrors Reasoning under llama.cpp's wire name -- see
 	// Message's doc comment in openaicompat.go for why both fields exist.
-	ReasoningContent string                `json:"reasoning_content,omitempty"`
-	ToolCalls        []nativeToolCallDelta `json:"tool_calls,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// Refusal mirrors openai/stream.go's identical field -- this decoder is
+	// "a near-verbatim copy" of that one, per this file's own doc comment.
+	// Real self-hosted runtimes rarely populate this (refusal is an
+	// OpenAI-native safety feature, not something vLLM/llama.cpp/Ollama/
+	// TGI/LocalAI invent on their own), but forwarding it costs nothing and
+	// keeps this wire shape genuinely OpenAI-compatible.
+	Refusal   string                `json:"refusal,omitempty"`
+	ToolCalls []nativeToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // reasoningDeltaText returns whichever of Reasoning/ReasoningContent this
@@ -204,6 +211,7 @@ func toCanonicalDelta(d nativeStreamDelta) streaming.MessageDelta {
 	delta := streaming.MessageDelta{
 		Role:    d.Role,
 		Content: d.Content,
+		Refusal: d.Refusal,
 	}
 	// Reasoning deltas arrive in chunks that carry no tool calls, so this
 	// must run before the early return below -- otherwise a reasoning-only

@@ -347,3 +347,34 @@ func TestDecodeMidStreamErrorFrameReturnsRealError(t *testing.T) {
 		t.Errorf("usage = %+v, want nil", usage)
 	}
 }
+
+// TestDecodeRefusalDeltaIsForwarded is the direct regression proof for a
+// real, previously-disclosed gap: the buffered path's Message.Refusal
+// (openai.go) was wired, but the streaming counterpart was explicitly
+// named as NOT done in that same pass. OpenAI's real
+// ChatCompletionStreamResponseDelta schema carries "refusal" as a field
+// sibling to content/role/tool_calls (confirmed against the official
+// openai-openapi spec), streamed incrementally like ordinary content.
+// Break this by removing nativeStreamDelta's own Refusal field (or the
+// Refusal: d.Refusal line in toCanonicalDelta): this test starts failing
+// because Delta.Refusal comes back empty for a payload that, in reality,
+// carries a real refusal fragment.
+func TestDecodeRefusalDeltaIsForwarded(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, _, _, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"id":"x","model":"gpt-4o","choices":[{"index":0,"delta":{"refusal":"I cannot help with that."},"finish_reason":null}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(chunks) != 1 || len(chunks[0].Choices) != 1 {
+		t.Fatalf("chunks = %+v, want exactly one chunk with one choice", chunks)
+	}
+	if got := chunks[0].Choices[0].Delta.Refusal; got != "I cannot help with that." {
+		t.Errorf("Delta.Refusal = %q, want %q", got, "I cannot help with that.")
+	}
+	if chunks[0].Choices[0].Delta.Content != "" {
+		t.Errorf("Delta.Content = %q, want empty -- refusal must not leak into Content", chunks[0].Choices[0].Delta.Content)
+	}
+}

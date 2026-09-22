@@ -427,3 +427,29 @@ func TestDecodeMidStreamErrorFrameReturnsRealError(t *testing.T) {
 		t.Errorf("usage = %+v, want nil", usage)
 	}
 }
+
+// TestDecodeRefusalDeltaIsForwarded mirrors openai/stream.go's identical
+// test -- this decoder is documented as "a near-verbatim copy" of it.
+// Real self-hosted runtimes rarely populate "refusal" themselves, but this
+// proves the field is genuinely forwarded when a runtime does send it,
+// rather than silently discarded like every unrecognized JSON key
+// (encoding/json's default behavior) would do without this field existing.
+func TestDecodeRefusalDeltaIsForwarded(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	chunks, _, _, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"id":"x","model":"llama-3.1-70b-instruct","choices":[{"index":0,"delta":{"refusal":"I cannot help with that."},"finish_reason":null}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(chunks) != 1 || len(chunks[0].Choices) != 1 {
+		t.Fatalf("chunks = %+v, want exactly one chunk with one choice", chunks)
+	}
+	if got := chunks[0].Choices[0].Delta.Refusal; got != "I cannot help with that." {
+		t.Errorf("Delta.Refusal = %q, want %q", got, "I cannot help with that.")
+	}
+	if chunks[0].Choices[0].Delta.Content != "" {
+		t.Errorf("Delta.Content = %q, want empty -- refusal must not leak into Content", chunks[0].Choices[0].Delta.Content)
+	}
+}
