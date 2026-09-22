@@ -18,6 +18,19 @@ variable "account_id" {
 variable "oidc_provider_url" {
   description = "The EXISTING EKS cluster's own OIDC issuer URL, without the leading \"https://\" (e.g. \"oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE\") -- find it via `aws eks describe-cluster --name <cluster> --query \"cluster.identity.oidc.issuer\"`. This module attaches to that provider; it does not create the cluster or register the provider itself (that's a one-time `aws eks` / `aws iam create-open-id-connect-provider` step, or the `enable_irsa` flag on the terraform-aws-modules/eks module, if the cluster itself is Terraform-managed elsewhere)."
   type        = string
+
+  # `aws eks describe-cluster`'s own oidc.issuer field genuinely
+  # includes the "https://" scheme, but the trust-policy condition keys
+  # built from this variable (main.tf's "${var.oidc_provider_url}:sub"/
+  # ":aud") never do -- IAM condition keys for an OIDC provider are
+  # always scheme-free. Passing the describe-cluster value verbatim
+  # silently builds a condition key IAM can never match, so the whole
+  # trust relationship never actually grants anything. Found by a fresh
+  # audit sweep.
+  validation {
+    condition     = !startswith(lower(var.oidc_provider_url), "http://") && !startswith(lower(var.oidc_provider_url), "https://")
+    error_message = "oidc_provider_url must not include a leading http(s):// scheme -- IAM's OIDC condition keys (\"<url>:sub\"/\":aud\") are always scheme-free. Strip the scheme from aws eks describe-cluster's oidc.issuer value before passing it here."
+  }
 }
 
 variable "aws_region" {
