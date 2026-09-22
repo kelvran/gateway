@@ -1,0 +1,17 @@
+# Ignore-list for the OSV vulnerability scan OpenSSF Scorecard's own
+# "Vulnerabilities" check runs against this manifest (go.mod/go.sum) --
+# per that check's own documented remediation
+# (https://github.com/ossf/scorecard/blob/main/docs/checks.md#vulnerabilities).
+
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = """
+golang.org/x/crypto/openpgp (unmaintained, unsafe by design) is flagged
+purely because golang.org/x/crypto is a direct dependency of this module --
+gateway never imports the openpgp subpackage or any of its children
+(openpgp/packet, openpgp/armor, etc.) anywhere in its own code (confirmed
+via grep across gateway/). `govulncheck ./...` independently confirms zero
+reachable vulnerabilities via its own call-graph analysis, which this
+module-presence-only OSV scan cannot perform. Re-check if gateway ever
+starts using OpenPGP for real (it has no current reason to).
+"""
