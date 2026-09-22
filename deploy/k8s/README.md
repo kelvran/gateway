@@ -200,14 +200,19 @@ this footgun on every re-apply.
   spec level (the gateway process itself never calls the Kubernetes
   API — safe alongside IRSA, whose own credential injection is a
   distinct mechanism from this token, per the field's own comment in
-  `deployment.yaml`); and the image reference is pinned to the real,
-  currently-published `gateway/v0.12.0` release by digest — re-pin this
-  yourself before applying, it goes stale the moment a newer version
-  ships, same as any other pinned dependency. **Deliberately NOT
-  changed**, matching this repo's own established "accepted risk, not
-  silently fixed" posture for a Checkov finding that contradicts an
-  already-reasoned-about design choice: `envFrom.secretRef` (Checkov
-  prefers file-mounted secrets over environment variables) stays as-is
-  — `gateway`'s own config model reads every credential via
-  `os.Getenv`, and switching to file-mounted secrets would need a real
-  code change to the gateway itself, not just a manifest edit.
+  `deployment.yaml`); and the image reference is pinned by digest to a
+  real, currently-published `gateway/v*` release — see
+  `deployment.yaml`'s own `image:` field for the exact tag/digest in
+  effect right now, never restated here as a version number (a prior
+  version of this note said "v0.12.0" and went stale the moment a
+  newer release shipped — found by a fresh audit sweep). Re-pin
+  `deployment.yaml` yourself before applying if it's behind the release
+  you actually want, same as any other pinned dependency.
+  **Deliberately NOT changed**, matching this repo's own established
+  "accepted risk, not silently fixed" posture for a Checkov finding
+  that contradicts an already-reasoned-about design choice:
+  `envFrom.secretRef` (Checkov prefers file-mounted secrets over
+  environment variables) stays as-is — `gateway`'s own config model
+  reads every credential via `os.Getenv`, and switching to file-mounted
+  secrets would need a real code change to the gateway itself, not
+  just a manifest edit.
