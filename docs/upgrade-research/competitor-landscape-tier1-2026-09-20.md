@@ -418,3 +418,21 @@ holding after this fresh scan, for "next tier" positioning:**
   Mintlify→Trieve acquisition in RAG infrastructure) re-invest in the AI Gateway specifically at some
   future point? Not answerable from this pass; worth a dated re-check in a future research round
   rather than assuming the current dormancy is permanent.
+
+**Closing note (2026-09-23):** This report's own six-vendor scan (LiteLLM, Portkey, Helicone, Kong,
+Envoy/Agent Router, Cloudflare) never covered Martian or RouteLLM — neither name appears anywhere
+above (confirmed via grep, zero hits for both terms in this file). The actual open question about
+them was raised earlier, in `docs/upgrade-research/gateway-model-routing-intelligence-2026-09-11.md`'s
+own Caveats/Open Questions ("no source in this pass discussed Martian or Not Diamond directly...
+worth a dedicated follow-up research pass"). `docs/upgrade-research/learned-model-routing-algorithms-2026-09-22.md`
+named this document as the natural home to record that follow-up once found (its Recommendation 3),
+and its Findings 4–5 now close it: **Martian has abandoned model routing as a product entirely**,
+pivoting to interpretability research; its team's new offering ("Ship," via an incubated lab called
+Thesean AI) is an inference-time compute-allocation endpoint with a quality SLA, not a multi-model
+router — architecturally a different category, and out of scope for anything Kelvran's own gateway
+(which proxies to providers directly) could build or emulate. **RouteLLM (LMSYS)** is independently
+confirmed dormant — no commits since August 2024 — still `pip`-installable but an unmaintained
+upstream dependency if ever adopted; its `not_yet` verdict for Kelvran (blocked on the same
+labeled-preference-data precondition every trained router needs) is reconfirmed, not changed by this.
+Neither finding requires a Kelvran code change or revisits any settled decision; recorded here so a
+future research pass doesn't re-ask an already-answered question against this document.

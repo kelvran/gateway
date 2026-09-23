@@ -121,6 +121,78 @@ func TestCalculateCacheReadPlusCreationNeverExceedsPromptTokensInvariant(t *test
 	}
 }
 
+// TestCalculateSubtractsCacheReadAndCacheWriteTokensExactlyOnceEach pins the
+// exact bug class named in
+// docs/upgrade-research/internal-chargeback-cost-allocation-2026-09-22.md's
+// Finding 5: the OTel GenAI semantic-conventions spec defines
+// gen_ai.usage.input_tokens as *including* both the cache_read and
+// cache_write (cache-creation) token subtotals -- they are subsets of the
+// total, not additive to it. A pricing function that subtracts only
+// CacheReadTokens from PromptTokens to isolate "fresh" tokens, but forgets
+// to also subtract CacheCreationTokens, double-counts the cache-creation
+// portion: those tokens get priced once as "fresh" (at PromptPerToken) AND
+// again at CacheCreationPerToken, silently inflating cost_usd.
+//
+// This is distinct from
+// TestCalculateCacheReadPlusCreationNeverExceedsPromptTokensInvariant above,
+// which only pins the ADJACENT non-negativity property and would not catch
+// this bug: a same-direction (positive, non-negative) but materially wrong
+// dollar figure passes that test fine. This test instead asserts the real
+// return value against a fully independently-derived expected dollar
+// amount computed by subtracting BOTH CacheReadTokens and
+// CacheCreationTokens from PromptTokens before pricing, using concrete
+// numbers chosen so that forgetting the CacheCreationTokens subtraction
+// (the exact Finding 5 bug) produces a visibly different total ($0.0324
+// correct vs. $0.0444 if only CacheReadTokens were subtracted -- a ~37%
+// overstatement).
+func TestCalculateSubtractsCacheReadAndCacheWriteTokensExactlyOnceEach(t *testing.T) {
+	promptRate := decimal.RequireFromString("0.000003")
+	completionRate := decimal.RequireFromString("0.000015")
+	cacheReadRate := decimal.RequireFromString("0.0000003")
+	cacheCreationRate := decimal.RequireFromString("0.00000375")
+	c := NewCalculator(PriceTable{
+		"claude-opus-4": {
+			PromptPerToken:        promptRate,
+			CompletionPerToken:    completionRate,
+			CacheReadPerToken:     &cacheReadRate,
+			CacheCreationPerToken: &cacheCreationRate,
+		},
+	})
+
+	usage := Usage{
+		PromptTokens:        10000, // 3000 fresh + 3000 cache-read + 4000 cache-creation
+		CompletionTokens:    500,
+		CacheReadTokens:     3000,
+		CacheCreationTokens: 4000,
+	}
+	got := c.Calculate("claude-opus-4", usage)
+
+	// Correct: fresh = PromptTokens - CacheReadTokens - CacheCreationTokens
+	// = 10000 - 3000 - 4000 = 3000, each slice priced exactly once at its
+	// own rate.
+	freshTokensCorrect := decimal.NewFromInt(int64(usage.PromptTokens - usage.CacheReadTokens - usage.CacheCreationTokens))
+	wantCorrect := freshTokensCorrect.Mul(promptRate).
+		Add(decimal.NewFromInt(int64(usage.CacheReadTokens)).Mul(cacheReadRate)).
+		Add(decimal.NewFromInt(int64(usage.CacheCreationTokens)).Mul(cacheCreationRate)).
+		Add(decimal.NewFromInt(int64(usage.CompletionTokens)).Mul(completionRate))
+	if !got.Equal(wantCorrect) {
+		t.Errorf("Calculate() = %v, want %v (CacheReadTokens and CacheCreationTokens each subtracted from PromptTokens exactly once before pricing)", got, wantCorrect)
+	}
+
+	// Buggy (Finding 5's exact bug): fresh = PromptTokens - CacheReadTokens
+	// only (CacheCreationTokens never subtracted), so the 4000
+	// cache-creation tokens get priced twice: once folded into "fresh" at
+	// promptRate, and again at cacheCreationRate.
+	freshTokensBuggy := decimal.NewFromInt(int64(usage.PromptTokens - usage.CacheReadTokens))
+	wantBuggySingleSubtraction := freshTokensBuggy.Mul(promptRate).
+		Add(decimal.NewFromInt(int64(usage.CacheReadTokens)).Mul(cacheReadRate)).
+		Add(decimal.NewFromInt(int64(usage.CacheCreationTokens)).Mul(cacheCreationRate)).
+		Add(decimal.NewFromInt(int64(usage.CompletionTokens)).Mul(completionRate))
+	if got.Equal(wantBuggySingleSubtraction) {
+		t.Fatalf("Calculate() = %v matches the buggy single-subtraction (cache_read only) value -- CacheCreationTokens are being double-counted (Finding 5)", got)
+	}
+}
+
 // TestCalculateInvariantViolationTreatsEntirePromptAsUncachedRatherThanUndercounting
 // covers the HOSTILE case the boundary test above doesn't: a producer
 // (openaicompat's own doc comment discloses its CacheReadTokens as

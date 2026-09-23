@@ -302,7 +302,35 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              deliberately unbuilt, now for a stronger, re-verified reason than "no second
                              route yet." Hierarchical
                              scope resolution (org/team/user/session) remains
-                             target-only, same boundary as identity's own scope deferral below
+                             target-only, same boundary as identity's own scope deferral below.
+                             **Added 2026-09-23**, per docs/upgrade-research/edge-native-ai-gateway-
+                             deployment-2026-09-22.md: edge-native rate limiting (Cloudflare Workers Rate
+                             Limiting API, Cloudflare WAF rate-limiting rules, Vercel's WAF) was evaluated
+                             and found to be a LESS globally-accurate model than this package's own
+                             Redis/GCRA-backed cross-replica design above — deliberately per-PoP/local and
+                             eventually consistent by the vendors' own design, trading accuracy for speed,
+                             the opposite tradeoff this package already made. Not an upgrade path to
+                             revisit; recorded so it isn't re-litigated from scratch in a future edge/CDN
+                             evaluation.
+                             **Verified 2026-09-23**, per docs/upgrade-research/incident-postmortems-
+                             failure-taxonomy-2026-09-22.md Finding 4 (a real LiteLLM production incident:
+                             concurrent cold-start requests each created their own new Redis connection
+                             pool via a check-then-create race in RedisCache.init_async_client(), spiking
+                             connections from ~14 to a peak of 746 across 2 pods): checked directly
+                             against this codebase's own three Redis-client-construction call sites, not
+                             assumed. redislimiter.Open, redisbudget.Open, and configpropagation.Open
+                             (internal/ratelimit/redislimiter, internal/budget/redisbudget,
+                             internal/configpropagation) each call redis.NewClient exactly once inside
+                             their own constructor, and every call site (newKeyLimiter/newBudgetTracker/
+                             newConfigPublisher inside buildPipeline, plus the config-propagation
+                             subscriber's own separate configpropagation.Open call directly in run())
+                             executes exactly once, synchronously, on cmd/gateway/main.go's single-
+                             threaded startup path (main -> run -> buildPipeline) — before the HTTP
+                             server ever accepts a request. No lazy, per-request, or concurrent-cold-start
+                             construction path exists for any of the three; LiteLLM's specific bug shape
+                             (a Python redis.asyncio per-event-loop check-then-create race) has no
+                             structural equivalent here. Confirmed clean — recorded so a future pass
+                             doesn't redo this ~30-minute code read from scratch.
 /internal/cache            — Cache's public interface — see "Cache Subsystem" below; this is the ONLY
                              package Gateway's request pipeline is allowed to import from Cache
     /port.go                — type Cache interface { Get, Put, Delete } — the sole import surface.
@@ -665,6 +693,8 @@ One canonical internal schema, OpenAI Chat-Completions-shaped — the dialect vL
 **Reasoning/thinking-block round-tripping** (`Message.ReasoningBlocks`, per `docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md`) is a sixth normalization point, and the first one that was a genuine, live-breaking bug rather than a design gap: Anthropic's Messages API and Bedrock's Anthropic-compatible Claude Messages endpoint return a hard `400` if a prior turn's `thinking`/`redacted_thinking` blocks aren't echoed back byte-for-byte, in original order, on any subsequent turn carrying a tool result — some model tiers cannot disable thinking at all, so this fires unconditionally, not just under specific configuration. `adapter.Message.ReasoningBlocks` is an ordered, additive field (`Sequence`-indexed against `ToolCalls`, never a breaking replacement of `Content`/`ToolCalls`) capturing each opaque block's `Text`/`Signature` (plaintext) or `Data` (provider-encrypted ciphertext — never interpreted, scanned, or logged). Anthropic and Bedrock both fully DROPPED these blocks before this fix (`ContentBlock` had no field for either type, on either the buffered or streaming path); Gemini's bug was a different class entirely — its real `thought`/`thoughtSignature` fields exist, but a thought part's content rides the exact same `text` JSON key an ordinary answer uses, so it was silently MERGED into visible `Content`, indistinguishable from a real answer, rather than dropped. **Corrected 2026-09-13**: OpenAI remains deliberately deferred — it targets the Chat Completions wire shape, which has no reasoning/thinking field of any kind (confirmed against OpenAI's own current API reference; only `usage.completion_tokens_details.reasoning_tokens`, a plain count), and encrypted reasoning items/summaries exist only under the Responses API, which `openai.go` does not target. **openaicompat shipped** (that RFC's Phase 5): field-name verification against each target runtime's live source found the wire name genuinely fragmented — llama.cpp emits `reasoning_content`; vLLM renamed its own field to `reasoning` (accepting the old name only as a request-side backward-compat alias, never emitting it); Ollama's OpenAI-compat layer uses `reasoning`; TGI has none. `openaicompat.go`/`stream.go` capture/replay under both live wire names, as a single flat `ReasoningBlock` at `Sequence: 0` (no interleaving signal exists on this flat wire shape). Two cross-cutting consequences shipped as real code, not left as a design note: Cache L3-lite gained an eighth hard gate (`ReasoningBlocksFingerprint` — see Cache Subsystem below); the guardrail pre-call scan now excludes a Redacted block's opaque `Data` (previously fed straight into the PII/secret regex detectors, a real violation of `ReasoningBlock.Redacted`'s own "never scan" contract), while the post-call scan now includes plaintext `ReasoningBlocks.Text` (previously never scanned at all — see Guardrails Subsystem below).
 
 **Added 2026-09-23**, per `docs/upgrade-research/ai-gateway-api-standardization-2026-09-22.md`: no emerging standardized AI-gateway wire-protocol effort is being tracked as an adoption candidate against this canonical schema today — correctly, not from inattention. The one GA'd standard surveyed doesn't apply to Kelvran's architecture; the one effort that would apply is pre-alpha, unimplemented by any peer; and the peers Kelvran is actually benchmarked against in this repo's own convention (Kong, Envoy AI Gateway, LiteLLM) have each gone their own proprietary way at the layer that matters. A "monitor lightly, revisit in 6-12 months" verdict, not a permanent one — this schema's own OpenAI-Chat-Completions-shaped design (see above) is unaffected either way.
+
+**Added 2026-09-23**, per `docs/upgrade-research/agent-memory-context-management-2026-09-22.md`: checked directly against the code (Finding 1's own open question) whether an inbound `context_management`-shaped field (Anthropic's `context_management.edits`/`compact_20260112`, OpenAI Responses API's `context_management.compact_threshold`) survives anywhere in Kelvran's request path — confirmed clean, the expected result, not a silently-discovered gap. `adapter.ChatRequest` (`internal/adapter/types.go`) has no such field and no generic unknown-field-preservation mechanism at the canonical-schema level (Gemini's `thoughtSignature`, normalization point #4 above, is a NAMED field inside `gemini`'s own provider-specific wire structs, not a passthrough on `ChatRequest` itself); `chatCompletionsHandler` (`cmd/gateway/main.go`) decodes the request body straight into a bare `adapter.ChatRequest` via `json.Unmarshal`, which silently drops any JSON field with no matching struct tag before the request ever reaches an adapter's `ToProvider`. Separately, per that research doc's Finding 3: AWS Bedrock AgentCore Memory is confirmed a distinct AWS service family (`bedrock-agentcore`/`bedrock-agentcore-control`), unrelated to the Converse API `bedrock.go` already calls — nothing for this adapter to normalize, consistent with the "no Kelvran-native memory store" decision (that doc's own Finding 2: LiteLLM's `/v1/memory` was evaluated and explicitly declined) already recorded in that same research doc.
 
 ## Cache Subsystem
 
