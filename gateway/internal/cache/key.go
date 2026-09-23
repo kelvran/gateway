@@ -145,7 +145,23 @@ func formatOptionalInt(v *int) string {
 // indistinguishable to this function -- an unlikely but real collision
 // this fold closes the same way guardrailPolicyVersion already closes
 // its own "stored provenance, not just message bytes" gap.
-func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string) string {
+//
+// endUserID is folded in the same unconditional way, per this session's
+// own response-cache-compliance-risk research finding: this cache was
+// tenant-scoped only, so a response generated for one end user could be
+// served verbatim to a DIFFERENT end user behind the same virtual key
+// (empirically demonstrated cross-tenant/cross-user cache attacks).
+// Callers (dataplane) compute this as the caller-supplied
+// X-Kelvran-End-User-Id header's value when the owning VirtualKey has
+// CacheScopeToEndUser set, else "" (every request that doesn't opt into
+// this, including every one built before this parameter existed) — see
+// identity.VirtualKey.CacheScopeToEndUser's own doc comment for the
+// full opt-in/fail-closed contract. "" folds in identically to how the
+// pre-existing empty-string cases above already do — this fold alone
+// only affects the two DIFFERENT-nonempty-values case; two requests
+// both passing "" (the default, unscoped case) remain byte-for-byte
+// unaffected.
+func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string) string {
 	h := sha256.New()
 	// The leading "layer"/"l1" field exists so Key and NormalizedKey can
 	// never collide even given byte-identical remaining inputs — cheap
@@ -162,6 +178,29 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 	writeField(h, "guardrail_policy", guardrailPolicyVersion)
 	writeField(h, "response_format", responseFormatFingerprint)
 	writeField(h, "prompt", promptFingerprint)
+	writeField(h, "end_user", endUserID)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ScopeKey returns the value to pass as Cache.Get/Put/Delete's own
+// tenantID partitioning parameter: tenantID unchanged when endUserID is
+// empty (the default, unscoped case -- byte-for-byte identical to this
+// cache's pre-existing tenantID-only partitioning), or a combined,
+// collision-safe scope string when endUserID is set. Deliberately never
+// a bare concatenation (e.g. tenantID+":"+endUserID) -- endUserID is
+// caller-supplied per identity.VirtualKey.CacheScopeToEndUser's own doc
+// comment, and a bare separator would reintroduce exactly the
+// ambiguous-delimiter collision class writeField's own doc comment
+// documents, just at the partition-scope layer instead of the hash-key
+// layer. Reuses writeField's own length-prefixed encoding instead, the
+// same reason Key/NormalizedKey do.
+func ScopeKey(tenantID, endUserID string) string {
+	if endUserID == "" {
+		return tenantID
+	}
+	h := sha256.New()
+	writeField(h, "tenant", tenantID)
+	writeField(h, "end_user", endUserID)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -174,9 +213,9 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 // the conservative allowlist that RFC specifies — this function has no
 // opinion on normalization itself, matching Key's own "primitive/
 // serialized inputs only" contract so this package still never needs to
-// import internal/adapter. promptFingerprint mirrors Key's own identical
-// parameter -- see its doc comment above.
-func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string) string {
+// import internal/adapter. promptFingerprint and endUserID mirror Key's
+// own identical parameters -- see its doc comment above.
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string) string {
 	h := sha256.New()
 	writeField(h, "layer", "l2")
 	writeField(h, "tenant", tenantID)
@@ -187,5 +226,6 @@ func NormalizedKey(tenantID string, model string, normalizedMessages string, tem
 	writeField(h, "guardrail_policy", guardrailPolicyVersion)
 	writeField(h, "response_format", responseFormatFingerprint)
 	writeField(h, "prompt", promptFingerprint)
+	writeField(h, "end_user", endUserID)
 	return hex.EncodeToString(h.Sum(nil))
 }

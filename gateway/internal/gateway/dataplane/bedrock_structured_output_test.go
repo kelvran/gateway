@@ -180,7 +180,7 @@ func structuredOutputChatRequest() adapter.ChatRequest {
 func TestHandleChatCompletionErrorsOnUnsupportedBedrockModelWithNoCapableAlternativeOnFirstAttempt(t *testing.T) {
 	h := newBedrockStructuredOutputPipeline(t, unsupportedBedrockStructuredOutputModel)
 
-	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", "", structuredOutputChatRequest(), "")
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", "", "", structuredOutputChatRequest(), "")
 	if !errors.Is(err, adapter.ErrStructuredOutputUnsupported) {
 		t.Fatalf("HandleChatCompletion error = %v, want errors.Is(err, adapter.ErrStructuredOutputUnsupported)", err)
 	}
@@ -252,7 +252,7 @@ func TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttribut
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	_, err = p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", structuredOutputChatRequest(), "")
+	_, err = p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", "", structuredOutputChatRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want the old-style fallback to succeed against the incapable target", err)
 	}
@@ -278,7 +278,7 @@ func TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedWhenSup
 	// docs/rfcs/2026-09-12-gateway-structured-output-normalization.md.
 	h := newBedrockStructuredOutputPipeline(t, "global.anthropic.claude-haiku-4-5-20251001-v1:0")
 
-	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", "", structuredOutputChatRequest(), "")
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-cred", "", "", structuredOutputChatRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestHandleChatCompletionNeverEmitsResponseFormatRequestedNotEnforcedOnAuthF
 
 	// Deliberately wrong bearer token -- fails auth before routing ever
 	// selects a deployment.
-	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer wrong-credential", "", structuredOutputChatRequest(), "")
+	_, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer wrong-credential", "", "", structuredOutputChatRequest(), "")
 	if err == nil {
 		t.Fatal("expected an auth error")
 	}
@@ -334,7 +334,7 @@ func TestHandleChatCompletionStreamErrorsOnUnsupportedBedrockModelWithNoCapableA
 		adapter.Registry{"bedrock": bedrock.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", structuredOutputChatRequest(), rec, "")
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", structuredOutputChatRequest(), rec, "")
 	if !errors.Is(err, adapter.ErrStructuredOutputUnsupported) {
 		t.Fatalf("HandleChatCompletionStream error = %v, want errors.Is(err, adapter.ErrStructuredOutputUnsupported)", err)
 	}
@@ -355,7 +355,7 @@ func TestHandleChatCompletionStreamErrorsOnUnsupportedBedrockModelWithNoCapableA
 func TestHandleChatCompletionReroutesFirstPickToCapableDeploymentWhenOneExists(t *testing.T) {
 	h := newBedrockStructuredOutputPipelineTwoDeployments(t)
 
-	resp, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-two-dep-cred", "", structuredOutputChatRequest(), "")
+	resp, err := h.pipeline.HandleChatCompletion(context.Background(), "Bearer "+"structured-output-bedrock-two-dep-cred", "", "", structuredOutputChatRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}

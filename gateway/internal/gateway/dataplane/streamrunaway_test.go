@@ -170,7 +170,7 @@ func TestHandleChatCompletionStreamRunawayGuardCutsOffExcessiveCompletion(t *tes
 	// ceiling = 5 * streamRunawayCharsPerToken(4) * streamRunawayMaxTokensMultiplier(10) = 200 chars.
 	maxTokens := 5
 	rec := httptest.NewRecorder()
-	err = p.HandleChatCompletionStream(ctx, "Bearer runaway-secret", "", adapter.ChatRequest{
+	err = p.HandleChatCompletionStream(ctx, "Bearer runaway-secret", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, MaxTokens: &maxTokens,
 		Messages: []adapter.Message{{Role: "user", Content: "generate as much as you possibly can"}},
 	}, rec, "")
@@ -271,7 +271,7 @@ func TestHandleChatCompletionStreamRunawayGuardUnaffectedForOrdinaryStream(t *te
 
 	maxTokens := 50
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, MaxTokens: &maxTokens,
 		Messages: []adapter.Message{{Role: "user", Content: "write something of moderate length"}},
 	}, rec, "")
@@ -408,7 +408,7 @@ func TestHandleChatCompletionStreamRunawayGuardCutsOffExcessiveCompletionBedrock
 	// ceiling = 5 * streamRunawayCharsPerToken(4) * streamRunawayMaxTokensMultiplier(10) = 200 chars.
 	maxTokens := 5
 	rec := httptest.NewRecorder()
-	err = p.HandleChatCompletionStream(ctx, authHeader, "", adapter.ChatRequest{
+	err = p.HandleChatCompletionStream(ctx, authHeader, "", "", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, MaxTokens: &maxTokens,
 		Messages: []adapter.Message{{Role: "user", Content: "generate as much as you possibly can"}},
 	}, rec, "")

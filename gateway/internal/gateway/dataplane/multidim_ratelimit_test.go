@@ -78,7 +78,7 @@ func TestHandleChatCompletionPerModelRateLimitRejectsOnlyThatModel(t *testing.T)
 	}, map[string]ratelimit.ModelRateLimit{"gpt-4o": {Capacity: 1, RefillPerSecond: 0}})
 
 	gptReq := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "first gpt-4o call"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", gptReq, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", gptReq, ""); err != nil {
 		t.Fatalf("first gpt-4o request: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -86,13 +86,13 @@ func TestHandleChatCompletionPerModelRateLimitRejectsOnlyThatModel(t *testing.T)
 	}
 
 	secondGptReq := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "second gpt-4o call, gpt-4o's own override bucket is now exhausted"}}}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", secondGptReq, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", secondGptReq, "")
 	if err == nil {
 		t.Fatal("second gpt-4o request succeeded, want ErrRateLimited — gpt-4o's own 1-capacity override should be exhausted")
 	}
 
 	claudeReq := adapter.ChatRequest{Model: "claude-opus-4", Messages: []adapter.Message{{Role: "user", Content: "a claude-opus-4 call, unrelated to gpt-4o's own exhausted override"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", claudeReq, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", claudeReq, ""); err != nil {
 		t.Fatalf("claude-opus-4 request failed: %v — a model with no PerModel override must be unaffected by gpt-4o's own exhausted one, sharing the key's own 100-capacity default bucket", err)
 	}
 	if upstreamCalls != 2 {
@@ -113,11 +113,11 @@ func TestHandleChatCompletionWithoutPerModelBehavesUnchanged(t *testing.T) {
 	}, nil)
 
 	gptReq := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "a gpt-4o call with no per-model override configured"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", gptReq, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", gptReq, ""); err != nil {
 		t.Fatalf("gpt-4o request: %v", err)
 	}
 	claudeReq := adapter.ChatRequest{Model: "claude-opus-4", Messages: []adapter.Message{{Role: "user", Content: "a claude-opus-4 call with no per-model override configured"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", claudeReq, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", claudeReq, ""); err != nil {
 		t.Fatalf("claude-opus-4 request: %v", err)
 	}
 	if upstreamCalls != 2 {

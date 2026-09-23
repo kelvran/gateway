@@ -763,6 +763,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			RateLimitRefill:       refill,
 			MaxConcurrentRequests: vk.MaxConcurrentRequests,
 			BillingSubjectID:      vk.BillingSubjectID,
+			CacheScopeToEndUser:   vk.CacheScopeToEndUser,
 		})
 		if vk.TPMCapacity > 0 && cfg.RateLimit.RedisAddr != "" {
 			logger.Warn("virtual key configures a TPM rate limit, but Redis rate-limit mode is active; TPM is in-memory-only in v1 and will not be enforced",
@@ -1584,7 +1585,7 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		// be added to that same response.
 		ctx, upstreamDuration := dataplane.WithOverheadTracker(ctx)
 		requestStart := time.Now()
-		resp, err := p.HandleChatCompletion(ctx, r.Header.Get("Authorization"), r.RemoteAddr, req, r.Header.Get("Idempotency-Key"))
+		resp, err := p.HandleChatCompletion(ctx, r.Header.Get("Authorization"), r.RemoteAddr, r.Header.Get(dataplane.EndUserIDHeader), req, r.Header.Get("Idempotency-Key"))
 		if err != nil {
 			writeErrorResponse(w, err)
 			return
@@ -1676,7 +1677,7 @@ func handleStreamingChatCompletion(p *dataplane.Pipeline, w http.ResponseWriter,
 	w.Header().Set("Connection", "keep-alive")
 
 	ctx := telemetry.ExtractContext(r.Context(), r)
-	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), r.RemoteAddr, req, w, r.Header.Get("Idempotency-Key")); err != nil {
+	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), r.RemoteAddr, r.Header.Get(dataplane.EndUserIDHeader), req, w, r.Header.Get("Idempotency-Key")); err != nil {
 		writeErrorResponse(w, err)
 	}
 }

@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"sort"
@@ -87,8 +88,16 @@ type virtualKeyRequest struct {
 	// regions (Deployment.Region), per
 	// docs/upgrade-research/data-residency-regional-routing-2026-09-15.md
 	// — mirrors AllowedModels's own convention exactly.
-	AllowedRegions []string          `json:"allowed_regions"`
-	RateLimit      *rateLimitRequest `json:"rate_limit"`
+	AllowedRegions []string `json:"allowed_regions"`
+	// AllowedSourceCIDRs restricts this key to requests whose resolved
+	// client source IP falls within at least one of these CIDR blocks —
+	// mirrors AllowedModels/AllowedRegions' own convention exactly. See
+	// identity.VirtualKey.AllowedSourceCIDRs' own doc comment.
+	AllowedSourceCIDRs []string `json:"allowed_source_cidrs"`
+	// CacheScopeToEndUser mirrors identity.VirtualKey.CacheScopeToEndUser's
+	// own doc comment exactly.
+	CacheScopeToEndUser bool              `json:"cache_scope_to_end_user"`
+	RateLimit           *rateLimitRequest `json:"rate_limit"`
 }
 
 // rotateVirtualKeyRequest is the POST /admin/virtual_keys/{name}/rotate
@@ -517,6 +526,15 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 				allowedRegions[reg] = struct{}{}
 			}
 		}
+		var allowedSourceCIDRs []*net.IPNet
+		for _, cidr := range req.AllowedSourceCIDRs {
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("allowed_source_cidrs entry %q: %v", cidr, err), http.StatusBadRequest)
+				return
+			}
+			allowedSourceCIDRs = append(allowedSourceCIDRs, network)
+		}
 		burst, refill := 0.0, 0.0
 		var tpmCapacity, tpmRefill float64
 		var perModel map[string]ratelimit.ModelRateLimit
@@ -560,6 +578,8 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 			BudgetWarnPercent:   req.BudgetWarnPercent,
 			AllowedModels:       allowedModels,
 			AllowedRegions:      allowedRegions,
+			AllowedSourceCIDRs:  allowedSourceCIDRs,
+			CacheScopeToEndUser: req.CacheScopeToEndUser,
 			RateLimitBurst:      burst,
 			RateLimitRefill:     refill,
 		}
@@ -700,6 +720,12 @@ type updateDeploymentWeightRequest struct {
 // into this same JSON object rather than nesting under a sub-key.
 type eraseCacheEntryRequest struct {
 	VirtualKeyID string `json:"virtual_key_id"`
+	// EndUserID targets the exact end-user-scoped entry a request with
+	// CacheScopeToEndUser enabled and this same header value would have
+	// been cached under -- see dataplane.Pipeline.EraseCacheEntry's own
+	// doc comment. Empty (the default) targets the tenant-only-scoped
+	// entry, correct for every virtual key that never enabled that flag.
+	EndUserID string `json:"end_user_id"`
 	adapter.ChatRequest
 }
 
@@ -797,7 +823,7 @@ func eraseCacheEntryHandler(pipeline *dataplane.Pipeline, logger auditLogger) ht
 			return
 		}
 
-		result, err := pipeline.EraseCacheEntry(r.Context(), req.VirtualKeyID, req.ChatRequest)
+		result, err := pipeline.EraseCacheEntry(r.Context(), req.VirtualKeyID, req.EndUserID, req.ChatRequest)
 		switch {
 		case err == nil:
 			logger.Info("admin_cache_entry_erased", "virtual_key_id", req.VirtualKeyID, "model", req.Model, "l1_found", result.L1Found, "l2_found", result.L2Found, "authorized_by", credentialTierFromContext(r.Context()))
@@ -834,6 +860,8 @@ type virtualKeyListEntry struct {
 	BudgetWarnPercent          float64  `json:"budget_warn_percent"`
 	AllowedModels              []string `json:"allowed_models,omitempty"`
 	AllowedRegions             []string `json:"allowed_regions,omitempty"`
+	AllowedSourceCIDRs         []string `json:"allowed_source_cidrs,omitempty"`
+	CacheScopeToEndUser        bool     `json:"cache_scope_to_end_user,omitempty"`
 	RateLimitBurst             float64  `json:"rate_limit_burst,omitempty"`
 	RateLimitRefill            float64  `json:"rate_limit_refill_per_second,omitempty"`
 	BillingSubjectID           string   `json:"billing_subject_id,omitempty"`
@@ -859,10 +887,27 @@ func virtualKeyToListEntry(vk identity.VirtualKey) virtualKeyListEntry {
 		BudgetWarnPercent:          vk.BudgetWarnPercent,
 		AllowedModels:              sortedKeysOf(vk.AllowedModels),
 		AllowedRegions:             sortedKeysOf(vk.AllowedRegions),
+		AllowedSourceCIDRs:         ipNetStringsSorted(vk.AllowedSourceCIDRs),
+		CacheScopeToEndUser:        vk.CacheScopeToEndUser,
 		RateLimitBurst:             vk.RateLimitBurst,
 		RateLimitRefill:            vk.RateLimitRefill,
 		BillingSubjectID:           vk.BillingSubjectID,
 	}
+}
+
+// ipNetStringsSorted mirrors sortedKeysOf's own role for
+// AllowedSourceCIDRs, which is a []*net.IPNet (order not guaranteed to
+// match config-file declaration order) rather than a set.
+func ipNetStringsSorted(nets []*net.IPNet) []string {
+	if len(nets) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(nets))
+	for _, n := range nets {
+		out = append(out, n.String())
+	}
+	sort.Strings(out)
+	return out
 }
 
 // listVirtualKeysHandler serves every configured virtual key's safe,

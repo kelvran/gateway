@@ -168,7 +168,7 @@ func TestHandleChatCompletionStreamMidStreamTopupIncreasesReservationWhileStream
 	done := make(chan result, 1)
 	go func() {
 		rec := httptest.NewRecorder()
-		err := p.HandleChatCompletionStream(context.Background(), "Bearer topup-secret", "", adapter.ChatRequest{
+		err := p.HandleChatCompletionStream(context.Background(), "Bearer topup-secret", "", "", adapter.ChatRequest{
 			Model: "gpt-4o", Stream: true,
 			Messages: []adapter.Message{{Role: "user", Content: "generate a long response"}},
 		}, rec, "")
@@ -255,7 +255,7 @@ func TestHandleChatCompletionStreamMidStreamTopupExhaustionGracefullyTruncatesSt
 	}, slog.New(slog.NewJSONHandler(&logBuf, nil)))
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer topup-secret", "", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer topup-secret", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 		Messages: []adapter.Message{{Role: "user", Content: "generate as much as you possibly can"}},
 	}, rec, "")

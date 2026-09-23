@@ -14,6 +14,7 @@ package dataplane
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,41 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
+
+// TestVirtualKeyPayloadRoundTripPreservesAllowedSourceCIDRsAndCacheScope
+// is a fast, in-process regression guard for a real gap this same
+// session's work found and fixed: AllowedSourceCIDRs and
+// CacheScopeToEndUser were both added to identity.VirtualKey without
+// initially threading them through virtualKeyToPayload/
+// payloadToVirtualKey, meaning an admin-API-driven upsert of either
+// field would silently NOT propagate to other replicas via
+// configpropagation's pub/sub -- a replica that only ever received a key
+// via that path (never the static config file) would end up
+// unconstrained on source IP or unscoped on cache, regardless of what
+// the publishing replica's own config says.
+func TestVirtualKeyPayloadRoundTripPreservesAllowedSourceCIDRsAndCacheScope(t *testing.T) {
+	original := identity.VirtualKey{
+		ID:                  "rt-key",
+		KeyHash:             "hash",
+		AllowedSourceCIDRs:  []*net.IPNet{mustParseCIDR(t, "10.0.0.0/8"), mustParseCIDR(t, "192.168.1.0/24")},
+		CacheScopeToEndUser: true,
+	}
+
+	roundTripped := payloadToVirtualKey(virtualKeyToPayload(original))
+
+	if len(roundTripped.AllowedSourceCIDRs) != 2 {
+		t.Fatalf("round-tripped AllowedSourceCIDRs = %v, want 2 entries", roundTripped.AllowedSourceCIDRs)
+	}
+	if !isSourceIPAllowed(&roundTripped, "10.1.2.3") || !isSourceIPAllowed(&roundTripped, "192.168.1.5") {
+		t.Error("round-tripped AllowedSourceCIDRs no longer accepts an IP the original constraint allowed")
+	}
+	if isSourceIPAllowed(&roundTripped, "203.0.113.9") {
+		t.Error("round-tripped AllowedSourceCIDRs now accepts an IP the original constraint disallowed")
+	}
+	if !roundTripped.CacheScopeToEndUser {
+		t.Error("round-tripped CacheScopeToEndUser = false, want true (must survive the payload round trip)")
+	}
+}
 
 // newVirtualKeyPropagationTestPipeline mirrors
 // newConfigPropagationTestPipeline's exact shape (configpropagation_test.go)
@@ -73,7 +109,7 @@ func newVirtualKeyPropagationTestPipeline(t *testing.T, keys []identity.VirtualK
 // Verifier-internal peek, so this proves the full live-request path,
 // not just Verifier state in isolation.
 func canAuthenticate(p *Pipeline, secret string) bool {
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer "+secret, "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer "+secret, "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	return err == nil
 }
 

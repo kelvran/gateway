@@ -69,7 +69,7 @@ func TestHandleChatCompletionStreamBedrockFullSequenceDecodesCorrectly(t *testin
 		adapter.Registry{"bedrock": bedrock.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err != nil {
@@ -101,7 +101,7 @@ func TestHandleChatCompletionStreamBedrockFullSequenceDecodesCorrectly(t *testin
 	// cached ChatResponse is via a second, cache-hit request, whose
 	// fake-streamed body is built directly from that cached response.
 	rec2 := httptest.NewRecorder()
-	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec2, "")
 	if err != nil {
@@ -140,7 +140,7 @@ func TestHandleChatCompletionStreamBedrockExceptionFrameSurfacesAsError(t *testi
 		adapter.Registry{"bedrock": bedrock.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err == nil {
@@ -181,7 +181,7 @@ func TestHandleChatCompletionStreamBedrockMidFrameTruncationSurfacesAsError(t *t
 		adapter.Registry{"bedrock": bedrock.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err == nil {
@@ -215,7 +215,7 @@ func TestHandleChatCompletionStreamBedrockOversizedStreamIsBounded(t *testing.T)
 		adapter.Registry{"bedrock": bedrock.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err == nil {
@@ -253,7 +253,7 @@ func TestStreamDeploymentBedrockPropagatesDuplicateMetadataErrorRatherThanOverwr
 		adapter.Registry{"bedrock": bedrock.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "claude-bedrock", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err == nil {

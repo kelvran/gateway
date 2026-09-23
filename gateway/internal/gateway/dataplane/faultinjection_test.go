@@ -151,7 +151,7 @@ func TestFaultInjectionFallbackChainSurvivesAPrimaryOutage(t *testing.T) {
 	injector.failDeploymentForCalls("primary", 1_000_000) // "genuinely down," not a transient blip
 
 	p := newTestPipeline(t, injector.caller(), faultInjectionDeployments())
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", newFaultInjectionRequest(), "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", newFaultInjectionRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want success via fallback", err)
 	}
@@ -197,7 +197,7 @@ func TestFaultInjectionCircuitBreakerStopsAtMaxConsecutiveFailures(t *testing.T)
 	}
 
 	p := newTestPipeline(t, injector.caller(), faultInjectionDeployments())
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", newFaultInjectionRequest(), "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", newFaultInjectionRequest(), "")
 	if err == nil {
 		t.Fatal("HandleChatCompletion: err = nil, want a real error -- every hop in the chain is down")
 	}
@@ -252,7 +252,7 @@ func TestFaultInjectionInsertsRealMeasurableBackoffBeforeSecondChainHop(t *testi
 	// hop3 left unconfigured -- succeeds immediately.
 
 	p := newTestPipeline(t, injector.caller(), faultInjectionDeployments())
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", newFaultInjectionRequest(), "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", newFaultInjectionRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want success via hop3", err)
 	}
@@ -306,7 +306,7 @@ func TestFaultInjectionEmitsFallbackHopSpanEventForEachFailedChainHop(t *testing
 	// hop3 left unconfigured -- succeeds immediately.
 
 	p := newTestPipeline(t, injector.caller(), faultInjectionDeployments())
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", newFaultInjectionRequest(), "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", newFaultInjectionRequest(), "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want success via hop3", err)
 	}

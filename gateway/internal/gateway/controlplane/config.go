@@ -347,6 +347,11 @@ type VirtualKeyConfig struct {
 	// identifier, never read by any enforcement path. Empty (the
 	// default) means no known billing subject.
 	BillingSubjectID string
+	// CacheScopeToEndUser mirrors identity.VirtualKey.CacheScopeToEndUser's
+	// own doc comment exactly — an opt-in, false-by-default flag folding
+	// the caller-supplied X-Kelvran-End-User-Id header into this key's
+	// own L1/L2 response-cache partitioning.
+	CacheScopeToEndUser bool
 }
 
 // ModelRateLimitConfig is one virtual key's per-model RPM override — see
@@ -930,6 +935,9 @@ func Load(path string) (*Config, error) {
 			sort.Strings(vk.AllowedSourceCIDRs)
 		}
 		vk.BillingSubjectID, _ = getString(vkMap, "billing_subject_id")
+		if err := assignBool(&vk.CacheScopeToEndUser, vkMap, "cache_scope_to_end_user", fmt.Sprintf("controlplane: virtual key %q", name)); err != nil {
+			return nil, err
+		}
 		cfg.VirtualKeys = append(cfg.VirtualKeys, vk)
 	}
 	sort.Slice(cfg.VirtualKeys, func(i, j int) bool { return cfg.VirtualKeys[i].Name < cfg.VirtualKeys[j].Name })

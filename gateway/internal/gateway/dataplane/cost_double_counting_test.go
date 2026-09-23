@@ -77,7 +77,7 @@ func TestHandleChatCompletionCacheHitDoesNotRechargeBudget(t *testing.T) {
 		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("first (real-miss) call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -88,7 +88,7 @@ func TestHandleChatCompletionCacheHitDoesNotRechargeBudget(t *testing.T) {
 		t.Fatal("spentAfterMiss = 0, want a real nonzero cost — the price table fixture is broken")
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("second (cache-hit) call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -138,7 +138,7 @@ func TestHandleChatCompletionCoalescedFollowerDoesNotRechargeBudget(t *testing.T
 			defer wg.Done()
 			ready.Done()
 			<-go_
-			_, errs[i] = p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
+			_, errs[i] = p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, "")
 		}(i)
 	}
 

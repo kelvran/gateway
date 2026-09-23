@@ -108,7 +108,7 @@ func TestGatewayEventLoggedOnSuccessHasOutcomeOK(t *testing.T) {
 		return fakeOpenAIResponse("gpt-4o"), nil
 	}, nil, keys, logger)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-events", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-events", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestGatewayEventLoggedOnRejectionHasCorrectOutcome(t *testing.T) {
 		return nil, nil
 	}, nil, keys, logger)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-restricted", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-restricted", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("HandleChatCompletion succeeded, want ErrModelNotAllowed")
 	}
@@ -219,7 +219,7 @@ func TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors(t *testing.T) {
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-failopen", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-failopen", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion with a failing Redis backend: %v", err)
 	}
 
@@ -380,7 +380,7 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 	}
 
 	authHeader := "Bearer " + testKeyID
-	if _, err := p.HandleChatCompletion(context.Background(), authHeader, "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion with a failing Redis backend: %v", err)
 	}
 
@@ -407,7 +407,7 @@ func TestRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 	// function that swaps the provider again — this package's own
 	// one-delegation-per-test-binary constraint, see above) with a
 	// deliberately attacker-shaped model string checks that.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer no-such-key", "", adapter.ChatRequest{Model: attackerModelForRateLimitFailOpenTest}, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer no-such-key", "", "", adapter.ChatRequest{Model: attackerModelForRateLimitFailOpenTest}, ""); err == nil {
 		t.Fatal("HandleChatCompletion with an unregistered bearer token returned nil error, want an auth failure")
 	}
 
@@ -444,7 +444,7 @@ func TestGatewayEventRateLimitFailOpenFalseOnNormalPass(t *testing.T) {
 		return fakeOpenAIResponse("gpt-4o"), nil
 	}, nil, keys, logger)
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-normal", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-normal", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -476,7 +476,7 @@ func TestGatewayEventFallbackDetailPopulatedOnFallback(t *testing.T) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, deployments, keys, logger)
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-fallback", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-fallback", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("expected fallback to succeed, got error: %v", err)
 	}
 
@@ -506,7 +506,7 @@ func TestGatewayEventFallbackDetailAbsentWithNoEligibleFallback(t *testing.T) {
 		return nil, errors.New("simulated upstream failure")
 	}, nil, keys, logger)
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-nofallback", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-nofallback", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Fatal("expected an upstream error with no eligible fallback deployment")
 	}
 
@@ -564,7 +564,7 @@ func TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend(t *testing.T) {
 	}
 
 	// First request succeeds and records real spend (5*0.0001 + 3*0.0001 = 0.0008).
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-budget", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-budget", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
 	wantSpent := p.budget.SpentUSD(context.Background(), "team-budget", 0)
@@ -578,7 +578,7 @@ func TestGatewayEventBudgetSpentUsdReflectsRealPriorSpend(t *testing.T) {
 	// budget_spent_usd must reflect that spend AT DECISION TIME, i.e.
 	// exactly wantSpent, not zero, not a different number.
 	logBuf.Reset()
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-budget", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-budget", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Fatal("expected the second request to be budget-rejected")
 	}
 
@@ -653,7 +653,7 @@ func TestGatewayEventCarriesAgentRunIDAndCostUSD(t *testing.T) {
 	}
 	ctx := baggage.ContextWithBaggage(context.Background(), bag)
 
-	if _, err := p.HandleChatCompletion(ctx, "Bearer team-agentrun", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer team-agentrun", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -715,7 +715,7 @@ func TestGatewayEventCarriesSavingsUSD(t *testing.T) {
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "savings-usd-test"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("first (real-miss) call: %v", err)
 	}
 	missEvent := decodeLoggedGatewayEvent(t, &logBuf)
@@ -724,7 +724,7 @@ func TestGatewayEventCarriesSavingsUSD(t *testing.T) {
 	}
 
 	logBuf.Reset()
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("second (cache-hit) call: %v", err)
 	}
 	hitEvent := decodeLoggedGatewayEvent(t, &logBuf)
@@ -782,7 +782,7 @@ func TestGatewayEventCarriesFinishReasonOnSuccessAndOmitsItOnRejection(t *testin
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	successEvent := decodeLoggedGatewayEvent(t, &logBuf)
@@ -791,7 +791,7 @@ func TestGatewayEventCarriesFinishReasonOnSuccessAndOmitsItOnRejection(t *testin
 	}
 
 	logBuf.Reset()
-	if _, err := p.HandleChatCompletion(context.Background(), "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Fatal("HandleChatCompletion with no Authorization header: got nil error, want an auth error")
 	}
 	rejectionEvent := decodeLoggedGatewayEvent(t, &logBuf)
@@ -853,7 +853,7 @@ func TestGatewayEventStreamingFallbackFalseAfterFirstChunkSent(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err = p.HandleChatCompletionStream(context.Background(), "Bearer team-stream", "", adapter.ChatRequest{
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer team-stream", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if err == nil {
@@ -882,7 +882,7 @@ func TestGatewayDecisionEventCarriesBillingSubjectIDWhenConfigured(t *testing.T)
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, nil, keys, logger)
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill1", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill1", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -938,10 +938,10 @@ func TestBudgetReserveAndReconcileAreUnaffectedByBillingSubjectIDField(t *testin
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill2", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill2", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion (with BillingSubjectID): %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill3", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer team-bill3", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion (without BillingSubjectID): %v", err)
 	}
 	spentWith := p.budget.SpentUSD(context.Background(), "team-bill2", 0)

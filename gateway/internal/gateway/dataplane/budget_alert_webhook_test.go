@@ -82,7 +82,7 @@ func TestBudgetThresholdCrossedDeliversRealWebhook(t *testing.T) {
 	}
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer hook-key1", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer hook-key1", "", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestBudgetThresholdCrossedNeverDeliversWebhookWithNilNotifier(t *testing.T)
 	}
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer hook-key2", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer hook-key2", "", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 }

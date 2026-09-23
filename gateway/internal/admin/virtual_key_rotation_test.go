@@ -22,10 +22,10 @@ func TestRotateVirtualKeyViaHTTPKeepsOldSecretUsableDuringGracePeriod(t *testing
 		t.Fatalf("POST .../rotate: status = %d, want 204, body: %s", rec.Code, rec.Body.String())
 	}
 
-	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the OLD secret, still within grace period: %v", err)
 	}
-	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key-v2", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key-v2", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the NEW secret: %v", err)
 	}
 }

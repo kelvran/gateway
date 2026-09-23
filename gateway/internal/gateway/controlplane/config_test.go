@@ -1532,6 +1532,70 @@ func TestBillingSubjectIDDefaultsEmptyWhenUnconfigured(t *testing.T) {
 	}
 }
 
+// TestVirtualKeyConfigParsesCacheScopeToEndUser proves
+// cache_scope_to_end_user parses through when present, and defaults to
+// false when unset.
+func TestVirtualKeyConfigParsesCacheScopeToEndUser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    cache_scope_to_end_user: true\n" +
+		"  team-beta:\n" +
+		"    key_hash: \"bb\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	alpha, beta := cfg.VirtualKeys[0], cfg.VirtualKeys[1]
+	if !alpha.CacheScopeToEndUser {
+		t.Error("team-alpha.CacheScopeToEndUser = false, want true")
+	}
+	if beta.CacheScopeToEndUser {
+		t.Error("team-beta.CacheScopeToEndUser = true, want false (unset defaults to false)")
+	}
+}
+
+// TestVirtualKeyConfigRejectsNonBooleanCacheScopeToEndUser proves a
+// malformed value is a loud load-time error, mirroring every other
+// assignBool-backed field's identical contract.
+func TestVirtualKeyConfigRejectsNonBooleanCacheScopeToEndUser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    cache_scope_to_end_user: \"yes\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load: want an error for a non-boolean cache_scope_to_end_user, got nil")
+	}
+}
+
 // TestLoadDeploymentFallbackChainsParsesOrderedCommaSeparatedLists proves
 // each error-class key parses into an ORDERED slice (not just a set) —
 // this file's YAML-subset parser has no list support, so fallback_chains

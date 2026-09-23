@@ -1041,12 +1041,14 @@ func virtualKeyToPayload(vk identity.VirtualKey) configpropagation.VirtualKeyPay
 		BudgetWarnPercent:        vk.BudgetWarnPercent,
 		AllowedModels:            stringSetToSlice(vk.AllowedModels),
 		AllowedRegions:           stringSetToSlice(vk.AllowedRegions),
+		AllowedSourceCIDRs:       ipNetsToStrings(vk.AllowedSourceCIDRs),
 		RateLimitBurst:           vk.RateLimitBurst,
 		RateLimitRefill:          vk.RateLimitRefill,
 		MaxConcurrentRequests:    vk.MaxConcurrentRequests,
 		PreviousKeyHash:          vk.PreviousKeyHash,
 		PreviousKeyHashExpiresAt: vk.PreviousKeyHashExpiresAt,
 		BillingSubjectID:         vk.BillingSubjectID,
+		CacheScopeToEndUser:      vk.CacheScopeToEndUser,
 	}
 }
 
@@ -1059,13 +1061,50 @@ func payloadToVirtualKey(p configpropagation.VirtualKeyPayload) identity.Virtual
 		BudgetWarnPercent:        p.BudgetWarnPercent,
 		AllowedModels:            stringSliceToSet(p.AllowedModels),
 		AllowedRegions:           stringSliceToSet(p.AllowedRegions),
+		AllowedSourceCIDRs:       stringsToIPNets(p.AllowedSourceCIDRs),
 		RateLimitBurst:           p.RateLimitBurst,
 		RateLimitRefill:          p.RateLimitRefill,
 		MaxConcurrentRequests:    p.MaxConcurrentRequests,
 		PreviousKeyHash:          p.PreviousKeyHash,
 		PreviousKeyHashExpiresAt: p.PreviousKeyHashExpiresAt,
 		BillingSubjectID:         p.BillingSubjectID,
+		CacheScopeToEndUser:      p.CacheScopeToEndUser,
 	}
+}
+
+// ipNetsToStrings/stringsToIPNets convert AllowedSourceCIDRs between its
+// in-process []*net.IPNet form and the wire []string form -- mirrors
+// stringSetToSlice/stringSliceToSet's own shape-translation role for
+// AllowedModels/AllowedRegions, just for a slice instead of a set.
+// stringsToIPNets silently skips an unparseable entry rather than
+// erroring: this runs on the RECEIVING end of a pub/sub event that has
+// already been HMAC-verified, so a malformed CIDR here would only ever
+// come from a bug in the publishing replica's own already-validated
+// config, not from an untrusted source -- consistent with this
+// package's own established "never let a remote payload panic a
+// replica" posture (see, e.g., applyVirtualKeyUpsert's own doc comment).
+func ipNetsToStrings(nets []*net.IPNet) []string {
+	if len(nets) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(nets))
+	for _, n := range nets {
+		out = append(out, n.String())
+	}
+	return out
+}
+
+func stringsToIPNets(cidrs []string) []*net.IPNet {
+	if len(cidrs) == 0 {
+		return nil
+	}
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if _, network, err := net.ParseCIDR(cidr); err == nil {
+			out = append(out, network)
+		}
+	}
+	return out
 }
 
 // keyConfigToPayload/payloadToKeyConfig convert between
@@ -1621,27 +1660,34 @@ type EraseCacheEntryResult struct {
 // disproportionately larger change than this narrow race's own actual
 // severity justifies for this pass; named here as real future work,
 // not silently treated as solved.
-func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, req adapter.ChatRequest) (EraseCacheEntryResult, error) {
+// endUserID, when non-empty, targets the exact end-user-scoped entry a
+// request with CacheScopeToEndUser enabled and this same end-user header
+// value would have been cached under -- see
+// identity.VirtualKey.CacheScopeToEndUser's own doc comment. Empty
+// (unset, the default) targets the tenant-only-scoped entry, correct for
+// every virtual key that never enabled that flag.
+func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, endUserID string, req adapter.ChatRequest) (EraseCacheEntryResult, error) {
 	req, promptFP, err := p.resolvePromptIfSet(req)
 	if err != nil {
 		return EraseCacheEntryResult{}, err
 	}
 
+	cacheScope := cache.ScopeKey(virtualKeyID, endUserID)
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
-	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP)
-	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP)
+	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID)
+	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID)
 
 	var result EraseCacheEntryResult
-	if _, _, ok, _ := p.cache.Get(ctx, virtualKeyID, l1Key); ok {
+	if _, _, ok, _ := p.cache.Get(ctx, cacheScope, l1Key); ok {
 		result.L1Found = true
 	}
-	if err := p.cache.Delete(ctx, virtualKeyID, l1Key); err != nil {
+	if err := p.cache.Delete(ctx, cacheScope, l1Key); err != nil {
 		return result, fmt.Errorf("deleting L1 cache entry: %w", err)
 	}
-	if _, _, ok, _ := p.cacheL2.Get(ctx, virtualKeyID, l2Key); ok {
+	if _, _, ok, _ := p.cacheL2.Get(ctx, cacheScope, l2Key); ok {
 		result.L2Found = true
 	}
-	if err := p.cacheL2.Delete(ctx, virtualKeyID, l2Key); err != nil {
+	if err := p.cacheL2.Delete(ctx, cacheScope, l2Key); err != nil {
 		return result, fmt.Errorf("deleting L2 cache entry: %w", err)
 	}
 	return result, nil
@@ -2393,6 +2439,37 @@ func resolveClientIP(remoteAddr string) string {
 	return host
 }
 
+// EndUserIDHeader is the caller-supplied, unauthenticated header
+// identifying the end user a request is on behalf of, consulted only
+// when the owning identity.VirtualKey has CacheScopeToEndUser set -- see
+// that field's own doc comment for the full trust-boundary and
+// fail-closed contract. cmd/gateway reads this header and threads it
+// into HandleChatCompletion/HandleChatCompletionStream as
+// endUserIDHeader; exported so main.go and this package agree on the
+// exact same header name.
+const EndUserIDHeader = "X-Kelvran-End-User-Id"
+
+// resolveCacheEndUserScope implements CacheScopeToEndUser's fail-closed
+// contract: "" (a silent no-op, byte-for-byte unchanged cache behavior)
+// when the flag is off; the header's own value when the flag is on and
+// the header is present; otherwise a fresh, request-unique value derived
+// from this request's own OTel span ID -- guaranteeing this cache entry
+// can never be shared with ANY other request, past or future, rather
+// than silently falling back to tenant-only scoping (which would defeat
+// the whole point of enabling the flag). Reuses the span ID already
+// generated for this request instead of a new randomness source, since
+// OTel span IDs are themselves randomly generated per span and already
+// in scope at every call site that needs this.
+func resolveCacheEndUserScope(ctx context.Context, vk *identity.VirtualKey, endUserIDHeader string) string {
+	if !vk.CacheScopeToEndUser {
+		return ""
+	}
+	if endUserIDHeader != "" {
+		return endUserIDHeader
+	}
+	return "no-end-user-header-" + trace.SpanContextFromContext(ctx).SpanID().String()
+}
+
 // idempotencyKeyTTL bounds how long a claimed Idempotency-Key stays valid
 // before an abandoned claim (a caller that crashed or never returned) lets
 // a later request with the same key start fresh, per
@@ -2706,7 +2783,7 @@ func (p *Pipeline) logEmbeddingsRequest(ctx context.Context, vk *identity.Virtua
 // claimIdempotency's own doc comment for the full contract. An empty
 // idempotencyKey (or a nil p.idempotencyStore) is a guaranteed no-op,
 // identical to this parameter never having existed.
-func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, remoteAddr string, req adapter.ChatRequest, idempotencyKey string) (resp adapter.ChatResponse, err error) {
+func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, remoteAddr string, endUserIDHeader string, req adapter.ChatRequest, idempotencyKey string) (resp adapter.ChatResponse, err error) {
 	var (
 		cacheInfo             cacheProvenance
 		vk                    *identity.VirtualKey
@@ -2845,12 +2922,14 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
+	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
+	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope)
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
-	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {
+	if cached, layer, writtenAt, ok := p.checkCache(ctx, cacheScope, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -2872,7 +2951,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
-	resp, dep, fallback, billable, err = p.runMissPath(ctx, vk, req, l1Key, l2Key, l3Signature, promptFP)
+	resp, dep, fallback, billable, err = p.runMissPath(ctx, vk, req, cacheScope, l1Key, l2Key, l3Signature, promptFP)
 	return
 }
 
@@ -2940,7 +3019,7 @@ type cacheMissOutcome struct {
 // failure) returns before a real completion is ever obtained, so moving
 // this assignment to just after the upstream call succeeds leaves all of
 // those correctly non-billable while fixing the one that wasn't.
-func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key, l2Key string, l3Signature []uint64, promptFP string) (resp adapter.ChatResponse, dep Deployment, fallback fallbackInfo, billable bool, err error) {
+func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, cacheScope string, l1Key, l2Key string, l3Signature []uint64, promptFP string) (resp adapter.ChatResponse, dep Deployment, fallback fallbackInfo, billable bool, err error) {
 	// blockedResp/blockedDep capture the real, already-paid-for response
 	// and deployment for the one doErr path that's billable (a post-call
 	// guardrail block) — the closure's own resp/dep locals below shadow
@@ -3049,7 +3128,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 
 		if !responseWasTruncated(resp) {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-				p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
+				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
 			}
 		}
 

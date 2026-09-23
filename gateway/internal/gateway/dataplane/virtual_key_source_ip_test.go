@@ -150,7 +150,7 @@ func TestHandleChatCompletionRejectsDisallowedSourceIP(t *testing.T) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	})
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "203.0.113.9:1234", sourceIPConstraintChatRequest(), "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "203.0.113.9:1234", "", sourceIPConstraintChatRequest(), "")
 	if !errors.Is(err, ErrSourceIPNotAllowed) {
 		t.Fatalf("err = %v, want ErrSourceIPNotAllowed", err)
 	}
@@ -175,7 +175,7 @@ func TestHandleChatCompletionAllowsMatchingSourceIP(t *testing.T) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	})
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "10.1.2.3:1234", sourceIPConstraintChatRequest(), ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "10.1.2.3:1234", "", sourceIPConstraintChatRequest(), ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	if !called {
@@ -197,7 +197,7 @@ func TestHandleChatCompletionUnconstrainedKeyUnaffectedBySourceIP(t *testing.T) 
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	})
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "198.51.100.1:1234", sourceIPConstraintChatRequest(), ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "198.51.100.1:1234", "", sourceIPConstraintChatRequest(), ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want success -- an unconstrained key must be unaffected", err)
 	}
 }

@@ -105,7 +105,7 @@ func TestCallDeploymentCacheTokensFoldIntoCostAndTPM(t *testing.T) {
 	}
 
 	req := adapter.ChatRequest{Model: "claude-opus-4", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("call 1: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestCallDeploymentCacheTokensFoldIntoCostAndTPM(t *testing.T) {
 	// would still have 14 tokens left and this second call would be
 	// wrongly ALLOWED.
 	req2 := adapter.ChatRequest{Model: "claude-opus-4", Messages: []adapter.Message{{Role: "user", Content: "a different request"}}}
-	_, err = p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req2, "")
+	_, err = p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req2, "")
 	if err == nil {
 		t.Fatal("call 2 succeeded, want a TPM rejection -- the cache-inclusive token count from call 1 (2054) should have exhausted a 20-token bucket; a pre-fix accounting bug (6 tokens) would have wrongly allowed this")
 	}

@@ -109,6 +109,30 @@ type VirtualKey struct {
 	// make the allowlist itself spoofable. See dataplane.isSourceIPAllowed
 	// for the enforcement logic.
 	AllowedSourceCIDRs []*net.IPNet
+	// CacheScopeToEndUser, when true, folds the caller-supplied
+	// X-Kelvran-End-User-Id request header into this key's own L1/L2
+	// response-cache partitioning (cache.Key/NormalizedKey's endUserID
+	// parameter, and cache.ScopeKey for Cache.Get/Put/Delete's own
+	// tenantID parameter) — closing the cross-user cache-sharing gap this
+	// session's response-cache-compliance-risk research found: without
+	// it, a response generated for one end user behind this virtual key
+	// can be served verbatim to a DIFFERENT end user behind the same key,
+	// empirically demonstrated by real 2026 cross-tenant cache attacks.
+	// False (the default, and every virtual key configured before this
+	// field existed) is a silent no-op — byte-for-byte unchanged cache
+	// behavior, since existing tenants' cache hit-rate/cost economics
+	// must not change without an explicit decision to enable this.
+	//
+	// The header itself is caller-supplied and unauthenticated — the
+	// same trust class as the existing AgentRunId field (a correlation
+	// signal, not a security credential); Kelvran does not authenticate
+	// individual end users today, only virtual keys. When true but the
+	// header is ABSENT on a given request, dataplane fails closed: that
+	// entry gets its own request-unique scope (never shared with any
+	// other request, past or future) rather than silently falling back
+	// to tenant-only scoping, which would defeat the whole point of
+	// enabling this flag.
+	CacheScopeToEndUser bool
 	// RateLimitBurst and RateLimitRefill configure this key's own
 	// token-bucket rate limiter (see internal/ratelimit.TokenBucket).
 	RateLimitBurst  float64

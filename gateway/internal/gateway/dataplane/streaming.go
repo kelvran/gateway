@@ -86,7 +86,7 @@ type UpstreamStreamCaller func(ctx context.Context, dep Deployment, providerReq 
 // still happen exactly once per request, via the same deferred logRequest
 // pattern HandleChatCompletion uses, since a streamed generation is just
 // as billable as a buffered one.
-func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, remoteAddr string, req adapter.ChatRequest, w http.ResponseWriter, idempotencyKey string) (err error) {
+func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, remoteAddr string, endUserIDHeader string, req adapter.ChatRequest, w http.ResponseWriter, idempotencyKey string) (err error) {
 	var (
 		cacheInfo             cacheProvenance
 		resp                  adapter.ChatResponse
@@ -208,12 +208,14 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP)
+	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
+	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope)
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
-	if cached, layer, writtenAt, ok := p.checkCache(ctx, vk.ID, l1Key, l2Key); ok {
+	if cached, layer, writtenAt, ok := p.checkCache(ctx, cacheScope, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
@@ -308,7 +310,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// ever running again, for the life of the cache TTL.
 	if !blocked && !responseWasTruncated(resp) {
 		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-			p.writeCache(ctx, vk.ID, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
+			p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
 		}
 	}
 	return

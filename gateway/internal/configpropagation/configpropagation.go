@@ -186,19 +186,29 @@ const TypeVirtualKeyDelete = "virtual_key_delete"
 // not its Go representation, is what needs to cross the wire; dataplane.go
 // converts between the two shapes at its own call sites.
 type VirtualKeyPayload struct {
-	ID                       string          `json:"id"`
-	KeyHash                  string          `json:"key_hash"`
-	BudgetUSD                decimal.Decimal `json:"budget_usd"`
-	BudgetResetInterval      time.Duration   `json:"budget_reset_interval"`
-	BudgetWarnPercent        float64         `json:"budget_warn_percent"`
-	AllowedModels            []string        `json:"allowed_models,omitempty"`
-	AllowedRegions           []string        `json:"allowed_regions,omitempty"`
-	RateLimitBurst           float64         `json:"rate_limit_burst"`
-	RateLimitRefill          float64         `json:"rate_limit_refill"`
-	MaxConcurrentRequests    int             `json:"max_concurrent_requests"`
-	PreviousKeyHash          string          `json:"previous_key_hash,omitempty"`
-	PreviousKeyHashExpiresAt time.Time       `json:"previous_key_hash_expires_at,omitempty"`
-	BillingSubjectID         string          `json:"billing_subject_id,omitempty"`
+	ID                  string          `json:"id"`
+	KeyHash             string          `json:"key_hash"`
+	BudgetUSD           decimal.Decimal `json:"budget_usd"`
+	BudgetResetInterval time.Duration   `json:"budget_reset_interval"`
+	BudgetWarnPercent   float64         `json:"budget_warn_percent"`
+	AllowedModels       []string        `json:"allowed_models,omitempty"`
+	AllowedRegions      []string        `json:"allowed_regions,omitempty"`
+	// AllowedSourceCIDRs mirrors AllowedModels/AllowedRegions' own
+	// slice-of-strings wire shape -- CIDR notation strings, re-parsed
+	// into []*net.IPNet on the receiving end (dataplane.payloadToVirtualKey),
+	// the same set<->slice-shaped translation those two fields already
+	// establish for this payload/consumer boundary.
+	AllowedSourceCIDRs       []string  `json:"allowed_source_cidrs,omitempty"`
+	RateLimitBurst           float64   `json:"rate_limit_burst"`
+	RateLimitRefill          float64   `json:"rate_limit_refill"`
+	MaxConcurrentRequests    int       `json:"max_concurrent_requests"`
+	PreviousKeyHash          string    `json:"previous_key_hash,omitempty"`
+	PreviousKeyHashExpiresAt time.Time `json:"previous_key_hash_expires_at,omitempty"`
+	BillingSubjectID         string    `json:"billing_subject_id,omitempty"`
+	// CacheScopeToEndUser mirrors identity.VirtualKey.CacheScopeToEndUser's
+	// own doc comment exactly -- a plain bool, direct copy, no shape
+	// translation needed.
+	CacheScopeToEndUser bool `json:"cache_scope_to_end_user,omitempty"`
 }
 
 // ModelRateLimitPayload mirrors ratelimit.ModelRateLimit's own field set

@@ -27,21 +27,21 @@ func TestEraseCacheEntryRemovesARealCacheHit(t *testing.T) {
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "erase-me"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("first (miss) call: %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("upstreamCalls = %d after the first call, want 1", upstreamCalls)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("second (hit) call: %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("upstreamCalls = %d after a cache hit, want still 1", upstreamCalls)
 	}
 
-	result, err := p.EraseCacheEntry(context.Background(), "test-key", req)
+	result, err := p.EraseCacheEntry(context.Background(), "test-key", "", req)
 	if err != nil {
 		t.Fatalf("EraseCacheEntry: %v", err)
 	}
@@ -64,8 +64,8 @@ func TestEraseCacheEntryRemovesARealCacheHit(t *testing.T) {
 	// TestEraseCacheEntryDoesNotPreventAnIdenticalFollowUpFromHittingL3
 	// below for that real, disclosed consequence proven directly.
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
-	l1Key := cache.Key("test-key", req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "")
-	l2Key := cache.NormalizedKey("test-key", req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "")
+	l1Key := cache.Key("test-key", req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "", "")
+	l2Key := cache.NormalizedKey("test-key", req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "", "")
 	if _, _, ok, _ := p.cache.Get(context.Background(), "test-key", l1Key); ok {
 		t.Error("L1 entry still present after EraseCacheEntry")
 	}
@@ -93,14 +93,14 @@ func TestEraseCacheEntryDoesNotPreventAnIdenticalFollowUpFromHittingL3(t *testin
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "l3-still-serves-me"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("first (miss) call: %v", err)
 	}
-	if _, err := p.EraseCacheEntry(context.Background(), "test-key", req); err != nil {
+	if _, err := p.EraseCacheEntry(context.Background(), "test-key", "", req); err != nil {
 		t.Fatalf("EraseCacheEntry: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
 		t.Fatalf("post-erasure call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -120,7 +120,7 @@ func TestEraseCacheEntryOnNeverCachedRequestReportsNotFoundNotError(t *testing.T
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "never-requested"}}}
 
-	result, err := p.EraseCacheEntry(context.Background(), "test-key", req)
+	result, err := p.EraseCacheEntry(context.Background(), "test-key", "", req)
 	if err != nil {
 		t.Fatalf("EraseCacheEntry: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestEraseCacheEntryRejectsPromptAndMessagesBothSet(t *testing.T) {
 		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}
 
-	_, err := p.EraseCacheEntry(context.Background(), "test-key", req)
+	_, err := p.EraseCacheEntry(context.Background(), "test-key", "", req)
 	if !errors.Is(err, ErrPromptAndMessagesBothSet) {
 		t.Errorf("EraseCacheEntry error = %v, want ErrPromptAndMessagesBothSet", err)
 	}
