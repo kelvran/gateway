@@ -58,6 +58,19 @@ task definition's own `secrets` block, resolved by the task EXECUTION role
 before the container ever starts — no operator-installed ESO/kiam/kube2iam
 equivalent needed at all for this path.
 
+## Redis (Distributed State Backend)
+
+**Added 2026-09-23**, per `docs/upgrade-research/redis-state-backup-recovery-2026-09-22.md` Findings 1/3/4/6 — this section was previously silent on Redis entirely, a real gap once `rate_limit.redis_addr`/`budget.redis_addr`/`admin.redis_addr`/`config_propagation.redis_addr` moved from a rate-limit-only concern to holding financial-ledger (`redisbudget`) and credential-store (`redisstore`) state.
+
+**Local/dev target**: `docker-compose.yml`'s `redis` service (`redis:7-alpine`, `--profile redis`) now runs with `--appendonly yes --appendfsync everysec` and a named, persistent volume — bounding loss to at most ~1s of writes and surviving container recreation, neither of which was true before this date. This is explicitly a local/dev convenience, never the production target.
+
+**Production target — not yet provisioned, named here for the first time rather than left implicit.** Two real options, in order of preference for this data class:
+- **AWS MemoryDB** — durability is structural (a distributed transactional log every write is committed to, not a snapshot cadence someone has to remember to configure): "There is no data loss in this scenario as the data was persisted in the transaction log" for a full Multi-AZ cluster loss/rebuild. Preferred for `redisbudget`/`redisstore` specifically, since both hold state whose loss means either silently under-enforcing a spend cap or silently discarding a live credential — not an ordinary cache-miss cost.
+- **ElastiCache with Backup and Restore enabled** — the lower-effort alternative if MemoryDB's cost/API-compatibility tradeoffs (not evaluated here) aren't a fit; snapshot-based (up to 35-day retention), restorable into a new cluster, but its point-in-time-recovery ceiling is bounded by snapshot interval, not a transaction log the way MemoryDB's is.
+- Neither has been provisioned yet — this is a documented target for the next real infrastructure pass, not a claim that either exists today. If self-hosting instead of using a managed AWS service, provision a real Redis manifest (StatefulSet + PVC) under `deploy/k8s/` — none exists there today; the config *knobs* are documented, the resource that would provision Redis itself is not.
+
+**RPO/RTO target**: no Kelvran doc anywhere previously set an explicit number for any subsystem. Per AWS's own Well-Architected "Backup and restore" DR tier (the appropriate tier for Kelvran's current single-region, one-pilot-customer stage — not Pilot Light/Warm Standby/active-active, which are unjustified cost/complexity for this stage): **RPO ≤ 5 minutes** (via continuous/frequent backup, not an infrequent manual snapshot), **RTO ≤ 60 minutes** (restore + verify + redeploy). Revisit upward (tighter RPO/RTO, a higher DR tier) only once real production traffic volume and a real customer SLA justify the added cost — mirroring this repo's own established "instrument/decide later" posture for other capacity questions, not a permanent ceiling. A quarterly restore-drill practice (restore a real backup into a scratch instance and verify it) is the recommended way to keep this target honest rather than aspirational — not yet adopted, named here as the next step once a production Redis target is actually provisioned.
+
 ## Configuration Reference
 
 `gateway`'s config schema is real (`gateway/internal/gateway/controlplane/config.go`) — see `gateway/config.example.yaml` for every real section (`virtual_keys`, `deployments` incl. `weight`, `telemetry`, `budget`, `rate_limit`, `cache` incl. `l2`/`l3`, `guardrails`, `price_table`) with inline documentation. That's the YAML schema; the real per-*environment-variable* table (a narrower, separate thing) is:
