@@ -683,20 +683,32 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 // anywhere in that shape. adapter.JSONSchema.Strict is therefore a
 // correct, deliberate no-op here, not a silent gap.
 //
-// KNOWN DISCREPANCY, NOT YET LIVE-RE-VERIFIED (flagged 2026-09-22,
-// research-only finding): the same AWS blog's real Converse example sends
-// this data via a TOP-LEVEL, camelCase "outputConfig.textFormat" request
-// field (nested under "structure.jsonSchema.{schema,name,description}"),
-// structurally different from the snake_case "output_config.format"
-// shape this function still sends through the generic
-// additionalModelRequestFields escape hatch below -- last live-verified
-// 2026-09-13, before this discrepancy was found. Both may currently work
-// (a preview-era escape-hatch shape AWS still honors alongside its newer
-// promoted top-level field), or the escape-hatch shape may have stopped
-// being honored -- this needs one real Converse call against a live
-// Bedrock endpoint to resolve either way before migrating; guessing here
-// risks the same kind of breaking AWS rejection this function's own
-// design already goes out of its way to avoid elsewhere.
+// RESOLVED 2026-09-23, live-re-verified (the 2026-09-22 discrepancy this
+// comment used to flag as open is now closed). AWS's current userguide
+// (docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html)
+// confirms Converse's own promoted top-level field is camelCase
+// "outputConfig.textFormat" (schema nested under
+// "structure.jsonSchema.{schema,name,description}", with "schema" as a
+// JSON-encoded STRING, not a raw object) -- structurally different from
+// the snake_case "output_config.format" shape this function sends through
+// the generic additionalModelRequestFields escape hatch below. Live Converse
+// calls against a real Bedrock endpoint (us.anthropic.claude-sonnet-4-5-*
+// via an inference profile) confirm BOTH shapes are genuinely parsed and
+// enforced IDENTICALLY today, not just "both silently ignored": a schema
+// using an AWS-documented-unsupported keyword (numeric "minimum"/"maximum")
+// sent via either shape produces the exact same real ValidationException
+// text ("output_config.format.schema: For 'integer' type, properties
+// maximum, minimum are not supported") -- including when submitted via the
+// NEW outputConfig.textFormat field, whose own error message still cites
+// the OLD field's dotted path, proving AWS's backend normalizes both
+// request shapes into one internal representation before validating. No
+// code change needed: the existing escape-hatch shape is confirmed live,
+// working, and equivalent to the newer promoted field, not a stale/
+// deprecated preview-era artifact -- migrating to the new shape today
+// would only trade this function's simpler raw-object "schema" value for
+// the new field's own JSON-string-encoding requirement, for zero behavior
+// difference. Revisit only if AWS ever documents deprecating the escape-
+// hatch alias specifically.
 func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (map[string]any, error) {
 	if rf == nil {
 		return nil, nil
@@ -743,7 +755,20 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (
 // all is treated as unsupported, the same fail-safe-not-fail-open choice
 // bedrockEnsureAdditionalPropertiesFalse already makes for an explicit
 // caller value. Per docs/upgrade-research/advanced-tool-calling-
-// structured-output-2026-09-14.md Finding 5.
+// structured-output-2026-09-14.md Finding 5. **Confirmed 2026-09-23**
+// against AWS's own current userguide (docs.aws.amazon.com/bedrock/
+// latest/userguide/structured-output.html, "Supported JSON Schema
+// features"): AWS explicitly documents "$ref, $def, and definitions
+// (internal references only)" as SUPPORTED, with only "Recursive
+// schemas" and "External $ref references" listed under "not supported"
+// -- a real, narrower scope than this map's blanket "any $ref" rejection
+// implies. This does not change the fail-safe choice above: telling an
+// internal-only $ref apart from a recursive one still needs a real
+// schema-graph-cycle detector Kelvran doesn't have, so rejecting every
+// $ref remains the correct, deliberate default until that detector
+// exists -- this confirmation only sharpens what a future narrowing
+// would need to preserve (internal-only references), not a reason to
+// narrow it today.
 var bedrockUnsupportedSchemaKeys = map[string]string{
 	"$ref":       "a $ref reference (recursive schemas and external $ref are both unsupported)",
 	"minimum":    "a numeric \"minimum\" constraint",
