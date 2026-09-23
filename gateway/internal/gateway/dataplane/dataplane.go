@@ -57,6 +57,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
 	"github.com/kelvran/gateway/gateway/internal/alerting"
+	"github.com/kelvran/gateway/gateway/internal/anomaly"
 	"github.com/kelvran/gateway/gateway/internal/backup"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/cache"
@@ -662,7 +663,34 @@ type Pipeline struct {
 	// be proven deterministically, without sleeping on real elapsed
 	// time.
 	now func() time.Time
+	// finishReasonAnomalyDetector/fallbackAnomalyDetector flag a
+	// statistically meaningful per-virtual-key shift in FinishReason
+	// distribution / fallback rate -- see internal/anomaly's own doc
+	// comment for why this pair of signals (not response length/shape)
+	// is this pass's scope. Always constructed (never nil, never
+	// user-configurable in v1) since this is purely observational
+	// (a log line only, never alters a request), the same "always on,
+	// no new config surface" posture BudgetWarnPercent's log-only
+	// trigger already established.
+	finishReasonAnomalyDetector *anomaly.Detector
+	fallbackAnomalyDetector     *anomaly.Detector
 }
+
+// anomalyWindowSize/anomalyMinFlaggedRate/anomalyShiftFactor are this
+// pass's fixed v1 defaults for both anomaly.Detector instances -- not
+// yet exposed as YAML config, matching the plan's own "self-contained,
+// no new config surface" scope. 50 requests is small enough to react
+// within a few minutes of even modest traffic, large enough to smooth
+// over single-request noise; a 3x shift is the same conservative
+// order-of-magnitude threshold docs/rfcs/2026-09-05-gateway-ratelimit-
+// fail-open-metric.md's own alerting guidance uses elsewhere in this
+// codebase; 10% is a floor below which even a real multiplicative shift
+// is too small in absolute terms to page anyone over.
+const (
+	anomalyWindowSize     = 50
+	anomalyMinFlaggedRate = 0.10
+	anomalyShiftFactor    = 3.0
+)
 
 // NewPipeline validates cfg and constructs a Pipeline.
 func NewPipeline(cfg Config) (*Pipeline, error) {
@@ -720,36 +748,38 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}
 
 	p := &Pipeline{
-		identityStore:         cfg.IdentityStore,
-		idempotencyStore:      cfg.IdempotencyStore,
-		limiter:               cfg.Limiter,
-		concurrency:           cfg.Concurrency,
-		deploymentConcurrency: cfg.DeploymentConcurrency,
-		deploymentLimiter:     cfg.DeploymentLimiter,
-		retryBackoff:          ratelimit.NewRetryBackoff(),
-		budget:                cfg.Budget,
-		prompts:               prompts,
-		cache:                 cfg.Cache,
-		cacheL2:               cfg.CacheL2,
-		cacheL3:               cfg.CacheL3,
-		guardrails:            cfg.Guardrails,
-		adapters:              cfg.Adapters,
-		router:                cfg.Router,
-		deploymentsByName:     byName,
-		costCalc:              cfg.CostCalculator,
-		upstream:              cfg.Upstream,
-		embeddingUpstream:     cfg.EmbeddingUpstream,
-		configPublisher:       cfg.ConfigPublisher,
-		weightVersions:        map[weightVersionKey]int64{},
-		virtualKeyVersions:    map[string]int64{},
-		alertNotifier:         cfg.AlertNotifier,
-		upstreamStream:        cfg.UpstreamStream,
-		logger:                logger,
-		cacheTTL:              ttl,
-		cacheL2TTL:            l2TTL,
-		cacheL3TTL:            l3TTL,
-		probeSchedule:         map[string]*healthProbeSchedule{},
-		now:                   time.Now,
+		identityStore:               cfg.IdentityStore,
+		idempotencyStore:            cfg.IdempotencyStore,
+		limiter:                     cfg.Limiter,
+		concurrency:                 cfg.Concurrency,
+		deploymentConcurrency:       cfg.DeploymentConcurrency,
+		deploymentLimiter:           cfg.DeploymentLimiter,
+		retryBackoff:                ratelimit.NewRetryBackoff(),
+		budget:                      cfg.Budget,
+		prompts:                     prompts,
+		cache:                       cfg.Cache,
+		cacheL2:                     cfg.CacheL2,
+		cacheL3:                     cfg.CacheL3,
+		guardrails:                  cfg.Guardrails,
+		adapters:                    cfg.Adapters,
+		router:                      cfg.Router,
+		deploymentsByName:           byName,
+		costCalc:                    cfg.CostCalculator,
+		upstream:                    cfg.Upstream,
+		embeddingUpstream:           cfg.EmbeddingUpstream,
+		configPublisher:             cfg.ConfigPublisher,
+		weightVersions:              map[weightVersionKey]int64{},
+		virtualKeyVersions:          map[string]int64{},
+		alertNotifier:               cfg.AlertNotifier,
+		upstreamStream:              cfg.UpstreamStream,
+		logger:                      logger,
+		cacheTTL:                    ttl,
+		cacheL2TTL:                  l2TTL,
+		cacheL3TTL:                  l3TTL,
+		probeSchedule:               map[string]*healthProbeSchedule{},
+		now:                         time.Now,
+		finishReasonAnomalyDetector: anomaly.NewDetector(anomalyWindowSize, anomalyMinFlaggedRate, anomalyShiftFactor),
+		fallbackAnomalyDetector:     anomaly.NewDetector(anomalyWindowSize, anomalyMinFlaggedRate, anomalyShiftFactor),
 	}
 	p.verifier.Store(cfg.Verifier)
 	return p, nil
@@ -3847,7 +3877,31 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	}
 	span.End()
 
+	p.observeAnomalySignals(ctx, event)
 	p.logRequest(ctx, vk, req, resp, cacheInfo, cost, err, event)
+}
+
+// observeAnomalySignals feeds event's own already-computed FinishReason
+// and FallbackHappened fields into this Pipeline's two anomaly.Detector
+// instances -- see internal/anomaly's own doc comment for the full
+// rationale and identity.VirtualKey.CacheScopeToEndUser-style "purely
+// observational, never alters the request" posture. "length" and
+// "content_filter" are the two finish reasons a real output-quality
+// degradation would most plausibly shift, per this session's own
+// incident-postmortems-failure-taxonomy research (Anthropic's own
+// September 2025 postmortem: silent quality degradation with no HTTP
+// signal). Logged, never returned to the caller and never affects
+// billing/routing -- an operator-facing signal only.
+func (p *Pipeline) observeAnomalySignals(ctx context.Context, event *gatewayeventsv1.GatewayDecisionEvent) {
+	lengthOrContentFilter := event.FinishReason == "length" || event.FinishReason == "content_filter"
+	if p.finishReasonAnomalyDetector.Observe(event.VirtualKeyId, lengthOrContentFilter) {
+		p.logger.Warn("anomaly_detected_finish_reason_shift", append(traceLogFields(ctx),
+			"key_id", event.VirtualKeyId, "finish_reason", event.FinishReason)...)
+	}
+	if p.fallbackAnomalyDetector.Observe(event.VirtualKeyId, event.FallbackHappened) {
+		p.logger.Warn("anomaly_detected_fallback_rate_shift", append(traceLogFields(ctx),
+			"key_id", event.VirtualKeyId)...)
+	}
 }
 
 // checkBudgetWarnThreshold logs a budget_warn_threshold_crossed warning
