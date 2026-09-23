@@ -139,6 +139,17 @@ type RedisBackend interface {
 	// equivalent: newHighest (a percentage, e.g. 0.75) is recorded only if
 	// it exceeds whatever bucket is already marked for keyID.
 	MarkAlertBucket(ctx context.Context, keyID string, newHighest float64, resetIntervalMs int64) (marked bool, err error)
+	// MarkWarnAlerted is CheckAndMarkBudgetWarnAlerted's Redis-mode
+	// equivalent: a plain "set exactly once per window" primitive backing
+	// checkBudgetWarnThreshold's own webhook-delivery dedup, in a
+	// COMPLETELY SEPARATE Redis key namespace from MarkAlertBucket's own
+	// (see redisbudget.warnAlertKey's own doc comment) — the two
+	// mechanisms never share dedup state, even though both key off the
+	// same keyID/rolling-window shape. Unlike MarkAlertBucket, there is no
+	// ladder/highest-value comparison here: marked is true exactly once
+	// per resetIntervalMs-TTL'd window per keyID, false on every
+	// subsequent call until that window rolls over.
+	MarkWarnAlerted(ctx context.Context, keyID string, resetIntervalMs int64) (marked bool, err error)
 	// Delete purges keyID's spend and alert-bucket state entirely — GDPR/
 	// CCPA erasure, mirroring Store.Delete's identical contract.
 	Delete(ctx context.Context, keyID string) error
@@ -221,7 +232,21 @@ type Tracker struct {
 	// "already alerted" against a window that no longer exists.
 	highestAlertedBucket map[string]float64
 	highestAlertedEpoch  map[string]int64
-	store                Store // nil = pure in-memory, unchanged from before this RFC
+	// warnAlertedEpoch backs CheckAndMarkBudgetWarnAlerted's own dedup —
+	// checkBudgetWarnThreshold's brand-new webhook-delivery capability,
+	// firing at most once per rolling-window epoch per virtual key.
+	// Deliberately a SEPARATE map (own key namespace, own Redis backend
+	// method) from highestAlertedBucket/highestAlertedEpoch above, even
+	// though both track "already alerted this epoch" shapes — the two
+	// are independent mechanisms (a single warn-percent crossing vs. a
+	// four-rung bucket ladder) that must never share dedup state with
+	// each other. The map value is the epoch the key was last warned in;
+	// callers must use the two-value map form to distinguish "never
+	// warned" from "warned at epoch 0" (a lifetime-cap key, or any key's
+	// very first window, never advances past epoch 0) — see
+	// CheckAndMarkBudgetWarnAlerted's own doc comment.
+	warnAlertedEpoch map[string]int64
+	store            Store // nil = pure in-memory, unchanged from before this RFC
 	// backend, when non-nil, routes every enforcement-relevant method
 	// (Reserve/Reconcile/IncreaseReservation/SpentUSD/
 	// CheckAndMarkBudgetAlertBucket/Delete/Store/Close) to Redis instead
@@ -238,7 +263,7 @@ type Tracker struct {
 
 // NewTracker constructs an empty, pure in-memory Tracker.
 func NewTracker() *Tracker {
-	return &Tracker{spent: make(map[string]decimal.Decimal), periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), now: time.Now}
+	return &Tracker{spent: make(map[string]decimal.Decimal), periodStart: make(map[string]time.Time), periodEpoch: make(map[string]int64), billedCount: make(map[string]int64), highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), warnAlertedEpoch: make(map[string]int64), now: time.Now}
 }
 
 // NewTrackerWithStore constructs a Tracker backed by store: existing
@@ -279,7 +304,7 @@ func NewTrackerWithStore(ctx context.Context, store Store, logger *slog.Logger) 
 			billedCount[keyID] = s.BilledCount
 		}
 	}
-	return &Tracker{spent: spent, periodStart: periodStart, periodEpoch: periodEpoch, billedCount: billedCount, highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
+	return &Tracker{spent: spent, periodStart: periodStart, periodEpoch: periodEpoch, billedCount: billedCount, highestAlertedBucket: make(map[string]float64), highestAlertedEpoch: make(map[string]int64), warnAlertedEpoch: make(map[string]int64), store: store, logger: logger, now: time.Now}, nil
 }
 
 // NewRedisTracker constructs a Tracker whose enforcement decisions run
@@ -862,6 +887,68 @@ func (t *Tracker) CheckAndMarkBudgetAlertBucket(ctx context.Context, keyID strin
 	return newHighest, true
 }
 
+// CheckAndMarkBudgetWarnAlerted reports whether this is the first call for
+// keyID within its CURRENT rolling-window epoch (see the periodEpoch field
+// comment) since checkBudgetWarnThreshold's own warn-percent threshold was
+// crossed — the dedup gate for that function's webhook-delivery
+// capability, added alongside (never replacing) its existing,
+// deliberately-unchanged re-logs-every-request slog line; see that
+// function's own doc comment for why the two are now two independent
+// mechanisms. Unlike CheckAndMarkBudgetAlertBucket, there is no ladder
+// here: the caller has already determined the single warn-percent
+// threshold was crossed, so this method's only job is "has keyID already
+// been marked warned this window" — newlyCrossed is false on every
+// subsequent call within the same epoch, and true again once the epoch
+// advances (a fresh rolling window has no warn history of its own yet
+// either, mirroring CheckAndMarkBudgetAlertBucket's identical per-epoch
+// reasoning).
+//
+// Deliberately does NOT call resetIfNeeded itself — exactly like
+// CheckAndMarkBudgetAlertBucket, it relies on the caller (finalize) having
+// already reconciled the real cost for this request BEFORE calling this,
+// which is what actually advances periodEpoch for a just-elapsed window;
+// see that method's own doc comment for the same reasoning.
+//
+// Uses the two-value map form (t.warnAlertedEpoch[keyID]) rather than a
+// bare index expression: a lifetime-cap key (resetInterval <= 0, whose
+// periodEpoch never advances past 0) — or, for that matter, ANY key's
+// very first rolling window — has currentEpoch == 0, which is also
+// map[string]int64's own zero value. Without distinguishing "never
+// warned" (ok == false) from "warned at epoch 0" (ok == true, epoch ==
+// 0), the very first crossing for such a key would be silently treated
+// as already-warned and never fire its webhook at all.
+//
+// In Redis mode (t.backend != nil), the dedup lives in
+// backend.MarkWarnAlerted (a "set exactly once per window" compare-and-set
+// against its own resetInterval-TTL'd key, in a completely separate Redis
+// key namespace from MarkAlertBucket's own — see redisbudget.warnAlertKey's
+// own doc comment for why they must never collide) rather than
+// warnAlertedEpoch. A backend error is logged and treated as "not
+// crossed" — this is an alert-dedup signal for a webhook-delivery
+// capability, never an enforcement decision, so failing open (never
+// alerting, in the worst case) is the correct default, exactly mirroring
+// CheckAndMarkBudgetAlertBucket's own identical failure handling.
+func (t *Tracker) CheckAndMarkBudgetWarnAlerted(ctx context.Context, keyID string, resetInterval time.Duration) (newlyCrossed bool) {
+	if t.backend != nil {
+		marked, err := t.backend.MarkWarnAlerted(ctx, keyID, resetIntervalToMs(resetInterval))
+		if err != nil {
+			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "check_warn_alerted", "error", err.Error())
+			return false
+		}
+		return marked
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	currentEpoch := t.periodEpoch[keyID]
+	if alertedEpoch, alreadyWarned := t.warnAlertedEpoch[keyID]; alreadyWarned && alertedEpoch == currentEpoch {
+		return false
+	}
+	t.warnAlertedEpoch[keyID] = currentEpoch
+	return true
+}
+
 // Delete purges keyID's spend/rolling-window/alert-bucket state, in
 // memory and (if a Store is configured) durably — for GDPR/CCPA
 // erasure-request handling, per
@@ -888,6 +975,7 @@ func (t *Tracker) Delete(keyID string) error {
 	delete(t.billedCount, keyID)
 	delete(t.highestAlertedBucket, keyID)
 	delete(t.highestAlertedEpoch, keyID)
+	delete(t.warnAlertedEpoch, keyID)
 	t.mu.Unlock()
 	if t.store == nil {
 		return nil

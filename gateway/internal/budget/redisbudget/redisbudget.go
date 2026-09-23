@@ -238,14 +238,45 @@ end
 return {1, tostring(new_highest)}
 `
 
+// budgetWarnAlertLuaSrc is a plain "set exactly once per window"
+// primitive backing checkBudgetWarnThreshold's own webhook-delivery
+// dedup (budget.Tracker.CheckAndMarkBudgetWarnAlerted's Redis-mode
+// equivalent) — simpler than budgetAlertLuaSrc's own compare-and-set:
+// there is no ladder/highest-value to compare against here, just a
+// single boolean "already warned this window" flag, so this never needs
+// budgetAlertLuaSrc's own KEEPTTL branch for updating an already-set
+// value within the same window (this script only ever writes the key
+// ONCE per window — the GET check below returns early on every
+// subsequent call, so the SET below only ever runs against a genuinely
+// new window). Returns a bare Lua integer (0 or 1), not a 2-element
+// array — this primitive has no "current highest" value worth reporting
+// back to the caller the way budgetAlertLuaSrc's own `current` return
+// value is.
+const budgetWarnAlertLuaSrc = `
+local reset_interval_ms = tonumber(ARGV[1])
+
+local current = redis.call('GET', KEYS[1])
+if current ~= false then
+  return 0
+end
+
+if reset_interval_ms > 0 then
+  redis.call('SET', KEYS[1], 1, 'PX', reset_interval_ms)
+else
+  redis.call('SET', KEYS[1], 1)
+end
+return 1
+`
+
 // Backend is a Redis-backed implementation of internal/budget.RedisBackend.
 // The zero value is not usable — construct with Open.
 type Backend struct {
-	client        *redis.Client
-	reserveScript *redis.Script
-	fixedScript   *redis.Script
-	adjustScript  *redis.Script
-	alertScript   *redis.Script
+	client          *redis.Client
+	reserveScript   *redis.Script
+	fixedScript     *redis.Script
+	adjustScript    *redis.Script
+	alertScript     *redis.Script
+	warnAlertScript *redis.Script
 }
 
 // Open constructs a Backend against the Redis server described by opts
@@ -258,11 +289,12 @@ type Backend struct {
 func Open(opts redis.Options) (*Backend, error) {
 	client := redis.NewClient(&opts)
 	return &Backend{
-		client:        client,
-		reserveScript: redis.NewScript(budgetReserveLuaSrc),
-		fixedScript:   redis.NewScript(budgetReserveFixedLuaSrc),
-		adjustScript:  redis.NewScript(budgetAdjustLuaSrc),
-		alertScript:   redis.NewScript(budgetAlertLuaSrc),
+		client:          client,
+		reserveScript:   redis.NewScript(budgetReserveLuaSrc),
+		fixedScript:     redis.NewScript(budgetReserveFixedLuaSrc),
+		adjustScript:    redis.NewScript(budgetAdjustLuaSrc),
+		alertScript:     redis.NewScript(budgetAlertLuaSrc),
+		warnAlertScript: redis.NewScript(budgetWarnAlertLuaSrc),
 	}, nil
 }
 
@@ -284,6 +316,20 @@ func Open(opts redis.Options) (*Backend, error) {
 // arbitrary input, not just the common case.
 func spendKey(keyID string) string { return "budget:" + url.QueryEscape(keyID) }
 func alertKey(keyID string) string { return "budget:alert:" + url.QueryEscape(keyID) }
+
+// warnAlertKey is checkBudgetWarnThreshold's own webhook-dedup namespace
+// (backing MarkWarnAlerted) — a DIFFERENT fixed prefix ("budget:warnalert:")
+// from both spendKey's ("budget:") and alertKey's ("budget:alert:"), for
+// the identical url.QueryEscape-based collision-freedom reason spendKey/
+// alertKey's own shared doc comment above gives: an escaped keyID can
+// never contain a raw ':', so this prefix can never be produced by
+// concatenating any keyID onto spendKey's or alertKey's own prefix, and
+// vice versa. Kept entirely separate from alertKey on purpose — the warn
+// mechanism and the alert-bucket ladder are two independent dedup
+// mechanisms (per budget.RedisBackend.MarkWarnAlerted's own doc comment)
+// that must never share, or even coincidentally collide with, each
+// other's Redis state.
+func warnAlertKey(keyID string) string { return "budget:warnalert:" + url.QueryEscape(keyID) }
 
 // Reserve implements budget.RedisBackend.
 func (b *Backend) Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (allowed bool, reservedNanoUSD int64, epoch int64, err error) {
@@ -381,13 +427,31 @@ func (b *Backend) MarkAlertBucket(ctx context.Context, keyID string, newHighest 
 	return markedInt == 1, nil
 }
 
-// Delete implements budget.RedisBackend — purges both the spend and
-// alert-bucket keys for keyID, mirroring Tracker.Delete's in-memory
-// equivalent (GDPR/CCPA erasure). A no-op, not an error, for a keyID
-// with no recorded state at all (DEL on a missing key is always a
-// harmless 0).
+// MarkWarnAlerted implements budget.RedisBackend. Unlike MarkAlertBucket's
+// 2-element array (marked + the new highest value), budgetWarnAlertLuaSrc
+// returns a single bare integer — there is no "current highest" value
+// worth reporting back here, just the marked bool itself.
+func (b *Backend) MarkWarnAlerted(ctx context.Context, keyID string, resetIntervalMs int64) (marked bool, err error) {
+	val, err := b.warnAlertScript.Run(ctx, b.client, []string{warnAlertKey(keyID)}, resetIntervalMs).Result()
+	if err != nil {
+		return false, fmt.Errorf("redisbudget: running warn-alert script for key %q: %w", keyID, err)
+	}
+	markedInt, ok := val.(int64)
+	if !ok {
+		return false, fmt.Errorf("redisbudget: unexpected warn-alert script result type %T for key %q", val, keyID)
+	}
+	return markedInt == 1, nil
+}
+
+// Delete implements budget.RedisBackend — purges the spend, alert-bucket,
+// AND warn-alert keys for keyID, mirroring Tracker.Delete's in-memory
+// equivalent (GDPR/CCPA erasure) — the warn-alert key is included for the
+// exact same reason the alert-bucket key already was: neither has any
+// independent lawful purpose once the key itself is deleted. A no-op, not
+// an error, for a keyID with no recorded state at all (DEL on a missing
+// key is always a harmless 0).
 func (b *Backend) Delete(ctx context.Context, keyID string) error {
-	if err := b.client.Del(ctx, spendKey(keyID), alertKey(keyID)).Err(); err != nil {
+	if err := b.client.Del(ctx, spendKey(keyID), alertKey(keyID), warnAlertKey(keyID)).Err(); err != nil {
 		return fmt.Errorf("redisbudget: deleting key %q: %w", keyID, err)
 	}
 	return nil

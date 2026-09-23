@@ -3992,13 +3992,28 @@ func (p *Pipeline) observeAnomalySignals(ctx context.Context, event *gatewayeven
 
 // checkBudgetWarnThreshold logs a budget_warn_threshold_crossed warning
 // once vk's spend (after the real charge finalize just recorded) is at
-// or above vk.BudgetWarnPercent of its BudgetUSD cap — log-only, per
+// or above vk.BudgetWarnPercent of its BudgetUSD cap, per
 // docs/rfcs/2026-09-05-gateway-budget-warn-threshold.md: never rejects
-// or alters the request, no new API surface. Re-logs on every billable
-// completion while spend remains over threshold, rather than tracking
-// "already warned this period" state — matches this codebase's existing
+// or alters the request, no new API surface. The slog line itself is
+// still log-only and STILL re-logs on every billable completion while
+// spend remains over threshold, rather than tracking "already warned
+// this period" state — matches this codebase's existing
 // ratelimit_backend_unavailable precedent of logging every occurrence
-// rather than only the first.
+// rather than only the first; this framing is unchanged by everything
+// below.
+//
+// Alongside that unchanged log line, this now ALSO delivers a real
+// webhook — the same alertNotifier.Notify mechanism
+// checkBudgetAlertLadder's own webhook delivery already uses (per
+// docs/upgrade-research/operator-alerting-integrations-2026-09-15.md
+// Finding 4) — gated by budget.Tracker.CheckAndMarkBudgetWarnAlerted, a
+// dedup mechanism that is its OWN, entirely separate state/Redis-key
+// namespace from checkBudgetAlertLadder's own
+// CheckAndMarkBudgetAlertBucket (see each method's own doc comment),
+// firing the webhook at most once per rolling-window epoch per virtual
+// key. This function now embeds two genuinely independent mechanisms
+// side by side: the slog line fires on every request (unchanged), the
+// webhook fires once per window (new).
 func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.VirtualKey) {
 	if vk.BudgetWarnPercent <= 0 || !vk.BudgetUSD.IsPositive() {
 		return
@@ -4012,6 +4027,22 @@ func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.Vi
 			"budget_usd", vk.BudgetUSD.String(),
 			"warn_percent", vk.BudgetWarnPercent,
 		)...)
+
+		if !p.budget.CheckAndMarkBudgetWarnAlerted(ctx, vk.ID, vk.BudgetResetInterval) {
+			return
+		}
+		if p.alertNotifier != nil {
+			p.alertNotifier.Notify(ctx, alerting.Event{
+				Type:      "budget_warn_threshold_crossed",
+				Timestamp: time.Now(),
+				Fields: map[string]any{
+					"key_id":       vk.ID,
+					"spent_usd":    spent.String(),
+					"budget_usd":   vk.BudgetUSD.String(),
+					"warn_percent": vk.BudgetWarnPercent,
+				},
+			})
+		}
 	}
 }
 

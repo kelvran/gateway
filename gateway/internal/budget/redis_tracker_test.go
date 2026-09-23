@@ -27,6 +27,7 @@ type fakeRedisBudgetBackend struct {
 	adjustFunc          func(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error
 	spentNanoUSDFunc    func(ctx context.Context, keyID string) (int64, error)
 	markAlertBucketFunc func(ctx context.Context, keyID string, newHighest float64, resetIntervalMs int64) (bool, error)
+	markWarnAlertedFunc func(ctx context.Context, keyID string, resetIntervalMs int64) (bool, error)
 	deleteFunc          func(ctx context.Context, keyID string) error
 	closeFunc           func() error
 
@@ -40,6 +41,8 @@ type fakeRedisBudgetBackend struct {
 	lastAdjustEpoch      int64
 	markAlertCalls       int
 	lastMarkAlertHighest float64
+	markWarnAlertedCalls int
+	lastWarnAlertResetMs int64
 	deleteCalls          int
 	closeCalls           int
 }
@@ -85,6 +88,15 @@ func (f *fakeRedisBudgetBackend) MarkAlertBucket(ctx context.Context, keyID stri
 	f.lastMarkAlertHighest = newHighest
 	if f.markAlertBucketFunc != nil {
 		return f.markAlertBucketFunc(ctx, keyID, newHighest, resetIntervalMs)
+	}
+	return true, nil
+}
+
+func (f *fakeRedisBudgetBackend) MarkWarnAlerted(ctx context.Context, keyID string, resetIntervalMs int64) (bool, error) {
+	f.markWarnAlertedCalls++
+	f.lastWarnAlertResetMs = resetIntervalMs
+	if f.markWarnAlertedFunc != nil {
+		return f.markWarnAlertedFunc(ctx, keyID, resetIntervalMs)
 	}
 	return true, nil
 }
@@ -389,6 +401,64 @@ func TestSpentUSDRedisModeConvertsUnitsAndFailsOpenOnError(t *testing.T) {
 	spent = tr2.SpentUSD(context.Background(), "k", 0)
 	if !spent.IsZero() {
 		t.Errorf("SpentUSD() on backend error = %s, want 0 (fail open, never blocks)", spent.String())
+	}
+	if !bytes.Contains(logBuf.Bytes(), []byte("budget_redis_backend_unavailable")) {
+		t.Errorf("log output = %q, want it to contain \"budget_redis_backend_unavailable\"", logBuf.String())
+	}
+}
+
+// TestCheckAndMarkBudgetWarnAlertedRedisModeRoutesToBackendWithConvertedResetMs
+// mirrors CheckAndMarkBudgetAlertBucket's own Redis-mode routing tests
+// below — proving CheckAndMarkBudgetWarnAlerted's Redis-mode branch calls
+// backend.MarkWarnAlerted with resetInterval converted to milliseconds,
+// and returns exactly what the backend reports.
+func TestCheckAndMarkBudgetWarnAlertedRedisModeRoutesToBackendWithConvertedResetMs(t *testing.T) {
+	backend := &fakeRedisBudgetBackend{}
+	tr := NewRedisTracker(backend, nil)
+
+	newlyCrossed := tr.CheckAndMarkBudgetWarnAlerted(context.Background(), "k", time.Hour)
+	if !newlyCrossed {
+		t.Fatal("CheckAndMarkBudgetWarnAlerted() = false, want true (backend reports marked)")
+	}
+	if backend.markWarnAlertedCalls != 1 {
+		t.Errorf("backend.MarkWarnAlerted called %d times, want 1", backend.markWarnAlertedCalls)
+	}
+	if backend.lastWarnAlertResetMs != time.Hour.Milliseconds() {
+		t.Errorf("backend.MarkWarnAlerted resetIntervalMs = %d, want %d", backend.lastWarnAlertResetMs, time.Hour.Milliseconds())
+	}
+}
+
+// TestCheckAndMarkBudgetWarnAlertedRedisModeReturnsFalseWhenAlreadyMarked
+// proves the second call in the same window (backend reports marked=false)
+// correctly surfaces as newlyCrossed=false.
+func TestCheckAndMarkBudgetWarnAlertedRedisModeReturnsFalseWhenAlreadyMarked(t *testing.T) {
+	backend := &fakeRedisBudgetBackend{
+		markWarnAlertedFunc: func(ctx context.Context, keyID string, resetIntervalMs int64) (bool, error) {
+			return false, nil
+		},
+	}
+	tr := NewRedisTracker(backend, nil)
+
+	if newlyCrossed := tr.CheckAndMarkBudgetWarnAlerted(context.Background(), "k", 0); newlyCrossed {
+		t.Fatal("CheckAndMarkBudgetWarnAlerted() = true, want false (backend reports already marked)")
+	}
+}
+
+// TestCheckAndMarkBudgetWarnAlertedRedisModeFailsOpenOnBackendError mirrors
+// CheckAndMarkBudgetAlertBucket's identical fail-open-on-error contract —
+// a Redis outage must never itself trigger a webhook.
+func TestCheckAndMarkBudgetWarnAlertedRedisModeFailsOpenOnBackendError(t *testing.T) {
+	backend := &fakeRedisBudgetBackend{
+		markWarnAlertedFunc: func(ctx context.Context, keyID string, resetIntervalMs int64) (bool, error) {
+			return false, errors.New("simulated redis outage")
+		},
+	}
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	tr := NewRedisTracker(backend, logger)
+
+	if newlyCrossed := tr.CheckAndMarkBudgetWarnAlerted(context.Background(), "k", 0); newlyCrossed {
+		t.Fatal("CheckAndMarkBudgetWarnAlerted() on backend error = true, want false -- fail open, never alert on error")
 	}
 	if !bytes.Contains(logBuf.Bytes(), []byte("budget_redis_backend_unavailable")) {
 		t.Errorf("log output = %q, want it to contain \"budget_redis_backend_unavailable\"", logBuf.String())
