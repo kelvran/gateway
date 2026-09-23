@@ -106,7 +106,7 @@ spec:
           # current release is before applying -- this value goes stale
           # the moment a newer version ships, same as any other pinned
           # dependency.
-          image: ghcr.io/kelvran/gateway:v0.14.2@sha256:7c1f2f32c843359ee0bae5e816bdf18b6522ed0e88a0d938c768c8e0b2eb2264
+          image: ghcr.io/kelvran/gateway:v0.15.0@sha256:598b5c9f7b0779e5dbc01ba57c5d53e5cba8c0874eb0069167b77bae09174f03
           # Container-level securityContext, distinct from the pod-level
           # block above (Checkov's own CKV_K8S_30 checks for this
           # specifically) -- closes CKV_K8S_20 (no privilege escalation),
