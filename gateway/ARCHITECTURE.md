@@ -279,7 +279,20 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 /internal/adapter            — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
                              docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
-                             the gateway's second external Go dependency family after OTel)
+                             the gateway's second external Go dependency family after OTel).
+                             **Verified 2026-09-22**: this session's own research raised a theoretical
+                             cache-token double-counting concern (OTel's `gen_ai.usage.input_tokens`
+                             spec-definition includes both cache_read/cache_write subtotals). Checked
+                             directly against the code, not assumed: `Calculator.Calculate` already
+                             correctly subtracts `CacheReadTokens`/`CacheCreationTokens` from
+                             `PromptTokens` before pricing; every adapter (`openai`/`openaicompat`/
+                             `anthropic`/`bedrock`/`gemini`) independently populates all three fields
+                             from each provider's own already-separate native usage fields, never from
+                             a single combined field; and the OTel span emission
+                             (`dataplane.go`'s `ChatCompletionResult.InputTokens`) is set directly from
+                             `resp.Usage.PromptTokens`, with `CacheReadTokens`/`CacheCreationTokens`
+                             emitted as separate, informational sibling attributes, not re-added on
+                             top. No double-counting path exists anywhere in this pipeline.
 /internal/telemetry          — real OTel spans per request (GenAI semantic-convention attributes,
                              agent_run_id via W3C Baggage) — ACTIVE, per
                              docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md. **Added 2026-09-14**:
