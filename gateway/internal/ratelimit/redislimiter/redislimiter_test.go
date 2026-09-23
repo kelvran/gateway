@@ -358,6 +358,50 @@ func TestAdjustTPMClampPreventsManufacturingCapacityFromExcessiveRelease(t *test
 	}
 }
 
+// TestAllowSetsExpiryAtomicallyWithTheSameScriptCall is the direct
+// regression proof against the exact bug class in a real, closed
+// BerriAI/litellm GitHub issue (#38987, fixed by PR #39250): LiteLLM's
+// Redis-backed rate-limit counter was updated via TWO SEPARATE Redis
+// commands (INCRBYFLOAT then a conditional EXPIRE) -- if a Sentinel
+// failover promoted a new master between those two commands, the
+// increment survived but the expiry did not, leaving a permanent
+// (TTL=-1) counter that caused recurring false rate-limit saturation
+// until an operator manually deleted it. Kelvran's luaSrc combines the
+// HSET (state write) and EXPIRE into ONE atomic Lua script, run via a
+// SINGLE script.Run call in Allow -- there is no separate Go-side EXPIRE
+// call for a failover to land between. Proven here by checking the
+// key's real TTL immediately after the single Allow call returns: if
+// this test ever starts seeing TTL == -1 (no expiry), it means a future
+// refactor split the atomic script back into separate commands, exactly
+// the regression this incident describes -- re-read the incident before
+// "fixing" this back apart.
+func TestAllowSetsExpiryAtomicallyWithTheSameScriptCall(t *testing.T) {
+	l, err := Open(redis.Options{Addr: redisAddr})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	raw := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer func() { _ = raw.Close() }()
+
+	ctx := context.Background()
+	keyID := uniqueKey(t)
+
+	if _, err := l.Allow(ctx, keyID, 3, 1); err != nil {
+		t.Fatalf("Allow() error = %v", err)
+	}
+
+	redisKey := "ratelimit:" + keyID
+	ttl, err := raw.TTL(ctx, redisKey).Result()
+	if err != nil {
+		t.Fatalf("TTL(%q) error = %v", redisKey, err)
+	}
+	if ttl <= 0 {
+		t.Fatalf("TTL(%q) = %v immediately after a single Allow() call, want a positive TTL already set -- the HSET and EXPIRE must land in the same atomic script execution, never a separate follow-up command", redisKey, ttl)
+	}
+}
+
 func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
 	// A port nothing is listening on. Open must still succeed — go-redis
 	// dials lazily, and this RFC's fail-open policy depends on Open

@@ -184,6 +184,19 @@ func (failingRedisBackend) Close() error { return nil }
 // RateLimitFailOpen=true on the logged event — auditable in production,
 // not just asserted in docs/rfcs/2026-09-03-distributed-rate-limiting.md's
 // "second, independent control" argument.
+// TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors is also the
+// direct regression proof against a real, closed BerriAI/litellm GitHub
+// issue (#14820, filed 2025-09-23, fixed in v1.77.5-stable): LiteLLM's
+// newer "V3" rate-limiter regressed this exact property -- when Redis
+// became unreachable, in-flight requests started FAILING instead of
+// being handled without rate limiting, a behavior change LiteLLM's own
+// maintainers described as a regression from explicitly-preferred prior
+// behavior. This test proves Kelvran's checkRateLimit fail-open path
+// (dataplane.go) keeps the request succeeding when the limiter backend
+// errors -- if a future refactor ever flips this to fail-closed by
+// accident (exactly what LiteLLM's own V3 rewrite did, with no test to
+// catch it), this test starts failing at the `HandleChatCompletion`
+// call below, not just on the RateLimitFailOpen flag.
 func TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
