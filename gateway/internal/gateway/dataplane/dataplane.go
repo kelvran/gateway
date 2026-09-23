@@ -674,6 +674,16 @@ type Pipeline struct {
 	// trigger already established.
 	finishReasonAnomalyDetector *anomaly.Detector
 	fallbackAnomalyDetector     *anomaly.Detector
+	// deploymentLatencyMu/deploymentLatencyEMAMs back
+	// updateLatencyDeweighting's own rolling-average probe-latency signal
+	// -- see that method's own doc comment. A plain map + mutex, not a
+	// sync.Map: ProbeDeployments' own goroutine-per-deployment fan-out
+	// means concurrent writers are the norm, but the read side (finding
+	// a model group's fastest peer) needs a consistent-enough snapshot
+	// that a plain mutex is simplest and sufficient at this data volume
+	// (one float64 per deployment, never more than a few dozen).
+	deploymentLatencyMu    sync.Mutex
+	deploymentLatencyEMAMs map[string]float64
 }
 
 // anomalyWindowSize/anomalyMinFlaggedRate/anomalyShiftFactor are this
@@ -780,6 +790,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		now:                         time.Now,
 		finishReasonAnomalyDetector: anomaly.NewDetector(anomalyWindowSize, anomalyMinFlaggedRate, anomalyShiftFactor),
 		fallbackAnomalyDetector:     anomaly.NewDetector(anomalyWindowSize, anomalyMinFlaggedRate, anomalyShiftFactor),
+		deploymentLatencyEMAMs:      map[string]float64{},
 	}
 	p.verifier.Store(cfg.Verifier)
 	return p, nil
@@ -3324,7 +3335,18 @@ func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
 		Messages:  []adapter.Message{{Role: "user", Content: "ping"}},
 		MaxTokens: &maxTokens,
 	}
+	probeStart := p.now()
 	_, err := p.callDeployment(probeCtx, dep, req)
+	if err == nil {
+		// Latency is only a meaningful load signal on a SUCCESSFUL probe
+		// -- a failed/timed-out call's own elapsed time is dominated by
+		// healthProbeCallTimeout or a fast connection-refused error,
+		// neither of which says anything about this deployment's real
+		// serving latency when healthy. An unhealthy deployment is
+		// already excluded from Select entirely via the health gate
+		// below, so it has no need for a latency signal regardless.
+		p.updateLatencyDeweighting(dep, p.now().Sub(probeStart))
+	}
 
 	healthy, changed := p.router.ReportProbeResult(dep.Name, err == nil)
 	if !changed {
@@ -3335,6 +3357,70 @@ func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
 		return
 	}
 	p.logger.Warn("health_probe_deployment_unhealthy", "deployment", dep.Name, "error", err)
+}
+
+// latencyEMAAlpha weights each new probe latency observation against
+// the running average -- 0.3 reacts within a handful of probe cycles
+// (matching healthProbeCallTimeout's own multi-second cadence) without
+// letting one single slow/fast outlier probe swing the signal wildly,
+// the same smoothing-vs-reactivity tradeoff healthProbeBackoffGrowthFactor
+// makes elsewhere in this same file for a different signal.
+const latencyEMAAlpha = 0.3
+
+// updateLatencyDeweighting records elapsed (a real, successful probe's
+// own round-trip time) into dep's rolling-average latency, then compares
+// it against the FASTEST current average among dep.Model's other
+// deployments to compute a soft de-weighting percentage for
+// router.SetLatencyFactor -- see self-hosted-inference-server-
+// integration-depth-2026-09-22.md's own finding that Select has zero
+// load/latency signal today, and SetLatencyFactor's own doc comment for
+// why this is a soft signal, never a hard exclusion. Deliberately
+// bounded to what's safely buildable without a new metrics-scraping
+// integration: this reuses the EXISTING probe call's own timing, not a
+// new network call to a self-hosted runtime's /metrics endpoint (a
+// materially bigger integration named as explicit future work, not
+// built here). A model group with only one deployment, or where no peer
+// has a latency sample yet, has nothing to compare against and is left
+// alone (SetLatencyFactor never called) -- the same "no signal, no
+// effect" default every other optional gate in this package already
+// establishes.
+func (p *Pipeline) updateLatencyDeweighting(dep Deployment, elapsed time.Duration) {
+	elapsedMs := float64(elapsed.Milliseconds())
+	if elapsedMs <= 0 {
+		elapsedMs = 1 // a real, sub-millisecond-fast local/test call should never be treated as "no signal" via a zero value below.
+	}
+
+	p.deploymentLatencyMu.Lock()
+	ema, known := p.deploymentLatencyEMAMs[dep.Name]
+	if !known {
+		ema = elapsedMs
+	} else {
+		ema = latencyEMAAlpha*elapsedMs + (1-latencyEMAAlpha)*ema
+	}
+	p.deploymentLatencyEMAMs[dep.Name] = ema
+
+	fastest := ema
+	peerCount := 1
+	for name, d := range p.deploymentsByName {
+		if name == dep.Name || d.Model != dep.Model {
+			continue
+		}
+		peerEMA, ok := p.deploymentLatencyEMAMs[name]
+		if !ok {
+			continue
+		}
+		peerCount++
+		if peerEMA < fastest {
+			fastest = peerEMA
+		}
+	}
+	p.deploymentLatencyMu.Unlock()
+
+	if peerCount < 2 || fastest <= 0 {
+		return
+	}
+	percent := int(fastest / ema * 100)
+	p.router.SetLatencyFactor(dep.Name, percent)
 }
 
 // healthProbeBackoffGrowthFactor doubles a persistently-unhealthy

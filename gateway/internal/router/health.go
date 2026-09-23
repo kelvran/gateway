@@ -130,6 +130,18 @@ type deploymentHealth struct {
 	// across next() calls, so the accept ratio stays exact over any
 	// window that's a multiple of its period, not merely on average.
 	rampCredit int
+	// latencyFactorPercent is SetLatencyFactor's own stored value — see
+	// that method's doc comment. 0 (the zero value, and every deployment
+	// SetLatencyFactor has never been called for) means "no de-weighting
+	// signal, treat as 100%," mirroring this whole package's "zero means
+	// unset, unchanged behavior" convention.
+	latencyFactorPercent int
+	// latencyCredit is latencyFactorPercent's own Bresenham-style
+	// thinning-gate accumulator, structurally identical to rampCredit
+	// above but independent of it -- a deployment can be both ramping
+	// AND latency-de-weighted at once, each gate applying its own
+	// separate, persistent fractional-share accounting.
+	latencyCredit int
 }
 
 // ReportProbeResult records the outcome of one health probe for the
@@ -282,24 +294,85 @@ func (r *Router) admitTurn(name string) bool {
 	if !h.healthy {
 		return false
 	}
-	if !h.ramping {
+	if h.ramping {
+		cfg := r.healthCfg
+		step := h.rampStep
+		if step > cfg.RecoveryRampSteps {
+			step = cfg.RecoveryRampSteps
+		}
+		span := rampCreditFull - cfg.RecoveryRampInitialPercent
+		percent := cfg.RecoveryRampInitialPercent + span*step/cfg.RecoveryRampSteps
+
+		h.rampCredit += percent
+		if h.rampCredit >= rampCreditFull {
+			h.rampCredit -= rampCreditFull
+		} else {
+			return false
+		}
+	}
+
+	return admitLatencyThinnedTurn(h)
+}
+
+// latencyFactorFloorPercent is the minimum latencyFactorPercent
+// SetLatencyFactor ever stores — this is a SOFT de-weighting signal,
+// never a hard exclusion (per this session's own self-hosted-inference
+// research finding: a slow-but-healthy deployment must still receive
+// some traffic, just less of it), so even the slowest-relative-to-its-
+// group deployment keeps at least this share of its configured Weight.
+const latencyFactorFloorPercent = 10
+
+// admitLatencyThinnedTurn applies h's own latencyFactorPercent via the
+// identical Bresenham-style thinning gate admitTurn's ramp branch
+// already establishes (accumulate the percentage every offered turn,
+// admit once the accumulator reaches rampCreditFull, carry the
+// remainder forward) -- called with r.healthMu already held. A
+// deployment with no latency signal set (latencyFactorPercent == 0, the
+// zero value) always admits, byte-for-byte the pre-feature behavior.
+func admitLatencyThinnedTurn(h *deploymentHealth) bool {
+	if h.latencyFactorPercent <= 0 {
 		return true
 	}
-
-	cfg := r.healthCfg
-	step := h.rampStep
-	if step > cfg.RecoveryRampSteps {
-		step = cfg.RecoveryRampSteps
-	}
-	span := rampCreditFull - cfg.RecoveryRampInitialPercent
-	percent := cfg.RecoveryRampInitialPercent + span*step/cfg.RecoveryRampSteps
-
-	h.rampCredit += percent
-	if h.rampCredit >= rampCreditFull {
-		h.rampCredit -= rampCreditFull
+	h.latencyCredit += h.latencyFactorPercent
+	if h.latencyCredit >= rampCreditFull {
+		h.latencyCredit -= rampCreditFull
 		return true
 	}
 	return false
+}
+
+// SetLatencyFactor records a soft de-weighting signal for name, as a
+// percentage (1-100) of its configured Weight it should now effectively
+// receive -- e.g. 50 means "half its normal share," never a hard
+// exclusion (see latencyFactorFloorPercent). Callers (dataplane's health
+// probe loop) compute this from each deployment's own rolling-average
+// probe latency relative to its model-group peers; this method has no
+// opinion on how the percentage was derived, only on applying it, per
+// this package's existing separation between health-probe timing
+// (dataplane) and admission gating (router). percent <= 0 clears the
+// signal back to "unset, no de-weighting" -- the same "zero means
+// unset" convention this whole package uses. percent is clamped to
+// [latencyFactorFloorPercent, 100] so a caller can never accidentally
+// zero out a deployment's traffic entirely through this path.
+func (r *Router) SetLatencyFactor(name string, percent int) {
+	r.healthMu.Lock()
+	defer r.healthMu.Unlock()
+
+	h, ok := r.health[name]
+	if !ok {
+		h = &deploymentHealth{healthy: true}
+		r.health[name] = h
+	}
+	switch {
+	case percent <= 0:
+		h.latencyFactorPercent = 0
+	case percent > 100:
+		h.latencyFactorPercent = 100
+	case percent < latencyFactorFloorPercent:
+		h.latencyFactorPercent = latencyFactorFloorPercent
+	default:
+		h.latencyFactorPercent = percent
+	}
 }
 
 // activeCostTier reports the tier selectHealthy should currently prefer
