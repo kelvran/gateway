@@ -388,6 +388,7 @@ deployments:
     provider: "openai"
     upstream_model: "gpt-4o"
     base_url: %q
+    allow_insecure_http: true
     api_key_env: %q
 telemetry:
   exporter: "none"

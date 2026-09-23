@@ -21,6 +21,7 @@ package controlplane
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -46,8 +47,17 @@ type DeploymentConfig struct {
 	// (which may differ from Model, e.g. a versioned Anthropic model ID).
 	UpstreamModel string
 	// BaseURL is the full upstream endpoint URL to POST the provider
-	// request to.
+	// request to. Must be "https", not "http", unless AllowInsecureHTTP
+	// is explicitly set -- fails closed by default, same posture as
+	// AllowedRegions' own "empty region never satisfies a real
+	// constraint" design. Self-hosted openaicompat backends are the
+	// realistic case where an operator might otherwise point this at a
+	// plaintext internal endpoint.
 	BaseURL string
+	// AllowInsecureHTTP opts this one deployment out of the https-only
+	// requirement above, for legitimate localhost/dev-testing use. False
+	// (the default) is the secure, fail-closed posture.
+	AllowInsecureHTTP bool
 	// APIKeyEnv is the name of the environment variable holding this
 	// deployment's upstream provider API key. Never the raw key value.
 	// Required for every provider except "bedrock", per
@@ -184,6 +194,28 @@ type DeploymentConfig struct {
 	// deployments by this field into two disjoint pools — additive, zero
 	// behavior change for every existing chat deployment.
 	Kind string
+	// TLSConfig, when set, gives this one deployment its own dedicated
+	// *http.Transport built with a custom CA and/or client certificate,
+	// instead of sharing cmd/gateway's single global upstream transport
+	// (see newUpstreamTransport's own doc comment). Nil (the default) is
+	// a silent no-op -- the deployment keeps using the shared transport
+	// exactly as before this feature existed. The realistic case is a
+	// self-hosted openaicompat backend on an internal CA or behind mTLS.
+	TLSConfig *DeploymentTLSConfig
+}
+
+// DeploymentTLSConfig names PEM file paths, never inline certificate
+// material -- mirrors this whole config package's own "never store a
+// secret VALUE in a committed file" convention (see the package doc
+// comment) by keeping the actual key material on disk, outside the
+// config file. All three fields are independently optional: CACertPath
+// alone verifies the upstream's certificate against a custom CA;
+// ClientCertPath+ClientKeyPath alone (both required together) present a
+// client certificate for mTLS; both may be set together.
+type DeploymentTLSConfig struct {
+	CACertPath     string
+	ClientCertPath string
+	ClientKeyPath  string
 }
 
 // fallbackClassContentPolicy, fallbackClassContextWindowExceeded, and
@@ -261,6 +293,14 @@ type VirtualKeyConfig struct {
 	// own doc comment for the fail-closed behavior against a deployment
 	// with no region set at all.
 	AllowedRegions []string
+	// AllowedSourceCIDRs restricts this key to requests whose resolved
+	// client source IP falls within at least one of these CIDR blocks
+	// (e.g. "10.0.0.0/8", "203.0.113.4/32" for a single address). Empty
+	// means no constraint, mirroring AllowedModels/AllowedRegions. See
+	// identity.VirtualKey.AllowedSourceCIDRs' own doc comment for the
+	// enforcement point and the deliberate choice not to trust a
+	// client-supplied header (X-Forwarded-For) by default.
+	AllowedSourceCIDRs []string
 	// RateLimitBurst and RateLimitRefill configure this key's own
 	// token-bucket rate limiter. Zero means "use the gateway's default"
 	// (resolved by cmd/gateway, not here — this package only parses what
@@ -881,6 +921,14 @@ func Load(path string) (*Config, error) {
 			}
 			sort.Strings(vk.AllowedRegions)
 		}
+		if ac, ok := getMap(vkMap, "allowed_source_cidrs"); ok {
+			for cidr, v := range ac {
+				if enabled, ok := v.(bool); ok && enabled {
+					vk.AllowedSourceCIDRs = append(vk.AllowedSourceCIDRs, cidr)
+				}
+			}
+			sort.Strings(vk.AllowedSourceCIDRs)
+		}
 		vk.BillingSubjectID, _ = getString(vkMap, "billing_subject_id")
 		cfg.VirtualKeys = append(cfg.VirtualKeys, vk)
 	}
@@ -900,6 +948,9 @@ func Load(path string) (*Config, error) {
 		dep.Provider, _ = getString(depMap, "provider")
 		dep.UpstreamModel, _ = getString(depMap, "upstream_model")
 		dep.BaseURL, _ = getString(depMap, "base_url")
+		if err := assignBool(&dep.AllowInsecureHTTP, depMap, "allow_insecure_http", fmt.Sprintf("controlplane: deployment %q", name)); err != nil {
+			return nil, err
+		}
 		dep.APIKeyEnv, _ = getString(depMap, "api_key_env")
 		dep.AccessKeyIDEnv, _ = getString(depMap, "access_key_id_env")
 		dep.SecretAccessKeyEnv, _ = getString(depMap, "secret_access_key_env")
@@ -907,6 +958,24 @@ func Load(path string) (*Config, error) {
 		dep.Region, _ = getString(depMap, "region")
 		if dep.Model == "" || dep.Provider == "" || dep.UpstreamModel == "" || dep.BaseURL == "" {
 			return nil, fmt.Errorf("controlplane: deployment %q is missing one of model/provider/upstream_model/base_url", name)
+		}
+		if parsed, err := url.Parse(dep.BaseURL); err != nil {
+			return nil, fmt.Errorf("controlplane: deployment %q has an unparseable base_url %q: %w", name, dep.BaseURL, err)
+		} else if parsed.Scheme != "https" && !dep.AllowInsecureHTTP {
+			return nil, fmt.Errorf("controlplane: deployment %q base_url %q is not https -- set allow_insecure_http: true if this is a deliberate localhost/dev endpoint", name, dep.BaseURL)
+		}
+		if tlsRaw, ok := getMap(depMap, "tls"); ok {
+			tlsCfg := &DeploymentTLSConfig{}
+			tlsCfg.CACertPath, _ = getString(tlsRaw, "ca_cert_path")
+			tlsCfg.ClientCertPath, _ = getString(tlsRaw, "client_cert_path")
+			tlsCfg.ClientKeyPath, _ = getString(tlsRaw, "client_key_path")
+			if (tlsCfg.ClientCertPath == "") != (tlsCfg.ClientKeyPath == "") {
+				return nil, fmt.Errorf("controlplane: deployment %q tls.client_cert_path and tls.client_key_path must both be set together, or neither", name)
+			}
+			if tlsCfg.CACertPath == "" && tlsCfg.ClientCertPath == "" {
+				return nil, fmt.Errorf("controlplane: deployment %q declares a tls: block with none of ca_cert_path/client_cert_path+client_key_path set", name)
+			}
+			dep.TLSConfig = tlsCfg
 		}
 		if dep.Provider == "bedrock" {
 			if dep.AccessKeyIDEnv == "" || dep.SecretAccessKeyEnv == "" || dep.Region == "" {

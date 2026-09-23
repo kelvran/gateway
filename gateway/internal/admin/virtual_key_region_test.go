@@ -86,7 +86,7 @@ func TestUpsertVirtualKeyWithAllowedRegionsIsEnforced(t *testing.T) {
 	}
 
 	authHeader := "Bearer " + newBearerValue
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	if served != "eu" {

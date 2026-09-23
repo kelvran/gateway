@@ -48,6 +48,7 @@ deployments:
     provider: "openai"
     upstream_model: "gpt-4o"
     base_url: "http://unused"
+    allow_insecure_http: true
     api_key_env: "ADMIN_STARTUP_TEST_UNUSED_UPSTREAM_KEY"
 telemetry:
   exporter: "none"

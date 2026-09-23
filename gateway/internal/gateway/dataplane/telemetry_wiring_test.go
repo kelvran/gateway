@@ -72,7 +72,7 @@ func TestHandleChatCompletionEmitsSpanOnSuccess(t *testing.T) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, "")
 	if err != nil {
@@ -120,7 +120,7 @@ func TestHandleChatCompletionEmitsSpanOnAuthFailureWithoutVirtualKeyID(t *testin
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
-	_, err := p.HandleChatCompletion(context.Background(), "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("expected an error for missing Authorization header")
 	}
@@ -146,10 +146,10 @@ func TestHandleChatCompletionEmitsSpanWithCacheHitTrue(t *testing.T) {
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 
@@ -208,10 +208,10 @@ func TestHandleChatCompletionEmitsSpanWithL3CacheProvenance(t *testing.T) {
 	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "Explain how binary search works in a sorted array"}}}
 	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "Explain how binary search   works in a sorted array"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", first, ""); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", second, ""); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 
@@ -259,7 +259,7 @@ func TestHandleChatCompletionEmitsSpanWithAgentRunIDFromBaggage(t *testing.T) {
 	}
 	ctx := baggage.ContextWithBaggage(context.Background(), bag)
 
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -284,11 +284,11 @@ func TestHandleChatCompletionStreamEmitsSpanOnSuccessAndCacheHit(t *testing.T) {
 	req := adapter.ChatRequest{Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
 
 	rec1 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec1, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec1, ""); err != nil {
 		t.Fatalf("first HandleChatCompletionStream: %v", err)
 	}
 	rec2 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec2, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec2, ""); err != nil {
 		t.Fatalf("second HandleChatCompletionStream: %v", err)
 	}
 
@@ -322,7 +322,7 @@ func TestGenAIRequestStreamDistinguishesBufferedFromStreamingCalls(t *testing.T)
 	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
@@ -341,7 +341,7 @@ func TestGenAIRequestStreamDistinguishesBufferedFromStreamingCalls(t *testing.T)
 		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
 	}, nil, adapter.Registry{"openai": openai.New()})
 	rec := httptest.NewRecorder()
-	if err := sp.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	if err := sp.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, ""); err != nil {
 		t.Fatalf("HandleChatCompletionStream: %v", err)
@@ -395,7 +395,7 @@ func TestHandleChatCompletionEmitsCacheReadAndCreationTokenSpanAttributes(t *tes
 	}
 
 	req := adapter.ChatRequest{Model: "claude-opus-4", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 

@@ -86,7 +86,7 @@ type UpstreamStreamCaller func(ctx context.Context, dep Deployment, providerReq 
 // still happen exactly once per request, via the same deferred logRequest
 // pattern HandleChatCompletion uses, since a streamed generation is just
 // as billable as a buffered one.
-func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, req adapter.ChatRequest, w http.ResponseWriter, idempotencyKey string) (err error) {
+func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, remoteAddr string, req adapter.ChatRequest, w http.ResponseWriter, idempotencyKey string) (err error) {
 	var (
 		cacheInfo             cacheProvenance
 		resp                  adapter.ChatResponse
@@ -135,6 +135,10 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
 	if verifyErr != nil {
 		err = fmt.Errorf("dataplane: auth: %w", verifyErr)
+		return
+	}
+	if !isSourceIPAllowed(vk, resolveClientIP(remoteAddr)) {
+		err = fmt.Errorf("%w: %q", ErrSourceIPNotAllowed, remoteAddr)
 		return
 	}
 	if !isModelAllowed(vk, req.Model) {

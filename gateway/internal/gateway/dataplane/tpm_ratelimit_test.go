@@ -70,7 +70,7 @@ func TestHandleChatCompletionRejectsOnceTPMBucketExhausted(t *testing.T) {
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
 
 	// Call 1: balance starts at 10 (>0) -> allowed; debits 8 -> balance 2.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("call 1: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -79,7 +79,7 @@ func TestHandleChatCompletionRejectsOnceTPMBucketExhausted(t *testing.T) {
 
 	// Call 2: balance is 2 (>0) -> allowed; debits 8 -> balance -6 (overdraft).
 	req2 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "a different request"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req2, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req2, ""); err != nil {
 		t.Fatalf("call 2: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -88,7 +88,7 @@ func TestHandleChatCompletionRejectsOnceTPMBucketExhausted(t *testing.T) {
 
 	// Call 3: balance is -6 (<=0) -> rejected, no third upstream call.
 	req3 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "yet another distinct request"}}}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req3, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req3, "")
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("call 3 err = %v, want ErrRateLimited", err)
 	}
@@ -115,11 +115,11 @@ func TestHandleChatCompletionCacheHitDoesNotDebitTPMBucket(t *testing.T) {
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
 
 	// Real miss: balance 10 -> debit 8 -> balance 2.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("first (real-miss) call: %v", err)
 	}
 	// Repeat the IDENTICAL request: a real L1 cache hit. Must not debit.
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("second (cache-hit) call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -131,7 +131,7 @@ func TestHandleChatCompletionCacheHitDoesNotDebitTPMBucket(t *testing.T) {
 	// If the cache hit incorrectly re-debited (balance -6), this is
 	// rejected instead.
 	req2 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "a genuinely different request"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req2, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req2, ""); err != nil {
 		t.Fatalf("third (different, real-miss) call: %v — a cache hit must never re-debit the TPM bucket", err)
 	}
 	if upstreamCalls != 2 {
@@ -152,7 +152,7 @@ func TestHandleChatCompletionUnaffectedByTPMWhenNotConfigured(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "distinct content " + string(rune('a'+i))}}}
-		if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+		if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 			t.Fatalf("call %d: %v", i+1, err)
 		}
 	}
@@ -229,11 +229,11 @@ func TestHandleChatCompletionPerModelTPMExhaustsIndependentlyOfDefaultBucket(t *
 	// billedTokens/billedCount) against a balance of only 2, going
 	// negative, then reconciles to the same real 8-token cost.
 	gpt4oReq1 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "gpt-4o request one"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", gpt4oReq1, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", gpt4oReq1, ""); err != nil {
 		t.Fatalf("gpt-4o call 1: %v", err)
 	}
 	gpt4oReq2 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "gpt-4o request two"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", gpt4oReq2, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", gpt4oReq2, ""); err != nil {
 		t.Fatalf("gpt-4o call 2: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -243,7 +243,7 @@ func TestHandleChatCompletionPerModelTPMExhaustsIndependentlyOfDefaultBucket(t *
 	// A third gpt-4o call must now be rejected — its own override bucket
 	// is exhausted (negative balance after call 2).
 	gpt4oReq3 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "gpt-4o request three"}}}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", gpt4oReq3, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", gpt4oReq3, "")
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("gpt-4o call 3 err = %v, want ErrRateLimited — its own override bucket should be exhausted", err)
 	}
@@ -256,7 +256,7 @@ func TestHandleChatCompletionPerModelTPMExhaustsIndependentlyOfDefaultBucket(t *
 	// to the key's own default 1000-token bucket, untouched by gpt-4o's
 	// own exhaustion.
 	miniReq := adapter.ChatRequest{Model: "gpt-4o-mini", Messages: []adapter.Message{{Role: "user", Content: "gpt-4o-mini request"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", miniReq, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", miniReq, ""); err != nil {
 		t.Fatalf("gpt-4o-mini call: %v — must succeed against the key's own default TPM bucket, unaffected by gpt-4o's own exhausted override", err)
 	}
 	if upstreamCalls != 3 {

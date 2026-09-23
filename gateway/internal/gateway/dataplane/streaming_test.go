@@ -130,7 +130,7 @@ func TestHandleChatCompletionStreamModelNotAllowedCheckedFirst(t *testing.T) {
 	}, nil, adapter.Registry{"openai": openai.New()}, keys, tracker)
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if !errors.Is(err, ErrModelNotAllowed) {
@@ -154,7 +154,7 @@ func TestHandleChatCompletionStreamBudgetExceededRejectsBeforeUpstream(t *testin
 	}, nil, adapter.Registry{"openai": openai.New()}, keys, tracker)
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if !errors.Is(err, ErrBudgetExceeded) {
@@ -184,7 +184,7 @@ func TestHandleChatCompletionStreamCacheIsolatedAcrossVirtualKeys(t *testing.T) 
 	}
 
 	rec1 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", req, rec1, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", "", req, rec1, ""); err != nil {
 		t.Fatalf("team-alpha first call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -194,7 +194,7 @@ func TestHandleChatCompletionStreamCacheIsolatedAcrossVirtualKeys(t *testing.T) 
 	// team-beta's identical request must be a real cache MISS (a second
 	// real UpstreamStream call), not served from team-alpha's cache entry.
 	rec2 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer beta-secret", req, rec2, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer beta-secret", "", req, rec2, ""); err != nil {
 		t.Fatalf("team-beta first call: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -204,7 +204,7 @@ func TestHandleChatCompletionStreamCacheIsolatedAcrossVirtualKeys(t *testing.T) 
 	// Each key's own SECOND identical request must now be a fake-streamed
 	// cache hit — upstreamCalls stays at 2.
 	rec3 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", req, rec3, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer alpha-secret", "", req, rec3, ""); err != nil {
 		t.Fatalf("team-alpha second call: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -220,7 +220,7 @@ func TestHandleChatCompletionStreamCacheMissRealStream(t *testing.T) {
 	}, nil, adapter.Registry{"openai": openai.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err != nil {
@@ -242,7 +242,7 @@ func TestHandleChatCompletionStreamCacheMissRealStream(t *testing.T) {
 	// count must stay at 1, and the fake-streamed body must still carry
 	// the accumulated content and the correct finish_reason.
 	rec2 := httptest.NewRecorder()
-	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec2, "")
 	if err != nil {
@@ -286,7 +286,7 @@ func TestHandleChatCompletionStreamUnsupportedProviderReturnsTypedError(t *testi
 		adapter.Registry{"legacy-buffered-only": nonStreamingAdapter{}})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "claude-legacy", Stream: true,
 	}, rec, "")
 	if !errors.Is(err, ErrStreamingNotSupported) {
@@ -298,7 +298,7 @@ func TestHandleChatCompletionStreamNotConfiguredOnCacheMiss(t *testing.T) {
 	p := newStreamingTestPipeline(t, nil, nil, adapter.Registry{"openai": openai.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if !errors.Is(err, ErrStreamingNotConfigured) {
@@ -320,7 +320,7 @@ func TestHandleChatCompletionStreamFallbackBeforeFirstByte(t *testing.T) {
 	}, adapter.Registry{"openai": openai.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if err != nil {
@@ -370,7 +370,7 @@ func TestHandleChatCompletionStreamMultiHopFallbackChainRoutesByClassAndHop(t *t
 	}, deployments, adapter.Registry{"openai": openai.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if err != nil {
@@ -426,7 +426,7 @@ func TestHandleChatCompletionStreamMultiHopChainStopsOnceChunkSent(t *testing.T)
 	}, deployments, adapter.Registry{"openai": openai.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if err == nil {
@@ -478,7 +478,7 @@ func TestHandleChatCompletionStreamNoFallbackAfterFirstByte(t *testing.T) {
 	}, adapter.Registry{"openai": openai.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if err == nil {
@@ -553,7 +553,7 @@ func TestHandleChatCompletionStreamDisconnectAfterRealContentStillBillsIt(t *tes
 	}
 
 	rec := httptest.NewRecorder()
-	streamErr := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	streamErr := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if streamErr == nil {
@@ -598,12 +598,12 @@ func TestHandleChatCompletionStreamTruncatedResponseNeverCached(t *testing.T) {
 	req := adapter.ChatRequest{Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "give me a truncated answer"}}}
 
 	rec1 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec1, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec1, ""); err != nil {
 		t.Fatalf("first HandleChatCompletionStream: %v", err)
 	}
 
 	rec2 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec2, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec2, ""); err != nil {
 		t.Fatalf("second HandleChatCompletionStream: %v", err)
 	}
 
@@ -711,7 +711,7 @@ func TestFinishStreamedResponseLogsWarningOnDuplicateIndexAfterFinish(t *testing
 	}
 
 	rec := httptest.NewRecorder()
-	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err != nil {

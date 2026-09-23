@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -90,6 +91,24 @@ type VirtualKey struct {
 	// would silently defeat the exact guarantee this field exists to
 	// provide. See dataplane.isRegionAllowed for the enforcement logic.
 	AllowedRegions map[string]struct{}
+	// AllowedSourceCIDRs restricts this key to requests whose resolved
+	// client source IP falls within at least one of these CIDR blocks.
+	// Empty or nil means no constraint, mirroring AllowedModels's/
+	// AllowedRegions's own "empty means unrestricted" convention exactly.
+	// Pre-parsed into *net.IPNet (not raw strings) at construction time,
+	// the same reason AllowedModels/AllowedRegions are pre-resolved into
+	// sets rather than re-parsed per request. Checked ONCE, at request-
+	// auth resolution (dataplane.HandleChatCompletion/HandleEmbeddings/
+	// HandleChatCompletionStream, immediately after Verify succeeds) --
+	// unlike AllowedModels/AllowedRegions, source IP doesn't vary across
+	// the dataplane's several fallback-candidate call sites, so there is
+	// no need to duplicate this check at each of them. Resolved from the
+	// real TCP peer address (http.Request.RemoteAddr) by default -- a
+	// client-supplied header (X-Forwarded-For) is deliberately NOT
+	// trusted here, since trusting a spoofable header by default would
+	// make the allowlist itself spoofable. See dataplane.isSourceIPAllowed
+	// for the enforcement logic.
+	AllowedSourceCIDRs []*net.IPNet
 	// RateLimitBurst and RateLimitRefill configure this key's own
 	// token-bucket rate limiter (see internal/ratelimit.TokenBucket).
 	RateLimitBurst  float64

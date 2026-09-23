@@ -27,10 +27,10 @@ func TestRotateVirtualKeyBothHashesWorkDuringGracePeriod(t *testing.T) {
 		t.Fatalf("RotateVirtualKey: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v1", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v1", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the OLD secret, still within grace period: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v2", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v2", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the NEW secret: %v", err)
 	}
 }
@@ -52,10 +52,10 @@ func TestRotateVirtualKeyOldHashRejectedAfterGracePeriodElapses(t *testing.T) {
 		t.Fatalf("RotateVirtualKey: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v1", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v1", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Error("HandleChatCompletion with the OLD secret succeeded past its (zero/negative) grace period, want rejection")
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v2", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v2", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the NEW secret: %v", err)
 	}
 }
@@ -80,13 +80,13 @@ func TestRotateVirtualKeyASecondTimeDropsTheDoublyOldHash(t *testing.T) {
 		t.Fatalf("RotateVirtualKey (2nd): %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v1", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v1", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Error("HandleChatCompletion with the doubly-old (v1) secret succeeded after a second rotation, want rejection")
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v2", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v2", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the singly-old (v2) secret, still within its own grace period: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v3", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer alpha-v3", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the current (v3) secret: %v", err)
 	}
 }

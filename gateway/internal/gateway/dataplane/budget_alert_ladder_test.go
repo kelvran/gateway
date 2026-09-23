@@ -29,7 +29,7 @@ func TestFinalizeLogsBudgetThresholdCrossed(t *testing.T) {
 	p := warnThresholdTestPipeline(t, vk, &logBuf)
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer ladder-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer ladder-key", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -54,14 +54,14 @@ func TestFinalizeDoesNotReLogBudgetThresholdCrossedWithinSameBucket(t *testing.T
 	p := warnThresholdTestPipeline(t, vk, &logBuf)
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer ladder-key-2", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer ladder-key-2", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion (1st): %v", err)
 	}
 	if strings.Contains(logBuf.String(), "budget_threshold_crossed") {
 		t.Fatalf("log output unexpectedly contains budget_threshold_crossed while spend is far below the lowest bucket, got: %s", logBuf.String())
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer ladder-key-2", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer ladder-key-2", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion (2nd): %v", err)
 	}
 	if strings.Contains(logBuf.String(), "budget_threshold_crossed") {

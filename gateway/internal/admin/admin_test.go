@@ -189,7 +189,7 @@ func TestUpsertVirtualKeyViaHTTPMakesTheKeyImmediatelyUsable(t *testing.T) {
 		t.Fatalf("POST status = %d, want 204, body: %s", rec.Code, rec.Body.String())
 	}
 
-	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+newBearerValue, adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+newBearerValue, "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion with the newly-admin-added key: %v", err)
 	}
@@ -213,10 +213,10 @@ func TestUpsertVirtualKeyWithPerModelRateLimitIsEnforced(t *testing.T) {
 	}
 
 	authHeader := "Bearer " + newBearerValue
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("first gpt-4o request: %v", err)
 	}
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Fatal("second gpt-4o request succeeded, want a rate-limit rejection — the Admin-API-configured per_model override (burst 1) should already be exhausted")
 	}
 }
@@ -252,10 +252,10 @@ func TestUpsertVirtualKeyWithPerModelTPMRateLimitIsEnforced(t *testing.T) {
 	}
 
 	authHeader := "Bearer " + newBearerValue
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("first gpt-4o request: %v", err)
 	}
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
 		t.Fatal("second gpt-4o request succeeded, want a rate-limit rejection — the Admin-API-configured per_model TPM override (capacity 1) should already be exhausted")
 	}
 }
@@ -440,7 +440,7 @@ func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
 	}
 
-	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+otherBearerValue, adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+otherBearerValue, "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("HandleChatCompletion succeeded with a deleted key's bearer value")
 	}
@@ -633,7 +633,7 @@ func TestDeleteVirtualKeyViaHTTPAlsoErasesItsBudgetSpend(t *testing.T) {
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	if spent := pipeline.SpentUSD(context.Background(), "test-key", 0); spent.IsZero() {
@@ -1624,7 +1624,7 @@ func TestUpdateDeploymentWeightViaHTTPChangesLiveRouting(t *testing.T) {
 			Model:    "gpt-4o",
 			Messages: []adapter.Message{{Role: "user", Content: fmt.Sprintf("call %d", i)}},
 		}
-		resp, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+		resp, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
@@ -1724,7 +1724,7 @@ func TestEraseCacheEntryHandlerErasesARealHitAndLogsAudit(t *testing.T) {
 	}
 
 	chatReq := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "erase-me-via-http"}}}
-	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", chatReq, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", "", chatReq, ""); err != nil {
 		t.Fatalf("priming HandleChatCompletion: %v", err)
 	}
 	if upstreamCalls != 1 {

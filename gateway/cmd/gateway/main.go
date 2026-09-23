@@ -24,6 +24,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -31,6 +32,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -239,6 +241,68 @@ func newUpstreamTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConnsPerHost = upstreamMaxIdleConnsPerHost
 	return t
+}
+
+// newDeploymentTLSTransport builds a dedicated *http.Transport for one
+// deployment's controlplane.DeploymentTLSConfig -- mirrors
+// newUpstreamTransport's own "clone http.DefaultTransport, override only
+// what this feature needs" shape, so every other stdlib default (dial
+// timeouts, TLS handshake timeout, HTTP/2 support) is preserved. Reads
+// PEM files from disk at startup, never inline certificate material —
+// see controlplane.DeploymentTLSConfig's own doc comment.
+func newDeploymentTLSTransport(tlsCfg *controlplane.DeploymentTLSConfig) (*http.Transport, error) {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = upstreamMaxIdleConnsPerHost
+	clientTLSConfig := &tls.Config{}
+
+	if tlsCfg.CACertPath != "" {
+		pem, err := os.ReadFile(tlsCfg.CACertPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading ca_cert_path %q: %w", tlsCfg.CACertPath, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ca_cert_path %q contains no valid PEM certificate", tlsCfg.CACertPath)
+		}
+		clientTLSConfig.RootCAs = pool
+	}
+	if tlsCfg.ClientCertPath != "" {
+		cert, err := tls.LoadX509KeyPair(tlsCfg.ClientCertPath, tlsCfg.ClientKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("loading client_cert_path/client_key_path: %w", err)
+		}
+		clientTLSConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	t.TLSClientConfig = clientTLSConfig
+	return t, nil
+}
+
+// buildPerDeploymentTLSClients returns two maps, keyed by deployment
+// name, for every deployment that declares a TLSConfig -- one set of
+// buffered (upstreamHTTPTimeout-bounded) clients and one set of
+// zero-timeout streaming clients, mirroring the shared-transport,
+// two-clients shape newUpstreamTransport's own two call sites already
+// use for the global default. Both clients for a given deployment share
+// ONE *http.Transport (safe for concurrent use by multiple Clients, the
+// same reason newUpstreamTransport's own doc comment gives). Deployments
+// with no TLSConfig are simply absent from both maps -- clientForDeployment
+// falls back to the shared default client for them, unchanged.
+func buildPerDeploymentTLSClients(deployments []controlplane.DeploymentConfig) (buffered, streaming map[string]*http.Client, err error) {
+	buffered = make(map[string]*http.Client)
+	streaming = make(map[string]*http.Client)
+	for _, d := range deployments {
+		if d.TLSConfig == nil {
+			continue
+		}
+		transport, err := newDeploymentTLSTransport(d.TLSConfig)
+		if err != nil {
+			return nil, nil, fmt.Errorf("deployment %q tls config: %w", d.Name, err)
+		}
+		buffered[d.Name] = &http.Client{Timeout: upstreamHTTPTimeout, Transport: transport}
+		streaming[d.Name] = &http.Client{Transport: transport}
+	}
+	return buffered, streaming, nil
 }
 
 func main() {
@@ -674,6 +738,18 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 				allowedRegions[r] = struct{}{}
 			}
 		}
+		// Parsed once at startup, not per request -- a malformed CIDR
+		// string is a config-load-time failure (loud, aborts startup),
+		// never a silently-ignored entry that would quietly weaken this
+		// key's own allowlist.
+		var allowedSourceCIDRs []*net.IPNet
+		for _, cidr := range vk.AllowedSourceCIDRs {
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				return nil, fmt.Errorf("virtual key %q: allowed_source_cidrs entry %q: %w", vk.Name, cidr, err)
+			}
+			allowedSourceCIDRs = append(allowedSourceCIDRs, network)
+		}
 		virtualKeys = append(virtualKeys, identity.VirtualKey{
 			ID:                    vk.Name,
 			KeyHash:               vk.KeyHash,
@@ -682,6 +758,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			BudgetWarnPercent:     vk.BudgetWarnPercent,
 			AllowedModels:         allowedModels,
 			AllowedRegions:        allowedRegions,
+			AllowedSourceCIDRs:    allowedSourceCIDRs,
 			RateLimitBurst:        burst,
 			RateLimitRefill:       refill,
 			MaxConcurrentRequests: vk.MaxConcurrentRequests,
@@ -880,6 +957,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	alertNotifier := newAlertNotifier(cfg.Alerting, logger)
 
 	upstreamTransport := newUpstreamTransport()
+	perDeploymentBufferedClients, perDeploymentStreamClients, err := buildPerDeploymentTLSClients(cfg.Deployments)
+	if err != nil {
+		return nil, err
+	}
 
 	guardrailEngine, err := newGuardrailEngine(cfg.Guardrails, logger)
 	if err != nil {
@@ -931,8 +1012,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		Router:                depRouter,
 		Deployments:           deployments,
 		CostCalculator:        costaccounting.NewCalculator(priceTable),
-		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
-		EmbeddingUpstream:     dataplane.NewHTTPEmbeddingUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}),
+		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}, perDeploymentBufferedClients),
+		EmbeddingUpstream:     dataplane.NewHTTPEmbeddingUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}, perDeploymentBufferedClients),
 		ConfigPublisher:       configPublisher,
 		AlertNotifier:         alertNotifier,
 		// Streaming upstream calls deliberately do NOT use client.Timeout
@@ -947,7 +1028,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		// streaming upstream used to hang indefinitely, bounded only by
 		// the original inbound client disconnecting). See that function's
 		// own doc comment for the full design rationale.
-		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{Transport: upstreamTransport}, streamIdleTimeout),
+		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{Transport: upstreamTransport}, perDeploymentStreamClients, streamIdleTimeout),
 		Logger:         logger,
 		CacheTTL:       time.Duration(cfg.Cache.TTLSeconds) * time.Second,
 		CacheL2TTL:     time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
@@ -1503,7 +1584,7 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		// be added to that same response.
 		ctx, upstreamDuration := dataplane.WithOverheadTracker(ctx)
 		requestStart := time.Now()
-		resp, err := p.HandleChatCompletion(ctx, r.Header.Get("Authorization"), req, r.Header.Get("Idempotency-Key"))
+		resp, err := p.HandleChatCompletion(ctx, r.Header.Get("Authorization"), r.RemoteAddr, req, r.Header.Get("Idempotency-Key"))
 		if err != nil {
 			writeErrorResponse(w, err)
 			return
@@ -1558,7 +1639,7 @@ func embeddingsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		}
 
 		ctx := telemetry.ExtractContext(r.Context(), r)
-		resp, err := p.HandleEmbeddings(ctx, r.Header.Get("Authorization"), req)
+		resp, err := p.HandleEmbeddings(ctx, r.Header.Get("Authorization"), r.RemoteAddr, req)
 		if err != nil {
 			writeErrorResponse(w, err)
 			return
@@ -1595,7 +1676,7 @@ func handleStreamingChatCompletion(p *dataplane.Pipeline, w http.ResponseWriter,
 	w.Header().Set("Connection", "keep-alive")
 
 	ctx := telemetry.ExtractContext(r.Context(), r)
-	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), req, w, r.Header.Get("Idempotency-Key")); err != nil {
+	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), r.RemoteAddr, req, w, r.Header.Get("Idempotency-Key")); err != nil {
 		writeErrorResponse(w, err)
 	}
 }
@@ -1631,7 +1712,7 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		// 429 bucket above: the caller may be nowhere near its OWN rate
 		// limit or concurrency cap.
 		status = http.StatusServiceUnavailable
-	case errors.Is(err, dataplane.ErrModelNotAllowed):
+	case errors.Is(err, dataplane.ErrModelNotAllowed), errors.Is(err, dataplane.ErrSourceIPNotAllowed):
 		status = http.StatusForbidden
 	case errors.Is(err, dataplane.ErrStreamingNotSupported):
 		status = http.StatusBadRequest

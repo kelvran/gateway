@@ -98,7 +98,7 @@ func TestProbeDeploymentsExcludesOnlyAfterThresholdThenHandleChatCompletionRoute
 			Model:    "gpt-4o",
 			Messages: []adapter.Message{{Role: "user", Content: fmt.Sprintf("unique probe-routing question #%d", i)}},
 		}
-		resp, err := p.HandleChatCompletion(ctx, "Bearer test-key", req, "")
+		resp, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", req, "")
 		if err != nil {
 			t.Fatalf("HandleChatCompletion call %d: %v", i, err)
 		}

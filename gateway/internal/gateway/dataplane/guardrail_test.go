@@ -84,7 +84,7 @@ func TestHandleChatCompletionPreCallBlocksBlockTierRequest(t *testing.T) {
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{
 		{Role: "user", Content: "my card number is " + fakeCreditCardNumber},
 	}}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if err == nil {
 		t.Fatal("expected ErrGuardrailBlocked, got nil")
 	}
@@ -106,7 +106,7 @@ func TestHandleChatCompletionPreCallDoesNotBlockWarnTierRequest(t *testing.T) {
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{
 		{Role: "user", Content: "you can reach me at jane.doe@example.com"},
 	}}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if err != nil {
 		t.Fatalf("expected a Warn-tier finding to proceed normally, got error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestPreCallGuardrailExcludesRedactedReasoningData(t *testing.T) {
 		},
 	}}
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v — a Redacted ReasoningBlock's opaque Data must never be scanned by the guardrail engine", err)
 	}
@@ -175,7 +175,7 @@ func TestPreCallGuardrailScansPlaintextReasoningBlocks(t *testing.T) {
 		},
 	}}
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrGuardrailBlocked) {
 		t.Errorf("err = %v, want ErrGuardrailBlocked — a plaintext ReasoningBlock must be scanned identically to visible text", err)
 	}
@@ -293,7 +293,7 @@ func TestPostCallGuardrailScansPlaintextReasoningBlocks(t *testing.T) {
 	}
 
 	req := adapter.ChatRequest{Model: "claude-opus-4", Messages: []adapter.Message{{Role: "user", Content: "how do I process this refund?"}}}
-	_, err = p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err = p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrGuardrailBlocked) {
 		t.Errorf("err = %v, want ErrGuardrailBlocked — a Block-tier trigger hidden only inside a plaintext ReasoningBlock (visible Content is clean) must still be caught post-call", err)
 	}
@@ -333,7 +333,7 @@ func TestHandleChatCompletionPreCallScansToolResultMessagesFedBackFromAnEarlierT
 		// itself, it only ever sees the result the caller already sent.
 		{Role: "tool", ToolCallID: "call_1", Content: "customer card on file: " + fakeCreditCardNumber},
 	}}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrGuardrailBlocked) {
 		t.Errorf("err = %v, want ErrGuardrailBlocked -- PII inside a role:\"tool\" message (a tool-call RESULT fed back from an earlier turn) must be caught pre-call, same as if it had been typed directly into a user message", err)
 	}
@@ -350,7 +350,7 @@ func TestHandleChatCompletionPostCallBlocksBlockTierResponse(t *testing.T) {
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "give me a test card number"}}}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if err == nil {
 		t.Fatal("expected ErrGuardrailBlocked, got nil")
 	}
@@ -374,10 +374,10 @@ func TestHandleChatCompletionPostCallBlockedResponseNeverCached(t *testing.T) {
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "give me a test card number"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err == nil {
 		t.Fatal("expected the first request to be blocked post-call")
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err == nil {
 		t.Fatal("expected the second, identical request to be blocked again")
 	}
 	if upstreamCalls != 2 {
@@ -404,7 +404,7 @@ func TestHandleChatCompletionPostCallBlockedResponseStillBillsTheRealUpstreamCal
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, tracker)
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "give me a test card number"}}}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err == nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err == nil {
 		t.Fatal("expected the request to be blocked post-call")
 	} else if !errors.Is(err, ErrGuardrailBlocked) {
 		t.Fatalf("err = %v, want ErrGuardrailBlocked", err)
@@ -432,7 +432,7 @@ func TestHandleChatCompletionPostCallScansToolCallArguments(t *testing.T) {
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "send my card to support"}}}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if err == nil {
 		t.Fatal("expected ErrGuardrailBlocked — the trigger is hidden inside tool-call arguments, not Content")
 	}
@@ -468,7 +468,7 @@ func TestHandleChatCompletionStreamPostCallBlockTierIsAuditOnlyNeverWithheld(t *
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, adapter.Registry{"openai": openai.New()})
 
 	rec := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, "")
 	if err != nil {
@@ -500,7 +500,7 @@ func TestHandleChatCompletionStreamPostCallBlockedResponseNeverCached(t *testing
 	req := adapter.ChatRequest{Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "give me a test card number"}}}
 
 	rec1 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec1, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec1, ""); err != nil {
 		t.Fatalf("first HandleChatCompletionStream: %v", err)
 	}
 	if !strings.Contains(rec1.Body.String(), fakeCreditCardNumber) {
@@ -508,7 +508,7 @@ func TestHandleChatCompletionStreamPostCallBlockedResponseNeverCached(t *testing
 	}
 
 	rec2 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec2, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec2, ""); err != nil {
 		t.Fatalf("second HandleChatCompletionStream: %v", err)
 	}
 	if !strings.Contains(rec2.Body.String(), fakeCreditCardNumber) {
@@ -583,7 +583,7 @@ func TestHandleChatCompletionStreamPostCallAuditLogsToolCallArguments(t *testing
 	}
 
 	rec := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
 	}, rec, ""); err != nil {
 		t.Fatalf("expected the stream to complete successfully (audit-only, never blocked), got: %v", err)
@@ -686,7 +686,7 @@ func TestHandleChatCompletionStreamPostCallScansPlaintextReasoningBlocks(t *test
 
 	rec := httptest.NewRecorder()
 	req := adapter.ChatRequest{Model: "claude-opus-4", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "how do I process this refund?"}}}
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec, ""); err != nil {
 		t.Fatalf("expected the stream to complete successfully (audit-only, never blocked), got: %v", err)
 	}
 	if !strings.Contains(rec.Body.String(), fakeCreditCardNumber) {
@@ -749,7 +749,7 @@ func TestCacheHitsAreForcedMissesAfterGuardrailPolicyVersionChanges(t *testing.T
 	pV1 := buildPipeline("v1")
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "cache me please"}}}
 
-	if _, err := pV1.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := pV1.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("first request (policy v1): %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -759,7 +759,7 @@ func TestCacheHitsAreForcedMissesAfterGuardrailPolicyVersionChanges(t *testing.T
 	// Same policy version, same request: a real cache hit (upstream call
 	// count stays at 1) — proves the shared cache instances genuinely
 	// work before testing the version-mismatch behavior.
-	if _, err := pV1.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := pV1.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("second request (still policy v1): %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -770,7 +770,7 @@ func TestCacheHitsAreForcedMissesAfterGuardrailPolicyVersionChanges(t *testing.T
 	// guardrail policy version — every L1/L2/L3 entry written under "v1"
 	// must now be a real miss.
 	pV2 := buildPipeline("v2")
-	if _, err := pV2.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := pV2.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("third request (policy v2): %v", err)
 	}
 	if upstreamCalls != 2 {

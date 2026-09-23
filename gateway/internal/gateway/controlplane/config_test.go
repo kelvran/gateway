@@ -954,6 +954,115 @@ func TestLoadParsesAllowedRegions(t *testing.T) {
 	}
 }
 
+func TestLoadParsesAllowedSourceCIDRs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    allowed_source_cidrs:\n" +
+		"      10.0.0.0/8: true\n" +
+		"      192.168.0.0/16: false\n" +
+		"  team-beta:\n" +
+		"    key_hash: \"bb\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	alpha, beta := cfg.VirtualKeys[0], cfg.VirtualKeys[1]
+	if len(alpha.AllowedSourceCIDRs) != 1 || alpha.AllowedSourceCIDRs[0] != "10.0.0.0/8" {
+		t.Errorf("team-alpha.AllowedSourceCIDRs = %v, want exactly [10.0.0.0/8] (192.168.0.0/16: false must be excluded)", alpha.AllowedSourceCIDRs)
+	}
+	if len(beta.AllowedSourceCIDRs) != 0 {
+		t.Errorf("team-beta.AllowedSourceCIDRs = %v, want empty (no constraint declared)", beta.AllowedSourceCIDRs)
+	}
+}
+
+// TestLoadRejectsPlaintextHTTPBaseURL is the load-bearing proof for the
+// fail-closed default: a deployment's base_url must be https, unless
+// allow_insecure_http is explicitly set.
+func TestLoadRejectsPlaintextHTTPBaseURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"http://internal-vllm:8000\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load: want an error for a plaintext http:// base_url with no allow_insecure_http escape hatch, got nil")
+	}
+}
+
+// TestLoadAllowsPlaintextHTTPBaseURLWithExplicitEscapeHatch proves the
+// opt-out: allow_insecure_http: true makes a plaintext http:// base_url
+// load successfully, for legitimate localhost/dev-testing use.
+func TestLoadAllowsPlaintextHTTPBaseURLWithExplicitEscapeHatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"http://localhost:8000\"\n    allow_insecure_http: true\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Deployments[0].AllowInsecureHTTP {
+		t.Error("Deployments[0].AllowInsecureHTTP = false, want true")
+	}
+}
+
+func TestLoadParsesDeploymentTLSConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openaicompat\"\n    upstream_model: \"m\"\n    base_url: \"https://internal-vllm:8000\"\n    api_key_env: \"X\"\n    tls:\n      ca_cert_path: \"/etc/kelvran/ca.pem\"\n      client_cert_path: \"/etc/kelvran/client.pem\"\n      client_key_path: \"/etc/kelvran/client-key.pem\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tlsCfg := cfg.Deployments[0].TLSConfig
+	if tlsCfg == nil {
+		t.Fatal("Deployments[0].TLSConfig = nil, want non-nil")
+	}
+	if tlsCfg.CACertPath != "/etc/kelvran/ca.pem" || tlsCfg.ClientCertPath != "/etc/kelvran/client.pem" || tlsCfg.ClientKeyPath != "/etc/kelvran/client-key.pem" {
+		t.Errorf("TLSConfig = %+v, want all three paths populated verbatim", tlsCfg)
+	}
+}
+
+// TestLoadRejectsDeploymentTLSConfigWithOnlyClientCertPath proves
+// client_cert_path/client_key_path must be set together, never one
+// without the other.
+func TestLoadRejectsDeploymentTLSConfigWithOnlyClientCertPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openaicompat\"\n    upstream_model: \"m\"\n    base_url: \"https://internal-vllm:8000\"\n    api_key_env: \"X\"\n    tls:\n      client_cert_path: \"/etc/kelvran/client.pem\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load: want an error for client_cert_path without client_key_path, got nil")
+	}
+}
+
 func TestLoadRejectsDeploymentMissingFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

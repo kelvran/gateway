@@ -161,7 +161,7 @@ func TestHandleChatCompletionFirstPickRerouteRespectsRegionConstraint(t *testing
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	})
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, regionConstraintChatRequest(), ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", regionConstraintChatRequest(), ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	if served != "eu" {
@@ -190,7 +190,7 @@ func TestHandleChatCompletionRegionConstraintWithNoEligibleDeploymentStillSuccee
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	})
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, regionConstraintChatRequest(), ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", regionConstraintChatRequest(), ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want a normal successful response -- a region constraint with no eligible deployment is a best-effort no-op, never a hard error", err)
 	}
 }
@@ -210,7 +210,7 @@ func TestHandleChatCompletionUnconstrainedKeyUnaffectedByRegions(t *testing.T) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	})
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, regionConstraintChatRequest(), ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", regionConstraintChatRequest(), ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want success -- an unconstrained key must be unaffected", err)
 	}
 }
@@ -246,7 +246,7 @@ func TestHandleChatCompletionFallbackRespectsRegionConstraint(t *testing.T) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	})
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, regionConstraintChatRequest(), ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", regionConstraintChatRequest(), ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	if served != "eu-alt" {

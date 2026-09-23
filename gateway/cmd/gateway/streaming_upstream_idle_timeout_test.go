@@ -90,7 +90,7 @@ func newStreamingIdleTimeoutTestServer(t *testing.T, upstreamURL string) *httpte
 			t.Fatal("non-streaming Upstream should never be called by a streaming idle-timeout test")
 			return nil, nil
 		},
-		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}, testStreamIdleTimeout),
+		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{}, nil, testStreamIdleTimeout),
 	})
 	if err != nil {
 		t.Fatalf("NewPipeline: %v", err)

@@ -100,10 +100,10 @@ func TestVirtualKeyCreatedViaAdminAPISurvivesAPipelineRestart(t *testing.T) {
 	p2 := newTestPipelineWithIdentityStore(t, mergedKeys, store2)
 	defer func() { _ = p2.Close() }()
 
-	if _, err := p2.HandleChatCompletion(context.Background(), "Bearer config-secret", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p2.HandleChatCompletion(context.Background(), "Bearer config-secret", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the config-derived key after restart: %v", err)
 	}
-	if _, err := p2.HandleChatCompletion(context.Background(), "Bearer admin-secret", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p2.HandleChatCompletion(context.Background(), "Bearer admin-secret", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
 		t.Errorf("HandleChatCompletion with the admin-API-created key after restart: %v", err)
 	}
 }

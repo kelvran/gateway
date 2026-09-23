@@ -306,7 +306,7 @@ func TestHandleChatCompletionTwoVirtualKeysShareDeploymentCapacityCeiling(t *tes
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		keyAResp, keyAErr = p.HandleChatCompletion(context.Background(), "Bearer key-a", adapter.ChatRequest{Model: "shared-model"}, "")
+		keyAResp, keyAErr = p.HandleChatCompletion(context.Background(), "Bearer key-a", "", adapter.ChatRequest{Model: "shared-model"}, "")
 	}()
 
 	select {
@@ -315,7 +315,7 @@ func TestHandleChatCompletionTwoVirtualKeysShareDeploymentCapacityCeiling(t *tes
 		t.Fatal("timed out waiting for key-a's call to reach the (blocking) upstream")
 	}
 
-	_, keyBErr := p.HandleChatCompletion(context.Background(), "Bearer key-b", adapter.ChatRequest{Model: "shared-model"}, "")
+	_, keyBErr := p.HandleChatCompletion(context.Background(), "Bearer key-b", "", adapter.ChatRequest{Model: "shared-model"}, "")
 	var capErr *DeploymentCapacityError
 	if !errors.As(keyBErr, &capErr) {
 		t.Fatalf("key-b's err = %v, want a *DeploymentCapacityError (key-a is holding the deployment's only slot)", keyBErr)
@@ -378,7 +378,7 @@ func TestHandleChatCompletionCapacityConstrainedHopTriesNextHopBeforeFailing(t *
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, deployments, defaultTestVirtualKeys(), cc, nil)
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "m"}, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "m"}, "")
 	if err != nil {
 		t.Fatalf("expected the chain to still succeed at backup, got error: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestHandleChatCompletionStreamSkipsCapacityConstrainedHopAndReleasesSlot(t 
 	}
 
 	rec := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", Stream: true}, rec, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", Stream: true}, rec, ""); err != nil {
 		t.Fatalf("expected the chain to eventually succeed at hop-2, got error: %v", err)
 	}
 	if len(calls) != 2 || calls[0] != "primary" || calls[1] != "hop-2" {

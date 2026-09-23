@@ -99,7 +99,7 @@ func TestHandleEmbeddingsRoutesToOpenAIProvider(t *testing.T) {
 		}, nil
 	}, deployments, nil)
 
-	resp, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", adapter.EmbeddingRequest{
+	resp, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", "", adapter.EmbeddingRequest{
 		Model: "text-embedding-3-small", Input: []string{"hello"},
 	})
 	if err != nil {
@@ -130,7 +130,7 @@ func TestHandleEmbeddingsRoutesToBedrockInvokeModel(t *testing.T) {
 		return &bedrock.EmbeddingResponseWire{Embedding: []float64{0.4, 0.5}, InputTextTokenCount: 3}, nil
 	}, deployments, nil)
 
-	resp, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", adapter.EmbeddingRequest{
+	resp, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", "", adapter.EmbeddingRequest{
 		Model: "titan-embed", Input: []string{"hello world"},
 	})
 	if err != nil {
@@ -155,7 +155,7 @@ func TestHandleEmbeddingsRejectsWrongCredentialBeforeUpstreamCall(t *testing.T) 
 		return &openai.EmbeddingResponseWire{Data: []openai.EmbeddingDataWire{{Index: 0, Embedding: []float64{0.1}}}}, nil
 	}, deployments, nil)
 
-	_, err := p.HandleEmbeddings(context.Background(), "Bearer "+embeddingsTestFakeCredential("wrong-credential"), adapter.EmbeddingRequest{
+	_, err := p.HandleEmbeddings(context.Background(), "Bearer "+embeddingsTestFakeCredential("wrong-credential"), "", adapter.EmbeddingRequest{
 		Model: "text-embedding-3-small", Input: []string{"hello"},
 	})
 	if err == nil {
@@ -205,7 +205,7 @@ func TestHandleEmbeddingsRejectsModelNotAllowedForVirtualKey(t *testing.T) {
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	_, err = p.HandleEmbeddings(context.Background(), "Bearer "+restrictedCredential, adapter.EmbeddingRequest{
+	_, err = p.HandleEmbeddings(context.Background(), "Bearer "+restrictedCredential, "", adapter.EmbeddingRequest{
 		Model: "text-embedding-3-small", Input: []string{"hello"},
 	})
 	if !errors.Is(err, ErrModelNotAllowed) {
@@ -232,7 +232,7 @@ func TestHandleEmbeddingsEmitsCostAccountingEvent(t *testing.T) {
 		}, nil
 	}, deployments, priceTable)
 
-	if _, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", adapter.EmbeddingRequest{
+	if _, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", "", adapter.EmbeddingRequest{
 		Model: "text-embedding-3-small", Input: []string{"hello"},
 	}); err != nil {
 		t.Fatalf("HandleEmbeddings: %v", err)
@@ -308,7 +308,7 @@ func TestHandleEmbeddingsLogsACompletionLineWithUsageAndCostOnSuccess(t *testing
 		}, nil
 	}, deployments, priceTable, slog.New(slog.NewJSONHandler(&logBuf, nil)))
 
-	if _, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", adapter.EmbeddingRequest{
+	if _, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", "", adapter.EmbeddingRequest{
 		Model: "text-embedding-3-small", Input: []string{"hello"},
 	}); err != nil {
 		t.Fatalf("HandleEmbeddings: %v", err)
@@ -341,7 +341,7 @@ func TestHandleEmbeddingsLogsAnErrorLineOnUpstreamFailure(t *testing.T) {
 		return nil, upstreamErr
 	}, deployments, nil, slog.New(slog.NewJSONHandler(&logBuf, nil)))
 
-	_, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", adapter.EmbeddingRequest{
+	_, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", "", adapter.EmbeddingRequest{
 		Model: "text-embedding-3-small", Input: []string{"hello"},
 	})
 	if err == nil {
@@ -368,7 +368,7 @@ func TestHandleEmbeddingsRejectsDeploymentThatIsNotKindEmbedding(t *testing.T) {
 		return &openai.EmbeddingResponseWire{Data: []openai.EmbeddingDataWire{{Index: 0, Embedding: []float64{0.1}}}}, nil
 	}, deployments, nil)
 
-	_, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", adapter.EmbeddingRequest{
+	_, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", "", adapter.EmbeddingRequest{
 		Model: "gpt-4o", Input: []string{"hello"},
 	})
 	if !errors.Is(err, ErrNotAnEmbeddingDeployment) {

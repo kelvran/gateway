@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -94,6 +95,12 @@ var ErrConcurrencyLimitExceeded = errors.New("dataplane: concurrency limit excee
 // configured with a non-empty AllowedModels list that does not include the
 // requested model.
 var ErrModelNotAllowed = errors.New("dataplane: model not allowed for this virtual key")
+
+// ErrSourceIPNotAllowed is returned when the caller's virtual key is
+// configured with a non-empty AllowedSourceCIDRs list that does not
+// include the request's resolved client source IP. Mirrors
+// ErrModelNotAllowed's own sentinel-error convention.
+var ErrSourceIPNotAllowed = errors.New("dataplane: source IP not allowed for this virtual key")
 
 // ErrNoDeployment is returned when no configured Deployment routes the
 // requested model. Wrapped (not returned bare) so callers — including
@@ -2347,6 +2354,45 @@ func isRegionAllowed(vk *identity.VirtualKey, region string) bool {
 	return ok
 }
 
+// isSourceIPAllowed reports whether remoteIP (the resolved client source
+// IP -- see resolveClientIP) satisfies vk's AllowedSourceCIDRs
+// constraint. An empty/nil AllowedSourceCIDRs means no constraint,
+// mirroring isModelAllowed's own shape. An unparseable remoteIP fails
+// closed (never silently treated as allowed), the same posture
+// isRegionAllowed takes for an unknown region.
+func isSourceIPAllowed(vk *identity.VirtualKey, remoteIP string) bool {
+	if len(vk.AllowedSourceCIDRs) == 0 {
+		return true
+	}
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return false
+	}
+	for _, network := range vk.AllowedSourceCIDRs {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveClientIP extracts the request's client source IP from
+// http.Request.RemoteAddr (host:port form) for isSourceIPAllowed.
+// Deliberately does NOT consult X-Forwarded-For or any other
+// client-supplied header -- see identity.VirtualKey.AllowedSourceCIDRs'
+// own doc comment for why trusting a spoofable header by default would
+// defeat the allowlist it feeds. Returns remoteAddr unchanged if it
+// isn't in host:port form (e.g. already a bare IP, as some test harnesses
+// construct it), so isSourceIPAllowed's own net.ParseIP still gets a fair
+// shot at it.
+func resolveClientIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
 // idempotencyKeyTTL bounds how long a claimed Idempotency-Key stays valid
 // before an abandoned claim (a caller that crashed or never returned) lets
 // a later request with the same key start fresh, per
@@ -2510,7 +2556,7 @@ var ErrNotAnEmbeddingDeployment = errors.New("dataplane: requested model is not 
 // on every return path via defer, plus the existing
 // telemetry.RecordLLMSpend counter on success — deliberately NOT a new
 // OTel span or GatewayDecisionEvent, matching the scope boundary above.
-func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader string, req adapter.EmbeddingRequest) (resp adapter.EmbeddingResponse, err error) {
+func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader string, remoteAddr string, req adapter.EmbeddingRequest) (resp adapter.EmbeddingResponse, err error) {
 	start := time.Now()
 	var vk *identity.VirtualKey
 	var dep Deployment
@@ -2523,6 +2569,11 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	vk, verifyErr = p.verifier.Load().Verify(authorizationHeader)
 	if verifyErr != nil {
 		err = fmt.Errorf("dataplane: auth: %w", verifyErr)
+		return
+	}
+
+	if !isSourceIPAllowed(vk, resolveClientIP(remoteAddr)) {
+		err = fmt.Errorf("%w: %q", ErrSourceIPNotAllowed, remoteAddr)
 		return
 	}
 
@@ -2655,7 +2706,7 @@ func (p *Pipeline) logEmbeddingsRequest(ctx context.Context, vk *identity.Virtua
 // claimIdempotency's own doc comment for the full contract. An empty
 // idempotencyKey (or a nil p.idempotencyStore) is a guaranteed no-op,
 // identical to this parameter never having existed.
-func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, req adapter.ChatRequest, idempotencyKey string) (resp adapter.ChatResponse, err error) {
+func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, remoteAddr string, req adapter.ChatRequest, idempotencyKey string) (resp adapter.ChatResponse, err error) {
 	var (
 		cacheInfo             cacheProvenance
 		vk                    *identity.VirtualKey
@@ -2724,6 +2775,11 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
 	if verifyErr != nil {
 		err = fmt.Errorf("dataplane: auth: %w", verifyErr)
+		return
+	}
+
+	if !isSourceIPAllowed(vk, resolveClientIP(remoteAddr)) {
+		err = fmt.Errorf("%w: %q", ErrSourceIPNotAllowed, remoteAddr)
 		return
 	}
 
@@ -4247,12 +4303,27 @@ var responseUnmarshalers = map[string]func([]byte) (any, error){
 	},
 }
 
+// clientForDeployment returns perDeployment[dep.Name] when present,
+// falling back to defaultClient otherwise -- the shared selection logic
+// for every HTTP upstream-caller constructor below. perDeployment being
+// nil or not containing dep.Name is the common case (every deployment
+// with no DeploymentTLSConfig set): purely additive, zero behavior
+// change from before this feature existed.
+func clientForDeployment(dep Deployment, defaultClient *http.Client, perDeployment map[string]*http.Client) *http.Client {
+	if c, ok := perDeployment[dep.Name]; ok {
+		return c
+	}
+	return defaultClient
+}
+
 // NewHTTPUpstreamCaller returns a real, working UpstreamCaller that POSTs
 // the marshaled provider-native request to dep.BaseURL and decodes the
 // response via responseUnmarshalers. This is what cmd/gateway wires up in
 // production; tests inject a fake UpstreamCaller instead so the pipeline
-// is fully testable without a real network call.
-func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
+// is fully testable without a real network call. perDeployment is
+// consulted via clientForDeployment -- see its own doc comment; pass nil
+// when no deployment needs a dedicated TLS-configured client.
+func NewHTTPUpstreamCaller(defaultClient *http.Client, perDeployment map[string]*http.Client) UpstreamCaller {
 	return func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
 		body, err := json.Marshal(providerReq)
 		if err != nil {
@@ -4268,7 +4339,7 @@ func NewHTTPUpstreamCaller(client *http.Client) UpstreamCaller {
 			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
 		}
 
-		httpResp, err := client.Do(httpReq)
+		httpResp, err := clientForDeployment(dep, defaultClient, perDeployment).Do(httpReq)
 		if err != nil {
 			return nil, fmt.Errorf("calling upstream %q: %w", dep.BaseURL, err)
 		}
@@ -4331,7 +4402,7 @@ var embeddingResponseUnmarshalers = map[string]func([]byte) (any, error){
 // body bytes, never hardcoding a chat-specific URL path, so Bedrock's
 // SigV4 signing is exactly as correct here as it is for Converse (both
 // are bedrock-runtime operations under the same SigV4 service name).
-func NewHTTPEmbeddingUpstreamCaller(client *http.Client) UpstreamCaller {
+func NewHTTPEmbeddingUpstreamCaller(defaultClient *http.Client, perDeployment map[string]*http.Client) UpstreamCaller {
 	return func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
 		body, err := json.Marshal(providerReq)
 		if err != nil {
@@ -4347,7 +4418,7 @@ func NewHTTPEmbeddingUpstreamCaller(client *http.Client) UpstreamCaller {
 			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
 		}
 
-		httpResp, err := client.Do(httpReq)
+		httpResp, err := clientForDeployment(dep, defaultClient, perDeployment).Do(httpReq)
 		if err != nil {
 			return nil, fmt.Errorf("calling upstream %q: %w", dep.BaseURL, err)
 		}
@@ -4451,7 +4522,7 @@ func streamUpstreamURL(dep Deployment) (string, error) {
 // like the non-streaming path's own 60s timeout error already does (see
 // fallback.go's FallbackClassGeneric), rather than inventing a second,
 // streaming-only classification path.
-func NewHTTPUpstreamStreamCaller(client *http.Client, idleTimeout time.Duration) UpstreamStreamCaller {
+func NewHTTPUpstreamStreamCaller(defaultClient *http.Client, perDeployment map[string]*http.Client, idleTimeout time.Duration) UpstreamStreamCaller {
 	return func(ctx context.Context, dep Deployment, providerReq any) (io.ReadCloser, error) {
 		body, err := json.Marshal(providerReq)
 		if err != nil {
@@ -4491,7 +4562,7 @@ func NewHTTPUpstreamStreamCaller(client *http.Client, idleTimeout time.Duration)
 			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
 		}
 
-		httpResp, err := client.Do(httpReq)
+		httpResp, err := clientForDeployment(dep, defaultClient, perDeployment).Do(httpReq)
 		if err != nil {
 			idleTimer.Stop()
 			cancel()

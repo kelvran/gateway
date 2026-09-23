@@ -73,7 +73,7 @@ func newVirtualKeyPropagationTestPipeline(t *testing.T, keys []identity.VirtualK
 // Verifier-internal peek, so this proves the full live-request path,
 // not just Verifier state in isolation.
 func canAuthenticate(p *Pipeline, secret string) bool {
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer "+secret, adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer "+secret, "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	return err == nil
 }
 

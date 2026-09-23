@@ -105,7 +105,7 @@ func TestHandleChatCompletionRoutesTheSameVirtualKeyToTheSameStickySide(t *testi
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
 
 	for i := 0; i < 5; i++ {
-		if _, err := p.HandleChatCompletion(context.Background(), "Bearer canary-secret", req, ""); err != nil {
+		if _, err := p.HandleChatCompletion(context.Background(), "Bearer canary-secret", "", req, ""); err != nil {
 			t.Fatalf("call %d (canary key): %v", i, err)
 		}
 		if got := lastServedBy(); got != "canary" {
@@ -114,7 +114,7 @@ func TestHandleChatCompletionRoutesTheSameVirtualKeyToTheSameStickySide(t *testi
 	}
 
 	for i := 0; i < 5; i++ {
-		if _, err := p.HandleChatCompletion(context.Background(), "Bearer stable-secret", req, ""); err != nil {
+		if _, err := p.HandleChatCompletion(context.Background(), "Bearer stable-secret", "", req, ""); err != nil {
 			t.Fatalf("call %d (stable key): %v", i, err)
 		}
 		if got := lastServedBy(); got != "stable" {

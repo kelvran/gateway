@@ -27,14 +27,14 @@ func TestEraseCacheEntryRemovesARealCacheHit(t *testing.T) {
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "erase-me"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("first (miss) call: %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("upstreamCalls = %d after the first call, want 1", upstreamCalls)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("second (hit) call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -93,14 +93,14 @@ func TestEraseCacheEntryDoesNotPreventAnIdenticalFollowUpFromHittingL3(t *testin
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "l3-still-serves-me"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("first (miss) call: %v", err)
 	}
 	if _, err := p.EraseCacheEntry(context.Background(), "test-key", req); err != nil {
 		t.Fatalf("EraseCacheEntry: %v", err)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("post-erasure call: %v", err)
 	}
 	if upstreamCalls != 1 {

@@ -64,7 +64,7 @@ func TestPromptIDResolvesToRealMessageContentThroughTheFullPipeline(t *testing.T
 		PromptID:        "greeting",
 		PromptVariables: map[string]string{"persona": "a pirate", "name": "Ada"},
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestPromptIDAndMessagesBothSetIsRejected(t *testing.T) {
 		PromptID: "greeting",
 		Messages: []adapter.Message{{Role: "user", Content: "this should never be allowed alongside prompt_id"}},
 	}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrPromptAndMessagesBothSet) {
 		t.Errorf("err = %v, want ErrPromptAndMessagesBothSet", err)
 	}
@@ -122,7 +122,7 @@ func TestUnknownPromptIDFailsWithErrPromptResolutionFailed(t *testing.T) {
 	}, deployments)
 
 	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "does-not-exist"}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrPromptResolutionFailed) {
 		t.Errorf("err = %v, want ErrPromptResolutionFailed", err)
 	}
@@ -159,7 +159,7 @@ func TestResolvedPromptContentFailsMIMEValidationThroughTheFullPipeline(t *testi
 	}
 
 	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "mime-spoofed"}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrResolvedPromptContentInvalid) {
 		t.Errorf("err = %v, want ErrResolvedPromptContentInvalid", err)
 	}
@@ -191,7 +191,7 @@ func TestResolvedPromptContentWithGenuinelyMatchingMIMETypePasses(t *testing.T) 
 	}
 
 	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "mime-valid"}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v, want success for genuinely matching MIME content", err)
 	}
 	if upstreamCalls != 1 {
@@ -235,7 +235,7 @@ func TestPromptFingerprintBustsACacheHitEvenWithByteIdenticalResolvedContent(t *
 	}
 
 	ctx := context.Background()
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting-a"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting-a"}, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion (greeting-a): %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -246,14 +246,14 @@ func TestPromptFingerprintBustsACacheHitEvenWithByteIdenticalResolvedContent(t *
 	// really does hit the cache -- proves the harness itself still
 	// caches normally, so the next assertion's "2" isn't just cache
 	// being broken/disabled entirely.
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting-a"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting-a"}, ""); err != nil {
 		t.Fatalf("repeat HandleChatCompletion (greeting-a): %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("after repeating the identical request: upstreamCalls = %d, want 1 (should have been a cache hit)", upstreamCalls)
 	}
 
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting-b"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting-b"}, ""); err != nil {
 		t.Fatalf("second HandleChatCompletion (greeting-b): %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -292,7 +292,7 @@ func TestPromptVariablesInjectedPIIIsCaughtByPreCallGuardrail(t *testing.T) {
 		PromptID:        "cardinfo",
 		PromptVariables: map[string]string{"cardnumber": fakeCreditCardNumber},
 	}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrGuardrailBlocked) {
 		t.Errorf("err = %v, want ErrGuardrailBlocked -- a PII value injected via PromptVariables must be caught after resolution, same as if it had been typed directly into Messages", err)
 	}
@@ -325,14 +325,14 @@ func TestPromptVersionChangeBustsACacheHit(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptVersion: 1}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptVersion: 1}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion (version 1): %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("after version 1: upstreamCalls = %d, want 1", upstreamCalls)
 	}
 
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptVersion: 2}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptVersion: 2}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion (version 2): %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -362,7 +362,7 @@ func TestUnpinnedPromptVersionTelemetryReportsTheRealResolvedVersionNotZero(t *t
 	}
 
 	before := len(spanRecorder.Ended())
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting"}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion (unpinned \"latest\"): %v", err)
 	}
 
@@ -405,14 +405,14 @@ func TestHandleChatCompletionL3NeverServesAcrossDifferentPromptFingerprint(t *te
 	}
 
 	ctx := context.Background()
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "prompt-a"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", PromptID: "prompt-a"}, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion (prompt-a): %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("after first request: upstreamCalls = %d, want 1", upstreamCalls)
 	}
 
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o", PromptID: "prompt-b"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o", PromptID: "prompt-b"}, ""); err != nil {
 		t.Fatalf("second HandleChatCompletion (prompt-b): %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -446,7 +446,7 @@ func TestPromptLabelResolvesToWhicheverVersionItCurrentlyPoints(t *testing.T) {
 	}
 
 	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptLabel: "production"}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	if len(gotContents) != 1 || gotContents[0] != "v1" {
@@ -458,7 +458,7 @@ func TestPromptLabelResolvesToWhicheverVersionItCurrentlyPoints(t *testing.T) {
 	if _, err := p.SetPromptLabel("greeting", "production", 2); err != nil {
 		t.Fatalf("SetPromptLabel(production, 2): %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("HandleChatCompletion after promote: %v", err)
 	}
 	if len(gotContents) != 1 || gotContents[0] != "v2" {
@@ -487,7 +487,7 @@ func TestResolvePromptIfSetRejectsBothLabelAndVersionSet(t *testing.T) {
 	}
 
 	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptLabel: "production", PromptVersion: 1}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrPromptLabelAndVersionBothSet) {
 		t.Errorf("err = %v, want ErrPromptLabelAndVersionBothSet", err)
 	}
@@ -512,7 +512,7 @@ func TestUnknownPromptLabelFailsWithErrPromptResolutionFailed(t *testing.T) {
 	}
 
 	req := adapter.ChatRequest{Model: "gpt-4o", PromptID: "greeting", PromptLabel: "staging"}
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrPromptResolutionFailed) {
 		t.Errorf("err = %v, want ErrPromptResolutionFailed", err)
 	}

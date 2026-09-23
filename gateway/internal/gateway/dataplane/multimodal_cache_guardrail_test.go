@@ -30,7 +30,7 @@ func TestHandleChatCompletionMultiModalPartsVaryTheCacheKey(t *testing.T) {
 			}},
 		},
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", baseReq, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", baseReq, ""); err != nil {
 		t.Fatalf("first request: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -45,7 +45,7 @@ func TestHandleChatCompletionMultiModalPartsVaryTheCacheKey(t *testing.T) {
 			}},
 		},
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", differentImageReq, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", differentImageReq, ""); err != nil {
 		t.Fatalf("second request (different image): %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -72,10 +72,10 @@ func TestHandleChatCompletionMultiModalPartsCanStillCacheHit(t *testing.T) {
 			}},
 		},
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("first request: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("second (identical) request: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -113,7 +113,7 @@ func TestHandleChatCompletionGuardrailScansTextInMultiModalParts(t *testing.T) {
 		},
 	}
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrGuardrailBlocked) {
 		t.Fatalf("err = %v, want ErrGuardrailBlocked — PII in Parts[].Text must not bypass the pre-call guardrail", err)
 	}

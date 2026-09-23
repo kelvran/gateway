@@ -84,7 +84,7 @@ func TestHandleChatCompletionIdempotencyKeyReplaysTheFirstResponseWithoutASecond
 		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}
 
-	resp1, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "replay-key-1")
+	resp1, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "replay-key-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestHandleChatCompletionIdempotencyKeyReplaysTheFirstResponseWithoutASecond
 		t.Fatalf("upstreamCalls after first call = %d, want 1", upstreamCalls)
 	}
 
-	resp2, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "replay-key-1")
+	resp2, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "replay-key-1")
 	if err != nil {
 		t.Fatalf("second (replay) call: %v (a real second call would have failed with ErrRateLimited, since the bucket only had 1 token)", err)
 	}
@@ -125,14 +125,14 @@ func TestHandleChatCompletionNoIdempotencyKeyBehavesExactlyAsBefore(t *testing.T
 		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, ""); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("upstreamCalls after first call = %d, want 1", upstreamCalls)
 	}
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err = %v, want ErrRateLimited (an empty Idempotency-Key must be a pure no-op, even with a store configured)", err)
 	}
@@ -150,11 +150,11 @@ func TestHandleChatCompletionIdempotencyKeyMismatchedBodyReturnsFingerprintMisma
 	req1 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
 	req2 := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "a totally different message"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req1, "reused-key"); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req1, "reused-key"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req2, "reused-key")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req2, "reused-key")
 	if !errors.Is(err, idempotency.ErrFingerprintMismatch) {
 		t.Fatalf("err = %v, want ErrFingerprintMismatch", err)
 	}
@@ -182,14 +182,14 @@ func TestHandleChatCompletionIdempotencyKeyIsScopedPerTenant(t *testing.T) {
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a", req, "shared-literal-key"); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-a", "", req, "shared-literal-key"); err != nil {
 		t.Fatalf("tenant-a call: %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("upstreamCalls after tenant-a's call = %d, want 1", upstreamCalls)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-b", req, "shared-literal-key"); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer tenant-b", "", req, "shared-literal-key"); err != nil {
 		t.Fatalf("tenant-b call: %v (must get its OWN upstream call, not tenant-a's replayed response, an error, or a fingerprint mismatch)", err)
 	}
 	if upstreamCalls != 2 {
@@ -258,7 +258,7 @@ func TestHandleChatCompletionStreamIdempotencyKeyReplaysWithoutASecondUpstreamCa
 	}
 
 	rec1 := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec1, "stream-replay-key"); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec1, "stream-replay-key"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -266,7 +266,7 @@ func TestHandleChatCompletionStreamIdempotencyKeyReplaysWithoutASecondUpstreamCa
 	}
 
 	rec2 := httptest.NewRecorder()
-	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", req, rec2, "stream-replay-key")
+	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", req, rec2, "stream-replay-key")
 	if err != nil {
 		t.Fatalf("second (replay) call: %v (a real second call would have failed with ErrRateLimited, since the bucket only had 1 token)", err)
 	}
@@ -315,7 +315,7 @@ func TestHandleChatCompletionIdempotencyKeyWaiterResolvesAfterInFlightCallComple
 	}
 	callA := make(chan outcome, 1)
 	go func() {
-		resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "concurrent-key")
+		resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "concurrent-key")
 		callA <- outcome{resp, err}
 	}()
 
@@ -327,7 +327,7 @@ func TestHandleChatCompletionIdempotencyKeyWaiterResolvesAfterInFlightCallComple
 
 	callB := make(chan outcome, 1)
 	go func() {
-		resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "concurrent-key")
+		resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "concurrent-key")
 		callB <- outcome{resp, err}
 	}()
 
@@ -386,7 +386,7 @@ func TestHandleChatCompletionIdempotencyKeyWaiterReturnsPromptlyOnItsOwnContextC
 	}
 
 	go func() {
-		_, _ = p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "concurrent-key")
+		_, _ = p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "concurrent-key")
 	}()
 
 	select {
@@ -398,7 +398,7 @@ func TestHandleChatCompletionIdempotencyKeyWaiterReturnsPromptlyOnItsOwnContextC
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := p.HandleChatCompletion(ctx, "Bearer test-key", req, "concurrent-key")
+		_, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", req, "concurrent-key")
 		errCh <- err
 	}()
 
@@ -494,7 +494,7 @@ func TestHandleChatCompletionRecordsTelemetryEvenWhenItsOwnContextIsCanceledWhil
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
 
 	go func() {
-		_, _ = p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "concurrent-key")
+		_, _ = p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "concurrent-key")
 	}()
 
 	select {
@@ -506,7 +506,7 @@ func TestHandleChatCompletionRecordsTelemetryEvenWhenItsOwnContextIsCanceledWhil
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := p.HandleChatCompletion(ctx, "Bearer test-key", req, "concurrent-key")
+		_, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", req, "concurrent-key")
 		errCh <- err
 	}()
 

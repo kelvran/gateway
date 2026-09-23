@@ -43,10 +43,10 @@ func TestHandleChatCompletionLexicalNearDuplicateHitsL3(t *testing.T) {
 	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "Explain how binary search works in a sorted array"}}}
 	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "Explain how binary search   works in a sorted array"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", first, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", second, "")
 	if err != nil {
 		t.Fatalf("second HandleChatCompletion: %v", err)
 	}
@@ -87,14 +87,14 @@ func TestHandleChatCompletionL3NeverServesAcrossDifferentResponseFormat(t *testi
 		},
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", plain, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", plain, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion (plain): %v", err)
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("after first request: upstreamCalls = %d, want 1", upstreamCalls)
 	}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", structured, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", structured, ""); err != nil {
 		t.Fatalf("second HandleChatCompletion (structured): %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -176,10 +176,10 @@ func TestHandleChatCompletionEntityMismatchIsNotAnL3Hit(t *testing.T) {
 	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "What is 15% of $92"}}}
 	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "What is 15% of $93"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", first, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", second, ""); err != nil {
 		t.Fatalf("second HandleChatCompletion: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -223,10 +223,10 @@ func TestHandleChatCompletionNegationParticleInsertionIsNotAnL3Hit(t *testing.T)
 	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: fmt.Sprintf(passageTemplate, "can")}}}
 	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: fmt.Sprintf(passageTemplate, "cannot")}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", first, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", second, ""); err != nil {
 		t.Fatalf("second HandleChatCompletion: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -250,10 +250,10 @@ func TestHandleChatCompletionVolatileQueryNeverHitsL3(t *testing.T) {
 	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "What is the weather in Paris right now"}}}
 	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "What is the weather in Paris   right now"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", first, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", second, ""); err != nil {
 		t.Fatalf("second HandleChatCompletion: %v", err)
 	}
 	if upstreamCalls != 2 {
@@ -281,10 +281,10 @@ func TestHandleChatCompletionVolatileKeywordInSystemPromptDoesNotBypassL3(t *tes
 	first := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{systemPrompt, {Role: "user", Content: "Explain how binary search works in a sorted array"}}}
 	second := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{systemPrompt, {Role: "user", Content: "Explain how binary search   works in a sorted array"}}}
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", first, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", first, ""); err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", second, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", second, ""); err != nil {
 		t.Fatalf("second HandleChatCompletion: %v", err)
 	}
 	if upstreamCalls != 1 {
@@ -319,7 +319,7 @@ func TestHandleChatCompletionLexicalCacheSearchErrorFailsClosedToUpstream(t *tes
 	}, failingLexicalCache{})
 
 	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hello there"}}}
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", req, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", req, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion with a failing L3 backend: %v", err)
 	}

@@ -53,7 +53,7 @@ func TestHandleChatCompletionRoutesEachErrorClassToItsOwnFallbackList(t *testing
 				return fakeOpenAIResponse(dep.UpstreamModel), nil
 			}, deployments)
 
-			resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, "")
+			resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 			if err != nil {
 				t.Fatalf("expected the configured fallback to succeed, got error: %v", err)
 			}
@@ -94,7 +94,7 @@ func TestHandleChatCompletionMultiHopChainExhaustedInOrder(t *testing.T) {
 		return nil, &UpstreamHTTPError{StatusCode: 500, Body: dep.Name + " unavailable"}
 	}, deployments)
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("expected the chain to eventually succeed at hop-3, got error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestHandleChatCompletionMultiHopChainAllFailReturnsErrorOnlyAfterExhaustion
 		return nil, &UpstreamHTTPError{StatusCode: 500, Body: dep.Name + " unavailable"}
 	}, deployments)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("expected an error once every configured hop fails")
 	}
@@ -179,7 +179,7 @@ func TestHandleChatCompletionNoFallbackChainsConfiguredKeepsOldBehavior(t *testi
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, deployments)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("expected the old router-based fallback to succeed, got error: %v", err)
 	}
