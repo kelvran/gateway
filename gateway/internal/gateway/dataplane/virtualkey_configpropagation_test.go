@@ -120,7 +120,7 @@ func canAuthenticate(p *Pipeline, secret string) bool {
 // shortcut (mirrors configpropagation_test.go's own identical
 // rationale for TypeDeploymentWeight).
 func subscribeVirtualKeyEvents(ctx context.Context, sub *configpropagation.PubSub, target *Pipeline, onErr func(error)) {
-	_ = sub.Subscribe(ctx, func(event configpropagation.MutationEvent) {
+	_ = sub.Subscribe(ctx, "test-instance", func(event configpropagation.MutationEvent) {
 		switch event.Type {
 		case configpropagation.TypeVirtualKeyUpsert:
 			var payload configpropagation.VirtualKeyUpsertPayload

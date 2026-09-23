@@ -153,7 +153,7 @@ func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *test
 	subCtx, cancelSub := context.WithCancel(context.Background())
 	t.Cleanup(cancelSub)
 	go func() {
-		_ = subB.Subscribe(subCtx, func(event configpropagation.MutationEvent) {
+		_ = subB.Subscribe(subCtx, "instance-b", func(event configpropagation.MutationEvent) {
 			if event.Type != configpropagation.TypeDeploymentWeight {
 				return
 			}

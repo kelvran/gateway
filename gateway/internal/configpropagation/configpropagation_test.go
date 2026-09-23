@@ -100,7 +100,7 @@ func TestPublishDeploymentWeightEventOverRealRedis(t *testing.T) {
 	defer cancel()
 
 	var received atomic.Pointer[MutationEvent]
-	go func() { _ = sub.Subscribe(ctx, func(e MutationEvent) { received.Store(&e) }) }()
+	go func() { _ = sub.Subscribe(ctx, "test-instance", func(e MutationEvent) { received.Store(&e) }) }()
 
 	// Give the subscription a moment to actually register with Redis
 	// before publishing -- go-redis's Subscribe call returns once the
@@ -143,7 +143,7 @@ func TestSubscribeReturnsWhenContextCanceled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- sub.Subscribe(ctx, func(MutationEvent) {}) }()
+	go func() { done <- sub.Subscribe(ctx, "test-instance", func(MutationEvent) {}) }()
 
 	time.Sleep(50 * time.Millisecond) // let Subscribe actually start.
 	cancel()
@@ -204,7 +204,7 @@ func TestPublishRefusesWithoutSigningSecret(t *testing.T) {
 func TestSubscribeRefusesWithoutSigningSecret(t *testing.T) {
 	sub := Open(redis.Options{Addr: redisAddr}, "")
 	defer func() { _ = sub.Close() }()
-	err := sub.Subscribe(context.Background(), func(MutationEvent) {})
+	err := sub.Subscribe(context.Background(), "test-instance", func(MutationEvent) {})
 	if err == nil {
 		t.Fatal("Subscribe with no signing secret returned nil error, want a refusal error")
 	}
@@ -228,7 +228,7 @@ func TestSubscribeDropsEventWithForgedOrMissingSignature(t *testing.T) {
 	defer cancel()
 
 	var receivedCount atomic.Int64
-	go func() { _ = sub.Subscribe(ctx, func(MutationEvent) { receivedCount.Add(1) }) }()
+	go func() { _ = sub.Subscribe(ctx, "test-instance", func(MutationEvent) { receivedCount.Add(1) }) }()
 	time.Sleep(100 * time.Millisecond)
 
 	payload, err := json.Marshal(DeploymentWeightPayload{Model: "attacker-model", DeploymentName: "attacker-deployment", Weight: 999})
@@ -318,7 +318,9 @@ func TestSubscribeSurvivesARealRedisPartitionAndDeliversEventsAfterRecovery(t *t
 
 	var received atomic.Pointer[MutationEvent]
 	subscribeDone := make(chan error, 1)
-	go func() { subscribeDone <- sub.Subscribe(ctx, func(e MutationEvent) { received.Store(&e) }) }()
+	go func() {
+		subscribeDone <- sub.Subscribe(ctx, "test-instance", func(e MutationEvent) { received.Store(&e) })
+	}()
 	time.Sleep(100 * time.Millisecond) // let the subscription actually register with Redis.
 
 	if out, err := exec.Command("docker", "pause", containerID).CombinedOutput(); err != nil {

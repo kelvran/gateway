@@ -60,6 +60,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"strconv"
 	"time"
 
@@ -118,20 +119,43 @@ const TypeDeploymentWeight = "deployment_weight"
 // stance, an unsigned receiver here is never a legitimate choice, since
 // the only subscriber is this same codebase, not a third-party endpoint
 // with no verification concept of its own.
+// CanaryPercent, when > 0 and < 100, gates delivery to only a
+// deterministic PERCENTAGE of subscribing instances -- an out-of-cohort
+// instance skips onEvent entirely for this event (logged, not applied),
+// per Subscribe's own cohort check. 0 (the default, and every event
+// published before this field existed) means "apply to 100% of
+// subscribers immediately," byte-for-byte the original behavior. A
+// publisher promotes a canaried mutation to everyone by re-publishing
+// the identical payload with CanaryPercent unset/100 and the SAME
+// PublishedAtUnixNano -- reusing the existing last-writer-wins ordering
+// token rather than inventing a second "this promotes that" reference,
+// so an already-applied (in-cohort) instance's re-application is a
+// harmless idempotent no-op (the timestamp compares equal, never
+// discarded as stale) and an out-of-cohort instance's own cohort check
+// now evaluates true. Deliberately NOT a new delivery mechanism -- see
+// this package's own doc comment on why push-fire-and-forget (not poll)
+// was already chosen; this is a filter on top of that existing
+// broadcast, not a second one.
 type MutationEvent struct {
 	Type                string          `json:"type"`
 	OriginInstanceID    string          `json:"origin_instance_id"`
 	PublishedAtUnixNano int64           `json:"published_at_unix_nano"`
 	Payload             json.RawMessage `json:"payload"`
+	CanaryPercent       int             `json:"canary_percent,omitempty"`
 	Signature           string          `json:"signature,omitempty"`
 }
 
 // signingInput returns the exact byte sequence signEvent/verifyEvent MAC
 // over — every field of event EXCEPT Signature itself, joined with "."
 // separators, mirroring internal/alerting.signPayload's identical
-// "id.timestamp.body" canonicalization.
+// "id.timestamp.body" canonicalization. CanaryPercent is included so an
+// in-flight tamper (e.g. forcing a canaried mutation to 100% early, or
+// suppressing it to 0% for a targeted subset of instances) invalidates
+// the signature exactly like tampering with any other field already
+// does -- without this, CanaryPercent would be the one field a
+// man-in-the-middle on the shared Redis channel could rewrite for free.
 func signingInput(event MutationEvent) []byte {
-	return []byte(event.Type + "." + event.OriginInstanceID + "." + strconv.FormatInt(event.PublishedAtUnixNano, 10) + "." + string(event.Payload))
+	return []byte(event.Type + "." + event.OriginInstanceID + "." + strconv.FormatInt(event.PublishedAtUnixNano, 10) + "." + strconv.Itoa(event.CanaryPercent) + "." + string(event.Payload))
 }
 
 func signEvent(secret []byte, event MutationEvent) string {
@@ -148,6 +172,28 @@ func verifyEvent(secret []byte, event MutationEvent) bool {
 		return false
 	}
 	return hmac.Equal([]byte(signEvent(secret, event)), []byte(event.Signature))
+}
+
+// inCanaryCohort reports whether instanceID falls within the first
+// canaryPercent% of the deterministic hash space -- canaryPercent <= 0
+// always returns true (MutationEvent.CanaryPercent's own "0 means apply
+// to everyone" default), matching every event published before this
+// field existed. canaryPercent >= 100 also always returns true (a
+// promoted/non-canaried event, or a nonsensical value treated the same
+// as "no restriction" rather than erroring on a value this package
+// itself has no admin-facing validation path for). FNV-1a (stdlib,
+// non-cryptographic) is deliberately used here, not a general-purpose
+// crypto hash -- this is a load-distribution decision, not a security
+// boundary; the SIGNATURE (which already covers CanaryPercent, per
+// signingInput's own doc comment) is what prevents tampering, not this
+// hash's own collision resistance.
+func inCanaryCohort(instanceID string, canaryPercent int) bool {
+	if canaryPercent <= 0 || canaryPercent >= 100 {
+		return true
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(instanceID))
+	return int(h.Sum32()%100) < canaryPercent
 }
 
 // DeploymentWeightPayload is MutationEvent.Payload's shape when Type ==
@@ -292,8 +338,15 @@ type Publisher interface {
 // from. This is the real, accepted cost of choosing push over the
 // poll-based alternative (see this package's own doc comment) — a
 // disclosed limitation, not silently glossed over.
+//
+// instanceID (the caller's own telemetry.InstanceID -- this package has
+// no dependency on internal/telemetry itself, so the caller supplies it,
+// mirroring OriginInstanceID's own "set by the caller" convention) is
+// this instance's identity for MutationEvent.CanaryPercent's own cohort
+// check: an out-of-cohort event is skipped (never reaches onEvent),
+// exactly like an unsigned or malformed one already is.
 type Subscriber interface {
-	Subscribe(ctx context.Context, onEvent func(MutationEvent)) error
+	Subscribe(ctx context.Context, instanceID string, onEvent func(MutationEvent)) error
 }
 
 // PubSub implements both Publisher and Subscriber over a single
@@ -358,7 +411,7 @@ func (r *PubSub) Publish(ctx context.Context, event MutationEvent) error {
 // channelName to onEvent, until ctx is canceled — see Subscriber's own
 // doc comment for the fire-and-forget/no-replay contract this
 // implements.
-func (r *PubSub) Subscribe(ctx context.Context, onEvent func(MutationEvent)) error {
+func (r *PubSub) Subscribe(ctx context.Context, instanceID string, onEvent func(MutationEvent)) error {
 	if len(r.signingSecret) == 0 {
 		return fmt.Errorf("configpropagation: refusing to subscribe without a signing secret -- would apply unauthenticated remote mutations")
 	}
@@ -387,6 +440,9 @@ func (r *PubSub) Subscribe(ctx context.Context, onEvent func(MutationEvent)) err
 			// applyVirtualKeyUpsert/applyVirtualKeyDelete) apply it with
 			// full admin authority.
 			if !verifyEvent(r.signingSecret, event) {
+				continue
+			}
+			if !inCanaryCohort(instanceID, event.CanaryPercent) {
 				continue
 			}
 			onEvent(event)

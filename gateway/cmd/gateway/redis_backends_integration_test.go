@@ -137,7 +137,7 @@ func newRedisBackedIntegrationServer(t *testing.T, upstreamURL, upstreamKeyEnvVa
 // convergence must start this themselves, against the same target
 // Pipeline production's own subscriber goroutine would apply events to.
 func subscribeVirtualKeyAndWeightEvents(ctx context.Context, sub *configpropagation.PubSub, target *dataplane.Pipeline, logger *slog.Logger) {
-	_ = sub.Subscribe(ctx, func(event configpropagation.MutationEvent) {
+	_ = sub.Subscribe(ctx, "test-instance", func(event configpropagation.MutationEvent) {
 		switch event.Type {
 		case configpropagation.TypeVirtualKeyUpsert:
 			var payload configpropagation.VirtualKeyUpsertPayload

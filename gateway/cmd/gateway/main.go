@@ -555,7 +555,7 @@ func run(configPath string, logger *slog.Logger) error {
 		}
 		subscriber := configpropagation.Open(redisOptions(cfg.ConfigPropagation.RedisAddr, cfg.ConfigPropagation.Redis), configPropagationSecret)
 		go func() {
-			err := subscriber.Subscribe(ctx, func(event configpropagation.MutationEvent) {
+			err := subscriber.Subscribe(ctx, telemetry.InstanceID, func(event configpropagation.MutationEvent) {
 				if event.OriginInstanceID == telemetry.InstanceID {
 					// This instance's own mutation, already applied
 					// locally before it was ever published — re-applying
