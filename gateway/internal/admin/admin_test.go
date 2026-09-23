@@ -139,7 +139,7 @@ func doRequest(t *testing.T, h http.Handler, method, path, bearerValue, body str
 }
 
 func TestRequestsWithoutTheAdminCredentialAreRejected(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	cases := []struct {
 		name        string
@@ -159,7 +159,7 @@ func TestRequestsWithoutTheAdminCredentialAreRejected(t *testing.T) {
 }
 
 func TestGetConfigReturnsTheRealLoadedConfig(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/config", fakeAdminCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -180,7 +180,7 @@ func TestGetConfigReturnsTheRealLoadedConfig(t *testing.T) {
 
 func TestUpsertVirtualKeyViaHTTPMakesTheKeyImmediatelyUsable(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	newBearerValue := "brand-new-value"
 	body := `{"key_hash":"` + testHashOf(newBearerValue) + `","rate_limit":{"burst":50,"refill_per_second":50}}`
@@ -203,7 +203,7 @@ func TestUpsertVirtualKeyViaHTTPMakesTheKeyImmediatelyUsable(t *testing.T) {
 // completeness discipline.
 func TestUpsertVirtualKeyWithPerModelRateLimitIsEnforced(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	newBearerValue := "per-model-test-value"
 	body := `{"key_hash":"` + testHashOf(newBearerValue) + `","rate_limit":{"burst":100,"refill_per_second":100,"per_model":{"gpt-4o":{"burst":1,"refill_per_second":0.0001}}}}`
@@ -226,7 +226,7 @@ func TestUpsertVirtualKeyWithPerModelRateLimitIsEnforced(t *testing.T) {
 // Admin API surface, so an operator gets the same validation regardless
 // of which of the two surfaces they use.
 func TestUpsertVirtualKeyRejectsNonPositivePerModelRateLimit(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","rate_limit":{"burst":100,"refill_per_second":100,"per_model":{"gpt-4o":{"burst":0,"refill_per_second":1}}}}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-epsilon", fakeAdminCredential(), body)
@@ -242,7 +242,7 @@ func TestUpsertVirtualKeyRejectsNonPositivePerModelRateLimit(t *testing.T) {
 // own default TPM bucket.
 func TestUpsertVirtualKeyWithPerModelTPMRateLimitIsEnforced(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	newBearerValue := "per-model-tpm-test-value"
 	body := `{"key_hash":"` + testHashOf(newBearerValue) + `","rate_limit":{"burst":100,"refill_per_second":100,"tpm_capacity":1000,"tpm_refill_per_second":0.0001,"per_model":{"gpt-4o":{"burst":100,"refill_per_second":100,"tpm_capacity":1,"tpm_refill_per_second":0.0001}}}}`
@@ -266,7 +266,7 @@ func TestUpsertVirtualKeyWithPerModelTPMRateLimitIsEnforced(t *testing.T) {
 // the same validation regardless of which of the two config surfaces
 // they use.
 func TestUpsertVirtualKeyRejectsPerModelTPMCapacityWithoutRefill(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","rate_limit":{"burst":100,"refill_per_second":100,"per_model":{"gpt-4o":{"burst":1,"refill_per_second":1,"tpm_capacity":1000}}}}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-eta", fakeAdminCredential(), body)
@@ -276,7 +276,7 @@ func TestUpsertVirtualKeyRejectsPerModelTPMCapacityWithoutRefill(t *testing.T) {
 }
 
 func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-gamma", fakeAdminCredential(), `{}`)
 	if rec.Code != http.StatusBadRequest {
@@ -290,7 +290,7 @@ func TestUpsertVirtualKeyMissingKeyHashIsRejected(t *testing.T) {
 // TestUpsertVirtualKeyMissingKeyHashIsRejected above, which sends
 // well-formed JSON missing a required field.
 func TestUpsertVirtualKeyRejectsMalformedJSONBody(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-x", fakeAdminCredential(), `{not valid json`)
 	if rec.Code != http.StatusBadRequest {
@@ -322,7 +322,7 @@ func (r *truncatedBodyReader) Read(p []byte) (int, error) {
 // (errors) partway through, well-formed-looking JSON prefix included --
 // never a 500, never a hang.
 func TestUpsertVirtualKeyRejectsTruncatedBodyContentLengthMismatch(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := &truncatedBodyReader{prefix: []byte(`{"key_hash":"` + testHashOf("irrelevant"))}
 	req := httptest.NewRequest(http.MethodPost, "/admin/virtual_keys/team-truncated", io.NopCloser(body))
@@ -342,7 +342,7 @@ func TestUpsertVirtualKeyRejectsTruncatedBodyContentLengthMismatch(t *testing.T)
 // identity.Verifier/budget.Tracker/ratelimit.KeyLimiter and every future
 // log line referencing it.
 func TestUpsertVirtualKeyRejectsOversizedName(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	oversizedName := strings.Repeat("a", maxAdminIdentifierLen+1)
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `"}`
@@ -358,7 +358,7 @@ func TestUpsertVirtualKeyRejectsOversizedName(t *testing.T) {
 // value that lands in decimal.Decimal.IsPositive()'s own "unlimited"
 // bucket for the wrong reason.
 func TestUpsertVirtualKeyRejectsNegativeBudgetUSD(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"-10"}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-negative-budget", fakeAdminCredential(), body)
@@ -374,7 +374,7 @@ func TestUpsertVirtualKeyRejectsNegativeBudgetUSD(t *testing.T) {
 // resetInterval -- trivially true on every check, silently forcing a
 // permanent reset rather than erroring on the operator mistake.
 func TestUpsertVirtualKeyRejectsNegativeBudgetResetIntervalSeconds(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_reset_interval_seconds":-3600}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-negative-reset", fakeAdminCredential(), body)
@@ -388,7 +388,7 @@ func TestUpsertVirtualKeyRejectsNegativeBudgetResetIntervalSeconds(t *testing.T)
 // non-fatal but confusing operator mistake (an alert threshold that can
 // never fire, or fires immediately) worth rejecting up front.
 func TestUpsertVirtualKeyRejectsOutOfRangeBudgetWarnPercent(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_warn_percent":150}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-bad-warn-percent", fakeAdminCredential(), body)
@@ -402,7 +402,7 @@ func TestUpsertVirtualKeyRejectsOutOfRangeBudgetWarnPercent(t *testing.T) {
 // every one of these 3 fields) must still be accepted, not swept up by
 // an overly strict >= 0 boundary mistake.
 func TestUpsertVirtualKeyAcceptsZeroBudgetFieldsAsUnlimitedDefault(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"0","budget_reset_interval_seconds":0,"budget_warn_percent":0}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-zero-budget", fakeAdminCredential(), body)
@@ -417,7 +417,7 @@ func TestUpsertVirtualKeyAcceptsZeroBudgetFieldsAsUnlimitedDefault(t *testing.T)
 // propagates up through this handler's outer json.Decode call as an
 // ordinary malformed-body 400, never silently defaulting to zero.
 func TestUpsertVirtualKeyRejectsMalformedBudgetUSDValue(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("irrelevant") + `","budget_usd":"not-a-number"}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-bad-budget-usd", fakeAdminCredential(), body)
@@ -428,7 +428,7 @@ func TestUpsertVirtualKeyRejectsMalformedBudgetUSDValue(t *testing.T) {
 
 func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	// Add a second key first, so deleting one still leaves one behind.
 	otherBearerValue := "other-bearer-value"
@@ -455,7 +455,7 @@ func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 // corrupted mix of both.
 func TestConcurrentRotateVirtualKeyRequestsForSameNameDoNotCorruptState(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	secretA := "rotated-secret-a"
 	secretB := "rotated-secret-b"
@@ -496,7 +496,7 @@ func TestConcurrentRotateVirtualKeyRequestsForSameNameDoNotCorruptState(t *testi
 // genuinely different bodies for the SAME name.
 func TestConcurrentUpsertVirtualKeyRequestsForSameNameDoNotCorruptState(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	secretA := "upsert-race-secret-a"
 	secretB := "upsert-race-secret-b"
@@ -538,7 +538,7 @@ func TestConcurrentUpsertVirtualKeyRequestsForSameNameDoNotCorruptState(t *testi
 // key already gone (404), and the key must be genuinely gone afterward.
 func TestConcurrentDeleteVirtualKeyRequestsForSameNameNeverBothSucceed(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	// A second key is required -- DeleteVirtualKey rejects deleting the
 	// only remaining virtual key.
@@ -640,7 +640,7 @@ func TestDeleteVirtualKeyViaHTTPAlsoErasesItsBudgetSpend(t *testing.T) {
 		t.Fatal("setup: SpentUSD is 0 after a real request — nothing was billed to erase")
 	}
 
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	rec := doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeAdminCredential(), "")
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
@@ -652,7 +652,7 @@ func TestDeleteVirtualKeyViaHTTPAlsoErasesItsBudgetSpend(t *testing.T) {
 }
 
 func TestDeleteVirtualKeyUnknownNameReturns404(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/never-existed", fakeAdminCredential(), "")
 	if rec.Code != http.StatusNotFound {
@@ -661,7 +661,7 @@ func TestDeleteVirtualKeyUnknownNameReturns404(t *testing.T) {
 }
 
 func TestDeleteVirtualKeyLastRemainingKeyReturns409(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodDelete, "/admin/virtual_keys/test-key", fakeAdminCredential(), "")
 	if rec.Code != http.StatusConflict {
@@ -674,7 +674,7 @@ func TestDeleteVirtualKeyLastRemainingKeyReturns409(t *testing.T) {
 // bearer value must never work against /admin/*, since the two are
 // deliberately separate credential spaces.
 func TestClientVirtualKeyNeverAuthenticatesAgainstAdmin(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/config", "test-key", "")
 	if rec.Code != http.StatusUnauthorized {
@@ -694,7 +694,7 @@ func fakeViewerCredential() string {
 // configured viewer credential authenticates the read-only route but
 // never a write route.
 func TestViewerTokenCanReadConfigButNotMutateVirtualKeys(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/config", fakeViewerCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -718,7 +718,7 @@ func TestViewerTokenCanReadConfigButNotMutateVirtualKeys(t *testing.T) {
 // away the admin credential's own existing full read/write access.
 func TestAdminTokenStillWorksForEverythingWhenAViewerTierIsConfigured(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/config", fakeAdminCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -738,7 +738,7 @@ func TestAdminTokenStillWorksForEverythingWhenAViewerTierIsConfigured(t *testing
 // GET /admin/config, and an unrecognized value (that happens to equal
 // an empty string comparison edge case) is still rejected.
 func TestOmittingTheViewerTierBehavesExactlyAsBefore(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/config", "", "")
 	if rec.Code != http.StatusUnauthorized {
@@ -764,7 +764,7 @@ func capturingLogger() (*slog.Logger, *strings.Builder) {
 // claim for a successful create.
 func TestUpsertVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	newBearerValue := "audit-log-test-value"
 	body := `{"key_hash":"` + testHashOf(newBearerValue) + `"}`
@@ -787,7 +787,7 @@ func TestUpsertVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret(t *testing.T) {
 func TestDeleteVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret(t *testing.T) {
 	pipeline := newTestPipeline(t)
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	otherBearerValue := "other-bearer-value-for-audit-test"
 	body := `{"key_hash":"` + testHashOf(otherBearerValue) + `"}`
@@ -812,7 +812,7 @@ func TestDeleteVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret(t *testing.T) {
 // prompt.Store.Upsert's own doc comment, and returns the created
 // version in its response body.
 func TestUpsertPromptCreatesVersionOneThenVersionTwo(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"messages":[{"role":"system","content":"You are {{persona}}."}]}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), body)
@@ -846,7 +846,7 @@ func TestUpsertPromptCreatesVersionOneThenVersionTwo(t *testing.T) {
 // the id path parameter at all before it became a map key in
 // prompt.Store and every future log line referencing it.
 func TestUpsertPromptRejectsOversizedID(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	oversizedID := strings.Repeat("a", maxAdminIdentifierLen+1)
 	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/"+oversizedID, fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusBadRequest {
@@ -855,7 +855,7 @@ func TestUpsertPromptRejectsOversizedID(t *testing.T) {
 }
 
 func TestUpsertPromptRejectsEmptyMessages(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[]}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
@@ -866,7 +866,7 @@ func TestUpsertPromptRejectsEmptyMessages(t *testing.T) {
 // TestUpsertVirtualKeyRejectsMalformedJSONBody's own proof for this
 // handler's identical json.Decode error path.
 func TestUpsertPromptRejectsMalformedJSONBody(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	rec := doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{not valid json`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
@@ -881,7 +881,7 @@ func TestUpsertPromptRejectsMalformedJSONBody(t *testing.T) {
 // fast for the prompt author rather than only ever being caught later,
 // at every future request-time resolution of this same prompt.
 func TestUpsertPromptRejectsMIMESpoofedContent(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	spoofedData := base64.StdEncoding.EncodeToString([]byte("this is plain text, not an image"))
 	body := `{"messages":[{"role":"user","content":"here's an image","parts":[{"type":"image","media_type":"image/png","data":"` + spoofedData + `"}]}]}`
@@ -894,7 +894,7 @@ func TestUpsertPromptRejectsMIMESpoofedContent(t *testing.T) {
 // TestGetPromptRoutesReturnLatestSpecificVersionAndNotFound exercises
 // all three GET routes against the same upserted prompt.
 func TestGetPromptRoutesReturnLatestSpecificVersionAndNotFound(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v2"}]}`)
@@ -939,7 +939,7 @@ func TestGetPromptRoutesReturnLatestSpecificVersionAndNotFound(t *testing.T) {
 // strconv.Atoi + version <= 0 check) against every malformed shape --
 // never previously exercised, though already correct.
 func TestGetPromptVersionRejectsNonNumericAndNonPositiveVersion(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 
 	cases := []string{"abc", "0", "-1", "99999999999999999999"}
@@ -954,7 +954,7 @@ func TestGetPromptVersionRejectsNonNumericAndNonPositiveVersion(t *testing.T) {
 }
 
 func TestListPromptsReturnsLatestVersionOfEveryPromptSortedByID(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	doRequest(t, h, http.MethodPost, "/admin/prompts/zeta", fakeAdminCredential(), `{"messages":[{"role":"user","content":"z"}]}`)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/alpha", fakeAdminCredential(), `{"messages":[{"role":"user","content":"a1"}]}`)
@@ -980,7 +980,7 @@ func TestListPromptsReturnsLatestVersionOfEveryPromptSortedByID(t *testing.T) {
 }
 
 func TestDeletePromptRemovesItAndUnknownIDReturns404(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
 
@@ -1005,7 +1005,7 @@ func TestDeletePromptRemovesItAndUnknownIDReturns404(t *testing.T) {
 // routes -- viewer authenticates every GET but is rejected (401, this
 // codebase's existing viewer-role-rejection status) on POST/DELETE.
 func TestViewerTokenCanReadPromptsButNotMutateThem(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger(), nil)
 
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
 
@@ -1037,7 +1037,7 @@ func TestViewerTokenCanReadPromptsButNotMutateThem(t *testing.T) {
 // prompt ID and resulting version, never the message content.
 func TestUpsertPromptLogsAnAuditEntryWithoutLeakingContent(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	const secretLookingContent = "the-eagle-has-landed-42"
 	body := `{"messages":[{"role":"system","content":"` + secretLookingContent + `"}]}`
@@ -1059,7 +1059,7 @@ func TestUpsertPromptLogsAnAuditEntryWithoutLeakingContent(t *testing.T) {
 // TestDeleteVirtualKeyLogsAnAuditEntryWithoutLeakingTheSecret.
 func TestDeletePromptLogsAnAuditEntry(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"hi"}]}`)
 	rec := doRequest(t, h, http.MethodDelete, "/admin/prompts/greeting", fakeAdminCredential(), "")
@@ -1077,7 +1077,7 @@ func TestDeletePromptLogsAnAuditEntry(t *testing.T) {
 // for the promote/rollback route: PUT .../labels/{label} moves the label
 // to name an existing version, and the response reflects it.
 func TestSetPromptLabelMovesAnExistingVersion(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v2"}]}`)
@@ -1099,7 +1099,7 @@ func TestSetPromptLabelMovesAnExistingVersion(t *testing.T) {
 // TestUpdateDeploymentWeightRequiresAdminCredential's own proof for this
 // write-shaped route.
 func TestSetPromptLabelHandlerRequiresAdminToken(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 
 	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", "wrong-value-entirely", `{"version":1}`)
@@ -1111,7 +1111,7 @@ func TestSetPromptLabelHandlerRequiresAdminToken(t *testing.T) {
 // TestSetPromptLabelHandlerRejectsANonExistentVersion proves the 404
 // path -- a label can never point at a version that doesn't exist.
 func TestSetPromptLabelHandlerRejectsANonExistentVersion(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 
 	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":99}`)
@@ -1124,7 +1124,7 @@ func TestSetPromptLabelHandlerRejectsANonExistentVersion(t *testing.T) {
 // package's own established malformed-body regression proof for every
 // other write route.
 func TestSetPromptLabelHandlerRejectsMalformedJSONBody(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 
 	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{not valid json`)
@@ -1138,7 +1138,7 @@ func TestSetPromptLabelHandlerRejectsMalformedJSONBody(t *testing.T) {
 // for the new label route.
 func TestSetPromptLabelHandlerLogsAnAuditEntry(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 	rec := doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
@@ -1157,7 +1157,7 @@ func TestSetPromptLabelHandlerLogsAnAuditEntry(t *testing.T) {
 // TestDeletePromptRemovesItAndUnknownIDReturns404's own shape for the new
 // label-delete route.
 func TestDeletePromptLabelRemovesItAndUnknownLabelReturns404(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 	doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
 
@@ -1175,7 +1175,7 @@ func TestDeletePromptLabelRemovesItAndUnknownLabelReturns404(t *testing.T) {
 // TestDeletePromptLabelHandlerRequiresAdminToken mirrors
 // TestSetPromptLabelHandlerRequiresAdminToken for the delete route.
 func TestDeletePromptLabelHandlerRequiresAdminToken(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 	doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
 
@@ -1189,7 +1189,7 @@ func TestDeletePromptLabelHandlerRequiresAdminToken(t *testing.T) {
 // TestDeletePromptLogsAnAuditEntry for the new label-delete route.
 func TestDeletePromptLabelHandlerLogsAnAuditEntry(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"user","content":"v1"}]}`)
 	doRequest(t, h, http.MethodPut, "/admin/prompts/greeting/labels/production", fakeAdminCredential(), `{"version":1}`)
@@ -1215,7 +1215,7 @@ func TestDeletePromptLabelHandlerLogsAnAuditEntry(t *testing.T) {
 // contextWithCredentialTier plumbing.
 func TestGetConfigLogsAnAuditEntryNamingTheCredentialTier(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, logger)
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, logger, nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/config", fakeAdminCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -1240,7 +1240,7 @@ func TestGetConfigLogsAnAuditEntryNamingTheCredentialTier(t *testing.T) {
 // as GET /admin/config, for the prompt-management surface.
 func TestPromptReadRoutesLogAnAuditEntryWithoutLeakingContent(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	const secretLookingContent = "the-eagle-has-landed-42"
 	doRequest(t, h, http.MethodPost, "/admin/prompts/greeting", fakeAdminCredential(), `{"messages":[{"role":"system","content":"`+secretLookingContent+`"}]}`)
@@ -1281,7 +1281,7 @@ func TestPromptReadRoutesLogAnAuditEntryWithoutLeakingContent(t *testing.T) {
 // line, not just a read one — the request itself must still succeed.
 func TestAuditLogDisabledSuppressesVirtualKeyUpsertEntry(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(auditLogDisabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(auditLogDisabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	body := `{"key_hash":"` + testHashOf("audit-disabled-test-value") + `"}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/team-omega", fakeAdminCredential(), body)
@@ -1297,7 +1297,7 @@ func TestAuditLogDisabledSuppressesVirtualKeyUpsertEntry(t *testing.T) {
 // read route, proving the suppression isn't scoped only to writes.
 func TestAuditLogDisabledSuppressesPromptReadEntries(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(auditLogDisabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(auditLogDisabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/prompts", fakeAdminCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -1322,7 +1322,7 @@ func pprofEnabledConfig() *controlplane.Config {
 // registered on the mux at all -- ServeMux returns a plain 404, not a
 // 401, since the route itself does not exist to be unauthorized against.
 func TestPprofDisabledByDefaultReturns404(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/debug/pprof/", fakeAdminCredential(), "")
 	if rec.Code != http.StatusNotFound {
@@ -1335,7 +1335,7 @@ func TestPprofDisabledByDefaultReturns404(t *testing.T) {
 // route -- missing or wrong credential is rejected before pprof.Index
 // ever runs.
 func TestPprofEnabledRequiresAdminCredential(t *testing.T) {
-	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	cases := []struct {
 		name        string
@@ -1360,7 +1360,7 @@ func TestPprofEnabledRequiresAdminCredential(t *testing.T) {
 // viewer tier exposes elsewhere on this mux, so pprof always requires
 // creds.Admin specifically, exactly like the write routes.
 func TestPprofEnabledViewerCredentialRejected(t *testing.T) {
-	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: "a-viewer-credential"}, discardLogger())
+	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: "a-viewer-credential"}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/debug/pprof/", "a-viewer-credential", "")
 	if rec.Code != http.StatusUnauthorized {
@@ -1373,7 +1373,7 @@ func TestPprofEnabledViewerCredentialRejected(t *testing.T) {
 // index route serves pprof's own real output, and a named profile route
 // (goroutine) serves a real profile, not a 404/501 stub.
 func TestPprofEnabledWithAdminCredentialServesRealProfilingData(t *testing.T) {
-	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(pprofEnabledConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/debug/pprof/", fakeAdminCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -1397,7 +1397,7 @@ func TestPprofEnabledWithAdminCredentialServesRealProfilingData(t *testing.T) {
 // bare 404 indistinguishable from a typo'd path, and never a 200 that
 // silently did nothing.
 func TestBackupRouteDisabledReturns501WhenNoBackupDirConfigured(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/backup", fakeAdminCredential(), "")
 	if rec.Code != http.StatusNotImplemented {
@@ -1409,7 +1409,7 @@ func TestBackupRouteDisabledReturns501WhenNoBackupDirConfigured(t *testing.T) {
 // disk-touching route is gated exactly like every other write route on
 // this mux -- admin-only, never viewer or cost_viewer.
 func TestBackupRouteRequiresAdminCredential(t *testing.T) {
-	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil),
 		http.MethodPost, "/admin/backup", "wrong-value-entirely", "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("POST /admin/backup with a wrong credential: status = %d, want 401", rec.Code)
@@ -1465,7 +1465,7 @@ func TestBackupRouteWritesTimestampedFilesForEachConfiguredStore(t *testing.T) {
 	backupDir := t.TempDir()
 	cfg := testConfig()
 	cfg.Admin.BackupDir = backupDir
-	h := Handler(cfg, pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(cfg, pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/backup", fakeAdminCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -1549,7 +1549,7 @@ func TestBackupRouteReturns500WhenBackupDirIsUnwritable(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Admin.BackupDir = backupDir
-	h := Handler(cfg, pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(cfg, pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/backup", fakeAdminCredential(), "")
 	if rec.Code != http.StatusInternalServerError {
@@ -1611,7 +1611,7 @@ func TestUpdateDeploymentWeightViaHTTPChangesLiveRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPipeline: %v", err)
 	}
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/deployments/d1/weight", fakeAdminCredential(), `{"weight":3}`)
 	if rec.Code != http.StatusNoContent {
@@ -1639,7 +1639,7 @@ func TestUpdateDeploymentWeightViaHTTPChangesLiveRouting(t *testing.T) {
 // write-shaped, live-routing-mutating route is gated exactly like every
 // other write route on this mux — admin-only.
 func TestUpdateDeploymentWeightRequiresAdminCredential(t *testing.T) {
-	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil),
 		http.MethodPost, "/admin/deployments/d1/weight", "wrong-value-entirely", `{"weight":3}`)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("POST /admin/deployments/d1/weight with a wrong credential: status = %d, want 401", rec.Code)
@@ -1654,7 +1654,7 @@ func TestUpdateDeploymentWeightRequiresAdminCredential(t *testing.T) {
 // for this route covered only the success path and the auth gate — none
 // of these 3 branches had ever been exercised at the HTTP layer.
 func TestUpdateDeploymentWeightRejectsNegativeWeight(t *testing.T) {
-	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil),
 		http.MethodPost, "/admin/deployments/d1/weight", fakeAdminCredential(), `{"weight":-1}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /admin/deployments/d1/weight with weight=-1: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
@@ -1662,7 +1662,7 @@ func TestUpdateDeploymentWeightRejectsNegativeWeight(t *testing.T) {
 }
 
 func TestUpdateDeploymentWeightRejectsMalformedBody(t *testing.T) {
-	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil),
 		http.MethodPost, "/admin/deployments/d1/weight", fakeAdminCredential(), `{not valid json`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /admin/deployments/d1/weight with a malformed body: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
@@ -1670,7 +1670,7 @@ func TestUpdateDeploymentWeightRejectsMalformedBody(t *testing.T) {
 }
 
 func TestUpdateDeploymentWeightRejectsUnknownDeployment(t *testing.T) {
-	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil),
 		http.MethodPost, "/admin/deployments/does-not-exist/weight", fakeAdminCredential(), `{"weight":3}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("POST /admin/deployments/does-not-exist/weight: status = %d, want 404, body: %s", rec.Code, rec.Body.String())
@@ -1732,7 +1732,7 @@ func TestEraseCacheEntryHandlerErasesARealHitAndLogsAudit(t *testing.T) {
 	}
 
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, logger)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, logger, nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/cache/erase", fakeAdminCredential(),
 		`{"virtual_key_id":"test-key","model":"gpt-4o","messages":[{"role":"user","content":"erase-me-via-http"}]}`)
@@ -1757,7 +1757,7 @@ func TestEraseCacheEntryHandlerErasesARealHitAndLogsAudit(t *testing.T) {
 // TestEraseCacheEntryHandlerRequiresAdminToken proves this write-shaped
 // route is gated exactly like every other admin mutation route.
 func TestEraseCacheEntryHandlerRequiresAdminToken(t *testing.T) {
-	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil),
 		http.MethodPost, "/admin/cache/erase", "wrong-value-entirely", `{"virtual_key_id":"test-key","model":"gpt-4o"}`)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("POST /admin/cache/erase with a wrong credential: status = %d, want 401", rec.Code)
@@ -1765,7 +1765,7 @@ func TestEraseCacheEntryHandlerRequiresAdminToken(t *testing.T) {
 }
 
 func TestEraseCacheEntryHandlerRejectsMissingVirtualKeyID(t *testing.T) {
-	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil),
 		http.MethodPost, "/admin/cache/erase", fakeAdminCredential(), `{"model":"gpt-4o"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /admin/cache/erase with no virtual_key_id: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
@@ -1773,7 +1773,7 @@ func TestEraseCacheEntryHandlerRejectsMissingVirtualKeyID(t *testing.T) {
 }
 
 func TestEraseCacheEntryHandlerRejectsMalformedBody(t *testing.T) {
-	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger()),
+	rec := doRequest(t, Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil),
 		http.MethodPost, "/admin/cache/erase", fakeAdminCredential(), `{not valid json`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /admin/cache/erase with a malformed body: status = %d, want 400, body: %s", rec.Code, rec.Body.String())
@@ -1789,7 +1789,7 @@ func TestEraseCacheEntryHandlerRejectsMalformedBody(t *testing.T) {
 // nothing cached" -- a real false-negative risk for a GDPR Article 17
 // erasure request specifically.
 func TestEraseCacheEntryHandlerRejectsUnknownVirtualKeyID(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	rec := doRequest(t, h, http.MethodPost, "/admin/cache/erase", fakeAdminCredential(),
 		`{"virtual_key_id":"does-not-exist","model":"gpt-4o","messages":[{"role":"user","content":"anything"}]}`)
 	if rec.Code != http.StatusNotFound {
@@ -1802,7 +1802,7 @@ func TestEraseCacheEntryHandlerRejectsUnknownVirtualKeyID(t *testing.T) {
 // (both found flags false), never a 404 -- matching
 // dataplane.Pipeline.EraseCacheEntry's own no-op-not-error contract.
 func TestEraseCacheEntryHandlerOnNeverCachedEntryStillReturns200(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 	rec := doRequest(t, h, http.MethodPost, "/admin/cache/erase", fakeAdminCredential(),
 		`{"virtual_key_id":"test-key","model":"gpt-4o","messages":[{"role":"user","content":"never-requested"}]}`)
 	if rec.Code != http.StatusOK {

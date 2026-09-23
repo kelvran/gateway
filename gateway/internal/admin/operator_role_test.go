@@ -26,7 +26,7 @@ func TestOperatorTokenCanRotateReweightAndEraseButNothingElse(t *testing.T) {
 		Admin:    fakeAdminCredential(),
 		Viewer:   fakeViewerCredential(),
 		Operator: fakeOperatorCredential(),
-	}, discardLogger())
+	}, discardLogger(), nil)
 
 	rotateBody := `{"new_key_hash":"` + testHashOf("operator-rotated-secret") + `"}`
 	if rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/test-key/rotate", fakeOperatorCredential(), rotateBody); rec.Code != http.StatusNoContent {
@@ -66,7 +66,7 @@ func TestOperatorTokenCanRotateReweightAndEraseButNothingElse(t *testing.T) {
 // mirroring TestAdminTokenStillWorksForEverythingWhenAViewerTierIsConfigured's
 // own shape for the viewer tier.
 func TestAdminTokenStillWorksForEverythingWhenAnOperatorTierIsConfigured(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Operator: fakeOperatorCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Operator: fakeOperatorCredential()}, discardLogger(), nil)
 
 	if rec := doRequest(t, h, http.MethodPost, "/admin/deployments/d1/weight", fakeAdminCredential(), `{"weight":7}`); rec.Code != http.StatusNoContent {
 		t.Errorf("POST .../weight with the admin credential: status = %d, want 204, body: %s", rec.Code, rec.Body.String())
@@ -83,7 +83,7 @@ func TestAdminTokenStillWorksForEverythingWhenAnOperatorTierIsConfigured(t *test
 // credential works, mirroring TestOmittingTheViewerTierBehavesExactlyAsBefore's
 // own shape for the viewer tier.
 func TestOmittingTheOperatorTierBehavesExactlyAsBefore(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	if rec := doRequest(t, h, http.MethodPost, "/admin/deployments/d1/weight", fakeOperatorCredential(), `{"weight":3}`); rec.Code != http.StatusUnauthorized {
 		t.Errorf("POST .../weight with an unconfigured operator credential: status = %d, want 401", rec.Code)
@@ -102,7 +102,7 @@ func TestOmittingTheOperatorTierBehavesExactlyAsBefore(t *testing.T) {
 // "admin" string, drives these log lines now.
 func TestOperatorAuditLogRecordsOperatorTier(t *testing.T) {
 	logger, buf := capturingLogger()
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Operator: fakeOperatorCredential()}, logger)
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Operator: fakeOperatorCredential()}, logger, nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/deployments/d1/weight", fakeOperatorCredential(), `{"weight":9}`)
 	if rec.Code != http.StatusNoContent {

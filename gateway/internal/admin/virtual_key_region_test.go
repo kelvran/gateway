@@ -76,7 +76,7 @@ func newTwoRegionTestPipeline(t *testing.T, served *string) *dataplane.Pipeline 
 func TestUpsertVirtualKeyWithAllowedRegionsIsEnforced(t *testing.T) {
 	var served string
 	pipeline := newTwoRegionTestPipeline(t, &served)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	newBearerValue := "region-constrained-test-value"
 	body := `{"key_hash":"` + testHashOf(newBearerValue) + `","allowed_regions":["eu-west-1"]}`

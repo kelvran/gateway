@@ -92,6 +92,14 @@ linters:
         linters:
           - gosec
         text: "G304"
+      # auditstore.Open/Query read/write admin.audit_log_path -- an
+      # operator-supplied config value (controlplane.AdminConfig.AuditLogPath),
+      # never attacker-reachable input, the identical reasoning
+      # config.go's own G304 suppression above already gives.
+      - path: internal/admin/auditstore/auditstore.go
+        linters:
+          - gosec
+        text: "G304"
       # Test-fixture loaders reading a hardcoded "testdata/" prefix plus
       # a test-controlled fixture name -- never external/attacker input.
       # Every provider adapter package (anthropic/bedrock/gemini/openai/

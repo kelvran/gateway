@@ -53,6 +53,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openaicompat"
 	"github.com/kelvran/gateway/gateway/internal/admin"
+	"github.com/kelvran/gateway/gateway/internal/admin/auditstore"
 	"github.com/kelvran/gateway/gateway/internal/alerting"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/budget/boltstore"
@@ -517,9 +518,21 @@ func run(configPath string, logger *slog.Logger) error {
 		if adminListenAddr == "" {
 			adminListenAddr = defaultAdminListenAddr
 		}
+		// auditStore is nil (GET /admin/audit never registered, no
+		// durable copy attempted) unless AuditLogPath is explicitly
+		// configured -- mirrors BackupDir's own "off unless configured"
+		// posture, per that field's own doc comment.
+		var auditStore *auditstore.Store
+		if cfg.Admin.AuditLogPath != "" {
+			auditStore, err = auditstore.Open(cfg.Admin.AuditLogPath)
+			if err != nil {
+				return fmt.Errorf("opening admin.audit_log_path %q: %w", cfg.Admin.AuditLogPath, err)
+			}
+			defer func() { _ = auditStore.Close() }()
+		}
 		adminServer = &http.Server{
 			Addr:              adminListenAddr,
-			Handler:           admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken, CostViewer: costViewerToken, Operator: operatorToken}, logger),
+			Handler:           admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken, CostViewer: costViewerToken, Operator: operatorToken}, logger, auditStore),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 	}

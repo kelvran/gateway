@@ -16,7 +16,7 @@ func TestListVirtualKeysHandlerRequiresAdminOrViewerToken(t *testing.T) {
 		Admin:      fakeAdminCredential(),
 		Viewer:     fakeViewerCredential(),
 		CostViewer: fakeCostViewerCredential(),
-	}, discardLogger())
+	}, discardLogger(), nil)
 
 	for _, cred := range []string{fakeAdminCredential(), fakeViewerCredential()} {
 		rec := doRequest(t, h, http.MethodGet, "/admin/virtual_keys", cred, "")
@@ -41,7 +41,7 @@ func TestListVirtualKeysHandlerRequiresAdminOrViewerToken(t *testing.T) {
 // value at all, for any configured key.
 func TestListVirtualKeysHandlerNeverExposesKeyHash(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	hash := testHashOf("list-secret-check-credential")
 	body := `{"key_hash":"` + hash + `","budget_usd":"5"}`
@@ -64,7 +64,7 @@ func TestListVirtualKeysHandlerNeverExposesKeyHash(t *testing.T) {
 // current per-key config -- not a stub.
 func TestListVirtualKeysHandlerReturnsSortedByIDAndRealBudgetShape(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("zzz-key") + `","budget_usd":"25","budget_reset_interval_seconds":3600,"budget_warn_percent":80,"allowed_models":["gpt-4o","claude-sonnet-5"]}`
 	if rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/zzz-key", fakeAdminCredential(), body); rec.Code != http.StatusNoContent {

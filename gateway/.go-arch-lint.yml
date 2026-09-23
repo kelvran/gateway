@@ -33,6 +33,7 @@ components:
   controlplane:      { in: gateway/controlplane }
   dataplane:         { in: gateway/dataplane }
   admin:             { in: admin }
+  admin-auditstore:  { in: admin/auditstore }
   prompt:            { in: prompt }
   prompt-boltstore:  { in: prompt/boltstore }
   gatewayevents:     { in: ../api/gatewayevents/v1 }
@@ -155,6 +156,7 @@ deps:
   admin:
     mayDependOn:
       - adapter
+      - admin-auditstore
       - controlplane
       - dataplane
       - identity

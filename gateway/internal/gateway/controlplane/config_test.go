@@ -2205,6 +2205,46 @@ func TestLoadAdminSectionExplicitlyDisablesAuditLog(t *testing.T) {
 	}
 }
 
+// TestLoadParsesAuditLogPath proves admin.audit_log_path parses through
+// when present, and defaults empty (durable audit trail off) when
+// unset, mirroring BackupDir's own "off unless configured" convention.
+func TestLoadParsesAuditLogPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  audit_log_path: \"/var/log/kelvran/audit.jsonl\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Admin.AuditLogPath != "/var/log/kelvran/audit.jsonl" {
+		t.Errorf("Admin.AuditLogPath = %q, want %q", cfg.Admin.AuditLogPath, "/var/log/kelvran/audit.jsonl")
+	}
+}
+
+// TestLoadAuditLogPathDefaultsEmptyWhenUnconfigured proves every config
+// written before this field existed parses to "" -- no unexpected
+// default path.
+func TestLoadAuditLogPathDefaultsEmptyWhenUnconfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Admin.AuditLogPath != "" {
+		t.Errorf("Admin.AuditLogPath = %q, want empty", cfg.Admin.AuditLogPath)
+	}
+}
+
 // TestLoadOnCorruptStoreDefaultsToFailRegardlessOfAdminSectionPresence
 // proves admin.on_corrupt_store defaults to "fail" -- both when the
 // admin section is absent entirely, and when it's present but this key

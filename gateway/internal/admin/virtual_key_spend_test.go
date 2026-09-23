@@ -24,7 +24,7 @@ func TestCostViewerTokenCanReadSpendButNothingElse(t *testing.T) {
 		Admin:      fakeAdminCredential(),
 		Viewer:     fakeViewerCredential(),
 		CostViewer: fakeCostViewerCredential(),
-	}, discardLogger())
+	}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/virtual_keys/test-key/spend", fakeCostViewerCredential(), "")
 	if rec.Code != http.StatusOK {
@@ -59,7 +59,7 @@ func TestAdminAndViewerTokensStillReadSpendWhenCostViewerIsConfigured(t *testing
 		Admin:      fakeAdminCredential(),
 		Viewer:     fakeViewerCredential(),
 		CostViewer: fakeCostViewerCredential(),
-	}, discardLogger())
+	}, discardLogger(), nil)
 
 	for _, cred := range []string{fakeAdminCredential(), fakeViewerCredential()} {
 		rec := doRequest(t, h, http.MethodGet, "/admin/virtual_keys/test-key/spend", cred, "")
@@ -73,7 +73,7 @@ func TestAdminAndViewerTokensStillReadSpendWhenCostViewerIsConfigured(t *testing
 // optional -- an empty Credentials.CostViewer means the spend route only
 // authenticates Admin/Viewer, exactly as if the field didn't exist.
 func TestOmittingCostViewerBehavesExactlyAsBefore(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/virtual_keys/test-key/spend", fakeCostViewerCredential(), "")
 	if rec.Code != http.StatusUnauthorized {
@@ -89,7 +89,7 @@ func TestOmittingCostViewerBehavesExactlyAsBefore(t *testing.T) {
 // TestGetVirtualKeySpendUnknownNameReturns404 proves the negative case
 // mirroring deleteVirtualKeyHandler's own not-found convention.
 func TestGetVirtualKeySpendUnknownNameReturns404(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodGet, "/admin/virtual_keys/does-not-exist/spend", fakeAdminCredential(), "")
 	if rec.Code != http.StatusNotFound {
@@ -102,7 +102,7 @@ func TestGetVirtualKeySpendUnknownNameReturns404(t *testing.T) {
 // a positive budget cap.
 func TestGetVirtualKeySpendReflectsRealBudgetShape(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"key_hash":"` + testHashOf("spend-key") + `","budget_usd":"10","budget_reset_interval_seconds":3600}`
 	if rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/spend-key", fakeAdminCredential(), body); rec.Code != http.StatusNoContent {

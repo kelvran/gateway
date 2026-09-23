@@ -762,6 +762,17 @@ type AdminConfig struct {
 	// pipeline already captures the same audit trail and this codebase's
 	// own logging would just be redundant duplicate volume.
 	EnableAuditLog bool
+	// AuditLogPath, if set, gives every admin-route audit event a
+	// durable, queryable JSONL trail (internal/admin/auditstore) IN
+	// ADDITION to the existing slog line above -- see that package's own
+	// doc comment for why "write-only" was a real, confirmed gap.
+	// Governed by the SAME EnableAuditLog switch, not a second one:
+	// disabling audit logging disables both paths together, per this
+	// feature's own "purely additive to the existing mechanism, not a
+	// second independent toggle" design. Empty (the default) means no
+	// durable trail -- mirrors BackupDir's own "off unless configured"
+	// posture exactly.
+	AuditLogPath string
 	// OnCorruptStore controls what happens when a configured
 	// persist_path (identity/budget/prompt) exists but bbolt fails to
 	// open it -- distinct from "path absent," which is always handled
@@ -1169,6 +1180,7 @@ func Load(path string) (*Config, error) {
 		if err := assignBool(&cfg.Admin.EnableAuditLog, adminRaw, "enable_audit_log", "controlplane: admin.enable_audit_log"); err != nil {
 			return nil, err
 		}
+		cfg.Admin.AuditLogPath, _ = getString(adminRaw, "audit_log_path")
 		if v, present := getString(adminRaw, "on_corrupt_store"); present {
 			switch v {
 			case "fail", "reset":

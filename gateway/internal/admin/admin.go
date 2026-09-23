@@ -38,6 +38,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/admin/auditstore"
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/gateway/internal/identity"
@@ -157,9 +158,16 @@ type perModelRateLimitRequest struct {
 // package IS an audit entry (confirmed: this file has zero Warn/Error/Debug
 // calls, only Info) — so wrapping the single Info method here is
 // sufficient to gate all of them, not just some.
+//
+// store, when non-nil, ALSO appends every entry to a durable, queryable
+// JSONL trail (internal/admin/auditstore) -- see that package's own doc
+// comment for why the plain slog line above is genuinely write-only.
+// Governed by the same `enabled` switch as the slog line, not a second
+// one, per controlplane.AdminConfig.AuditLogPath's own doc comment.
 type auditLogger struct {
 	logger  *slog.Logger
 	enabled bool
+	store   *auditstore.Store
 }
 
 func (a auditLogger) Info(msg string, args ...any) {
@@ -167,6 +175,15 @@ func (a auditLogger) Info(msg string, args ...any) {
 		return
 	}
 	a.logger.Info(msg, args...)
+	if a.store != nil {
+		if err := a.store.Append(msg, args...); err != nil {
+			// The operational slog line above already succeeded --
+			// losing the durable copy is a real, worth-knowing failure
+			// (e.g. a full disk) but must never be mistaken for the
+			// audit event itself having failed to record anywhere.
+			a.logger.Warn("admin_audit_durable_append_failed", "error", err.Error())
+		}
+	}
 }
 
 // Handler builds the admin HTTP surface. cfg is the already-loaded,
@@ -180,10 +197,17 @@ func (a auditLogger) Info(msg string, args ...any) {
 // create/delete (never the credential/secret value itself), per
 // docs/rfcs/2026-09-09-gateway-admin-viewer-role.md — unless
 // cfg.Admin.EnableAuditLog is false, per that field's own doc comment.
-func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Credentials, logger *slog.Logger) http.Handler {
-	audit := auditLogger{logger: logger, enabled: cfg.Admin.EnableAuditLog}
+// auditStore, when non-nil (cmd/gateway opens it only when
+// cfg.Admin.AuditLogPath is set), backs GET /admin/audit and every
+// audit-log call site's own durable copy — see auditLogger's own doc
+// comment.
+func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Credentials, logger *slog.Logger, auditStore *auditstore.Store) http.Handler {
+	audit := auditLogger{logger: logger, enabled: cfg.Admin.EnableAuditLog, store: auditStore}
 	mux := http.NewServeMux()
 	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg, audit)))
+	if auditStore != nil {
+		mux.Handle("GET /admin/audit", requireEitherBearerToken(creds, queryAuditLogHandler(auditStore)))
+	}
 	mux.Handle("GET /admin/virtual_keys", requireEitherBearerToken(creds, listVirtualKeysHandler(pipeline, audit)))
 	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, audit)))
 	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, audit)))
@@ -429,6 +453,65 @@ func getConfigHandler(cfg *controlplane.Config, logger auditLogger) http.Handler
 			return
 		}
 		logger.Info("admin_config_read", "authorized_by", credentialTierFromContext(r.Context()))
+	}
+}
+
+// auditEntryResponse is one entry in GET /admin/audit's own JSON
+// response array -- a direct field-for-field mirror of
+// auditstore.Entry, kept as its own type rather than exposing that
+// package's type directly on the wire, matching this file's own
+// established convention (e.g. virtualKeyListEntry vs.
+// identity.VirtualKey) of a dedicated response shape per route.
+type auditEntryResponse struct {
+	Time   time.Time         `json:"time"`
+	Msg    string            `json:"msg"`
+	Fields map[string]string `json:"fields,omitempty"`
+}
+
+// queryAuditLogHandler serves GET /admin/audit -- see
+// internal/admin/auditstore's own doc comment for what this closes: the
+// existing slog audit line has no read path at all. Query parameters
+// (all optional, combinable): msg (exact action-type match),
+// field/value (exact match against one Fields entry -- e.g.
+// ?field=name&value=team-alpha for "everything about this one virtual
+// key"), since/until (RFC 3339 timestamps, half-open range). No
+// parameters at all returns every recorded entry.
+func queryAuditLogHandler(store *auditstore.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		filter := auditstore.Filter{
+			Msg:        q.Get("msg"),
+			FieldKey:   q.Get("field"),
+			FieldValue: q.Get("value"),
+		}
+		if since := q.Get("since"); since != "" {
+			t, err := time.Parse(time.RFC3339, since)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("since %q is not a valid RFC 3339 timestamp: %v", since, err), http.StatusBadRequest)
+				return
+			}
+			filter.Since = t
+		}
+		if until := q.Get("until"); until != "" {
+			t, err := time.Parse(time.RFC3339, until)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("until %q is not a valid RFC 3339 timestamp: %v", until, err), http.StatusBadRequest)
+				return
+			}
+			filter.Until = t
+		}
+
+		entries, err := store.Query(filter)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("querying audit log: %v", err), http.StatusInternalServerError)
+			return
+		}
+		resp := make([]auditEntryResponse, 0, len(entries))
+		for _, e := range entries {
+			resp = append(resp, auditEntryResponse{Time: e.Time, Msg: e.Msg, Fields: e.Fields})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 

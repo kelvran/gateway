@@ -14,7 +14,7 @@ import (
 // authenticate the data-plane pipeline afterward.
 func TestRotateVirtualKeyViaHTTPKeepsOldSecretUsableDuringGracePeriod(t *testing.T) {
 	pipeline := newTestPipeline(t)
-	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"new_key_hash":"` + testHashOf("test-key-v2") + `","grace_period_seconds":3600}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/test-key/rotate", fakeAdminCredential(), body)
@@ -34,7 +34,7 @@ func TestRotateVirtualKeyViaHTTPKeepsOldSecretUsableDuringGracePeriod(t *testing
 // admin-only, mirroring upsertVirtualKeyHandler/deleteVirtualKeyHandler's
 // own gating.
 func TestRotateVirtualKeyRequiresAdminCredential(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential(), Viewer: fakeViewerCredential()}, discardLogger(), nil)
 
 	body := `{"new_key_hash":"` + testHashOf("irrelevant") + `"}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/test-key/rotate", fakeViewerCredential(), body)
@@ -46,7 +46,7 @@ func TestRotateVirtualKeyRequiresAdminCredential(t *testing.T) {
 // TestRotateVirtualKeyMissingNewKeyHashIsRejected mirrors
 // TestUpsertVirtualKeyMissingKeyHashIsRejected's own validation shape.
 func TestRotateVirtualKeyMissingNewKeyHashIsRejected(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/test-key/rotate", fakeAdminCredential(), `{}`)
 	if rec.Code != http.StatusBadRequest {
@@ -60,7 +60,7 @@ func TestRotateVirtualKeyMissingNewKeyHashIsRejected(t *testing.T) {
 // validation (via dataplane.Pipeline.RotateVirtualKey) rather than being
 // accepted as an opaque, unvalidated string.
 func TestRotateVirtualKeyMalformedNewKeyHashIsRejected(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	cases := []struct {
 		name       string
@@ -83,7 +83,7 @@ func TestRotateVirtualKeyMalformedNewKeyHashIsRejected(t *testing.T) {
 // TestRotateVirtualKeyUnknownNameReturns404 mirrors
 // TestDeleteVirtualKeyUnknownNameReturns404's own not-found convention.
 func TestRotateVirtualKeyUnknownNameReturns404(t *testing.T) {
-	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger())
+	h := Handler(testConfig(), newTestPipeline(t), Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
 
 	body := `{"new_key_hash":"` + testHashOf("irrelevant") + `"}`
 	rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/does-not-exist/rotate", fakeAdminCredential(), body)
