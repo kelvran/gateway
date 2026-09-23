@@ -1995,20 +1995,45 @@ func (p *Pipeline) checkFallbackTargetRateLimit(ctx context.Context, keyID, mode
 // Every true return MUST be paired with exactly one releaseConcurrency
 // call — HandleChatCompletion/HandleChatCompletionStream both do this via
 // defer immediately after a successful acquire.
-func (p *Pipeline) checkConcurrency(vk *identity.VirtualKey) bool {
+//
+// Takes ctx (rather than just vk) so it can read
+// telemetry.AgentRunIDFromContext(ctx) and thread it through to
+// ratelimit.ConcurrencyLimiter.AcquireWithRun — purely for that
+// limiter's own OBSERVABILITY-only runCounts bookkeeping (see that
+// method's doc comment), never as a second admission dimension: the
+// actual admit/reject decision here is identical to what plain Acquire
+// already did, keyed on vk.ID alone.
+func (p *Pipeline) checkConcurrency(ctx context.Context, vk *identity.VirtualKey) bool {
 	if p.concurrency == nil {
 		return true
 	}
-	return p.concurrency.Acquire(vk.ID)
+	return p.concurrency.AcquireWithRun(vk.ID, telemetry.AgentRunIDFromContext(ctx))
 }
 
 // releaseConcurrency frees the in-flight slot checkConcurrency reserved.
-// A no-op when Config.Concurrency was left unset, mirroring checkConcurrency.
-func (p *Pipeline) releaseConcurrency(vk *identity.VirtualKey) {
+// A no-op when Config.Concurrency was left unset, mirroring
+// checkConcurrency. Takes ctx for the same reason checkConcurrency
+// does — the released ReleaseWithRun call must report the SAME
+// agent_run_id the paired AcquireWithRun call recorded, or runCounts'
+// own per-agent-run bookkeeping would drift.
+func (p *Pipeline) releaseConcurrency(ctx context.Context, vk *identity.VirtualKey) {
 	if p.concurrency == nil {
 		return
 	}
-	p.concurrency.Release(vk.ID)
+	p.concurrency.ReleaseWithRun(vk.ID, telemetry.AgentRunIDFromContext(ctx))
+}
+
+// InFlightByAgentRun reports keyID's current in-flight load broken down
+// by agent_run_id — the seam the admin API's GET
+// .../virtual_keys/{name}/inflight route calls. Returns (0,
+// map[string]int{}) when Config.Concurrency was left unset, mirroring
+// checkConcurrency's own nil-safety convention exactly (never nil, never
+// a panic, for the common "concurrency limiting not configured" case).
+func (p *Pipeline) InFlightByAgentRun(keyID string) (total int, byAgentRun map[string]int) {
+	if p.concurrency == nil {
+		return 0, map[string]int{}
+	}
+	return p.concurrency.InFlightByAgentRun(keyID)
 }
 
 // checkDeploymentConcurrency reserves one in-flight slot against
@@ -2943,11 +2968,11 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	// EVERY subsequent return path (cache hit, guardrail block, upstream
 	// success or failure) without needing a second release call at each
 	// one.
-	if !p.checkConcurrency(vk) {
+	if !p.checkConcurrency(ctx, vk) {
 		err = ErrConcurrencyLimitExceeded
 		return
 	}
-	defer p.releaseConcurrency(vk)
+	defer p.releaseConcurrency(ctx, vk)
 
 	budgetSpentAtDecision = p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
 	var budgetOK bool

@@ -188,11 +188,11 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// block for the full rationale. Both the buffered and streaming paths
 	// need this, or the cap would be trivially bypassed by setting
 	// "stream": true.
-	if !p.checkConcurrency(vk) {
+	if !p.checkConcurrency(ctx, vk) {
 		err = ErrConcurrencyLimitExceeded
 		return
 	}
-	defer p.releaseConcurrency(vk)
+	defer p.releaseConcurrency(ctx, vk)
 
 	budgetSpentAtDecision = p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
 	var budgetOK bool

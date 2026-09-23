@@ -223,6 +223,13 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 		tokenTier{creds.Viewer, "viewer"},
 		tokenTier{creds.CostViewer, "cost_viewer"},
 	))
+	// Same tier as GET /admin/virtual_keys itself (requireEitherBearerToken
+	// -- admin-or-viewer), not the narrower CostViewer-inclusive tier
+	// .../spend uses above: this is operational in-flight-load state, the
+	// same category as the config/topology GET /admin/virtual_keys already
+	// exposes, not a cost/billing view a finance-only CostViewer credential
+	// has any specific need to see.
+	mux.Handle("GET /admin/virtual_keys/{name}/inflight", requireEitherBearerToken(creds, getVirtualKeyInFlightHandler(pipeline, audit)))
 	// Prompt/template management, per this feature's own design: prompts
 	// are GLOBAL, operator-managed config (the same category as
 	// price_table/deployments/guardrails config above) -- reads are
@@ -1042,6 +1049,48 @@ func getVirtualKeySpendHandler(pipeline *dataplane.Pipeline, logger auditLogger)
 			PercentUsed:                percentUsed,
 		})
 		logger.Info("admin_virtual_key_spend_read", "name", name, "authorized_by", credentialTierFromContext(r.Context()))
+	}
+}
+
+// virtualKeyInFlightResponse is what GET
+// /admin/virtual_keys/{name}/inflight returns -- a pure, read-only
+// OBSERVABILITY signal, per dataplane.Pipeline.InFlightByAgentRun's own
+// doc comment: TotalInFlight is name's current total in-flight request
+// count (accurate whether or not that key has a configured concurrency
+// cap); ByAgentRunID is the same count broken down per agent_run_id, so
+// an operator can notice "most of this key's concurrency is one runaway
+// agent run" and decide, manually and out of band, whether to mint that
+// run its own separate virtual key. This value is NEVER consulted by any
+// admission/throttling decision anywhere in this codebase -- see
+// ratelimit.ConcurrencyLimiter's own package-level doc comment for the
+// full observability-only rule this response type surfaces.
+type virtualKeyInFlightResponse struct {
+	TotalInFlight int            `json:"total_in_flight"`
+	ByAgentRunID  map[string]int `json:"by_agent_run_id"`
+}
+
+// getVirtualKeyInFlightHandler serves name's current in-flight load,
+// broken down by agent_run_id -- mirrors getVirtualKeySpendHandler's own
+// exact shape (look up by name, 404 if not found, encode via
+// writeJSONResponse, audit-log the read). 404 if name doesn't match any
+// configured key, matching every other name-scoped GET route on this
+// mux. logger records this read (name + credential tier, never the
+// in-flight figures themselves) mirroring every other read route's audit
+// convention.
+func getVirtualKeyInFlightHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		vk, ok := pipeline.GetVirtualKey(name)
+		if !ok {
+			http.Error(w, fmt.Sprintf("virtual key %q not found", name), http.StatusNotFound)
+			return
+		}
+		total, byAgentRun := pipeline.InFlightByAgentRun(vk.ID)
+		writeJSONResponse(w, virtualKeyInFlightResponse{
+			TotalInFlight: total,
+			ByAgentRunID:  byAgentRun,
+		})
+		logger.Info("admin_virtual_key_inflight_read", "name", name, "authorized_by", credentialTierFromContext(r.Context()))
 	}
 }
 

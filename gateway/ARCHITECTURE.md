@@ -331,6 +331,34 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              (a Python redis.asyncio per-event-loop check-then-create race) has no
                              structural equivalent here. Confirmed clean — recorded so a future pass
                              doesn't redo this ~30-minute code read from scratch.
+                             **Missing from this entry until now**: `ratelimit.ConcurrencyLimiter`
+                             (internal/ratelimit/concurrency.go, per
+                             docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md) bounds how many of
+                             one virtual key's requests may be simultaneously outstanding
+                             (`VirtualKeyConfig.MaxConcurrentRequests`) — a genuinely different dimension
+                             from this package's own RPM/TPM buckets above, which bound how FAST a key
+                             may issue new requests, never how MANY may be outstanding at once. The
+                             identical type is reused, unchanged, for the per-deployment aggregate cap
+                             (`DeploymentConfig.MaxConcurrentRequests`, wired as `Pipeline.
+                             DeploymentConcurrency`, per docs/upgrade-research/gateway-per-deployment-
+                             concurrency-2026-09-09.md) — a separate instance, separate scope, sharing
+                             only the type. Deliberately scoped to the virtual-key ID only, never
+                             `agent_run_id` — that value is client-supplied/unverified (W3C Baggage), so
+                             enforcing anything on it would let a client bypass the control by rotating
+                             the value per request; see docs/upgrade-research/multi-agent-fanout-
+                             concurrency-composition-2026-09-23.md for a fresh, dedicated research pass
+                             independently reconfirming this industry-wide (no production LLM gateway
+                             safely nests a per-agent-run sub-limit inside a parent key's own allowance
+                             either), and DECISIONS.md's matching entry for the full resolved verdict.
+                             **Added 2026-09-23**, from that same research round: `AcquireWithRun`/
+                             `ReleaseWithRun`/`InFlightByAgentRun` extend `ConcurrencyLimiter` with a
+                             read-only, observability-only per-agent-run breakdown of one key's current
+                             in-flight count (surfaced via `GET /admin/virtual_keys/{name}/inflight`) —
+                             tracked for every key, capped or not, and never consulted by the admission
+                             decision above. The pre-existing single-argument `Acquire`/`Release` are now
+                             thin wrappers over the new methods with an empty run ID, so every one of
+                             their ~15 existing call sites (including the deployment-scoped limiter,
+                             which has no agent-run concept at all) is unaffected.
 /internal/cache            — Cache's public interface — see "Cache Subsystem" below; this is the ONLY
                              package Gateway's request pipeline is allowed to import from Cache
     /port.go                — type Cache interface { Get, Put, Delete } — the sole import surface.
