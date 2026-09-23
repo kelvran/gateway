@@ -21,6 +21,31 @@
 # treated as solved -- tighten this yourself if your own cluster's
 # egress topology allows it (e.g. a fixed NAT gateway IP an egress rule
 # could target).
+#
+# Added 2026-09-23, per docs/upgrade-research/zero-trust-service-mesh-gateway-security-2026-09-22.md
+# Finding 3: the "no stable IP to pin to" rationale above is true of the
+# SaaS providers this file ships scoped to by default, but does NOT
+# transfer to a self-hosted inference backend (vLLM/SGLang/etc.) running
+# as another Pod in this SAME cluster -- an operator wiring a
+# Deployment's base_url at one of those backends can (and should) scope
+# egress to it specifically, since its Service's label selector and
+# ClusterIP are entirely operator-controlled, not a dynamic CDN
+# endpoint. Example, additive to the blanket `- {}` rule above rather
+# than a replacement for it (SaaS traffic still needs the open rule):
+#
+#   egress:
+#     - {}  # keep this for SaaS-provider traffic (see comment above)
+#     - to:  # tighter, additional rule scoping self-hosted backend traffic
+#         - podSelector:
+#             matchLabels:
+#               app.kubernetes.io/name: my-self-hosted-inference-backend
+#       ports:
+#         - protocol: TCP
+#           port: 8000  # the self-hosted backend's own serving port
+#
+# Not applied as a live rule here since no self-hosted backend ships
+# with this base manifest set -- an operator who runs one in-cluster
+# should add a rule shaped like the example above to their own overlay.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

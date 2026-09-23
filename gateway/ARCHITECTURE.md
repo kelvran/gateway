@@ -78,6 +78,30 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              analog anywhere, and no confirmed Kelvran customer demand for one. This SSE-
                              only design — with its own real resilience (runaway-completion guard, mid-
                              stream budget/TPM reservation top-up) — is unaffected and remains the v2 design.
+                             **Added 2026-09-23**, per docs/upgrade-research/streaming-transport-protocol-
+                             evolution-2026-09-22.md: re-confirms, doesn't merely re-assert, that SSE
+                             remains correct for this layer — every major LLM provider (OpenAI, Anthropic,
+                             Gemini, Cohere, Mistral) still streams tokens over SSE in 2026, and no
+                             production LLM gateway (Kong, Envoy AI Gateway, LiteLLM, Portkey) has moved
+                             its default token-delivery path off it. WebTransport reaching browser
+                             "Baseline" status in March 2026 doesn't change this verdict — every source
+                             discussing it for AI workloads frames it around bidirectional, partially-
+                             unreliable traffic (cloud gaming, live video, collaborative cursors), not the
+                             ordered, reliable, one-way delivery this package already provides. gRPC
+                             server-streaming for LLM completions is real, shipping infrastructure
+                             elsewhere, but oriented at GCP-IAM-authenticated service-to-service traffic
+                             (Vertex AI dedicated endpoints), not the API-key-authenticated public surface
+                             this package's adapters actually call — a real developer-forum report shows
+                             gRPC access to Gemini's own public API-key endpoint failing outright. One
+                             separate, code-grounded fact worth naming even though it doesn't change this
+                             verdict: `cmd/gateway/main.go`'s client-facing `*http.Server` calls plain
+                             `ListenAndServe()` with no `TLSConfig`/h2c wiring, so the Go process itself
+                             only ever speaks HTTP/1.1 — whatever HTTP/2 or HTTP/3 a real client sees
+                             depends entirely on an ingress/load-balancer this repo does not commit a
+                             manifest for (`deploy/k8s/base/` has no `Ingress` resource). Worth
+                             investigating against a real deployment's own ingress config if HTTP/2-level
+                             behavior (e.g. multiplexing) ever matters — not something to change inside
+                             this package, which is unaffected either way.
 /internal/router          — **ACTIVE**, per docs/rfcs/2026-09-04-weighted-routing.md: weighted round-robin
                              deployment selection (the LVS/IPVS `wrr.c` smooth-WRR algorithm — O(1) state
                              per deployment, no goroutine, no ticker), closing the "weighted" half of
@@ -195,6 +219,58 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              which wants "not this one," the opposite of stickiness), falling through to
                              plain `selectHealthy` whenever the sticky pick also fails `exclude`/health/
                              cost-tier filtering — never bypassing those safety gates.
+                             **Added 2026-09-23, doc-vs-code staleness fix**: this section previously
+                             never credited a real Phase 6 feature shipped earlier the same day —
+                             `health.go`'s `admitLatencyThinnedTurn`/`latencyCredit` (mirroring the
+                             existing ramp-recovery gate's own accumulator shape) apply a soft,
+                             multiplicative de-weighting factor on top of a deployment's configured
+                             `Weight`, driven by `dataplane.updateLatencyDeweighting`'s per-deployment
+                             EMA of real probe-call latency (`latencyEMAAlpha = 0.3`) — never a hard
+                             exclusion, so a slow-but-healthy deployment still receives some traffic,
+                             just proportionally less. `Router.SetLatencyFactor` is the one new public
+                             entry point; `Select`/`ReportProbeResult` are otherwise unchanged. **Also
+                             added 2026-09-23**, per docs/upgrade-research/self-hosted-inference-server-
+                             integration-depth-2026-09-22.md: a real, currently-unread signal family
+                             exists beyond the latency EMA above — every self-hosted runtime the
+                             `openaicompat` adapter targets (vLLM, SGLang, TGI, llama.cpp) exposes its
+                             own native queue-depth/KV-cache-utilization telemetry (e.g. vLLM's
+                             `vllm:num_requests_waiting`/`vllm:kv_cache_usage_perc`) over a separate
+                             `/metrics` (or, for llama.cpp, `/slots`) endpoint this router never scrapes.
+                             The deepest coordination tier for this signal (precise KV-cache-event-
+                             driven prefix-cache routing, disaggregated prefill/decode orchestration) is
+                             deliberately out of scope — that tier is real and production-proven, but
+                             lives one architectural layer down, in dedicated sidecar/ext-proc systems
+                             (the Kubernetes Gateway API Inference Extension's Endpoint Picker, most
+                             visibly packaged as GKE Inference Gateway/llm-d) that Kelvran's own single-
+                             process, provider-agnostic shape was never designed to replicate. A
+                             shallower tier — scraping the same `/metrics`/`/slots` endpoint as a soft
+                             pre-filter feeding this same latency-de-weighting mechanism — is a real,
+                             evidence-backed gap (LiteLLM's own GitHub issue #37622 shows its request-
+                             count-only `least-busy` strategy routing to a 98.8%-KV-cache-saturated
+                             instance while a sibling sat fully idle, purely because it never reads
+                             backend state) but is correctly left unbuilt pending a bounded RFC, not
+                             built speculatively — named future work, not silently dropped. Separately,
+                             the same report resolves "speculative decoding" as a router-relevant
+                             concept to NOT APPLICABLE, not merely unbuilt: token-level speculative
+                             decoding (a draft model proposing candidates a larger model verifies within
+                             one inference engine) has zero wire-visible signal — the client-facing
+                             response is identical whether or not the backend used it internally, so
+                             there is nothing for this router to coordinate on. The similarly-named but
+                             structurally different *response-level* speculative decoding/model
+                             cascading (two separate HTTP-addressable endpoints, a cheap model drafts,
+                             an expensive one verifies) is the same "cost-aware model cascading"
+                             question `DECISIONS.md`'s `[2026-09-14]` and `[2026-09-20]` (third entry)
+                             entries already researched twice and correctly left `not_yet` for lack of
+                             an accurate request-level confidence/refusal signal — this report found no
+                             new evidence changing that verdict. **Also added 2026-09-23**, per
+                             docs/upgrade-research/carbon-aware-sustainable-routing-2026-09-22.md: no
+                             carbon-aware routing signal exists here, and none is planned — reconfirmed,
+                             not merely re-asserted, since two of Kelvran's five adapters (OpenAI,
+                             Anthropic) publish zero real energy/carbon data for their own models today,
+                             which would leave any such feature flying blind for the two adapters likely
+                             carrying the most traffic. The existing, unrelated `CostTier` mechanism
+                             above is a reasonable energy proxy already, once built — no separate
+                             carbon-specific code path is planned to duplicate it.
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
@@ -341,7 +417,18 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              gateway/internal/), explicitly out of scope for v1 per PRD.md. Intended
                              design: inbound (expose Kelvran's own APIs as MCP tools) + outbound (broker
                              agent tool calls) brokering — shares identity/costaccounting, not a second
-                             gateway
+                             gateway. **Added 2026-09-23**, per docs/upgrade-research/agent-memory-
+                             context-management-2026-09-22.md — a deliberate non-build verdict, not a
+                             deferred item: a Kelvran-native cross-request agent memory store (Zep/Mem0-
+                             style long-term memory, distinct from this same request's own context
+                             window) is explicitly out of scope, consistent with Kelvran's stated
+                             stateless-per-request architecture and its own PRD.md non-goals. A caller
+                             who wants provider-hosted persistent memory (e.g. OpenAI's Conversations
+                             API) already gets it transparently today — Kelvran's canonical schema
+                             passes such a request through as an ordinary opaque request/response,
+                             requiring zero new code on Kelvran's side, since building a memory store
+                             would mean Kelvran itself tracking cross-request state it deliberately
+                             does not track anywhere else in this architecture.
 /internal/guardrail          — pre/post-call middleware interface; PII/content checks — ACTIVE, per
                              docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md
 /internal/alerting           — **Added 2026-09-18**, per docs/upgrade-research/operator-alerting-
@@ -577,6 +664,8 @@ One canonical internal schema, OpenAI Chat-Completions-shaped — the dialect vL
 
 **Reasoning/thinking-block round-tripping** (`Message.ReasoningBlocks`, per `docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md`) is a sixth normalization point, and the first one that was a genuine, live-breaking bug rather than a design gap: Anthropic's Messages API and Bedrock's Anthropic-compatible Claude Messages endpoint return a hard `400` if a prior turn's `thinking`/`redacted_thinking` blocks aren't echoed back byte-for-byte, in original order, on any subsequent turn carrying a tool result — some model tiers cannot disable thinking at all, so this fires unconditionally, not just under specific configuration. `adapter.Message.ReasoningBlocks` is an ordered, additive field (`Sequence`-indexed against `ToolCalls`, never a breaking replacement of `Content`/`ToolCalls`) capturing each opaque block's `Text`/`Signature` (plaintext) or `Data` (provider-encrypted ciphertext — never interpreted, scanned, or logged). Anthropic and Bedrock both fully DROPPED these blocks before this fix (`ContentBlock` had no field for either type, on either the buffered or streaming path); Gemini's bug was a different class entirely — its real `thought`/`thoughtSignature` fields exist, but a thought part's content rides the exact same `text` JSON key an ordinary answer uses, so it was silently MERGED into visible `Content`, indistinguishable from a real answer, rather than dropped. **Corrected 2026-09-13**: OpenAI remains deliberately deferred — it targets the Chat Completions wire shape, which has no reasoning/thinking field of any kind (confirmed against OpenAI's own current API reference; only `usage.completion_tokens_details.reasoning_tokens`, a plain count), and encrypted reasoning items/summaries exist only under the Responses API, which `openai.go` does not target. **openaicompat shipped** (that RFC's Phase 5): field-name verification against each target runtime's live source found the wire name genuinely fragmented — llama.cpp emits `reasoning_content`; vLLM renamed its own field to `reasoning` (accepting the old name only as a request-side backward-compat alias, never emitting it); Ollama's OpenAI-compat layer uses `reasoning`; TGI has none. `openaicompat.go`/`stream.go` capture/replay under both live wire names, as a single flat `ReasoningBlock` at `Sequence: 0` (no interleaving signal exists on this flat wire shape). Two cross-cutting consequences shipped as real code, not left as a design note: Cache L3-lite gained an eighth hard gate (`ReasoningBlocksFingerprint` — see Cache Subsystem below); the guardrail pre-call scan now excludes a Redacted block's opaque `Data` (previously fed straight into the PII/secret regex detectors, a real violation of `ReasoningBlock.Redacted`'s own "never scan" contract), while the post-call scan now includes plaintext `ReasoningBlocks.Text` (previously never scanned at all — see Guardrails Subsystem below).
 
+**Added 2026-09-23**, per `docs/upgrade-research/ai-gateway-api-standardization-2026-09-22.md`: no emerging standardized AI-gateway wire-protocol effort is being tracked as an adoption candidate against this canonical schema today — correctly, not from inattention. The one GA'd standard surveyed doesn't apply to Kelvran's architecture; the one effort that would apply is pre-alpha, unimplemented by any peer; and the peers Kelvran is actually benchmarked against in this repo's own convention (Kong, Envoy AI Gateway, LiteLLM) have each gone their own proprietary way at the layer that matters. A "monitor lightly, revisit in 6-12 months" verdict, not a permanent one — this schema's own OpenAI-Chat-Completions-shaped design (see above) is unaffected either way.
+
 ## Cache Subsystem
 
 Cache is a package boundary, **not a network hop**, at every stage until (if ever) `docs/decisions/0002-cache-embedded-in-gateway.md`'s extraction triggers fire. Gateway's request pipeline only ever calls `cache.Cache.Get`/`Put`/`Delete` (L1/L2 — `Delete` added 2026-09-14, see `/internal/cache` above) or `cache.LexicalCache.Search`/`Put` (L3 — a distinct interface, since a similarity search returns zero-to-many scored candidates, not a single hit/miss) — never a concrete implementation. Internally: L1 (exact hash, SHA-256, in-process, LRU-bounded — real, per `internal/cache/key.go`/`internal/cache/inprocess`), L2 (normalized-match, a narrow 3-operation allowlist — outer whitespace trim, Unicode NFC, trailing terminal punctuation strip — real, per `docs/rfcs/2026-09-03-cache-l2-normalized-match.md`; deliberately narrower than that RFC's own grounding research recommended, since Kelvran's agent traffic can plausibly include pasted code where internal-whitespace/case normalization risks a wrong-answer collision), **L3-lite** (MinHash/shingling lexical near-duplicate matching — never real embedding-based semantic similarity, deferred to a later RFC per `docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md`'s "why not real embeddings yet" — real, gated by an entity/number/date hard-gate, a **negation-particle hard-gate** (added 2026-09-12, see below), a per-tenant-partitioned `inprocess.LexicalCache`, a freshness/risk model, and a hard bypass for volatile queries; see `PRD.md`'s scope note that L3 must never ship without the hard-gate).
@@ -602,6 +691,8 @@ Pre-call and post-call middleware hooks — **real**, per `docs/rfcs/2026-09-03-
 **2026-09-12 addition**: the pre-call scan now excludes a `ReasoningBlock`'s opaque, provider-encrypted `Data` (Anthropic `redacted_thinking`, Bedrock `redactedContent`) via a dedicated `guardrailScanMessages` — before this fix it was fed straight into the PII/secret regex detectors as part of `serializeMessages`' blanket full-message marshal, a real violation of that field's own "never scan" contract, even though the practical exposure was low (ciphertext rarely resembles a real PII pattern). The post-call scan now includes plaintext `ReasoningBlocks.Text`, previously never scanned at all despite a model's reasoning trace being a real channel for PII/secrets/policy-violating content that never surfaces in visible output — the mirror gap to the pre-call fix. See `docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md`.
 
 **Corrected 2026-09-13**: "fail-open-with-logging" above was only half true until this fix — `Engine.Check` previously logged a `guardrail_verdict_blocked` line only when `Blocked` was true; a Warn-tier category's own findings (prompt_injection/contact_info/network_id) were recorded on `Verdict.Findings` but never logged anywhere, since every one of this Engine's 4 call sites (pre-call/post-call, buffered/streaming) only ever inspects `.Blocked`. Found via a live adversarial evaluation against the real pilot gateway (7 hand-crafted probes mirroring promptfoo's own public plugin taxonomy — indirect-prompt-injection, ASCII-smuggling via Unicode tag characters, system-prompt-override, a Context Compliance Attack, special-token-injection, plus 2 PII probes): 6 of 7 produced zero guardrail log output at all, indistinguishable from the detector never running — including the hidden-Unicode-tag probe, despite `promptinjection.go`'s own doc comment specifically claiming hidden-Unicode detection. `Engine.Check` now also logs `guardrail_verdict_warn` whenever `Findings` is non-empty but `Blocked` is false, giving Warn-tier detections a real audit trail for the first time. The underlying blocking/policy behavior is unchanged — this is pure observability, not a security-behavior change. Separately confirmed as real, unfixed, and correctly out of scope for this fix: the model's own alignment (not Kelvran's gateway) was the only thing that actually refused 5 of the 6 non-PII probes — Kelvran's own guardrail layer provides zero defense against classic jailbreak/CCA/indirect-injection framing today, exactly the gap `docs/rfcs/2026-09-13-gateway-bedrock-guardrails-ml-detector-design.md` scopes a design for.
+
+**Added 2026-09-23**, per `docs/upgrade-research/wasm-plugin-extensibility-2026-09-22.md`, reinforcing rather than revisiting `docs/upgrade-research/guardrail-plugin-extensibility-2026-09-15.md`'s existing "not yet" verdict on a WASM-based plugin/filter-chain model for this package: the newest evidence is harder, not softer — Kong (one of the three systems this research area evaluates against) removed WASM support from Kong Gateway entirely in version 3.11 (July 2025) after two years in beta, replacing it with a native plugin mechanism specifically for performance/memory reasons, and Envoy's own WASM HTTP filter still carries an "experimental" label in its current docs years after introduction. WASM would solve a problem (safe extensibility for a marketplace of untrusted, third-party plugin authors) this single-maintainer, single-binary gateway does not have, at a real, measured performance cost (~50% of native execution speed per Google's own V8 benchmarks) that would collide directly with this package's own per-request body-inspection hot path (`Engine.Check` runs pre-call AND post-call on every request). The `guardrail.Detector` interface's existing sibling-package pattern (`bedrockguard` above) remains the extensibility mechanism for a genuinely new detector — a real Go package, not a sandboxed plugin runtime.
 
 ## Tech Stack
 
