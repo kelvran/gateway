@@ -788,6 +788,44 @@ type AdminConfig struct {
 	// for making this an explicit, disclosed CHOICE, not_yet for
 	// picking reset as the default.
 	OnCorruptStore string
+	// MTLSConfig, when set, requires every client connecting to the admin
+	// HTTP server to present a valid TLS client certificate signed by an
+	// operator-supplied CA, on top of (never instead of) the existing
+	// bearer-token tiers above -- transport-layer defense-in-depth for the
+	// design gap DECISIONS.md's `[2026-09-15]` entry named as genuinely
+	// unresolved ("mTLS/zero-trust for the admin surface beyond
+	// bearer-token auth"). See AdminMTLSConfig's own doc comment for why
+	// this is the opposite direction of DeploymentTLSConfig. Nil (the
+	// default) means mTLS is off -- matching every other optional
+	// AdminConfig knob's own "off unless configured" convention (see
+	// AuditLogPath's doc comment) -- and behavior is byte-for-byte
+	// unchanged from before this field existed: plain HTTP, bearer-token
+	// -only. Meaningless (never read) when TokenEnv is empty, since the
+	// whole admin server never starts in that case.
+	MTLSConfig *AdminMTLSConfig
+}
+
+// AdminMTLSConfig names PEM file paths, never inline certificate material --
+// mirrors DeploymentTLSConfig's own "never store a secret VALUE in a
+// committed file" convention by keeping the actual key material on disk,
+// outside the config file. Unlike DeploymentTLSConfig, which configures the
+// gateway acting as a TLS CLIENT making OUTBOUND calls to a deployment, this
+// struct configures the admin HTTP server acting as a TLS SERVER that
+// requires and verifies INCOMING client certificates -- the opposite
+// direction. All three fields are required TOGETHER, unlike
+// DeploymentTLSConfig's independently-optional fields: a TLS server always
+// needs its own certificate to present (ServerCertPath/ServerKeyPath), and
+// requiring client certs needs a CA to verify them against (CACertPath), so
+// there is no valid partial configuration here.
+type AdminMTLSConfig struct {
+	// CACertPath is the PEM file the admin server verifies incoming client
+	// certificates against.
+	CACertPath string
+	// ServerCertPath is the PEM certificate the admin server presents to
+	// connecting clients.
+	ServerCertPath string
+	// ServerKeyPath is the PEM private key matching ServerCertPath.
+	ServerKeyPath string
 }
 
 // HealthProbeConfig configures the active/synthetic health-probing
@@ -1188,6 +1226,26 @@ func Load(path string) (*Config, error) {
 			default:
 				return nil, fmt.Errorf("controlplane: admin.on_corrupt_store %q is invalid (want \"fail\" or \"reset\")", v)
 			}
+		}
+		if mtlsRaw, ok := getMap(adminRaw, "mtls"); ok {
+			mtlsCfg := &AdminMTLSConfig{}
+			mtlsCfg.CACertPath, _ = getString(mtlsRaw, "ca_cert_path")
+			mtlsCfg.ServerCertPath, _ = getString(mtlsRaw, "server_cert_path")
+			mtlsCfg.ServerKeyPath, _ = getString(mtlsRaw, "server_key_path")
+			var missing []string
+			if mtlsCfg.CACertPath == "" {
+				missing = append(missing, "ca_cert_path")
+			}
+			if mtlsCfg.ServerCertPath == "" {
+				missing = append(missing, "server_cert_path")
+			}
+			if mtlsCfg.ServerKeyPath == "" {
+				missing = append(missing, "server_key_path")
+			}
+			if len(missing) > 0 {
+				return nil, fmt.Errorf("controlplane: admin.mtls declares a block but is missing %s -- ca_cert_path/server_cert_path/server_key_path are all required together", strings.Join(missing, ", "))
+			}
+			cfg.Admin.MTLSConfig = mtlsCfg
 		}
 	}
 

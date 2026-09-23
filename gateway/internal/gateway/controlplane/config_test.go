@@ -2283,6 +2283,108 @@ func TestLoadOnCorruptStoreDefaultsToFailRegardlessOfAdminSectionPresence(t *tes
 	}
 }
 
+// TestLoadParsesAdminMTLSConfig proves admin.mtls, when all three fields
+// are set, populates AdminMTLSConfig correctly.
+func TestLoadParsesAdminMTLSConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  token_env: \"KELVRAN_ADMIN_TOKEN\"\n  mtls:\n    ca_cert_path: \"/etc/kelvran/admin-ca.pem\"\n    server_cert_path: \"/etc/kelvran/admin-server.pem\"\n    server_key_path: \"/etc/kelvran/admin-server-key.pem\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	mtlsCfg := cfg.Admin.MTLSConfig
+	if mtlsCfg == nil {
+		t.Fatal("Admin.MTLSConfig = nil, want non-nil")
+	}
+	if mtlsCfg.CACertPath != "/etc/kelvran/admin-ca.pem" || mtlsCfg.ServerCertPath != "/etc/kelvran/admin-server.pem" || mtlsCfg.ServerKeyPath != "/etc/kelvran/admin-server-key.pem" {
+		t.Errorf("MTLSConfig = %+v, want all three paths populated verbatim", mtlsCfg)
+	}
+}
+
+// TestLoadAdminMTLSConfigDefaultsNilWhenUnconfigured proves that a config
+// with no admin.mtls block at all -- either no admin: section, or an
+// admin: section present for some other field -- leaves Admin.MTLSConfig
+// nil, matching today's unchanged (plain HTTP, bearer-token-only) behavior.
+func TestLoadAdminMTLSConfigDefaultsNilWhenUnconfigured(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "admin section absent",
+			content: "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n",
+		},
+		{
+			name:    "admin section present, mtls unset",
+			content: "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  token_env: \"KELVRAN_ADMIN_TOKEN\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Admin.MTLSConfig != nil {
+				t.Errorf("Admin.MTLSConfig = %+v, want nil", cfg.Admin.MTLSConfig)
+			}
+		})
+	}
+}
+
+// TestLoadRejectsAdminMTLSConfigWithMissingField proves admin.mtls requires
+// all three fields TOGETHER -- unlike DeploymentTLSConfig's independently
+// optional fields -- and names exactly which field(s) are missing in the
+// returned error.
+func TestLoadRejectsAdminMTLSConfigWithMissingField(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mtlsLines string
+		wantInErr string
+	}{
+		{
+			name:      "missing ca_cert_path",
+			mtlsLines: "  mtls:\n    server_cert_path: \"/etc/kelvran/admin-server.pem\"\n    server_key_path: \"/etc/kelvran/admin-server-key.pem\"\n",
+			wantInErr: "ca_cert_path",
+		},
+		{
+			name:      "missing server_cert_path",
+			mtlsLines: "  mtls:\n    ca_cert_path: \"/etc/kelvran/admin-ca.pem\"\n    server_key_path: \"/etc/kelvran/admin-server-key.pem\"\n",
+			wantInErr: "server_cert_path",
+		},
+		{
+			name:      "missing server_key_path",
+			mtlsLines: "  mtls:\n    ca_cert_path: \"/etc/kelvran/admin-ca.pem\"\n    server_cert_path: \"/etc/kelvran/admin-server.pem\"\n",
+			wantInErr: "server_key_path",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nadmin:\n  token_env: \"KELVRAN_ADMIN_TOKEN\"\n" + tc.mtlsLines + "deployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("Load: want an error for an incomplete admin.mtls block, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantInErr) {
+				t.Errorf("Load error = %q, want it to name %q", err.Error(), tc.wantInErr)
+			}
+		})
+	}
+}
+
 // TestLoadOnCorruptStoreParsesReset proves the actual opt-in path.
 func TestLoadOnCorruptStoreParsesReset(t *testing.T) {
 	dir := t.TempDir()

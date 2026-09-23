@@ -234,6 +234,18 @@ linters:
         linters:
           - gosec
         text: "G204"
+      # clientWithCert's InsecureSkipVerify is deliberate, not an
+      # oversight: this file's whole point is proving the admin server's
+      # own CLIENT-certificate enforcement (ClientAuth:
+      # RequireAndVerifyClientCert), an orthogonal concern from whether a
+      # generic HTTP client trusts this ephemeral self-signed test
+      # server's own certificate -- already-proven stdlib behavior this
+      # suite doesn't need to re-test. Never used outside _test.go, never
+      # near production TLS config.
+      - path: cmd/gateway/admin_mtls_test\.go
+        linters:
+          - gosec
+        text: "G402"
 
 formatters:
   enable:

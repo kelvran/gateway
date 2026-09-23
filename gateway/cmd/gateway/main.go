@@ -279,6 +279,37 @@ func newDeploymentTLSTransport(tlsCfg *controlplane.DeploymentTLSConfig) (*http.
 	return t, nil
 }
 
+// newAdminMTLSConfig builds a *tls.Config for the admin HTTP server acting
+// as a TLS SERVER that requires and verifies incoming client certificates --
+// the opposite direction of newDeploymentTLSTransport above, which builds a
+// TLS CLIENT config for outbound calls. Reads PEM files from disk at
+// startup, never inline certificate material — see
+// controlplane.AdminMTLSConfig's own doc comment. ClientAuth is
+// RequireAndVerifyClientCert, not VerifyClientCertIfGiven — a client
+// without a valid certificate signed by CACertPath must fail the TLS
+// handshake outright, not merely skip an optional check, since this is a
+// hard transport-layer requirement layered on top of the existing
+// bearer-token tiers, not a replacement for them.
+func newAdminMTLSConfig(mtlsCfg *controlplane.AdminMTLSConfig) (*tls.Config, error) {
+	serverCert, err := tls.LoadX509KeyPair(mtlsCfg.ServerCertPath, mtlsCfg.ServerKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading admin.mtls server_cert_path/server_key_path: %w", err)
+	}
+	pem, err := os.ReadFile(mtlsCfg.CACertPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading admin.mtls ca_cert_path %q: %w", mtlsCfg.CACertPath, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("admin.mtls ca_cert_path %q contains no valid PEM certificate", mtlsCfg.CACertPath)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+	}, nil
+}
+
 // buildPerDeploymentTLSClients returns two maps, keyed by deployment
 // name, for every deployment that declares a TLSConfig -- one set of
 // buffered (upstreamHTTPTimeout-bounded) clients and one set of
@@ -535,6 +566,16 @@ func run(configPath string, logger *slog.Logger) error {
 			Handler:           admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken, CostViewer: costViewerToken, Operator: operatorToken}, logger, auditStore),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
+		// TLSConfig stays nil (plain HTTP, exactly as before this feature
+		// existed) unless admin.mtls is explicitly configured -- see
+		// controlplane.AdminMTLSConfig's own doc comment.
+		if cfg.Admin.MTLSConfig != nil {
+			adminTLSConfig, err := newAdminMTLSConfig(cfg.Admin.MTLSConfig)
+			if err != nil {
+				return fmt.Errorf("configuring admin.mtls: %w", err)
+			}
+			adminServer.TLSConfig = adminTLSConfig
+		}
 	}
 
 	// ctx is canceled the moment a real SIGTERM/SIGINT arrives. stop
@@ -630,8 +671,16 @@ func run(configPath string, logger *slog.Logger) error {
 	adminServeErr := make(chan error, 1)
 	if adminServer != nil {
 		go func() {
-			logger.Info("admin server listening", "addr", adminServer.Addr)
-			adminServeErr <- adminServer.ListenAndServe()
+			logger.Info("admin server listening", "addr", adminServer.Addr, "mtls", adminServer.TLSConfig != nil)
+			if adminServer.TLSConfig != nil {
+				// Empty certFile/keyFile arguments are correct here -- the
+				// certificate is already loaded into TLSConfig.Certificates
+				// by newAdminMTLSConfig, per ListenAndServeTLS's own
+				// documented convention for this exact shape.
+				adminServeErr <- adminServer.ListenAndServeTLS("", "")
+			} else {
+				adminServeErr <- adminServer.ListenAndServe()
+			}
 		}()
 	}
 

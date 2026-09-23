@@ -436,6 +436,20 @@ telemetry:
 #   # redis_password_env: "REDIS_ADMIN_PASSWORD"
 #   # redis_username: "default"
 #   # redis_tls: true
+#   # Added 2026-09-23: opt-in mTLS for the admin server, closing the
+#   # "mTLS/zero-trust for the admin surface" design gap DECISIONS.md's
+#   # [2026-09-15] entry named as genuinely unresolved. ADDITIVE to the
+#   # bearer-token tiers above, never a replacement -- every one of
+#   # token_env/viewer_token_env/operator_token_env still applies
+#   # unchanged once a client's certificate clears this check. All three
+#   # fields are required TOGETHER (a TLS server always needs its own
+#   # certificate; requiring client certs needs a CA to verify them
+#   # against) -- omit the whole mtls: block for today's unchanged, plain-
+#   # HTTP default.
+#   # mtls:
+#   #   ca_cert_path: "/etc/kelvran/admin-ca.pem"
+#   #   server_cert_path: "/etc/kelvran/admin-server.pem"
+#   #   server_key_path: "/etc/kelvran/admin-server-key.pem"
 
 # Push-based cross-instance admin-mutation propagation (deployment
 # weight changes, and virtual-key upsert/delete/rotate), via Redis
