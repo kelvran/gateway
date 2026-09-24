@@ -102,10 +102,14 @@ func BedrockModelSupportsForcedToolChoice(model string) bool {
 // instead of forcing. Matched by substring, mirroring every other
 // per-model whitelist/blocklist in this file, for the same real-model-ID
 // reason (region/version prefixes and date/version suffixes around the
-// family name).
+// family name). "claude-opus-5-5" added 2026-09-24 per
+// docs/upgrade-research/upstream-provider-api-changes-2026-09-24.md
+// Finding 1 -- Anthropic's own 2026-09-22 release notes confirm Opus 5.5
+// inherits this same restriction from Fable 5.1/Mythos 5.1.
 var anthropicForcedToolChoiceUnsupportedModelSubstrings = []string{
 	"claude-fable-5-1",
 	"claude-mythos-5-1",
+	"claude-opus-5-5",
 }
 
 // AnthropicModelRejectsForcedToolChoice reports whether model (an

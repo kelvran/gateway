@@ -54,3 +54,31 @@ func TestSupportsStructuredOutputBedrockIsPerModel(t *testing.T) {
 		}
 	}
 }
+
+// TestAnthropicModelRejectsForcedToolChoice proves the substring
+// allowlist matches every model family Anthropic has documented as
+// rejecting forced tool_choice, including claude-opus-5-5 (added
+// 2026-09-24 per docs/upgrade-research/upstream-provider-api-changes-
+// 2026-09-24.md Finding 1 -- Anthropic's own 2026-09-22 release notes
+// confirm Opus 5.5 inherits this restriction from Fable 5.1/Mythos 5.1),
+// and that unrelated models are never falsely flagged.
+func TestAnthropicModelRejectsForcedToolChoice(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-fable-5-1", true},
+		{"claude-mythos-5-1", true},
+		{"claude-opus-5-5", true},
+		{"anthropic.claude-opus-5-5-20260901-v1:0", true},
+		{"global.anthropic.claude-fable-5-1-20260901-v1:0", true},
+		{"claude-sonnet-5", false},
+		{"claude-opus-4-6-20260101", false},
+		{"gpt-4o", false},
+	}
+	for _, tt := range tests {
+		if got := AnthropicModelRejectsForcedToolChoice(tt.model); got != tt.want {
+			t.Errorf("AnthropicModelRejectsForcedToolChoice(%q) = %v, want %v", tt.model, got, tt.want)
+		}
+	}
+}
