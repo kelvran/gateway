@@ -70,9 +70,11 @@ Direct inspection of Kelvran's own Go adapter source shows two of these are alre
 
 **2026 best-practice grounding:** Anthropic's own support article and release notes/product page independently corroborate the strict-default + non-strict-opt-in mechanism [confirmed 2-1 / 2-1 / 3-0 across three merged sub-facets].
 
-**Concrete next step:** scope a follow-up design pass (not a blind patch) for whether to plumb the `thinking-binding-controls-2026-08-01` beta header and a `block_binding`/`prefix_mismatch_behavior` field through — relevant to `docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md`.
+**Follow-up scoping (2026-09-24, same day):** a dedicated reachability check confirmed this is real and reachable *today* — worse than this finding's original framing. Kelvran's prompt management (`docs/rfcs/2026-09-13-gateway-prompt-management.md`) is global and live-mutable: `resolvePromptIfSet` (`dataplane.go:1830`) re-resolves `PromptID`/`PromptVersion`/`PromptLabel`+`PromptVariables` and replaces `req.Messages` server-side on every call. If an admin live-mutates or version-bumps a prompt template between turn N (where a thinking block gets signed under the old prefix) and turn N+1 (where the caller replays it), Kelvran forwards a now-stale-signed thinking block alongside a different, freshly-resolved prefix — triggering Anthropic's strict-default 400 through no fault of the caller. `docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md` is silent on this exact failure mode (it only covers omitted-block 400s, not prefix/binding mismatches). **Recommendation: default to Anthropic's non-strict mode** — Kelvran has no mechanism to guarantee prefix stability across turns given its own live-mutable global prompt design, so defaulting to strict would let Kelvran's own admin surface silently break in-flight reasoning conversations with an opaque 400 that isn't the caller's mistake. Non-strict degrades gracefully (drops the stale block, request still succeeds); Kelvran should surface which blocks were dropped (at minimum an OTel span attribute) for caller visibility. Offer strict as an explicit per-caller opt-in for those wanting a hard reasoning-continuity guarantee.
 
-**Effort:** Small-Medium — needs a design decision on default strict/non-strict behavior before coding.
+**Concrete next step:** add a `ThinkingBindingMode` field to `ChatRequest`/the wire struct, forward the `thinking-binding-controls-2026-08-01` beta header (default non-strict unless the caller opts into strict), parse and surface the drop-notification on response, and add a test reproducing the live-prompt-mutation reachability scenario above. A short addendum to the existing 2026-09-12 RFC covers this — no new RFC needed.
+
+**Effort:** Small-Medium — a design decision is now made (default non-strict); implementation is a scoped, additive change.
 
 ---
 
@@ -98,9 +100,11 @@ Direct inspection of Kelvran's own Go adapter source shows two of these are alre
 
 **2026 best-practice grounding:** Verified verbatim via two independent fetch tools plus a Wayback Machine archive snapshot [confirmed 2-1].
 
-**Concrete next step:** a targeted follow-up read of the router/transport/dataplane layer to confirm whether gpt-6-astra tool-calls are already routed to `/v1/responses`, before deciding whether this is a real end-to-end break.
+**Follow-up investigation (2026-09-24, same day): CONFIRMED, this is a real, structural gap, not a hypothesis.** `Deployment.BaseURL` (`controlplane/config.go:56`) is a full, static, operator-configured upstream URL; `callDeployment`/its streaming twin (`dataplane.go:4608`/`4687`) POST directly to that literal URL with zero model-name-aware endpoint selection anywhere in `router/` or `dataplane/` (grepped for "responses"/"astra" across both packages: no hits outside comments/tests). If an operator configures a `gpt-6-astra` deployment the same way as every other OpenAI model (pointing `BaseURL` at Chat Completions) and sends a tool-calling request, Kelvran marshals a Chat-Completions-shaped payload and forwards it verbatim — there is no code path that could route it to `/v1/responses` even in principle, and no clean client-side rejection either. Not "might silently break" — "there is no mechanism by which Kelvran could handle this today."
 
-**Effort:** Investigation first (Small); the fix itself, if confirmed needed, is Large (a new Responses-API code path).
+**Concrete next step:** name as a real, deliberately-deferred future item (a new Responses-API adapter surface) rather than building now — Large effort, no immediate demand signal, and the existing Chat-Completions-shaped openai adapter would need a structurally new request/response mapping, not a patch.
+
+**Effort:** Large (a new Responses-API code path) — confirmed real, not scheduled for this round.
 
 ---
 
@@ -112,9 +116,11 @@ Direct inspection of Kelvran's own Go adapter source shows two of these are alre
 
 **2026 best-practice grounding:** Verified against two independent primary OpenAI pages plus DNS/TLS/404-control checks ruling out a sandboxed mock [confirmed 3-0].
 
-**Concrete next step:** a follow-up code read of the router/fallback layer specifically, to see whether this distinction would change any fallback decision if plumbed through.
+**Follow-up investigation (2026-09-24, same day): CONFIRMED non-issue — no action needed.** `fallback.go:205`'s only fallback-eligibility check is `httpErr.StatusCode >= 500 && httpErr.StatusCode <= 599` — purely numeric-status-code-based, with zero sub-code body parsing anywhere (`UpstreamHTTPError.Body`, `fallback.go:47-50`, is captured but never parsed for sub-type). Since OpenAI's split uses *different HTTP status codes* (429 vs 503, not same-code-different-body), the new 503/`server_is_overloaded` already falls cleanly into the existing `>=500` fallback-eligible bucket with zero code change needed, and 429/`slow_down` stays outside that bucket exactly as every other 429 already does (handled by the separate, sub-code-agnostic `RetryAfterError`/backoff path). Distinguishing the two sub-codes would not currently change any fallback/retry decision — this finding's original "worth a follow-up" framing overstated the value.
 
-**Effort:** Investigation first (Small); differentiation itself likely Small-Medium.
+**Concrete next step:** none — closed as a confirmed non-issue.
+
+**Effort:** N/A (no action) — downgraded from this finding's original "Investigation first" framing now that the investigation is done.
 
 ---
 
@@ -148,10 +154,10 @@ Direct inspection of Kelvran's own Go adapter source shows two of these are alre
 
 ## Top takeaways
 
-1. **Ship the one-line Opus 5.5 fix.** Add `"claude-opus-5-5"` to `AnthropicModelRejectsForcedToolChoice`'s substring list — trivial, zero design risk, closes a real gap today.
+1. **Shipped:** the one-line Opus 5.5 fix (`"claude-opus-5-5"` added to `AnthropicModelRejectsForcedToolChoice`'s substring list) — trivial, zero design risk, closed 2026-09-24.
 2. **Two suspected gaps are already confirmed non-issues** — bedrock-mantle and Gemini's Interactions API are both already correctly out of scope by design, and already documented in-repo for the Bedrock case.
-3. **The "preserved thinking" 400 risk (Finding 4) is the most consequential real gap** — it can surface as an unmediated upstream 400 for real Kelvran traffic (mid-stream-edited conversations), and deserves a deliberate design decision (strict vs. non-strict default) rather than a blind patch.
-4. **Two findings need a runtime/router-layer check before being treated as confirmed** (GPT-6 Astra Responses-API requirement; the OpenAI 429/503 split's actual routing impact) — this report's adapter-only inspection cannot resolve either on its own.
+3. **The "preserved thinking" 400 risk (Finding 4) is confirmed real and reachable today**, via Kelvran's own live-mutable global prompt management — worse than originally framed. Scoped, not yet built: default to Anthropic's non-strict mode (see Finding 4's follow-up).
+4. **Both follow-up-needed items are now resolved.** GPT-6 Astra's Responses-API requirement is a confirmed, real, structural gap (Finding 6) — Large effort, deliberately not scheduled this round. The OpenAI 429/503 split (Finding 7) is a confirmed non-issue — closed, no action needed.
 
 ---
 
