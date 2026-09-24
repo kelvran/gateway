@@ -1248,3 +1248,181 @@ func TestToProviderToolChoiceForcedModeAllowedForOrdinaryModel(t *testing.T) {
 		t.Fatalf("ToProvider: %v, want no error for an ordinary model", err)
 	}
 }
+
+func thinkingBindingChatRequest(model, mode string) adapter.ChatRequest {
+	return adapter.ChatRequest{
+		Model:               model,
+		Messages:            []adapter.Message{{Role: "user", Content: "what is the weather"}},
+		ThinkingBindingMode: mode,
+	}
+}
+
+// TestThinkingBindingToProviderTableDriven proves thinkingBindingToProvider's
+// full decision table directly: the model gate (only the two models
+// Anthropic documents as running the preserved-thinking prefix check at
+// all ever get a non-nil Thinking -- every other model is untouched, the
+// exact regression this gate exists to prevent), Kelvran's own
+// non-strict-by-default resolution ("" and "non_strict" both resolve to
+// "drop_block"), the explicit "strict" opt-in ("error"), and a real,
+// typed error for any other value rather than a silent fallback.
+func TestThinkingBindingToProviderTableDriven(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		mode         string
+		wantNil      bool
+		wantBehavior string
+		wantErr      bool
+	}{
+		{name: "qualifying model, default mode", model: "claude-opus-5-5", mode: "", wantBehavior: "drop_block"},
+		{name: "qualifying model, explicit non_strict", model: "claude-fable-5-1", mode: "non_strict", wantBehavior: "drop_block"},
+		{name: "qualifying model, explicit strict", model: "claude-opus-5-5", mode: "strict", wantBehavior: "error"},
+		{name: "qualifying bedrock-style model ID, default mode", model: "global.anthropic.claude-opus-5-5-20260901-v1:0", mode: "", wantBehavior: "drop_block"},
+		{name: "non-qualifying model, default mode", model: "claude-sonnet-5", mode: "", wantNil: true},
+		{name: "non-qualifying model, explicit strict", model: "claude-opus-4-6", mode: "strict", wantNil: true},
+		{name: "qualifying model, unknown mode", model: "claude-opus-5-5", mode: "bogus", wantErr: true},
+		{name: "non-qualifying model, unknown mode is still a no-op (never reached)", model: "claude-sonnet-5", mode: "bogus", wantNil: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			thinking, err := thinkingBindingToProvider(tt.mode, tt.model)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("thinkingBindingToProvider(%q, %q): want an error, got nil", tt.mode, tt.model)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("thinkingBindingToProvider(%q, %q): %v", tt.mode, tt.model, err)
+			}
+			if tt.wantNil {
+				if thinking != nil {
+					t.Errorf("thinkingBindingToProvider(%q, %q) = %+v, want nil", tt.mode, tt.model, thinking)
+				}
+				return
+			}
+			if thinking == nil || thinking.BlockBinding == nil {
+				t.Fatalf("thinkingBindingToProvider(%q, %q) = %+v, want a populated Thinking.BlockBinding", tt.mode, tt.model, thinking)
+			}
+			if thinking.Type != "adaptive" {
+				t.Errorf("Thinking.Type = %q, want %q", thinking.Type, "adaptive")
+			}
+			if thinking.BlockBinding.PrefixMismatchBehavior != tt.wantBehavior {
+				t.Errorf("BlockBinding.PrefixMismatchBehavior = %q, want %q", thinking.BlockBinding.PrefixMismatchBehavior, tt.wantBehavior)
+			}
+		})
+	}
+}
+
+// TestToProviderThinkingBindingDefaultsToNonStrictForQualifyingModel is
+// the end-to-end proof (through the real ToProvider entry point, not
+// just the internal helper) that a ChatRequest with
+// ThinkingBindingMode left unset -- e.g. every ChatRequest built before
+// this field existed -- resolves to Kelvran's own deliberate non-strict
+// default for a model that runs the preserved-thinking prefix check.
+//
+// Scope, stated precisely: this proves the DEFAULT-VALUE RESOLUTION
+// mechanism only -- one ToProvider call, asserting
+// Thinking.BlockBinding.PrefixMismatchBehavior == "drop_block". It does
+// NOT drive Finding 4's own live-prompt-mutation reachability scenario
+// (an admin mutating a prompt between the turn a thinking block is
+// signed under and the turn it's replayed on, via resolvePromptIfSet) --
+// no test in this diff does; see this RFC addendum's own "Unresolved
+// Questions" for that explicitly-disclosed gap. Without the mechanism
+// this test DOES cover, that scenario would surface Anthropic's own
+// strict-by-default 400 to the caller; this test does not by itself
+// prove the scenario is reachable or handled correctly end-to-end.
+func TestToProviderThinkingBindingDefaultsToNonStrictForQualifyingModel(t *testing.T) {
+	for _, model := range []string{"claude-opus-5-5", "claude-fable-5-1"} {
+		nativeAny, err := New().ToProvider(thinkingBindingChatRequest(model, ""))
+		if err != nil {
+			t.Fatalf("ToProvider(%q): %v", model, err)
+		}
+		native := nativeAny.(*Request)
+		if native.Thinking == nil || native.Thinking.BlockBinding == nil {
+			t.Fatalf("ToProvider(%q): Thinking = %+v, want a populated BlockBinding", model, native.Thinking)
+		}
+		if got := native.Thinking.BlockBinding.PrefixMismatchBehavior; got != "drop_block" {
+			t.Errorf("ToProvider(%q): PrefixMismatchBehavior = %q, want %q (Kelvran's own non-strict default)", model, got, "drop_block")
+		}
+	}
+}
+
+// TestToProviderThinkingBindingOmittedForNonQualifyingModel is the
+// decisive regression proof: a model that doesn't run the
+// preserved-thinking prefix check at all must NEVER receive a
+// thinking.type field -- sending "adaptive" to a model that only
+// supports manual "enabled" thinking is a real, live 400, not a
+// harmless no-op, per thinkingBlockBindingModelSubstrings' own doc
+// comment.
+func TestToProviderThinkingBindingOmittedForNonQualifyingModel(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-5", "claude-opus-4-6", "claude-3-5-sonnet-20241022"} {
+		nativeAny, err := New().ToProvider(thinkingBindingChatRequest(model, ""))
+		if err != nil {
+			t.Fatalf("ToProvider(%q): %v", model, err)
+		}
+		native := nativeAny.(*Request)
+		if native.Thinking != nil {
+			t.Errorf("ToProvider(%q): Thinking = %+v, want nil", model, native.Thinking)
+		}
+	}
+}
+
+// TestThinkingBindingBetaHeaderValue proves the exported helper
+// dataplane's setUpstreamAuthHeaders relies on to decide the
+// anthropic-beta header value -- needed=false whenever ToProvider left
+// Thinking nil (nil Request included), needed=true with the exact
+// confirmed beta value otherwise.
+func TestThinkingBindingBetaHeaderValue(t *testing.T) {
+	if _, needed := ThinkingBindingBetaHeaderValue(nil); needed {
+		t.Error("ThinkingBindingBetaHeaderValue(nil): needed = true, want false")
+	}
+	if _, needed := ThinkingBindingBetaHeaderValue(&Request{}); needed {
+		t.Error("ThinkingBindingBetaHeaderValue(&Request{}): needed = true, want false")
+	}
+	req := &Request{Thinking: &Thinking{Type: "adaptive", BlockBinding: &BlockBinding{PrefixMismatchBehavior: "drop_block"}}}
+	value, needed := ThinkingBindingBetaHeaderValue(req)
+	if !needed {
+		t.Fatal("ThinkingBindingBetaHeaderValue: needed = false, want true")
+	}
+	if value != "thinking-binding-controls-2026-08-01" {
+		t.Errorf("ThinkingBindingBetaHeaderValue: value = %q, want %q", value, "thinking-binding-controls-2026-08-01")
+	}
+}
+
+// TestFromProviderSurfacesInputTransformations proves Anthropic's own
+// top-level input_transformations response array survives FromProvider
+// into the canonical ChatResponse, mirroring how Refusal is surfaced
+// today -- and that an absent array (every response from a request that
+// never sent the beta header) stays a nil, silent no-op.
+func TestFromProviderSurfacesInputTransformations(t *testing.T) {
+	native := &Response{
+		ID:         "msg_1",
+		Model:      "claude-opus-5-5",
+		StopReason: "end_turn",
+		Content:    []ContentBlock{{Type: "text", Text: "ok"}},
+		InputTransformations: []InputTransformationWire{
+			{Type: "thinking_dropped", Path: "messages.1.content.0", Reason: "prefix_binding_mismatch"},
+		},
+	}
+	resp, err := New().FromProvider(native)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if len(resp.InputTransformations) != 1 {
+		t.Fatalf("InputTransformations = %+v, want exactly 1 entry", resp.InputTransformations)
+	}
+	got := resp.InputTransformations[0]
+	want := adapter.InputTransformation{Type: "thinking_dropped", Path: "messages.1.content.0", Reason: "prefix_binding_mismatch"}
+	if got != want {
+		t.Errorf("InputTransformations[0] = %+v, want %+v", got, want)
+	}
+
+	emptyResp, err := New().FromProvider(&Response{ID: "msg_2", StopReason: "end_turn", Content: []ContentBlock{{Type: "text", Text: "ok"}}})
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if emptyResp.InputTransformations != nil {
+		t.Errorf("InputTransformations = %+v, want nil when the native response carried none", emptyResp.InputTransformations)
+	}
+}

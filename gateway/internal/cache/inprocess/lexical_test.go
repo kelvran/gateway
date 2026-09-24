@@ -28,7 +28,7 @@ func TestLexicalPutThenSearchReturnsCandidate(t *testing.T) {
 	c := NewLexicalCache(0)
 	ctx := context.Background()
 
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3, 4), []byte("resp-1"), map[string]struct{}{"Paris": {}}, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3, 4), []byte("resp-1"), map[string]struct{}{"Paris": {}}, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -64,10 +64,10 @@ func TestLexicalSearchNeverCrossesTenantBoundary(t *testing.T) {
 	ctx := context.Background()
 	sharedSig := sig(10, 20, 30)
 
-	if err := c.Put(ctx, "team-alpha", sharedSig, []byte("alpha-resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sharedSig, []byte("alpha-resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put(team-alpha): %v", err)
 	}
-	if err := c.Put(ctx, "team-beta", sharedSig, []byte("beta-resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-beta", sharedSig, []byte("beta-resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put(team-beta): %v", err)
 	}
 
@@ -101,15 +101,15 @@ func TestLexicalEvictionIsPerTenant(t *testing.T) {
 	c := NewLexicalCache(1) // cap of 1 entry PER TENANT
 	ctx := context.Background()
 
-	if err := c.Put(ctx, "team-alpha", sig(1), []byte("alpha-1"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1), []byte("alpha-1"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put(team-alpha, 1): %v", err)
 	}
-	if err := c.Put(ctx, "team-beta", sig(1), []byte("beta-1"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-beta", sig(1), []byte("beta-1"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put(team-beta, 1): %v", err)
 	}
 	// Overflow team-alpha's own cap of 1 — must evict team-alpha's entry
 	// only, leaving team-beta's untouched.
-	if err := c.Put(ctx, "team-alpha", sig(2), []byte("alpha-2"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(2), []byte("alpha-2"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put(team-alpha, 2): %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestLexicalSearchExpiredEntryIsReapedAndNotReturned(t *testing.T) {
 	c := NewLexicalCacheWithClock(0, clock.now)
 	ctx := context.Background()
 
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", 10*time.Second); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", 10*time.Second); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	clock.Advance(11 * time.Second)
@@ -152,7 +152,7 @@ func TestLexicalSearchAtExactExpiryInstantStillReturnsCandidate(t *testing.T) {
 	ctx := context.Background()
 
 	const ttl = 10 * time.Second
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", ttl); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", ttl); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	clock.Advance(ttl) // now == expiresAt exactly, not one instant past it.
@@ -175,7 +175,7 @@ func TestLexicalSearchNonPositiveKReturnsEmptyNotPanic(t *testing.T) {
 	c := NewLexicalCache(0)
 	ctx := context.Background()
 
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -205,7 +205,7 @@ func TestLexicalCacheTenantCountIsUnbounded(t *testing.T) {
 	const tenantCount = 5000
 	for i := 0; i < tenantCount; i++ {
 		tenantID := "tenant-" + strconv.Itoa(i)
-		if err := c.Put(ctx, tenantID, sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+		if err := c.Put(ctx, tenantID, sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 			t.Fatalf("Put(%s): %v", tenantID, err)
 		}
 	}
@@ -219,10 +219,10 @@ func TestLexicalSearchResultsSortedBySimilarityDescending(t *testing.T) {
 	c := NewLexicalCache(0)
 	ctx := context.Background()
 
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3, 4), []byte("low-sim"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3, 4), []byte("low-sim"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put(low-sim): %v", err)
 	}
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3, 99), []byte("high-sim"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3, 99), []byte("high-sim"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put(high-sim): %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestLexicalPutAppliesJitterWithinConfiguredFraction(t *testing.T) {
 	c := NewLexicalCacheWithClockAndJitter(0, clock.now, 0.10, func() float64 { return 1.0 })
 	ctx := context.Background()
 
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestLexicalPutZeroRandProducesNoJitter(t *testing.T) {
 	c := NewLexicalCacheWithClockAndJitter(0, clock.now, 0.10, func() float64 { return 0.0 })
 	ctx := context.Background()
 
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -294,7 +294,7 @@ func TestLexicalNewWithClockStillHasZeroJitter(t *testing.T) {
 	c := NewLexicalCacheWithClock(0, clock.now)
 	ctx := context.Background()
 
-	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", time.Hour); err != nil {
+	if err := c.Put(ctx, "team-alpha", sig(1, 2, 3), []byte("resp"), nil, "gpt-4o", "v1", "", "", nil, "", "", time.Hour); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 

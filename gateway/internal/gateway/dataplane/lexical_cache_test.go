@@ -102,6 +102,45 @@ func TestHandleChatCompletionL3NeverServesAcrossDifferentResponseFormat(t *testi
 	}
 }
 
+// TestHandleChatCompletionNeverServesAcrossDifferentThinkingBindingMode is
+// the full-pipeline (L1-exact-match-level, not just L3) proof for the
+// 2026-09-24 addendum to
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md: two
+// byte-identical requests differing ONLY in ThinkingBindingMode must
+// never collide on the same cache entry at any layer. Mirrors
+// TestHandleChatCompletionL3NeverServesAcrossDifferentResponseFormat's own
+// structure exactly, substituting ThinkingBindingMode for ResponseFormat —
+// before this fix, a caller who set "strict" specifically to get a hard
+// 400 on a stale-signed thinking block could instead silently receive an
+// earlier, same-content request's response cached under Kelvran's
+// non-strict default (or vice versa), defeating that opt-in's entire
+// purpose.
+func TestHandleChatCompletionNeverServesAcrossDifferentThinkingBindingMode(t *testing.T) {
+	var upstreamCalls int
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	const content = "Explain how binary search works in a sorted array"
+	nonStrict := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: content}}}
+	strict := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: content}}, ThinkingBindingMode: "strict"}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", nonStrict, ""); err != nil {
+		t.Fatalf("first HandleChatCompletion (non-strict/default): %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("after first request: upstreamCalls = %d, want 1", upstreamCalls)
+	}
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", strict, ""); err != nil {
+		t.Fatalf("second HandleChatCompletion (strict): %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Errorf("after a byte-identical-messages request that ONLY differs in ThinkingBindingMode: upstreamCalls = %d, want 2 (no cache layer must ever serve a different-mode cached entry)", upstreamCalls)
+	}
+}
+
 // TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint
 // closes docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
 // own cache-key decision: two requests differing ONLY in accumulated
@@ -132,7 +171,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint(t
 		{Role: "assistant", ReasoningBlocks: []adapter.ReasoningBlock{{Sequence: 0, Text: "original reasoning"}}},
 	}
 	writtenResp := []byte(`{"id":"cached-resp"}`)
-	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), time.Hour); err != nil {
+	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), "", time.Hour); err != nil {
 		t.Fatalf("cacheL3.Put: %v", err)
 	}
 
@@ -156,6 +195,57 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint(t
 	cached, _, _, hit := p.checkLexicalCache(ctx, vk, matching, "irrelevant-l1-key", fixedSignature, "")
 	if !hit {
 		t.Fatal("checkLexicalCache returned a miss for a query whose ReasoningBlocks exactly match the written entry — the gate must not reject a genuine match")
+	}
+	if string(cached) != string(writtenResp) {
+		t.Errorf("cached = %q, want %q", cached, writtenResp)
+	}
+}
+
+// TestCheckLexicalCacheNeverServesAcrossDifferentThinkingBindingMode closes
+// the 2026-09-24 addendum to
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's own
+// cache-key decision, extended to L3: two requests differing ONLY in
+// ThinkingBindingMode must never collide on an L3 near-duplicate hit — a
+// caller who set "strict" (a hard reasoning-continuity guarantee) must
+// never silently receive a response cached under a different mode.
+//
+// Mirrors TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint's
+// own structure exactly: a direct unit test of checkLexicalCache with a
+// hand-fixed signature isolates the ThinkingBindingMode gate as the ONLY
+// variable, since ThinkingBindingMode lives on ChatRequest itself (not on
+// Messages), so varying it alone would never perturb normalizeMessages'
+// own MinHash signature anyway — this still uses the same fixed-signature
+// pattern for consistency with its sibling test.
+func TestCheckLexicalCacheNeverServesAcrossDifferentThinkingBindingMode(t *testing.T) {
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	ctx := context.Background()
+	vk := &identity.VirtualKey{ID: "test-key"}
+	fixedSignature := []uint64{1, 2, 3, 4}
+
+	writtenMessages := []adapter.Message{{Role: "user", Content: "hi"}}
+	writtenResp := []byte(`{"id":"cached-resp"}`)
+	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), "non_strict", time.Hour); err != nil {
+		t.Fatalf("cacheL3.Put: %v", err)
+	}
+
+	// Byte-identical messages via the forced-identical signature above,
+	// but genuinely different ThinkingBindingMode — exactly the scenario
+	// this gate exists to close.
+	mismatched := adapter.ChatRequest{Model: "gpt-4o", Messages: writtenMessages, ThinkingBindingMode: "strict"}
+	if _, _, _, hit := p.checkLexicalCache(ctx, vk, mismatched, "irrelevant-l1-key", fixedSignature, ""); hit {
+		t.Error("checkLexicalCache returned a hit for a query whose ThinkingBindingMode differs from the written entry's — the hard gate must reject this")
+	}
+
+	// Sanity check: the SAME setup but with ThinkingBindingMode matching
+	// what was written IS a real hit — proving the gate rejects on a
+	// genuine mismatch, not unconditionally.
+	matching := adapter.ChatRequest{Model: "gpt-4o", Messages: writtenMessages, ThinkingBindingMode: "non_strict"}
+	cached, _, _, hit := p.checkLexicalCache(ctx, vk, matching, "irrelevant-l1-key", fixedSignature, "")
+	if !hit {
+		t.Fatal("checkLexicalCache returned a miss for a query whose ThinkingBindingMode exactly matches the written entry — the gate must not reject a genuine match")
 	}
 	if string(cached) != string(writtenResp) {
 		t.Errorf("cached = %q, want %q", cached, writtenResp)
@@ -302,7 +392,7 @@ func (failingLexicalCache) Search(_ context.Context, _ string, _ []uint64, _ int
 	return nil, errors.New("simulated L3 backend failure")
 }
 
-func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ map[string]struct{}, _ string, _ time.Duration) error {
+func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ map[string]struct{}, _ string, _ string, _ time.Duration) error {
 	return nil
 }
 

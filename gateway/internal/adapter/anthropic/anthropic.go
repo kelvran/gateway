@@ -29,6 +29,49 @@ import (
 // must supply a default rather than send an invalid request upstream.
 const defaultMaxTokens = 4096
 
+// thinkingBindingControlsBeta is the exact anthropic-beta header value
+// (live-verified against platform.claude.com/docs/en/build-with-claude/
+// preserved-thinking, 2026-09-24) that unlocks
+// Thinking.BlockBinding.PrefixMismatchBehavior on the request and the
+// top-level InputTransformations array on the response -- per the
+// addendum to
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md.
+const thinkingBindingControlsBeta = "thinking-binding-controls-2026-08-01"
+
+// thinkingBlockBindingModelSubstrings is the exact set of Claude
+// model-family substrings Anthropic documents as running the
+// preserved-thinking prefix-integrity check at all, live-verified
+// against platform.claude.com/docs/en/build-with-claude/preserved-thinking
+// (2026-09-24): "On Claude Fable 5.1 and Claude Opus 5.5, a thinking
+// block stays valid only while everything you sent before it is
+// unchanged." Every other Claude model has no such check to opt into --
+// sending thinking.type: "adaptive" to one of those would be a real,
+// live regression (a model that supports only manual "enabled" thinking
+// rejects "adaptive" with a 400), so this gate exists specifically to
+// keep Thinking nil for every model this feature doesn't apply to.
+// Matched by substring, mirroring
+// anthropicForcedToolChoiceUnsupportedModelSubstrings in
+// internal/adapter/capabilities.go for the same real-model-ID reason
+// (region/version prefixes and date/version suffixes around the family
+// name) -- kept local to this package rather than promoted there since
+// no other adapter needs it today (Bedrock's Anthropic-family models
+// running this same check is unverified as of this writing).
+var thinkingBlockBindingModelSubstrings = []string{
+	"claude-fable-5-1",
+	"claude-opus-5-5",
+}
+
+// modelSupportsThinkingBlockBinding reports whether model (an Anthropic
+// model ID) matches one of thinkingBlockBindingModelSubstrings.
+func modelSupportsThinkingBlockBinding(model string) bool {
+	for _, substr := range thinkingBlockBindingModelSubstrings {
+		if strings.Contains(model, substr) {
+			return true
+		}
+	}
+	return false
+}
+
 // Request is Anthropic's native Messages API request shape. System is an
 // array of blocks (restructured from a plain string, per
 // docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md) so each
@@ -53,6 +96,36 @@ type Request struct {
 	// ToolChoice, when set, requests tool-calling forcing behavior --
 	// per docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
 	ToolChoice *ToolChoiceWire `json:"tool_choice,omitempty"`
+	// Thinking, when set, is Anthropic's native top-level
+	// thinking-configuration object. Kelvran doesn't otherwise configure
+	// Type ("adaptive"/"enabled"/"disabled") or a token budget anywhere
+	// today -- extended/adaptive thinking budget configuration is a
+	// separate, unbuilt feature. This field exists ONLY to carry
+	// BlockBinding, per the thinking-binding-controls-2026-08-01
+	// addendum to
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md
+	// -- ToProvider only ever populates it (with Type "adaptive") for
+	// the exact models thinkingBlockBindingModelSubstrings names; every
+	// other model gets a nil Thinking, byte-identical to today's
+	// existing behavior.
+	Thinking *Thinking `json:"thinking,omitempty"`
+}
+
+// Thinking is Anthropic's native top-level thinking-configuration
+// object -- see Request.Thinking's own doc comment for why this adapter
+// only ever sets Type and BlockBinding, never a token budget.
+type Thinking struct {
+	Type         string        `json:"type,omitempty"`
+	BlockBinding *BlockBinding `json:"block_binding,omitempty"`
+}
+
+// BlockBinding is Anthropic's native thinking.block_binding object.
+// PrefixMismatchBehavior is "error" (Anthropic's own default: reject
+// the request with a 400 naming the first stale block) or "drop_block"
+// (drop each stale block and every thinking block after it, and let the
+// request succeed) -- per thinkingBindingToProvider's own doc comment.
+type BlockBinding struct {
+	PrefixMismatchBehavior string `json:"prefix_mismatch_behavior,omitempty"`
 }
 
 // OutputConfig is Anthropic's real top-level structured-output request
@@ -287,6 +360,57 @@ func toolChoiceToProvider(tc *adapter.ToolChoice, model string) (*ToolChoiceWire
 	}, nil
 }
 
+// thinkingBindingToProvider converts
+// adapter.ChatRequest.ThinkingBindingMode into Anthropic's native
+// Thinking object for req.Model -- nil, nil when model doesn't match
+// thinkingBlockBindingModelSubstrings (the same no-op-when-inapplicable
+// convention as toolChoiceToProvider), since sending Type: "adaptive"
+// to a model that doesn't support it would be a real, live regression
+// (see thinkingBlockBindingModelSubstrings' own doc comment). Errors
+// (never silently falls back to the default) on any mode value other
+// than the three ChatRequest.ThinkingBindingMode documents, mirroring
+// anthropicToolChoiceTypeFor's own real-typed-error convention for an
+// unrecognized enum value.
+func thinkingBindingToProvider(mode, model string) (*Thinking, error) {
+	if !modelSupportsThinkingBlockBinding(model) {
+		return nil, nil
+	}
+	var behavior string
+	switch mode {
+	case "", "non_strict":
+		// Kelvran's own deliberate default -- see
+		// ChatRequest.ThinkingBindingMode's doc comment for why this
+		// diverges from Anthropic's own strict-by-default behavior.
+		behavior = "drop_block"
+	case "strict":
+		behavior = "error"
+	default:
+		return nil, fmt.Errorf("anthropic: unknown thinking_binding_mode %q", mode)
+	}
+	return &Thinking{
+		Type:         "adaptive",
+		BlockBinding: &BlockBinding{PrefixMismatchBehavior: behavior},
+	}, nil
+}
+
+// ThinkingBindingBetaHeaderValue reports the anthropic-beta header value
+// needed to activate req's own Thinking.BlockBinding field, and whether
+// one is needed at all -- false whenever ToProvider left Thinking nil
+// (every model thinkingBlockBindingModelSubstrings doesn't name, i.e.
+// every Anthropic model this feature doesn't apply to yet). Exported so
+// dataplane.setUpstreamAuthHeaders -- which sets provider auth/beta
+// headers at the transport layer, never inside this adapter package
+// itself (this package is pure wire-format marshaling with no HTTP/
+// header code anywhere) -- can read it directly off the *Request
+// ToProvider already returned, with no separate lookup or re-derivation
+// of the model gate.
+func ThinkingBindingBetaHeaderValue(req *Request) (string, bool) {
+	if req == nil || req.Thinking == nil || req.Thinking.BlockBinding == nil {
+		return "", false
+	}
+	return thinkingBindingControlsBeta, true
+}
+
 // Response is Anthropic's native Messages API response shape.
 type Response struct {
 	ID         string         `json:"id"`
@@ -295,6 +419,25 @@ type Response struct {
 	Content    []ContentBlock `json:"content"`
 	StopReason string         `json:"stop_reason"`
 	Usage      Usage          `json:"usage"`
+	// InputTransformations is Anthropic's own top-level response array,
+	// present only when the request sent the thinkingBindingControlsBeta
+	// header -- lists each thinking/redacted_thinking block the
+	// preserved-thinking prefix check dropped, or let through despite
+	// failing. Live-verified against platform.claude.com/docs/en/
+	// build-with-claude/preserved-thinking (2026-09-24). Empty/absent
+	// (every response from a request that didn't send the beta header,
+	// or one where nothing was dropped) is a silent no-op.
+	InputTransformations []InputTransformationWire `json:"input_transformations,omitempty"`
+}
+
+// InputTransformationWire is one entry in Anthropic's native
+// input_transformations response array -- see Response.
+// InputTransformations' own doc comment for field meanings; mirrors
+// adapter.InputTransformation's shape exactly (Type/Path/Reason).
+type InputTransformationWire struct {
+	Type   string `json:"type"`
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 
 // Usage is Anthropic's native token-accounting shape (note the different
@@ -449,6 +592,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		return nil, err
 	}
 
+	thinking, err := thinkingBindingToProvider(req.ThinkingBindingMode, req.Model)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Request{
 		Model:        req.Model,
 		System:       systemBlocks,
@@ -459,6 +607,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		Stream:       req.Stream,
 		OutputConfig: outputConfig,
 		ToolChoice:   toolChoice,
+		Thinking:     thinking,
 	}, nil
 }
 
@@ -635,6 +784,20 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	// provider served the request.
 	finishReason := finishReasonFromStopReason(native.StopReason)
 
+	// Surface Anthropic's own input_transformations array, per
+	// Response.InputTransformations' own doc comment -- nil when the
+	// request never sent thinkingBindingControlsBeta (the common case
+	// today, and every response before this field existed), matching
+	// this schema's established "unset is a no-op" convention.
+	var inputTransformations []adapter.InputTransformation
+	for _, it := range native.InputTransformations {
+		inputTransformations = append(inputTransformations, adapter.InputTransformation{
+			Type:   it.Type,
+			Path:   it.Path,
+			Reason: it.Reason,
+		})
+	}
+
 	return adapter.ChatResponse{
 		ID:    native.ID,
 		Model: native.Model,
@@ -648,5 +811,6 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			CacheReadTokens:     native.Usage.CacheReadInputTokens,
 			CacheCreationTokens: native.Usage.CacheCreationInputTokens,
 		},
+		InputTransformations: inputTransformations,
 	}, nil
 }

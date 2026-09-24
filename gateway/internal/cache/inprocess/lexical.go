@@ -23,6 +23,7 @@ type lexicalEntry struct {
 	promptFingerprint          string
 	negationFingerprint        map[string]struct{}
 	reasoningBlocksFingerprint string
+	thinkingBindingMode        string
 	expiresAt                  time.Time
 }
 
@@ -161,6 +162,7 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 			PromptFingerprint:          sc.entry.promptFingerprint,
 			NegationFingerprint:        negationFPCopy,
 			ReasoningBlocksFingerprint: sc.entry.reasoningBlocksFingerprint,
+			ThinkingBindingMode:        sc.entry.thinkingBindingMode,
 		})
 	}
 	return result, nil
@@ -169,7 +171,7 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 // Put implements cache.LexicalCache. Creates tenantID's bucket on first
 // write; inserting past maxEntries evicts that tenant's own
 // least-recently-used entry — never another tenant's.
-func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, ttl time.Duration) error {
+func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -205,6 +207,7 @@ func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint6
 		promptFingerprint:          promptFingerprint,
 		negationFingerprint:        negationFPCopy,
 		reasoningBlocksFingerprint: reasoningBlocksFingerprint,
+		thinkingBindingMode:        thinkingBindingMode,
 		expiresAt:                  now.Add(ttl + jitter),
 	})
 	if bucket.entries.Len() > c.maxEntries {

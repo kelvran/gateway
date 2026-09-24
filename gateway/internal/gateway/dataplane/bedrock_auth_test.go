@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+	"github.com/kelvran/gateway/gateway/internal/adapter/anthropic"
 )
 
 // testCred builds a placeholder credential-shaped string for tests --
@@ -40,7 +44,7 @@ func TestSetUpstreamAuthHeadersBedrockSignsRealSigV4Headers(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 
-	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, body); err != nil {
+	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, nil, body); err != nil {
 		t.Fatalf("setUpstreamAuthHeaders: %v", err)
 	}
 
@@ -94,7 +98,7 @@ func TestSetUpstreamAuthHeadersBedrockIncludesSessionToken(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 
-	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, body); err != nil {
+	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, nil, body); err != nil {
 		t.Fatalf("setUpstreamAuthHeaders: %v", err)
 	}
 
@@ -127,7 +131,7 @@ func TestSetUpstreamAuthHeadersNonBedrockProvidersUnchanged(t *testing.T) {
 			t.Fatalf("NewRequest(%s): %v", c.provider, err)
 		}
 
-		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, nil); err != nil {
+		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, nil, nil); err != nil {
 			t.Fatalf("setUpstreamAuthHeaders(%s): %v", c.provider, err)
 		}
 
@@ -149,7 +153,7 @@ func TestSetUpstreamAuthHeadersSetsIdempotencyKeyForOpenAI(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 
-	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, body); err != nil {
+	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, nil, body); err != nil {
 		t.Fatalf("setUpstreamAuthHeaders: %v", err)
 	}
 
@@ -174,7 +178,7 @@ func TestSetUpstreamAuthHeadersIdempotencyKeyIsStableAcrossRetriesWithIdenticalB
 		if err != nil {
 			t.Fatalf("NewRequest: %v", err)
 		}
-		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, body); err != nil {
+		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, nil, body); err != nil {
 			t.Fatalf("setUpstreamAuthHeaders: %v", err)
 		}
 		keys[i] = httpReq.Header.Get("Idempotency-Key")
@@ -198,11 +202,153 @@ func TestSetUpstreamAuthHeadersDoesNotSetIdempotencyKeyForAnthropicOrGeminiOrBed
 		if err != nil {
 			t.Fatalf("NewRequest(%s): %v", provider, err)
 		}
-		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, []byte(`{}`)); err != nil {
+		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, nil, []byte(`{}`)); err != nil {
 			t.Fatalf("setUpstreamAuthHeaders(%s): %v", provider, err)
 		}
 		if got := httpReq.Header.Get("Idempotency-Key"); got != "" {
 			t.Errorf("%s: Idempotency-Key = %q, want empty — no verified support for this header", provider, got)
 		}
+	}
+}
+
+// nativeAnthropicRequest builds a real *anthropic.Request the exact way
+// callDeployment does -- via the real Adapter.ToProvider, not a hand-
+// built literal -- so this test exercises the genuine ToProvider ->
+// setUpstreamAuthHeaders wiring end to end, not just setUpstreamAuthHeaders
+// in isolation.
+func nativeAnthropicRequest(t *testing.T, model, mode string) *anthropic.Request {
+	t.Helper()
+	req := adapter.ChatRequest{
+		Model:               model,
+		Messages:            []adapter.Message{{Role: "user", Content: "hi"}},
+		ThinkingBindingMode: mode,
+	}
+	nativeAny, err := anthropic.New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("anthropic ToProvider: %v", err)
+	}
+	native, ok := nativeAny.(*anthropic.Request)
+	if !ok {
+		t.Fatalf("anthropic ToProvider returned %T, want *anthropic.Request", nativeAny)
+	}
+	return native
+}
+
+// TestSetUpstreamAuthHeadersAnthropicBetaDefaultsNonStrictForQualifyingModel
+// proves the default-value WIRING mechanism end to end: a ChatRequest
+// with ThinkingBindingMode left unset -- the common case, and every
+// ChatRequest built before this field existed -- must reach the REAL
+// outgoing *http.Request as the thinking-binding-controls-2026-08-01
+// anthropic-beta header, with the marshaled body's
+// thinking.block_binding.prefix_mismatch_behavior set to Kelvran's own
+// non-strict default ("drop_block"), for every model that runs
+// Anthropic's preserved-thinking prefix check.
+//
+// Scope, stated precisely: this is the mechanism Finding 4's own
+// live-prompt-mutation reachability scenario DEPENDS ON, but this test
+// does not itself drive that scenario -- it never mutates a prompt or
+// replays a stale-signed thinking block across two turns. No test in
+// this diff does; see this RFC addendum's own "Unresolved Questions" for
+// that explicitly-disclosed gap ("proven at the unit/wiring level ...
+// but not against a live Anthropic account"). Without the wiring this
+// test DOES cover, an admin's ordinary live prompt-template edit between
+// the turn a thinking block was signed under and the turn it's replayed
+// on would surface Anthropic's own strict-by-default 400 to a caller who
+// did nothing wrong -- but proving that this wiring is correct is not
+// the same claim as proving the end-to-end scenario was exercised.
+func TestSetUpstreamAuthHeadersAnthropicBetaDefaultsNonStrictForQualifyingModel(t *testing.T) {
+	for _, model := range []string{"claude-opus-5-5", "claude-fable-5-1"} {
+		native := nativeAnthropicRequest(t, model, "")
+		body, err := json.Marshal(native)
+		if err != nil {
+			t.Fatalf("marshaling native request: %v", err)
+		}
+		dep := Deployment{Name: "d", Provider: "anthropic", APIKey: testCred("anthropic")}
+		httpReq, err := http.NewRequest(http.MethodPost, "https://example.com", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+
+		if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, native, body); err != nil {
+			t.Fatalf("setUpstreamAuthHeaders(%s): %v", model, err)
+		}
+
+		if got := httpReq.Header.Get("anthropic-beta"); got != "thinking-binding-controls-2026-08-01" {
+			t.Errorf("%s: anthropic-beta header = %q, want %q", model, got, "thinking-binding-controls-2026-08-01")
+		}
+		var wire struct {
+			Thinking struct {
+				Type         string `json:"type"`
+				BlockBinding struct {
+					PrefixMismatchBehavior string `json:"prefix_mismatch_behavior"`
+				} `json:"block_binding"`
+			} `json:"thinking"`
+		}
+		if err := json.Unmarshal(body, &wire); err != nil {
+			t.Fatalf("unmarshaling marshaled body: %v", err)
+		}
+		if wire.Thinking.Type != "adaptive" {
+			t.Errorf("%s: thinking.type = %q, want %q", model, wire.Thinking.Type, "adaptive")
+		}
+		if got := wire.Thinking.BlockBinding.PrefixMismatchBehavior; got != "drop_block" {
+			t.Errorf("%s: thinking.block_binding.prefix_mismatch_behavior = %q, want %q", model, got, "drop_block")
+		}
+	}
+}
+
+// TestSetUpstreamAuthHeadersAnthropicBetaStrictOptIn proves the explicit
+// per-caller opt-in half of Finding 4's decision: ThinkingBindingMode
+// "strict" still sends the beta header (both the field and the response
+// array require it), but resolves the wire value to Anthropic's own
+// default ("error") instead of Kelvran's non-strict override.
+func TestSetUpstreamAuthHeadersAnthropicBetaStrictOptIn(t *testing.T) {
+	native := nativeAnthropicRequest(t, "claude-opus-5-5", "strict")
+	body, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	dep := Deployment{Name: "d", Provider: "anthropic", APIKey: testCred("anthropic")}
+	httpReq, err := http.NewRequest(http.MethodPost, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, native, body); err != nil {
+		t.Fatalf("setUpstreamAuthHeaders: %v", err)
+	}
+
+	if got := httpReq.Header.Get("anthropic-beta"); got != "thinking-binding-controls-2026-08-01" {
+		t.Errorf("anthropic-beta header = %q, want %q (still required to set the strict value at all)", got, "thinking-binding-controls-2026-08-01")
+	}
+	if native.Thinking == nil || native.Thinking.BlockBinding == nil || native.Thinking.BlockBinding.PrefixMismatchBehavior != "error" {
+		t.Errorf("Thinking = %+v, want BlockBinding.PrefixMismatchBehavior = %q", native.Thinking, "error")
+	}
+}
+
+// TestSetUpstreamAuthHeadersAnthropicBetaOmittedForNonQualifyingModel is
+// the regression guard: a model that doesn't run the preserved-thinking
+// prefix check at all must get neither the beta header nor a thinking
+// field on the wire -- exactly today's pre-existing behavior, unchanged.
+func TestSetUpstreamAuthHeadersAnthropicBetaOmittedForNonQualifyingModel(t *testing.T) {
+	native := nativeAnthropicRequest(t, "claude-sonnet-5", "")
+	body, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling native request: %v", err)
+	}
+	dep := Deployment{Name: "d", Provider: "anthropic", APIKey: testCred("anthropic")}
+	httpReq, err := http.NewRequest(http.MethodPost, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	if err := setUpstreamAuthHeaders(context.Background(), httpReq, dep, native, body); err != nil {
+		t.Fatalf("setUpstreamAuthHeaders: %v", err)
+	}
+
+	if got := httpReq.Header.Get("anthropic-beta"); got != "" {
+		t.Errorf("anthropic-beta header = %q, want empty for a model that doesn't run the prefix check", got)
+	}
+	if strings.Contains(string(body), `"thinking"`) {
+		t.Errorf("marshaled body = %s, want no \"thinking\" field at all", body)
 	}
 }

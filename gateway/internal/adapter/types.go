@@ -401,6 +401,42 @@ type ChatRequest struct {
 	// convention -- each provider's own default ("auto": the model
 	// decides) applies.
 	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
+	// ThinkingBindingMode controls how Anthropic's preserved-thinking
+	// prefix-integrity check (the thinking-binding-controls-2026-08-01
+	// beta feature) handles a replayed thinking/redacted_thinking block
+	// whose signed prefix (the system prompt/tools/messages sent before
+	// it) no longer matches what's being sent now -- see the addendum to
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md
+	// for the full reachability analysis: Kelvran's own prompt
+	// management (docs/rfcs/2026-09-13-gateway-prompt-management.md) is
+	// global and live-mutable, so an admin editing or version-bumping a
+	// prompt template between the turn a thinking block was signed under
+	// and the turn it's replayed on can invalidate that exact prefix
+	// through no fault of the caller.
+	//
+	// One of "" (default), "non_strict", or "strict":
+	//
+	//   - "" (the default, and every ChatRequest built before this
+	//     field existed): Kelvran requests Anthropic's NON-STRICT mode
+	//     ("drop_block") -- deliberately the OPPOSITE of Anthropic's own
+	//     strict-by-default behavior for accounts created on or after
+	//     2026-08-31. This divergence is intentional, not an oversight:
+	//     Kelvran has no mechanism to guarantee prefix stability across
+	//     turns given its own live-mutable global prompt design, so
+	//     inheriting Anthropic's strict default would let an ordinary
+	//     admin prompt edit silently break an in-flight reasoning
+	//     conversation with an opaque 400 that isn't the caller's own
+	//     mistake.
+	//   - "non_strict": the explicit spelling of the default above.
+	//   - "strict": opts into Anthropic's own default ("error") instead,
+	//     for callers who want a hard reasoning-continuity guarantee and
+	//     would rather fail loudly than silently lose a thinking block.
+	//
+	// Meaningless -- a silent no-op -- for every provider/model that
+	// doesn't run this check at all, which today is every Anthropic
+	// model except the two named in anthropic.go's own model gate, and
+	// every non-Anthropic provider.
+	ThinkingBindingMode string `json:"thinking_binding_mode,omitempty"`
 }
 
 // ToolChoice requests forcing behavior for tool calling, per
@@ -469,6 +505,44 @@ type ChatResponse struct {
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
 	Usage   Usage    `json:"usage"`
+	// InputTransformations reports thinking/redacted_thinking blocks
+	// Anthropic's preserved-thinking prefix-integrity check dropped, or
+	// let through despite failing, on THIS call -- per the
+	// thinking-binding-controls-2026-08-01 addendum to
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md
+	// (see ChatRequest.ThinkingBindingMode's own doc comment for the
+	// full context). Anthropic-only: nil on every response from every
+	// other adapter (no equivalent check exists elsewhere today), and
+	// nil on Anthropic responses too whenever the request's model didn't
+	// match anthropic.go's own model gate -- a silent no-op matching
+	// Refusal's own per-provider-availability convention. Non-empty only
+	// when at least one block was actually affected.
+	InputTransformations []InputTransformation `json:"input_transformations,omitempty"`
+}
+
+// InputTransformation is one entry in Anthropic's own top-level
+// input_transformations response array, per ChatResponse.
+// InputTransformations' own doc comment. Live-verified against
+// platform.claude.com/docs/en/build-with-claude/preserved-thinking
+// (2026-09-24).
+type InputTransformation struct {
+	// Type is "thinking_dropped" (the block never reached the model and
+	// wasn't billed) or "thinking_mismatch_allowed" (the block failed
+	// the prefix check but reached the model anyway, because this
+	// request/account doesn't enforce the check by default -- an
+	// older-account compatibility signal Anthropic never emits for a
+	// request that set prefix_mismatch_behavior explicitly, which this
+	// adapter always does for every model its own gate names).
+	Type string `json:"type"`
+	// Path names the affected block's location in the request, verbatim
+	// from Anthropic's own wire shape (e.g. "messages.3.content.0") --
+	// opaque, never parsed or interpreted by Kelvran.
+	Path string `json:"path"`
+	// Reason is "prefix_binding_mismatch" (the live-mutable-prompt
+	// reachability risk this whole feature exists to surface) or
+	// "model_binding_mismatch" (the block was produced by a model the
+	// serving model can't read).
+	Reason string `json:"reason"`
 }
 
 // Adapter translates between the canonical schema above and one upstream

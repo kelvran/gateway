@@ -1715,8 +1715,8 @@ func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, end
 
 	cacheScope := cache.ScopeKey(virtualKeyID, endUserID)
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
-	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID)
-	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID)
+	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode)
+	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode)
 
 	var result EraseCacheEntryResult
 	if _, _, ok, _ := p.cache.Get(ctx, cacheScope, l1Key); ok {
@@ -2237,10 +2237,10 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, encoded []byte) {
 	_ = p.cache.Put(ctx, tenantID, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, tenantID, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -2414,6 +2414,20 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		// named gates either, so not counted via
 		// telemetry.RecordCacheL3GateOutcome.
 		if c.ReasoningBlocksFingerprint != queryReasoningFP {
+			continue
+		}
+		// A gate closing the 2026-09-24 addendum to
+		// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md's
+		// own cache-key decision -- the identical L1/L2 fold key.go's
+		// Key/NormalizedKey now apply, extended here to L3's fuzzy
+		// near-duplicate match: a caller who set ThinkingBindingMode to
+		// "strict" (a hard reasoning-continuity guarantee) must never be
+		// served an L3 near-duplicate hit written under a different mode,
+		// and vice versa. Exact string equality, both-empty counting as a
+		// match, same convention as every other gate above -- deliberately
+		// not one of Finding 1's three named gates either, so not counted
+		// via telemetry.RecordCacheL3GateOutcome.
+		if c.ThinkingBindingMode != req.ThinkingBindingMode {
 			continue
 		}
 		p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", true, p.cacheL3TTL)
@@ -2990,8 +3004,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
 	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope)
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode)
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
@@ -3194,7 +3208,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 
 		if !responseWasTruncated(resp) {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
+				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, encoded)
 			}
 		}
 
@@ -4610,7 +4624,7 @@ func NewHTTPUpstreamCaller(defaultClient *http.Client, perDeployment map[string]
 			return nil, fmt.Errorf("building upstream request: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, body); err != nil {
+		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, providerReq, body); err != nil {
 			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
 		}
 
@@ -4689,7 +4703,7 @@ func NewHTTPEmbeddingUpstreamCaller(defaultClient *http.Client, perDeployment ma
 			return nil, fmt.Errorf("building upstream embedding request: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, body); err != nil {
+		if err := setUpstreamAuthHeaders(ctx, httpReq, dep, providerReq, body); err != nil {
 			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
 		}
 
@@ -4831,7 +4845,7 @@ func NewHTTPUpstreamStreamCaller(defaultClient *http.Client, perDeployment map[s
 		} else {
 			httpReq.Header.Set("Accept", "text/event-stream")
 		}
-		if err := setUpstreamAuthHeaders(streamCtx, httpReq, dep, body); err != nil {
+		if err := setUpstreamAuthHeaders(streamCtx, httpReq, dep, providerReq, body); err != nil {
 			idleTimer.Stop()
 			cancel()
 			return nil, fmt.Errorf("setting auth headers for deployment %q: %w", dep.Name, err)
@@ -4931,7 +4945,16 @@ const bedrockSigningName = "bedrock"
 // unused by every other provider), and the signer call can return an
 // error — every other case below is infallible, matching this function's
 // pre-existing (void) contract as closely as possible.
-func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Deployment, body []byte) error {
+//
+// providerReq is the same provider-native value (e.g. *anthropic.Request)
+// every caller already marshaled into body — passed through separately,
+// unmarshaled, so this function can read Go-typed fields ToProvider set
+// that have no wire representation of their own to decide a HEADER value
+// from (see the "anthropic" case's anthropic-beta lookup below). nil is
+// fine for every provider that doesn't need it — the type assertion
+// simply fails and that branch is skipped, exactly like every other
+// no-op-when-unset field in this codebase.
+func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Deployment, providerReq any, body []byte) error {
 	switch dep.Provider {
 	case "openai":
 		httpReq.Header.Set("Authorization", "Bearer "+dep.APIKey)
@@ -4958,6 +4981,20 @@ func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Depl
 	case "anthropic":
 		httpReq.Header.Set("x-api-key", dep.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
+		// thinking-binding-controls-2026-08-01, per the addendum to
+		// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md
+		// -- anthropic.ThinkingBindingBetaHeaderValue reports false
+		// whenever ToProvider left Request.Thinking nil (every model
+		// its own gate doesn't name), so this is a no-op for every
+		// deployment/model this feature doesn't apply to. Only one beta
+		// value is ever set here today, so no comma-joining with any
+		// other anthropic-beta value is needed yet — see that function's
+		// own doc comment if a second one is ever added.
+		if nativeReq, ok := providerReq.(*anthropic.Request); ok {
+			if beta, needed := anthropic.ThinkingBindingBetaHeaderValue(nativeReq); needed {
+				httpReq.Header.Set("anthropic-beta", beta)
+			}
+		}
 	case "gemini":
 		httpReq.Header.Set("x-goog-api-key", dep.APIKey)
 	case "bedrock":

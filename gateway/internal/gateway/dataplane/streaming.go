@@ -210,8 +210,8 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 
 	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
 	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope)
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode)
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
@@ -310,7 +310,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// ever running again, for the life of the cache TTL.
 	if !blocked && !responseWasTruncated(resp) {
 		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-			p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), encoded)
+			p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, encoded)
 		}
 	}
 	return

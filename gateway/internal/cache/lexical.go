@@ -176,6 +176,19 @@ type LexicalCandidate struct {
 	// GuardrailPolicyVersion/ResponseFormatFingerprint/PromptFingerprint's
 	// own convention above — never a fabricated value.
 	ReasoningBlocksFingerprint string
+	// ThinkingBindingMode is dataplane's own record of the write-time
+	// request's adapter.ChatRequest.ThinkingBindingMode, per the
+	// 2026-09-24 addendum to
+	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md:
+	// closes the identical L1/L2 gap key.go's own Key/NormalizedKey fold
+	// closes, but for L3-lite's fuzzy near-duplicate match, which has no
+	// single exact hash key of its own to fold a field into -- a caller
+	// who opted into "strict" (a hard reasoning-continuity guarantee)
+	// must never be served an L3 near-duplicate hit that was written
+	// under a different mode. Exact string-equality gate, both-empty
+	// counting as a match, mirroring every other fingerprint field
+	// above.
+	ThinkingBindingMode string
 }
 
 // LexicalCache is Cache L3-lite's own interface — deliberately not Cache,
@@ -188,5 +201,5 @@ type LexicalCandidate struct {
 // partition itself, not a post-hoc filter").
 type LexicalCache interface {
 	Search(ctx context.Context, tenantID string, signature []uint64, k int) ([]LexicalCandidate, error)
-	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, ttl time.Duration) error
+	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, ttl time.Duration) error
 }

@@ -64,8 +64,8 @@ func TestEraseCacheEntryRemovesARealCacheHit(t *testing.T) {
 	// TestEraseCacheEntryDoesNotPreventAnIdenticalFollowUpFromHittingL3
 	// below for that real, disclosed consequence proven directly.
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
-	l1Key := cache.Key("test-key", req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "", "")
-	l2Key := cache.NormalizedKey("test-key", req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "", "")
+	l1Key := cache.Key("test-key", req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "", "", req.ThinkingBindingMode)
+	l2Key := cache.NormalizedKey("test-key", req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, "", "", req.ThinkingBindingMode)
 	if _, _, ok, _ := p.cache.Get(context.Background(), "test-key", l1Key); ok {
 		t.Error("L1 entry still present after EraseCacheEntry")
 	}

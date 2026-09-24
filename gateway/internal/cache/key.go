@@ -161,7 +161,25 @@ func formatOptionalInt(v *int) string {
 // only affects the two DIFFERENT-nonempty-values case; two requests
 // both passing "" (the default, unscoped case) remain byte-for-byte
 // unaffected.
-func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string) string {
+//
+// thinkingBindingMode is folded in the same unconditional way, per the
+// 2026-09-24 addendum to
+// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md:
+// callers (dataplane) pass adapter.ChatRequest.ThinkingBindingMode
+// verbatim. Without this, two requests identical in every other field
+// but differing only in ThinkingBindingMode (e.g. "" vs "strict") would
+// collide on the same L1 key — silently serving a caller who opted into
+// "strict" specifically to get a hard 400 on a stale-signed thinking
+// block a cached response generated under Kelvran's own non-strict
+// default instead, defeating that opt-in's entire purpose. This is
+// exactly the class of gap this RFC's own original body already named
+// for ReasoningBlocks ("Kelvran's cache-key fingerprint must include a
+// hash of the full ReasoningBlocks sequence, not just Content") —
+// ThinkingBindingMode governs how a replayed ReasoningBlocks/thinking
+// block is handled on THIS call, so the identical rule applies to it.
+// "" folds in identically to every other empty-string case above; this
+// fold alone only affects the two DIFFERENT-nonempty-values case.
+func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string) string {
 	h := sha256.New()
 	// The leading "layer"/"l1" field exists so Key and NormalizedKey can
 	// never collide even given byte-identical remaining inputs — cheap
@@ -179,6 +197,7 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 	writeField(h, "response_format", responseFormatFingerprint)
 	writeField(h, "prompt", promptFingerprint)
 	writeField(h, "end_user", endUserID)
+	writeField(h, "thinking_binding_mode", thinkingBindingMode)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -213,9 +232,10 @@ func ScopeKey(tenantID, endUserID string) string {
 // the conservative allowlist that RFC specifies — this function has no
 // opinion on normalization itself, matching Key's own "primitive/
 // serialized inputs only" contract so this package still never needs to
-// import internal/adapter. promptFingerprint and endUserID mirror Key's
-// own identical parameters -- see its doc comment above.
-func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string) string {
+// import internal/adapter. promptFingerprint, endUserID, and
+// thinkingBindingMode mirror Key's own identical parameters -- see its
+// doc comment above.
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string) string {
 	h := sha256.New()
 	writeField(h, "layer", "l2")
 	writeField(h, "tenant", tenantID)
@@ -227,5 +247,6 @@ func NormalizedKey(tenantID string, model string, normalizedMessages string, tem
 	writeField(h, "response_format", responseFormatFingerprint)
 	writeField(h, "prompt", promptFingerprint)
 	writeField(h, "end_user", endUserID)
+	writeField(h, "thinking_binding_mode", thinkingBindingMode)
 	return hex.EncodeToString(h.Sum(nil))
 }
