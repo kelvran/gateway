@@ -151,6 +151,27 @@ still need to decide:
   cover the whole server, or does scoping go finer) — genuinely undecided, and likely depends on
   what real downstream MCP servers' own permission models turn out to support.
 
+## Addendum (2026-09-24): external precedent has moved since this RFC was written
+
+Per `docs/upgrade-research/mcp-a2a-ecosystem-maturity-check-2026-09-24.md` (a follow-up research
+pass revisiting this RFC's own trigger conditions): three of the largest-footprint production MCP
+gateway implementations — AWS Bedrock AgentCore Gateway, Microsoft's Foundry Agent Service, and
+Cloudflare's `workers-oauth-provider` — have all independently shipped a per-hop OAuth 2.0
+On-Behalf-Of token-exchange pattern (RFC 8693/7523) since this RFC was drafted, narrowing the
+"OBO vs. simpler injected credential" question above with real evidence rather than the
+LiteLLM/Portkey-only comparison this RFC's own Motivation section was built from. AWS's
+AgentCore Identity centralizes raw credentials in a "secure token vault" so neither the gateway
+nor its MCP servers ever handle them directly — structurally the same `OutboundCredential`
+abstraction this RFC sketches, now with three external, GA, production-scale precedents instead
+of two smaller peer gateways. This does NOT resolve this RFC's own stated trigger ("wait for MCP's
+own spec stabilizing AND a first real integration") — no first real Kelvran MCP/A2A integration
+exists yet, and the same follow-up research found zero dated evidence of actual operator demand
+for MCP support on a self-hosted gateway specifically. It only de-risks the *design* half: when a
+future implementation RFC is eventually written, cite AWS AgentCore Identity's and Microsoft
+Foundry's shipped patterns as the primary precedent to adapt, superseding this RFC's reliance on
+LiteLLM/Portkey alone. Not scheduled as work; recorded here so the citation doesn't have to be
+re-researched from scratch when that future RFC is written.
+
 ## Verification
 
 None — this RFC is design-only, per its own Status line and this phase's own scope. No code

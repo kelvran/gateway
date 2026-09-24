@@ -17,14 +17,29 @@
 // issuing the actual probe request is dataplane.Pipeline's job, since
 // only dataplane has access to each Deployment's BaseURL/adapter/API key.
 //
-// Deliberately out of scope, per the weighted-routing RFC and narrowed
-// (not overturned) by the health-probing RFC: usage/latency/cost-based
-// routing signals, model-group fallback chains, and the traffic-derived
-// statistical circuit breaker (Envoy-style outlier detection,
-// LiteLLM-style allowed_fails cooldown) — that class genuinely needs a
-// traffic-volume floor Kelvran doesn't have production data for yet, and
-// correctly stays deferred per gateway/ARCHITECTURE.md. Only the
-// traffic-independent active-probe half is real here.
+// Corrected 2026-09-24, per docs/upgrade-research/gateway-performance-
+// optimization-2026-09-24.md Finding 3: latency- and cost-based routing
+// signals are NOT out of scope — both are real and live today.
+// SetLatencyFactor (health.go) records a soft de-weighting percentage
+// per deployment from each deployment's own rolling-average probe
+// latency relative to its model-group peers, applied via a
+// Bresenham-style thinning gate (admitLatencyThinnedTurn); activeCostTier/
+// costTiers (health.go, populated from each Deployment.CostTier at
+// New()) similarly biases selection toward a cheaper tier when one is
+// healthy. Both are traffic-INDEPENDENT signals — probe-derived or
+// static config, never learned from real request-serving traffic — so
+// neither needed the traffic-volume floor this doc comment originally,
+// correctly, gated something else on.
+//
+// What DOES remain out of scope, per the weighted-routing RFC and
+// narrowed (not overturned) by the health-probing RFC: model-group
+// fallback chains, and the traffic-DERIVED statistical circuit breaker
+// (Envoy-style outlier detection, LiteLLM-style allowed_fails cooldown),
+// plus the more sophisticated online-learning latency/cost scoring
+// (EWMA, Bayesian posteriors) comparator gateways ship — that class
+// genuinely needs a traffic-volume floor Kelvran doesn't have
+// production data for yet, and correctly stays deferred per
+// gateway/ARCHITECTURE.md.
 package router
 
 import (
