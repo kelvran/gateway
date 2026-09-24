@@ -72,6 +72,52 @@ type limitedReadCloser struct {
 
 func (l *limitedReadCloser) Close() error { return l.closer.Close() }
 
+// streamingInFlightAcquire increments p.streamingInFlightByL1Key[l1Key]
+// and reports whether another streaming request for the exact same l1Key
+// was already in flight (count > 0) BEFORE this increment — a genuine
+// near-duplicate-collision signal for the caller to record via
+// telemetry.RecordStreamingNearDuplicateCollision and a structured log
+// line, per streamingInFlightByL1Key's own doc comment (dataplane.go).
+// Purely observational: the returned bool is never used to block, delay,
+// or coalesce the calling request — every streaming request runs its own
+// real, fully independent upstream call regardless of this result.
+//
+// Every call MUST be paired with exactly one streamingInFlightRelease
+// call for the same l1Key, normally via defer immediately after this
+// call — mirrors ratelimit.ConcurrencyLimiter's own
+// AcquireWithRun-then-deferred-Release convention (concurrency.go), the
+// closest existing precedent in this codebase for this exact "count
+// concurrent in-flight operations sharing a key, for observability only"
+// shape.
+func (p *Pipeline) streamingInFlightAcquire(l1Key string) (collided bool) {
+	p.streamingInFlightMu.Lock()
+	defer p.streamingInFlightMu.Unlock()
+	collided = p.streamingInFlightByL1Key[l1Key] > 0
+	p.streamingInFlightByL1Key[l1Key]++
+	return collided
+}
+
+// streamingInFlightRelease decrements p.streamingInFlightByL1Key[l1Key],
+// deleting the entry entirely once it reaches zero rather than leaving a
+// stale zero behind — mirrors ConcurrencyLimiter.recordRunReleaseLocked's
+// own identical convention (concurrency.go), bounding this map's memory
+// under l1Key churn the same way. A no-op (never goes negative) for an
+// l1Key with no outstanding count, defending against a Release without a
+// matching Acquire, which correct calling code must never do, but which
+// is cheap to guard against regardless — the same defensive posture
+// ConcurrencyLimiter.Release already uses.
+func (p *Pipeline) streamingInFlightRelease(l1Key string) {
+	p.streamingInFlightMu.Lock()
+	defer p.streamingInFlightMu.Unlock()
+	if p.streamingInFlightByL1Key[l1Key] <= 0 {
+		return
+	}
+	p.streamingInFlightByL1Key[l1Key]--
+	if p.streamingInFlightByL1Key[l1Key] == 0 {
+		delete(p.streamingInFlightByL1Key, l1Key)
+	}
+}
+
 // UpstreamStreamCaller performs the actual upstream HTTP call for one
 // deployment when streaming, returning the raw response body for the
 // caller to read as SSE frames — unlike UpstreamCaller, it does not decode
@@ -214,6 +260,22 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
+	// Streaming near-duplicate-collision observation — see
+	// streamingInFlightByL1Key's own doc comment (dataplane.go) and this
+	// function's "no singleflight coalescing" doc comment below
+	// (streamDeploymentWithFallback's caller, near billable = true).
+	// Placed here, immediately after l1Key/l2Key are computed and
+	// strictly before the cache checks below, so every streaming request
+	// that reaches this point is observed regardless of whether it then
+	// hits or misses cache. Deliberately NEVER gates, delays, or
+	// coalesces anything: every request below still runs its own real,
+	// fully independent path exactly as if this block didn't exist.
+	if p.streamingInFlightAcquire(l1Key) {
+		telemetry.RecordStreamingNearDuplicateCollision(ctx, vk.ID)
+		p.logger.Warn("streaming_near_duplicate_collision", append(traceLogFields(ctx), "key_id", vk.ID, "l1_key", l1Key)...)
+	}
+	defer p.streamingInFlightRelease(l1Key)
+
 	cacheAttempted = true
 	if cached, layer, writtenAt, ok := p.checkCache(ctx, cacheScope, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
@@ -296,7 +358,17 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// The streaming path has no singleflight coalescing (unlike
 	// runMissPath's buffered miss path) — every completed stream is its
 	// own real, unshared upstream call, so it's always billable, per
-	// docs/rfcs/2026-09-05-gateway-cost-double-counting.md.
+	// docs/rfcs/2026-09-05-gateway-cost-double-counting.md. As of this
+	// change, near-duplicate-l1Key collisions on this path ARE measured
+	// (see streamingInFlightAcquire above and the
+	// kelvran.streaming.near_duplicate_collision counter/
+	// streaming_near_duplicate_collision log line it emits), per
+	// docs/upgrade-research/gateway-performance-optimization-2026-09-24.md
+	// Finding 1's own recommendation — purely to inform whether real
+	// coalescing is worth building here, NOT an implementation of it: this
+	// measurement changes no behavior, and every completed stream above
+	// remains its own real, unshared, billable call regardless of any
+	// collision detected.
 	billable = true
 
 	// A Block-tier post-call verdict is audit-only for CLIENT delivery

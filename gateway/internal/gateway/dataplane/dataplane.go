@@ -640,6 +640,32 @@ type Pipeline struct {
 	// golang.org/x/sync/singleflight's own documented contract; no
 	// construction needed in NewPipeline.
 	missGroup singleflight.Group
+	// streamingInFlightMu guards streamingInFlightByL1Key.
+	streamingInFlightMu sync.Mutex
+	// streamingInFlightByL1Key counts, per exact-match l1Key (cache.Key —
+	// the same key missGroup above coalesces on for the BUFFERED path),
+	// how many streaming requests for that exact key are in flight right
+	// now — purely for OBSERVABILITY, never admission control or
+	// coalescing. The streaming path has no singleflight-style coalescing
+	// at all (see streaming.go's own doc comment on that named, accepted
+	// v1 scope limit) — this counter exists only to measure whether
+	// genuinely-identical concurrent streaming requests happen often
+	// enough in real traffic to justify building that coalescing, per
+	// docs/upgrade-research/gateway-performance-optimization-2026-09-24.md
+	// Finding 1's own recommendation: a traffic-SHAPE question, answerable
+	// with cheap log-only instrumentation, not a traffic-volume one
+	// requiring this codebase's usual "wait for real production data"
+	// gate. Modeled on ratelimit.ConcurrencyLimiter's own runCounts field
+	// (concurrency.go) — the closest existing precedent here for "track
+	// how many concurrent in-flight operations share a key, purely for
+	// observability" — but deliberately narrower: no cap/limit concept at
+	// all, scoped to the streaming path's own l1Key rather than a
+	// (keyID, agentRunID) pair. An entry is deleted the moment its count
+	// reaches zero (see streamingInFlightRelease, streaming.go), mirroring
+	// recordRunReleaseLocked's identical "delete rather than leave a stale
+	// zero" convention, so a churn of distinct l1Keys never grows this map
+	// without bound.
+	streamingInFlightByL1Key map[string]int
 	// probeMu guards probeSchedule — see probeDueDeployments/
 	// rescheduleDeployment, per
 	// docs/rfcs/2026-09-08-gateway-health-probe-backoff.md. A separate
@@ -780,6 +806,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		configPublisher:             cfg.ConfigPublisher,
 		weightVersions:              map[weightVersionKey]int64{},
 		virtualKeyVersions:          map[string]int64{},
+		streamingInFlightByL1Key:    map[string]int{},
 		alertNotifier:               cfg.AlertNotifier,
 		upstreamStream:              cfg.UpstreamStream,
 		logger:                      logger,

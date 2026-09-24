@@ -7,9 +7,14 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
@@ -20,6 +25,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/streaming"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // realOpenAISSEStream is a minimal but genuine OpenAI streaming response:
@@ -721,5 +727,382 @@ func TestFinishStreamedResponseLogsWarningOnDuplicateIndexAfterFinish(t *testing
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "stream_duplicate_index_after_finish") {
 		t.Errorf("expected a stream_duplicate_index_after_finish warning; got log output:\n%s", logOutput)
+	}
+}
+
+// streamingNearDuplicateCollisionMetricDelta reads
+// "kelvran.streaming.near_duplicate_collision" for keyID out of rm — the
+// same metricdata.Sum[int64]/dp.Attributes.Value extraction shape
+// gatewayevents_test.go's own snapshotDataplaneTelemetry already uses for
+// kelvran.ratelimit.fail_open, kept local to this file (rather than
+// extending that shared helper) since this test file's own scope is
+// deliberately limited to streaming.go's own surface.
+func streamingNearDuplicateCollisionMetricDelta(t *testing.T, rm metricdata.ResourceMetrics, keyID string) int64 {
+	t.Helper()
+	var total int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "kelvran.streaming.near_duplicate_collision" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("kelvran.streaming.near_duplicate_collision data type = %T, want metricdata.Sum[int64]", m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				gotKeyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
+				if hasAttr && gotKeyID.AsString() == keyID {
+					total += dp.Value
+				}
+			}
+		}
+	}
+	return total
+}
+
+// TestStreamingInFlightCounterTracksConcurrentRequestsForSameKey is the
+// load-bearing proof for streamingInFlightByL1Key itself (dataplane.go):
+// n genuinely concurrent, byte-identical streaming requests (same l1Key)
+// must all be observed as truly in flight AT THE SAME TIME (the shared
+// counter reads exactly n while every one of them is still blocked in its
+// own real upstream call), and the map entry must be fully released (n-1
+// decrements plus a final delete-on-zero) once every one of them
+// completes — mirroring TestHandleChatCompletionCoalescedFollowerDoes-
+// NotRechargeBudget's own concurrent-request harness shape
+// (cost_double_counting_test.go), the closest existing precedent for
+// driving n genuinely concurrent identical requests through this
+// pipeline. Also proves n-1 of the n requests recorded a genuine
+// collision via the real kelvran.streaming.near_duplicate_collision
+// counter (never n, since exactly one request must be first to observe
+// an empty slot) — the same metric-delta verification style
+// TestRateLimitFailOpenIncrementsMetricCounter (gatewayevents_test.go)
+// already established for this codebase's other fail-open-style counter.
+func TestStreamingInFlightCounterTracksConcurrentRequestsForSameKey(t *testing.T) {
+	const n = 5
+	const testKeyID = "streaming-inflight-counter-key"
+
+	reader := dataplaneTelemetryMetricsReaderForTest()
+	var before metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &before); err != nil {
+		t.Fatalf("reader.Collect (before): %v", err)
+	}
+	deltaBefore := streamingNearDuplicateCollisionMetricDelta(t, before, testKeyID)
+
+	var upstreamCallsStarted atomic.Int64
+	release := make(chan struct{})
+	allStarted := make(chan struct{})
+
+	keys := []identity.VirtualKey{
+		{ID: testKeyID, KeyHash: testHashOf(testKeyID), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		if upstreamCallsStarted.Add(1) == n {
+			close(allStarted)
+		}
+		<-release
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, budget.NewTracker())
+
+	req := adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}
+
+	var ready sync.WaitGroup
+	ready.Add(n)
+	goCh := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ready.Done()
+			<-goCh
+			rec := httptest.NewRecorder()
+			errs[i] = p.HandleChatCompletionStream(context.Background(), "Bearer "+testKeyID, "", "", req, rec, "")
+		}(i)
+	}
+
+	ready.Wait()
+	close(goCh)
+
+	select {
+	case <-allStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for all n upstream calls to start")
+	}
+
+	// While all n requests are genuinely in flight — each blocked in its
+	// own real, independently-started upstream call, never coalesced —
+	// the shared in-flight counter for their one common l1Key must read
+	// exactly n.
+	p.streamingInFlightMu.Lock()
+	numKeys := len(p.streamingInFlightByL1Key)
+	var gotCount int
+	for _, c := range p.streamingInFlightByL1Key {
+		gotCount = c
+	}
+	p.streamingInFlightMu.Unlock()
+	if numKeys != 1 {
+		t.Fatalf("streamingInFlightByL1Key has %d distinct keys, want exactly 1 (all %d requests are byte-identical)", numKeys, n)
+	}
+	if gotCount != n {
+		t.Fatalf("in-flight count = %d, want %d while all %d requests are concurrently blocked in their own upstream call", gotCount, n, n)
+	}
+
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if got := upstreamCallsStarted.Load(); got != n {
+		t.Fatalf("upstreamCallsStarted = %d, want exactly %d -- every request must make its own real, unshared upstream call regardless of the collision counter (observation-only, never coalescing)", got, n)
+	}
+
+	// Every request has now completed and released its slot -- the map
+	// entry must be deleted entirely (never left behind as a stale zero),
+	// mirroring ConcurrencyLimiter.recordRunReleaseLocked's own identical
+	// convention (concurrency.go).
+	p.streamingInFlightMu.Lock()
+	remaining := len(p.streamingInFlightByL1Key)
+	p.streamingInFlightMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("streamingInFlightByL1Key has %d leftover entries after all requests completed, want 0", remaining)
+	}
+
+	var afterRM metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &afterRM); err != nil {
+		t.Fatalf("reader.Collect (after): %v", err)
+	}
+	deltaAfter := streamingNearDuplicateCollisionMetricDelta(t, afterRM, testKeyID)
+	if got := deltaAfter - deltaBefore; got != n-1 {
+		t.Fatalf("kelvran.streaming.near_duplicate_collision[key_id=%s] delta = %d, want exactly %d (n-1) -- exactly one of %d byte-identical concurrent requests must be the first to observe an empty slot, every other one must observe a real collision", testKeyID, got, n-1, n)
+	}
+}
+
+// TestStreamingNearDuplicateCollisionNeverFiresForALoneRequest proves the
+// negative case streamingInFlightAcquire's own doc comment depends on: a
+// single streaming request with no concurrent twin for the same l1Key
+// must never be misreported as a collision -- neither the structured log
+// line nor the real kelvran.streaming.near_duplicate_collision counter.
+func TestStreamingNearDuplicateCollisionNeverFiresForALoneRequest(t *testing.T) {
+	const testKeyID = "streaming-inflight-lone-request-key"
+
+	reader := dataplaneTelemetryMetricsReaderForTest()
+	var before metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &before); err != nil {
+		t.Fatalf("reader.Collect (before): %v", err)
+	}
+	deltaBefore := streamingNearDuplicateCollisionMetricDelta(t, before, testKeyID)
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	keys := []identity.VirtualKey{
+		{ID: testKeyID, KeyHash: testHashOf(testKeyID), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("non-streaming Upstream should never be called by a streaming test")
+			return nil, nil
+		},
+		UpstreamStream: func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+			return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer "+testKeyID, "", "", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "a genuinely solo request, no concurrent twin"}},
+	}, rec, "")
+	if err != nil {
+		t.Fatalf("HandleChatCompletionStream: %v", err)
+	}
+
+	if strings.Contains(logBuf.String(), "streaming_near_duplicate_collision") {
+		t.Fatalf("a lone streaming request with no concurrent twin must never log a collision; got:\n%s", logBuf.String())
+	}
+
+	p.streamingInFlightMu.Lock()
+	remaining := len(p.streamingInFlightByL1Key)
+	p.streamingInFlightMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("streamingInFlightByL1Key has %d leftover entries after the lone request completed, want 0", remaining)
+	}
+
+	var afterRM metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &afterRM); err != nil {
+		t.Fatalf("reader.Collect (after): %v", err)
+	}
+	deltaAfter := streamingNearDuplicateCollisionMetricDelta(t, afterRM, testKeyID)
+	if got := deltaAfter - deltaBefore; got != 0 {
+		t.Fatalf("kelvran.streaming.near_duplicate_collision[key_id=%s] delta = %d, want 0 -- a lone request with no concurrent twin must never be recorded as a collision", testKeyID, got)
+	}
+}
+
+// TestStreamingInFlightAcquireReleaseThenReacquireNeverFalselyCollides is
+// the direct, unit-level proof that streamingInFlightRelease's delete-on-
+// zero cleanup (streaming.go) actually leaves the map key-reusable rather
+// than a stale nonzero count behind: acquire, release, then acquire the
+// SAME l1Key again on the SAME Pipeline instance must report collided ==
+// false both times, and the map must be empty after each release. Neither
+// TestStreamingInFlightCounterTracksConcurrentRequestsForSameKey (n
+// genuinely concurrent requests, never sequential reuse) nor
+// TestStreamingNearDuplicateCollisionNeverFiresForALoneRequest (a single
+// acquire/release pair, never re-acquired) exercises this exact sequence.
+// Note (verified by actually running a mutation, not assumed): given how
+// this code is shaped, any bug that leaves a stale nonzero count behind
+// also leaves streamingInFlightByL1Key's len() != 0, which both existing
+// tests' own "leftover entries ... want 0" assertions already catch --
+// e.g. mutating streamingInFlightRelease to decrement a local copy
+// instead of the map entry fails BOTH existing tests too, not just this
+// one. This test's real value is therefore directness, not closing a
+// live detection gap: it asserts the documented "acquire after a full
+// release never collides" contract in its own terms (the collided return
+// value on a real reacquire) rather than only inferring it from a map-
+// length side effect, so it stays a correct, legible regression guard
+// even if streamingInFlightByL1Key's internal representation ever
+// changes in a way that decouples "map length" from "would a reacquire
+// falsely collide." Deliberately bypasses HandleChatCompletionStream/
+// NewPipeline entirely (a bare Pipeline literal is safe here because
+// these two methods touch only streamingInFlightMu/
+// streamingInFlightByL1Key, per NewPipeline's own doc comment on this
+// field) so the test is fast, deterministic, and isolates exactly the
+// two functions under test.
+func TestStreamingInFlightAcquireReleaseThenReacquireNeverFalselyCollides(t *testing.T) {
+	p := &Pipeline{streamingInFlightByL1Key: map[string]int{}}
+	const l1Key = "reused-l1-key"
+
+	if collided := p.streamingInFlightAcquire(l1Key); collided {
+		t.Fatal("first acquire of a fresh key reported a collision, want false")
+	}
+	p.streamingInFlightRelease(l1Key)
+	if remaining := len(p.streamingInFlightByL1Key); remaining != 0 {
+		t.Fatalf("streamingInFlightByL1Key has %d entries after the first release, want 0 (delete-on-zero)", remaining)
+	}
+
+	if collided := p.streamingInFlightAcquire(l1Key); collided {
+		t.Fatal("re-acquiring the same l1Key after a full release+delete falsely reported a collision -- a stale nonzero count survived release")
+	}
+	p.streamingInFlightRelease(l1Key)
+	if remaining := len(p.streamingInFlightByL1Key); remaining != 0 {
+		t.Fatalf("streamingInFlightByL1Key has %d entries after the second release, want 0 (delete-on-zero)", remaining)
+	}
+}
+
+// TestStreamingNearDuplicateCollisionSequentialKeyReuseNeverFalselyFires
+// is the live, full-pipeline complement to
+// TestStreamingInFlightAcquireReleaseThenReacquireNeverFalselyCollides:
+// two genuinely SEQUENTIAL (never overlapping) real streaming requests
+// for the byte-identical request -- and therefore the same l1Key -- on
+// the same long-running Pipeline instance must both be observed as lone
+// requests, exactly like
+// TestStreamingNearDuplicateCollisionNeverFiresForALoneRequest's single
+// call, but proven across a real release-then-reacquire cycle rather
+// than a single acquire/release pair. This is the "plausible collision
+// scenario" TestStreamingNearDuplicateCollisionNeverFiresForALoneRequest
+// itself never exercises (per that test's own single-call shape): a
+// second, wholly independent request reusing the first's now-released
+// l1Key is exactly the ordinary traffic pattern (the same tenant asking
+// the same model the same prompt twice, sequentially) that a stale-count
+// bug would misreport as a collision in production.
+func TestStreamingNearDuplicateCollisionSequentialKeyReuseNeverFalselyFires(t *testing.T) {
+	const testKeyID = "streaming-inflight-sequential-reuse-key"
+
+	reader := dataplaneTelemetryMetricsReaderForTest()
+	var before metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &before); err != nil {
+		t.Fatalf("reader.Collect (before): %v", err)
+	}
+	deltaBefore := streamingNearDuplicateCollisionMetricDelta(t, before, testKeyID)
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	keys := []identity.VirtualKey{
+		{ID: testKeyID, KeyHash: testHashOf(testKeyID), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("non-streaming Upstream should never be called by a streaming test")
+			return nil, nil
+		},
+		UpstreamStream: func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+			return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	req := adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "same request, asked twice, never concurrently"}},
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		rec := httptest.NewRecorder()
+		if err := p.HandleChatCompletionStream(context.Background(), "Bearer "+testKeyID, "", "", req, rec, ""); err != nil {
+			t.Fatalf("HandleChatCompletionStream (attempt %d): %v", attempt, err)
+		}
+
+		p.streamingInFlightMu.Lock()
+		remaining := len(p.streamingInFlightByL1Key)
+		p.streamingInFlightMu.Unlock()
+		if remaining != 0 {
+			t.Fatalf("streamingInFlightByL1Key has %d leftover entries after attempt %d completed, want 0", remaining, attempt)
+		}
+	}
+
+	if strings.Contains(logBuf.String(), "streaming_near_duplicate_collision") {
+		t.Fatalf("two sequential, non-overlapping requests reusing the same l1Key must never log a collision; got:\n%s", logBuf.String())
+	}
+
+	var afterRM metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &afterRM); err != nil {
+		t.Fatalf("reader.Collect (after): %v", err)
+	}
+	deltaAfter := streamingNearDuplicateCollisionMetricDelta(t, afterRM, testKeyID)
+	if got := deltaAfter - deltaBefore; got != 0 {
+		t.Fatalf("kelvran.streaming.near_duplicate_collision[key_id=%s] delta = %d, want 0 -- sequential key reuse after a full release must never be recorded as a collision", testKeyID, got)
 	}
 }

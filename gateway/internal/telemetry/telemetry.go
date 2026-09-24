@@ -174,6 +174,39 @@ func RecordStreamCostEstimated(ctx context.Context, keyID string) {
 	streamCostEstimatedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
 }
 
+// streamingNearDuplicateCollisionCounter is per
+// docs/upgrade-research/gateway-performance-optimization-2026-09-24.md
+// Finding 1's own recommendation: before building streaming-path request
+// coalescing (a genuinely more involved mechanism than runMissPath's
+// buffered-path singleflight.Group — a broadcast/fan-out to every
+// concurrent waiter, not a single shared return value), first measure
+// whether genuinely-identical concurrent streaming requests for the same
+// l1Key actually happen often enough in real traffic to justify building
+// it. This is a traffic-SHAPE question, not a traffic-volume one —
+// answerable with this cheap, log-only instrumentation alone, without
+// committing to the real build first. Mirrors rateLimitFailOpenCounter's
+// own construction pattern.
+var streamingNearDuplicateCollisionCounter = mustInt64Counter(
+	meter,
+	"kelvran.streaming.near_duplicate_collision",
+	metric.WithDescription("Streaming requests that found another streaming request for the identical (exact-match) l1Key already in flight -- observation only, never coalesced or blocked."),
+	metric.WithUnit("{collision}"),
+)
+
+// RecordStreamingNearDuplicateCollision increments the near-duplicate-
+// collision counter for keyID. The caller
+// (dataplane.HandleChatCompletionStream) calls this at the exact same
+// point it already logs a streaming_near_duplicate_collision warning —
+// an additional, aggregate-friendly signal, not a replacement for that
+// log line, mirroring RecordRateLimitFailOpen's own identical convention.
+// Only ever called when a genuine collision was detected (see
+// streamingInFlightAcquire's own doc comment, dataplane.go/streaming.go)
+// — never unconditionally on every streaming request, matching this
+// file's existing "only emit when meaningful" convention.
+func RecordStreamingNearDuplicateCollision(ctx context.Context, keyID string) {
+	streamingNearDuplicateCollisionCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
+}
+
 // RecordFallbackHop emits a "fallback_hop" span event for a single FAILED
 // fallback-chain hop attempt, per AttrKelvranFallbackHopErrorClass's own
 // doc comment (result.go). Uses trace.SpanFromContext(ctx) rather than an
