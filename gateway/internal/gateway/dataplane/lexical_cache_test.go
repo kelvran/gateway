@@ -184,7 +184,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint(t
 			{Role: "assistant", ReasoningBlocks: []adapter.ReasoningBlock{{Sequence: 0, Text: "a completely different chain of thought"}}},
 		},
 	}
-	if _, _, _, hit := p.checkLexicalCache(ctx, vk, mismatched, "irrelevant-l1-key", fixedSignature, ""); hit {
+	if _, _, _, hit := p.checkLexicalCache(ctx, vk, vk.ID, mismatched, "irrelevant-l1-key", fixedSignature, ""); hit {
 		t.Error("checkLexicalCache returned a hit for a query whose ReasoningBlocks differ from the written entry's fingerprint — the hard gate must reject this")
 	}
 
@@ -192,7 +192,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint(t
 	// was written IS a real hit — proving the gate rejects on a genuine
 	// mismatch, not unconditionally.
 	matching := adapter.ChatRequest{Model: "gpt-4o", Messages: writtenMessages}
-	cached, _, _, hit := p.checkLexicalCache(ctx, vk, matching, "irrelevant-l1-key", fixedSignature, "")
+	cached, _, _, hit := p.checkLexicalCache(ctx, vk, vk.ID, matching, "irrelevant-l1-key", fixedSignature, "")
 	if !hit {
 		t.Fatal("checkLexicalCache returned a miss for a query whose ReasoningBlocks exactly match the written entry — the gate must not reject a genuine match")
 	}
@@ -235,7 +235,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentThinkingBindingMode(t *testi
 	// but genuinely different ThinkingBindingMode — exactly the scenario
 	// this gate exists to close.
 	mismatched := adapter.ChatRequest{Model: "gpt-4o", Messages: writtenMessages, ThinkingBindingMode: "strict"}
-	if _, _, _, hit := p.checkLexicalCache(ctx, vk, mismatched, "irrelevant-l1-key", fixedSignature, ""); hit {
+	if _, _, _, hit := p.checkLexicalCache(ctx, vk, vk.ID, mismatched, "irrelevant-l1-key", fixedSignature, ""); hit {
 		t.Error("checkLexicalCache returned a hit for a query whose ThinkingBindingMode differs from the written entry's — the hard gate must reject this")
 	}
 
@@ -243,7 +243,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentThinkingBindingMode(t *testi
 	// what was written IS a real hit — proving the gate rejects on a
 	// genuine mismatch, not unconditionally.
 	matching := adapter.ChatRequest{Model: "gpt-4o", Messages: writtenMessages, ThinkingBindingMode: "non_strict"}
-	cached, _, _, hit := p.checkLexicalCache(ctx, vk, matching, "irrelevant-l1-key", fixedSignature, "")
+	cached, _, _, hit := p.checkLexicalCache(ctx, vk, vk.ID, matching, "irrelevant-l1-key", fixedSignature, "")
 	if !hit {
 		t.Fatal("checkLexicalCache returned a miss for a query whose ThinkingBindingMode exactly matches the written entry — the gate must not reject a genuine match")
 	}

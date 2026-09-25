@@ -289,7 +289,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// failure — same fallthrough behavior as the buffered path.
 	}
 
-	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l1Key, l3Signature, promptFP); ok {
+	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, cacheScope, req, l1Key, l3Signature, promptFP); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp

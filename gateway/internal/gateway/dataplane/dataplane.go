@@ -2555,7 +2555,22 @@ func freshnessRiskModel(writtenAt time.Time, storedModelID, currentModelID strin
 // resource on this instance," not "l1Key is a real L3 storage key" — the
 // same question checkCache's own L1/L2 events already answer for their
 // own layers, extended here to L3's different mechanism.
-func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, l1Key string, signature []uint64, promptFP string) (cached []byte, similarity float64, ageMs float64, hit bool) {
+//
+// tenantID is the SAME cacheScope value checkCache/writeCache already use
+// for L1/L2 — identity.VirtualKey.CacheScopeToEndUser's own doc comment
+// requires the caller-supplied end-user header to fold into "this key's
+// own L1/L2/L3 response-cache partitioning" for ALL three layers, not
+// just L1/L2. Before this fix, this function searched p.cacheL3 keyed on
+// the bare vk.ID instead of tenantID, while writeCache had always written
+// L3 keyed on tenantID (cacheScope) — a real read/write bucket mismatch:
+// whenever CacheScopeToEndUser is true, cacheScope is a per-end-user
+// SHA256 hash that never equals the bare vk.ID (cache.ScopeKey and
+// resolveCacheEndUserScope's own fail-closed contract guarantee
+// endUserID is never empty once the flag is on), so every L3 write landed
+// in a bucket this search could never reach. vk is still threaded through
+// for the Warn log below and the cross-instance-check telemetry, which
+// key on the virtual key's own identity, not its cache partition.
+func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKey, tenantID string, req adapter.ChatRequest, l1Key string, signature []uint64, promptFP string) (cached []byte, similarity float64, ageMs float64, hit bool) {
 	// Per-gate outcome counters, per docs/upgrade-research/cache-2026-09-06.md
 	// Finding 1 — GroundedCache's own per-gate ablation methodology
 	// applied to L3-lite's three existing gates. No new gate logic: every
@@ -2565,7 +2580,7 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 	if volatile {
 		return nil, 0, 0, false
 	}
-	candidates, err := p.cacheL3.Search(ctx, vk.ID, signature, l3SearchK)
+	candidates, err := p.cacheL3.Search(ctx, tenantID, signature, l3SearchK)
 	if err != nil {
 		p.logger.Warn("lexical_cache_search_failed", append(traceLogFields(ctx), "key_id", vk.ID, "error", err.Error())...)
 		return nil, 0, 0, false // fail-closed: a search error skips L3, never bypasses the gate
@@ -3237,7 +3252,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// failure — fall through to the upstream path below.
 	}
 
-	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, req, l1Key, l3Signature, promptFP); ok {
+	if cached, similarity, ageMs, ok := p.checkLexicalCache(ctx, vk, cacheScope, req, l1Key, l3Signature, promptFP); ok {
 		var cachedResp adapter.ChatResponse
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
