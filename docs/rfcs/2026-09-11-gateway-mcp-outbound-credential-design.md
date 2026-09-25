@@ -172,6 +172,25 @@ Foundry's shipped patterns as the primary precedent to adapt, superseding this R
 LiteLLM/Portkey alone. Not scheduled as work; recorded here so the citation doesn't have to be
 re-researched from scratch when that future RFC is written.
 
+**Addendum (2026-09-25): the "zero dated evidence of demand" half above is now partially, not
+fully, reversed.** A dedicated recheck (`docs/upgrade-research/mcp-gateway-demand-signal-recheck-
+2026-09-25.md`) specifically re-tested whether real, dated, primary-source demand exists for
+MCP/A2A brokering AT the gateway/proxy layer, as distinct from demand for MCP support inside an
+agent framework itself. It found real evidence in the broader ecosystem: developers filed dated
+GitHub issues explicitly asking for gateway-layer MCP brokering on LiteLLM (issue #7934) and
+Envoy AI Gateway (issue #589) — both since shipped as real features — and separately, real
+production-use friction reports (not just feature requests) exist against LiteLLM's shipped A2A
+Agent Gateway (issue #21409), a later-stage signal than a mere ask. Checked against CrewAI, the
+OpenAI Agents SDK, and LangGraph's own issue trackers, every thread stayed strictly
+framework-scoped — no comment anywhere proposed relocating MCP brokering to a gateway layer,
+confirming this demand class is real but narrower than "everyone wants this," not universal.
+**Critically, none of this evidence is, or could be, Kelvran-specific** — it answers "does this
+demand class exist anywhere in the comparable ecosystem" (yes, now confirmed), not "is anyone
+asking about Kelvran" (still structurally unanswerable until Kelvran has external users) — the
+same limitation this RFC's own trigger condition names. Net effect: the ecosystem-demand
+half of the "not yet" framing is now real and citable; the Kelvran-specific-demand half remains
+exactly as open as before. Not scheduled as work.
+
 ## Verification
 
 None — this RFC is design-only, per its own Status line and this phase's own scope. No code
