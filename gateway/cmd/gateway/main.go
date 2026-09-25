@@ -55,6 +55,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/admin"
 	"github.com/kelvran/gateway/gateway/internal/admin/auditstore"
 	"github.com/kelvran/gateway/gateway/internal/alerting"
+	"github.com/kelvran/gateway/gateway/internal/backup"
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	"github.com/kelvran/gateway/gateway/internal/budget/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/budget/redisbudget"
@@ -340,7 +341,25 @@ func buildPerDeploymentTLSClients(deployments []controlplane.DeploymentConfig) (
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the gateway's YAML config file")
 	validateOnly := flag.Bool("validate", false, "load and validate the config file, then exit (0 if valid, 1 if not) -- no listener, no store, no telemetry, nothing else started")
+	restoreStore := flag.String("restore-store", "", "run a one-shot OFFLINE restore for this store's persist_path (identity|budget|prompt), then exit -- no listener, no server started. The gateway process must be STOPPED before running this, and must not be started again against the same persist_path until it completes; see internal/backup.Restore's own doc comment for why a live restore-while-serving is not supported")
+	restoreFrom := flag.String("restore-from", "", "backup file path to restore from (e.g. one written by POST /admin/backup) -- required when -restore-store is set")
+	restoreForce := flag.Bool("restore-force", false, "overwrite an existing destination persist_path file when restoring -- refused by default, mirroring backup.CopyFile's own refuses-to-overwrite convention")
 	flag.Parse()
+
+	// -restore-store is evaluated before -validate and before the normal
+	// server-start path below: it is a one-shot operator action (like
+	// -validate), never a running mode, so it must never reach run().
+	// See docs/operations/DEPLOY.md's "Local Bbolt Persistence: Backup &
+	// Restore" section for the full stop-restore-start operator
+	// procedure this flag is one step of.
+	if *restoreStore != "" {
+		if err := runRestore(*configPath, *restoreStore, *restoreFrom, *restoreForce); err != nil {
+			fmt.Fprintln(os.Stderr, "restore error:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("restored %s store from %q\n", *restoreStore, *restoreFrom)
+		return
+	}
 
 	if *validateOnly {
 		cfg, err := controlplane.Load(*configPath)
@@ -384,6 +403,72 @@ func main() {
 		logger.Error("gateway exited", "error", err)
 		os.Exit(1)
 	}
+}
+
+// restorablePersistPath resolves storeKind's own configured persist_path
+// out of cfg -- the exact field each of newBudgetTracker/newPromptStore/
+// the identity-store switch in buildPipeline itself reads to decide
+// whether (and where) that store persists to bbolt. Returns an error for
+// an unrecognized storeKind, or for a recognized one whose persist_path
+// is genuinely unset in this config file (in-memory-only stores have no
+// destination a restore could target).
+func restorablePersistPath(cfg *controlplane.Config, storeKind string) (string, error) {
+	var path string
+	switch storeKind {
+	case "identity":
+		path = cfg.Admin.PersistPath
+	case "budget":
+		path = cfg.Budget.PersistPath
+	case "prompt":
+		path = cfg.Prompt.PersistPath
+	default:
+		return "", fmt.Errorf("unknown -restore-store %q (must be one of: identity, budget, prompt)", storeKind)
+	}
+	if path == "" {
+		return "", fmt.Errorf("%s store has no persist_path configured -- nothing to restore into", storeKind)
+	}
+	return path, nil
+}
+
+// runRestore implements the gateway binary's one-shot OFFLINE restore
+// mode (-restore-store/-restore-from/-restore-force): resolve
+// storeKind's configured persist_path out of configPath's own config
+// file, then hand off to internal/backup.Restore against it. This is
+// the exact, previously-missing operator recovery path for a corrupted
+// persist_path file that already has a real backup.CopyFile-produced
+// backup (via POST /admin/backup) sitting on disk -- see
+// internal/backup.Restore's own doc comment for why this must only ever
+// run against a STOPPED gateway process, never alongside a live one
+// serving the same persist_path.
+//
+// Deliberately does not start any server, listener, or telemetry, and
+// never calls run()/buildPipeline -- it loads just enough config to
+// resolve one path, performs one file operation, and returns, mirroring
+// -validate's identical "load config, do one thing, exit" shape. The
+// very next NORMAL gateway invocation (no restore flag) is what
+// actually loads the now-restored file, through that store's own real
+// constructor (identityboltstore.Open/boltstore.Open/promptboltstore.Open,
+// each already wired via openPersistStoreWithRecovery) -- exactly like
+// it would for any other pre-existing persist_path file.
+func runRestore(configPath, storeKind, fromPath string, force bool) error {
+	if fromPath == "" {
+		return fmt.Errorf("-restore-from is required when -restore-store is set")
+	}
+
+	cfg, err := controlplane.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	destPath, err := restorablePersistPath(cfg, storeKind)
+	if err != nil {
+		return err
+	}
+
+	if err := backup.Restore(fromPath, destPath, force); err != nil {
+		return fmt.Errorf("restoring %s store: %w", storeKind, err)
+	}
+	return nil
 }
 
 // namedServer pairs a *http.Server with a human-readable name, purely so
