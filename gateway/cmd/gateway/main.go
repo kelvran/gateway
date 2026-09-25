@@ -497,6 +497,7 @@ func run(configPath string, logger *slog.Logger) error {
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
 	mux.HandleFunc("/v1/embeddings", embeddingsHandler(pipeline))
 	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/readyz", readyzHandler(pipeline))
 
 	// inFlight tracks real client-facing handler invocations so shutdown
 	// can give them a fair, bounded chance to finish — including their
@@ -1578,6 +1579,43 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// readyzHandler reports, per canonical model, whether at least one
+// configured deployment is currently healthy per the existing active
+// probe loop (dataplane.Pipeline.ReadinessSummary) -- deliberately a
+// SEPARATE endpoint from healthzHandler, never a change to it: /healthz
+// stays a pure liveness check, decoupled from upstream reachability by
+// design (see its own doc comment), while /readyz is the dedicated
+// backend-reachability signal a 2026 LiteLLM-monitoring postmortem found
+// most production LLM-gateway monitors were missing (docs/upgrade-
+// research/production-readiness-security-grounding-2026-09-25.md
+// Finding 2). Point an external/readiness check here, keep liveness
+// probes on /healthz -- restarting the process fixes nothing if every
+// deployment for a model is genuinely unhealthy upstream.
+func readyzHandler(p *dataplane.Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ready, perModel := p.ReadinessSummary()
+		body, err := json.Marshal(map[string]any{
+			"ready":  ready,
+			"models": perModel,
+		})
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if !ready {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		_, _ = w.Write(body)
+	}
 }
 
 func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {

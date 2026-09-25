@@ -159,3 +159,96 @@ func TestProbeDeploymentsReincludesDeploymentAfterMConsecutiveSuccesses(t *testi
 		t.Error("\"bad\" was never selected again after its 2nd consecutive recovery probe re-included it")
 	}
 }
+
+// failingByNameUpstream is a multi-deployment UpstreamCaller fixture:
+// any deployment whose Name is in the mutable failing set always
+// errors; every other deployment always succeeds. Unlike
+// intermittentUpstream (which supports exactly one failing name at a
+// time — insufficient for proving readiness goes false only once EVERY
+// deployment for a model is down), this supports failing an arbitrary
+// set simultaneously.
+type failingByNameUpstream struct {
+	mu      sync.Mutex
+	failing map[string]bool
+}
+
+func (u *failingByNameUpstream) call(_ context.Context, dep Deployment, _ any) (any, error) {
+	u.mu.Lock()
+	fail := u.failing[dep.Name]
+	u.mu.Unlock()
+	if fail {
+		return nil, errors.New("failingByNameUpstream: simulated upstream failure")
+	}
+	return fakeOpenAIResponse(dep.UpstreamModel), nil
+}
+
+func (u *failingByNameUpstream) setFailing(names ...string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.failing = make(map[string]bool, len(names))
+	for _, n := range names {
+		u.failing[n] = true
+	}
+}
+
+// TestReadinessSummaryReflectsPerModelProbeHealth proves the /readyz
+// data source (Pipeline.ReadinessSummary) end-to-end against the real
+// probe loop: a model stays ready while at least one sibling deployment
+// is healthy, and only goes unready once every deployment for that
+// specific model has tripped the N-of-M threshold -- while an unrelated,
+// fully-healthy model's own readiness is never affected.
+func TestReadinessSummaryReflectsPerModelProbeHealth(t *testing.T) {
+	deployments := []Deployment{
+		{Name: "good", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		{Name: "bad", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+		{Name: "other-solo", Model: "other-model", Provider: "openai", UpstreamModel: "other-model", BaseURL: "http://unused"},
+	}
+	upstream := &failingByNameUpstream{}
+	upstream.setFailing("bad")
+	p := newTestPipeline(t, upstream.call, deployments)
+	ctx := context.Background()
+
+	if ready, perModel := p.ReadinessSummary(); !ready {
+		t.Fatalf("setup: ready = false, want true before any probe runs; perModel = %+v", perModel)
+	}
+
+	// Trip "bad"'s N-of-M threshold. "gpt-4o" must stay ready ("good" is
+	// still healthy); "other-model" (untouched) must stay ready too.
+	for i := 0; i < 3; i++ {
+		p.ProbeDeployments(ctx)
+	}
+	if healthy := p.router.IsHealthy("bad"); healthy {
+		t.Fatal("setup: \"bad\" should be unhealthy after 3 consecutive probe failures")
+	}
+	ready, perModel := p.ReadinessSummary()
+	if !ready {
+		t.Fatalf("ready = false after only \"bad\" (not its sibling \"good\") went unhealthy; perModel = %+v", perModel)
+	}
+	if !perModel["gpt-4o"] {
+		t.Errorf("perModel[%q] = false, want true (sibling \"good\" is still healthy)", "gpt-4o")
+	}
+	if !perModel["other-model"] {
+		t.Errorf("perModel[%q] = false, want true (untouched by this failure)", "other-model")
+	}
+
+	// Now ALSO fail "good", simultaneously with "bad" staying down —
+	// every deployment for "gpt-4o" is unhealthy. "gpt-4o" must go
+	// unready; "other-model" must remain unaffected.
+	upstream.setFailing("bad", "good")
+	for i := 0; i < 3; i++ {
+		p.ProbeDeployments(ctx)
+	}
+	if healthy := p.router.IsHealthy("good"); healthy {
+		t.Fatal("setup: \"good\" should be unhealthy after 3 consecutive probe failures")
+	}
+	ready, perModel = p.ReadinessSummary()
+	if ready {
+		t.Fatalf("ready = true after EVERY \"gpt-4o\" deployment went unhealthy, want false; perModel = %+v", perModel)
+	}
+	if perModel["gpt-4o"] {
+		t.Errorf("perModel[%q] = true, want false (no healthy deployment left for this model)", "gpt-4o")
+	}
+	if !perModel["other-model"] {
+		t.Errorf("perModel[%q] = false, want true (this model's own deployment was never touched)", "other-model")
+	}
+}

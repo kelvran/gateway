@@ -133,6 +133,7 @@ func newIntegrationServer(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvV
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
 	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/readyz", readyzHandler(pipeline))
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -253,6 +254,49 @@ func TestIntegrationHealthzRequiresNoAuthAndIsUnaffectedByTraffic(t *testing.T) 
 	_ = resp.Body.Close()
 
 	checkHealthz() // after a real request has been served
+}
+
+// TestIntegrationReadyzReportsPerModelHealthAndRequiresNoAuth proves the
+// dedicated readiness endpoint end-to-end over a real net/http round
+// trip: reachable with no Authorization header (an operational
+// endpoint, same auth-exemption convention as /healthz), 200 with
+// ready=true while the single configured deployment is healthy, and
+// carries a per-model breakdown naming that deployment's own canonical
+// model. The unhealthy-goes-503 case is proven at the unit level
+// (TestReadinessSummaryReflectsPerModelProbeHealth in
+// internal/gateway/dataplane) against the real probe loop — this test
+// only proves the HTTP wiring and auth exemption, not re-deriving that
+// same probe-threshold logic here.
+func TestIntegrationReadyzReportsPerModelHealthAndRequiresNoAuth(t *testing.T) {
+	upstream, _ := newMockUpstream(t)
+	gw := newIntegrationServer(t, upstream.URL, "test-gateway-key", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_READYZ")
+
+	resp, err := http.Get(gw.URL + "/readyz")
+	if err != nil {
+		t.Fatalf("GET /readyz: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	var decoded struct {
+		Ready  bool            `json:"ready"`
+		Models map[string]bool `json:"models"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decoding body %q: %v", body, err)
+	}
+	if !decoded.Ready {
+		t.Errorf("ready = false, want true (the one configured deployment has never been probed as unhealthy)")
+	}
+	if healthy, ok := decoded.Models["gpt-4o"]; !ok || !healthy {
+		t.Errorf("models[%q] = (%v, present=%v), want (true, present=true)", "gpt-4o", healthy, ok)
+	}
 }
 
 // TestIntegrationWellFormedRequestSucceeds drives (b): a well-formed,

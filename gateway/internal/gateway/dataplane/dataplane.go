@@ -3641,6 +3641,50 @@ func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
 	p.logger.Warn("health_probe_deployment_unhealthy", "deployment", dep.Name, "error", err)
 }
 
+// ReadinessSummary reports, per canonical model, whether at least one of
+// its configured deployments is currently healthy per p.router.IsHealthy
+// -- a read of the EXISTING probe loop's own state (ProbeDeployments/
+// probeOneDeployment already make the real timed calls; this adds no
+// new network call of its own). Built for a dedicated /readyz endpoint,
+// distinct from /healthz's own deliberately-provider-independent
+// liveness check (see cmd/gateway/main.go's healthzHandler doc comment):
+// a 2026 production LiteLLM-monitoring postmortem found "/health/
+// liveliness returns 200 while every routed request fails" to be the
+// single most common real-world LLM-gateway monitoring blind spot
+// (docs/upgrade-research/production-readiness-security-grounding-
+// 2026-09-25.md Finding 2) -- this closes that gap without touching
+// /healthz's own, still-correct, provider-independence reasoning.
+//
+// Ready is false if any configured canonical model has zero healthy
+// deployments. A model with zero configured deployments at all (should
+// never happen given controlplane.Load's own validation, but this is
+// deliberately still safe rather than panicking) counts as unhealthy,
+// not ready -- fail closed, matching this codebase's own convention
+// elsewhere (e.g. AllowedRegions' empty-fails-closed design).
+func (p *Pipeline) ReadinessSummary() (ready bool, perModel map[string]bool) {
+	byModel := map[string][]string{}
+	for name, dep := range p.deploymentsByName {
+		byModel[dep.Model] = append(byModel[dep.Model], name)
+	}
+
+	perModel = make(map[string]bool, len(byModel))
+	ready = true
+	for model, names := range byModel {
+		modelHealthy := false
+		for _, name := range names {
+			if p.router.IsHealthy(name) {
+				modelHealthy = true
+				break
+			}
+		}
+		perModel[model] = modelHealthy
+		if !modelHealthy {
+			ready = false
+		}
+	}
+	return ready, perModel
+}
+
 // latencyEMAAlpha weights each new probe latency observation against
 // the running average -- 0.3 reacts within a handful of probe cycles
 // (matching healthProbeCallTimeout's own multi-second cadence) without
