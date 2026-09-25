@@ -76,6 +76,36 @@ type DeploymentConfig struct {
 	// even for "bedrock" deployments — most real deployments use
 	// long-lived IAM user credentials with no session token at all.
 	SessionTokenEnv string
+	// APIKeyFile/AccessKeyIDFile/SecretAccessKeyFile/SessionTokenFile are
+	// OPTIONAL alternatives to the four *Env fields above: instead of
+	// resolving this credential ONCE at cmd/gateway startup from a
+	// fixed-at-exec-time environment variable, the gateway resolves it
+	// from the named FILE PATH's on-disk contents and PERIODICALLY
+	// RE-READS that same path for the rest of the process's lifetime
+	// (see internal/gateway/dataplane's RunCredentialReloadLoop /
+	// credential_reload.go). This is what lets a rotated credential —
+	// e.g. a Kubernetes projected Secret volume update, or an operator's
+	// own rotation script rewriting the file — reach a running gateway
+	// process WITHOUT a restart, closing the gap AGENTS.md's own
+	// Gotchas note on STS-session rotation describes. A bare *Env
+	// credential can never be hot-reloaded this way: os.Getenv reads the
+	// process's own environ, fixed at exec time, which a Secret-volume
+	// update never touches — only the mounted FILE it originally
+	// populated the env var from.
+	//
+	// Empty (the default) means this deployment keeps using its
+	// corresponding *Env field exactly as before this feature existed —
+	// strictly additive, opt-in only, zero effect on every deployment
+	// that doesn't set one. When BOTH a *File field and its *Env
+	// counterpart are set, *File wins and *Env is never consulted for
+	// that one credential. Satisfies the SAME "required unless bedrock
+	// wants the Env variant" validation as the *Env fields below — see
+	// the *File-or-*Env check where this deployment's provider branch is
+	// validated.
+	APIKeyFile          string
+	AccessKeyIDFile     string
+	SecretAccessKeyFile string
+	SessionTokenFile    string
 	// Region is the AWS region SigV4 signing is computed against.
 	// Required only when Provider == "bedrock". Not a secret — a plain
 	// config value, unlike every *Env field above.
@@ -828,6 +858,23 @@ type AdminMTLSConfig struct {
 	ServerKeyPath string
 }
 
+// CredentialReloadConfig configures the file-based credential hot-reload
+// background loop (dataplane.RunCredentialReloadLoop), per
+// DeploymentConfig.APIKeyFile's own doc comment. Optional in a
+// DIFFERENT sense than HealthProbeConfig below: a zero-valued
+// CredentialReloadConfig (IntervalSeconds == 0) means "use
+// dataplane.DefaultCredentialReloadInterval (60s)", NOT "disabled" —
+// there is no separate disabled state to express here, because the
+// loop is already a complete no-op whenever no deployment configures
+// any *File credential field at all (see RunCredentialReloadLoop's own
+// doc comment).
+type CredentialReloadConfig struct {
+	// IntervalSeconds is how often RunCredentialReloadLoop re-reads
+	// every configured deployment's *File credential source(s). <= 0
+	// resolves to dataplane.DefaultCredentialReloadInterval.
+	IntervalSeconds int
+}
+
 // HealthProbeConfig configures the active/synthetic health-probing
 // background loop, per
 // docs/rfcs/2026-09-07-gateway-active-health-probing.md. Optional — a
@@ -901,6 +948,11 @@ type Config struct {
 	// already-computed operational signals (budget-threshold crossings
 	// today). Optional.
 	Alerting AlertingConfig
+	// CredentialReload configures the optional file-based credential
+	// hot-reload background loop. Optional -- see
+	// CredentialReloadConfig's own doc comment for its "zero means
+	// default, not disabled" convention.
+	CredentialReload CredentialReloadConfig
 }
 
 // Load reads and parses the YAML config file at path.
@@ -1012,6 +1064,10 @@ func Load(path string) (*Config, error) {
 		dep.AccessKeyIDEnv, _ = getString(depMap, "access_key_id_env")
 		dep.SecretAccessKeyEnv, _ = getString(depMap, "secret_access_key_env")
 		dep.SessionTokenEnv, _ = getString(depMap, "session_token_env")
+		dep.APIKeyFile, _ = getString(depMap, "api_key_file")
+		dep.AccessKeyIDFile, _ = getString(depMap, "access_key_id_file")
+		dep.SecretAccessKeyFile, _ = getString(depMap, "secret_access_key_file")
+		dep.SessionTokenFile, _ = getString(depMap, "session_token_file")
 		dep.Region, _ = getString(depMap, "region")
 		if dep.Model == "" || dep.Provider == "" || dep.UpstreamModel == "" || dep.BaseURL == "" {
 			return nil, fmt.Errorf("controlplane: deployment %q is missing one of model/provider/upstream_model/base_url", name)
@@ -1035,10 +1091,14 @@ func Load(path string) (*Config, error) {
 			dep.TLSConfig = tlsCfg
 		}
 		if dep.Provider == "bedrock" {
-			if dep.AccessKeyIDEnv == "" || dep.SecretAccessKeyEnv == "" || dep.Region == "" {
+			// Either the *Env or the *File variant satisfies each
+			// requirement -- see APIKeyFile's own doc comment above for
+			// why a *File credential is a strict alternative, not an
+			// additional requirement, to its *Env counterpart.
+			if (dep.AccessKeyIDEnv == "" && dep.AccessKeyIDFile == "") || (dep.SecretAccessKeyEnv == "" && dep.SecretAccessKeyFile == "") || dep.Region == "" {
 				return nil, fmt.Errorf("controlplane: deployment %q (provider bedrock) is missing one of access_key_id_env/secret_access_key_env/region", name)
 			}
-		} else if dep.APIKeyEnv == "" {
+		} else if dep.APIKeyEnv == "" && dep.APIKeyFile == "" {
 			return nil, fmt.Errorf("controlplane: deployment %q is missing api_key_env", name)
 		}
 		dep.Weight, _ = getInt(depMap, "weight")
@@ -1255,6 +1315,10 @@ func Load(path string) (*Config, error) {
 		cfg.HealthProbe.HealthyThreshold, _ = getInt(healthProbeRaw, "healthy_threshold")
 		cfg.HealthProbe.RecoveryRampSteps, _ = getInt(healthProbeRaw, "recovery_ramp_steps")
 		cfg.HealthProbe.RecoveryRampInitialPercent, _ = getInt(healthProbeRaw, "recovery_ramp_initial_percent")
+	}
+
+	if credReloadRaw, ok := getMap(root, "credential_reload"); ok {
+		cfg.CredentialReload.IntervalSeconds, _ = getInt(credReloadRaw, "interval_seconds")
 	}
 
 	if priceRaw, ok := getMap(root, "price_table"); ok {

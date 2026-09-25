@@ -241,6 +241,21 @@ type Deployment struct {
 	// defense-in-depth guard against a client naming the wrong kind of
 	// model for the route it called.
 	Kind string
+	// CredentialFiles/CredentialState back the OPT-IN file-based
+	// credential hot-reload mechanism -- see credential_reload.go's own
+	// package doc comment for the full design rationale (in short: an
+	// *Env credential is fixed for the life of the process; a *File
+	// credential is periodically re-read from disk, so a Kubernetes
+	// projected Secret volume rotation reaches a running gateway
+	// process without a restart). Both stay at their zero value (empty
+	// CredentialFiles, nil CredentialState) for every deployment that
+	// doesn't configure any *File field -- cmd/gateway's buildPipeline
+	// only ever populates them when at least one is set. Never read
+	// directly -- see effectiveCredentials, the ONLY call site
+	// setUpstreamAuthHeaders (and any future upstream-auth code) should
+	// use to get this deployment's CURRENT credential values.
+	CredentialFiles DeploymentCredentialFiles
+	CredentialState *atomic.Pointer[DeploymentCredentials]
 }
 
 // effectiveCacheControlAutoDisabled reports whether CacheControl
@@ -5242,9 +5257,17 @@ const bedrockSigningName = "bedrock"
 // simply fails and that branch is skipped, exactly like every other
 // no-op-when-unset field in this codebase.
 func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Deployment, providerReq any, body []byte) error {
+	// creds is dep's CURRENT credential values -- dep.CredentialState's
+	// latest hot-reloaded snapshot if this deployment opted into the
+	// *File convention, or dep's own plain fields otherwise. This is the
+	// ONLY read of a credential value in this function -- see
+	// effectiveCredentials' own doc comment (credential_reload.go) for
+	// why dep.APIKey/AccessKeyID/SecretAccessKey/SessionToken must never
+	// be read directly here anymore.
+	creds := dep.effectiveCredentials()
 	switch dep.Provider {
 	case "openai":
-		httpReq.Header.Set("Authorization", "Bearer "+dep.APIKey)
+		httpReq.Header.Set("Authorization", "Bearer "+creds.APIKey)
 		// Idempotency-Key, per
 		// docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md:
 		// makes Kelvran's OWN retries/fallbacks to the same deployment
@@ -5266,7 +5289,7 @@ func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Depl
 		payloadHash := sha256.Sum256(body)
 		httpReq.Header.Set("Idempotency-Key", hex.EncodeToString(payloadHash[:]))
 	case "anthropic":
-		httpReq.Header.Set("x-api-key", dep.APIKey)
+		httpReq.Header.Set("x-api-key", creds.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
 		// thinking-binding-controls-2026-08-01, per the addendum to
 		// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md
@@ -5283,20 +5306,20 @@ func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Depl
 			}
 		}
 	case "gemini":
-		httpReq.Header.Set("x-goog-api-key", dep.APIKey)
+		httpReq.Header.Set("x-goog-api-key", creds.APIKey)
 	case "bedrock":
 		payloadHash := sha256.Sum256(body)
-		creds := aws.Credentials{
-			AccessKeyID:     dep.AccessKeyID,
-			SecretAccessKey: dep.SecretAccessKey,
-			SessionToken:    dep.SessionToken,
+		awsCreds := aws.Credentials{
+			AccessKeyID:     creds.AccessKeyID,
+			SecretAccessKey: creds.SecretAccessKey,
+			SessionToken:    creds.SessionToken,
 		}
 		signer := v4.NewSigner()
-		if err := signer.SignHTTP(ctx, creds, httpReq, hex.EncodeToString(payloadHash[:]), bedrockSigningName, dep.Region, time.Now()); err != nil {
+		if err := signer.SignHTTP(ctx, awsCreds, httpReq, hex.EncodeToString(payloadHash[:]), bedrockSigningName, dep.Region, time.Now()); err != nil {
 			return fmt.Errorf("signing bedrock request for deployment %q: %w", dep.Name, err)
 		}
 	default:
-		httpReq.Header.Set("Authorization", "Bearer "+dep.APIKey)
+		httpReq.Header.Set("Authorization", "Bearer "+creds.APIKey)
 	}
 	return nil
 }

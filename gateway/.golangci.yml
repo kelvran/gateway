@@ -100,6 +100,16 @@ linters:
         linters:
           - gosec
         text: "G304"
+      # ReadCredentialFile reads an operator-supplied credential *File
+      # config value (controlplane.DeploymentConfig.AccessKeyIDFile and
+      # its three siblings) -- the SAME "local file this process's own
+      # operator controls, never attacker-reachable input" reasoning
+      # config.go's own G304 suppression above already gives, applied to
+      # the file-based credential hot-reload feature's own file read.
+      - path: internal/gateway/dataplane/credential_reload.go
+        linters:
+          - gosec
+        text: "G304"
       # Test-fixture loaders reading a hardcoded "testdata/" prefix plus
       # a test-controlled fixture name -- never external/attacker input.
       # Every provider adapter package (anthropic/bedrock/gemini/openai/

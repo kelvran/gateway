@@ -2967,3 +2967,127 @@ func TestLoadParsesQuotedDeploymentKeyContainingColon(t *testing.T) {
 		t.Errorf("Deployments[0].Name = %q, want %q (quoted key's colon must not be mistaken for the key/value separator)", got, "my:deployment")
 	}
 }
+
+// TestLoadBedrockDeploymentAcceptsFileFieldsInPlaceOfEnv proves the
+// *File credential fields are a genuine ALTERNATIVE to their *Env
+// counterparts for a bedrock deployment, not merely parsed and ignored
+// -- a deployment setting ONLY access_key_id_file/secret_access_key_file
+// (no *_env at all) must pass validation, and Load must actually
+// populate the *File fields on DeploymentConfig.
+func TestLoadBedrockDeploymentAcceptsFileFieldsInPlaceOfEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"bedrock\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    region: \"us-east-1\"\n    access_key_id_file: \"/etc/kelvran/secrets/access-key-id\"\n    secret_access_key_file: \"/etc/kelvran/secrets/secret-access-key\"\n    session_token_file: \"/etc/kelvran/secrets/session-token\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with only *_file bedrock credential fields (no *_env) returned an error, want success: %v", err)
+	}
+	if len(cfg.Deployments) != 1 {
+		t.Fatalf("len(Deployments) = %d, want 1", len(cfg.Deployments))
+	}
+	dep := cfg.Deployments[0]
+	if dep.AccessKeyIDFile != "/etc/kelvran/secrets/access-key-id" {
+		t.Errorf("AccessKeyIDFile = %q, want the configured path", dep.AccessKeyIDFile)
+	}
+	if dep.SecretAccessKeyFile != "/etc/kelvran/secrets/secret-access-key" {
+		t.Errorf("SecretAccessKeyFile = %q, want the configured path", dep.SecretAccessKeyFile)
+	}
+	if dep.SessionTokenFile != "/etc/kelvran/secrets/session-token" {
+		t.Errorf("SessionTokenFile = %q, want the configured path", dep.SessionTokenFile)
+	}
+	if dep.AccessKeyIDEnv != "" || dep.SecretAccessKeyEnv != "" {
+		t.Errorf("AccessKeyIDEnv/SecretAccessKeyEnv = %q/%q, want both empty -- this deployment never set either", dep.AccessKeyIDEnv, dep.SecretAccessKeyEnv)
+	}
+}
+
+// TestLoadNonBedrockDeploymentAcceptsAPIKeyFileInPlaceOfEnv is the
+// non-bedrock mirror of the test above -- api_key_file alone (no
+// api_key_env) must satisfy the "every non-bedrock deployment needs a
+// credential source" requirement.
+func TestLoadNonBedrockDeploymentAcceptsAPIKeyFileInPlaceOfEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_file: \"/etc/kelvran/secrets/api-key\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with only api_key_file (no api_key_env) returned an error, want success: %v", err)
+	}
+	if len(cfg.Deployments) != 1 {
+		t.Fatalf("len(Deployments) = %d, want 1", len(cfg.Deployments))
+	}
+	if got := cfg.Deployments[0].APIKeyFile; got != "/etc/kelvran/secrets/api-key" {
+		t.Errorf("APIKeyFile = %q, want the configured path", got)
+	}
+	if got := cfg.Deployments[0].APIKeyEnv; got != "" {
+		t.Errorf("APIKeyEnv = %q, want empty -- this deployment never set it", got)
+	}
+}
+
+// TestLoadDeploymentMissingBothEnvAndFileCredentialStillErrors is the
+// decisive regression guard: widening the requiredness check to accept
+// *File as an alternative must NOT accidentally make the credential
+// requirement itself optional -- a deployment setting NEITHER *_env NOR
+// *_file must still fail to load, exactly as before this feature
+// existed.
+func TestLoadDeploymentMissingBothEnvAndFileCredentialStillErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with neither api_key_env nor api_key_file set returned nil error, want an error")
+	}
+}
+
+// TestLoadCredentialReloadSectionParsesIntervalSeconds proves the
+// optional credential_reload: section, when present, is parsed
+// correctly.
+func TestLoadCredentialReloadSectionParsesIntervalSeconds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ncredential_reload:\n  interval_seconds: 30\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CredentialReload.IntervalSeconds != 30 {
+		t.Errorf("CredentialReload.IntervalSeconds = %d, want 30", cfg.CredentialReload.IntervalSeconds)
+	}
+}
+
+// TestLoadWithoutCredentialReloadSectionDefaultsToZeroValue is the
+// mirror-image proof to the parse test above: omitting credential_reload:
+// entirely leaves it at its zero value, which
+// dataplane.RunCredentialReloadLoop's own caller (cmd/gateway) treats as
+// "use the built-in default interval", never an error.
+func TestLoadWithoutCredentialReloadSectionDefaultsToZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CredentialReload.IntervalSeconds != 0 {
+		t.Errorf("CredentialReload.IntervalSeconds = %d, want 0 (the zero value) when the section is omitted", cfg.CredentialReload.IntervalSeconds)
+	}
+}

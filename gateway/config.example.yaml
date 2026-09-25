@@ -149,6 +149,13 @@ deployments:
     upstream_model: "gpt-4o"
     base_url: "https://api.openai.com/v1/chat/completions"
     api_key_env: "OPENAI_API_KEY"
+    # api_key_file: "/var/run/secrets/kelvran/api-key"   # optional
+    # alternative to api_key_env -- resolves AND PERIODICALLY RE-READS
+    # this credential from the named file's contents instead of a
+    # fixed-at-startup env var, hot-reloading a rotation without a
+    # restart. *_file wins if both are set. See the claude-bedrock-
+    # primary deployment below for the full rationale comment (same
+    # convention for every provider, not just bedrock).
     # weight: 1   # optional; omit for equal-weight round-robin (today's default)
     # cost_tier: 1   # optional, lower = cheaper; see DECISIONS.md's [2026-09-12] entry.
     # Real motivating case: this SAME canonical model ("gpt-4o") also
@@ -248,6 +255,23 @@ deployments:
     secret_access_key_env: "AWS_SECRET_ACCESS_KEY"
     # session_token_env: "AWS_SESSION_TOKEN"   # optional; only for temporary/STS credentials
     region: "us-east-1"
+    # access_key_id_file/secret_access_key_file/session_token_file are
+    # OPTIONAL alternatives to the three *_env fields above: instead of
+    # a fixed-at-startup env var, the gateway resolves this credential
+    # from the named file's on-disk contents and PERIODICALLY RE-READS
+    # that same path for the life of the process (see
+    # internal/gateway/dataplane/credential_reload.go). This is what
+    # lets a Kubernetes projected Secret volume rotation (or an
+    # operator's own rotation script rewriting the file) reach a
+    # running gateway process WITHOUT a restart -- closing the gap
+    # AGENTS.md's own Gotchas note on STS-session rotation describes,
+    # for operators who use this convention specifically. A bare *_env
+    # credential (the fields above) remains restart-only, exactly as
+    # before this feature existed. When both a *_file field and its
+    # *_env counterpart are set, *_file wins.
+    # access_key_id_file: "/var/run/secrets/kelvran/access-key-id"
+    # secret_access_key_file: "/var/run/secrets/kelvran/secret-access-key"
+    # session_token_file: "/var/run/secrets/kelvran/session-token"    # optional
 
 # OTel span export — see docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md
 # and docs/operations/TELEMETRY.md. Optional: omit this whole section for
@@ -509,6 +533,17 @@ telemetry:
 #   healthy_threshold: 2
 #   recovery_ramp_steps: 4
 #   recovery_ramp_initial_percent: 20
+
+# Configures RunCredentialReloadLoop, the file-based credential
+# hot-reload background loop -- see any deployment's own *_file field
+# comments above (e.g. claude-bedrock-primary's access_key_id_file).
+# Optional in a DIFFERENT sense than health_probe above: omitting this
+# section (or interval_seconds <= 0) means "use the built-in 60s
+# default", NOT "disabled" -- there's no separate disabled state,
+# because the loop is already a complete no-op whenever no deployment
+# configures any *_file credential field at all.
+# credential_reload:
+#   interval_seconds: 60
 
 # Static per-model price table (USD per token), used by
 # internal/costaccounting for Decimal-precision cost calculation — see

@@ -681,6 +681,27 @@ func run(configPath string, logger *slog.Logger) error {
 	// triggers graceful shutdown, no separate stop mechanism needed.
 	go pipeline.RunHealthProbeLoop(ctx, time.Duration(cfg.HealthProbe.IntervalSeconds)*time.Second)
 
+	// File-based credential hot-reload, per
+	// gateway/internal/gateway/dataplane/credential_reload.go's own doc
+	// comment -- a no-op (RunCredentialReloadLoop returns immediately)
+	// unless at least one deployment configured an *_file credential
+	// source (access_key_id_file/secret_access_key_file/
+	// session_token_file/api_key_file) above buildPipeline's own
+	// deployment loop. Closes the literal "the only remediation is
+	// restarting the process" gap AGENTS.md's own Gotchas note on
+	// STS-session rotation describes, for operators who opt into the
+	// *_file convention specifically -- a deployment still using only
+	// the pre-existing *_env convention remains restart-only by design,
+	// exactly as before this feature existed. Scoped to ctx, exactly
+	// like RunHealthProbeLoop immediately above: canceled by the same
+	// SIGTERM/SIGINT that triggers graceful shutdown, no separate stop
+	// mechanism needed.
+	credentialReloadInterval := dataplane.DefaultCredentialReloadInterval
+	if cfg.CredentialReload.IntervalSeconds > 0 {
+		credentialReloadInterval = time.Duration(cfg.CredentialReload.IntervalSeconds) * time.Second
+	}
+	go pipeline.RunCredentialReloadLoop(ctx, credentialReloadInterval)
+
 	// Config-propagation subscriber, per internal/configpropagation's
 	// own doc comment — a no-op unless config_propagation.redis_addr is
 	// configured. A SEPARATE *redis.Client connection from the one
@@ -1024,25 +1045,66 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			Kind:                            d.Kind,
 		}
 		if d.Provider == "bedrock" {
-			dep.AccessKeyID = os.Getenv(d.AccessKeyIDEnv)
-			if dep.AccessKeyID == "" {
-				logger.Warn("deployment's AWS access key ID env var is not set; calls to this deployment will fail",
-					"deployment", d.Name, "env_var", d.AccessKeyIDEnv)
+			if d.AccessKeyIDFile != "" {
+				dep.AccessKeyID = readCredentialFileOrWarn(logger, d.Name, "access_key_id", d.AccessKeyIDFile)
+			} else {
+				dep.AccessKeyID = os.Getenv(d.AccessKeyIDEnv)
+				if dep.AccessKeyID == "" {
+					logger.Warn("deployment's AWS access key ID env var is not set; calls to this deployment will fail",
+						"deployment", d.Name, "env_var", d.AccessKeyIDEnv)
+				}
 			}
-			dep.SecretAccessKey = os.Getenv(d.SecretAccessKeyEnv)
-			if dep.SecretAccessKey == "" {
-				logger.Warn("deployment's AWS secret access key env var is not set; calls to this deployment will fail",
-					"deployment", d.Name, "env_var", d.SecretAccessKeyEnv)
+			if d.SecretAccessKeyFile != "" {
+				dep.SecretAccessKey = readCredentialFileOrWarn(logger, d.Name, "secret_access_key", d.SecretAccessKeyFile)
+			} else {
+				dep.SecretAccessKey = os.Getenv(d.SecretAccessKeyEnv)
+				if dep.SecretAccessKey == "" {
+					logger.Warn("deployment's AWS secret access key env var is not set; calls to this deployment will fail",
+						"deployment", d.Name, "env_var", d.SecretAccessKeyEnv)
+				}
 			}
-			if d.SessionTokenEnv != "" {
+			if d.SessionTokenFile != "" {
+				dep.SessionToken = readCredentialFileOrWarn(logger, d.Name, "session_token", d.SessionTokenFile)
+			} else if d.SessionTokenEnv != "" {
 				dep.SessionToken = os.Getenv(d.SessionTokenEnv)
 			}
 		} else {
-			dep.APIKey = os.Getenv(d.APIKeyEnv)
-			if dep.APIKey == "" {
-				logger.Warn("deployment's upstream API key env var is not set; calls to this deployment will fail",
-					"deployment", d.Name, "env_var", d.APIKeyEnv)
+			if d.APIKeyFile != "" {
+				dep.APIKey = readCredentialFileOrWarn(logger, d.Name, "api_key", d.APIKeyFile)
+			} else {
+				dep.APIKey = os.Getenv(d.APIKeyEnv)
+				if dep.APIKey == "" {
+					logger.Warn("deployment's upstream API key env var is not set; calls to this deployment will fail",
+						"deployment", d.Name, "env_var", d.APIKeyEnv)
+				}
 			}
+		}
+		// credFiles is the zero value (every field "") for every
+		// deployment that doesn't configure any *File credential source
+		// -- dep.CredentialFiles/dep.CredentialState both stay at their
+		// own zero values (nil) in that case, and
+		// setUpstreamAuthHeaders/effectiveCredentials keep reading
+		// dep.APIKey/AccessKeyID/SecretAccessKey/SessionToken directly,
+		// exactly as before this feature existed. Only a deployment that
+		// sets at least one *File field opts into
+		// RunCredentialReloadLoop's periodic re-read below -- see
+		// dataplane/credential_reload.go's package doc comment for the
+		// full rationale (env vars are fixed at process-exec time; a
+		// mounted Secret-volume FILE is not).
+		credFiles := dataplane.DeploymentCredentialFiles{
+			APIKey:          d.APIKeyFile,
+			AccessKeyID:     d.AccessKeyIDFile,
+			SecretAccessKey: d.SecretAccessKeyFile,
+			SessionToken:    d.SessionTokenFile,
+		}
+		if credFiles.HasAny() {
+			dep.CredentialFiles = credFiles
+			dep.CredentialState = dataplane.NewDeploymentCredentialState(dataplane.DeploymentCredentials{
+				APIKey:          dep.APIKey,
+				AccessKeyID:     dep.AccessKeyID,
+				SecretAccessKey: dep.SecretAccessKey,
+				SessionToken:    dep.SessionToken,
+			})
 		}
 		deployments = append(deployments, dep)
 		routerDeployments = append(routerDeployments, router.Deployment{
@@ -1644,6 +1706,26 @@ func envOrEmpty(name string) string {
 		return ""
 	}
 	return os.Getenv(name)
+}
+
+// readCredentialFileOrWarn resolves one upstream credential value for
+// deployment depName's fieldLabel (e.g. "access_key_id") from path --
+// the *File alternative to the *Env resolution above (buildPipeline's
+// own deployment loop). This is the SAME path
+// dataplane.RunCredentialReloadLoop periodically re-reads later (see
+// that function's own doc comment), so the very first request already
+// sees whatever the file holds right now, not a stale value. A read
+// failure (missing file, permission denied) warns exactly like the
+// *Env "not set" case above and returns "" -- calls to this deployment
+// fail explicitly rather than silently using an empty credential.
+func readCredentialFileOrWarn(logger *slog.Logger, depName, fieldLabel, path string) string {
+	value, err := dataplane.ReadCredentialFile(path)
+	if err != nil {
+		logger.Warn("deployment credential file could not be read; calls to this deployment will fail",
+			"deployment", depName, "field", fieldLabel, "path", path, "error", err.Error())
+		return ""
+	}
+	return value
 }
 
 // chatCompletionsHandler adapts dataplane.Pipeline.HandleChatCompletion to
