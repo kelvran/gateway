@@ -728,6 +728,189 @@ const (
 	anomalyShiftFactor    = 3.0
 )
 
+// upstream503DeweightPercent is the percentage passed to
+// router.Router.SetLatencyFactor when a REAL (non-probe) upstream call
+// gets an HTTP 503 -- see wrapUpstreamCallerFor503Deweight's own doc
+// comment for the full rationale. Deliberately NOT
+// router.latencyFactorFloorPercent's literal value duplicated here --
+// that constant is unexported (health.go), and hardcoding its current
+// number here would silently drift out of sync if that floor is ever
+// retuned. 1 is the lowest percentage SetLatencyFactor's own contract
+// treats as "still a real de-weighting signal" (its switch treats
+// percent <= 0 as CLEARING the signal back to unset -- see that
+// method's own doc comment -- so this must stay a low POSITIVE value,
+// never 0 or negative); passing 1 always resolves, through
+// SetLatencyFactor's own clamp, to exactly latencyFactorFloorPercent,
+// whatever that value currently is, without this file needing to know
+// or duplicate it.
+const upstream503DeweightPercent = 1
+
+// probeContextKey is a private type so no other package can construct a
+// colliding context key -- the same convention every context-value key
+// in this codebase already follows (see overhead.go's
+// overheadContextKey).
+type probeContextKey struct{}
+
+// withProbeContext marks ctx as belonging to a synthetic health-probe
+// call (ProbeDeployments/probeOneDeployment), never real client traffic.
+// reportUpstream503Deweight reads this back via isProbeContext to
+// actually enforce the "REAL (non-probe) upstream call" scoping
+// wrapUpstreamCallerFor503Deweight/wrapUpstreamStreamCallerFor503Deweight
+// document -- without this marker, probeOneDeployment's own call into
+// p.callDeployment reaches the identical wrapped p.upstream closure real
+// traffic does (probeOneDeployment has no other call path -- see its own
+// doc comment), so a 503 returned to a probe would otherwise trigger the
+// exact same de-weighting signal a real request's 503 does, silently
+// widening this feature's documented and tested scope to probe traffic
+// too.
+func withProbeContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, probeContextKey{}, true)
+}
+
+// isProbeContext reports whether ctx was marked via withProbeContext.
+func isProbeContext(ctx context.Context) bool {
+	marked, _ := ctx.Value(probeContextKey{}).(bool)
+	return marked
+}
+
+// wrapUpstreamCallerFor503Deweight wraps caller (the real HTTP
+// UpstreamCaller NewPipeline was given via Config.Upstream/
+// Config.EmbeddingUpstream) so that, in addition to returning exactly
+// the same (resp, err) the wrapped caller itself returned, a REAL
+// (non-probe) call that failed with an HTTP 503 also reports an
+// immediate, interim de-weighting signal to rtr for THIS deployment's
+// FUTURE routing decisions -- never altering the CURRENT request's own
+// return value in any way. Returns nil when caller is nil, preserving
+// the "Config.EmbeddingUpstream/UpstreamStream left unset means this
+// call path is disabled" convention every existing nil-check downstream
+// (e.g. HandleEmbeddings' own "p.embeddingUpstream == nil" check,
+// streaming.go's "p.upstreamStream == nil" check) already relies on.
+//
+// Applied uniformly to ALL THREE real upstream call paths -- buffered
+// chat (Config.Upstream), embedding (Config.EmbeddingUpstream), and
+// streaming (Config.UpstreamStream, via
+// wrapUpstreamStreamCallerFor503Deweight's identical sibling below) --
+// from ONE shared place (NewPipeline) rather than tripling this same
+// check inline at each of the three closures in NewHTTPUpstreamCaller/
+// NewHTTPEmbeddingUpstreamCaller/NewHTTPUpstreamStreamCaller that build
+// the *UpstreamHTTPError this function inspects. Deliberately NOT done
+// inline in those three closures instead: they are plain, exported-
+// signature-stable package-level functions constructed in
+// cmd/gateway/main.go BEFORE any *Pipeline (and therefore before any
+// *router.Router value) exists, so giving them direct router access
+// would require adding a required parameter to their exported
+// signatures -- which would force a matching edit to every existing
+// caller (cmd/gateway/main.go's real wiring, plus its own direct-
+// construction tests) purely to thread a value through, for zero
+// behavioral difference from wrapping at this single choke point
+// instead. Wrapping here sees the EXACT unwrapped *UpstreamHTTPError
+// each closure returns, at the moment it crosses back into Pipeline-
+// owned code -- functionally identical to inserting the check inline at
+// each closure, since nothing between "the closure returns" and "this
+// wrapper runs" ever touches or rewraps the error.
+//
+// Per docs/upgrade-research/self-hosted-inference-serving-landscape-
+// 2026-09-25.md Finding 1: vLLM v0.29.0 (PR #49445) added a real, wire-
+// visible HTTP 503 admission-control rejection when the engine's OWN
+// request queue is overloaded -- a genuinely new, immediately
+// actionable overload signal that needs no /metrics-scraping
+// integration at all (distinct from this codebase's separately-deferred
+// "scrape upstream /metrics for true queue depth" future work), since
+// it only needs the status code every real upstream call already
+// receives. Checked NARROWLY for StatusCode == http.StatusServiceUnavailable
+// specifically, never the whole >= 500 range isCandidateHealthFailure/
+// attemptFallbackChain's own fallback-eligibility check already treats
+// uniformly (fallback.go): 503 has an explicit, standard HTTP meaning of
+// "temporarily unavailable / overloaded," distinct from 500/502/504's
+// more generic server-error meanings, and is the SPECIFIC signal this
+// finding is about -- widening this to every 5xx would misfire on
+// ordinary internal-server-error responses that carry no real
+// information about routing load at all.
+//
+// Reuses router.Router.SetLatencyFactor exactly as it exists today
+// (health.go), rather than adding a new dedicated method or a new field
+// on UpstreamHTTPError: SetLatencyFactor is already called repeatedly,
+// on its own cadence, by the health-probe loop
+// (updateLatencyDeweighting, called from probeOneDeployment) --
+// recomputed fresh each probe cycle from rolling-average probe latency.
+// This call is simply an immediate, interim correction landing in that
+// SAME stored value; the next scheduled probe cycle naturally overwrites
+// it with its own freshly-computed number regardless of whether this
+// fired, so no new time-decay/expiry mechanism is needed anywhere for
+// this signal -- SetLatencyFactor's caller-owns-the-recompute-cadence
+// design already covers it. SetLatencyFactor is itself a SOFT
+// de-weighting signal, never a hard exclusion (see its own doc comment
+// and latencyFactorFloorPercent) -- a deployment that is merely
+// overloaded, not actually down, still receives some future traffic,
+// just less of it, exactly the same soft-signal contract the
+// probe-latency path already established.
+func wrapUpstreamCallerFor503Deweight(caller UpstreamCaller, rtr *router.Router) UpstreamCaller {
+	if caller == nil {
+		return nil
+	}
+	return func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
+		resp, err := caller(ctx, dep, providerReq)
+		reportUpstream503Deweight(ctx, rtr, dep.Name, err)
+		return resp, err
+	}
+}
+
+// wrapUpstreamStreamCallerFor503Deweight mirrors
+// wrapUpstreamCallerFor503Deweight exactly, one level over, for
+// Config.UpstreamStream -- see that function's own doc comment for the
+// full rationale. This is what closes the THIRD of the three real call
+// sites (the streaming one, NewHTTPUpstreamStreamCaller) despite its own
+// real invocation sites living in streaming.go, not this file: wrapping
+// the caller itself here, at construction time, means streaming.go
+// never needs to change at all -- it keeps calling p.upstreamStream
+// exactly as before, and gets back the identical (io.ReadCloser, error),
+// with this side effect already applied underneath.
+func wrapUpstreamStreamCallerFor503Deweight(caller UpstreamStreamCaller, rtr *router.Router) UpstreamStreamCaller {
+	if caller == nil {
+		return nil
+	}
+	return func(ctx context.Context, dep Deployment, providerReq any) (io.ReadCloser, error) {
+		body, err := caller(ctx, dep, providerReq)
+		reportUpstream503Deweight(ctx, rtr, dep.Name, err)
+		return body, err
+	}
+}
+
+// reportUpstream503Deweight is the shared narrow-check-and-report logic
+// both wrappers above call, factored out so the actual
+// StatusCode == http.StatusServiceUnavailable check and the
+// SetLatencyFactor call exist in exactly ONE place, never tripled.
+// depName is always the correct deployment for whichever of the three
+// real call sites triggered it -- both wrappers close over the SAME dep
+// their own caller was invoked with (UpstreamCaller and
+// UpstreamStreamCaller both take dep as a parameter already), never a
+// separately tracked or assumed value.
+//
+// ctx is checked via isProbeContext FIRST, before anything else: a
+// synthetic health-probe call (probeOneDeployment) reaches this exact
+// function through the identical wrapped p.upstream/p.upstreamStream
+// closure real traffic does -- callDeployment itself has no notion of
+// "who's calling," so without this check a probe's own 503 would
+// silently widen this feature's documented "REAL (non-probe) upstream
+// call" scope to probe traffic too, double-counting against
+// updateLatencyDeweighting's own, separate probe-latency signal.
+func reportUpstream503Deweight(ctx context.Context, rtr *router.Router, depName string, err error) {
+	if isProbeContext(ctx) {
+		return
+	}
+	if err == nil {
+		return
+	}
+	var httpErr *UpstreamHTTPError
+	if !errors.As(err, &httpErr) {
+		return
+	}
+	if httpErr.StatusCode != http.StatusServiceUnavailable {
+		return
+	}
+	rtr.SetLatencyFactor(depName, upstream503DeweightPercent)
+}
+
 // NewPipeline validates cfg and constructs a Pipeline.
 func NewPipeline(cfg Config) (*Pipeline, error) {
 	switch {
@@ -784,31 +967,38 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 	}
 
 	p := &Pipeline{
-		identityStore:               cfg.IdentityStore,
-		idempotencyStore:            cfg.IdempotencyStore,
-		limiter:                     cfg.Limiter,
-		concurrency:                 cfg.Concurrency,
-		deploymentConcurrency:       cfg.DeploymentConcurrency,
-		deploymentLimiter:           cfg.DeploymentLimiter,
-		retryBackoff:                ratelimit.NewRetryBackoff(),
-		budget:                      cfg.Budget,
-		prompts:                     prompts,
-		cache:                       cfg.Cache,
-		cacheL2:                     cfg.CacheL2,
-		cacheL3:                     cfg.CacheL3,
-		guardrails:                  cfg.Guardrails,
-		adapters:                    cfg.Adapters,
-		router:                      cfg.Router,
-		deploymentsByName:           byName,
-		costCalc:                    cfg.CostCalculator,
-		upstream:                    cfg.Upstream,
-		embeddingUpstream:           cfg.EmbeddingUpstream,
-		configPublisher:             cfg.ConfigPublisher,
-		weightVersions:              map[weightVersionKey]int64{},
-		virtualKeyVersions:          map[string]int64{},
-		streamingInFlightByL1Key:    map[string]int{},
-		alertNotifier:               cfg.AlertNotifier,
-		upstreamStream:              cfg.UpstreamStream,
+		identityStore:         cfg.IdentityStore,
+		idempotencyStore:      cfg.IdempotencyStore,
+		limiter:               cfg.Limiter,
+		concurrency:           cfg.Concurrency,
+		deploymentConcurrency: cfg.DeploymentConcurrency,
+		deploymentLimiter:     cfg.DeploymentLimiter,
+		retryBackoff:          ratelimit.NewRetryBackoff(),
+		budget:                cfg.Budget,
+		prompts:               prompts,
+		cache:                 cfg.Cache,
+		cacheL2:               cfg.CacheL2,
+		cacheL3:               cfg.CacheL3,
+		guardrails:            cfg.Guardrails,
+		adapters:              cfg.Adapters,
+		router:                cfg.Router,
+		deploymentsByName:     byName,
+		costCalc:              cfg.CostCalculator,
+		// Wrapped, not assigned bare -- see wrapUpstreamCallerFor503Deweight's
+		// own doc comment. cfg.Router is guaranteed non-nil here (validated
+		// in the switch above), so every wrapped closure's own
+		// SetLatencyFactor call always has a real router to report to.
+		upstream:                 wrapUpstreamCallerFor503Deweight(cfg.Upstream, cfg.Router),
+		embeddingUpstream:        wrapUpstreamCallerFor503Deweight(cfg.EmbeddingUpstream, cfg.Router),
+		configPublisher:          cfg.ConfigPublisher,
+		weightVersions:           map[weightVersionKey]int64{},
+		virtualKeyVersions:       map[string]int64{},
+		streamingInFlightByL1Key: map[string]int{},
+		alertNotifier:            cfg.AlertNotifier,
+		// Wrapped, not assigned bare -- same rationale/nil-preserving
+		// contract as upstream/embeddingUpstream above, via
+		// wrapUpstreamStreamCallerFor503Deweight's own doc comment.
+		upstreamStream:              wrapUpstreamStreamCallerFor503Deweight(cfg.UpstreamStream, cfg.Router),
 		logger:                      logger,
 		cacheTTL:                    ttl,
 		cacheL2TTL:                  l2TTL,
@@ -3392,9 +3582,20 @@ func (p *Pipeline) ProbeDeployments(ctx context.Context) {
 // deployment's synthetic probe request. Split out from ProbeDeployments
 // purely so each deployment's own probeCtx/cancel pair stays scoped to
 // its own goroutine.
+//
+// probeCtx is marked via withProbeContext before it ever reaches
+// p.callDeployment -- this is the ONLY thing that keeps
+// reportUpstream503Deweight's own "REAL (non-probe) upstream call" scope
+// real, since callDeployment routes a probe through the exact same
+// wrapped p.upstream closure real traffic uses. Without this marker, a
+// probe's own 503 would ALSO trigger SetLatencyFactor, on top of (not
+// instead of) updateLatencyDeweighting's own dedicated probe-latency
+// signal below -- an unintended double signal this feature was never
+// meant to add.
 func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
 	probeCtx, cancel := context.WithTimeout(ctx, healthProbeCallTimeout)
 	defer cancel()
+	probeCtx = withProbeContext(probeCtx)
 
 	maxTokens := healthProbeMaxTokens
 	req := adapter.ChatRequest{
