@@ -17,7 +17,7 @@
 | evals/judge/\_\_init\_\_.py      |        0 |        0 |    100% |           |
 | evals/judge/cache.py             |       11 |        0 |    100% |           |
 | evals/judge/deterministic.py     |        6 |        0 |    100% |           |
-| evals/judge/llm\_judge.py        |      100 |        3 |     97% |464, 474-479 |
+| evals/judge/llm\_judge.py        |      123 |        3 |     98% |632, 643-648 |
 | evals/judge/providers.py         |      100 |        2 |     98% |   370-371 |
 | evals/models.py                  |      104 |        0 |    100% |           |
 | evals/online/\_\_init\_\_.py     |        0 |        0 |    100% |           |
@@ -31,7 +31,7 @@
 | evals/tracing.py                 |       32 |        0 |    100% |           |
 | evals/trend\_alert.py            |       63 |        1 |     98% |       191 |
 | evals/webhook.py                 |       48 |        2 |     96% |   152-153 |
-| **TOTAL**                        | **1821** |   **72** | **96%** |           |
+| **TOTAL**                        | **1844** |   **72** | **96%** |           |
 
 
 ## Setup coverage badge
