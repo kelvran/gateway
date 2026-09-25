@@ -148,7 +148,16 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 		return nil, false, nil, fmt.Errorf("openai: decoding stream chunk: %w", err)
 	}
 	if native.Error != nil {
-		return nil, false, nil, fmt.Errorf("openai: upstream stream error (%s): %s", native.Error.Type, native.Error.Message)
+		// *adapter.UpstreamStreamError, not a bare fmt.Errorf: this is a
+		// real, provider-authored error string arriving on an already-2xx
+		// streaming connection -- cmd/gateway's writeErrorResponse must
+		// redact it via ClientSafeMessage the same way it already redacts
+		// dataplane.UpstreamHTTPError's Body for a non-2xx response. See
+		// UpstreamStreamError's own doc comment for the full writeup.
+		return nil, false, nil, &adapter.UpstreamStreamError{
+			Provider: "openai",
+			Raw:      fmt.Sprintf("upstream stream error (%s): %s", native.Error.Type, native.Error.Message),
+		}
 	}
 
 	chunk := streaming.ChatCompletionChunk{

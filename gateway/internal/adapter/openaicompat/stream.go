@@ -169,7 +169,17 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 		return nil, false, nil, fmt.Errorf("openaicompat: decoding stream chunk: %w", err)
 	}
 	if native.Error != nil {
-		return nil, false, nil, fmt.Errorf("openaicompat: upstream stream error (%s): %s", native.Error.Type, native.Error.Message)
+		// *adapter.UpstreamStreamError, not a bare fmt.Errorf: a
+		// self-hosted backend's error.message here can carry a raw stack
+		// trace or internal hostname, the exact disclosure risk
+		// dataplane.UpstreamHTTPError.ClientSafeMessage already redacts
+		// for a non-2xx HTTP response -- cmd/gateway's writeErrorResponse
+		// must redact this in-band, already-2xx-stream shape the same
+		// way. See UpstreamStreamError's own doc comment.
+		return nil, false, nil, &adapter.UpstreamStreamError{
+			Provider: "openaicompat",
+			Raw:      fmt.Sprintf("upstream stream error (%s): %s", native.Error.Type, native.Error.Message),
+		}
 	}
 
 	chunk := streaming.ChatCompletionChunk{

@@ -416,7 +416,16 @@ func (d *streamDecoder) decodeError(data string) ([]streaming.ChatCompletionChun
 	if err := json.Unmarshal([]byte(data), &e); err != nil {
 		return nil, false, nil, fmt.Errorf("anthropic: decoding error event: %w", err)
 	}
-	return nil, false, nil, fmt.Errorf("anthropic: upstream stream error (%s): %s", e.Error.Type, e.Error.Message)
+	// *adapter.UpstreamStreamError, not a bare fmt.Errorf: Anthropic's own
+	// error.message here is raw upstream-authored text arriving on an
+	// already-2xx streaming connection -- cmd/gateway's writeErrorResponse
+	// must redact it via ClientSafeMessage the same way it already
+	// redacts dataplane.UpstreamHTTPError's Body for a non-2xx response.
+	// See UpstreamStreamError's own doc comment.
+	return nil, false, nil, &adapter.UpstreamStreamError{
+		Provider: "anthropic",
+		Raw:      fmt.Sprintf("upstream stream error (%s): %s", e.Error.Type, e.Error.Message),
+	}
 }
 
 // chunk builds a canonical chunk carrying delta, stamped with this

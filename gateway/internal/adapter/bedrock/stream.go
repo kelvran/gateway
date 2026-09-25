@@ -50,20 +50,32 @@ var (
 // which carries no :exception-type header at all) still produces a real
 // error, just not one of the typed sentinels -- forward-compatible, never
 // silently dropped.
+//
+// Every branch returns an *adapter.UpstreamStreamError rather than a bare
+// fmt.Errorf: payload is the raw AWS exception body verbatim (a
+// throttling/validation exception's payload can echo request details; a
+// real AccessDenied-shaped body can carry the operator's AWS account ID
+// and IAM role ARN, the identical secret class
+// dataplane.UpstreamHTTPError.ClientSafeMessage already redacts for the
+// non-2xx-HTTP case). Cause preserves each typed sentinel through
+// UpstreamStreamError.Unwrap so errors.Is(err, ErrBedrockThrottled) (etc.)
+// still works exactly as it did when this returned a bare
+// fmt.Errorf("%w: %s", ...) -- see UpstreamStreamError's own doc comment
+// for the full disclosure writeup.
 func bedrockStreamExceptionError(exceptionType string, payload []byte) error {
 	switch strings.ToLower(exceptionType) {
 	case "throttlingexception":
-		return fmt.Errorf("%w: %s", ErrBedrockThrottled, string(payload))
+		return &adapter.UpstreamStreamError{Provider: "bedrock", Cause: ErrBedrockThrottled, Raw: string(payload)}
 	case "validationexception":
-		return fmt.Errorf("%w: %s", ErrBedrockValidation, string(payload))
+		return &adapter.UpstreamStreamError{Provider: "bedrock", Cause: ErrBedrockValidation, Raw: string(payload)}
 	case "serviceunavailableexception":
-		return fmt.Errorf("%w: %s", ErrBedrockServiceUnavailable, string(payload))
+		return &adapter.UpstreamStreamError{Provider: "bedrock", Cause: ErrBedrockServiceUnavailable, Raw: string(payload)}
 	case "internalserverexception":
-		return fmt.Errorf("%w: %s", ErrBedrockInternalServer, string(payload))
+		return &adapter.UpstreamStreamError{Provider: "bedrock", Cause: ErrBedrockInternalServer, Raw: string(payload)}
 	case "modelstreamerrorexception":
-		return fmt.Errorf("%w: %s", ErrBedrockModelStreamError, string(payload))
+		return &adapter.UpstreamStreamError{Provider: "bedrock", Cause: ErrBedrockModelStreamError, Raw: string(payload)}
 	default:
-		return fmt.Errorf("bedrock: upstream stream exception %q: %s", exceptionType, string(payload))
+		return &adapter.UpstreamStreamError{Provider: "bedrock", Raw: fmt.Sprintf("upstream stream exception %q: %s", exceptionType, string(payload))}
 	}
 }
 
@@ -223,8 +235,12 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 		// The generic "error" message-type -- AWS's RPC-level error
 		// framing, which carries no :exception-type header at all, so no
 		// per-type sentinel is possible here. Still a real, typed-enough
-		// error, never silently dropped.
-		return nil, nil, fmt.Errorf("bedrock: upstream stream %s: %s", v.String(), string(msg.Payload))
+		// error, never silently dropped. Same *adapter.UpstreamStreamError
+		// wrapping as bedrockStreamExceptionError immediately above --
+		// msg.Payload is an identical raw-AWS-body disclosure risk, just
+		// reached via the sibling RPC-level framing instead of the
+		// :exception-type framing.
+		return nil, nil, &adapter.UpstreamStreamError{Provider: "bedrock", Raw: fmt.Sprintf("upstream stream %s: %s", v.String(), string(msg.Payload))}
 	}
 
 	var eventType string

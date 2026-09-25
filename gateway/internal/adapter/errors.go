@@ -1,6 +1,9 @@
 package adapter
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrProviderContentPolicyBlocked is a sentinel error an adapter's
 // FromProvider (or a streaming decoder's Decode) wraps when it detects
@@ -70,3 +73,72 @@ var ErrStructuredOutputUnsupported = errors.New("adapter: response_format is not
 // error's prior shape) so a caller can errors.Is-detect this specific
 // condition, matching ErrProviderContentPolicyBlocked's own convention.
 var ErrBedrockURLContentUnsupported = errors.New("adapter: bedrock does not support URL-based image/document content; provide inline base64 data instead")
+
+// UpstreamStreamError wraps a mid-stream, in-band error signal from an
+// upstream provider on an ALREADY-2xx streaming connection -- an OpenAI/
+// openaicompat native `data: {"error":{...}}` frame, an Anthropic
+// `error` SSE event, or a Bedrock ConverseStream `:exception-type` (or
+// generic RPC-level "error" message-type) frame. Every one of these
+// embeds the raw, provider-authored error text verbatim (a Bedrock AWS
+// exception payload can carry the operator's real AWS account ID and
+// IAM role ARN; a self-hosted openaicompat backend's error.message can
+// carry a stack trace or internal hostname) -- the exact same
+// information-disclosure risk dataplane.UpstreamHTTPError already
+// redacts for a non-2xx HTTP response (see that type's own doc comment
+// for the full writeup of that risk). UpstreamHTTPError itself cannot
+// cover this case: dataplane's HTTP upstream callers only construct one
+// when the upstream HTTP status is >=300, but every path that
+// constructs an UpstreamStreamError starts from an already-2xx
+// streaming connection that then carries a provider-authored error
+// INSIDE the body once decoding begins -- confirmed unreachable by
+// UpstreamHTTPError's own errors.As check in cmd/gateway's
+// writeErrorResponse before this type existed, so that check silently
+// fell through to the unredacted default (err.Error()) for exactly this
+// shape.
+//
+// Error()'s own string is SERVER-SIDE ONLY, mirroring
+// UpstreamHTTPError.Error()'s identical convention -- it is what reaches
+// dataplane.go's logRequest/logEmbeddingsRequest structured error log
+// line via err.Error(), so an operator debugging a real upstream fault
+// loses nothing to this fix. ClientSafeMessage is the ONLY text about
+// this failure that cmd/gateway's writeErrorResponse may put in a
+// client-facing HTTP error body.
+type UpstreamStreamError struct {
+	// Provider names which adapter produced this (e.g. "openai",
+	// "openaicompat", "anthropic", "bedrock") -- safe to disclose, purely
+	// diagnostic, matching the same disclosure level as
+	// UpstreamHTTPError's status code.
+	Provider string
+	// Raw is the full, unredacted upstream-authored error text (and, for
+	// Bedrock, the sentinel category text too -- see Error() below).
+	// Never put in a client-facing response; see ClientSafeMessage.
+	Raw string
+	// Cause, if non-nil, is a typed sentinel (e.g.
+	// bedrock.ErrBedrockThrottled) this error wraps -- returned by
+	// Unwrap so a caller can still errors.Is-detect the specific
+	// category through this wrapper, exactly as it could before this
+	// type existed.
+	Cause error
+}
+
+// Error implements the error interface. See the type's own doc comment
+// for why this string is server-side only.
+func (e *UpstreamStreamError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %s", e.Cause.Error(), e.Raw)
+	}
+	return fmt.Sprintf("%s: %s", e.Provider, e.Raw)
+}
+
+// Unwrap exposes Cause so errors.Is still finds a wrapped typed
+// sentinel through this error.
+func (e *UpstreamStreamError) Unwrap() error {
+	return e.Cause
+}
+
+// ClientSafeMessage mirrors dataplane.UpstreamHTTPError.ClientSafeMessage
+// -- the only text about this failure safe to hand to a tenant. Never
+// includes Raw.
+func (e *UpstreamStreamError) ClientSafeMessage() string {
+	return fmt.Sprintf("%s: upstream provider returned a mid-stream error", e.Provider)
+}

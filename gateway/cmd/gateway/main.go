@@ -1940,7 +1940,63 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 	if errors.As(err, &retryErr) {
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryErr.RetryAfter)))
 	}
-	http.Error(w, err.Error(), status)
+
+	// message defaults to err.Error() -- correct and non-leaking for
+	// every case above (all of them are Kelvran's own sentinel/typed
+	// errors, whose Error() strings are already written to be
+	// client-safe) -- EXCEPT a (possibly wrapped) *dataplane.
+	// UpstreamHTTPError, whose Error() embeds the raw upstream response
+	// body verbatim. That body is real provider output, not something
+	// Kelvran authored, and can carry operator infrastructure secrets: a
+	// Bedrock AccessDeniedException body includes the operator's real
+	// AWS account ID and IAM role ARN; a self-hosted openaicompat
+	// backend can leak stack traces or internal hostnames. This is the
+	// one place in this function that must never fall through to the
+	// default `status = http.StatusBadGateway` case above WITHOUT also
+	// swapping the message -- every other default-status error here
+	// reaches this point with a message its own Error() already wrote
+	// to be safe. See UpstreamHTTPError.ClientSafeMessage's own doc
+	// comment (internal/gateway/dataplane/fallback.go) and
+	// THREAT_MODEL.md's Change Log for the full writeup. The status
+	// code is deliberately left untouched by this check -- only the
+	// body text changes; a tenant still sees the same numeric status
+	// (typically 502, the default above) this function always mapped
+	// this error class to.
+	//
+	// The full raw body is still captured server-side regardless: every
+	// caller of this function already ran through dataplane.go's
+	// logRequest/logEmbeddingsRequest, whose own `p.logger.Error(...,
+	// "error", err.Error())` call logs the UNREDACTED err.Error() (this
+	// struct's real Body, not ClientSafeMessage) before the error ever
+	// reaches cmd/gateway at all -- an operator debugging a real
+	// upstream permission problem loses nothing to this fix.
+	message := err.Error()
+	var upstreamErr *dataplane.UpstreamHTTPError
+	if errors.As(err, &upstreamErr) {
+		message = upstreamErr.ClientSafeMessage()
+	}
+	// *adapter.UpstreamStreamError is UpstreamHTTPError's sibling for the
+	// case checked above: a mid-stream, in-band provider error arriving
+	// on an ALREADY-2xx streaming connection (an OpenAI/openaicompat
+	// native `data: {"error":...}` frame, an Anthropic `error` SSE
+	// event, or a Bedrock ConverseStream exception/RPC-error frame) --
+	// every streaming adapter's decoder wraps these as
+	// *adapter.UpstreamStreamError specifically so this check can catch
+	// them; none of them ever produce an UpstreamHTTPError, since no
+	// non-2xx HTTP status occurred. Without this check, that raw
+	// provider-authored text (which carries the identical secret classes
+	// UpstreamHTTPError.ClientSafeMessage already redacts above) relayed
+	// verbatim to any authenticated tenant whenever the failure happened
+	// before or after the first chunk was flushed -- see
+	// adapter.UpstreamStreamError's own doc comment for the full
+	// writeup. Checked independently of, not instead of, the
+	// UpstreamHTTPError check above: an error chain only ever contains
+	// one of the two concrete types, never both.
+	var streamErr *adapter.UpstreamStreamError
+	if errors.As(err, &streamErr) {
+		message = streamErr.ClientSafeMessage()
+	}
+	http.Error(w, message, status)
 }
 
 // retryAfterSeconds rounds d up to the nearest whole second, with a floor

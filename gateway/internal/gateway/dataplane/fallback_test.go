@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,66 @@ func TestClassifyFallbackError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := classifyFallbackError(tt.err); got != tt.want {
 				t.Errorf("classifyFallbackError(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpstreamHTTPErrorClientSafeMessageNeverLeaksBody proves
+// ClientSafeMessage's whole reason for existing: unlike Error() (which
+// deliberately embeds Body verbatim for server-side/classification use —
+// see that method's own doc comment), ClientSafeMessage must never let
+// the raw upstream response body reach whatever renders it, even a
+// realistic AWS Bedrock AccessDeniedException body naming a real account
+// ID and IAM role ARN — the exact concrete leak THREAT_MODEL.md's Change
+// Log now documents. StatusCode is deliberately still asserted present:
+// only the body is the leak, per that same doc comment.
+func TestUpstreamHTTPErrorClientSafeMessageNeverLeaksBody(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *UpstreamHTTPError
+	}{
+		{
+			name: "bedrock AccessDeniedException naming a real account ID and role ARN",
+			err: &UpstreamHTTPError{
+				StatusCode: 403,
+				Body:       `{"message":"User: arn:aws:iam::123456789012:role/kelvran-prod-gateway-role is not authorized to perform: bedrock:InvokeModel on resource: arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-sonnet"}`,
+			},
+		},
+		{
+			name: "self-hosted openaicompat backend stack trace",
+			err: &UpstreamHTTPError{
+				StatusCode: 500,
+				Body:       `panic: runtime error at internal-llm-worker-07.prod.internal:8080, goroutine 42`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			safe := tt.err.ClientSafeMessage()
+			if strings.Contains(safe, tt.err.Body) {
+				t.Fatalf("ClientSafeMessage() = %q contains the raw Body %q verbatim", safe, tt.err.Body)
+			}
+			// A representative substring of the sensitive body, not the
+			// whole thing -- proves no PARTIAL leak either (e.g. via a
+			// naive prefix/suffix truncation of Error()'s string, which
+			// would still fail the strings.Contains(safe, tt.err.Body)
+			// check above but could still leak the sensitive part).
+			for _, needle := range []string{"123456789012", "kelvran-prod-gateway-role", "internal-llm-worker-07"} {
+				if strings.Contains(safe, needle) {
+					t.Errorf("ClientSafeMessage() = %q contains sensitive substring %q", safe, needle)
+				}
+			}
+			wantStatus := fmt.Sprintf("%d", tt.err.StatusCode)
+			if !strings.Contains(safe, wantStatus) {
+				t.Errorf("ClientSafeMessage() = %q, want it to still name the status code %s (safe to disclose)", safe, wantStatus)
+			}
+			// Error() (the server-side/classification string) must still
+			// carry the full body unchanged -- this fix must never touch
+			// that contract.
+			if !strings.Contains(tt.err.Error(), tt.err.Body) {
+				t.Errorf("Error() = %q no longer contains the raw Body %q -- server-side callers (classifyFallbackError, structured error logs) need the real body", tt.err.Error(), tt.err.Body)
 			}
 		})
 	}

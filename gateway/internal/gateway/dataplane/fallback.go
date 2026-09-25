@@ -52,8 +52,46 @@ type UpstreamHTTPError struct {
 // Error implements the error interface. callDeployment wraps this with
 // "%w" (never "%v"), so errors.As still finds the concrete type through
 // that wrap.
+//
+// Error()'s own string is SERVER-SIDE ONLY — it is what
+// classifyFallbackError/isCandidateHealthFailure inspect (both internal,
+// never client-facing) and what dataplane.go's logRequest/
+// logEmbeddingsRequest write into the structured "chat_completion"/
+// "embeddings" error log line via err.Error() (both real slog.Error
+// calls, gated only on err != nil, so this Body is captured server-side
+// on every failure of this kind, buffered or streaming, before this type
+// ever reaches cmd/gateway). See ClientSafeMessage below for the
+// text that is actually safe to hand to a tenant over HTTP.
 func (e *UpstreamHTTPError) Error() string {
 	return fmt.Sprintf("upstream returned status %d: %s", e.StatusCode, e.Body)
+}
+
+// ClientSafeMessage returns the ONLY text about this failure that
+// cmd/gateway's writeErrorResponse may put in a client-facing HTTP error
+// body — never Body itself, and never Error()'s string (which embeds
+// Body verbatim). Fixes a real, confirmed medium-severity information
+// disclosure: a Bedrock deployment's real AWS AccessDeniedException body
+// looks like `{"message":"User: arn:aws:iam::<account>:role/<role> is
+// not authorized to perform: bedrock:InvokeModel on resource: ..."}` —
+// before this method existed, that ARN (the operator's real AWS account
+// ID and IAM role name) relayed verbatim to ANY authenticated tenant
+// (any valid virtual key, no special privilege needed) once the
+// fallback chain exhausted and writeErrorResponse's default case fell
+// through to `http.Error(w, err.Error(), status)`. More generally, this
+// stops any tenant from fingerprinting upstream infrastructure
+// (self-hosted openaicompat stack traces, internal hostnames,
+// provider-side request IDs) just by causing upstream failures. See
+// THREAT_MODEL.md's Change Log for the full writeup.
+//
+// The status code itself is deliberately still included — it's safe to
+// disclose (writeErrorResponse's own status-code mapping already
+// reveals as much for every sentinel error it recognizes; this is no
+// more revealing), and a generic-but-informative message is more useful
+// to a legitimate caller than a bare "upstream error" with no numeric
+// detail at all. Only the raw response BODY — the part that can contain
+// operator secrets an HTTP status code never can — is withheld.
+func (e *UpstreamHTTPError) ClientSafeMessage() string {
+	return fmt.Sprintf("upstream provider returned status %d", e.StatusCode)
 }
 
 // DeploymentCapacityError is returned when a shared deployment's own
