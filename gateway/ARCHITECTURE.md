@@ -270,7 +270,27 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              which would leave any such feature flying blind for the two adapters likely
                              carrying the most traffic. The existing, unrelated `CostTier` mechanism
                              above is a reasonable energy proxy already, once built — no separate
-                             carbon-specific code path is planned to duplicate it.
+                             carbon-specific code path is planned to duplicate it. **Added
+                             2026-09-25**, per `docs/upgrade-research/self-hosted-inference-serving-
+                             landscape-2026-09-25.md` Finding 1: a second, separate soft de-weighting
+                             signal now exists alongside the probe-latency EMA above —
+                             `upstream503DeweightPercent`/`reportUpstream503Deweight`
+                             (`gateway/internal/gateway/dataplane/dataplane.go`) reacts to a REAL
+                             upstream HTTP 503 from actual client-facing request traffic (not just the
+                             probe loop), calling the same `Router.SetLatencyFactor` entry point the
+                             latency EMA uses. Deliberately scoped to 503 only (never other 4xx/5xx —
+                             a narrow, high-confidence "this specific deployment is overloaded right
+                             now" signal), and explicitly excludes probe-originated calls
+                             (`withProbeContext`/`isProbeContext`) so a probe's own 503 triggers only
+                             the latency-EMA path, never double-counting into this one too. Because
+                             both signals write the SAME `deploymentHealth.latencyFactorPercent`
+                             field with plain last-write-wins overwrite semantics, a real-503 interim
+                             de-weight is naturally self-healing: the next scheduled health-probe
+                             cycle's own latency measurement overwrites it, by design, avoiding a
+                             separate time-decay/expiry mechanism — but this also means a probe cycle
+                             landing shortly after a real 503 can erase that protective de-weight
+                             before the underlying overload has actually cleared, a real, disclosed
+                             under-protection edge case flagged by the same audit, not yet resolved.
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
@@ -515,6 +535,33 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              unconfigured, so `dataplane.Pipeline.alertNotifier != nil` stays a valid
                              nil-check; wired into `checkBudgetAlertLadder`'s existing threshold-crossed
                              path, gated on the new `alerting:` config section (`config.example.yaml`).
+                             **Added 2026-09-25**, found missing by this session's own audit:
+                             `BudgetWarnPercent`'s own trigger (`dataplane.go`) is a SEPARATE path from
+                             `checkBudgetAlertLadder` above — same `alerting.Notifier`, but its own
+                             epoch-based dedup so crossing the warn threshold repeatedly within one
+                             epoch fires the webhook once, not on every billable completion past it.
+/internal/anomaly             — **Added 2026-09-23** (Phase 5b of the 8-phase upgrade round), found
+                             missing from this tree entirely by this session's own 2026-09-25 audit: a
+                             rolling-window aggregator over `GatewayDecisionEvent`'s own already-
+                             available signals (per virtual key or global) flagging a statistically
+                             significant shift in `FinishReason` distribution (e.g. a sudden spike in
+                             `"length"`/`"content_filter"` vs. a historical baseline) or in fallback
+                             rate. Deliberately scoped to what the event stream already carries — a
+                             true response-shape/length-based detector needs a `GatewayDecisionEvent`
+                             proto field addition first (a cross-language `buf breaking`-gated change),
+                             named as out of scope for this pass, not silently dropped.
+/internal/configpropagation   — undocumented in this tree until now, found missing entirely by this
+                             session's own 2026-09-25 audit despite being a real, live-wired Redis
+                             pub/sub broadcast mechanism for deployment-weight/virtual-key mutations
+                             across replicas. `MutationEvent.CanaryPercent` (Phase 5c of the 8-phase
+                             upgrade round, 2026-09-23) lets a publisher stage a mutation to a
+                             deterministic percentage of subscribing instances first (each instance
+                             hashes its own stable instance ID against the percentage) before a
+                             follow-up event, sharing the same `PublishedAtUnixNano`, promotes it to
+                             100% — a real canary/staged-rollout mechanism for config mutations, not
+                             just for traffic. `CanaryPercent` is itself covered by the same HMAC
+                             signature every other event field already is, proven by a dedicated
+                             tampered-field regression test.
 /internal/admin               — Real, per docs/rfcs/2026-09-05-gateway-admin-api.md: an optional,
                              off-by-default HTTP surface on its own separate net.Listener (never the
                              client-facing gateway's mux/port) exposing read-only config introspection
@@ -554,7 +601,24 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              mutations are in-memory-only in v1
                              (lost on restart, reverting to config.yaml); every other config section
                              (guardrails, budgets' shape, rate limits, cache, price table,
-                             telemetry) stays static-YAML-only, named explicitly as later follow-on work
+                             telemetry) stays static-YAML-only, named explicitly as later follow-on
+                             work. **Corrected 2026-09-25**, stale since 2026-09-18, found by this
+                             session's own 26-agent production-readiness audit: three real, shipped
+                             admin-surface features were missing from this description entirely. Opt-in
+                             mTLS (`admin.mtls`/`AdminMTLSConfig`, 2026-09-23) requires every client
+                             connecting to the admin server to present a valid TLS client certificate
+                             signed by an operator-supplied CA, additive to (never replacing) the
+                             bearer-token tiers above. A fourth credential tier, `Operator`
+                             (2026-09-20, `admin.operator_token_env`), authenticates only the
+                             reversible, single-named-resource writes (key rotation, deployment-weight
+                             nudges, cache erasure) — narrower than Admin, which stays a strict
+                             superset. A new `internal/admin/auditstore` package (2026-09-25) writes
+                             each audit event to a durable, queryable JSONL file alongside the existing
+                             `slog.Info` line — the prior structured-log-only trail was write-only with
+                             no read/query path at all; purely additive, gated by the same
+                             `EnableAuditLog` switch. See `THREAT_MODEL.md`'s Gateway
+                             Elevation-of-Privilege row for the mTLS/Operator-tier detail and
+                             `SECURITY.md`'s Data Retention table for the auditstore detail
 /internal/prompt             — **Corrected 2026-09-12**: missing from a prior pass of this tree, a
                              doc-vs-code staleness instance per AGENTS.md's catalogued pattern.
                              Real, ACTIVE, per docs/rfcs/2026-09-13-gateway-prompt-management.md:
@@ -737,6 +801,8 @@ Cache is a package boundary, **not a network hop**, at every stage until (if eve
 L1, L2, and L3 are each a separate `inprocess` cache instance, independently capacity-bounded (LRU eviction, no unbounded mode) — L3's bound is structurally *per tenant*, unlike L1/L2's single shared cap, since true tenant partitioning for a similarity search is a security requirement (`THREAT_MODEL.md`'s KeyPooling mitigation), not a style choice. Tenant namespace is real for every layer today (`cache.Key()`/`cache.NormalizedKey()`'s leading `tenantID` parameter for L1/L2, `LexicalCache`'s own `tenantID` parameter for L3, per `docs/rfcs/2026-09-02-virtual-keys-budgets.md`), enforced at every hop (lookup, write, retry, fallback) — the design decision that defeats cross-tenant leakage.
 
 **2026-09-18 addition — `Pipeline.EraseCacheEntry` finally gives `cache.Cache.Delete` a real caller**, via `POST /admin/cache/erase` (see `/internal/admin` above). Two disclosed, real limitations, not silently narrowed: (1) **L3 is not touched at all** — `LexicalCache` has no `Delete` method on its own interface, and `writeCache` populates L1, L2, AND L3 on every miss, so a byte-identical follow-up request for content this endpoint just reported erased can still be served from cache, from L3 instead of L1 — confirmed empirically by a dedicated regression test, not just reasoned about; an L3 entry's own TTL is the only path to eventual removal until a real `LexicalCache.Delete` exists. (2) **The Get-then-Delete sequence against L1/L2 isn't atomic** — `cache.Cache` has no combined get-and-delete operation, and `inprocess.Cache`'s `Get`/`Delete` each acquire the mutex independently, so a concurrent identical in-flight request's own `writeCache` call landing between this method's Get and Delete (or right after Delete returns) can leave a fresh entry under the same key, invisible to this method's caller. Narrow-window and low-severity (repopulates with a NEW response for a NEW request, never resurrects the erased bytes) — closing it properly needs a new atomic `GetAndDelete` interface method implemented across `inprocess` AND a new RPC for the `grpcclient`/`grpcserver` pair, named as real future work rather than built here.
+
+**Corrected 2026-09-25** — this section's own "Tenant namespace is real for every layer today... enforced at every hop" sentence above describes *tenant* (virtual-key) partitioning, which stayed true throughout, but never mentioned the finer-grained *end-user* partitioning within one tenant that shipped 2026-09-23: `identity.VirtualKey.CacheScopeToEndUser` (opt-in, default off) folds a caller-supplied `X-Kelvran-End-User-Id` header into `cache.Key`/`cache.NormalizedKey`/`cache.ScopeKey`, so L1/L2/L3 partition by `tenant+end_user` rather than `tenant` alone when a key opts in — fail-closed if the header is absent while the flag is on. Found stale by this session's own 26-agent production-readiness audit: this section had no mention of the feature at all, despite `DECISIONS.md` naming it the highest-severity fix of the 2026-09-23 research round. Same audit also found, and the same day fixed, an asymmetry the write path never had: `checkLexicalCache` (L3's read path) searched on the bare virtual-key ID instead of the same scoped value `writeCache` already wrote L3 entries under — see `THREAT_MODEL.md`'s Cache Information Disclosure row for the full fail-closed/fail-open mechanics and fix detail.
 
 ## MCP/A2A Subsystem
 
