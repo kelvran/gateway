@@ -9,13 +9,14 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/kelvran/gateway/gateway/internal/budget"
 	budgetboltstore "github.com/kelvran/gateway/gateway/internal/budget/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/prompt"
 	promptboltstore "github.com/kelvran/gateway/gateway/internal/prompt/boltstore"
-	"github.com/shopspring/decimal"
 )
 
 // This file is the one deliberate exception to backup.go's own "leaf
