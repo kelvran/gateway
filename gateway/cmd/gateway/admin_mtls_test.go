@@ -234,3 +234,63 @@ func TestAdminMTLSStillRequiresBearerTokenWithCorrectClientCert(t *testing.T) {
 		t.Fatalf("status = %d, want 401 -- a correct mTLS client cert must not bypass the existing bearer-token check", resp.StatusCode)
 	}
 }
+
+// TestAdminMTLSAcceptsLeafCertSignedByConfiguredCA is the corrected
+// replacement for what TestAdminMTLSAcceptsCorrectClientCertWithValidBearerToken
+// above only fakes: that test presents the CA ROOT itself as the
+// "client cert" (a degenerate one-self-signed-cert-vs-itself check).
+// This test presents a genuine LEAF certificate (IsCA: false, its own
+// distinct key, real x509.CreateCertificate cross-signature via
+// writeTestPEMLeafCert) issued BY the server's configured CA -- proving
+// the server verifies a real two-certificate chain, not just an exact
+// self-signed-cert match.
+func TestAdminMTLSAcceptsLeafCertSignedByConfiguredCA(t *testing.T) {
+	dir := t.TempDir()
+	caCertPath, caKeyPath := writeTestPEMCert(t, dir, "ca")
+	serverCertPath, serverKeyPath := writeTestPEMCert(t, dir, "server")
+	leafCertPath, leafKeyPath := writeTestPEMLeafCert(t, dir, "leaf", caCertPath, caKeyPath)
+
+	srv, adminToken := newAdminMTLSTestServer(t, caCertPath, serverCertPath, serverKeyPath)
+
+	client := clientWithCert(t, leafCertPath, leafKeyPath)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/admin/config", nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do with a real leaf cert signed by the configured CA and a valid bearer token: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 -- a genuine leaf cert issued by the server's configured CA must verify", resp.StatusCode)
+	}
+}
+
+// TestAdminMTLSRejectsLeafCertSignedByUnrelatedCA strengthens
+// TestAdminMTLSRejectsClientWithWrongCACertificate's own existing
+// negative case (which only ever presents another self-signed cert) to
+// the realistic production failure mode: a real, otherwise-valid LEAF
+// certificate, correctly chained, but rooted at the WRONG CA -- someone
+// using a different org's CA to issue a client cert, not a garbled or
+// self-signed one.
+func TestAdminMTLSRejectsLeafCertSignedByUnrelatedCA(t *testing.T) {
+	dir := t.TempDir()
+	caCertPath, _ := writeTestPEMCert(t, dir, "ca")
+	serverCertPath, serverKeyPath := writeTestPEMCert(t, dir, "server")
+	otherCACertPath, otherCAKeyPath := writeTestPEMCert(t, dir, "otherca")
+	leafCertPath, leafKeyPath := writeTestPEMLeafCert(t, dir, "leaf-wrong-ca", otherCACertPath, otherCAKeyPath)
+
+	srv, _ := newAdminMTLSTestServer(t, caCertPath, serverCertPath, serverKeyPath)
+
+	client := clientWithCert(t, leafCertPath, leafKeyPath)
+	resp, err := client.Get(srv.URL + "/admin/config")
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("client.Get with a real leaf cert signed by an unrelated CA: want a TLS handshake failure, got a successful response")
+	}
+	if !strings.Contains(err.Error(), "unknown certificate authority") {
+		t.Fatalf("client.Get with a real leaf cert signed by an unrelated CA: err = %q, want it to mention \"unknown certificate authority\"", err)
+	}
+}

@@ -134,6 +134,15 @@ linters:
         linters:
           - gosec
         text: "G304"
+      # writeTestPEMLeafCert reads a CA cert/key path it was JUST handed
+      # by a sibling t.TempDir()-rooted writeTestPEMCert call in the same
+      # test -- the identical test-fixture-only, never-attacker-reachable
+      # reasoning as the two suppressions immediately above, applied to
+      # the mTLS leaf-cert-chain test fixture.
+      - path: cmd/gateway/deployment_tls_client_test\.go
+        linters:
+          - gosec
+        text: "G304"
       # Both loops' own bounds already prove the index is safe (an
       # equal-length check immediately before the loop in one case, a
       # `stage > 0` guard derived from ranging over the same slice in
