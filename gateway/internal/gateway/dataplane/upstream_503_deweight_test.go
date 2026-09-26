@@ -266,6 +266,129 @@ func TestHandleChatCompletionRoutesAroundReal503ViaConfiguredFallbackChain(t *te
 	}
 }
 
+// upstreamFailsRealCallsWith503ButProbesSucceed is a two-deployment
+// UpstreamCaller fixture for proving the self-healing interaction
+// between a real 503 de-weight and the NEXT health-probe cycle: unlike
+// upstreamReturningStatusFor (which fails targetDeployment for EVERY
+// caller, probe or real), this fixture fails targetDeployment ONLY for
+// real (non-probe) calls, via isProbeContext(ctx) -- so a test can
+// trigger the interim 503 de-weight with one real call, then run
+// ProbeDeployments and have targetDeployment's own probe succeed,
+// exercising updateLatencyDeweighting's "next probe cycle overwrites
+// it" claim rather than a probe that would itself trip the separate
+// N-of-M health-exclusion mechanism.
+func upstreamFailsRealCallsWith503ButProbesSucceed(targetDeployment string) UpstreamCaller {
+	return func(ctx context.Context, dep Deployment, _ any) (any, error) {
+		if dep.Name == targetDeployment && !isProbeContext(ctx) {
+			return nil, &UpstreamHTTPError{StatusCode: http.StatusServiceUnavailable, Body: "simulated"}
+		}
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}
+}
+
+// TestGoodLatencyProbeCycleOverwritesReal503DeweightSignal is the
+// headline self-healing proof named in dataplane.go's own doc comment
+// on reportUpstream503Deweight/updateLatencyDeweighting: both write the
+// SAME router.deploymentHealth.latencyFactorPercent field, last-write-
+// wins, "so the next scheduled probe cycle naturally overwrites it with
+// its own freshly-computed number regardless of whether this fired, no
+// new time-decay/expiry mechanism needed" -- never proven end-to-end
+// before this test. Order matters: the real 503 call happens strictly
+// BEFORE the probe rounds (SetLatencyFactor has no timestamp guard).
+// Two probe rounds, not one, per latency_deweight_wiring_test.go's own
+// established rationale -- updateLatencyDeweighting's peerCount<2 gate
+// means a single round is a no-op. Banded, not exact, assertions for
+// the healed state, matching that same file's own jitter-safety
+// precedent -- near-instant mock latencies could deterministically
+// converge, but real CI scheduler jitter makes an exact count riskier
+// than it needs to be to prove the real property (measurably healed,
+// not starved).
+func TestGoodLatencyProbeCycleOverwritesReal503DeweightSignal(t *testing.T) {
+	deployments := twoDeploymentsSameModel() // "good", "bad"
+	p := newTestPipeline(t, upstreamFailsRealCallsWith503ButProbesSucceed("bad"), deployments)
+	ctx := context.Background()
+
+	badDep, ok := p.deploymentsByName["bad"]
+	if !ok {
+		t.Fatal(`setup: "bad" deployment not found`)
+	}
+
+	// One real, non-probe upstream call that fails with a 503 --
+	// triggers the interim de-weight.
+	if _, err := p.callDeployment(ctx, badDep, probeChatRequest()); err == nil {
+		t.Fatal("expected callDeployment to return an error for the simulated 503 response")
+	}
+
+	const totalCalls = 600
+	interim := selectCounts(t, p, "gpt-4o", totalCalls)
+	if got := interim["bad"]; got != 54 {
+		t.Fatalf(`interim counts["bad"] = %d, want 54 (matching TestReal503UpstreamCallDeweightsFutureRouting's own exact-count assertion) -- setup didn't produce the expected interim de-weight`, got)
+	}
+
+	// Two probe rounds: "bad"'s own probe now succeeds (this fixture's
+	// whole point), so round 2 sees both peers with a healthy, roughly
+	// equal EMA and should overwrite the stale 503-floor signal.
+	p.ProbeDeployments(ctx)
+	p.ProbeDeployments(ctx)
+
+	healed := selectCounts(t, p, "gpt-4o", totalCalls)
+	if got := healed["bad"]; got <= 150 {
+		t.Errorf(`healed counts["bad"] = %d, want well above the interim floor of 54 -- the next good-latency probe cycle must overwrite the stale real-503 de-weight signal, not leave "bad" starved forever`, got)
+	}
+}
+
+// TestReal503DeweightPersistsWhenNextProbeCycleAlsoFails is the other
+// half of correctness this file's own new self-healing test above must
+// not accidentally prove for the wrong reason: if the NEXT probe cycle
+// ALSO fails, updateLatencyDeweighting is skipped entirely (the
+// err == nil guard on probeOneDeployment's own success-only latency
+// path), so the stale 503-floor signal must correctly PERSIST -- an
+// unrelated "some other mechanism cleared it regardless of probe
+// outcome" bug would make this test fail while the sibling test above
+// still passes.
+func TestReal503DeweightPersistsWhenNextProbeCycleAlsoFails(t *testing.T) {
+	deployments := twoDeploymentsSameModel() // "good", "bad"
+	p := newTestPipeline(t, upstreamReturningStatusFor("bad", http.StatusServiceUnavailable), deployments)
+	ctx := context.Background()
+
+	badDep, ok := p.deploymentsByName["bad"]
+	if !ok {
+		t.Fatal(`setup: "bad" deployment not found`)
+	}
+
+	if _, err := p.callDeployment(ctx, badDep, probeChatRequest()); err == nil {
+		t.Fatal("expected callDeployment to return an error for the simulated 503 response")
+	}
+
+	const totalCalls = 600
+	interim := selectCounts(t, p, "gpt-4o", totalCalls)
+	if got := interim["bad"]; got != 54 {
+		t.Fatalf(`interim counts["bad"] = %d, want 54 -- setup didn't produce the expected interim de-weight`, got)
+	}
+
+	// "bad" keeps failing on probes too (upstreamReturningStatusFor
+	// fails every caller, probe or real) -- updateLatencyDeweighting's
+	// own err==nil guard means neither round ever recomputes a fresh
+	// latency signal for it.
+	p.ProbeDeployments(ctx)
+	p.ProbeDeployments(ctx)
+
+	// Banded, not exact: continuing the SAME shared WRR cursor across
+	// two sequential 600-call selectCounts batches is deterministic but
+	// phase-sensitive -- confirmed by direct repeated local runs to
+	// always land at 55, one off from the fresh-cursor 54 the interim
+	// measurement (and the sibling TestReal503UpstreamCallDeweightsFutureRouting)
+	// both get. The property this test exists to prove is "stays
+	// de-weighted, never heals back toward 300," not "is exactly the
+	// same count a fresh cursor would produce" -- a tight band proves
+	// that property without being coupled to smooth-WRR's own internal
+	// cursor-phase arithmetic.
+	stillDeweighted := selectCounts(t, p, "gpt-4o", totalCalls)
+	if got := stillDeweighted["bad"]; got < 50 || got > 60 {
+		t.Errorf(`counts["bad"] after two failing probe rounds = %d, want in [50,60] (still near the de-weighted floor) -- the stale 503-floor signal must persist when the next probe cycle also fails, not get cleared by an unrelated mechanism or healed back toward an equal 300/300 share`, got)
+	}
+}
+
 // upstreamStreamReturningStatusFor mirrors upstreamReturningStatusFor,
 // one level over, for UpstreamStreamCaller -- every call routed to
 // targetDeployment fails with an *UpstreamHTTPError at the given
