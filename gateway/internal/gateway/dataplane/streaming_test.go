@@ -1106,3 +1106,139 @@ func TestStreamingNearDuplicateCollisionSequentialKeyReuseNeverFalselyFires(t *t
 		t.Fatalf("kelvran.streaming.near_duplicate_collision[key_id=%s] delta = %d, want 0 -- sequential key reuse after a full release must never be recorded as a collision", testKeyID, got)
 	}
 }
+
+// TestStreamingNearDuplicateCollisionCounterAgainstAlreadyWarmCache is the
+// regression proof for the bug this change fixes: streamingInFlightAcquire/
+// streamingInFlightRelease used to sit strictly BEFORE checkCache/
+// checkLexicalCache, so a collision on an ALREADY-WARM l1Key -- where
+// every one of n concurrent duplicate requests below is guaranteed to hit
+// L1 and never reach upstream at all -- still incremented
+// kelvran.streaming.near_duplicate_collision, even though a cache hit
+// carries zero upstream-coalescing-relevant signal (the exact thing this
+// counter exists to measure, per streamingNearDuplicateCollisionCounter's
+// own doc comment, telemetry.go). After the fix (acquire/release moved to
+// immediately before the guardrail check -- i.e. only reached once BOTH
+// cache checks have conclusively missed, mirroring runMissPath's own
+// post-both-cache-miss placement, dataplane.go), a cache-hit path returns
+// out of HandleChatCompletionStream before ever calling
+// streamingInFlightAcquire, so the collision delta asserted below is not
+// merely unlikely to fire, it becomes structurally unreachable.
+//
+// n=25, not 5: against the PRE-fix ordering, this test's own guarantee
+// is probabilistic, not structural -- it only fails if two of n
+// goroutines' fast, in-memory checkCache/checkLexicalCache-then-acquire
+// windows genuinely overlap in time, and with n too small that overlap
+// is not guaranteed. Measured directly (revert only the acquire/release
+// block to its pre-fix position, leave this test as-is, run
+// `-count=100` repeatedly): n=5 produced 3 spurious PASSes out of 170
+// total runs across two batches (~1.8%) on a 10-core machine, and a
+// prior independent review measured 17.5%-30% on different hardware --
+// both confirm the false-negative rate is real and hardware-sensitive,
+// not zero. n=25 produced 0 spurious PASSes out of 400 runs (100 +
+// 300) under the identical revert. Not a structural guarantee even at
+// n=25 -- just empirically the point past which this specific
+// scheduler/hardware combination stopped producing a false negative in
+// four hundred attempts. If this ever flakes PASS on genuinely reverted
+// code again, raise n further rather than trusting a single green run.
+//
+// Mirrors TestStreamingInFlightCounterTracksConcurrentRequestsForSameKey's
+// own ready/goCh/wg concurrent-harness shape exactly, minus that test's
+// upstream-blocking release/allStarted channels -- there is nothing to
+// block on here, since these n requests must never reach upstream at all
+// (that absorption is asserted directly below, via upstreamCalls).
+// upstreamCalls is an atomic.Int64, not a bare int as
+// TestHandleChatCompletionStreamCacheMissRealStream's own single-call
+// counter uses -- this test's own closure can, in principle, be invoked
+// from more than one of the n goroutines below concurrently (exactly the
+// scenario the assertion right after them proves does NOT happen), so a
+// bare int write there would be a genuine data race under `go test -race`
+// even though the assertion itself expects the count to stay at 1.
+func TestStreamingNearDuplicateCollisionCounterAgainstAlreadyWarmCache(t *testing.T) {
+	const n = 25
+	const testKeyID = "streaming-warm-cache-collision-key"
+
+	var upstreamCalls atomic.Int64
+	keys := []identity.VirtualKey{
+		{ID: testKeyID, KeyHash: testHashOf(testKeyID), RateLimitBurst: 100, RateLimitRefill: 100},
+	}
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		upstreamCalls.Add(1)
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, budget.NewTracker())
+
+	req := adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "warm this cache first, then hit it concurrently"}},
+	}
+
+	// (b) One real request first, allowed to complete normally -- this
+	// warms L1 via the pipeline's own real writeCache call, exactly the
+	// mechanism TestHandleChatCompletionStreamCacheMissRealStream's own
+	// second-call cache-hit assertion already relies on.
+	warmRec := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer "+testKeyID, "", "", req, warmRec, ""); err != nil {
+		t.Fatalf("warming request: %v", err)
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstreamCalls after warming request = %d, want 1", got)
+	}
+
+	// (c) Baseline snapshot AFTER the cache is warm, immediately before
+	// the concurrent duplicate-request phase below -- isolates this
+	// phase's own contribution to the counter from the (already-proven-
+	// zero, per the other collision tests) contribution of a single lone
+	// request.
+	reader := dataplaneTelemetryMetricsReaderForTest()
+	var baselineRM metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &baselineRM); err != nil {
+		t.Fatalf("reader.Collect (baseline): %v", err)
+	}
+	deltaBaseline := streamingNearDuplicateCollisionMetricDelta(t, baselineRM, testKeyID)
+
+	// (d) n truly concurrent, byte-identical requests against the now-
+	// warm cache.
+	var ready sync.WaitGroup
+	ready.Add(n)
+	goCh := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ready.Done()
+			<-goCh
+			rec := httptest.NewRecorder()
+			errs[i] = p.HandleChatCompletionStream(context.Background(), "Bearer "+testKeyID, "", "", req, rec, "")
+		}(i)
+	}
+
+	ready.Wait()
+	close(goCh)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+
+	// (e) upstreamCalls stays at 1 -- the cache absorbs all n duplicates
+	// regardless of the collision-counter placement bug; this passes
+	// even against the current, unfixed code, since it is unrelated to
+	// where streamingInFlightAcquire sits.
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstreamCalls after %d concurrent cache-hit duplicates = %d, want still 1 (the warming call only) -- the cache must absorb every duplicate", n, got)
+	}
+
+	// This is the assertion that proves the fix: a collision against an
+	// ALREADY-WARM cache carries no upstream-coalescing-relevant signal
+	// and must never increment the counter.
+	var afterRM metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &afterRM); err != nil {
+		t.Fatalf("reader.Collect (after): %v", err)
+	}
+	deltaAfter := streamingNearDuplicateCollisionMetricDelta(t, afterRM, testKeyID)
+	if got := deltaAfter - deltaBaseline; got != 0 {
+		t.Fatalf("kelvran.streaming.near_duplicate_collision[key_id=%s] delta = %d, want 0 -- a collision against an already-warm cache carries no upstream-coalescing-relevant signal and must never increment this counter", testKeyID, got)
+	}
+}

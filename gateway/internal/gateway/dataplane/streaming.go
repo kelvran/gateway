@@ -260,22 +260,6 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode)
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
-	// Streaming near-duplicate-collision observation — see
-	// streamingInFlightByL1Key's own doc comment (dataplane.go) and this
-	// function's "no singleflight coalescing" doc comment below
-	// (streamDeploymentWithFallback's caller, near billable = true).
-	// Placed here, immediately after l1Key/l2Key are computed and
-	// strictly before the cache checks below, so every streaming request
-	// that reaches this point is observed regardless of whether it then
-	// hits or misses cache. Deliberately NEVER gates, delays, or
-	// coalesces anything: every request below still runs its own real,
-	// fully independent path exactly as if this block didn't exist.
-	if p.streamingInFlightAcquire(l1Key) {
-		telemetry.RecordStreamingNearDuplicateCollision(ctx, vk.ID)
-		p.logger.Warn("streaming_near_duplicate_collision", append(traceLogFields(ctx), "key_id", vk.ID, "l1_key", l1Key)...)
-	}
-	defer p.streamingInFlightRelease(l1Key)
-
 	cacheAttempted = true
 	if cached, layer, writtenAt, ok := p.checkCache(ctx, cacheScope, l1Key, l2Key); ok {
 		var cachedResp adapter.ChatResponse
@@ -300,6 +284,32 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// A corrupt cache entry is treated as a miss, not a request
 		// failure — same fallthrough behavior as the buffered path.
 	}
+
+	// Streaming near-duplicate-collision observation — see
+	// streamingInFlightByL1Key's own doc comment (dataplane.go) and this
+	// function's "no singleflight coalescing" doc comment below
+	// (streamDeploymentWithFallback's caller, near billable = true).
+	// Placed here, immediately after L1/L2/L3 have ALL conclusively
+	// missed and fallen through to real processing — deliberately NOT
+	// immediately after l1Key/l2Key are computed, mirroring runMissPath's
+	// own identical post-both-cache-miss placement (dataplane.go): a
+	// cache HIT carries zero upstream-coalescing-relevant signal, since
+	// neither request in a warm-cache collision would ever reach
+	// upstream regardless of this counter's own presence or absence.
+	// Counting that as a "near-duplicate collision" would directly
+	// undermine the counter's own documented purpose — measuring whether
+	// genuinely UPSTREAM-BOUND concurrent requests happen often enough to
+	// justify building real request coalescing, per
+	// streamingNearDuplicateCollisionCounter's own doc comment
+	// (telemetry.go) — by mixing in collisions the cache already fully
+	// absorbed. Deliberately still NEVER gates, delays, or coalesces
+	// anything: every request below still runs its own real, fully
+	// independent path exactly as if this block didn't exist.
+	if p.streamingInFlightAcquire(l1Key) {
+		telemetry.RecordStreamingNearDuplicateCollision(ctx, vk.ID)
+		p.logger.Warn("streaming_near_duplicate_collision", append(traceLogFields(ctx), "key_id", vk.ID, "l1_key", l1Key)...)
+	}
+	defer p.streamingInFlightRelease(l1Key)
 
 	// Guardrail pre-call — identical position and reasoning to the
 	// buffered path (dataplane.go's HandleChatCompletion): after L1/L2/L3
