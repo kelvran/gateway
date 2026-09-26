@@ -2757,10 +2757,27 @@ func isSourceIPAllowed(vk *identity.VirtualKey, remoteIP string) bool {
 // defeat the allowlist it feeds. Returns remoteAddr unchanged if it
 // isn't in host:port form (e.g. already a bare IP, as some test harnesses
 // construct it), so isSourceIPAllowed's own net.ParseIP still gets a fair
-// shot at it.
+// shot at it -- EXCEPT for an ambiguous, unbracketed IPv6-with-port
+// shape (more than one colon, no brackets -- e.g. "::1:1234" meant as
+// host "::1" port "1234"), which fails closed to "" instead: net.
+// SplitHostPort already rejects that shape as ambiguous ("too many
+// colons") and returns it unchanged, but net.ParseIP then happily
+// parses the WHOLE string as a different, valid-looking IPv6 address
+// (0:0:0:0:0:0:1:1234) and checks THAT against the CIDR allowlist --
+// silently substituting a different address instead of erroring, the
+// exact "ambiguous resolution" this allowlist's own X-Forwarded-For
+// refusal above already exists to avoid. isSourceIPAllowed's own
+// net.ParseIP("") already returns nil -> deny, so failing closed here
+// costs no new code there. A real net/http RemoteAddr for IPv6 is
+// always bracketed, so this never fires in production; it only
+// disarms a malformed/hand-constructed input from being silently
+// misparsed into a DIFFERENT real address rather than rejected.
 func resolveClientIP(remoteAddr string) string {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
+		if strings.Count(remoteAddr, ":") > 1 {
+			return ""
+		}
 		return remoteAddr
 	}
 	return host

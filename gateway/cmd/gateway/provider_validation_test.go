@@ -78,3 +78,65 @@ func TestBuildPipelineAcceptsEveryRealRegisteredProvider(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildPipelineParsesIPv6AllowedSourceCIDR closes a real, small gap:
+// buildPipeline's own net.ParseCIDR conversion loop
+// (VirtualKeyConfig.AllowedSourceCIDRs []string ->
+// identity.VirtualKey.AllowedSourceCIDRs []*net.IPNet) had zero IPv6
+// coverage anywhere in this codebase -- only
+// TestLoadParsesAllowedSourceCIDRs' own IPv4-only strings
+// (controlplane/config_test.go), and that test only proves the raw
+// YAML-to-string-list collection step, never this package's own actual
+// net.ParseCIDR conversion. A real IPv6 CIDR string must build cleanly
+// here exactly like an IPv4 one already does.
+func TestBuildPipelineParsesIPv6AllowedSourceCIDR(t *testing.T) {
+	cfg := &controlplane.Config{
+		ListenAddr: ":0",
+		VirtualKeys: []controlplane.VirtualKeyConfig{
+			{
+				Name: "test-key", KeyHash: testKeyHash("test-key"), RateLimitBurst: 100, RateLimitRefill: 100,
+				AllowedSourceCIDRs: []string{"2001:db8::/32"},
+			},
+		},
+		Deployments: []controlplane.DeploymentConfig{
+			{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", APIKeyEnv: "UNUSED_API_KEY"},
+		},
+	}
+	t.Setenv("UNUSED_API_KEY", "fake-key-not-a-real-secret")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := buildPipeline(cfg, logger); err != nil {
+		t.Fatalf("buildPipeline with a real IPv6 CIDR string: %v", err)
+	}
+}
+
+// TestBuildPipelineRejectsMalformedAllowedSourceCIDR proves this
+// package's own doc comment's claim ("a malformed CIDR string is a
+// config-load-time failure, loud, aborts startup, never a
+// silently-ignored entry that would quietly weaken this key's own
+// allowlist") for real, for both an IPv4-shaped and an IPv6-shaped
+// malformed string -- not previously exercised by any test.
+func TestBuildPipelineRejectsMalformedAllowedSourceCIDR(t *testing.T) {
+	for _, malformed := range []string{"not-a-cidr", "2001:db8::/not-a-prefix"} {
+		t.Run(malformed, func(t *testing.T) {
+			cfg := &controlplane.Config{
+				ListenAddr: ":0",
+				VirtualKeys: []controlplane.VirtualKeyConfig{
+					{
+						Name: "test-key", KeyHash: testKeyHash("test-key"), RateLimitBurst: 100, RateLimitRefill: 100,
+						AllowedSourceCIDRs: []string{malformed},
+					},
+				},
+				Deployments: []controlplane.DeploymentConfig{
+					{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", APIKeyEnv: "UNUSED_API_KEY"},
+				},
+			}
+			t.Setenv("UNUSED_API_KEY", "fake-key-not-a-real-secret")
+
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			if _, err := buildPipeline(cfg, logger); err == nil {
+				t.Fatalf("buildPipeline with malformed allowed_source_cidrs entry %q returned nil error, want an error", malformed)
+			}
+		})
+	}
+}
