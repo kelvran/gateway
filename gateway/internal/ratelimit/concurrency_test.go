@@ -269,6 +269,81 @@ func TestAcquireWithRunTracksPerAgentRunCountsForUncappedKeyEvenThoughInFlightNe
 	}
 }
 
+// TestAcquireWithRunRejectionNeverRecordsANewAgentRun proves a rejected
+// AcquireWithRun call for a BRAND-NEW agent_run_id (one that has never
+// held a slot before) leaves runCounts/InFlightByAgentRun completely
+// untouched for that run -- not just zero-valued, but absent as a map
+// key entirely, proving no increment (transient or otherwise) ever
+// happened. AcquireWithRun's own rejection branch (concurrency.go) returns
+// false before ever calling recordRunAcquireLocked, entirely inside one
+// Lock/defer Unlock critical section -- this is the regression guard for
+// that structural guarantee.
+func TestAcquireWithRunRejectionNeverRecordsANewAgentRun(t *testing.T) {
+	l := NewConcurrencyLimiter([]ConcurrencyConfig{{ID: "key-a", MaxInFlight: 3}})
+
+	for i, run := range []string{"run-1", "run-2", "run-3"} {
+		if !l.AcquireWithRun("key-a", run) {
+			t.Fatalf("AcquireWithRun #%d (%s) = false, want true (still under the cap of 3)", i+1, run)
+		}
+	}
+	totalBefore, byRunBefore := l.InFlightByAgentRun("key-a")
+	if totalBefore != 3 {
+		t.Fatalf("setup: total = %d, want 3", totalBefore)
+	}
+
+	if l.AcquireWithRun("key-a", "run-4") {
+		t.Fatal("4th AcquireWithRun(key-a, run-4) = true, want false -- key-a is already at its MaxInFlight cap of 3")
+	}
+
+	total, byRun := l.InFlightByAgentRun("key-a")
+	if total != 3 {
+		t.Fatalf("total after a rejected AcquireWithRun = %d, want still 3 (a rejected call must not reserve a slot)", total)
+	}
+	if _, ok := byRun["run-4"]; ok {
+		t.Errorf("byRun[%q] is present after a rejected AcquireWithRun call, want it entirely absent as a map key -- got value %d", "run-4", byRun["run-4"])
+	}
+	if len(byRun) != len(byRunBefore) {
+		t.Errorf("byRun has %d entries after the rejection, want still %d (no new agent_run_id keys introduced)", len(byRun), len(byRunBefore))
+	}
+}
+
+// TestAcquireWithRunRejectionNeverIncrementsAnExistingAgentRunCount is
+// the sharper sibling of the test above: the rejected call REUSES an
+// agent_run_id that already holds some of the in-flight slots, proving
+// that specific run's own count stays at its exact pre-rejection value,
+// not incremented by even one.
+func TestAcquireWithRunRejectionNeverIncrementsAnExistingAgentRunCount(t *testing.T) {
+	l := NewConcurrencyLimiter([]ConcurrencyConfig{{ID: "key-a", MaxInFlight: 3}})
+
+	if !l.AcquireWithRun("key-a", "run-1") {
+		t.Fatal("AcquireWithRun(key-a, run-1) #1 = false, want true")
+	}
+	if !l.AcquireWithRun("key-a", "run-1") {
+		t.Fatal("AcquireWithRun(key-a, run-1) #2 = false, want true")
+	}
+	if !l.AcquireWithRun("key-a", "run-2") {
+		t.Fatal("AcquireWithRun(key-a, run-2) = false, want true")
+	}
+
+	// key-a is now at its cap of 3 (run-1 holds 2, run-2 holds 1). The
+	// rejected 4th call reuses run-1, the exact scenario a naive
+	// increment-then-fail-to-decrement bug would misreport.
+	if l.AcquireWithRun("key-a", "run-1") {
+		t.Fatal("4th AcquireWithRun(key-a, run-1) = true, want false -- key-a is already at its MaxInFlight cap of 3")
+	}
+
+	total, byRun := l.InFlightByAgentRun("key-a")
+	if total != 3 {
+		t.Fatalf("total after a rejected AcquireWithRun reusing run-1 = %d, want still 3", total)
+	}
+	if byRun["run-1"] != 2 {
+		t.Errorf("byRun[run-1] after a rejected AcquireWithRun reusing run-1 = %d, want still 2 (unchanged by the rejection)", byRun["run-1"])
+	}
+	if byRun["run-2"] != 1 {
+		t.Errorf("byRun[run-2] after an unrelated rejected call = %d, want still 1", byRun["run-2"])
+	}
+}
+
 // TestInFlightByAgentRunReturnsSnapshotNotLiveReference proves
 // InFlightByAgentRun's own doc comment's "fresh, independent copy, never
 // a live reference" claim: a later Acquire/Release must never retroactively
