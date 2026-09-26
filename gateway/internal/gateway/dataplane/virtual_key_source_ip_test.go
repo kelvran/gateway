@@ -152,6 +152,30 @@ func TestResolveClientIPPassesThroughBareIP(t *testing.T) {
 	}
 }
 
+// TestResolveClientIPBarePortlessIPv6AlsoFailsClosed locks in a
+// deliberate, non-obvious consequence of the fail-closed fix in
+// TestResolveClientIPMalformedIPv6WithoutBracketsFailsClosed: a GENUINE
+// bare (portless) IPv6 address -- not just the ambiguous host:port typo
+// shape -- also fails closed to "", because the two are provably
+// indistinguishable from the bare string alone. "::1" and "::1:1234"
+// trigger the identical net.SplitHostPort error ("too many colons in
+// address") and BOTH parse successfully via net.ParseIP -- there is no
+// syntactic signal available to resolveClientIP that would let it treat
+// one as safe-to-pass-through and the other as ambiguous. This is the
+// intentional, safer choice (see resolveClientIP's own doc comment):
+// denying a real net/http RemoteAddr never happens either way, since
+// production RemoteAddr always brackets IPv6, so the only real-world
+// effect of this choice is disarming exactly the class of malformed
+// input this fix targets, at the cost of also denying a hand-constructed
+// bare IPv6 caller that no real code path produces today.
+func TestResolveClientIPBarePortlessIPv6AlsoFailsClosed(t *testing.T) {
+	for _, bare := range []string{"::1", "2001:db8::1", "::ffff:10.1.2.3", "::"} {
+		if got := resolveClientIP(bare); got != "" {
+			t.Errorf("resolveClientIP(%q) = %q, want \"\" -- a genuine bare IPv6 address is indistinguishable from an ambiguous unbracketed host:port shape and must also fail closed", bare, got)
+		}
+	}
+}
+
 // TestResolveClientIPNeverConsultsForwardedHeader is a documentation-grade
 // regression guard for the resolved design decision in
 // identity.VirtualKey.AllowedSourceCIDRs' own doc comment: resolveClientIP
