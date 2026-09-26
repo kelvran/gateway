@@ -178,6 +178,33 @@ func TestIntegrationConcurrentBurstAgainstFailingDeploymentNeverExceedsCircuitBr
 	// original fix's own reproduction used just 2 deployments), so 20
 	// still genuinely exercises the real invariant while lowering
 	// resource pressure.
+	//
+	// **Second occurrence, 2026-09-26**: this test failed once in CI at
+	// this same burst=20 size (a 502 on request 12, then again locally
+	// on request 13 and request 1 across separate reproduction runs --
+	// never the same request index twice, and never the "reached bad
+	// more than once" assertion, only the "reached good at all"
+	// assertion). Investigated as a possible regression from that same
+	// day's 8-commit production-readiness round before accepting it as
+	// another instance of this same flake class: read every commit's
+	// diff (none touch nextDeployment/attemptFallbackChain/router.Select,
+	// and the one background loop added that day, RunCredentialReloadLoop,
+	// never starts in this test at all -- it's wired in cmd/gateway's
+	// run(), which this test bypasses by calling buildPipeline directly);
+	// bisected via disposable git worktrees at 3 checkpoints spanning
+	// that round (0/100 clean at each) versus ~1-4% observed across
+	// ~300 runs at the round's final commit -- suggestive but not
+	// statistically conclusive at these low rates (a true ~2% rate
+	// still produces a clean 100/100 batch roughly 13% of the time by
+	// chance). No plausible code-level mechanism found despite this
+	// direct read; a CI re-run of the identical commit passed clean.
+	// Recorded here, not silently re-run and forgotten, per this
+	// project's own AGENTS.md Gotchas convention for exactly this
+	// pattern -- promote to a real fix (e.g. a bounded retry in this
+	// test's own HTTP client, or investigating httptest.Server resource
+	// pressure under sudden concurrency directly) if a third occurrence
+	// makes the pattern clearer than two isolated data points currently
+	// allow.
 	const burstSize = 20
 	client := &http.Client{}
 	var wg sync.WaitGroup
