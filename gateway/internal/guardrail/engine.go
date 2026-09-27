@@ -45,6 +45,16 @@ type Engine struct {
 // automatic and unconditional — no operator action required — without
 // weakening version's own, separate, code-change-tracking half of the
 // contract.
+//
+// Scope limit, deliberate: the fingerprint covers policy (Actions/
+// ErrorActions) only, never the active detector SET. Enabling/disabling
+// cfg.BedrockGuardrails/cfg.EmbedSim via config also changes what a
+// cached "clean" verdict actually means (it was never checked by a
+// detector that didn't exist yet), but neither is reflected in policy
+// at all — an operator doing that today still needs to bump version by
+// hand, exactly as before this fix. Automating that too would need
+// hashing the resolved detector configuration, not just Policy; left
+// for its own follow-up rather than folded in here.
 func NewEngine(detectors []Detector, policy Policy, version string, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
