@@ -777,3 +777,89 @@ func TestCacheHitsAreForcedMissesAfterGuardrailPolicyVersionChanges(t *testing.T
 		t.Errorf("upstreamCalls after the policy-version bump = %d, want 2 — a policy change must force a real cache miss on all layers, never a silent stale hit", upstreamCalls)
 	}
 }
+
+// TestCacheHitsAreForcedMissesAfterCategoryOverridesChangeWithoutAPolicyVersionBump
+// is the sibling regression proof for the real gap found 2026-09-28:
+// unlike the test above (an operator who correctly remembers to bump
+// policy_version), this proves the case where they DON'T -- the exact
+// mistake cmd/gateway's newGuardrailEngine makes possible, since
+// policy_version and category_overrides are two entirely independent
+// config fields with no code tying a change in one to the other. Two
+// Pipelines share the identical cache instances AND the identical
+// explicit policyVersion string ("v1" for both) -- only the effective
+// Policy differs, mirroring exactly what newGuardrailEngine builds from
+// two different category_overrides configs. Before guardrail.NewEngine
+// folded an automatic policy fingerprint into Version(), this was a
+// silent cache-key collision: a verdict cached under the OLD policy
+// (contact_info categorized as ActionWarn, DefaultPolicy's own default)
+// would keep being served after an operator moved contact_info to
+// ActionBlock, indefinitely, on a Redis-backed L2/L3 cache surviving the
+// gateway restart that new config requires.
+func TestCacheHitsAreForcedMissesAfterCategoryOverridesChangeWithoutAPolicyVersionBump(t *testing.T) {
+	keys := defaultTestVirtualKeys()
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	l1 := inprocess.New(0)
+	l2 := inprocess.New(0)
+	l3 := inprocess.NewLexicalCache(0)
+	deployments := []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}
+
+	var upstreamCalls int
+	upstream := func(ctx context.Context, dep Deployment, req any) (any, error) {
+		upstreamCalls++
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}
+
+	buildPipeline := func(policy guardrail.Policy) *Pipeline {
+		p, err := NewPipeline(Config{
+			Verifier:       verifier,
+			Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+			Budget:         budget.NewTracker(),
+			Cache:          l1,
+			CacheL2:        l2,
+			CacheL3:        l3,
+			Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), policy, "v1", nil), // identical "v1" on both -- the operator never bumped it
+			Adapters:       adapter.Registry{"openai": openai.New()},
+			Router:         testRouter(deployments),
+			Deployments:    deployments,
+			CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+			Upstream:       upstream,
+			Logger:         discardLogger(),
+		})
+		if err != nil {
+			t.Fatalf("NewPipeline: %v", err)
+		}
+		return p
+	}
+
+	pBefore := buildPipeline(guardrail.DefaultPolicy())
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "cache me please, category_overrides test"}}}
+
+	if _, err := pBefore.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
+		t.Fatalf("first request (default policy): %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstreamCalls after first request = %d, want 1", upstreamCalls)
+	}
+
+	// A new Pipeline sharing the SAME cache instances and the SAME
+	// explicit policyVersion string ("v1", never bumped), but with
+	// contact_info overridden from the default ActionWarn to ActionBlock
+	// -- exactly what cmd/gateway's newGuardrailEngine builds from a real
+	// `category_overrides: {contact_info: "block"}` config entry. The
+	// prior cached entry (written when contact_info was merely warned on)
+	// must NOT be silently served now that it would be blocked.
+	overridden := guardrail.DefaultPolicy()
+	overridden.Actions[guardrail.CategoryContactInfo] = guardrail.ActionBlock
+	overridden.ErrorActions[guardrail.CategoryContactInfo] = guardrail.ActionBlock
+	pAfter := buildPipeline(overridden)
+
+	if _, err := pAfter.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
+		t.Fatalf("second request (category_overrides changed, policy_version unchanged): %v", err)
+	}
+	if upstreamCalls != 2 {
+		t.Errorf("upstreamCalls after the category_overrides change = %d, want 2 — a Policy change must force a real cache miss even when the operator never bumped policy_version by hand", upstreamCalls)
+	}
+}

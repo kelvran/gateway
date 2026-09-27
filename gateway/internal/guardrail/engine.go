@@ -2,8 +2,11 @@ package guardrail
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"sort"
 )
 
 // Engine is Kelvran's guardrail check — one instance shared across every
@@ -18,21 +21,86 @@ type Engine struct {
 	logger    *slog.Logger
 }
 
-// NewEngine constructs an Engine. version is stamped into every cache
-// write (see cache.Key/NormalizedKey's guardrailPolicyVersion parameter
-// and LexicalCandidate.GuardrailPolicyVersion) so a policy/detector
-// change invalidates stale cache entries rather than silently serving a
-// hit that was never checked under the current rules — bump it whenever
-// detectors or policy change and a new binary is released.
+// NewEngine constructs an Engine. version is combined with an automatic
+// fingerprint of policy's own actual enforcement state (see
+// policyFingerprint) into the single string Version() returns, which is
+// stamped into every cache write (see cache.Key/NormalizedKey's
+// guardrailPolicyVersion parameter and LexicalCandidate.
+// GuardrailPolicyVersion) so a policy/detector change invalidates stale
+// cache entries rather than silently serving a hit that was never
+// checked under the current rules.
+//
+// version itself still must be bumped by hand whenever DETECTOR code
+// (not policy data) changes and a new binary is released — the
+// automatic policy-fingerprint half cannot observe a code change, only
+// a change to the resulting Policy value. It closes a real, separate
+// gap found 2026-09-28: cmd/gateway's newGuardrailEngine applies
+// cfg.CategoryOverrides on top of DefaultPolicy() to build policy, but
+// PolicyVersion is a config value the operator sets independently — an
+// operator who changes category_overrides without realizing they also
+// need to bump policy_version got a silent cache-key collision. A
+// Redis-backed L2/L3 cache survives the resulting gateway restart, so
+// pre-change verdicts kept being served under the new policy
+// indefinitely, until natural TTL expiry. The fingerprint makes this
+// automatic and unconditional — no operator action required — without
+// weakening version's own, separate, code-change-tracking half of the
+// contract.
 func NewEngine(detectors []Detector, policy Policy, version string, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Engine{detectors: detectors, policy: policy, version: version, logger: logger}
+	return &Engine{detectors: detectors, policy: policy, version: version + policyFingerprint(policy), logger: logger}
 }
 
-// Version returns the Engine's own policy-version string.
+// Version returns the Engine's own cache-differentiating version
+// string: the caller-provided version, combined with an automatic
+// fingerprint of policy's actual enforcement state — see NewEngine's
+// own doc comment for why both halves matter. The exact composition
+// (separator, hash format/length) is an internal implementation detail
+// — callers must treat the whole string as an opaque cache-key input,
+// never parse or reconstruct a half of it.
 func (e *Engine) Version() string { return e.version }
+
+// policyFingerprint returns a short, deterministic string derived from
+// p's own actual enforcement state (Actions + ErrorActions), sorted by
+// Category for a result stable regardless of map iteration order.
+//
+// A plain colon/semicolon-joined encoding is safe here, unlike
+// cache.writeField's own necessarily length-prefixed, collision-safe
+// encoding (see that function's own doc comment on the KeyPooling
+// class of attack it exists to close): every Category value that can
+// ever appear in p.Actions/p.ErrorActions is one of this package's own
+// small, fixed set of hardcoded string constants (types.go) —
+// cmd/gateway's newGuardrailEngine rejects and skips any
+// config-supplied category string that doesn't already match one of
+// them, so this input space is never attacker- or even
+// operator-string-controlled the way cache.Key's own client-supplied
+// fields are; a colon or semicolon can never actually appear inside a
+// Category value in practice.
+func policyFingerprint(p Policy) string {
+	seen := make(map[Category]struct{}, len(p.Actions)+len(p.ErrorActions))
+	for cat := range p.Actions {
+		seen[cat] = struct{}{}
+	}
+	for cat := range p.ErrorActions {
+		seen[cat] = struct{}{}
+	}
+	categories := make([]string, 0, len(seen))
+	for cat := range seen {
+		categories = append(categories, string(cat))
+	}
+	sort.Strings(categories)
+
+	h := sha256.New()
+	for _, catStr := range categories {
+		cat := Category(catStr)
+		// hash.Hash's Write can never return an error (io.Writer's own
+		// contract for this type), matching cache/key.go's own writeField
+		// convention of discarding it explicitly rather than checking.
+		_, _ = fmt.Fprintf(h, "%s:%d:%d;", catStr, p.Actions[cat], p.ErrorActions[cat])
+	}
+	return "#policy-" + hex.EncodeToString(h.Sum(nil))[:12]
+}
 
 // Detectors returns e's configured detector list — read-only access for
 // a caller that needs to discover per-detector capabilities beyond

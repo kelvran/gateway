@@ -224,10 +224,60 @@ func TestEngineCheckNoFindingsNoBlock(t *testing.T) {
 	}
 }
 
+// TestEngineVersion proves Version() still carries the caller-provided
+// version verbatim as its own prefix -- NewEngine now appends an
+// automatic policy fingerprint after it (see
+// TestNewEngineVersionChangesWhenPolicyChangesEvenIfVersionStringDoesNot
+// for the fingerprint half's own load-bearing proof), but the explicit
+// version string itself must remain fully intact and recoverable by a
+// human reading a raw cache key or log line.
 func TestEngineVersion(t *testing.T) {
 	e := NewEngine(nil, DefaultPolicy(), "v1.2.3", nil)
-	if got := e.Version(); got != "v1.2.3" {
-		t.Errorf("Version() = %q, want %q", got, "v1.2.3")
+	if got := e.Version(); !strings.HasPrefix(got, "v1.2.3") {
+		t.Errorf("Version() = %q, want a string starting with %q (the caller-provided version, plus an automatic policy-fingerprint suffix)", got, "v1.2.3")
+	}
+}
+
+// TestNewEngineVersionChangesWhenPolicyChangesEvenIfVersionStringDoesNot
+// is the load-bearing regression proof for the real gap found
+// 2026-09-28: two Engines built with the IDENTICAL explicit version
+// string but a genuinely DIFFERENT effective Policy (the exact shape
+// cmd/gateway's newGuardrailEngine produces when an operator changes
+// guardrails.category_overrides without also bumping policy_version)
+// must still report different Version() values -- otherwise a cache
+// entry written under the old policy stays servable under the new one.
+func TestNewEngineVersionChangesWhenPolicyChangesEvenIfVersionStringDoesNot(t *testing.T) {
+	unchanged := NewEngine(nil, DefaultPolicy(), "v1", nil)
+
+	changed := DefaultPolicy()
+	changed.Actions[CategoryContactInfo] = ActionBlock // was ActionWarn
+	changedEngine := NewEngine(nil, changed, "v1", nil)
+
+	if unchanged.Version() == changedEngine.Version() {
+		t.Fatalf("Version() = %q for both an unchanged and a changed policy sharing the same explicit version string %q -- a policy change must force a different cache-key version", unchanged.Version(), "v1")
+	}
+}
+
+// TestNewEngineVersionIsDeterministic proves policyFingerprint doesn't
+// depend on Go's own randomized map iteration order: two Policy values
+// built by inserting the identical (category, action) pairs in a
+// different order must produce byte-identical Version() output.
+func TestNewEngineVersionIsDeterministic(t *testing.T) {
+	a := Policy{Actions: map[Category]Action{}, ErrorActions: map[Category]Action{}}
+	for _, cat := range []Category{CategoryCredential, CategoryContactInfo, CategoryNetworkID} {
+		a.Actions[cat] = ActionWarn
+		a.ErrorActions[cat] = ActionBlock
+	}
+	b := Policy{Actions: map[Category]Action{}, ErrorActions: map[Category]Action{}}
+	for _, cat := range []Category{CategoryNetworkID, CategoryCredential, CategoryContactInfo} {
+		b.Actions[cat] = ActionWarn
+		b.ErrorActions[cat] = ActionBlock
+	}
+
+	ea := NewEngine(nil, a, "v1", nil)
+	eb := NewEngine(nil, b, "v1", nil)
+	if ea.Version() != eb.Version() {
+		t.Errorf("Version() = %q and %q for two Policy values with identical content inserted in a different order, want identical", ea.Version(), eb.Version())
 	}
 }
 
