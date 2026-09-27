@@ -98,6 +98,16 @@ virtual_keys:
     allowed_models:
       gpt-4o: true
       claude-opus-4: true
+    # Optional; omit for no source-IP restriction (any client IP allowed).
+    # A mapping of CIDR -> true, exactly like allowed_models above -- NOT
+    # a YAML list. This parser (parseYAMLMini, package doc comment) has
+    # no list support at all; a "- \"10.0.0.0/8\"" list entry does not
+    # error as "wrong shape" -- it silently parses as garbage and gets
+    # dropped, leaving the key completely UNRESTRICTED with zero warning
+    # (confirmed live 2026-09-27; Load now rejects this loudly instead,
+    # but only the map shape below was ever intended to work).
+    allowed_source_cidrs:
+      "10.0.0.0/8": true
 
   team-beta:
     # No budget_usd/rate_limit/allowed_models: unlimited budget, the

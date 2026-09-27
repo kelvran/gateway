@@ -21,6 +21,7 @@ package controlplane
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"sort"
@@ -1013,7 +1014,11 @@ func Load(path string) (*Config, error) {
 		}
 		if am, ok := getMap(vkMap, "allowed_models"); ok {
 			for model, v := range am {
-				if enabled, ok := v.(bool); ok && enabled {
+				enabled, ok := v.(bool)
+				if !ok {
+					return nil, fmt.Errorf("controlplane: virtual key %q allowed_models entry %q: value must be true or false, got %v (%T) -- this field is a mapping of model name -> true, see config.example.yaml; this parser has no YAML list support, so a \"- model-name\" list entry parses as garbage here rather than being rejected up front", name, model, v, v)
+				}
+				if enabled {
 					vk.AllowedModels = append(vk.AllowedModels, model)
 				}
 			}
@@ -1021,17 +1026,43 @@ func Load(path string) (*Config, error) {
 		}
 		if ar, ok := getMap(vkMap, "allowed_regions"); ok {
 			for region, v := range ar {
-				if enabled, ok := v.(bool); ok && enabled {
+				enabled, ok := v.(bool)
+				if !ok {
+					return nil, fmt.Errorf("controlplane: virtual key %q allowed_regions entry %q: value must be true or false, got %v (%T) -- this field is a mapping of region name -> true, see config.example.yaml; this parser has no YAML list support, so a \"- region-name\" list entry parses as garbage here rather than being rejected up front", name, region, v, v)
+				}
+				if enabled {
 					vk.AllowedRegions = append(vk.AllowedRegions, region)
 				}
 			}
 			sort.Strings(vk.AllowedRegions)
 		}
+		// allowed_source_cidrs additionally validates each enabled entry
+		// is real net.ParseCIDR-parseable syntax, right here at Load time
+		// -- not just later inside cmd/gateway.buildPipeline's own
+		// (unchanged, still-authoritative) conversion to []*net.IPNet.
+		// Doing it here too means `-validate` (which calls Load but never
+		// buildPipeline) actually catches a malformed CIDR string instead
+		// of reporting "config is valid" for a config that will crash the
+		// process on real startup -- confirmed live 2026-09-27: a
+		// malformed CIDR passed `-validate` cleanly before this change.
 		if ac, ok := getMap(vkMap, "allowed_source_cidrs"); ok {
 			for cidr, v := range ac {
-				if enabled, ok := v.(bool); ok && enabled {
-					vk.AllowedSourceCIDRs = append(vk.AllowedSourceCIDRs, cidr)
+				enabled, ok := v.(bool)
+				if !ok {
+					return nil, fmt.Errorf("controlplane: virtual key %q allowed_source_cidrs entry %q: value must be true or false, got %v (%T) -- this field is a mapping of CIDR -> true, see config.example.yaml; this parser has no YAML list support, so a \"- \\\"cidr\\\"\" list entry parses as garbage here rather than being rejected up front", name, cidr, v, v)
 				}
+				if !enabled {
+					// A disabled ("false") entry's CIDR text is deliberately
+					// never syntax-checked -- it was never enforced before
+					// this fix either, so there's nothing to protect here;
+					// only a "true" entry's syntax matters, since only that
+					// one ever reaches isSourceIPAllowed's real CIDR match.
+					continue
+				}
+				if _, _, err := net.ParseCIDR(cidr); err != nil {
+					return nil, fmt.Errorf("controlplane: virtual key %q allowed_source_cidrs entry %q: %w", name, cidr, err)
+				}
+				vk.AllowedSourceCIDRs = append(vk.AllowedSourceCIDRs, cidr)
 			}
 			sort.Strings(vk.AllowedSourceCIDRs)
 		}

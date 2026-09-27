@@ -70,6 +70,9 @@ func TestLoadExampleConfig(t *testing.T) {
 			t.Errorf("team-alpha.AllowedModels[%d] = %q, want %q", i, alpha.AllowedModels[i], m)
 		}
 	}
+	if len(alpha.AllowedSourceCIDRs) != 1 || alpha.AllowedSourceCIDRs[0] != "10.0.0.0/8" {
+		t.Errorf("team-alpha.AllowedSourceCIDRs = %v, want [10.0.0.0/8]", alpha.AllowedSourceCIDRs)
+	}
 
 	beta, ok := vkByName["team-beta"]
 	if !ok {
@@ -987,6 +990,154 @@ func TestLoadParsesAllowedSourceCIDRs(t *testing.T) {
 	}
 	if len(beta.AllowedSourceCIDRs) != 0 {
 		t.Errorf("team-beta.AllowedSourceCIDRs = %v, want empty (no constraint declared)", beta.AllowedSourceCIDRs)
+	}
+}
+
+// TestLoadRejectsAllowedSourceCIDRsWrittenAsAYAMLList is the regression
+// proof for a real, live-verified gap (found 2026-09-27 driving a real
+// gateway process, not by any Go-level unit test): this parser has no
+// YAML list support at all (see this file's own package doc comment),
+// so a config authored with the natural-looking
+//
+//	allowed_source_cidrs:
+//	  - "::1/128"
+//
+// shape (matching the Go field's own []string type) does NOT error out
+// as "not a mapping" -- parseYAMLMini's line-oriented parser instead
+// finds the FIRST colon in the raw line `- "::1/128"`, which lands
+// inside the quoted CIDR string itself (a real IPv6 CIDR always
+// contains a colon), and garbles the whole line into ONE nonsense
+// key/value pair (key `- "`, value `:1/128"`) under allowed_source_cidrs
+// rather than rejecting it. Before this fix, that garbled value silently
+// failed the `v.(bool)` check inside the parsing loop and was dropped
+// with zero error anywhere -- Load, `-validate`, AND buildPipeline all
+// reported success, while the virtual key silently got ZERO source-IP
+// restriction (fully unrestricted) instead of the intended one. Now
+// fails loudly at Load time instead.
+func TestLoadRejectsAllowedSourceCIDRsWrittenAsAYAMLList(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    allowed_source_cidrs:\n" +
+		"      - \"::1/128\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with allowed_source_cidrs written as a YAML list = nil error, want a loud rejection -- this shape must never silently produce an unrestricted key")
+	}
+}
+
+// TestLoadRejectsMalformedAllowedSourceCIDRSyntax proves this file's own
+// Load-time net.ParseCIDR check -- added specifically so `-validate`
+// (which calls Load but never cmd/gateway.buildPipeline) actually
+// catches a malformed CIDR string instead of reporting "config is
+// valid" for a config that will only fail later, at real process
+// startup. cmd/gateway's own TestBuildPipelineRejectsMalformedAllowedSourceCIDR
+// already proved buildPipeline's independent, still-authoritative check;
+// this is the earlier, `-validate`-reachable half.
+func TestLoadRejectsMalformedAllowedSourceCIDRSyntax(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    allowed_source_cidrs:\n" +
+		"      not-a-real-cidr: true\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a malformed allowed_source_cidrs entry = nil error, want a loud rejection at Load time (so -validate catches it too, not just real startup)")
+	}
+}
+
+// TestLoadRejectsAllowedModelsListEntryContainingAColon and its
+// allowed_regions sibling below prove the identical fix applies to
+// allowed_source_cidrs' two sibling allowlist fields, which share the
+// exact same "value must be true/false" parsing shape -- an
+// unrestricted allowed_models/allowed_regions defaults to "every
+// model/region allowed" (per each field's own doc comment), so this
+// class of mistake would have silently WIDENED access instead of
+// narrowing it, arguably a worse failure direction than
+// allowed_source_cidrs' own.
+//
+// Deliberately uses a colon-containing name (a real Bedrock model ID
+// shape), not a plain "gpt-4o"/"us-east-1" -- a colonless list entry
+// (the common case for most model/region names) is already rejected
+// one layer up, by parseYAMLMini's own "expected key: value" check
+// (findKeyColon finds no colon at all in "- gpt-4o" and errors
+// immediately), never reaching this fix's new value-type check at all.
+// A colon IS how this exact garbling mechanism reaches this fix's code
+// path, matching allowed_source_cidrs' own CIDR-notation-always-has-a-
+// colon mechanism.
+func TestLoadRejectsAllowedModelsListEntryContainingAColon(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    allowed_models:\n" +
+		"      - \"anthropic.claude-haiku-4-5-20251001-v1:0\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with allowed_models written as a YAML list = nil error, want a loud rejection -- this shape must never silently produce an unrestricted (every-model-allowed) key")
+	}
+}
+
+func TestLoadRejectsAllowedRegionsListEntryContainingAColon(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    allowed_regions:\n" +
+		"      - \"us-east-1:extra\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with allowed_regions written as a YAML list = nil error, want a loud rejection -- this shape must never silently produce an unrestricted key")
 	}
 }
 
