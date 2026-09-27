@@ -382,8 +382,8 @@ func TestHandleChatCompletionCapacityConstrainedHopTriesNextHopBeforeFailing(t *
 	if err != nil {
 		t.Fatalf("expected the chain to still succeed at backup, got error: %v", err)
 	}
-	if resp.Model != "m" {
-		t.Errorf("resp.Model = %q, want m (echoed client-facing canonical model)", resp.Model)
+	if resp.Model != "m3" {
+		t.Errorf("resp.Model = %q, want m3 -- backup genuinely served this response, not the originally-requested model m", resp.Model)
 	}
 	if len(calls) != 2 || calls[0] != "primary" || calls[1] != "backup" {
 		t.Fatalf("calls = %v, want [primary backup] — capacity-constrained skipped entirely", calls)

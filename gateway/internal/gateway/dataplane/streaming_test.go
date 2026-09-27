@@ -397,6 +397,65 @@ func TestHandleChatCompletionStreamMultiHopFallbackChainRoutesByClassAndHop(t *t
 	}
 }
 
+// TestHandleChatCompletionStreamCachedCrossModelFallbackReplaysRealServingModel
+// is the streaming sibling of
+// TestHandleChatCompletionCachedCrossModelFallbackReplaysRealServingModel
+// (crossmodel_fallback_billing_test.go): finishStreamedResponse's own
+// resp.Model fix is never itself streamed to a LIVE client (every chunk
+// during a live stream comes straight from the provider's own decoded
+// data, before Kelvran's own resp.Model assignment even runs) — it only
+// becomes client-visible once this response is CACHED and later replayed
+// via writeFakeStream on a cache hit. Proves exactly that: a first
+// request that falls over to a genuinely different model (gpt-4o) via
+// fallback_chains, then a second, identical request served from cache,
+// must report gpt-4o in its replayed SSE chunks — never a silent
+// duplicate of the originally-requested gpt-4o-mini.
+func TestHandleChatCompletionStreamCachedCrossModelFallbackReplaysRealServingModel(t *testing.T) {
+	primary := Deployment{
+		Name: "primary-cheap", Model: "gpt-4o-mini", Provider: "openai", UpstreamModel: "gpt-4o-mini", BaseURL: "http://unused",
+		FallbackChains: map[string][]string{FallbackClassGeneric: {"fallback-expensive"}},
+	}
+	deployments := []Deployment{
+		primary,
+		{Name: "fallback-expensive", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
+	}
+
+	var calls []string
+	p := newStreamingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		calls = append(calls, dep.Name)
+		if dep.Name == "primary-cheap" {
+			return nil, &UpstreamHTTPError{StatusCode: 500, Body: "primary-cheap unavailable"}
+		}
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, deployments, adapter.Registry{"openai": openai.New()})
+
+	first := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
+		Model: "gpt-4o-mini", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, first, ""); err != nil {
+		t.Fatalf("first HandleChatCompletionStream: %v", err)
+	}
+	if len(calls) != 2 || calls[0] != "primary-cheap" || calls[1] != "fallback-expensive" {
+		t.Fatalf("calls = %v, want [primary-cheap fallback-expensive]", calls)
+	}
+
+	second := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
+		Model: "gpt-4o-mini", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, second, ""); err != nil {
+		t.Fatalf("second HandleChatCompletionStream: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %v, want still exactly 2 -- the second request must be a cache hit, no new upstream calls", calls)
+	}
+	if strings.Contains(second.Body.String(), `"model":"gpt-4o-mini"`) {
+		t.Errorf("cached replay body contains a silent duplicate of the requested model -- body: %s", second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), `"model":"gpt-4o"`) {
+		t.Errorf("cached replay body missing the model that GENUINELY served the original response (gpt-4o) -- body: %s", second.Body.String())
+	}
+}
+
 // TestHandleChatCompletionStreamMultiHopChainStopsOnceChunkSent proves the
 // "no further hop once a chunk reached the client" rule applies to EVERY
 // hop of a multi-hop chain, not only the very first attempt: hop-1 (a

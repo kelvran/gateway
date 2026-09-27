@@ -124,8 +124,8 @@ func TestHandleChatCompletionBillsCrossModelFallbackAtServedModelPrice(t *testin
 	if err != nil {
 		t.Fatalf("expected the fallback to succeed, got error: %v", err)
 	}
-	if resp.Model != "gpt-4o-mini" {
-		t.Errorf("resp.Model = %q, want %q (echoed client-facing canonical model — unchanged by this fix)", resp.Model, "gpt-4o-mini")
+	if resp.Model != "gpt-4o" {
+		t.Errorf("resp.Model = %q, want %q -- the client-facing response must report the model that GENUINELY served it, not the originally-requested gpt-4o-mini", resp.Model, "gpt-4o")
 	}
 	if len(calls) != 2 || calls[0] != "primary-cheap" || calls[1] != "fallback-expensive" {
 		t.Fatalf("calls = %v, want [primary-cheap fallback-expensive]", calls)
@@ -143,12 +143,12 @@ func TestHandleChatCompletionBillsCrossModelFallbackAtServedModelPrice(t *testin
 }
 
 // TestHandleChatCompletionResponseModelReflectsRealServingModelOnFallback
-// proves the sibling observability fix: the OTel span's
-// gen_ai.response.model attribute must genuinely reflect the model that
-// served the response (gpt-4o) on a cross-model fallback, not stay a
-// silent duplicate of the request model (gpt-4o-mini) the way
-// resp.Model's own client-facing echo (unchanged by this fix, per the
-// assertion above) always does.
+// proves the OTel span's gen_ai.response.model attribute genuinely
+// reflects the model that served the response (gpt-4o) on a cross-model
+// fallback, not a silent duplicate of the request model (gpt-4o-mini) —
+// this was the original, narrower fix; resp.Model's own client-facing
+// echo (see the assertion above) was fixed separately, later, to report
+// the same truth.
 func TestHandleChatCompletionResponseModelReflectsRealServingModelOnFallback(t *testing.T) {
 	before := len(spanRecorder.Ended())
 
@@ -180,6 +180,75 @@ func TestHandleChatCompletionResponseModelReflectsRealServingModelOnFallback(t *
 	}
 	if v.AsString() != "gpt-4o" {
 		t.Errorf("%s = %q, want %q", telemetry.AttrGenAIResponseModel, v.AsString(), "gpt-4o")
+	}
+}
+
+// TestHandleChatCompletionRespModelReflectsRealServingModelOnFallback is
+// the client-facing sibling of
+// TestHandleChatCompletionResponseModelReflectsRealServingModelOnFallback
+// above: resp.Model (the actual HTTP response body's "model" field, not
+// just the server-side OTel/telemetry attribute) must genuinely reflect
+// gpt-4o -- the model that served the response after the fallback hop --
+// never a silent duplicate of the originally-requested gpt-4o-mini. Found
+// by a whole-session completeness sweep on 2026-09-27: server-side
+// telemetry already reported the truth; the client-visible field did
+// not, so a client had no way to detect it had been served a genuinely
+// different (here, more expensive) model via fallback.
+func TestHandleChatCompletionRespModelReflectsRealServingModelOnFallback(t *testing.T) {
+	p := newCrossModelFallbackPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		if dep.Name == "primary-cheap" {
+			return nil, &UpstreamHTTPError{StatusCode: 500, Body: "primary-cheap unavailable"}
+		}
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, budget.NewTracker(), nil)
+
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, "")
+	if err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+	if resp.Model == "gpt-4o-mini" {
+		t.Fatalf("resp.Model = %q, a silent duplicate of the requested model — want %q, the model that GENUINELY served the response after the fallback hop", resp.Model, "gpt-4o")
+	}
+	if resp.Model != "gpt-4o" {
+		t.Errorf("resp.Model = %q, want %q", resp.Model, "gpt-4o")
+	}
+}
+
+// TestHandleChatCompletionCachedCrossModelFallbackReplaysRealServingModel
+// proves the fix propagates through a cache hit too: once a cross-model
+// fallback response is cached, a LATER identical request served from
+// that cache entry must still report the model that genuinely produced
+// it (gpt-4o), not the requested one (gpt-4o-mini) — the cache simply
+// replays whatever resp.Model was written at cache-write time, so this
+// is really a proof that the write-time fix (callDeployment) is what's
+// load-bearing here, not a separate read-time mechanism.
+func TestHandleChatCompletionCachedCrossModelFallbackReplaysRealServingModel(t *testing.T) {
+	var calls []string
+	p := newCrossModelFallbackPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		calls = append(calls, dep.Name)
+		if dep.Name == "primary-cheap" {
+			return nil, &UpstreamHTTPError{StatusCode: 500, Body: "primary-cheap unavailable"}
+		}
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	}, budget.NewTracker(), nil)
+
+	first, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, "")
+	if err != nil {
+		t.Fatalf("first HandleChatCompletion: %v", err)
+	}
+	if first.Model != "gpt-4o" {
+		t.Fatalf("first resp.Model = %q, want gpt-4o", first.Model)
+	}
+
+	second, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, "")
+	if err != nil {
+		t.Fatalf("second HandleChatCompletion: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %v, want exactly 2 (primary-cheap, fallback-expensive) -- the second request must be a cache hit, no new upstream calls", calls)
+	}
+	if second.Model != "gpt-4o" {
+		t.Errorf("cached replay resp.Model = %q, want %q -- the cache must replay the model that GENUINELY served the original response, not the requested gpt-4o-mini", second.Model, "gpt-4o")
 	}
 }
 
@@ -256,8 +325,8 @@ func TestHandleChatCompletionFallbackHopSkipsRateLimitedTargetButChainStillSucce
 	if err != nil {
 		t.Fatalf("expected the chain to still succeed at claude-fallback, got error: %v", err)
 	}
-	if resp.Model != "gpt-4o-mini" {
-		t.Errorf("resp.Model = %q, want %q", resp.Model, "gpt-4o-mini")
+	if resp.Model != "claude-opus-4" {
+		t.Errorf("resp.Model = %q, want %q -- claude-fallback genuinely served this response, not the originally-requested gpt-4o-mini", resp.Model, "claude-opus-4")
 	}
 	if len(calls) != 2 || calls[0] != "primary-cheap" || calls[1] != "claude-fallback" {
 		t.Fatalf("calls = %v, want [primary-cheap claude-fallback] — gpt-4o-ratelimited skipped entirely, chain continues to the next target", calls)

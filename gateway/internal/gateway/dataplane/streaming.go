@@ -975,9 +975,16 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	}
 
 	resp := acc.build(usage)
-	// Echo back the client-facing canonical model name, matching
-	// callDeployment's convention for the buffered path.
-	resp.Model = req.Model
+	// Report the canonical model of the deployment that GENUINELY served
+	// this response, matching callDeployment's convention for the
+	// buffered path -- dep is always the real, successfully-serving
+	// deployment here. This resp is never itself streamed to the client
+	// chunk-by-chunk (every chunk was already flushed via sw.WriteChunk
+	// during the decode loop above, straight from the provider's own
+	// stream data) -- it only matters for billing/telemetry and, if this
+	// response gets cached, for a FUTURE cache-hit client's replayed
+	// resp.Model (writeFakeStream echoes whatever was cached verbatim).
+	resp.Model = dep.Model
 
 	// Guardrail post-call, streaming path — audit-only for CLIENT DELIVERY
 	// ONLY, per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md's

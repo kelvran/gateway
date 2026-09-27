@@ -3162,9 +3162,14 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 		err = fmt.Errorf("dataplane: translating embedding response for deployment %q: %w", dep.Name, err)
 		return
 	}
-	// Echo back the client-facing canonical model name, matching
-	// callDeployment's identical convention for chat completions.
-	resp.Model = req.Model
+	// Report the canonical model of the deployment that GENUINELY served
+	// this response, matching callDeployment's identical convention for
+	// chat completions -- dep is always the real, successfully-serving
+	// deployment here, never a zero value, so dep.Model is always valid.
+	// Byte-for-byte identical to req.Model whenever dep.Model == req.Model
+	// (every case today, since HandleEmbeddings has no cross-model
+	// fallback_chains mechanism at all).
+	resp.Model = dep.Model
 
 	cost = p.costCalc.Calculate(dep.Model, costaccounting.Usage{
 		PromptTokens: resp.Usage.PromptTokens,
@@ -3637,10 +3642,22 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 		return adapter.ChatResponse{}, fmt.Errorf("adapter %q FromProvider: %w", dep.Provider, err)
 	}
 
-	// Echo back the client-facing canonical model name, matching the
-	// convention of OpenAI-shaped APIs (the response's "model" field
-	// reflects what the caller asked for).
-	resp.Model = req.Model
+	// Report the canonical model of the deployment that GENUINELY served
+	// this response, matching the real convention of OpenAI-shaped APIs
+	// (the response's "model" field reflects what actually generated the
+	// completion, e.g. a versioned snapshot the client didn't literally
+	// name -- not a bare echo of the request). dep is always the real,
+	// successfully-serving deployment here, never a zero value, so
+	// dep.Model is always valid. Byte-for-byte identical to req.Model
+	// whenever dep.Model == req.Model (every case except a genuine
+	// cross-model fallback_chains hop) -- see
+	// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
+	// Before this, a cross-model fallback silently told the client it got
+	// req.Model even though a different model actually served it -- the
+	// server-side telemetry (realServingModel, gen_ai.response.model) has
+	// reported the truth since the earlier billing fix; this closes the
+	// same gap for the client-visible response body.
+	resp.Model = dep.Model
 	return resp, nil
 }
 
