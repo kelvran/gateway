@@ -3516,6 +3516,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 					p.releaseDeploymentConcurrency,
 					func(d Deployment) bool { return capabilityOKForRequest(d, req) },
 					func(d Deployment) bool { return isRegionAllowed(vk, d.Region) },
+					func(d Deployment) bool { return isModelAllowed(vk, d.Model) },
 				)
 				if attempted {
 					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}

@@ -426,12 +426,25 @@ const (
 //     canonical model. Callers pass a closure over the ORIGINAL request's
 //     own vk, mirroring capabilityOK's "travels with the client, not the
 //     failed hop" contract exactly.
+//   - modelOK, checked immediately after regionOK, in the same position
+//     and with the same skip-without-charging-backoff semantics — closes
+//     a real gap a completeness sweep found on 2026-09-27: a virtual
+//     key's AllowedModels (identity.VirtualKey) was checked once, against
+//     req.Model, at the top of HandleChatCompletion/
+//     HandleChatCompletionStream — never re-checked against an explicit
+//     fallback_chains target's own canonical Model, even though a
+//     fallback_chains hop can legitimately name a DIFFERENT model than
+//     the one first requested (see crossmodel_fallback_billing_test.go's
+//     own fixture, which already needed and got 2 other targeted
+//     cross-model fixes: billing and rateLimitOK above). Callers pass a
+//     closure over the ORIGINAL request's own vk, mirroring regionOK's
+//     "travels with the client, not the failed hop" contract exactly.
 //
 // releaseDeploymentCapacity is the release counterpart to
 // deploymentCapacityOK, called on every path above that abandons an
 // already-capacity-acquired candidate without ever reaching call() —
 // see the deploymentCapacityOK bullet above for the full rationale.
-func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool, releaseDeploymentCapacity func(depName string), capabilityOK func(d Deployment) bool, regionOK func(d Deployment) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
+func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, tried map[string]bool, call func(Deployment) (adapter.ChatResponse, error), stop func() bool, rateLimitOK func(model string) bool, deploymentCapacityOK func(depName string) bool, releaseDeploymentCapacity func(depName string), capabilityOK func(d Deployment) bool, regionOK func(d Deployment) bool, modelOK func(d Deployment) bool) (dep Deployment, resp adapter.ChatResponse, err error, attempted bool) {
 	consecutiveFailures := 0
 	realAttempts := 0
 	for _, name := range targets {
@@ -473,6 +486,11 @@ func (p *Pipeline) attemptFallbackChain(ctx context.Context, targets []string, t
 		}
 
 		if !regionOK(nextDep) {
+			releaseDeploymentCapacity(nextDep.Name)
+			continue
+		}
+
+		if !modelOK(nextDep) {
 			releaseDeploymentCapacity(nextDep.Name)
 			continue
 		}

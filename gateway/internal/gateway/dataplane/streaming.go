@@ -555,6 +555,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 			p.releaseDeploymentConcurrency,
 			func(d Deployment) bool { return capabilityOKForRequest(d, req) },
 			func(d Deployment) bool { return isRegionAllowed(msr.vk, d.Region) },
+			func(d Deployment) bool { return isModelAllowed(msr.vk, d.Model) },
 		)
 		if attempted {
 			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
