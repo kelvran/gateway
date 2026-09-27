@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -1240,5 +1241,137 @@ func TestStreamingNearDuplicateCollisionCounterAgainstAlreadyWarmCache(t *testin
 	deltaAfter := streamingNearDuplicateCollisionMetricDelta(t, afterRM, testKeyID)
 	if got := deltaAfter - deltaBaseline; got != 0 {
 		t.Fatalf("kelvran.streaming.near_duplicate_collision[key_id=%s] delta = %d, want 0 -- a collision against an already-warm cache carries no upstream-coalescing-relevant signal and must never increment this counter", testKeyID, got)
+	}
+}
+
+// --- Source-IP allowlist tests: the streaming-path mirror of
+// virtual_key_source_ip_test.go's HandleChatCompletion (buffered-path)
+// coverage. A holistic, whole-session review of today's work found this
+// gap: streaming.go's own isSourceIPAllowed(vk, resolveClientIP(remoteAddr))
+// call (line ~186, wired identically to dataplane.go's buffered-path
+// check at line ~3219) had zero handler-level test of its own -- the
+// buffered path's four tests never touch HandleChatCompletionStream, so
+// a future refactor of this handler's own early-check ordering (the
+// exact class of change this session's Item 6 already made to the
+// collision-counter block) could silently drop or reorder this check
+// with nothing catching it. This is pre-existing, already-correct
+// production code (unchanged by today's session) -- these are pure
+// test additions, not a fix.
+
+func streamingSourceIPConstraintChatRequest() adapter.ChatRequest {
+	return adapter.ChatRequest{Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}}}
+}
+
+// TestHandleChatCompletionStreamRejectsDisallowedSourceIP mirrors
+// virtual_key_source_ip_test.go's TestHandleChatCompletionRejectsDisallowedSourceIP.
+func TestHandleChatCompletionStreamRejectsDisallowedSourceIP(t *testing.T) {
+	authCred := "stream-ip-constrained-cred"
+	_, allowedNet, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("net.ParseCIDR: %v", err)
+	}
+	keys := []identity.VirtualKey{{
+		ID: "stream-ip-key", KeyHash: testHashOf(authCred),
+		AllowedSourceCIDRs: []*net.IPNet{allowedNet},
+		RateLimitBurst:     100, RateLimitRefill: 100,
+	}}
+	var called bool
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		called = true
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, budget.NewTracker())
+
+	rec := httptest.NewRecorder()
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer "+authCred, "203.0.113.9:1234", "", streamingSourceIPConstraintChatRequest(), rec, "")
+	if !errors.Is(err, ErrSourceIPNotAllowed) {
+		t.Fatalf("err = %v, want ErrSourceIPNotAllowed", err)
+	}
+	if called {
+		t.Error("UpstreamStream was called for a disallowed source IP -- must never be attempted")
+	}
+}
+
+// TestHandleChatCompletionStreamAllowsMatchingSourceIP mirrors
+// virtual_key_source_ip_test.go's TestHandleChatCompletionAllowsMatchingSourceIP.
+func TestHandleChatCompletionStreamAllowsMatchingSourceIP(t *testing.T) {
+	authCred := "stream-ip-constrained-cred-2"
+	_, allowedNet, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("net.ParseCIDR: %v", err)
+	}
+	keys := []identity.VirtualKey{{
+		ID: "stream-ip-key-2", KeyHash: testHashOf(authCred),
+		AllowedSourceCIDRs: []*net.IPNet{allowedNet},
+		RateLimitBurst:     100, RateLimitRefill: 100,
+	}}
+	var called bool
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		called = true
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, budget.NewTracker())
+
+	rec := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer "+authCred, "10.1.2.3:1234", "", streamingSourceIPConstraintChatRequest(), rec, ""); err != nil {
+		t.Fatalf("HandleChatCompletionStream: %v", err)
+	}
+	if !called {
+		t.Error("UpstreamStream was never called for an allowed source IP")
+	}
+}
+
+// TestHandleChatCompletionStreamAllowsMatchingIPv6SourceIP mirrors
+// virtual_key_source_ip_test.go's TestHandleChatCompletionAllowsMatchingIPv6SourceIP.
+func TestHandleChatCompletionStreamAllowsMatchingIPv6SourceIP(t *testing.T) {
+	authCred := "stream-ip-constrained-cred-ipv6-allow"
+	_, allowedNet, err := net.ParseCIDR("2001:db8::/32")
+	if err != nil {
+		t.Fatalf("net.ParseCIDR: %v", err)
+	}
+	keys := []identity.VirtualKey{{
+		ID: "stream-ip-key-ipv6-allow", KeyHash: testHashOf(authCred),
+		AllowedSourceCIDRs: []*net.IPNet{allowedNet},
+		RateLimitBurst:     100, RateLimitRefill: 100,
+	}}
+	var called bool
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		called = true
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, budget.NewTracker())
+
+	rec := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer "+authCred, "[2001:db8::1]:1234", "", streamingSourceIPConstraintChatRequest(), rec, ""); err != nil {
+		t.Fatalf("HandleChatCompletionStream: %v", err)
+	}
+	if !called {
+		t.Error("UpstreamStream was never called for an allowed IPv6 source IP")
+	}
+}
+
+// TestHandleChatCompletionStreamRejectsDisallowedIPv6SourceIP mirrors
+// virtual_key_source_ip_test.go's TestHandleChatCompletionRejectsDisallowedIPv6SourceIP.
+func TestHandleChatCompletionStreamRejectsDisallowedIPv6SourceIP(t *testing.T) {
+	authCred := "stream-ip-constrained-cred-ipv6-reject"
+	_, allowedNet, err := net.ParseCIDR("2001:db8::/32")
+	if err != nil {
+		t.Fatalf("net.ParseCIDR: %v", err)
+	}
+	keys := []identity.VirtualKey{{
+		ID: "stream-ip-key-ipv6-reject", KeyHash: testHashOf(authCred),
+		AllowedSourceCIDRs: []*net.IPNet{allowedNet},
+		RateLimitBurst:     100, RateLimitRefill: 100,
+	}}
+	var called bool
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		called = true
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, nil, adapter.Registry{"openai": openai.New()}, keys, budget.NewTracker())
+
+	rec := httptest.NewRecorder()
+	err = p.HandleChatCompletionStream(context.Background(), "Bearer "+authCred, "[2001:db9::1]:1234", "", streamingSourceIPConstraintChatRequest(), rec, "")
+	if !errors.Is(err, ErrSourceIPNotAllowed) {
+		t.Fatalf("err = %v, want ErrSourceIPNotAllowed", err)
+	}
+	if called {
+		t.Error("UpstreamStream was called for a disallowed IPv6 source IP -- must never be attempted")
 	}
 }

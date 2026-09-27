@@ -910,7 +910,16 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		// Parsed once at startup, not per request -- a malformed CIDR
 		// string is a config-load-time failure (loud, aborts startup),
 		// never a silently-ignored entry that would quietly weaken this
-		// key's own allowlist.
+		// key's own allowlist. This duplicates controlplane.Load's own
+		// identical net.ParseCIDR check (added in the same round as this
+		// comment, commit 351a4544) -- on the real Load -> buildPipeline
+		// startup path, Load's check fires first and this loop never
+		// actually sees an invalid string. Kept, not dead code: this is
+		// the only check reached by a caller that constructs a
+		// controlplane.Config directly, bypassing Load (see this
+		// package's own TestBuildPipelineRejectsMalformedAllowedSourceCIDR/
+		// TestBuildPipelineParsesIPv6AllowedSourceCIDR) -- real
+		// defense-in-depth, not redundant dead code to delete.
 		var allowedSourceCIDRs []*net.IPNet
 		for _, cidr := range vk.AllowedSourceCIDRs {
 			_, network, err := net.ParseCIDR(cidr)
