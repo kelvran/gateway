@@ -52,46 +52,31 @@ package dataplane
 import (
 	"context"
 	"log/slog"
-	"os"
-	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/kelvran/gateway/gateway/internal/credentialstate"
 )
 
-// DeploymentCredentials is an immutable snapshot of a deployment's
-// resolved upstream credential values — the same four values
-// Deployment's own APIKey/AccessKeyID/SecretAccessKey/SessionToken
-// fields hold for every deployment that hasn't opted into file-based
-// hot-reload. Never logged in full — see reloadDeploymentCredentials'
-// own doc comment.
-type DeploymentCredentials struct {
-	APIKey          string
-	AccessKeyID     string
-	SecretAccessKey string
-	SessionToken    string
-}
+// DeploymentCredentials and DeploymentCredentialFiles are type aliases
+// (not new types) for the domain-agnostic primitives in
+// internal/credentialstate, extracted there once bedrockguard/embedsim
+// needed the identical atomic-swap mechanism (see that package's own
+// doc comment). An alias is the identical underlying type under a
+// second name — atomic.Pointer[DeploymentCredentials] and
+// atomic.Pointer[credentialstate.Credentials] are the same instantiated
+// generic type — so every existing call site in this package (and
+// every test in credential_reload_test.go) keeps compiling and
+// behaving identically with zero further edits; HasAny() is inherited
+// automatically from the aliased type. Never logged in full — see
+// reloadDeploymentCredentials' own doc comment.
+type DeploymentCredentials = credentialstate.Credentials
 
-// DeploymentCredentialFiles is the set of on-disk file paths a
-// deployment may configure as its credential source, mirroring
-// controlplane.DeploymentConfig's four new *File fields one-for-one. An
-// empty string means that particular credential still comes from
-// Deployment's own plain field, resolved once at cmd/gateway startup
-// exactly as before this feature existed.
-type DeploymentCredentialFiles struct {
-	APIKey          string
-	AccessKeyID     string
-	SecretAccessKey string
-	SessionToken    string
-}
-
-// HasAny reports whether f configures at least one file-based
-// credential source — cmd/gateway's buildPipeline uses this to decide
-// whether a deployment opts into RunCredentialReloadLoop at all, and
-// RunCredentialReloadLoop itself uses it to skip every deployment that
-// didn't.
-func (f DeploymentCredentialFiles) HasAny() bool {
-	return f.APIKey != "" || f.AccessKeyID != "" || f.SecretAccessKey != "" || f.SessionToken != ""
-}
+// DeploymentCredentialFiles mirrors controlplane.DeploymentConfig's
+// four *File fields one-for-one. An empty string means that particular
+// credential still comes from Deployment's own plain field, resolved
+// once at cmd/gateway startup exactly as before this feature existed.
+type DeploymentCredentialFiles = credentialstate.Files
 
 // NewDeploymentCredentialState builds the shared, atomically-swappable
 // credential holder cmd/gateway's buildPipeline wires onto
@@ -102,9 +87,7 @@ func (f DeploymentCredentialFiles) HasAny() bool {
 // very first request behaves identically whether or not a rotation has
 // happened yet.
 func NewDeploymentCredentialState(initial DeploymentCredentials) *atomic.Pointer[DeploymentCredentials] {
-	state := &atomic.Pointer[DeploymentCredentials]{}
-	state.Store(&initial)
-	return state
+	return credentialstate.NewState(initial)
 }
 
 // effectiveCredentials returns dep's current credential values: the
@@ -132,20 +115,12 @@ func (d Deployment) effectiveCredentials() DeploymentCredentials {
 	}
 }
 
-// ReadCredentialFile reads path and returns its trimmed contents — the
-// leading/trailing whitespace strip matters because a Kubernetes
-// projected Secret volume's file (and most operator-written rotation
-// scripts) commonly ends in a trailing newline that isn't part of the
-// actual credential value. Exported so cmd/gateway's buildPipeline can
-// use the exact same read logic for a deployment's INITIAL value that
-// RunCredentialReloadLoop below uses for every subsequent re-read of
-// the same path.
+// ReadCredentialFile reads path and returns its trimmed contents.
+// Exported so cmd/gateway's buildPipeline can use the exact same read
+// logic for a deployment's INITIAL value that RunCredentialReloadLoop
+// below uses for every subsequent re-read of the same path.
 func ReadCredentialFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
+	return credentialstate.ReadFile(path)
 }
 
 // DefaultCredentialReloadInterval is how often RunCredentialReloadLoop

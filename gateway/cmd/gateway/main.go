@@ -702,6 +702,21 @@ func run(configPath string, logger *slog.Logger) error {
 	}
 	go pipeline.RunCredentialReloadLoop(ctx, credentialReloadInterval)
 
+	// Guardrail-subsystem credential hot-reload (Bedrock Guardrails /
+	// the EmbedSim Bedrock embedder) -- same *_file convention, same
+	// credential_reload.interval_seconds knob as the deployment loop
+	// immediately above. guardrail.DefaultDetectors() (the regex/
+	// checksum PII detectors) never satisfy credentialReloader, so this
+	// is a no-op whenever neither bedrock_guardrails nor embed_sim is
+	// configured -- discovered via a type assertion per detector, not a
+	// hardcoded type list, so a future third AWS-backed detector opts in
+	// automatically the moment it implements the same one-method shape.
+	for _, det := range pipeline.GuardrailEngine().Detectors() {
+		if reloader, ok := det.(credentialReloader); ok {
+			go reloader.RunCredentialReloadLoop(ctx, credentialReloadInterval, logger)
+		}
+	}
+
 	// Config-propagation subscriber, per internal/configpropagation's
 	// own doc comment — a no-op unless config_propagation.redis_addr is
 	// configured. A SEPARATE *redis.Client connection from the one
@@ -1675,22 +1690,76 @@ func newGuardrailEngine(cfg controlplane.GuardrailsConfig, logger *slog.Logger) 
 
 	detectors := guardrail.DefaultDetectors()
 	if bg := cfg.BedrockGuardrails; bg != nil {
+		var accessKeyID string
+		if bg.AccessKeyIDFile != "" {
+			accessKeyID = readCredentialFileOrWarn(logger, "guardrails.bedrock_guardrails", "access_key_id", bg.AccessKeyIDFile)
+		} else {
+			accessKeyID = os.Getenv(bg.AccessKeyIDEnv)
+			if accessKeyID == "" {
+				logger.Warn("bedrock guardrails access key ID env var is not set; calls will fail", "env_var", bg.AccessKeyIDEnv)
+			}
+		}
+		var secretAccessKey string
+		if bg.SecretAccessKeyFile != "" {
+			secretAccessKey = readCredentialFileOrWarn(logger, "guardrails.bedrock_guardrails", "secret_access_key", bg.SecretAccessKeyFile)
+		} else {
+			secretAccessKey = os.Getenv(bg.SecretAccessKeyEnv)
+			if secretAccessKey == "" {
+				logger.Warn("bedrock guardrails secret access key env var is not set; calls will fail", "env_var", bg.SecretAccessKeyEnv)
+			}
+		}
+		var sessionToken string
+		if bg.SessionTokenFile != "" {
+			sessionToken = readCredentialFileOrWarn(logger, "guardrails.bedrock_guardrails", "session_token", bg.SessionTokenFile)
+		} else {
+			sessionToken = envOrEmpty(bg.SessionTokenEnv)
+		}
 		detectors = append(detectors, bedrockguard.New(bedrockguard.Config{
-			Region:           bg.Region,
-			AccessKeyID:      os.Getenv(bg.AccessKeyIDEnv),
-			SecretAccessKey:  os.Getenv(bg.SecretAccessKeyEnv),
-			SessionToken:     envOrEmpty(bg.SessionTokenEnv),
-			GuardrailID:      bg.GuardrailID,
-			GuardrailVersion: bg.GuardrailVersion,
+			Region:              bg.Region,
+			AccessKeyID:         accessKeyID,
+			SecretAccessKey:     secretAccessKey,
+			SessionToken:        sessionToken,
+			AccessKeyIDFile:     bg.AccessKeyIDFile,
+			SecretAccessKeyFile: bg.SecretAccessKeyFile,
+			SessionTokenFile:    bg.SessionTokenFile,
+			GuardrailID:         bg.GuardrailID,
+			GuardrailVersion:    bg.GuardrailVersion,
 		}, nil))
 		logger.Info("guardrail_bedrock_guardrails_enabled", "guardrail_id", bg.GuardrailID, "guardrail_version", bg.GuardrailVersion)
 	}
 	if es := cfg.EmbedSim; es != nil {
+		var accessKeyID string
+		if es.AccessKeyIDFile != "" {
+			accessKeyID = readCredentialFileOrWarn(logger, "guardrails.embed_sim", "access_key_id", es.AccessKeyIDFile)
+		} else {
+			accessKeyID = os.Getenv(es.AccessKeyIDEnv)
+			if accessKeyID == "" {
+				logger.Warn("embedsim access key ID env var is not set; calls will fail", "env_var", es.AccessKeyIDEnv)
+			}
+		}
+		var secretAccessKey string
+		if es.SecretAccessKeyFile != "" {
+			secretAccessKey = readCredentialFileOrWarn(logger, "guardrails.embed_sim", "secret_access_key", es.SecretAccessKeyFile)
+		} else {
+			secretAccessKey = os.Getenv(es.SecretAccessKeyEnv)
+			if secretAccessKey == "" {
+				logger.Warn("embedsim secret access key env var is not set; calls will fail", "env_var", es.SecretAccessKeyEnv)
+			}
+		}
+		var sessionToken string
+		if es.SessionTokenFile != "" {
+			sessionToken = readCredentialFileOrWarn(logger, "guardrails.embed_sim", "session_token", es.SessionTokenFile)
+		} else {
+			sessionToken = envOrEmpty(es.SessionTokenEnv)
+		}
 		embedder := embedsim.NewBedrockEmbedder(embedsim.BedrockEmbedderConfig{
-			Region:          es.Region,
-			AccessKeyID:     os.Getenv(es.AccessKeyIDEnv),
-			SecretAccessKey: os.Getenv(es.SecretAccessKeyEnv),
-			SessionToken:    envOrEmpty(es.SessionTokenEnv),
+			Region:              es.Region,
+			AccessKeyID:         accessKeyID,
+			SecretAccessKey:     secretAccessKey,
+			SessionToken:        sessionToken,
+			AccessKeyIDFile:     es.AccessKeyIDFile,
+			SecretAccessKeyFile: es.SecretAccessKeyFile,
+			SessionTokenFile:    es.SessionTokenFile,
 		}, nil)
 		det, err := embedsim.New(embedsim.Config{
 			SimilarityThreshold: es.SimilarityThreshold,
@@ -1727,11 +1796,29 @@ func envOrEmpty(name string) string {
 // failure (missing file, permission denied) warns exactly like the
 // *Env "not set" case above and returns "" -- calls to this deployment
 // fail explicitly rather than silently using an empty credential.
-func readCredentialFileOrWarn(logger *slog.Logger, depName, fieldLabel, path string) string {
+// credentialReloader is satisfied by any guardrail.Detector that owns
+// its own atomically-swappable, file-based credential state --
+// *bedrockguard.Detector and *embedsim.Detector today (the latter
+// delegates to its own embedder). Defined here, not in dataplane or
+// guardrail, since only this function's caller (run(), above) needs to
+// discover it -- the same "interface lives in the consumer" idiom
+// .go-arch-lint.yml's own comments document for
+// ratelimit.RedisBackend/budget.RedisBackend.
+type credentialReloader interface {
+	RunCredentialReloadLoop(ctx context.Context, interval time.Duration, logger *slog.Logger)
+}
+
+// readCredentialFileOrWarn reads path (a credential's *File source) for
+// subsystem -- a deployment name, or "guardrails.bedrock_guardrails"/
+// "guardrails.embed_sim" for the two non-deployment credential-holding
+// subsystems that reuse this same helper for their own INITIAL value
+// resolution (each has its own separate RunCredentialReloadLoop for
+// every subsequent re-read of the same path).
+func readCredentialFileOrWarn(logger *slog.Logger, subsystem, fieldLabel, path string) string {
 	value, err := dataplane.ReadCredentialFile(path)
 	if err != nil {
-		logger.Warn("deployment credential file could not be read; calls to this deployment will fail",
-			"deployment", depName, "field", fieldLabel, "path", path, "error", err.Error())
+		logger.Warn("credential file could not be read; calls will fail",
+			"subsystem", subsystem, "field", fieldLabel, "path", path, "error", err.Error())
 		return ""
 	}
 	return value

@@ -2019,6 +2019,17 @@ func (p *Pipeline) ListVirtualKeys() []identity.VirtualKey {
 	return result
 }
 
+// GuardrailEngine returns p's configured guardrail engine — exposed so
+// cmd/gateway's run() can discover, via engine.Detectors(), any
+// detector that supports credential hot-reload (bedrockguard.Detector,
+// embedsim.Detector) and start its own reload loop alongside p's own
+// RunCredentialReloadLoop. dataplane itself never inspects the returned
+// value beyond this pass-through — it has zero import of bedrockguard/
+// embedsim, matching .go-arch-lint.yml's own component graph.
+func (p *Pipeline) GuardrailEngine() *guardrail.Engine {
+	return p.guardrails
+}
+
 // SpentUSD returns keyID's cumulative recorded spend under resetInterval's
 // rolling window -- a thin, read-only wrapper around p.budget.SpentUSD,
 // exposed so admin.go (which has no access to Pipeline's private budget

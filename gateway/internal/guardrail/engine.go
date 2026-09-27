@@ -34,6 +34,13 @@ func NewEngine(detectors []Detector, policy Policy, version string, logger *slog
 // Version returns the Engine's own policy-version string.
 func (e *Engine) Version() string { return e.version }
 
+// Detectors returns e's configured detector list — read-only access for
+// a caller that needs to discover per-detector capabilities beyond
+// Check's own aggregate result, e.g. cmd/gateway's run() locating
+// whichever detector(s) support credential hot-reload via a type
+// assertion (see that function's own credentialReloader interface).
+func (e *Engine) Detectors() []Detector { return e.detectors }
+
 // Check runs every configured Detector against text and returns the
 // combined Verdict. A Block-tier finding, or a Detector error on a
 // Block-tier category (per Policy.ErrorActions), sets Blocked — an

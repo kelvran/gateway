@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+
+	"github.com/kelvran/gateway/gateway/internal/credentialstate"
 )
 
 // bedrockSigningName mirrors bedrockguard.go's own identically-named
@@ -41,6 +44,14 @@ type BedrockEmbedderConfig struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
+	// AccessKeyIDFile/SecretAccessKeyFile/SessionTokenFile are OPTIONAL
+	// alternatives to their plain-value siblings above -- see
+	// bedrockguard.Config's identically-shaped fields for the full
+	// rationale (this package's own credential_reload.go mirrors that
+	// package's mechanism exactly).
+	AccessKeyIDFile     string
+	SecretAccessKeyFile string
+	SessionTokenFile    string
 	// ModelID overrides defaultEmbeddingModelID -- test-only in practice.
 	ModelID string
 	// BaseURL overrides the real AWS host entirely when non-empty --
@@ -51,8 +62,10 @@ type BedrockEmbedderConfig struct {
 // BedrockEmbedder implements Embedder via AWS Bedrock's Titan Text
 // Embeddings model, called through InvokeModel.
 type BedrockEmbedder struct {
-	cfg    BedrockEmbedderConfig
-	client *http.Client
+	cfg       BedrockEmbedderConfig
+	credFiles credentialstate.Files
+	credState *atomic.Pointer[credentialstate.Credentials]
+	client    *http.Client
 }
 
 // NewBedrockEmbedder constructs a BedrockEmbedder. client is injectable
@@ -65,7 +78,28 @@ func NewBedrockEmbedder(cfg BedrockEmbedderConfig, client *http.Client) *Bedrock
 	if client == nil {
 		client = &http.Client{Timeout: requestTimeout}
 	}
-	return &BedrockEmbedder{cfg: cfg, client: client}
+	return &BedrockEmbedder{
+		cfg: cfg,
+		credFiles: credentialstate.Files{
+			AccessKeyID:     cfg.AccessKeyIDFile,
+			SecretAccessKey: cfg.SecretAccessKeyFile,
+			SessionToken:    cfg.SessionTokenFile,
+		},
+		credState: credentialstate.NewState(credentialstate.Credentials{
+			AccessKeyID:     cfg.AccessKeyID,
+			SecretAccessKey: cfg.SecretAccessKey,
+			SessionToken:    cfg.SessionToken,
+		}),
+		client: client,
+	}
+}
+
+// effectiveCredentials returns e's current credential values -- see
+// bedrockguard.Detector's identically-named method for the full
+// rationale. This is the ONLY place Embed should ever read a credential
+// value from.
+func (e *BedrockEmbedder) effectiveCredentials() credentialstate.Credentials {
+	return *e.credState.Load()
 }
 
 type invokeModelRequest struct {
@@ -95,10 +129,11 @@ func (e *BedrockEmbedder) Embed(ctx context.Context, text string) ([]float32, er
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	payloadHash := sha256.Sum256(body)
+	cc := e.effectiveCredentials()
 	creds := aws.Credentials{
-		AccessKeyID:     e.cfg.AccessKeyID,
-		SecretAccessKey: e.cfg.SecretAccessKey,
-		SessionToken:    e.cfg.SessionToken,
+		AccessKeyID:     cc.AccessKeyID,
+		SecretAccessKey: cc.SecretAccessKey,
+		SessionToken:    cc.SessionToken,
 	}
 	signer := v4.NewSigner()
 	if err := signer.SignHTTP(ctx, creds, httpReq, hex.EncodeToString(payloadHash[:]), bedrockSigningName, e.cfg.Region, time.Now()); err != nil {

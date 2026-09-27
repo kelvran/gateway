@@ -560,6 +560,47 @@ func TestLoadBedrockGuardrailsMissingRequiredFieldErrors(t *testing.T) {
 	}
 }
 
+// TestLoadBedrockGuardrailsAcceptsFileFieldsInPlaceOfEnv is the
+// guardrails.bedrock_guardrails sibling of
+// TestLoadBedrockDeploymentAcceptsFileFieldsInPlaceOfEnv -- proves the
+// *_file convention satisfies the same required-field check as *_env.
+func TestLoadBedrockGuardrailsAcceptsFileFieldsInPlaceOfEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  bedrock_guardrails:\n    region: \"us-east-1\"\n    access_key_id_file: \"/var/run/secrets/access-key-id\"\n    secret_access_key_file: \"/var/run/secrets/secret-access-key\"\n    guardrail_id: \"gr-abc123\"\n    guardrail_version: \"1\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with *_file fields in place of *_env: %v", err)
+	}
+	bg := cfg.Guardrails.BedrockGuardrails
+	if bg == nil {
+		t.Fatal("Guardrails.BedrockGuardrails = nil, want a populated *BedrockGuardrailsConfig")
+	}
+	if bg.AccessKeyIDFile != "/var/run/secrets/access-key-id" || bg.SecretAccessKeyFile != "/var/run/secrets/secret-access-key" {
+		t.Errorf("BedrockGuardrails = %+v, want AccessKeyIDFile/SecretAccessKeyFile populated from YAML", bg)
+	}
+}
+
+// TestLoadBedrockGuardrailsMissingBothFileAndEnvErrors proves neither
+// *_env nor *_file alone is required -- but at least one of the pair
+// is, for both access_key_id and secret_access_key.
+func TestLoadBedrockGuardrailsMissingBothFileAndEnvErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  bedrock_guardrails:\n    region: \"us-east-1\"\n    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\n    guardrail_id: \"gr-abc123\"\n    guardrail_version: \"1\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with neither access_key_id_env nor access_key_id_file set returned nil error, want an error")
+	}
+}
+
 // TestLoadGuardrailsEmbedSimSectionParsesAllFields proves the optional
 // guardrails.embed_sim: sub-section, when present, is parsed correctly,
 // mirroring TestLoadGuardrailsBedrockGuardrailsSectionParsesAllFields.
@@ -602,6 +643,44 @@ func TestLoadGuardrailsEmbedSimDefaultsSimilarityThresholdWhenUnset(t *testing.T
 	}
 	if cfg.Guardrails.EmbedSim == nil || cfg.Guardrails.EmbedSim.SimilarityThreshold != 0.82 {
 		t.Errorf("EmbedSim.SimilarityThreshold = %v, want the 0.82 default", cfg.Guardrails.EmbedSim)
+	}
+}
+
+// TestLoadEmbedSimAcceptsFileFieldsInPlaceOfEnv mirrors
+// TestLoadBedrockGuardrailsAcceptsFileFieldsInPlaceOfEnv.
+func TestLoadEmbedSimAcceptsFileFieldsInPlaceOfEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  embed_sim:\n    region: \"us-east-1\"\n    access_key_id_file: \"/var/run/secrets/access-key-id\"\n    secret_access_key_file: \"/var/run/secrets/secret-access-key\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with *_file fields in place of *_env: %v", err)
+	}
+	es := cfg.Guardrails.EmbedSim
+	if es == nil {
+		t.Fatal("Guardrails.EmbedSim = nil, want a populated *EmbedSimConfig")
+	}
+	if es.AccessKeyIDFile != "/var/run/secrets/access-key-id" || es.SecretAccessKeyFile != "/var/run/secrets/secret-access-key" {
+		t.Errorf("EmbedSim = %+v, want AccessKeyIDFile/SecretAccessKeyFile populated from YAML", es)
+	}
+}
+
+// TestLoadEmbedSimMissingBothFileAndEnvErrors mirrors
+// TestLoadBedrockGuardrailsMissingBothFileAndEnvErrors.
+func TestLoadEmbedSimMissingBothFileAndEnvErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  embed_sim:\n    region: \"us-east-1\"\n    secret_access_key_env: \"AWS_SECRET_ACCESS_KEY\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with neither access_key_id_env nor access_key_id_file set returned nil error, want an error")
 	}
 }
 

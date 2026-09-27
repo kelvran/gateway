@@ -230,3 +230,20 @@ func TestEngineVersion(t *testing.T) {
 		t.Errorf("Version() = %q, want %q", got, "v1.2.3")
 	}
 }
+
+// TestEngineDetectorsReturnsConfiguredDetectors proves the pass-through
+// accessor cmd/gateway's run() uses to discover, via a type assertion,
+// which detector(s) support credential hot-reload.
+func TestEngineDetectorsReturnsConfiguredDetectors(t *testing.T) {
+	detectors := DefaultDetectors()
+	e := NewEngine(detectors, DefaultPolicy(), "test", nil)
+	got := e.Detectors()
+	if len(got) != len(detectors) {
+		t.Fatalf("len(Detectors()) = %d, want %d", len(got), len(detectors))
+	}
+	for i := range detectors {
+		if got[i] != detectors[i] {
+			t.Errorf("Detectors()[%d] = %v, want %v", i, got[i], detectors[i])
+		}
+	}
+}

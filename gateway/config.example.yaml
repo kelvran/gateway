@@ -393,6 +393,41 @@ telemetry:
 #   policy_version: "v1"
 #   category_overrides:
 #     contact_info: "warn"
+#
+#   # Optional AWS Bedrock Guardrails ML detector, per
+#   # docs/rfcs/2026-09-13-gateway-bedrock-guardrails-ml-detector-design.md
+#   # -- an ADDITIONAL PROMPT_ATTACK check, never a replacement for the
+#   # regex/checksum detectors above. Every field is required once this
+#   # sub-section is present at all. Same credential shape as a bedrock
+#   # deployment: access_key_id_env/secret_access_key_env (plus an
+#   # optional session_token_env), or the *_file alternatives below for
+#   # hot-reload without a gateway restart — see any deployment's own
+#   # *_file field comments earlier in this file for the full rationale.
+#   # When both a *_file and its *_env sibling are set, *_file wins.
+#   bedrock_guardrails:
+#     region: "us-east-1"
+#     access_key_id_env: "AWS_ACCESS_KEY_ID"
+#     secret_access_key_env: "AWS_SECRET_ACCESS_KEY"
+#     # session_token_env: "AWS_SESSION_TOKEN"   # optional
+#     # access_key_id_file: "/var/run/secrets/kelvran/access-key-id"
+#     # secret_access_key_file: "/var/run/secrets/kelvran/secret-access-key"
+#     # session_token_file: "/var/run/secrets/kelvran/session-token"   # optional
+#     guardrail_id: "gr-abc123"
+#     guardrail_version: "1"
+#
+#   # Optional embedding-similarity prompt-injection detector
+#   # (internal/guardrail/embedsim) — catches paraphrases of known
+#   # attacks the regex detector's own fixed phrase list misses. Same
+#   # credential shape/hot-reload convention as bedrock_guardrails above.
+#   embed_sim:
+#     region: "us-east-1"
+#     access_key_id_env: "AWS_ACCESS_KEY_ID"
+#     secret_access_key_env: "AWS_SECRET_ACCESS_KEY"
+#     # session_token_env: "AWS_SESSION_TOKEN"   # optional
+#     # access_key_id_file: "/var/run/secrets/kelvran/access-key-id"
+#     # secret_access_key_file: "/var/run/secrets/kelvran/secret-access-key"
+#     # session_token_file: "/var/run/secrets/kelvran/session-token"   # optional
+#     similarity_threshold: 0.82
 
 # Admin HTTP surface: read-only config introspection (GET /admin/config)
 # plus live, no-restart virtual-key mutation (POST/DELETE
@@ -547,10 +582,13 @@ telemetry:
 # Configures RunCredentialReloadLoop, the file-based credential
 # hot-reload background loop -- see any deployment's own *_file field
 # comments above (e.g. claude-bedrock-primary's access_key_id_file).
-# Optional in a DIFFERENT sense than health_probe above: omitting this
-# section (or interval_seconds <= 0) means "use the built-in 60s
-# default", NOT "disabled" -- there's no separate disabled state,
-# because the loop is already a complete no-op whenever no deployment
+# This ONE interval also governs the separate guardrail-subsystem
+# reload loops (bedrock_guardrails/embed_sim's own *_file fields above)
+# -- no second interval_seconds knob for those. Optional in a DIFFERENT
+# sense than health_probe above: omitting this section (or
+# interval_seconds <= 0) means "use the built-in 60s default", NOT
+# "disabled" -- there's no separate disabled state, because every one
+# of these loops is already a complete no-op whenever nothing it covers
 # configures any *_file credential field at all.
 # credential_reload:
 #   interval_seconds: 60

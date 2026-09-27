@@ -110,6 +110,27 @@ linters:
         linters:
           - gosec
         text: "G304"
+      # internal/credentialstate.ReadFile is the shared implementation
+      # dataplane/credential_reload.go's own suppression above already
+      # covers -- extracted into its own leaf package once bedrockguard/
+      # embedsim needed the identical mechanism (see that package's own
+      # doc comment). Same reasoning, same operator-supplied *File path,
+      # never attacker-reachable input.
+      - path: internal/credentialstate/credentialstate.go
+        linters:
+          - gosec
+        text: "G304"
+      # guardrail_credential_file_test.go writes real AWS credential
+      # VALUES (read from the operator's own AWS_ACCESS_KEY_ID/
+      # AWS_SECRET_ACCESS_KEY env vars under RUN_LIVE_LLM_TESTS=1) to a
+      # t.TempDir()-rooted path it just constructed itself -- the
+      # identical test-fixture-only, never-attacker-reachable reasoning
+      # as deployment_tls_client_test.go's own suppression above, for a
+      # write instead of a read (gosec's G703, not G304).
+      - path: cmd/gateway/guardrail_credential_file_test\.go
+        linters:
+          - gosec
+        text: "G703"
       # backup.CopyFile/Restore read/write a path resolved from the
       # gateway's own -restore-from/-restore-store CLI flags (or, for
       # CopyFile, admin.backup_dir) -- the identical "operator-supplied,

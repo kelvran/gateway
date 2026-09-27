@@ -8,6 +8,7 @@ excludeFiles:
   - "^.*_test\\.go$"
 
 components:
+  credentialstate:   { in: credentialstate }
   identity:          { in: identity }
   identity-boltstore: { in: identity/boltstore }
   identity-redisstore: { in: identity/redisstore }
@@ -44,8 +45,8 @@ components:
   alerting:               { in: alerting }
   anomaly:                { in: anomaly }
 
-# Components deliberately absent from `deps:` below (identity,
-# ratelimit, router, costaccounting, guardrail, telemetry,
+# Components deliberately absent from `deps:` below (credentialstate,
+# identity, ratelimit, router, costaccounting, guardrail, telemetry,
 # cache-correlation, cache, adapter, controlplane, backup, idempotency,
 # configpropagation, alerting, budget-redisbudget, anomaly) are pure
 # leaves per
@@ -117,9 +118,11 @@ deps:
   bedrockguard:
     mayDependOn:
       - guardrail
+      - credentialstate
   embedsim:
     mayDependOn:
       - guardrail
+      - credentialstate
   idempotency-inprocess:
     mayDependOn:
       - idempotency
@@ -144,6 +147,7 @@ deps:
       - cache
       - configpropagation
       - costaccounting
+      - credentialstate
       - gatewayevents
       - guardrail
       - identity

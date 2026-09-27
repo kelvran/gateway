@@ -662,6 +662,18 @@ type EmbedSimConfig struct {
 	AccessKeyIDEnv     string
 	SecretAccessKeyEnv string
 	SessionTokenEnv    string
+	// AccessKeyIDFile/SecretAccessKeyFile/SessionTokenFile are OPTIONAL
+	// alternatives to their *Env siblings above, mirroring
+	// DeploymentConfig's own *File convention one-for-one (see that
+	// field's own doc comment for the full rationale: this is what lets
+	// a rotated AWS credential reach a running gateway process without a
+	// restart, via internal/guardrail/embedsim's own RunCredentialReloadLoop).
+	// Empty (the default) means this credential keeps using its
+	// corresponding *Env field exactly as before this feature existed.
+	// When both are set, *File wins.
+	AccessKeyIDFile     string
+	SecretAccessKeyFile string
+	SessionTokenFile    string
 	// SimilarityThreshold is the minimum cosine similarity required to
 	// report a Finding. <= 0 (absent) resolves to a real default of 0.82.
 	SimilarityThreshold float64
@@ -680,8 +692,16 @@ type BedrockGuardrailsConfig struct {
 	AccessKeyIDEnv     string
 	SecretAccessKeyEnv string
 	SessionTokenEnv    string
-	GuardrailID        string
-	GuardrailVersion   string
+	// AccessKeyIDFile/SecretAccessKeyFile/SessionTokenFile are OPTIONAL
+	// alternatives to their *Env siblings above -- see EmbedSimConfig's
+	// identically-shaped fields for the full rationale (this repo's own
+	// internal/guardrail/bedrockguard package mirrors embedsim's own
+	// credential_reload.go mechanism exactly).
+	AccessKeyIDFile     string
+	SecretAccessKeyFile string
+	SessionTokenFile    string
+	GuardrailID         string
+	GuardrailVersion    string
 }
 
 // AdminConfig configures the optional admin HTTP surface (read-only
@@ -1286,10 +1306,13 @@ func Load(path string) (*Config, error) {
 			bg.AccessKeyIDEnv, _ = getString(bgRaw, "access_key_id_env")
 			bg.SecretAccessKeyEnv, _ = getString(bgRaw, "secret_access_key_env")
 			bg.SessionTokenEnv, _ = getString(bgRaw, "session_token_env")
+			bg.AccessKeyIDFile, _ = getString(bgRaw, "access_key_id_file")
+			bg.SecretAccessKeyFile, _ = getString(bgRaw, "secret_access_key_file")
+			bg.SessionTokenFile, _ = getString(bgRaw, "session_token_file")
 			bg.GuardrailID, _ = getString(bgRaw, "guardrail_id")
 			bg.GuardrailVersion, _ = getString(bgRaw, "guardrail_version")
-			if bg.Region == "" || bg.AccessKeyIDEnv == "" || bg.SecretAccessKeyEnv == "" || bg.GuardrailID == "" || bg.GuardrailVersion == "" {
-				return nil, fmt.Errorf("controlplane: guardrails.bedrock_guardrails is missing one of region/access_key_id_env/secret_access_key_env/guardrail_id/guardrail_version")
+			if bg.Region == "" || (bg.AccessKeyIDEnv == "" && bg.AccessKeyIDFile == "") || (bg.SecretAccessKeyEnv == "" && bg.SecretAccessKeyFile == "") || bg.GuardrailID == "" || bg.GuardrailVersion == "" {
+				return nil, fmt.Errorf("controlplane: guardrails.bedrock_guardrails is missing one of region/access_key_id_env (or _file)/secret_access_key_env (or _file)/guardrail_id/guardrail_version")
 			}
 			cfg.Guardrails.BedrockGuardrails = bg
 		}
@@ -1299,10 +1322,13 @@ func Load(path string) (*Config, error) {
 			es.AccessKeyIDEnv, _ = getString(esRaw, "access_key_id_env")
 			es.SecretAccessKeyEnv, _ = getString(esRaw, "secret_access_key_env")
 			es.SessionTokenEnv, _ = getString(esRaw, "session_token_env")
+			es.AccessKeyIDFile, _ = getString(esRaw, "access_key_id_file")
+			es.SecretAccessKeyFile, _ = getString(esRaw, "secret_access_key_file")
+			es.SessionTokenFile, _ = getString(esRaw, "session_token_file")
 			es.SimilarityThreshold, _ = getFloat(esRaw, "similarity_threshold")
 			es.CorpusPath, _ = getString(esRaw, "corpus_path")
-			if es.Region == "" || es.AccessKeyIDEnv == "" || es.SecretAccessKeyEnv == "" {
-				return nil, fmt.Errorf("controlplane: guardrails.embed_sim is missing one of region/access_key_id_env/secret_access_key_env")
+			if es.Region == "" || (es.AccessKeyIDEnv == "" && es.AccessKeyIDFile == "") || (es.SecretAccessKeyEnv == "" && es.SecretAccessKeyFile == "") {
+				return nil, fmt.Errorf("controlplane: guardrails.embed_sim is missing one of region/access_key_id_env (or _file)/secret_access_key_env (or _file)")
 			}
 			if es.SimilarityThreshold <= 0 {
 				es.SimilarityThreshold = 0.82

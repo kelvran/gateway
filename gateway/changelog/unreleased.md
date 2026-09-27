@@ -6,6 +6,8 @@ Versioning: [SemVer](https://semver.org/) — load-bearing for the Go module pat
 
 ## Added
 
+- Bedrock Guardrails (`guardrails.bedrock_guardrails`) and the EmbedSim Bedrock embedder (`guardrails.embed_sim`) now support the same file-based credential hot-reload convention already available for deployments: optional `access_key_id_file`/`secret_access_key_file`/`session_token_file` fields, re-read on the same `credential_reload.interval_seconds` tick as deployment credentials. Previously, either subsystem's AWS credential was resolved once at startup and held for the life of the process — an AWS STS session token expiring, or a Kubernetes projected Secret volume rotation, required a full gateway restart to pick up. New shared `internal/credentialstate` package backs all three now-hot-reloadable subsystems (deployments, Bedrock Guardrails, EmbedSim) with the identical lock-free atomic-swap mechanism. Live-verified end to end against real AWS: rotating the credential file to a bad value produced a real `403` from AWS Bedrock on the very next reload tick, and restoring it recovered cleanly — not just a unit-level proof.
+
 ## Changed
 
 ## Deprecated

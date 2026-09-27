@@ -136,6 +136,20 @@ func fakeOpenAIResponse(model string) *openai.Response {
 	}
 }
 
+// TestGuardrailEngineReturnsConfiguredEngine proves the pass-through
+// accessor cmd/gateway's run() uses to discover, via
+// engine.Detectors(), which detector(s) support credential hot-reload.
+func TestGuardrailEngineReturnsConfiguredEngine(t *testing.T) {
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		t.Fatal("upstream should never be called by this test")
+		return nil, nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	if got := p.GuardrailEngine(); got == nil || got != p.guardrails {
+		t.Errorf("GuardrailEngine() = %v, want p.guardrails (%v)", got, p.guardrails)
+	}
+}
+
 func TestHandleChatCompletionRejectsMissingAuth(t *testing.T) {
 	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
 		t.Fatal("upstream should never be called when auth fails")

@@ -21,11 +21,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
+	"github.com/kelvran/gateway/gateway/internal/credentialstate"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 )
 
@@ -54,6 +56,18 @@ type Config struct {
 	SessionToken     string
 	GuardrailID      string
 	GuardrailVersion string
+	// AccessKeyIDFile/SecretAccessKeyFile/SessionTokenFile are OPTIONAL
+	// alternatives to their plain-value siblings above, mirroring
+	// controlplane.DeploymentConfig's own *File convention: cmd/gateway's
+	// newGuardrailEngine resolves the INITIAL value from either source
+	// before calling New; these three paths are what New additionally
+	// captures so this Detector's own RunCredentialReloadLoop
+	// (credential_reload.go) can periodically re-read them for the life
+	// of the process. Empty (the default) means this credential is never
+	// hot-reloaded -- exactly the behavior before this capability existed.
+	AccessKeyIDFile     string
+	SecretAccessKeyFile string
+	SessionTokenFile    string
 	// BaseURL overrides the real AWS host ("https://bedrock-runtime.
 	// {Region}.amazonaws.com") entirely when non-empty -- test-only,
 	// mirroring controlplane.DeploymentConfig.BaseURL's own convention,
@@ -76,8 +90,10 @@ type Config struct {
 // per-detector failure-policy surface, per the RFC's own resolved
 // Unresolved Question.
 type Detector struct {
-	cfg    Config
-	client *http.Client
+	cfg       Config
+	credFiles credentialstate.Files
+	credState *atomic.Pointer[credentialstate.Credentials]
+	client    *http.Client
 }
 
 // New constructs a Detector. client is injectable so tests can point it at
@@ -87,7 +103,29 @@ func New(cfg Config, client *http.Client) *Detector {
 	if client == nil {
 		client = &http.Client{Timeout: requestTimeout}
 	}
-	return &Detector{cfg: cfg, client: client}
+	return &Detector{
+		cfg: cfg,
+		credFiles: credentialstate.Files{
+			AccessKeyID:     cfg.AccessKeyIDFile,
+			SecretAccessKey: cfg.SecretAccessKeyFile,
+			SessionToken:    cfg.SessionTokenFile,
+		},
+		credState: credentialstate.NewState(credentialstate.Credentials{
+			AccessKeyID:     cfg.AccessKeyID,
+			SecretAccessKey: cfg.SecretAccessKey,
+			SessionToken:    cfg.SessionToken,
+		}),
+		client: client,
+	}
+}
+
+// effectiveCredentials returns d's current credential values -- the
+// latest snapshot from d.credState, which reflects either the original
+// Config values (no reload ever happened) or the most recent successful
+// file re-read (see credential_reload.go). This is the ONLY place
+// Detect should ever read a credential value from.
+func (d *Detector) effectiveCredentials() credentialstate.Credentials {
+	return *d.credState.Load()
 }
 
 func (d *Detector) Name() string { return "bedrock_guardrails_prompt_attack" }
@@ -165,10 +203,11 @@ func (d *Detector) Detect(ctx context.Context, text string) ([]guardrail.Finding
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	payloadHash := sha256.Sum256(body)
+	cc := d.effectiveCredentials()
 	creds := aws.Credentials{
-		AccessKeyID:     d.cfg.AccessKeyID,
-		SecretAccessKey: d.cfg.SecretAccessKey,
-		SessionToken:    d.cfg.SessionToken,
+		AccessKeyID:     cc.AccessKeyID,
+		SecretAccessKey: cc.SecretAccessKey,
+		SessionToken:    cc.SessionToken,
 	}
 	signer := v4.NewSigner()
 	if err := signer.SignHTTP(ctx, creds, httpReq, hex.EncodeToString(payloadHash[:]), bedrockSigningName, d.cfg.Region, time.Now()); err != nil {
