@@ -22,16 +22,29 @@ Use a **scratch config**, not `gateway/config.yaml` (the real, gitignored pilot 
 `deployments:`/AWS env-var names for real Bedrock calls, but write fresh `virtual_keys:` so you never
 touch the pilot's real budgets/keys. Generate a key hash: `printf '%s' '<secret>' | shasum -a 256`.
 
-## ⚠️ `allowed_source_cidrs` YAML shape gotcha (confirmed live, 2026-09-27)
+## ⚠️ `allowed_source_cidrs` YAML shape gotcha (confirmed live, 2026-09-27; fixed same day, commit 351a4544)
 
 This field is a **map of `"cidr": true`**, exactly like `allowed_models`/`allowed_regions` —
 **NOT a YAML list**, even though the Go struct field is `[]string` (which makes a list feel natural).
 
+**Real mechanism, corrected** (an earlier version of this note guessed wrong — don't repeat that
+mistake): `controlplane.Load`'s parser (`parseYAMLMini`) has no list syntax awareness at all. A
+`- "::1/128"` line does NOT make `getMap` return `ok=false` — a child map genuinely gets created and
+`getMap` returns `ok=true`. The real bug: `parseYAMLMini` finds the FIRST colon anywhere in the raw
+line, which for an IPv6 CIDR lands inside the quoted value itself, garbling the whole line into one
+bogus key/value pair (e.g. key `- "`, value `:1/128"`) inside that (successfully-returned) map — that
+garbled value then fails the `v.(bool)` assertion in the parsing loop and silently gets dropped.
+
+**As of commit 351a4544, this is fixed**: `Load` now returns a loud error for any non-bool value
+under `allowed_models`/`allowed_regions`/`allowed_source_cidrs` (catching this exact garbling), and
+also validates CIDR syntax at Load time (so `-validate` catches a malformed CIDR too, not just real
+startup). Before that fix, this silently produced an unrestricted key with `-validate` reporting
+"config is valid" — kept below as a still-useful illustration of the shape mistake to avoid, even
+though it's no longer silent.
+
 ```yaml
-# WRONG — silently parses to a no-op. getMap() returns ok=false on a list value,
-# so the whole `if ac, ok := getMap(...); ok` block never runs. NO error anywhere:
-# `-validate` says "config is valid", the key just gets an unrestricted (empty)
-# AllowedSourceCIDRs with the constraint fully but silently disabled.
+# WRONG — as of 351a4544 this now correctly fails Load()/`-validate` with a loud
+# error naming the field. Before that fix it silently produced an unrestricted key.
 allowed_source_cidrs:
   - "::1/128"
 
@@ -40,16 +53,25 @@ allowed_source_cidrs:
   "::1/128": true
 ```
 
-Confirmed by live-testing the wrong shape: real IPv4 request to a key restricted to `::1/128`
-came back `200 OK` (should have been `403`) with zero warning at load or validate time.
+Confirmed by live-testing the wrong shape (before the fix): a real IPv4 request to a key restricted
+to `::1/128` came back `200 OK` (should have been `403`) with zero warning at load or validate time.
 
-## `-validate` is not a full pre-deploy check
+Before trusting a real config file (e.g. before restarting the pilot gateway after touching
+`allowed_source_cidrs`/`allowed_models`/`allowed_regions`), run `-validate` against it once to
+confirm no other virtual key has the same non-bool-value pattern — `Load` now catches it, but nothing
+swept the existing pilot config for OTHER instances until someone runs this:
+`go run ./cmd/gateway -config gateway/config.yaml -validate`.
 
-`-validate` only calls `controlplane.Load` + `validateConfig` — it never calls `buildPipeline`, so it
-never runs `net.ParseCIDR` on `allowed_source_cidrs` entries (or anything else only checked inside
-`buildPipeline`). A malformed CIDR string passes `-validate` cleanly but crashes the process on real
-startup (`building pipeline: virtual key ...: invalid CIDR address: ...`). Don't trust `-validate`
-as a complete "will this config actually start" gate — it's a narrower check than real startup.
+## `-validate` used to be narrower than real startup — fixed same day (commit 351a4544)
+
+`-validate` only calls `controlplane.Load` + `validateConfig` — it never calls `buildPipeline`.
+Before 351a4544, that meant `net.ParseCIDR` on `allowed_source_cidrs` entries only ran inside
+`buildPipeline`, so a malformed CIDR string passed `-validate` cleanly but crashed the process on
+real startup. `Load` now runs the identical `net.ParseCIDR` check itself, so `-validate` catches this
+class of error too as of today. `-validate` may still not be a COMPLETE "will this config actually
+start" gate for other checks that remain `buildPipeline`-only (e.g. verifying a named provider is
+actually registered) — don't assume "config is valid" means "will start clean" for everything;
+verify against this file's own actual `buildPipeline` call sites if a new gotcha like this surfaces.
 
 ## Observing behavior without Prometheus/Grafana
 
