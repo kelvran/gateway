@@ -162,7 +162,7 @@ jobs:
         # repo's own testing conventions explicitly reject (see ci.yml's
         # regression-corpus-gate comment). Findings surface via the
         # code-scanning dashboard instead, same posture as CodeQL/Scorecard.
-        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12.3122.0
+        uses: bridgecrewio/checkov-action@a8664e3a0549367977f0cda990a34311835c87c0 # v12.3123.0
         with:
           directory: terraform/
           framework: terraform
@@ -234,7 +234,7 @@ jobs:
         # scan doesn't need it rendered to check the committed resources.
         # soft_fail for the same no-guessed-baseline reason as the
         # terraform-checkov job above.
-        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12.3122.0
+        uses: bridgecrewio/checkov-action@a8664e3a0549367977f0cda990a34311835c87c0 # v12.3123.0
         with:
           directory: deploy/k8s/base
           framework: kubernetes
