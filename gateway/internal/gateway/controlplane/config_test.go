@@ -445,6 +445,34 @@ func TestLoadGuardrailsSectionParsesPolicyVersionAndOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsCategoryOverrideWrittenAsANestedMapping is the
+// category_overrides sibling of TestLoadRejectsAllowedSourceCIDRsWrittenAsAYAMLList
+// (a different mistake, same underlying bug class: a config value's
+// real type silently doesn't match what the parsing loop expects, and
+// the old code dropped it with zero error instead of rejecting it).
+// Unlike allowed_source_cidrs, this field's real category/action values
+// are colon-free, so the colon-garbling mechanism that bug exploited
+// can't reach here -- parseYAMLMini's own "expected key: value" check
+// already rejects a bare "- category" list line one layer up. The real
+// risk here is over-nesting instead: every sibling section in this same
+// guardrails: block (bedrock_guardrails, embed_sim) legitimately uses a
+// nested map, so "category:\n  action: block" instead of a flat
+// "category: block" is a plausible copy-paste mistake -- it parses
+// cleanly into a map[string]any value, which used to silently fail the
+// v.(string) assertion and vanish with no error anywhere.
+func TestLoadRejectsCategoryOverrideWrittenAsANestedMapping(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nguardrails:\n  category_overrides:\n    contact_info:\n      action: \"block\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load with a category_overrides entry written as a nested mapping = nil error, want a loud rejection -- this shape must never silently drop the override")
+	}
+}
+
 // TestLoadWithoutGuardrailsSectionDefaultsToZeroValue is the mirror-image
 // "genuinely optional" proof: a config with no guardrails: section at
 // all must parse successfully with the zero value, never an error.

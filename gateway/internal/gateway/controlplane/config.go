@@ -1246,10 +1246,38 @@ func Load(path string) (*Config, error) {
 		cfg.Guardrails.PolicyVersion, _ = getString(guardrailsRaw, "policy_version")
 		if overridesRaw, ok := getMap(guardrailsRaw, "category_overrides"); ok {
 			cfg.Guardrails.CategoryOverrides = make(map[string]string, len(overridesRaw))
-			for category := range overridesRaw {
-				if action, ok := getString(overridesRaw, category); ok {
-					cfg.Guardrails.CategoryOverrides[category] = action
+			for category, v := range overridesRaw {
+				action, ok := v.(string)
+				if !ok {
+					// Same bug CLASS as allowed_models/allowed_regions/
+					// allowed_source_cidrs (351a4544), reached via a
+					// DIFFERENT mechanism -- category/action values here
+					// are colon-free (see internal/guardrail's own
+					// Category/Action enums), so the colon-garbling path
+					// that bug exploited can't happen here; a bare
+					// "- category" list line has no colon at all and
+					// parseYAMLMini's own findKeyColon already rejects it
+					// loudly one layer up. The real risk here is
+					// over-nesting instead -- every sibling section in
+					// this same guardrails: block (bedrock_guardrails,
+					// embed_sim) legitimately uses a nested map, so
+					// "category:\n  action: block" instead of
+					// "category: block" is a plausible copy-paste
+					// mistake, and it parses cleanly into a
+					// map[string]any value here, silently dropped by the
+					// old code with zero error. A silently-dropped
+					// override reverts the category to guardrail.
+					// DefaultPolicy's own baseline, not to "no
+					// protection" -- fail-open only for an override that
+					// was meant to STRENGTHEN a category past its
+					// default, fail-safe for one meant to weaken it --
+					// but "silently doesn't do what the operator
+					// configured" is wrong either direction, so this
+					// fails loud regardless of which way the mistake
+					// goes.
+					return nil, fmt.Errorf("controlplane: guardrails.category_overrides entry %q: value must be a string (e.g. %q: \"block\"), got %T -- this field is a flat mapping of category -> action string, see config.example.yaml", category, category, v)
 				}
+				cfg.Guardrails.CategoryOverrides[category] = action
 			}
 		}
 		if bgRaw, ok := getMap(guardrailsRaw, "bedrock_guardrails"); ok {
