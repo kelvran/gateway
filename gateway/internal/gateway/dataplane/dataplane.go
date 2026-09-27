@@ -353,14 +353,36 @@ func (p *Pipeline) rerouteToCapableDeploymentIfNeeded(dep Deployment, req adapte
 	if eligible(dep) {
 		return dep
 	}
-	excluded := map[string]bool{dep.Name: true}
+	if candidate, ok := p.nextEligibleDeployment(req.Model, dep.Name, eligible); ok {
+		return candidate
+	}
+	return dep
+}
+
+// nextEligibleDeployment walks model's deployment pool via repeated
+// nextDeployment calls, starting from an exclude set of just
+// {excludeName}, growing that set by one on every ineligible candidate,
+// until eligible returns true for one (returned, ok=true) or the pool
+// is exhausted (ok=false). Shared by rerouteToCapableDeploymentIfNeeded
+// (the first pick, which falls through to the original ineligible
+// deployment when this returns ok=false — its own long-documented v1
+// scope limit), HandleEmbeddings' own sole-pick reroute (same
+// fallthrough convention), runMissPath's own legacy (no fallback_chains
+// configured) fallback branch below (which does NOT fall through — see
+// that call site's own comment for why skipping the hop entirely,
+// matching attemptFallbackChain's own capabilityOK/regionOK gate
+// convention, is the correct behavior for a fallback hop specifically,
+// unlike the first pick), and streamDeploymentWithFallback's identical
+// legacy-fallback branch in streaming.go (a different file, same fix).
+func (p *Pipeline) nextEligibleDeployment(model string, excludeName string, eligible func(Deployment) bool) (Deployment, bool) {
+	excluded := map[string]bool{excludeName: true}
 	for {
-		candidate, hasCandidate := p.nextDeployment(req.Model, excluded)
+		candidate, hasCandidate := p.nextDeployment(model, excluded)
 		if !hasCandidate {
-			return dep
+			return Deployment{}, false
 		}
 		if eligible(candidate) {
-			return candidate
+			return candidate, true
 		}
 		excluded[candidate.Name] = true
 	}
@@ -2994,6 +3016,20 @@ var ErrNotAnEmbeddingDeployment = errors.New("dataplane: requested model is not 
 // on every return path via defer, plus the existing
 // telemetry.RecordLLMSpend counter on success — deliberately NOT a new
 // OTel span or GatewayDecisionEvent, matching the scope boundary above.
+//
+// **Fixed, a second real gap found by the same 2026-09-27 review**:
+// this function's sole deployment pick used to call plain
+// nextDeployment(req.Model, nil) with no AllowedRegions check at all —
+// unlike HandleChatCompletion/HandleChatCompletionStream, which both
+// gate their first pick via rerouteToCapableDeploymentIfNeeded. Every
+// single embeddings request from a region-restricted virtual key could
+// land on an out-of-region deployment, unconditionally (no transient
+// error needed to trigger it, unlike the sibling chat-completion
+// legacy-fallback bug this same review found). Now best-effort rerouted
+// via the shared nextEligibleDeployment helper, mirroring
+// rerouteToCapableDeploymentIfNeeded's own "never a hard error" v1 scope
+// limit for the fully-degenerate case (no in-region deployment exists
+// anywhere in the pool).
 func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader string, remoteAddr string, req adapter.EmbeddingRequest) (resp adapter.EmbeddingResponse, err error) {
 	start := time.Now()
 	var vk *identity.VirtualKey
@@ -3066,6 +3102,28 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	if !found {
 		err = fmt.Errorf("%w: %q", ErrNoDeployment, req.Model)
 		return
+	}
+	// A real, previously-unguarded gap the same 2026-09-27 review that
+	// found and fixed the chat-completion legacy-fallback region bypass
+	// also caught here: unlike HandleChatCompletion/HandleChatCompletionStream's
+	// first pick (rerouteToCapableDeploymentIfNeeded), this was the ONLY
+	// selection in the whole embeddings path and never checked
+	// isRegionAllowed at all -- every single embeddings request from an
+	// AllowedRegions-restricted virtual key could land on an out-of-region
+	// deployment, unconditionally, with no error condition required (the
+	// chat-completion bug needed a transient 5xx/timeout/throttle first;
+	// this one didn't need anything). Best-effort reroute, mirroring
+	// rerouteToCapableDeploymentIfNeeded's own documented v1 scope limit:
+	// never a hard error -- if genuinely no in-region deployment exists
+	// anywhere in the pool for this model, falls through to the original
+	// pick unchanged, exactly like the chat-completion first pick already
+	// does for the identical fully-degenerate case.
+	if !isRegionAllowed(vk, dep.Region) {
+		if reroute, ok := p.nextEligibleDeployment(req.Model, dep.Name, func(d Deployment) bool {
+			return isRegionAllowed(vk, d.Region)
+		}); ok {
+			dep = reroute
+		}
 	}
 	if dep.Kind != "embedding" {
 		err = fmt.Errorf("%w: deployment %q", ErrNotAnEmbeddingDeployment, dep.Name)
@@ -3452,7 +3510,31 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
 					dep, resp, err = hopDep, hopResp, hopErr
 				}
-			} else if fallbackDep, hasFallback := p.nextDeployment(req.Model, map[string]bool{dep.Name: true}); hasFallback {
+			} else if fallbackDep, hasFallback := p.nextEligibleDeployment(req.Model, dep.Name, func(d Deployment) bool {
+				return capabilityOKForRequest(d, req) && isRegionAllowed(vk, d.Region)
+			}); hasFallback {
+				// Legacy (no fallback_chains configured) single-fallback
+				// path — the pre-existing, unconfigured-by-default
+				// behavior every deployment gets unless it opts into
+				// fallback_chains. Previously called plain nextDeployment
+				// with no eligibility filter at all: a data-residency-
+				// restricted (AllowedRegions) or ResponseFormat-restricted
+				// virtual key could silently land on an out-of-region or
+				// incapable deployment here on an ordinary transient
+				// upstream error (5xx/timeout/throttle) -- no attacker
+				// action needed. Found by a 2026-09-27 holistic review
+				// that traced a combined-restriction key end to end;
+				// isRegionAllowed/capabilityOKForRequest already gated
+				// the first pick (rerouteToCapableDeploymentIfNeeded) and
+				// the explicit fallback_chains hop (attemptFallbackChain's
+				// own regionOK/capabilityOK closures above) -- this was
+				// the one remaining unguarded selection site. Skips the
+				// hop entirely (hasFallback=false) when no eligible
+				// candidate exists, matching attemptFallbackChain's own
+				// convention for a fallback hop specifically -- unlike
+				// rerouteToCapableDeploymentIfNeeded's first-pick
+				// contract, this never falls through to an ineligible
+				// deployment; the original error propagates instead.
 				fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 				dep = fallbackDep
 				resp, err = p.callDeploymentWithCapacityCheck(ctx, dep, req)

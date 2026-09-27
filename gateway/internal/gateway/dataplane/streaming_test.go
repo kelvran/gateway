@@ -1347,6 +1347,46 @@ func TestHandleChatCompletionStreamAllowsMatchingIPv6SourceIP(t *testing.T) {
 	}
 }
 
+// TestHandleChatCompletionStreamLegacyFallbackRespectsRegionConstraint
+// is dataplane_test.go's TestHandleChatCompletionLegacyFallbackRespectsRegionConstraint
+// (virtual_key_region_test.go), streaming-path mirror -- proving the
+// identical legacy-fallback region-filtering fix in streaming.go's own
+// HandleChatCompletionStream (not just the buffered dataplane.go copy)
+// actually works, since both files needed the same fix.
+func TestHandleChatCompletionStreamLegacyFallbackRespectsRegionConstraint(t *testing.T) {
+	authCred := "stream-region-legacy-fallback-cred"
+	keys := []identity.VirtualKey{{
+		ID: "stream-region-legacy-fallback-key", KeyHash: testHashOf(authCred),
+		AllowedRegions: map[string]struct{}{"eu-west-1": {}},
+		RateLimitBurst: 100, RateLimitRefill: 100,
+	}}
+	// Deliberately NO FallbackChains on "primary" -- its own upstream
+	// failure must take the legacy branch, not attemptFallbackChain.
+	deployments := []Deployment{
+		{Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", Region: "eu-west-1"},
+		{Name: "us-alt", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", Region: "us-east-1"},
+		{Name: "eu-alt", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", Region: "eu-west-1"},
+	}
+	var served string
+	p := newStreamingTestPipelineWithKeysAndBudget(t, func(ctx context.Context, dep Deployment, req any) (io.ReadCloser, error) {
+		if dep.Name == "primary" {
+			return nil, errors.New("primary deployment failing, forcing the legacy fallback branch")
+		}
+		served = dep.Name
+		return nopCloserReader{strings.NewReader(realOpenAISSEStream)}, nil
+	}, deployments, adapter.Registry{"openai": openai.New()}, keys, budget.NewTracker())
+
+	rec := httptest.NewRecorder()
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer "+authCred, "", "", adapter.ChatRequest{
+		Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}},
+	}, rec, ""); err != nil {
+		t.Fatalf("HandleChatCompletionStream: %v", err)
+	}
+	if served != "eu-alt" {
+		t.Errorf("served by %q, want eu-alt -- the legacy fallback branch must skip the out-of-region us-alt target entirely", served)
+	}
+}
+
 // TestHandleChatCompletionStreamRejectsDisallowedIPv6SourceIP mirrors
 // virtual_key_source_ip_test.go's TestHandleChatCompletionRejectsDisallowedIPv6SourceIP.
 func TestHandleChatCompletionStreamRejectsDisallowedIPv6SourceIP(t *testing.T) {

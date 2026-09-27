@@ -189,20 +189,41 @@ func TestHandleChatCompletionErrorsOnUnsupportedBedrockModelWithNoCapableAlterna
 	}
 }
 
-// TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttributeOnOldStyleFallback
-// proves responseFormatRequestedNotEnforced's own attribute-emission code
-// (dataplane.go) is still real, reachable code after the fix above, not
-// dead code -- via the one remaining, disclosed, deliberately out-of-scope
-// gap: checkResponseFormatEnforceable only gates the FIRST pick (this
-// phase's own scope) and attemptFallbackChain's capabilityOK gate only
-// gates a NEW-style (dep.FallbackChains configured) fallback hop -- the
-// OLD-style single-fallback-via-router path (dataplane.go's "pre-existing
-// single-fallback-via-router behavior, unchanged" branch, taken when the
+// TestHandleChatCompletionOldStyleFallbackSkipsIncapableTargetRatherThanSilentlyServingIt
+// supersedes the prior (this same day, 2026-09-27) version of this test,
+// which asserted the OPPOSITE and documented it as a disclosed, real,
+// still-open gap: the OLD-style single-fallback-via-router path
+// (runMissPath's "else if ...; hasFallback" branch, taken when the
 // first-picked deployment has no FallbackChains configured AND its own
-// upstream call errors) still has no capability check on the fallback
-// target it picks. This is real, still-open, named follow-on work -- not
-// silently fixed by this phase, and not silently dropped either.
-func TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttributeOnOldStyleFallback(t *testing.T) {
+// upstream call errors) used to call plain nextDeployment with NO
+// capability (or region) filter at all -- unlike the first pick
+// (checkResponseFormatEnforceable, hard error) and the NEW-style
+// fallback_chains hop (attemptFallbackChain's own capabilityOK/regionOK
+// closures, skip outright) -- so it could silently land on an incapable
+// deployment, previously "documented" only via the
+// ResponseFormatRequestedNotEnforced span attribute this test used to
+// assert was set. A whole-session holistic review the same day traced
+// the identical gap for AllowedRegions (a virtual key restricted to a
+// region could land on an out-of-region deployment here too) and closed
+// both at once via a new shared Pipeline.nextEligibleDeployment helper
+// (dataplane.go), reused by rerouteToCapableDeploymentIfNeeded (first
+// pick, unchanged fallthrough-to-ineligible behavior) and this legacy
+// branch (which now, like attemptFallbackChain, skips an ineligible
+// candidate outright instead of selecting it).
+//
+// With the SAME two-deployment fixture as before (one candidate, and
+// it's incapable), the legacy fallback now finds zero eligible
+// candidates and does not attempt a fallback at all -- the original
+// upstream error propagates, and the incapable deployment never serves
+// the request, so ResponseFormatRequestedNotEnforced correctly never
+// fires. That attribute's own emission code (dataplane.go's finalize)
+// is unchanged and remains real, defense-in-depth code independent of
+// this specific selection path -- it's computed fresh against whichever
+// deployment ultimately serves ANY request, regardless of how it got
+// selected -- just no longer exercisable via this particular scenario,
+// now that all three known selection sites (first pick, new-style
+// fallback, old-style fallback) filter by capability and region.
+func TestHandleChatCompletionOldStyleFallbackSkipsIncapableTargetRatherThanSilentlyServingIt(t *testing.T) {
 	before := len(spanRecorder.Ended())
 
 	authCred := "structured-output-old-style-fallback-cred"
@@ -216,11 +237,12 @@ func TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttribut
 
 	deployments := []Deployment{
 		// No FallbackChains configured -- its own upstream failure takes
-		// the OLD-style, capability-blind fallback branch.
+		// the OLD-style fallback branch.
 		{Name: "capable-but-fails", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0", BaseURL: "http://unused"},
 		{Name: "incapable-fallback-target", Model: "claude-bedrock", Provider: "bedrock", UpstreamModel: unsupportedBedrockStructuredOutputModel, BaseURL: "http://unused"},
 	}
 
+	var incapableTargetCalled bool
 	p, err := NewPipeline(Config{
 		Verifier:       verifier,
 		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
@@ -237,6 +259,7 @@ func TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttribut
 			if dep.Name == "capable-but-fails" {
 				return nil, fmt.Errorf("simulated upstream failure")
 			}
+			incapableTargetCalled = true
 			return &bedrock.Response{
 				Output: bedrock.Output{Message: bedrock.Message{
 					Role:    "assistant",
@@ -253,17 +276,19 @@ func TestHandleChatCompletionEmitsResponseFormatRequestedNotEnforcedSpanAttribut
 	}
 
 	_, err = p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", "", structuredOutputChatRequest(), "")
-	if err != nil {
-		t.Fatalf("HandleChatCompletion: %v, want the old-style fallback to succeed against the incapable target", err)
+	if err == nil {
+		t.Fatal("HandleChatCompletion: nil error, want the original upstream error to propagate -- the only fallback candidate is incapable and must be skipped, not silently served")
+	}
+	if incapableTargetCalled {
+		t.Error("the incapable fallback target was called -- it must be skipped outright, never selected")
 	}
 
 	spans := spansSince(before)
 	if len(spans) != 1 {
 		t.Fatalf("len(spans) = %d, want 1", len(spans))
 	}
-	v, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranResponseFormatRequestedNotEnforced)
-	if !ok || v.AsBool() != true {
-		t.Errorf("%s = %v, ok=%v, want true -- the old-style fallback path has no capability gate on its own target", telemetry.AttrKelvranResponseFormatRequestedNotEnforced, v, ok)
+	if _, ok := spanAttr(t, spans[0].Attributes(), telemetry.AttrKelvranResponseFormatRequestedNotEnforced); ok {
+		t.Error("ResponseFormatRequestedNotEnforced is set even though no deployment ever actually served this request")
 	}
 }
 

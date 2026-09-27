@@ -560,7 +560,16 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
 			dep, resp, err = hopDep, hopResp, hopErr
 		}
-	} else if fallbackDep, hasFallback := p.nextDeployment(req.Model, map[string]bool{dep.Name: true}); hasFallback {
+	} else if fallbackDep, hasFallback := p.nextEligibleDeployment(req.Model, dep.Name, func(d Deployment) bool {
+		return capabilityOKForRequest(d, req) && isRegionAllowed(msr.vk, d.Region)
+	}); hasFallback {
+		// Legacy (no fallback_chains configured) single-fallback path —
+		// see dataplane.go's runMissPath own identical fix and comment
+		// (same bug, same fix, buffered-path/streaming-path sibling
+		// functions) for the full rationale: this previously called
+		// plain nextDeployment with no eligibility filter, letting a
+		// data-residency-restricted key silently land on an out-of-region
+		// deployment on an ordinary transient upstream error.
 		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
 		dep = fallbackDep
 		resp, estimated, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)

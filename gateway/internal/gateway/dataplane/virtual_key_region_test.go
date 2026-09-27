@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/budget"
@@ -251,5 +253,153 @@ func TestHandleChatCompletionFallbackRespectsRegionConstraint(t *testing.T) {
 	}
 	if served != "eu-alt" {
 		t.Errorf("served by %q, want eu-alt -- the fallback chain must skip the out-of-region us-alt target entirely", served)
+	}
+}
+
+// TestHandleChatCompletionLegacyFallbackRespectsRegionConstraint is
+// TestHandleChatCompletionFallbackRespectsRegionConstraint's sibling for
+// the OLD-style, no-FallbackChains-configured branch -- a real,
+// pre-existing gap (not introduced by this fix; unrelated to the
+// commits that added AllowedRegions itself) a 2026-09-27 holistic
+// review found: unlike the first pick (rerouteToCapableDeploymentIfNeeded)
+// and the explicit fallback_chains hop (attemptFallbackChain's own
+// regionOK closure, proven above), the legacy fallback branch
+// (runMissPath's "else if fallbackDep, hasFallback :=
+// p.nextEligibleDeployment(...)" branch) previously called plain
+// nextDeployment with no region filter at all, so a data-residency-
+// restricted key could silently land on an out-of-region deployment on
+// an ordinary transient upstream error -- no attacker action needed.
+func TestHandleChatCompletionLegacyFallbackRespectsRegionConstraint(t *testing.T) {
+	authCred := "region-legacy-fallback-cred"
+	vk := identity.VirtualKey{
+		ID: "region-legacy-fallback-key", KeyHash: testHashOf(authCred),
+		AllowedRegions: map[string]struct{}{"eu-west-1": {}},
+		RateLimitBurst: 100, RateLimitRefill: 100,
+	}
+	// Deliberately NO FallbackChains on "primary" -- its own upstream
+	// failure must take the legacy branch, not attemptFallbackChain.
+	deployments := []Deployment{
+		{Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", Region: "eu-west-1"},
+		{Name: "us-alt", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", Region: "us-east-1"},
+		{Name: "eu-alt", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", Region: "eu-west-1"},
+	}
+	var served string
+	p := newRegionConstraintPipeline(t, vk, authCred, deployments, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		if dep.Name == "primary" {
+			return nil, errors.New("primary deployment failing, forcing the legacy fallback branch")
+		}
+		served = dep.Name
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	})
+
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", "", regionConstraintChatRequest(), ""); err != nil {
+		t.Fatalf("HandleChatCompletion: %v", err)
+	}
+	if served != "eu-alt" {
+		t.Errorf("served by %q, want eu-alt -- the legacy fallback branch must skip the out-of-region us-alt target entirely", served)
+	}
+}
+
+// TestHandleChatCompletionLegacyFallbackSkipsEntirelyWhenNoEligibleTargetExists
+// proves the degenerate case's own safety direction: when EVERY
+// alternate deployment is out-of-region, the legacy fallback must not
+// happen at all (never silently violate the constraint by falling
+// through to an ineligible target anyway) -- the original upstream
+// error must propagate instead. This is deliberately stricter than
+// rerouteToCapableDeploymentIfNeeded's own first-pick contract (which
+// falls through to the ineligible original when nothing better exists,
+// a documented v1 scope limit) -- a fallback HOP, unlike the first pick,
+// has a real alternative (don't fall back at all) that doesn't require
+// either rejecting every request outright or silently proceeding.
+func TestHandleChatCompletionLegacyFallbackSkipsEntirelyWhenNoEligibleTargetExists(t *testing.T) {
+	authCred := "region-legacy-fallback-no-eligible-cred"
+	vk := identity.VirtualKey{
+		ID: "region-legacy-fallback-no-eligible-key", KeyHash: testHashOf(authCred),
+		AllowedRegions: map[string]struct{}{"eu-west-1": {}},
+		RateLimitBurst: 100, RateLimitRefill: 100,
+	}
+	deployments := []Deployment{
+		{Name: "primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", Region: "eu-west-1"},
+		{Name: "us-alt", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused", Region: "us-east-1"},
+	}
+	var usAltCalled bool
+	p := newRegionConstraintPipeline(t, vk, authCred, deployments, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		if dep.Name == "primary" {
+			return nil, errors.New("primary deployment failing")
+		}
+		usAltCalled = true
+		return fakeOpenAIResponse(dep.UpstreamModel), nil
+	})
+
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer "+authCred, "", "", regionConstraintChatRequest(), "")
+	if err == nil {
+		t.Fatal("HandleChatCompletion: nil error, want the original upstream error to propagate -- the only fallback candidate is out-of-region and must be skipped, not silently served")
+	}
+	if usAltCalled {
+		t.Error("the out-of-region fallback target was called -- it must be skipped outright, never selected")
+	}
+}
+
+// TestHandleEmbeddingsRerouteRespectsRegionConstraint is
+// TestHandleChatCompletionFirstPickRerouteRespectsRegionConstraint's
+// embeddings-path sibling -- a second, distinct real gap the same
+// 2026-09-27 review found: HandleEmbeddings' own sole deployment pick
+// had NO region check at all, unlike HandleChatCompletion's first pick.
+// Unlike the chat-completion legacy-fallback bug, this one needs no
+// transient upstream error to trigger -- every embeddings request from
+// a region-restricted key hit it unconditionally.
+func TestHandleEmbeddingsRerouteRespectsRegionConstraint(t *testing.T) {
+	authCred := "region-embeddings-cred"
+	keys := []identity.VirtualKey{{
+		ID: "region-embeddings-key", KeyHash: testHashOf(authCred),
+		AllowedRegions: map[string]struct{}{"eu-west-1": {}},
+		RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("1000"),
+	}}
+	verifier, err := identity.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	deployments := []Deployment{
+		{Name: "us-emb", Model: "text-embedding-3-small", Provider: "openai", UpstreamModel: "text-embedding-3-small", BaseURL: "http://unused", Kind: "embedding", Region: "us-east-1"},
+		{Name: "eu-emb", Model: "text-embedding-3-small", Provider: "openai", UpstreamModel: "text-embedding-3-small", BaseURL: "http://unused", Kind: "embedding", Region: "eu-west-1"},
+	}
+	var served string
+	p, err := NewPipeline(Config{
+		Verifier:       verifier,
+		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Budget:         budget.NewTracker(),
+		Cache:          inprocess.New(0),
+		CacheL2:        inprocess.New(0),
+		CacheL3:        inprocess.NewLexicalCache(0),
+		Guardrails:     guardrail.NewEngine(guardrail.DefaultDetectors(), guardrail.DefaultPolicy(), "test", nil),
+		Adapters:       adapter.Registry{"openai": openai.New()},
+		Router:         testRouter(deployments),
+		Deployments:    deployments,
+		CostCalculator: costaccounting.NewCalculator(costaccounting.PriceTable{}),
+		Upstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			t.Fatal("chat Upstream should never be called by an embeddings test")
+			return nil, nil
+		},
+		EmbeddingUpstream: func(ctx context.Context, dep Deployment, req any) (any, error) {
+			served = dep.Name
+			return &openai.EmbeddingResponseWire{
+				Model: "text-embedding-3-small",
+				Data:  []openai.EmbeddingDataWire{{Index: 0, Embedding: []float64{0.1, 0.2, 0.3}}},
+				Usage: openai.EmbeddingUsageWire{PromptTokens: 2, TotalTokens: 2},
+			}, nil
+		},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewPipeline: %v", err)
+	}
+
+	if _, err := p.HandleEmbeddings(context.Background(), "Bearer "+authCred, "", adapter.EmbeddingRequest{
+		Model: "text-embedding-3-small", Input: []string{"hello"},
+	}); err != nil {
+		t.Fatalf("HandleEmbeddings: %v", err)
+	}
+	if served != "eu-emb" {
+		t.Errorf("served by %q, want eu-emb -- the router's own first pick landed on the out-of-region us-emb, and it must be rerouted", served)
 	}
 }
