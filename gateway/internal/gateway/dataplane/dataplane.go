@@ -4181,11 +4181,15 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// after any routing/fallback_chains resolution, so its own
 		// dep.Model is the correct price-table entry whenever a real
 		// deployment resolved this response — never req.Model, the
-		// client's originally-requested (possibly cheaper) model, which
-		// callDeployment deliberately echoes back onto resp.Model for the
-		// client-facing response body only (matching the convention of
-		// OpenAI-shaped APIs) and must never double as the price-table
-		// key too.
+		// client's originally-requested (possibly cheaper) model.
+		// callDeployment now sets resp.Model to dep.Model too (the
+		// client-facing response body reports the real serving model,
+		// not an echo of req.Model), so realServingModel(dep, req.Model)
+		// and realServingModel(dep, resp.Model) agree here on purpose —
+		// req.Model is used explicitly anyway, as the correct fallback
+		// value on a cache hit (dep.Model == "" there), never resp.Model,
+		// which finalize's caller may not have populated at all on an
+		// error path.
 		cost = p.costCalc.Calculate(realServingModel(dep, req.Model), costaccounting.Usage{
 			PromptTokens:        resp.Usage.PromptTokens,
 			CompletionTokens:    resp.Usage.CompletionTokens,
@@ -4250,13 +4254,18 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		errorType = errorTypeFor(outcome)
 	}
 	// responseModel reflects the model that GENUINELY served this
-	// response, not resp.Model's own client-facing echo of req.Model —
-	// closes the observability half of
+	// response. Originally closed the observability half of
 	// costabuse-crossmodel-fallback-billed-at-requested-not-served-model-price's
-	// sibling gap: before this, ResponseModel was a silent duplicate of
-	// RequestModel on every request, cross-model fallback or not, since
-	// callDeployment always overwrites resp.Model back to req.Model for
-	// the response body. err == nil is required in addition to
+	// sibling gap when resp.Model was still a silent duplicate of
+	// req.Model on every request; callDeployment/HandleEmbeddings/
+	// finishStreamedResponse now set resp.Model to dep.Model directly, so
+	// realServingModel(dep, resp.Model) below agrees with resp.Model
+	// itself whenever dep is populated — this line stays, rather than a
+	// bare `responseModel := resp.Model`, for the one case where dep is
+	// NOT populated at all: a cache hit, where resp.Model is whatever was
+	// cached (already the true serving model, thanks to the same fix) and
+	// dep.Model == "" correctly falls through to it unchanged. err == nil
+	// is required in addition to
 	// realServingModel's own dep.Model != "" check: on any error path
 	// (including one where dep is a fallback target that was actually
 	// attempted but still failed), resp was never genuinely produced, so
