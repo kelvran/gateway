@@ -38,13 +38,31 @@ type Engine struct {
 // cfg.CategoryOverrides on top of DefaultPolicy() to build policy, but
 // PolicyVersion is a config value the operator sets independently — an
 // operator who changes category_overrides without realizing they also
-// need to bump policy_version got a silent cache-key collision. A
-// Redis-backed L2/L3 cache survives the resulting gateway restart, so
-// pre-change verdicts kept being served under the new policy
-// indefinitely, until natural TTL expiry. The fingerprint makes this
-// automatic and unconditional — no operator action required — without
-// weakening version's own, separate, code-change-tracking half of the
-// contract.
+// need to bump policy_version got a silent cache-key collision. The
+// fingerprint makes closing that collision automatic and unconditional
+// — no operator action required — without weakening version's own,
+// separate, code-change-tracking half of the contract.
+//
+// **Corrected 2026-09-28, same day, via live end-to-end verification**:
+// this doc comment originally claimed "a Redis-backed L2/L3 cache
+// survives the resulting gateway restart" as the reason this collision
+// is reachable in practice today. That's wrong — no Redis-backed L1/L2/L3
+// cache exists in shipped code; internal/cache/inprocess is the only
+// real implementation, and docs/rfcs/2026-09-11-gateway-redis-backed-cache-design.md
+// is still design-only. NewEngine is called exactly once per process
+// (grep-confirmed: cmd/gateway's newGuardrailEngine is its only call
+// site), so Version() never changes within one process's lifetime
+// either way — and category_overrides can only change via a config
+// edit plus a full restart, which wipes an in-process cache clean
+// regardless of this fix. The collision this fix closes is therefore
+// NOT reachable in Kelvran's current, real deployment shape. It remains
+// worth keeping: it's a genuine correctness improvement (Version()
+// should reflect the actual enforcement state, not just an
+// operator-remembered label) that costs nothing and closes a latent
+// landmine the moment the Redis-backed cache RFC above ships — at which
+// point this exact scenario becomes live-reachable and this fix will
+// already be in place. Framed honestly as forward-looking hardening,
+// not an active-exploit fix, going forward.
 //
 // Scope limit, deliberate: the fingerprint covers policy (Actions/
 // ErrorActions) only, never the active detector SET. Enabling/disabling

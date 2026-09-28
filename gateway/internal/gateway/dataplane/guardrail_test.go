@@ -793,8 +793,19 @@ func TestCacheHitsAreForcedMissesAfterGuardrailPolicyVersionChanges(t *testing.T
 // silent cache-key collision: a verdict cached under the OLD policy
 // (contact_info categorized as ActionWarn, DefaultPolicy's own default)
 // would keep being served after an operator moved contact_info to
-// ActionBlock, indefinitely, on a Redis-backed L2/L3 cache surviving the
-// gateway restart that new config requires.
+// ActionBlock. This test proves the collision is closed at the
+// mechanism level, using two in-process Pipelines sharing one cache
+// instance to simulate it directly -- it is NOT, today, a live-reachable
+// production scenario: category_overrides only changes via a config
+// edit plus a full restart, and Kelvran's only real cache
+// (internal/cache/inprocess) is wiped clean by that same restart
+// regardless. The fix is forward-looking hardening for when
+// docs/rfcs/2026-09-11-gateway-redis-backed-cache-design.md's
+// still-design-only Redis-backed cache ships and this mechanism becomes
+// live-reachable -- see guardrail.NewEngine's own doc comment, corrected
+// 2026-09-28 the same day via live end-to-end verification after this
+// test's own doc comment (and the shipping commit's) originally
+// overstated current reachability.
 func TestCacheHitsAreForcedMissesAfterCategoryOverridesChangeWithoutAPolicyVersionBump(t *testing.T) {
 	keys := defaultTestVirtualKeys()
 	verifier, err := identity.NewVerifier(keys)
