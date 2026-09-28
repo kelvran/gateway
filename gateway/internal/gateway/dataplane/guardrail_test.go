@@ -598,6 +598,9 @@ func TestHandleChatCompletionStreamPostCallAuditLogsToolCallArguments(t *testing
 	if strings.Contains(logOutput, "finding_count=0") {
 		t.Errorf("expected a nonzero finding_count — the trigger is a real Block-tier credit-card number; got log output: %s", logOutput)
 	}
+	if !strings.Contains(logOutput, "finding_detectors=") {
+		t.Errorf("expected a finding_detectors field naming which detector(s) fired; got log output: %s", logOutput)
+	}
 }
 
 // sseAnthropicStreamWithThinkingAndText builds a minimal, genuine
@@ -701,6 +704,9 @@ func TestHandleChatCompletionStreamPostCallScansPlaintextReasoningBlocks(t *test
 	}
 	if strings.Contains(logOutput, "finding_count=0") {
 		t.Errorf("expected a nonzero finding_count — the trigger is a real Block-tier credit-card number inside the thinking block; got log output: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "finding_detectors=") {
+		t.Errorf("expected a finding_detectors field naming which detector(s) fired; got log output: %s", logOutput)
 	}
 }
 

@@ -202,6 +202,36 @@ func TestEngineCheckWarnTierFindingIsLogged(t *testing.T) {
 	}
 }
 
+// TestEngineCheckLogsFindingDetectorsForTwoDistinctDetectors proves
+// Check's own log lines carry per-detector attribution, not just an
+// aggregate finding_count -- the real gap a live end-to-end verification
+// pass found: the AWS Bedrock Guardrails ML PROMPT_ATTACK detector's own
+// contribution wasn't distinguishable from the regex/heuristic
+// prompt-injection detector in verdicts/logs. Two fakeDetectors shaped
+// like the real ones (bedrockguard.go's own "bedrock_guardrails_"+type
+// naming convention; promptinjection.go's own "promptinjection" name)
+// both fire on the same Check -- the captured log must name both.
+func TestEngineCheckLogsFindingDetectorsForTwoDistinctDetectors(t *testing.T) {
+	logger, buf := capturingLogger()
+	e := NewEngine([]Detector{
+		fakeDetector{name: "bedrock_guardrails", category: CategoryPromptInjection, findings: []Finding{{Category: CategoryPromptInjection, Detector: "bedrock_guardrails_prompt_attack"}}},
+		fakeDetector{name: "promptinjection", category: CategoryPromptInjection, findings: []Finding{{Category: CategoryPromptInjection, Detector: "promptinjection"}}},
+	}, DefaultPolicy(), "test", logger)
+
+	e.Check(context.Background(), "irrelevant text")
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "finding_detectors=") {
+		t.Fatalf("log output missing finding_detectors field: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "bedrock_guardrails_prompt_attack") {
+		t.Errorf("log output missing the Bedrock ML detector's own name: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "promptinjection") {
+		t.Errorf("log output missing the regex detector's own name: %s", logOutput)
+	}
+}
+
 // TestEngineCheckNoFindingsProducesNoLogOutput proves the fix above
 // doesn't over-fire -- an entirely clean Check (no findings at all,
 // the overwhelmingly common case) must still produce zero guardrail log

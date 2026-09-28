@@ -189,9 +189,9 @@ func (e *Engine) Check(ctx context.Context, text string) Verdict {
 	// zero metric, zero audit trail anywhere, indistinguishable from the
 	// detector never firing at all.
 	if verdict.Blocked {
-		e.logger.Warn("guardrail_verdict_blocked", "finding_count", len(verdict.Findings))
+		e.logger.Warn("guardrail_verdict_blocked", "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())
 	} else if len(verdict.Findings) > 0 {
-		e.logger.Warn("guardrail_verdict_warn", "finding_count", len(verdict.Findings))
+		e.logger.Warn("guardrail_verdict_warn", "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())
 	}
 	return verdict
 }

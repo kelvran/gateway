@@ -321,7 +321,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// regardless of streaming/buffered, so there is no half-formed-
 	// content problem on the input side.
 	if verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages)); verdict.Blocked {
-		p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings))...)
+		p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())...)
 		err = ErrGuardrailBlocked
 		return
 	}
@@ -1010,7 +1010,7 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	// stays audit-only.
 	if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
 		p.logger.Warn("guardrail_blocked_postcall_streaming_audit_only",
-			append(traceLogFields(ctx), "deployment", dep.Name, "finding_count", len(postVerdict.Findings))...)
+			append(traceLogFields(ctx), "deployment", dep.Name, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames())...)
 		*blocked = true
 	}
 

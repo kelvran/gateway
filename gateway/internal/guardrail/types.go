@@ -64,3 +64,33 @@ type Verdict struct {
 	Findings      []Finding
 	DetectorError error
 }
+
+// DetectorNames returns the distinct Detector strings that fired across
+// v.Findings, in first-seen order, deduplicated -- e.g.
+// ["bedrock_guardrails_prompt_attack", "promptinjection"] when both an
+// AWS Bedrock Guardrails PROMPT_ATTACK hit and this package's own
+// regex/heuristic prompt-injection detector fire on the same check.
+// Every detector (bedrockguard.go, promptinjection.go, every regex
+// detector in this package) already sets Finding.Detector to its own
+// distinct name -- this method only ever summarizes that existing,
+// already-correct data, never derives or infers a name itself. Always
+// non-nil, even when v.Findings is empty -- callers (Check below, and
+// dataplane/streaming.go's own log call sites) pass this directly into
+// a structured log field.
+//
+// Deliberately NOT sorted: first-seen order preserves the
+// detector-execution-order signal (Check iterates e.detectors in a
+// fixed, caller-supplied order), which is itself informative for
+// triage, and is already deterministic per-run without needing to sort.
+func (v Verdict) DetectorNames() []string {
+	names := make([]string, 0, len(v.Findings))
+	seen := make(map[string]struct{}, len(v.Findings))
+	for _, f := range v.Findings {
+		if _, ok := seen[f.Detector]; ok {
+			continue
+		}
+		seen[f.Detector] = struct{}{}
+		names = append(names, f.Detector)
+	}
+	return names
+}

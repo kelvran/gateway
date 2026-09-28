@@ -3501,7 +3501,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// checked under the current policy at write time, per this same RFC's
 		// cache-key/GuardrailPolicyVersion mechanism.
 		if verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages)); verdict.Blocked {
-			p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings))...)
+			p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())...)
 			return nil, ErrGuardrailBlocked
 		}
 
@@ -3605,7 +3605,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// client) has happened yet — a Block verdict can still refuse
 		// DELIVERY, but never the billing for the real call already made.
 		if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
-			p.logger.Warn("guardrail_blocked_postcall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(postVerdict.Findings))...)
+			p.logger.Warn("guardrail_blocked_postcall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames())...)
 			// Captured via the side channel, not the shadowed local resp/
 			// dep, so finalize's cost calculation (keyed on the real
 			// Usage/dep that were just obtained) still runs correctly on
