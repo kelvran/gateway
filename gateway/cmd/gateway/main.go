@@ -2106,6 +2106,28 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		// is malformed" shape as ErrPromptResolutionFailed, just caught
 		// one step later (after resolution succeeded, not during it).
 		status = http.StatusBadRequest
+	case errors.Is(err, dataplane.ErrEmptyMessages):
+		// 400, the same bucket -- a request resolving to zero messages
+		// is a client request-shape problem, never an upstream failure.
+		// Found 2026-09-28 via live verification: this case was simply
+		// missing here before dataplane.go/streaming.go validated it up
+		// front, so it never reached this switch at all -- the request
+		// went all the way to a real upstream call, which rejected it
+		// with the provider's own 400, then fell through to this
+		// function's 502 default via the generic UpstreamHTTPError path.
+		status = http.StatusBadRequest
+	case errors.Is(err, dataplane.ErrNoDeployment):
+		// 400, not the 502 default -- naming a model with no configured
+		// deployment at all is a client request-shape mistake (a typo,
+		// or a model this gateway was simply never told about), resolved
+		// by a pure in-memory routing-table lookup that never attempts an
+		// upstream call either way -- the same "client error, not an
+		// upstream failure" reasoning as ErrModelNotAllowed/
+		// ErrNotAnEmbeddingDeployment above. Found 2026-09-28 via live
+		// verification: this case was simply missing here, so it fell
+		// through to the 502 default despite never touching upstream at
+		// all.
+		status = http.StatusBadRequest
 	}
 
 	// Retry-After, per docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's

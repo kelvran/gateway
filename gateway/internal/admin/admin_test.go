@@ -189,7 +189,7 @@ func TestUpsertVirtualKeyViaHTTPMakesTheKeyImmediatelyUsable(t *testing.T) {
 		t.Fatalf("POST status = %d, want 204, body: %s", rec.Code, rec.Body.String())
 	}
 
-	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+newBearerValue, "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+newBearerValue, "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion with the newly-admin-added key: %v", err)
 	}
@@ -213,10 +213,10 @@ func TestUpsertVirtualKeyWithPerModelRateLimitIsEnforced(t *testing.T) {
 	}
 
 	authHeader := "Bearer " + newBearerValue
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, ""); err != nil {
 		t.Fatalf("first gpt-4o request: %v", err)
 	}
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, ""); err == nil {
 		t.Fatal("second gpt-4o request succeeded, want a rate-limit rejection — the Admin-API-configured per_model override (burst 1) should already be exhausted")
 	}
 }
@@ -252,10 +252,10 @@ func TestUpsertVirtualKeyWithPerModelTPMRateLimitIsEnforced(t *testing.T) {
 	}
 
 	authHeader := "Bearer " + newBearerValue
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, ""); err != nil {
 		t.Fatalf("first gpt-4o request: %v", err)
 	}
-	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err == nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), authHeader, "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, ""); err == nil {
 		t.Fatal("second gpt-4o request succeeded, want a rate-limit rejection — the Admin-API-configured per_model TPM override (capacity 1) should already be exhausted")
 	}
 }
@@ -440,7 +440,7 @@ func TestDeleteVirtualKeyViaHTTPRemovesAccess(t *testing.T) {
 		t.Fatalf("DELETE status = %d, want 204, body: %s", rec.Code, rec.Body.String())
 	}
 
-	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+otherBearerValue, "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := pipeline.HandleChatCompletion(context.Background(), "Bearer "+otherBearerValue, "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err == nil {
 		t.Fatal("HandleChatCompletion succeeded with a deleted key's bearer value")
 	}
@@ -633,7 +633,7 @@ func TestDeleteVirtualKeyViaHTTPAlsoErasesItsBudgetSpend(t *testing.T) {
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := pipeline.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	if spent := pipeline.SpentUSD(context.Background(), "test-key", 0); spent.IsZero() {

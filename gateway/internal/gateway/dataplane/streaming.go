@@ -224,6 +224,10 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	if err != nil {
 		return
 	}
+	if len(req.Messages) == 0 {
+		err = ErrEmptyMessages
+		return
+	}
 	var rateLimitOK bool
 	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens, tpmReservationEpoch = p.checkRateLimit(ctx, vk, req.Model)
 	if !rateLimitOK {

@@ -139,6 +139,7 @@ func TestHandleChatCompletionStreamModelNotAllowedCheckedFirst(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if !errors.Is(err, ErrModelNotAllowed) {
 		t.Fatalf("err = %v, want ErrModelNotAllowed (must be checked before rate-limit/budget)", err)
@@ -163,6 +164,7 @@ func TestHandleChatCompletionStreamBudgetExceededRejectsBeforeUpstream(t *testin
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer team-x-secret", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
@@ -295,6 +297,7 @@ func TestHandleChatCompletionStreamUnsupportedProviderReturnsTypedError(t *testi
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "claude-legacy", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if !errors.Is(err, ErrStreamingNotSupported) {
 		t.Fatalf("err = %v, want ErrStreamingNotSupported", err)
@@ -307,6 +310,7 @@ func TestHandleChatCompletionStreamNotConfiguredOnCacheMiss(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if !errors.Is(err, ErrStreamingNotConfigured) {
 		t.Fatalf("err = %v, want ErrStreamingNotConfigured", err)
@@ -329,6 +333,7 @@ func TestHandleChatCompletionStreamFallbackBeforeFirstByte(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got error: %v", err)
@@ -379,6 +384,7 @@ func TestHandleChatCompletionStreamMultiHopFallbackChainRoutesByClassAndHop(t *t
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err != nil {
 		t.Fatalf("expected the chain to eventually succeed at hop-2, got error: %v", err)
@@ -494,6 +500,7 @@ func TestHandleChatCompletionStreamMultiHopChainStopsOnceChunkSent(t *testing.T)
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err == nil {
 		t.Fatal("expected an error from hop-1's mid-stream connection loss, got nil")
@@ -546,6 +553,7 @@ func TestHandleChatCompletionStreamNoFallbackAfterFirstByte(t *testing.T) {
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err == nil {
 		t.Fatal("expected an error from the mid-stream connection loss, got nil")

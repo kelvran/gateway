@@ -38,6 +38,39 @@ func TestWriteErrorResponseMapsWrappedDeploymentCapacityErrorTo503(t *testing.T)
 	}
 }
 
+// TestWriteErrorResponseMapsNoDeploymentTo400 is the load-bearing proof
+// for a real gap found 2026-09-28 via live end-to-end verification: a
+// request naming a model with no configured deployment at all is a pure
+// in-memory routing-table lookup failure -- it never attempts an
+// upstream call either way -- yet ErrNoDeployment had no case in this
+// switch at all, so it fell through to the http.StatusBadGateway
+// default (a real Bedrock/OpenAI call against a nonexistent model
+// confirmed this live: a genuine 502, not the 400 a client request-shape
+// mistake should produce).
+func TestWriteErrorResponseMapsNoDeploymentTo400(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeErrorResponse(rec, fmt.Errorf("%w: %q", dataplane.ErrNoDeployment, "does-not-exist"))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+// TestWriteErrorResponseMapsEmptyMessagesTo400 mirrors the test above for
+// dataplane.ErrEmptyMessages -- the sibling gap the same live
+// verification pass found: a request resolving to zero messages
+// previously reached a real (wasted) upstream call, which rejected it
+// with the provider's own 400, wrapped as an UpstreamHTTPError and
+// defaulting to 502 here. dataplane.go/streaming.go now reject it before
+// ever attempting a deployment call; this proves the status-code half of
+// that fix.
+func TestWriteErrorResponseMapsEmptyMessagesTo400(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeErrorResponse(rec, dataplane.ErrEmptyMessages)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 // TestWriteErrorResponseDeploymentCapacityErrorNeverMapsTo429 is the
 // negative-space proof: a DeploymentCapacityError must be distinguishable
 // from a real client-facing rate-limit rejection at the status-code

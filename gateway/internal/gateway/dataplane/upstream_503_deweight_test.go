@@ -254,7 +254,7 @@ func TestHandleChatCompletionRoutesAroundReal503ViaConfiguredFallbackChain(t *te
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, deployments)
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("expected the configured fallback to succeed on a real 503, got error: %v", err)
 	}

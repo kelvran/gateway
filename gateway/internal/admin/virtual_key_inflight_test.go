@@ -115,7 +115,7 @@ func TestGetVirtualKeyInFlightReturnsCorrectShapeForAnExistingKey(t *testing.T) 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = pipeline.HandleChatCompletion(ctx, "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+		_, _ = pipeline.HandleChatCompletion(ctx, "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	}()
 
 	select {

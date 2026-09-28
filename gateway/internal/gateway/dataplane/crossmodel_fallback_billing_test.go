@@ -120,7 +120,7 @@ func TestHandleChatCompletionBillsCrossModelFallbackAtServedModelPrice(t *testin
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, tracker, nil)
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("expected the fallback to succeed, got error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestHandleChatCompletionResponseModelReflectsRealServingModelOnFallback(t *
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, budget.NewTracker(), nil)
 
-	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestHandleChatCompletionRespModelReflectsRealServingModelOnFallback(t *test
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, budget.NewTracker(), nil)
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestHandleChatCompletionCachedCrossModelFallbackReplaysRealServingModel(t *
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, budget.NewTracker(), nil)
 
-	first, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, "")
+	first, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("first HandleChatCompletion: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestHandleChatCompletionCachedCrossModelFallbackReplaysRealServingModel(t *
 		t.Fatalf("first resp.Model = %q, want gpt-4o", first.Model)
 	}
 
-	second, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, "")
+	second, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("second HandleChatCompletion: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestHandleChatCompletionFallbackHopSkipsRateLimitedTargetButChainStillSucce
 		t.Fatalf("setup: second direct AllowForModel(gpt-4o) = (%v, %v), want (false, nil) — exhaustion must be real before the real test request runs", allowed, err)
 	}
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini"}, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o-mini", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("expected the chain to still succeed at claude-fallback, got error: %v", err)
 	}

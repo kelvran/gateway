@@ -470,6 +470,7 @@ func TestHandleChatCompletionStreamPostCallBlockTierIsAuditOnlyNeverWithheld(t *
 	rec := httptest.NewRecorder()
 	err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, "")
 	if err != nil {
 		t.Fatalf("expected the stream to complete successfully (audit-only, never blocked), got: %v", err)
@@ -585,6 +586,7 @@ func TestHandleChatCompletionStreamPostCallAuditLogsToolCallArguments(t *testing
 	rec := httptest.NewRecorder()
 	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{
 		Model: "gpt-4o", Stream: true,
+		Messages: []adapter.Message{{Role: "user", Content: "hi"}},
 	}, rec, ""); err != nil {
 		t.Fatalf("expected the stream to complete successfully (audit-only, never blocked), got: %v", err)
 	}

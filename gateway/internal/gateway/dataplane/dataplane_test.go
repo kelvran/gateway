@@ -156,7 +156,7 @@ func TestHandleChatCompletionRejectsMissingAuth(t *testing.T) {
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
-	_, err := p.HandleChatCompletion(context.Background(), "", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err == nil {
 		t.Fatal("expected an error for missing Authorization header")
 	}
@@ -173,7 +173,7 @@ func TestHandleChatCompletionRejectsRateLimited(t *testing.T) {
 		{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
 	}, keys)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err = %v, want ErrRateLimited", err)
 	}
@@ -267,7 +267,7 @@ func TestHandleChatCompletionFallsBackOnUpstreamError(t *testing.T) {
 		{Name: "secondary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"},
 	})
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got error: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestHandleChatCompletionNoDeploymentForModel(t *testing.T) {
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "unknown-model"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "unknown-model", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err == nil {
 		t.Fatal("expected an error for an unconfigured model")
 	}
@@ -315,9 +315,31 @@ func TestHandleChatCompletionModelNotAllowedCheckedBeforeRateLimitAndBudget(t *t
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys, tracker)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if !errors.Is(err, ErrModelNotAllowed) {
 		t.Fatalf("err = %v, want ErrModelNotAllowed (must be checked before rate-limit/budget)", err)
+	}
+}
+
+// TestHandleChatCompletionEmptyMessagesRejectedBeforeUpstream is the
+// load-bearing proof for a real gap found 2026-09-28 via live end-to-end
+// verification: a request with Messages: [] and no PromptID previously
+// reached a real upstream call every time (which then failed with the
+// provider's own 400, surfaced to the client as a misleading 502) --
+// there was no validation of this shape anywhere. resolvePromptIfSet
+// only ever validated the PromptID-set path; a plain empty Messages
+// slice with no prompt sailed through untouched. Mirrors
+// TestHandleChatCompletionModelNotAllowedCheckedBeforeRateLimitAndBudget's
+// own "upstream must never be called" pattern.
+func TestHandleChatCompletionEmptyMessagesRejectedBeforeUpstream(t *testing.T) {
+	p := newTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		t.Fatal("upstream must never be called for a request with zero messages")
+		return nil, nil
+	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
+
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{}}, "")
+	if !errors.Is(err, ErrEmptyMessages) {
+		t.Fatalf("err = %v, want ErrEmptyMessages", err)
 	}
 }
 
@@ -333,12 +355,12 @@ func TestHandleChatCompletionPerKeyRateLimitsAreIndependent(t *testing.T) {
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer exhausted-secret", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer exhausted-secret", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("exhausted key: err = %v, want ErrRateLimited", err)
 	}
 
-	_, err = p.HandleChatCompletion(context.Background(), "Bearer fresh-secret", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err = p.HandleChatCompletion(context.Background(), "Bearer fresh-secret", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("fresh key was blocked by the exhausted key's rate limit: %v", err)
 	}
@@ -359,7 +381,7 @@ func TestHandleChatCompletionBudgetExceededRejectsBeforeUpstream(t *testing.T) {
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}}, keys, tracker)
 
-	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "Bearer team-x-secret", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}

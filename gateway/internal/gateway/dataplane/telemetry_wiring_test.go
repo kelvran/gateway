@@ -120,7 +120,7 @@ func TestHandleChatCompletionEmitsSpanOnAuthFailureWithoutVirtualKeyID(t *testin
 		return nil, nil
 	}, []Deployment{{Name: "d1", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: "http://unused"}})
 
-	_, err := p.HandleChatCompletion(context.Background(), "", "", "", adapter.ChatRequest{Model: "gpt-4o"}, "")
+	_, err := p.HandleChatCompletion(context.Background(), "", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err == nil {
 		t.Fatal("expected an error for missing Authorization header")
 	}
@@ -259,7 +259,7 @@ func TestHandleChatCompletionEmitsSpanWithAgentRunIDFromBaggage(t *testing.T) {
 	}
 	ctx := baggage.ContextWithBaggage(context.Background(), bag)
 
-	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o"}, ""); err != nil {
+	if _, err := p.HandleChatCompletion(ctx, "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, ""); err != nil {
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 

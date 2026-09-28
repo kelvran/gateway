@@ -164,6 +164,31 @@ var ErrPromptResolutionFailed = errors.New("dataplane: failed to resolve prompt_
 // occupies.
 var ErrResolvedPromptContentInvalid = errors.New("dataplane: resolved prompt content failed validation")
 
+// ErrEmptyMessages is returned when a chat completion request resolves
+// to zero messages -- either the client sent Messages: [] directly with
+// no PromptID set, or a PromptID resolved (successfully, past
+// ErrPromptResolutionFailed) to an empty message list, a degenerate
+// prompt template. Found 2026-09-28 via a live end-to-end verification
+// pass: previously unvalidated, so this shape reached a real upstream
+// call every time, which then failed with the provider's own 400 --
+// wrapped as an UpstreamHTTPError and defaulting to a 502 in
+// writeErrorResponse, the "the upstream failed" bucket, even though the
+// real cause is a client request-shape problem, never an upstream
+// failure, exactly the class ErrPromptAndMessagesBothSet/
+// ErrPromptResolutionFailed above already occupy. Mapped to a 400 by
+// cmd/gateway/main.go's writeErrorResponse.
+//
+// Checked at HandleChatCompletion/HandleChatCompletionStream directly,
+// right after resolvePromptIfSet -- NOT inside resolvePromptIfSet
+// itself, even though every one of its 3 callers goes through it: unlike
+// those two, EraseCacheEntry's whole job is reconstructing the cache key
+// components a PAST request was written under, to erase that specific
+// entry, including a stale entry a request shaped this way could only
+// have produced before this validation existed. Rejecting it there too
+// would strand an operator unable to erase exactly that kind of legacy
+// entry -- deliberately left reachable there.
+var ErrEmptyMessages = errors.New("dataplane: request resolved to zero messages")
+
 // Deployment is a resolved upstream route: a concrete provider/endpoint a
 // canonical model can be sent to, with its API key already resolved from
 // the environment (never the raw config file) by the caller (cmd/gateway).
@@ -3319,6 +3344,10 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	var promptFP string
 	req, promptFP, err = p.resolvePromptIfSet(req)
 	if err != nil {
+		return
+	}
+	if len(req.Messages) == 0 {
+		err = ErrEmptyMessages
 		return
 	}
 

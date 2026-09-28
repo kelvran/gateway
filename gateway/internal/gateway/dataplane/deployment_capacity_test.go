@@ -119,7 +119,7 @@ func TestCallDeploymentWithCapacityCheckReleasesSlotOnSuccessAndError(t *testing
 				return fakeOpenAIResponse(d.UpstreamModel), nil
 			},
 		}
-		if _, err := p.callDeploymentWithCapacityCheck(context.Background(), dep, adapter.ChatRequest{Model: "gpt-4o"}); err != nil {
+		if _, err := p.callDeploymentWithCapacityCheck(context.Background(), dep, adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}); err != nil {
 			t.Fatalf("callDeploymentWithCapacityCheck: %v", err)
 		}
 		if got := cc.InFlight("d1"); got != 0 {
@@ -135,7 +135,7 @@ func TestCallDeploymentWithCapacityCheckReleasesSlotOnSuccessAndError(t *testing
 				return nil, errors.New("simulated upstream failure")
 			},
 		}
-		if _, err := p.callDeploymentWithCapacityCheck(context.Background(), dep, adapter.ChatRequest{Model: "gpt-4o"}); err == nil {
+		if _, err := p.callDeploymentWithCapacityCheck(context.Background(), dep, adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}); err == nil {
 			t.Fatal("expected the simulated upstream failure to propagate, got nil error")
 		}
 		if got := cc.InFlight("d1"); got != 0 {
@@ -162,7 +162,7 @@ func TestCallDeploymentWithCapacityCheckRejectsWithDeploymentCapacityError(t *te
 			t.Fatal("setup: could not pre-acquire d1's only slot")
 		}
 		p := &Pipeline{deploymentConcurrency: cc, adapters: adapter.Registry{"openai": openai.New()}, upstream: neverCall}
-		_, err := p.callDeploymentWithCapacityCheck(context.Background(), dep, adapter.ChatRequest{Model: "gpt-4o"})
+		_, err := p.callDeploymentWithCapacityCheck(context.Background(), dep, adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}})
 		var capErr *DeploymentCapacityError
 		if !errors.As(err, &capErr) {
 			t.Fatalf("err = %v, want a *DeploymentCapacityError", err)
@@ -178,7 +178,7 @@ func TestCallDeploymentWithCapacityCheckRejectsWithDeploymentCapacityError(t *te
 			t.Fatalf("setup: could not pre-consume d1's only token: allowed=%v err=%v", allowed, err)
 		}
 		p := &Pipeline{deploymentLimiter: limiter, logger: discardLogger(), adapters: adapter.Registry{"openai": openai.New()}, upstream: neverCall}
-		_, err := p.callDeploymentWithCapacityCheck(context.Background(), dep, adapter.ChatRequest{Model: "gpt-4o"})
+		_, err := p.callDeploymentWithCapacityCheck(context.Background(), dep, adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}})
 		var capErr *DeploymentCapacityError
 		if !errors.As(err, &capErr) {
 			t.Fatalf("err = %v, want a *DeploymentCapacityError", err)
@@ -306,7 +306,7 @@ func TestHandleChatCompletionTwoVirtualKeysShareDeploymentCapacityCeiling(t *tes
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		keyAResp, keyAErr = p.HandleChatCompletion(context.Background(), "Bearer key-a", "", "", adapter.ChatRequest{Model: "shared-model"}, "")
+		keyAResp, keyAErr = p.HandleChatCompletion(context.Background(), "Bearer key-a", "", "", adapter.ChatRequest{Model: "shared-model", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	}()
 
 	select {
@@ -315,7 +315,7 @@ func TestHandleChatCompletionTwoVirtualKeysShareDeploymentCapacityCeiling(t *tes
 		t.Fatal("timed out waiting for key-a's call to reach the (blocking) upstream")
 	}
 
-	_, keyBErr := p.HandleChatCompletion(context.Background(), "Bearer key-b", "", "", adapter.ChatRequest{Model: "shared-model"}, "")
+	_, keyBErr := p.HandleChatCompletion(context.Background(), "Bearer key-b", "", "", adapter.ChatRequest{Model: "shared-model", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	var capErr *DeploymentCapacityError
 	if !errors.As(keyBErr, &capErr) {
 		t.Fatalf("key-b's err = %v, want a *DeploymentCapacityError (key-a is holding the deployment's only slot)", keyBErr)
@@ -378,7 +378,7 @@ func TestHandleChatCompletionCapacityConstrainedHopTriesNextHopBeforeFailing(t *
 		return fakeOpenAIResponse(dep.UpstreamModel), nil
 	}, deployments, defaultTestVirtualKeys(), cc, nil)
 
-	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "m"}, "")
+	resp, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "m", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, "")
 	if err != nil {
 		t.Fatalf("expected the chain to still succeed at backup, got error: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestHandleChatCompletionStreamSkipsCapacityConstrainedHopAndReleasesSlot(t 
 	}
 
 	rec := httptest.NewRecorder()
-	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Stream: true}, rec, ""); err != nil {
+	if err := p.HandleChatCompletionStream(context.Background(), "Bearer test-key", "", "", adapter.ChatRequest{Model: "gpt-4o", Stream: true, Messages: []adapter.Message{{Role: "user", Content: "hi"}}}, rec, ""); err != nil {
 		t.Fatalf("expected the chain to eventually succeed at hop-2, got error: %v", err)
 	}
 	if len(calls) != 2 || calls[0] != "primary" || calls[1] != "hop-2" {
