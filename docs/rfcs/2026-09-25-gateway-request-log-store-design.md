@@ -13,6 +13,16 @@ scope the "how" now, without committing to the "when." Neither Replay nor a bund
 scheduled as work — the 2026-09-24 scoping pass's own verdict was "do not scope an RFC for either
 yet" — and this RFC does not change that; it scopes only their shared prerequisite.
 
+**Corrected 2026-09-28**: the "Portkey-style Replay feature" framing above should not be read as
+confirmation Portkey itself ships a feature literally named "Replay" — a 2026-09-28 ecosystem
+recheck (`/deep-research`, adversarially verified) found that specific attribution refuted three
+separate times across three sources; Portkey's own documented observability capability is logging,
+tracing, and analytics dashboards, not a named Replay feature. Different sources instead attribute
+Replay-style capability to Helicone or to small indie gateway projects. This doesn't change this
+RFC's own scope (a persisted, queryable log store is still the correct shared prerequisite for
+either DevEx feature, however it ends up branded) — it only corrects the specific competitor
+citation motivating it. See that RFC's sibling GPT-6-Astra addendum for the full recheck.
+
 ## Date
 
 2026-09-25
@@ -405,7 +415,13 @@ question this design pass did not need to resolve to scope the store itself.
 convention, this RFC names its own: real multi-field `AND` filters, a real pagination-cursor need,
 or aggregate counts outgrowing hand-rolled bbolt index-bucket maintenance. None of these have
 fired as of this RFC's own date — bbolt v1 remains the right scope for a store with zero real
-callers yet.
+callers yet. **Rechecked 2026-09-28**: still not fired — no new AND-filter/pagination/aggregate
+need surfaced, and the same recheck's ecosystem half found no request-log/replay-specific pressure
+strong enough to justify moving off bbolt v1 speculatively. One real, if modest, ecosystem-parity
+signal did confirm (3-0): LiteLLM's free, self-hosted proxy already bundles persisted request logs
+plus a web console as a standard (non-enterprise) feature. That's a baseline-observability
+argument, not evidence for either of the two DevEx-feature triggers named in Status above — noted
+here for completeness, not as a trigger.
 
 ## Verification
 

@@ -339,6 +339,21 @@ one way or the other — it is not proof demand will never exist, only that none
 this codebase's own history as of this RFC's date. Whether or when to build (3) should depend on
 this question changing, not on this RFC's own architectural sketch being complete.
 
+**Rechecked 2026-09-28, trigger still not fired.** A dedicated recheck split into the same two
+halves as the MCP-demand recheck precedent (`DECISIONS.md` `[2026-09-25]`): the Kelvran-specific
+half (direct `git log`/`LOGS.md`/`DECISIONS.md` grep since this RFC's own date) stayed exactly as
+above — zero hits. The ecosystem half (`/deep-research`, 102 agents, 20 sources, 25 claims
+adversarially verified) reconfirmed the underlying technical gap is real (3-0: OpenAI's own docs
+state Chat Completions still cannot serve tool-calling + non-`none` `reasoning_effort` for
+GPT-5.4+) but found nothing *new* — no confirmed Kelvran-specific instance, and "GPT-6 Astra"
+specifically named as an ecosystem pain point stayed thin. One real, dated lead surfaced but was
+never adversarially verified (out of budget — only the top 25 of 84 extracted claims were
+checked): `github.com/BerriAI/litellm/issues/40123` (opened 2026-09-07), a third-party LiteLLM user
+hitting exactly this model's tool-calling wall. Worth a bookmark for a future recheck, not proof
+of demand — it's a downstream OSS gateway's user, not a Kelvran customer, and the claim itself was
+never checked for accuracy. Verdict unchanged: still design-only, still waiting on this RFC's own
+named trigger.
+
 **Reconciliation with `docs/rfcs/2026-09-20-gateway-openai-responses-api-support.md`, named but not
 decided.** Both RFCs sketch overlapping Responses-API wire types for different, non-overlapping
 pipeline entry points (see Motivation and Drawbacks). Whether a future implementation should: (a)
