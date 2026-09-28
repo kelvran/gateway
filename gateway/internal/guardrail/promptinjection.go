@@ -75,10 +75,24 @@ var injectionTargets = []string{
 // space still matches exactly as before — this is a strictly wider
 // matcher, never a narrower one, so it cannot regress the True Negative
 // case.
+//
+// The optional "(?:all\W+)?" between verb and target closes a real gap a
+// live end-to-end production dry run found 2026-09-28: "Ignore all
+// previous instructions" — arguably the single most common real-world
+// prompt-injection opener — matched neither the "previous instructions"
+// nor the "all instructions" target on its own, since the verb-target
+// match requires strict adjacency and injectionTargets never enumerated
+// the 3-word "all previous instructions" combination. Fixed generically
+// (tolerating one optional "all" qualifier for ANY target in the list)
+// rather than by enumerating every specific "all <target>" phrase by
+// hand — the same "widen the mechanism, not just the one reported
+// phrase" reasoning already applied to \W+ above, and it also closes the
+// identical gap for "disregard all your rules"/"bypass all your
+// guidelines"/etc, not just the one phrase the dry run happened to test.
 var injectionPhrasePattern = regexp.MustCompile(buildInjectionPhrasePattern())
 
 func buildInjectionPhrasePattern() string {
-	return "(?i)(?:" + joinAsWordSeparatedAlternation(injectionVerbs) + `)\W+(?:` + joinAsWordSeparatedAlternation(injectionTargets) + ")"
+	return "(?i)(?:" + joinAsWordSeparatedAlternation(injectionVerbs) + `)\W+(?:all\W+)?(?:` + joinAsWordSeparatedAlternation(injectionTargets) + ")"
 }
 
 // joinAsWordSeparatedAlternation turns a list of one-or-more-word phrases
