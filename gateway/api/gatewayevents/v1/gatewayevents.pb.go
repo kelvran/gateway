@@ -57,21 +57,31 @@ const (
 	// and from the generic OUTCOME_UPSTREAM_ERROR bucket this value was
 	// originally folded into before this enum value existed.
 	GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY GatewayDecisionEvent_Outcome = 9
+	// The request itself was malformed in a way no upstream call could
+	// ever have resolved (e.g. dataplane.ErrEmptyMessages: messages
+	// resolved to zero after any prompt_id template expansion) — a
+	// pure client request-shape rejection, never touching upstream.
+	// Added 2026-09-28 after a live end-to-end verify pass found this
+	// case silently misclassified into the generic OUTCOME_UPSTREAM_ERROR
+	// bucket, the same "no dedicated value yet" gap OUTCOME_DEPLOYMENT_CAPACITY
+	// closed above for a different sentinel.
+	GatewayDecisionEvent_OUTCOME_INVALID_REQUEST GatewayDecisionEvent_Outcome = 10
 )
 
 // Enum value maps for GatewayDecisionEvent_Outcome.
 var (
 	GatewayDecisionEvent_Outcome_name = map[int32]string{
-		0: "OUTCOME_UNSPECIFIED",
-		1: "OUTCOME_OK",
-		2: "OUTCOME_AUTH_FAILED",
-		3: "OUTCOME_MODEL_NOT_ALLOWED",
-		4: "OUTCOME_RATE_LIMITED",
-		5: "OUTCOME_BUDGET_EXCEEDED",
-		6: "OUTCOME_NO_DEPLOYMENT",
-		7: "OUTCOME_UPSTREAM_ERROR",
-		8: "OUTCOME_GUARDRAIL_BLOCKED",
-		9: "OUTCOME_DEPLOYMENT_CAPACITY",
+		0:  "OUTCOME_UNSPECIFIED",
+		1:  "OUTCOME_OK",
+		2:  "OUTCOME_AUTH_FAILED",
+		3:  "OUTCOME_MODEL_NOT_ALLOWED",
+		4:  "OUTCOME_RATE_LIMITED",
+		5:  "OUTCOME_BUDGET_EXCEEDED",
+		6:  "OUTCOME_NO_DEPLOYMENT",
+		7:  "OUTCOME_UPSTREAM_ERROR",
+		8:  "OUTCOME_GUARDRAIL_BLOCKED",
+		9:  "OUTCOME_DEPLOYMENT_CAPACITY",
+		10: "OUTCOME_INVALID_REQUEST",
 	}
 	GatewayDecisionEvent_Outcome_value = map[string]int32{
 		"OUTCOME_UNSPECIFIED":         0,
@@ -84,6 +94,7 @@ var (
 		"OUTCOME_UPSTREAM_ERROR":      7,
 		"OUTCOME_GUARDRAIL_BLOCKED":   8,
 		"OUTCOME_DEPLOYMENT_CAPACITY": 9,
+		"OUTCOME_INVALID_REQUEST":     10,
 	}
 )
 
@@ -415,7 +426,7 @@ var File_gatewayevents_v1_gatewayevents_proto protoreflect.FileDescriptor
 
 const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\n" +
-	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x83\b\n" +
+	"$gatewayevents/v1/gatewayevents.proto\x12\x10gatewayevents.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa0\b\n" +
 	"\x14GatewayDecisionEvent\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x17\n" +
 	"\aspan_id\x18\x02 \x01(\tR\x06spanId\x12;\n" +
@@ -437,7 +448,7 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"savingsUsd\x12*\n" +
 	"\x11cost_is_estimated\x18\x0f \x01(\bR\x0fcostIsEstimated\x12,\n" +
 	"\x12billing_subject_id\x18\x10 \x01(\tR\x10billingSubjectId\x12#\n" +
-	"\rfinish_reason\x18\x11 \x01(\tR\ffinishReason\"\x98\x02\n" +
+	"\rfinish_reason\x18\x11 \x01(\tR\ffinishReason\"\xb5\x02\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -449,7 +460,9 @@ const file_gatewayevents_v1_gatewayevents_proto_rawDesc = "" +
 	"\x15OUTCOME_NO_DEPLOYMENT\x10\x06\x12\x1a\n" +
 	"\x16OUTCOME_UPSTREAM_ERROR\x10\a\x12\x1d\n" +
 	"\x19OUTCOME_GUARDRAIL_BLOCKED\x10\b\x12\x1f\n" +
-	"\x1bOUTCOME_DEPLOYMENT_CAPACITY\x10\tBIZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3"
+	"\x1bOUTCOME_DEPLOYMENT_CAPACITY\x10\t\x12\x1b\n" +
+	"\x17OUTCOME_INVALID_REQUEST\x10\n" +
+	"BIZGgithub.com/kelvran/gateway/gateway/api/gatewayevents/v1;gatewayeventsv1b\x06proto3"
 
 var (
 	file_gatewayevents_v1_gatewayevents_proto_rawDescOnce sync.Once

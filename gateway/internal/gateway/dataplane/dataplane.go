@@ -4641,6 +4641,14 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_BUDGET_EXCEEDED
 	case errors.Is(err, ErrNoDeployment):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_NO_DEPLOYMENT
+	case errors.Is(err, ErrEmptyMessages):
+		// Added 2026-09-28: a live end-to-end verify pass of the 502-to-
+		// 400 fix that introduced ErrEmptyMessages found this case had
+		// no dedicated Outcome value yet, silently falling into the
+		// generic default branch below (OUTCOME_UPSTREAM_ERROR) despite
+		// never making an upstream call -- misleading telemetry for a
+		// pure client request-shape rejection.
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST
 	case errors.Is(err, ErrGuardrailBlocked):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED
 	default:

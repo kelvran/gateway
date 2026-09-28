@@ -47,6 +47,15 @@ message GatewayDecisionEvent {
     // and from the generic OUTCOME_UPSTREAM_ERROR bucket this value was
     // originally folded into before this enum value existed.
     OUTCOME_DEPLOYMENT_CAPACITY = 9;
+    // The request itself was malformed in a way no upstream call could
+    // ever have resolved (e.g. dataplane.ErrEmptyMessages: messages
+    // resolved to zero after any prompt_id template expansion) — a
+    // pure client request-shape rejection, never touching upstream.
+    // Added 2026-09-28 after a live end-to-end verify pass found this
+    // case silently misclassified into the generic OUTCOME_UPSTREAM_ERROR
+    // bucket, the same "no dedicated value yet" gap OUTCOME_DEPLOYMENT_CAPACITY
+    // closed above for a different sentinel.
+    OUTCOME_INVALID_REQUEST = 10;
   }
   Outcome outcome = 6;
 

@@ -51,6 +51,7 @@ func TestOutcomeForClassifiesEverySentinelError(t *testing.T) {
 		{"rate limited", ErrRateLimited, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_RATE_LIMITED},
 		{"budget exceeded", ErrBudgetExceeded, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_BUDGET_EXCEEDED},
 		{"no deployment", ErrNoDeployment, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_NO_DEPLOYMENT},
+		{"empty messages", ErrEmptyMessages, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
 		{"guardrail blocked", ErrGuardrailBlocked, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED},
 		{"generic upstream error", context.DeadlineExceeded, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR},
 		{"deployment capacity (concurrency)", &DeploymentCapacityError{Deployment: "d1", Reason: "concurrency"}, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},
