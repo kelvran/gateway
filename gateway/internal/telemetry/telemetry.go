@@ -244,31 +244,21 @@ func RecordFallbackHop(ctx context.Context, deploymentName, errorClass string, d
 	))
 }
 
-// tokenUsageHistogram and operationDurationHistogram are the OTel GenAI
-// semantic-conventions instruments named in
-// docs/upgrade-research/gateway-2026-09-06.md Finding 3:
-// gen_ai.client.token.usage (Histogram, unit "{token}") and
-// gen_ai.client.operation.duration (Histogram, unit "s") — additive to
-// docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md, which stood
-// up this codebase's only prior instrument and explicitly named this as
-// the *first* metric, not the only one. Both instrument names are the
-// spec's own canonical strings, not a kelvran.*-namespaced equivalent —
-// deliberately, so a GenAI-aware dashboard (e.g. Envoy AI Gateway's
-// published Grafana dashboard, the concrete precedent this Finding
-// cites) can query them without any Kelvran-specific translation. See
-// gen_ai.client.token.usage's own "Development," not "Stable," spec
-// stability badge, called out as a documented risk in
-// docs/rfcs/2026-09-07-gateway-genai-metrics.md, not a reason to wait —
-// this codebase already has precedent (gen_ai.* trace attributes, per
-// docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md) for building
-// against development-stability OTel GenAI conventions.
-var tokenUsageHistogram = mustFloat64Histogram(
-	meter,
-	"gen_ai.client.token.usage",
-	metric.WithDescription("Number of input and output tokens used by this GenAI client operation."),
-	metric.WithUnit("{token}"),
-)
-
+// operationDurationHistogram is the OTel GenAI semantic-conventions
+// instrument named in docs/upgrade-research/gateway-2026-09-06.md
+// Finding 3: gen_ai.client.operation.duration (Histogram, unit "s") —
+// additive to docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md,
+// which stood up this codebase's only prior instrument and explicitly
+// named this as the *first* metric, not the only one. The instrument
+// name is the spec's own canonical string, not a kelvran.*-namespaced
+// equivalent — deliberately, so a GenAI-aware dashboard (e.g. Envoy AI
+// Gateway's published Grafana dashboard, the concrete precedent this
+// Finding cites) can query it without any Kelvran-specific translation.
+// A live, provisioned Grafana dashboard
+// (docs/operations/grafana/dashboards/kelvran-overview.json) and live
+// Prometheus SLO rules (docs/operations/grafana/prometheus/
+// kelvran-slo-rules.yml) query this exact instrument by name — never
+// rename or remove it without updating both.
 var operationDurationHistogram = mustFloat64Histogram(
 	meter,
 	"gen_ai.client.operation.duration",
@@ -276,11 +266,97 @@ var operationDurationHistogram = mustFloat64Histogram(
 	metric.WithUnit("s"),
 )
 
-// GenAI token-type attribute values, per the semantic-conventions spec's
-// gen_ai.token.type enum — the two used by RecordChatCompletionMetrics.
+// tokenBucketBoundaries are the semantic-conventions spec's own
+// recommended ExplicitBucketBoundaries for the two per-operation token
+// histograms below — shared because both instruments cover the same
+// {token} value range.
+var tokenBucketBoundaries = metric.WithExplicitBucketBoundaries(
+	1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864,
+)
+
+// inputTokensCounter, outputTokensCounter, cacheReadTokensCounter,
+// cacheWriteTokensCounter, inputTokensOperationHistogram, and
+// outputTokensOperationHistogram are the current OTel GenAI
+// semantic-conventions token-metrics instruments
+// (open-telemetry/semantic-conventions-genai, docs/gen-ai/
+// gen-ai-token-metrics.md), replacing this package's own prior
+// gen_ai.client.token.usage Histogram + gen_ai.token.type enum
+// attribute — removed outright (clean cutover, not a dual-emit
+// transition) after a live end-to-end research pass confirmed
+// gen_ai.client.token.usage was itself removed upstream
+// (open-telemetry/semantic-conventions-genai PR #374, merged
+// 2026-09-22) and that zero Kelvran dashboard/PromQL rule anywhere
+// referenced it by name, unlike operationDurationHistogram above.
+//
+// A 5th counter in the same spec family,
+// gen_ai.client.inference.usage.reasoning.output_tokens, is
+// deliberately NOT declared here — no field anywhere in this codebase
+// (adapter.Usage, ChatCompletionResult) tracks reasoning/thinking
+// token counts today, and an instrument that only ever recorded a
+// fabricated 0 would read as "confirmed zero reasoning tokens" to a
+// dashboard, not "never measured" — worse than not existing at all.
+// Add it for real once reasoning-token tracking becomes its own
+// feature, not before.
+//
+// The two *_tokens Counters carry a gen_ai.token.modality attribute per
+// the spec's own requirement; the two *OperationHistogram instruments
+// deliberately do not — the spec explains percentiles across
+// modalities don't add up meaningfully, so modality is omitted there.
+var (
+	inputTokensCounter = mustInt64Counter(
+		meter,
+		"gen_ai.client.inference.usage.input_tokens",
+		metric.WithDescription("The number of input (prompt) tokens used, including cached tokens."),
+		metric.WithUnit("{token}"),
+	)
+	outputTokensCounter = mustInt64Counter(
+		meter,
+		"gen_ai.client.inference.usage.output_tokens",
+		metric.WithDescription("The number of output (completion) tokens used, including reasoning tokens."),
+		metric.WithUnit("{token}"),
+	)
+	cacheReadTokensCounter = mustInt64Counter(
+		meter,
+		"gen_ai.client.inference.usage.cache_read.input_tokens",
+		metric.WithDescription("The number of input tokens served from a provider-managed cache."),
+		metric.WithUnit("{token}"),
+	)
+	cacheWriteTokensCounter = mustInt64Counter(
+		meter,
+		"gen_ai.client.inference.usage.cache_write.input_tokens",
+		metric.WithDescription("The number of input tokens written to a provider-managed cache."),
+		metric.WithUnit("{token}"),
+	)
+	inputTokensOperationHistogram = mustFloat64Histogram(
+		meter,
+		"gen_ai.client.inference.operation.input_tokens",
+		metric.WithDescription("The number of input (prompt) tokens used per inference operation."),
+		metric.WithUnit("{token}"),
+		tokenBucketBoundaries,
+	)
+	outputTokensOperationHistogram = mustFloat64Histogram(
+		meter,
+		"gen_ai.client.inference.operation.output_tokens",
+		metric.WithDescription("The number of output (completion) tokens used per inference operation."),
+		metric.WithUnit("{token}"),
+		tokenBucketBoundaries,
+	)
+)
+
+// AttrGenAITokenModality is the semantic-conventions spec's
+// gen_ai.token.modality attribute — required on every Counter declared
+// above. Only "text"/"unknown" are ever produced by this codebase today
+// (see genAITokenModalityFor's own doc comment in dataplane.go):
+// Bedrock's Converse API never breaks usage down by modality, so a
+// request carrying any multimodal adapter.ContentPart genuinely cannot
+// be attributed a real text-vs-image split, and the spec's own guidance
+// is to report "unknown" rather than guess. "image"/"audio" are real,
+// well-known spec values this codebase has no code path to produce yet.
+const AttrGenAITokenModality = "gen_ai.token.modality"
+
 const (
-	GenAITokenTypeInput  = "input"
-	GenAITokenTypeOutput = "output"
+	GenAITokenModalityText    = "text"
+	GenAITokenModalityUnknown = "unknown"
 )
 
 // RecordChatCompletionMetrics records both GenAI histograms from r — the
@@ -299,17 +375,18 @@ const (
 // per the spec's own "conditionally required on failure" framing for
 // that attribute — never a fabricated empty string on success.
 //
-// gen_ai.client.token.usage is recorded only when r.Billable — a cache
-// hit (any layer) or a coalesced singleflight follower replays token
-// counts from a real upstream call this specific request itself never
-// made, per docs/rfcs/2026-09-05-gateway-cost-double-counting.md's
-// billable gate (already used identically by budget.Record and
-// limiter.RecordTokens). Unlike AttrKelvranCostUSD/InputTokens on the
-// span — a single per-request attribute, safe to report as "what this
-// would have cost" even on a cache hit — a histogram accumulates across
-// many requests; replaying the same cached token count on every
-// subsequent hit would inflate an aggregate token-throughput query by
-// however many times that entry was served, not just report it once.
+// The 4 token-usage Counters and 2 per-operation Histograms below are
+// recorded only when r.Billable — a cache hit (any layer) or a
+// coalesced singleflight follower replays token counts from a real
+// upstream call this specific request itself never made, per
+// docs/rfcs/2026-09-05-gateway-cost-double-counting.md's billable gate
+// (already used identically by budget.Record and limiter.RecordTokens).
+// Unlike AttrKelvranCostUSD/InputTokens on the span — a single
+// per-request attribute, safe to report as "what this would have cost"
+// even on a cache hit — a Counter/Histogram accumulates across many
+// requests; replaying the same cached token count on every subsequent
+// hit would inflate an aggregate token-throughput query by however many
+// times that entry was served, not just report it once.
 func RecordChatCompletionMetrics(ctx context.Context, r ChatCompletionResult) {
 	var attrs []attribute.KeyValue
 	attrs = append(attrs, attribute.String(AttrGenAIOperationName, "chat"))
@@ -331,17 +408,26 @@ func RecordChatCompletionMetrics(ctx context.Context, r ChatCompletionResult) {
 	if !r.Billable {
 		return
 	}
-	// Each token-type data point gets its own copy of attrs, rather than
-	// two successive append(attrs, ...) calls sharing attrs's backing
-	// array — a real, if benign here (each Record call fully consumes its
-	// slice before the next append runs), footgun not worth relying on.
+	// modalityAttrs gets its own copy of attrs, rather than sharing attrs's
+	// backing array via append — a real, if benign here (each Record call
+	// fully consumes its slice before the next append runs), footgun not
+	// worth relying on. The two *OperationHistogram Records below reuse
+	// bare attrs directly (no modality attribute, per the spec's own
+	// per-instrument attribute set).
+	modalityAttrs := append(append([]attribute.KeyValue{}, attrs...), attribute.String(AttrGenAITokenModality, r.TokenModality))
 	if r.InputTokens > 0 {
-		inputAttrs := append(append([]attribute.KeyValue{}, attrs...), attribute.String(AttrGenAITokenType, GenAITokenTypeInput))
-		tokenUsageHistogram.Record(ctx, float64(r.InputTokens), metric.WithAttributes(inputAttrs...))
+		inputTokensCounter.Add(ctx, int64(r.InputTokens), metric.WithAttributes(modalityAttrs...))
+		inputTokensOperationHistogram.Record(ctx, float64(r.InputTokens), metric.WithAttributes(attrs...))
 	}
 	if r.OutputTokens > 0 {
-		outputAttrs := append(append([]attribute.KeyValue{}, attrs...), attribute.String(AttrGenAITokenType, GenAITokenTypeOutput))
-		tokenUsageHistogram.Record(ctx, float64(r.OutputTokens), metric.WithAttributes(outputAttrs...))
+		outputTokensCounter.Add(ctx, int64(r.OutputTokens), metric.WithAttributes(modalityAttrs...))
+		outputTokensOperationHistogram.Record(ctx, float64(r.OutputTokens), metric.WithAttributes(attrs...))
+	}
+	if r.CacheReadTokens > 0 {
+		cacheReadTokensCounter.Add(ctx, int64(r.CacheReadTokens), metric.WithAttributes(modalityAttrs...))
+	}
+	if r.CacheCreationTokens > 0 {
+		cacheWriteTokensCounter.Add(ctx, int64(r.CacheCreationTokens), metric.WithAttributes(modalityAttrs...))
 	}
 }
 

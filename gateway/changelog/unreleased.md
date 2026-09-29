@@ -8,6 +8,8 @@ Versioning: [SemVer](https://semver.org/) — load-bearing for the Go module pat
 
 ## Changed
 
+- `gen_ai.client.token.usage` (Histogram, with a `gen_ai.token.type` enum attribute) is replaced with the current OTel GenAI semantic-conventions token-metrics shape (`open-telemetry/semantic-conventions-genai` PR #374, merged 2026-09-22): 4 new Counters (`gen_ai.client.inference.usage.{input,output,cache_read.input,cache_write.input}_tokens`, each carrying a new `gen_ai.token.modality` attribute) plus 2 new percentile-only Histograms (`gen_ai.client.inference.operation.{input,output}_tokens`). `gen_ai.client.operation.duration` (the separate duration histogram a live Grafana dashboard and Prometheus SLO rules depend on) is unchanged. A 5th new counter in the same spec family, `reasoning.output_tokens`, is deliberately not added yet — Kelvran doesn't track reasoning-token counts anywhere today; adding an always-empty or fabricated-zero instrument would be worse than not adding it. Found via a live end-to-end research pass immediately after the v0.16.0 release.
+
 ## Deprecated
 
 ## Removed

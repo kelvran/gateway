@@ -179,8 +179,9 @@ linters:
       # OTel GenAI semantic-convention attribute *names* (string
       # constants like "gen_ai.usage.input_tokens") -- not credential
       # values. gosec's G101 heuristic matches on the surrounding
-      # "Attr... = ..." shape, not the actual string content.
-      - path: internal/telemetry/result\.go
+      # "Attr... = ..." shape, not the actual string content. Covers
+      # both files declaring Attr* constants of this shape.
+      - path: internal/telemetry/(result|telemetry)\.go
         linters:
           - gosec
         text: "G101"

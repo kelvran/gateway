@@ -44,15 +44,17 @@ const (
 	// cost-accounting work (adapter.Usage.CacheReadTokens/
 	// CacheCreationTokens, populated for all 5 adapters) already computes
 	// exactly this data on every request; it simply never reached these
-	// two span attributes. Deliberately span-attributes only in this
-	// pass — NOT also added to the gen_ai.client.token.usage histogram's
-	// token-type breakdown (telemetry.go's GenAITokenTypeInput/Output):
-	// this codebase could not independently verify whether the spec's
-	// gen_ai.token.type enum has real "cache_read"/"cache_creation"
-	// values (as opposed to only "input"/"output"), and fabricating an
-	// enum value neither this file nor its research grounding actually
-	// confirmed is worse than a narrower, honestly-scoped fix — named
-	// here as a real, disclosed gap rather than guessed at.
+	// two span attributes. Originally span-attributes only in this pass —
+	// NOT also added to the gen_ai.client.token.usage histogram's
+	// token-type breakdown, since this codebase could not independently
+	// verify whether that histogram's gen_ai.token.type enum had real
+	// "cache_read"/"cache_creation" values. That whole question is now
+	// moot: the 2026-09-29 OTel GenAI token-metrics migration (see
+	// telemetry.go's cacheReadTokensCounter/cacheWriteTokensCounter)
+	// replaced the shared histogram+enum shape with 4 dedicated Counter
+	// instruments, one per token category — cache_read/cache_write
+	// tokens now reach the metrics side too, closing this gap for real
+	// rather than leaving it disclosed-but-open.
 	AttrGenAIUsageCacheReadInputTokens = "gen_ai.usage.cache_read.input_tokens"
 	// AttrGenAIUsageCacheWriteInputTokens: renamed from
 	// gen_ai.usage.cache_creation.input_tokens upstream (semantic-
@@ -66,11 +68,6 @@ const (
 	// key, not a versioned API contract with external consumers pinned
 	// to the old string).
 	AttrGenAIUsageCacheWriteInputTokens = "gen_ai.usage.cache_write.input_tokens"
-	// AttrGenAIRequestModel is defined above but was previously never set
-	// on the span — RecordChatCompletionMetrics now sets it on the two
-	// new GenAI Metrics histograms (see telemetry.go), per
-	// docs/upgrade-research/gateway-2026-09-06.md Finding 3.
-	AttrGenAITokenType = "gen_ai.token.type"
 
 	// AttrErrorType is OTel's general (non-GenAI-specific) semantic-
 	// convention attribute for a low-cardinality description of what
@@ -290,6 +287,15 @@ type ChatCompletionResult struct {
 	// InputTokens/OutputTokens's own identical convention.
 	CacheReadTokens     int
 	CacheCreationTokens int
+	// TokenModality is always one of GenAITokenModalityText/
+	// GenAITokenModalityUnknown (telemetry.go) — set unconditionally by
+	// the caller (mirroring Streaming/CacheHit's own "never omit a
+	// value that's always known" convention), never inferred inside
+	// this package, which stays a dependency-free leaf with zero
+	// adapter package knowledge per this struct's own CacheLayer field
+	// convention above. RecordChatCompletionMetrics attaches it as the
+	// gen_ai.token.modality attribute on every token-usage Counter.
+	TokenModality string
 	// PromptID/PromptVersion are req.PromptID/req.PromptVersion at
 	// dataplane.finalize's call site — "" / 0 (PromptID's own zero
 	// value) whenever server-side prompt management wasn't used for

@@ -434,7 +434,21 @@ type cacheL3TelemetrySnapshot struct {
 	// property of that attribute set, not a cumulative value, so reading
 	// it from the "after" snapshot alone is correct.
 	durationErrorTypeByModel map[string]attrPresence
-	tokenSumByModelAndType   map[[2]string]float64
+	// inputTokensByModelAndModality/outputTokensByModelAndModality/
+	// cacheReadTokensByModelAndModality/cacheWriteTokensByModelAndModality
+	// key on {model, gen_ai.token.modality} — the 4 Counter instruments
+	// replacing the old shared gen_ai.client.token.usage Histogram's
+	// {model, gen_ai.token.type} keying.
+	inputTokensByModelAndModality      map[[2]string]int64
+	outputTokensByModelAndModality     map[[2]string]int64
+	cacheReadTokensByModelAndModality  map[[2]string]int64
+	cacheWriteTokensByModelAndModality map[[2]string]int64
+	// inputTokensOperationSumByModel/outputTokensOperationSumByModel key
+	// on model only — the 2 per-operation Histograms deliberately carry
+	// no modality attribute, per the spec's own "percentiles across
+	// modalities don't add up" reasoning.
+	inputTokensOperationSumByModel  map[string]float64
+	outputTokensOperationSumByModel map[string]float64
 }
 
 type attrPresence struct {
@@ -445,13 +459,18 @@ type attrPresence struct {
 func snapshotCacheL3Telemetry(t *testing.T, rm metricdata.ResourceMetrics) cacheL3TelemetrySnapshot {
 	t.Helper()
 	snap := cacheL3TelemetrySnapshot{
-		gateOutcomeCounts:            map[[2]string]int64{},
-		savingsByLayer:               map[string]float64{},
-		lookupCounts:                 map[[2]string]int64{},
-		persistenceFailedByStoreKind: map[string]int64{},
-		durationSumByModel:           map[string]float64{},
-		durationErrorTypeByModel:     map[string]attrPresence{},
-		tokenSumByModelAndType:       map[[2]string]float64{},
+		gateOutcomeCounts:                  map[[2]string]int64{},
+		savingsByLayer:                     map[string]float64{},
+		lookupCounts:                       map[[2]string]int64{},
+		persistenceFailedByStoreKind:       map[string]int64{},
+		durationSumByModel:                 map[string]float64{},
+		durationErrorTypeByModel:           map[string]attrPresence{},
+		inputTokensByModelAndModality:      map[[2]string]int64{},
+		outputTokensByModelAndModality:     map[[2]string]int64{},
+		cacheReadTokensByModelAndModality:  map[[2]string]int64{},
+		cacheWriteTokensByModelAndModality: map[[2]string]int64{},
+		inputTokensOperationSumByModel:     map[string]float64{},
+		outputTokensOperationSumByModel:    map[string]float64{},
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -521,20 +540,53 @@ func snapshotCacheL3Telemetry(t *testing.T, rm metricdata.ResourceMetrics) cache
 					errorType, hasErrorType := dp.Attributes.Value(attribute.Key(AttrErrorType))
 					snap.durationErrorTypeByModel[model.AsString()] = attrPresence{errorType.AsString(), hasErrorType}
 				}
-			case "gen_ai.client.token.usage":
+			case "gen_ai.client.inference.usage.input_tokens":
+				snapshotGenAITokenCounter(t, m, snap.inputTokensByModelAndModality)
+			case "gen_ai.client.inference.usage.output_tokens":
+				snapshotGenAITokenCounter(t, m, snap.outputTokensByModelAndModality)
+			case "gen_ai.client.inference.usage.cache_read.input_tokens":
+				snapshotGenAITokenCounter(t, m, snap.cacheReadTokensByModelAndModality)
+			case "gen_ai.client.inference.usage.cache_write.input_tokens":
+				snapshotGenAITokenCounter(t, m, snap.cacheWriteTokensByModelAndModality)
+			case "gen_ai.client.inference.operation.input_tokens":
 				hist, ok := m.Data.(metricdata.Histogram[float64])
 				if !ok {
-					t.Fatalf("gen_ai.client.token.usage data type = %T, want metricdata.Histogram[float64]", m.Data)
+					t.Fatalf("gen_ai.client.inference.operation.input_tokens data type = %T, want metricdata.Histogram[float64]", m.Data)
 				}
 				for _, dp := range hist.DataPoints {
 					model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
-					tokenType, _ := dp.Attributes.Value(attribute.Key(AttrGenAITokenType))
-					snap.tokenSumByModelAndType[[2]string{model.AsString(), tokenType.AsString()}] += dp.Sum
+					snap.inputTokensOperationSumByModel[model.AsString()] += dp.Sum
+				}
+			case "gen_ai.client.inference.operation.output_tokens":
+				hist, ok := m.Data.(metricdata.Histogram[float64])
+				if !ok {
+					t.Fatalf("gen_ai.client.inference.operation.output_tokens data type = %T, want metricdata.Histogram[float64]", m.Data)
+				}
+				for _, dp := range hist.DataPoints {
+					model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
+					snap.outputTokensOperationSumByModel[model.AsString()] += dp.Sum
 				}
 			}
 		}
 	}
 	return snap
+}
+
+// snapshotGenAITokenCounter accumulates m's Sum[int64] data points, keyed
+// by {gen_ai.request.model, gen_ai.token.modality}, into dst — shared by
+// snapshotCacheL3Telemetry's 4 identically-shaped token-usage Counter
+// cases (input/output/cache_read/cache_write).
+func snapshotGenAITokenCounter(t *testing.T, m metricdata.Metrics, dst map[[2]string]int64) {
+	t.Helper()
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("%s data type = %T, want metricdata.Sum[int64]", m.Name, m.Data)
+	}
+	for _, dp := range sum.DataPoints {
+		model, _ := dp.Attributes.Value(attribute.Key(AttrGenAIRequestModel))
+		modality, _ := dp.Attributes.Value(attribute.Key(AttrGenAITokenModality))
+		dst[[2]string{model.AsString(), modality.AsString()}] += dp.Value
+	}
 }
 
 // TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome proves
@@ -622,34 +674,54 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	RecordConfigPropagationSubscribeStopped(ctx)
 	RecordConfigPropagationSubscribeStopped(ctx)
 
-	// Three RecordChatCompletionMetrics scenarios, each given a unique
+	// Four RecordChatCompletionMetrics scenarios, each given a unique
 	// RequestModel so their attribute sets never collide into the same
-	// histogram data point: a genuine billable success (both histograms
-	// populated, no error.type), a non-billable cache hit/coalesced
-	// follower replaying the same token counts (operation.duration still
-	// recorded — every operation has a duration regardless of billing —
-	// but token.usage must NOT be, per RecordChatCompletionMetrics's own
-	// double-counting-avoidance doc comment), and a failure (billable is
-	// always false on error in real code, tokens are always 0, but
-	// operation.duration must still carry the conditional error.type
-	// attribute).
+	// data point: a genuine billable success (every instrument
+	// populated, no error.type, real cache-read/cache-write tokens, a
+	// known "text" modality), a second billable success with an
+	// "unknown" modality (proves the modality attribute's other real
+	// value reaches a real data point), a non-billable cache hit/
+	// coalesced follower replaying the same token counts
+	// (operation.duration still recorded — every operation has a
+	// duration regardless of billing — but every token-usage
+	// Counter/Histogram must NOT be, per RecordChatCompletionMetrics's
+	// own double-counting-avoidance doc comment), and a failure
+	// (billable is always false on error in real code, tokens are
+	// always 0, but operation.duration must still carry the
+	// conditional error.type attribute).
 	RecordChatCompletionMetrics(ctx, ChatCompletionResult{
-		Provider:      "openai",
-		RequestModel:  "genai-metrics-success",
-		ResponseModel: "gpt-4o",
-		InputTokens:   10,
-		OutputTokens:  4,
-		Billable:      true,
-		Duration:      250 * time.Millisecond,
+		Provider:            "openai",
+		RequestModel:        "genai-metrics-success",
+		ResponseModel:       "gpt-4o",
+		InputTokens:         10,
+		OutputTokens:        4,
+		CacheReadTokens:     3,
+		CacheCreationTokens: 2,
+		TokenModality:       GenAITokenModalityText,
+		Billable:            true,
+		Duration:            250 * time.Millisecond,
 	})
 	RecordChatCompletionMetrics(ctx, ChatCompletionResult{
 		Provider:      "openai",
-		RequestModel:  "genai-metrics-cache-hit",
+		RequestModel:  "genai-metrics-multimodal",
 		ResponseModel: "gpt-4o",
-		InputTokens:   10,
-		OutputTokens:  4,
-		Billable:      false,
-		Duration:      5 * time.Millisecond,
+		InputTokens:   20,
+		OutputTokens:  8,
+		TokenModality: GenAITokenModalityUnknown,
+		Billable:      true,
+		Duration:      300 * time.Millisecond,
+	})
+	RecordChatCompletionMetrics(ctx, ChatCompletionResult{
+		Provider:            "openai",
+		RequestModel:        "genai-metrics-cache-hit",
+		ResponseModel:       "gpt-4o",
+		InputTokens:         10,
+		OutputTokens:        4,
+		CacheReadTokens:     3,
+		CacheCreationTokens: 2,
+		TokenModality:       GenAITokenModalityText,
+		Billable:            false,
+		Duration:            5 * time.Millisecond,
 	})
 	RecordChatCompletionMetrics(ctx, ChatCompletionResult{
 		RequestModel: "genai-metrics-failure",
@@ -739,25 +811,71 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 		t.Errorf("failure scenario's error.type = %v, hasErrorType=%v, want %q", et.val, et.ok, "rate_limited")
 	}
 
-	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeInput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeInput}]; got != 10 {
-		t.Errorf("success scenario input token usage delta = %v, want 10", got)
+	multimodalSum := afterSnap.durationSumByModel["genai-metrics-multimodal"] - beforeSnap.durationSumByModel["genai-metrics-multimodal"]
+	if want := (300 * time.Millisecond).Seconds(); multimodalSum < want-durationEpsilon || multimodalSum > want+durationEpsilon {
+		t.Errorf("multimodal scenario duration Sum delta = %v, want %v", multimodalSum, want)
 	}
-	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeOutput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-success", GenAITokenTypeOutput}]; got != 4 {
-		t.Errorf("success scenario output token usage delta = %v, want 4", got)
+
+	textKey := [2]string{"genai-metrics-success", GenAITokenModalityText}
+	if got := afterSnap.inputTokensByModelAndModality[textKey] - beforeSnap.inputTokensByModelAndModality[textKey]; got != 10 {
+		t.Errorf("success scenario input_tokens delta = %v, want 10", got)
+	}
+	if got := afterSnap.outputTokensByModelAndModality[textKey] - beforeSnap.outputTokensByModelAndModality[textKey]; got != 4 {
+		t.Errorf("success scenario output_tokens delta = %v, want 4", got)
+	}
+	if got := afterSnap.cacheReadTokensByModelAndModality[textKey] - beforeSnap.cacheReadTokensByModelAndModality[textKey]; got != 3 {
+		t.Errorf("success scenario cache_read.input_tokens delta = %v, want 3", got)
+	}
+	if got := afterSnap.cacheWriteTokensByModelAndModality[textKey] - beforeSnap.cacheWriteTokensByModelAndModality[textKey]; got != 2 {
+		t.Errorf("success scenario cache_write.input_tokens delta = %v, want 2", got)
+	}
+	if got := afterSnap.inputTokensOperationSumByModel["genai-metrics-success"] - beforeSnap.inputTokensOperationSumByModel["genai-metrics-success"]; got != 10 {
+		t.Errorf("success scenario operation.input_tokens Sum delta = %v, want 10", got)
+	}
+	if got := afterSnap.outputTokensOperationSumByModel["genai-metrics-success"] - beforeSnap.outputTokensOperationSumByModel["genai-metrics-success"]; got != 4 {
+		t.Errorf("success scenario operation.output_tokens Sum delta = %v, want 4", got)
+	}
+
+	// Proves the gen_ai.token.modality attribute's other real value
+	// ("unknown", for a request containing multimodal content Bedrock's
+	// usage response can't attribute to text vs. image) reaches a real,
+	// distinctly-keyed data point — never collapsed into the "text" key
+	// above.
+	unknownKey := [2]string{"genai-metrics-multimodal", GenAITokenModalityUnknown}
+	if got := afterSnap.inputTokensByModelAndModality[unknownKey] - beforeSnap.inputTokensByModelAndModality[unknownKey]; got != 20 {
+		t.Errorf("multimodal scenario input_tokens[unknown] delta = %v, want 20", got)
+	}
+	if got := afterSnap.outputTokensByModelAndModality[unknownKey] - beforeSnap.outputTokensByModelAndModality[unknownKey]; got != 8 {
+		t.Errorf("multimodal scenario output_tokens[unknown] delta = %v, want 8", got)
+	}
+	if got := afterSnap.inputTokensByModelAndModality[[2]string{"genai-metrics-multimodal", GenAITokenModalityText}]; got != 0 {
+		t.Errorf("multimodal scenario must never be keyed under modality=text, got a text-keyed value of %v", got)
 	}
 
 	// The load-bearing double-counting-avoidance proof: the cache-hit
-	// scenario replayed the exact same InputTokens/OutputTokens as the
-	// success scenario, but Billable=false — neither must ever contribute
-	// a delta to gen_ai.client.token.usage.
-	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeInput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeInput}]; got != 0 {
-		t.Errorf("non-billable cache-hit scenario recorded an input token.usage delta of %v — must be suppressed", got)
+	// scenario replayed the exact same InputTokens/OutputTokens/
+	// CacheReadTokens/CacheCreationTokens as the success scenario, but
+	// Billable=false — none of the 4 new Counters or 2 new
+	// per-operation Histograms must ever contribute a delta for it.
+	cacheHitKey := [2]string{"genai-metrics-cache-hit", GenAITokenModalityText}
+	if got := afterSnap.inputTokensByModelAndModality[cacheHitKey] - beforeSnap.inputTokensByModelAndModality[cacheHitKey]; got != 0 {
+		t.Errorf("non-billable cache-hit scenario recorded an input_tokens delta of %v — must be suppressed", got)
 	}
-	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeOutput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-cache-hit", GenAITokenTypeOutput}]; got != 0 {
-		t.Errorf("non-billable cache-hit scenario recorded an output token.usage delta of %v — must be suppressed", got)
+	if got := afterSnap.outputTokensByModelAndModality[cacheHitKey] - beforeSnap.outputTokensByModelAndModality[cacheHitKey]; got != 0 {
+		t.Errorf("non-billable cache-hit scenario recorded an output_tokens delta of %v — must be suppressed", got)
 	}
-	if got := afterSnap.tokenSumByModelAndType[[2]string{"genai-metrics-failure", GenAITokenTypeInput}] - beforeSnap.tokenSumByModelAndType[[2]string{"genai-metrics-failure", GenAITokenTypeInput}]; got != 0 {
-		t.Errorf("failure scenario recorded an input token.usage delta of %v — must be suppressed", got)
+	if got := afterSnap.cacheReadTokensByModelAndModality[cacheHitKey] - beforeSnap.cacheReadTokensByModelAndModality[cacheHitKey]; got != 0 {
+		t.Errorf("non-billable cache-hit scenario recorded a cache_read.input_tokens delta of %v — must be suppressed", got)
+	}
+	if got := afterSnap.cacheWriteTokensByModelAndModality[cacheHitKey] - beforeSnap.cacheWriteTokensByModelAndModality[cacheHitKey]; got != 0 {
+		t.Errorf("non-billable cache-hit scenario recorded a cache_write.input_tokens delta of %v — must be suppressed", got)
+	}
+	if got := afterSnap.inputTokensOperationSumByModel["genai-metrics-cache-hit"] - beforeSnap.inputTokensOperationSumByModel["genai-metrics-cache-hit"]; got != 0 {
+		t.Errorf("non-billable cache-hit scenario recorded an operation.input_tokens delta of %v — must be suppressed", got)
+	}
+	failureKey := [2]string{"genai-metrics-failure", ""}
+	if got := afterSnap.inputTokensByModelAndModality[failureKey] - beforeSnap.inputTokensByModelAndModality[failureKey]; got != 0 {
+		t.Errorf("failure scenario recorded an input_tokens delta of %v — must be suppressed", got)
 	}
 
 	if got := afterSnap.persistenceFailedByStoreKind["budget"] - beforeSnap.persistenceFailedByStoreKind["budget"]; got != 1 {

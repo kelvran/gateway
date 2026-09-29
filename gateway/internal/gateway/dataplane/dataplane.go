@@ -4185,6 +4185,27 @@ func realServingModel(dep Deployment, fallbackModel string) string {
 // itself (cost is computed from resp.Usage exactly the same way whether
 // that usage is real or estimated), only whether ChatCompletionResult/
 // GatewayDecisionEvent flag the resulting cost as an estimate.
+// genAITokenModalityFor returns the real, honest gen_ai.token.modality
+// value for req, per the OTel GenAI semantic-conventions spec's own
+// guidance: report "unknown" (never a guessed "text") whenever the
+// provider doesn't break token usage down by modality and the true
+// modality can't be reliably determined. Bedrock's Converse API usage
+// response never splits input/output token counts by modality — it's a
+// single aggregate number regardless of whether the request carried
+// multimodal content — so any request with at least one adapter.
+// ContentPart (image/document content, per
+// docs/rfcs/2026-09-06-gateway-multimodal-content.md) genuinely cannot
+// be attributed a real text-vs-image token split. A request with zero
+// Parts across every message has a real, known modality: "text".
+func genAITokenModalityFor(req adapter.ChatRequest) string {
+	for _, msg := range req.Messages {
+		if len(msg.Parts) > 0 {
+			return telemetry.GenAITokenModalityUnknown
+		}
+	}
+	return telemetry.GenAITokenModalityText
+}
+
 func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64, cacheAttempted bool, costEstimated bool, streaming bool, err error, duration time.Duration) {
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
@@ -4368,6 +4389,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// comment for why this previously never reached a span attribute.
 		CacheReadTokens:     resp.Usage.CacheReadTokens,
 		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		TokenModality:       genAITokenModalityFor(req),
 		// telemetry stays a dependency-free leaf (no decimal.Decimal
 		// import) per docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md —
 		// the exact decimal string is formatted here, at the boundary,
