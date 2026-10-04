@@ -82,7 +82,7 @@ jobs:
       - name: dead-man's-switch ping (start)
         if: ${{ env.HEALTHCHECKS_PING_URL != '' }}
         run: curl -fsS -m 10 --retry 3 "$HEALTHCHECKS_PING_URL/start" > /dev/null
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
