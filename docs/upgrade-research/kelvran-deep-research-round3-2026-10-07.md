@@ -253,3 +253,16 @@ direct read; `[O]` open — no claim survived verification.
   official docs rather than broad web coverage — third-party critiques could exist unseen.
 - Kelvran's pilot IAM user is `AccessDenied` for the Service Quotas API, so the quota numbers above are
   from the AWS documentation table, not the account's applied values.
+
+## Implementation status (added 2026-10-07, same day)
+
+All four items the user selected from the ranked list above shipped to `main`, each as its own commit with red→green tests, a 4-lens adversarial review workflow with 3-vote refutation per finding and a fresh-reviewer re-review of the repairs, and a live probe against real Bedrock where one existed:
+
+| Ranked item | Commit | Live proof |
+|---|---|---|
+| 1. Bedrock-quota-aware TPM accounting (deployment-scoped TPM wired per hop + `rate_limit.tpm_accounting`) | `c894a1cc` | ×10 deployment admitted 1 call (24+5 tokens → 74 weighted vs a 50 bucket), 503 `at capacity (tpm)` on the 2nd; raw twin admitted 2 |
+| 2. Reasoning-token tracking (`adapter.Usage.ReasoningTokens` → 5th OTel counter + span attribute) | `a79ce3fe` | Bedrock accepted `additionalModelResponseFieldPaths` on Haiku 4.5 (buffered + streaming) and Sonnet 5; the populated document itself is not observable until Kelvran enables thinking on Bedrock |
+| 3. Bedrock exception-name classification + Retry-After | `51fae2d8` | broken model id → log `upstream_status=400 upstream_error_type=ValidationException`, client body generic |
+| 4. Guardrail fail-open metric + U+E0000 tag block | `c8e9486d` | unit-tested only (fail-open needs an erroring detector) |
+
+Items 5–6 and the two negative verdicts (content-aware routing, streaming-estimator removal) are unchanged. Design decisions and the review findings are in `DECISIONS.md` `[2026-10-07]` and `docs/agents/LOGS.md` `[2026-10-07]`.
