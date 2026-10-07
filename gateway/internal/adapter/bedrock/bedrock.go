@@ -748,6 +748,11 @@ func reasoningTokensFromAdditionalFields(raw json.RawMessage) int {
 // attemptFallbackChain capabilityOK gate skips an incapable fallback
 // TARGET before ever calling it -- not the first-attempt router pick,
 // per this feature's own v1 design.
+// Corrected 2026-09-21 (586297bf) / restated 2026-10-08: the dataplane now gates
+// the first pick too -- checkResponseFormatEnforceable returns
+// adapter.ErrStructuredOutputUnsupported when no capable deployment exists in the
+// pool -- so this helper's silent omit is only ever reached for json_object on a
+// whitelisted model (no Converse equivalent to send), never for an unsupported one.
 //
 // No Strict-equivalent field exists to forward on this path: AWS's own
 // Bedrock ML blog's structured-outputs example (2026) shows the

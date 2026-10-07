@@ -2,26 +2,31 @@ package adapter
 
 import "strings"
 
-// bedrockStructuredOutputModelSubstrings is the exact, hardcoded set of
-// Bedrock-hosted Claude model-family substrings Anthropic documents as
-// supporting output_config.format via additionalModelRequestFields,
-// live-verified 2026-09-10 (a real Converse API call against
-// "additionalModelRequestFields": {"output_config": {"format": {"type":
-// "json_schema", "schema": ...}}} for global.anthropic.claude-sonnet-5 --
-// NOT in this set -- returned a clean, distinguishable AWS
-// ValidationException: "output_config.format: Extra inputs are not
-// permitted", proving this is a real, per-model, AWS-enforced
-// restriction, not a stale-docs guess).
-//
-// Matched by substring (strings.Contains), not exact equality, mirroring
-// this codebase's existing convention for matching a variable string
-// against a set of known substrings (see
-// internal/gateway/dataplane/fallback.go's containsAnyKeyword) --
-// real Bedrock model IDs carry a region/version prefix and a
-// date/version suffix around the family name itself (e.g.
-// "global.anthropic.claude-haiku-4-5-20251001-v1:0"), so exact-string
-// matching would miss every real ID.
+// bedrockStructuredOutputModelSubstrings is the hardcoded set of
+// Bedrock-hosted Claude model FAMILIES that accept output_config.format
+// via additionalModelRequestFields. The original five came from
+// Anthropic's own Bedrock allowlist documentation (RFC
+// 2026-09-12-gateway-structured-output-normalization, "Live
+// verification"); claude-haiku-4-5 (2026-09-10) and claude-sonnet-4-5
+// (2026-09-23, see bedrock.go) were then live-confirmed positive.
+// claude-sonnet-5 was live-confirmed NEGATIVE on 2026-09-10 (AWS
+// ValidationException "output_config.format: Extra inputs are not
+// permitted") and deliberately left out; on 2026-10-08 the identical
+// json_schema Converse call against global.anthropic.claude-sonnet-5
+// returned a schema-conforming answer (stopReason end_turn), so it was
+// added -- found live when an unmodified third-party client
+// (Deep-Research's planner, response_format json_object) got a hard
+// ErrStructuredOutputUnsupported for a Sonnet 5 deployment that Bedrock
+// had quietly started supporting, exactly the "stale whitelist
+// understates support" risk the RFC named. On the same day
+// global.anthropic.claude-sonnet-5-5 and us.anthropic.claude-sonnet-5-5
+// were live-confirmed still NEGATIVE, which is why matching is by
+// FAMILY BOUNDARY (bedrockModelFamilyMatches), not a bare substring:
+// "claude-sonnet-5" must not admit "claude-sonnet-5-5". AWS extends this
+// set over time; re-verify with that one call when a new Claude family
+// ships on Bedrock, and never add a family on documentation alone.
 var bedrockStructuredOutputModelSubstrings = []string{
+	"claude-sonnet-5",
 	"claude-opus-4-6",
 	"claude-sonnet-4-6",
 	"claude-sonnet-4-5",
@@ -54,13 +59,60 @@ func SupportsStructuredOutput(provider, model string) bool {
 // suffix) matches one of the whitelisted Claude model families in
 // bedrockStructuredOutputModelSubstrings.
 func bedrockModelSupportsStructuredOutput(model string) bool {
-	for _, substr := range bedrockStructuredOutputModelSubstrings {
-		if strings.Contains(model, substr) {
+	for _, family := range bedrockStructuredOutputModelSubstrings {
+		if bedrockModelFamilyMatches(model, family) {
 			return true
 		}
 	}
 	return false
 }
+
+// bedrockModelFamilyMatches reports whether model names exactly the Claude
+// family (e.g. "claude-sonnet-5"), as opposed to a sibling whose ID merely
+// starts with it ("claude-sonnet-5-5"). Real Bedrock IDs wrap the family in
+// an optional region/provider prefix and an optional "-YYYYMMDD-vN:M" (or
+// bare ":N") suffix -- "global.anthropic.claude-sonnet-5",
+// "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+// "us.anthropic.claude-sonnet-4-5-20250929-v1:0" -- so the character after
+// the family must be the end of the ID, a ':' version separator, or a '-'
+// that starts a date (8 digits) or a "vN" revision. A '-' followed by a
+// short digit run is another version component, i.e. a different family,
+// and is rejected: that is what keeps "claude-sonnet-5" from admitting the
+// still-unsupported Sonnet 5.5 (live-verified rejected 2026-10-08).
+func bedrockModelFamilyMatches(model, family string) bool {
+	for i := strings.Index(model, family); i >= 0; {
+		rest := model[i+len(family):]
+		if bedrockFamilySuffixOK(rest) {
+			return true
+		}
+		next := strings.Index(model[i+1:], family)
+		if next < 0 {
+			return false
+		}
+		i += 1 + next
+	}
+	return false
+}
+
+func bedrockFamilySuffixOK(rest string) bool {
+	if rest == "" || rest[0] == ':' {
+		return true
+	}
+	if rest[0] != '-' || len(rest) < 2 {
+		return false
+	}
+	rest = rest[1:]
+	if len(rest) >= 2 && rest[0] == 'v' && isASCIIDigit(rest[1]) {
+		return true
+	}
+	digits := 0
+	for digits < len(rest) && isASCIIDigit(rest[digits]) {
+		digits++
+	}
+	return digits >= 8
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // bedrockForcedToolChoiceModelSubstrings is the exact set of Bedrock
 // model-family substrings AWS documents as supporting ToolChoice's

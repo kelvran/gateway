@@ -248,6 +248,7 @@ check is intentionally applied only at the fallback-hop layer
 `gateway/internal/gateway/dataplane/fallback.go:372`, which skips an
 incapable fallback *target* before ever calling it), never at the
 first-attempt router pick.
+- **Corrected 2026-10-08**: the whitelist is now six entries (`claude-sonnet-5` added after a live Bedrock call accepted `output_config.format` for it; `claude-sonnet-5-5` live-verified still rejected, hence family-boundary matching) and, since `586297bf` (2026-09-21), the first pick returns `adapter.ErrStructuredOutputUnsupported` (HTTP 502) via `checkResponseFormatEnforceable` instead of proceeding silently — see `docs/rfcs/2026-09-12-gateway-structured-output-normalization.md`'s dated corrections.
 
 The concrete, minimal fix: apply the same `adapter.SupportsStructuredOutput`
 check that already gates fallback-hop selection to the *first* deployment

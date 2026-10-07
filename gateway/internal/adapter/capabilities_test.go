@@ -28,17 +28,26 @@ func TestSupportsStructuredOutputUnknownProviderIsFalse(t *testing.T) {
 // TestSupportsStructuredOutputBedrockIsPerModel is the load-bearing
 // proof for Bedrock's genuinely different, per-model (not per-provider)
 // capability check, live-verified against a real AWS Converse API call
-// per capabilities.go's own doc comment: global.anthropic.claude-sonnet-5
-// is NOT whitelisted (a real ValidationException confirms AWS itself
-// rejects output_config.format for it), while a Haiku-4.5-style Bedrock
-// model ID -- carrying the same region/version prefix and date/version
-// suffix real Bedrock IDs always do -- IS whitelisted.
+// per capabilities.go's own doc comment: a Haiku-4.5-style Bedrock model
+// ID -- carrying the same region/version prefix and date/version suffix
+// real Bedrock IDs always do -- IS whitelisted, an unknown family is not,
+// and global.anthropic.claude-sonnet-5 flipped from NOT whitelisted (a
+// real ValidationException on 2026-09-10) to whitelisted (a real
+// schema-conforming Converse answer on 2026-10-08) -- the list follows
+// AWS's live behaviour, never documentation.
 func TestSupportsStructuredOutputBedrockIsPerModel(t *testing.T) {
 	tests := []struct {
 		model string
 		want  bool
 	}{
-		{"global.anthropic.claude-sonnet-5", false},
+		{"global.anthropic.claude-sonnet-5", true},               // live-verified supported 2026-10-08 (rejected 2026-09-10)
+		{"global.anthropic.claude-sonnet-5-5", false},            // sibling family, live-verified rejected 2026-10-08
+		{"us.anthropic.claude-sonnet-5-5", false},                // same, us. profile
+		{"anthropic.claude-sonnet-50-v1:0", false},               // prefix of a longer version component
+		{"global.anthropic.claude-sonnet-5-20261101-v1:0", true}, // hypothetical dated Sonnet 5 ID: family boundary + date
+		{"global.anthropic.claude-sonnet-5:0", true},
+		{"anthropic.claude-sonnet-5-v1:0", true},               // "-vN" revision with no date             // bare ':N' revision
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", true}, // existing family, dated form
 		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", true},
 		{"anthropic.claude-opus-4-6-20260101-v1:0", true},
 		{"global.anthropic.claude-sonnet-4-6-20260101-v1:0", true},
