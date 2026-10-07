@@ -462,6 +462,24 @@ type Request struct {
 	// see additionalModelRequestFieldsFor for how this adapter avoids
 	// ever sending that combination.
 	AdditionalModelRequestFields map[string]any `json:"additionalModelRequestFields,omitempty"`
+	// AdditionalModelResponseFieldPaths is Converse's list of JSON Pointers
+	// (RFC 6901; "Minimum number of 0 items. Maximum number of 10 items.")
+	// into the MODEL's native response that Bedrock should copy into
+	// additionalModelResponseFields (Response / the messageStop stream
+	// event) -- the only way to see provider-native usage detail Converse's
+	// own TokenUsage lacks. ToProvider asks for /usage/output_tokens_details
+	// on Anthropic models so thinking_tokens reaches
+	// adapter.Usage.ReasoningTokens. Per the Converse API reference
+	// (docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html,
+	// additionalModelResponseFieldPaths; re-read 2026-10-07): "Converse
+	// and ConverseStream reject an empty JSON Pointer or incorrectly
+	// structured JSON Pointer with a 400 error code. If the JSON Pointer
+	// is valid, but the requested field is not in the model response, it
+	// is ignored by Converse" -- so a non-thinking call is unaffected.
+	// Confirmed live 2026-10-07: Haiku 4.5 (buffered and streaming) and
+	// Sonnet 5 accepted the request carrying this field with no thinking
+	// enabled and returned normal usage.
+	AdditionalModelResponseFieldPaths []string `json:"additionalModelResponseFieldPaths,omitempty"`
 }
 
 // Usage is Converse's native token-accounting shape (confirmed real field
@@ -493,6 +511,13 @@ type Response struct {
 	Output     Output `json:"output"`
 	StopReason string `json:"stopReason"`
 	Usage      Usage  `json:"usage"`
+	// AdditionalModelResponseFields is the document Converse builds from
+	// Request.AdditionalModelResponseFieldPaths -- the requested fields
+	// at their original positions, e.g.
+	// {"usage":{"output_tokens_details":{"thinking_tokens":123}}}. Kept
+	// raw: it is provider-native JSON this adapter reads one known path
+	// out of (reasoningTokensFromAdditionalFields) and otherwise ignores.
+	AdditionalModelResponseFields json.RawMessage `json:"additionalModelResponseFields,omitempty"`
 }
 
 // Adapter implements adapter.Adapter for Bedrock.
@@ -645,12 +670,61 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	return &Request{
-		Messages:                     messages,
-		System:                       systemBlocks,
-		InferenceConfig:              inferenceConfig,
-		ToolConfig:                   toolConfig,
-		AdditionalModelRequestFields: additionalFields,
+		Messages:                          messages,
+		System:                            systemBlocks,
+		InferenceConfig:                   inferenceConfig,
+		ToolConfig:                        toolConfig,
+		AdditionalModelRequestFields:      additionalFields,
+		AdditionalModelResponseFieldPaths: additionalModelResponseFieldPathsFor(req.Model),
 	}, nil
+}
+
+// additionalModelResponseFieldPathsFor returns the provider-native response
+// fields ToProvider asks Converse to copy into additionalModelResponseFields:
+// Anthropic's usage.output_tokens_details (thinking_tokens, the source of
+// adapter.Usage.ReasoningTokens) for Anthropic model ids, and nothing --
+// leaving the request byte-identical to before this field existed -- for
+// every other model family on Bedrock, which has no such object to copy.
+func additionalModelResponseFieldPathsFor(model string) []string {
+	if !strings.Contains(model, "anthropic.") {
+		return nil
+	}
+	return []string{"/usage/output_tokens_details"}
+}
+
+// reasoningTokensFromAdditionalFields reads thinking_tokens out of the
+// additionalModelResponseFields document Converse builds for
+// /usage/output_tokens_details -- the requested field at its original
+// position: {"usage":{"output_tokens_details":{"thinking_tokens":N}}}.
+//
+// Disclosed assumption, not a live-verified fact: the nested position
+// follows the API reference's own description ("the requested fields as
+// a JSON Pointer object in the additionalModelResponseFields field") and
+// RFC 6901 semantics, and matches the reference's worked example for a
+// single-segment pointer, but as of 2026-10-07 no live Kelvran request has
+// enabled thinking on Bedrock, so the populated document has only been
+// exercised against synthetic fixtures. If Bedrock turns out to flatten
+// it, this returns 0 (never an error) and the Bedrock reasoning series
+// would simply be absent -- the same visible outcome as a model that
+// reports no breakdown. Tolerant by design for that reason: absent, null,
+// a different requested field, or any unexpected shape is 0 -- this feeds
+// telemetry, not the response, and a provider-side change to the document
+// must not fail a request that otherwise succeeded.
+func reasoningTokensFromAdditionalFields(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var doc struct {
+		Usage struct {
+			OutputTokensDetails struct {
+				ThinkingTokens int `json:"thinking_tokens"`
+			} `json:"output_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return 0
+	}
+	return doc.Usage.OutputTokensDetails.ThinkingTokens
 }
 
 // additionalModelRequestFieldsFor builds Converse's real
@@ -1016,6 +1090,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			TotalTokens:         native.Usage.TotalTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheWriteInputTokens,
 			CacheReadTokens:     native.Usage.CacheReadInputTokens,
 			CacheCreationTokens: native.Usage.CacheWriteInputTokens,
+			ReasoningTokens:     reasoningTokensFromAdditionalFields(native.AdditionalModelResponseFields),
 		},
 	}, nil
 }

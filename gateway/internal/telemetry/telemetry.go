@@ -324,21 +324,35 @@ var tokenBucketBoundaries = metric.WithExplicitBucketBoundaries(
 // 2026-09-22) and that zero Kelvran dashboard/PromQL rule anywhere
 // referenced it by name, unlike operationDurationHistogram above.
 //
-// A 5th counter in the same spec family,
-// gen_ai.client.inference.usage.reasoning.output_tokens, is
-// deliberately NOT declared here — no field anywhere in this codebase
-// (adapter.Usage, ChatCompletionResult) tracks reasoning/thinking
-// token counts today, and an instrument that only ever recorded a
-// fabricated 0 would read as "confirmed zero reasoning tokens" to a
-// dashboard, not "never measured" — worse than not existing at all.
-// Add it for real once reasoning-token tracking becomes its own
-// feature, not before.
+// The 5th counter in the same spec family,
+// gen_ai.client.inference.usage.reasoning.output_tokens
+// (reasoningTokensCounter below), was deliberately held back until
+// reasoning-token tracking became a real feature: an instrument that
+// only ever recorded a fabricated 0 would have read as "confirmed zero
+// reasoning tokens" to a dashboard, not "never measured". It exists
+// since 2026-10-07, fed by adapter.Usage.ReasoningTokens (Anthropic
+// output_tokens_details.thinking_tokens, Bedrock's copy of it via
+// additionalModelResponseFields, OpenAI/openaicompat
+// completion_tokens_details.reasoning_tokens), and is still only
+// recorded when > 0 — a provider that does not report the breakdown
+// never produces a series.
 //
-// The two *_tokens Counters carry a gen_ai.token.modality attribute per
+// The *_tokens Counters carry a gen_ai.token.modality attribute per
 // the spec's own requirement; the two *OperationHistogram instruments
 // deliberately do not — the spec explains percentiles across
 // modalities don't add up meaningfully, so modality is omitted there.
 var (
+	// reasoningTokensCounter: "The number of output tokens used for
+	// reasoning (e.g. chain-of-thought, extended thinking)", "a subset of
+	// gen_ai.client.inference.usage.output_tokens" — verified 2026-10-07
+	// against model/gen-ai/token-metrics.yaml (requirement_level:
+	// recommended, instrument counter, unit {token}).
+	reasoningTokensCounter = mustInt64Counter(
+		meter,
+		"gen_ai.client.inference.usage.reasoning.output_tokens",
+		metric.WithDescription("The number of output tokens used for reasoning (e.g. chain-of-thought, extended thinking); a subset of output tokens."),
+		metric.WithUnit("{token}"),
+	)
 	inputTokensCounter = mustInt64Counter(
 		meter,
 		"gen_ai.client.inference.usage.input_tokens",
@@ -411,7 +425,7 @@ const (
 // per the spec's own "conditionally required on failure" framing for
 // that attribute — never a fabricated empty string on success.
 //
-// The 4 token-usage Counters and 2 per-operation Histograms below are
+// The 5 token-usage Counters and 2 per-operation Histograms below are
 // recorded only when r.Billable — a cache hit (any layer) or a
 // coalesced singleflight follower replays token counts from a real
 // upstream call this specific request itself never made, per
@@ -464,6 +478,9 @@ func RecordChatCompletionMetrics(ctx context.Context, r ChatCompletionResult) {
 	}
 	if r.CacheCreationTokens > 0 {
 		cacheWriteTokensCounter.Add(ctx, int64(r.CacheCreationTokens), metric.WithAttributes(modalityAttrs...))
+	}
+	if r.ReasoningTokens > 0 {
+		reasoningTokensCounter.Add(ctx, int64(r.ReasoningTokens), metric.WithAttributes(modalityAttrs...))
 	}
 }
 

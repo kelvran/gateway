@@ -183,8 +183,12 @@ type rawMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
+	// Usage on the final message_delta is cumulative: output_tokens and
+	// output_tokens_details.thinking_tokens are the whole response's
+	// totals, not a per-event increment -- nothing to accumulate.
 	Usage struct {
-		OutputTokens int `json:"output_tokens"`
+		OutputTokens        int                  `json:"output_tokens"`
+		OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"`
 	} `json:"usage"`
 }
 
@@ -399,6 +403,7 @@ func (d *streamDecoder) decodeMessageDelta(data string) ([]streaming.ChatComplet
 		TotalTokens:         d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens + m.Usage.OutputTokens,
 		CacheReadTokens:     d.cacheReadTokens,
 		CacheCreationTokens: d.cacheCreationTokens,
+		ReasoningTokens:     thinkingTokensOf(m.Usage.OutputTokensDetails),
 	}
 	// message_delta is the ONLY event that ever carries stop_reason — a
 	// chunk reconstructing the full canonical response (for cache

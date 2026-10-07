@@ -163,6 +163,13 @@ type contentBlockDeltaEvent struct {
 // unchanged.
 type messageStopEvent struct {
 	StopReason string `json:"stopReason"`
+	// AdditionalModelResponseFields is the streaming twin of
+	// Response.AdditionalModelResponseFields -- ConverseStream delivers
+	// the requested provider-native fields on messageStop, which arrives
+	// BEFORE the metadata event that carries TokenUsage, so the decoder
+	// stashes what it reads here and folds it into the usage it builds
+	// at metadata.
+	AdditionalModelResponseFields json.RawMessage `json:"additionalModelResponseFields,omitempty"`
 }
 
 // metadataEvent is the real "metadata" event payload -- confirmed to
@@ -211,6 +218,11 @@ type StreamDecoder struct {
 	messageStartSeen bool
 	messageStopSeen  bool
 	metadataSeen     bool
+	// reasoningTokens is stashed from messageStop's
+	// additionalModelResponseFields (usage.output_tokens_details.
+	// thinking_tokens) and folded into the usage built at the later
+	// metadata event -- see messageStopEvent.AdditionalModelResponseFields.
+	reasoningTokens int
 }
 
 // NewStreamDecoder returns a fresh StreamDecoder with no events seen yet.
@@ -334,6 +346,7 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 		if err != nil {
 			return nil, nil, err
 		}
+		d.reasoningTokens = reasoningTokensFromAdditionalFields(ev.AdditionalModelResponseFields)
 		chunk := streaming.ChatCompletionChunk{
 			Choices: []streaming.ChunkChoice{{Index: 0, FinishReason: &finishReason}},
 		}
@@ -354,6 +367,7 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 			TotalTokens:         ev.Usage.TotalTokens + ev.Usage.CacheReadInputTokens + ev.Usage.CacheWriteInputTokens,
 			CacheReadTokens:     ev.Usage.CacheReadInputTokens,
 			CacheCreationTokens: ev.Usage.CacheWriteInputTokens,
+			ReasoningTokens:     d.reasoningTokens,
 		}
 		return nil, usage, nil
 

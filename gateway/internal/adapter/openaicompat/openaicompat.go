@@ -272,15 +272,25 @@ type Choice struct {
 // — but it is still an assertion about code this codebase doesn't run
 // itself, not a live-verified guarantee the way OpenAI's spec is.
 type Usage struct {
-	PromptTokens        int                  `json:"prompt_tokens"`
-	CompletionTokens    int                  `json:"completion_tokens"`
-	TotalTokens         int                  `json:"total_tokens"`
-	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	TotalTokens             int                      `json:"total_tokens"`
+	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
 // PromptTokensDetails is the breakdown of Usage.PromptTokens.
 type PromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`
+}
+
+// CompletionTokensDetails mirrors internal/adapter/openai.CompletionTokensDetails
+// exactly: the OpenAI-shaped usage.completion_tokens_details.reasoning_tokens
+// breakdown that self-hosted runtimes serving reasoning models (vLLM with a
+// reasoning parser, for one) emit in the same shape. nil for the many
+// runtimes that report no breakdown.
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // cacheReadTokensFromUsage returns native's cached-token count, or 0 when
@@ -291,6 +301,16 @@ func cacheReadTokensFromUsage(native Usage) int {
 		return 0
 	}
 	return native.PromptTokensDetails.CachedTokens
+}
+
+// reasoningTokensFromUsage returns native's reasoning-token count, or 0
+// when CompletionTokensDetails is absent (most self-hosted runtimes) --
+// mirroring cacheReadTokensFromUsage and internal/adapter/openai exactly.
+func reasoningTokensFromUsage(native Usage) int {
+	if native.CompletionTokensDetails == nil {
+		return 0
+	}
+	return native.CompletionTokensDetails.ReasoningTokens
 }
 
 // Adapter implements adapter.Adapter for generic OpenAI-compatible
@@ -442,6 +462,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			CompletionTokens: native.Usage.CompletionTokens,
 			TotalTokens:      native.Usage.TotalTokens,
 			CacheReadTokens:  cacheReadTokensFromUsage(native.Usage),
+			ReasoningTokens:  reasoningTokensFromUsage(native.Usage),
 		},
 	}, nil
 }

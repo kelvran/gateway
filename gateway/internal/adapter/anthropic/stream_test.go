@@ -805,3 +805,52 @@ func TestStreamDecoderDecodeDoesNotRejectARealSingleOccurrenceStream(t *testing.
 		})
 	}
 }
+
+// TestStreamDecoder_UsageIncludesThinkingTokens: the final message_delta's
+// cumulative usage.output_tokens_details.thinking_tokens reaches
+// adapter.Usage.ReasoningTokens alongside the cache tokens stashed from
+// message_start -- fixture mirrors stream_usage_with_cache_tokens.txt with
+// the thinking breakdown added.
+func TestStreamDecoder_UsageIncludesThinkingTokens(t *testing.T) {
+	f, err := os.Open("testdata/stream_usage_with_thinking_tokens.txt")
+	if err != nil {
+		t.Fatalf("opening fixture: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	decoder := New().NewStreamDecoder()
+	reader := streaming.NewReader(f)
+
+	var usage *adapter.Usage
+	for {
+		ev, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reader.Next(): %v", err)
+		}
+		_, _, gotUsage, decErr := decoder.Decode(ev)
+		if decErr != nil {
+			t.Fatalf("Decode(%+v) error = %v", ev, decErr)
+		}
+		if gotUsage != nil {
+			usage = gotUsage
+		}
+	}
+
+	if usage == nil {
+		t.Fatal("usage = nil")
+	}
+	want := adapter.Usage{
+		PromptTokens:        50 + 1800 + 248,
+		CompletionTokens:    12,
+		TotalTokens:         50 + 1800 + 248 + 12,
+		CacheReadTokens:     1800,
+		CacheCreationTokens: 248,
+		ReasoningTokens:     7,
+	}
+	if *usage != want {
+		t.Errorf("usage = %+v, want %+v", *usage, want)
+	}
+}

@@ -231,15 +231,25 @@ type Choice struct {
 // opt-in caching has — see FromProvider's own doc comment on why
 // adapter.Usage.CacheCreationTokens stays 0 for every OpenAI response.
 type Usage struct {
-	PromptTokens        int                  `json:"prompt_tokens"`
-	CompletionTokens    int                  `json:"completion_tokens"`
-	TotalTokens         int                  `json:"total_tokens"`
-	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	TotalTokens             int                      `json:"total_tokens"`
+	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
 // PromptTokensDetails is OpenAI's breakdown of Usage.PromptTokens.
 type PromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`
+}
+
+// CompletionTokensDetails is OpenAI's breakdown of Usage.CompletionTokens
+// -- ReasoningTokens is the subset spent on reasoning by o-series/GPT-5
+// family models (usage.completion_tokens_details.reasoning_tokens,
+// verified 2026-10-07 against openai/openai-openapi's published spec).
+// nil when the response carried no breakdown.
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // cacheReadTokensFromUsage returns native's cached-token count, or 0 when
@@ -250,6 +260,17 @@ func cacheReadTokensFromUsage(native Usage) int {
 		return 0
 	}
 	return native.PromptTokensDetails.CachedTokens
+}
+
+// reasoningTokensFromUsage returns native's reasoning-token count, or 0
+// when CompletionTokensDetails is absent (every non-reasoning model) --
+// never a nil-pointer panic on the common case, mirroring
+// cacheReadTokensFromUsage.
+func reasoningTokensFromUsage(native Usage) int {
+	if native.CompletionTokensDetails == nil {
+		return 0
+	}
+	return native.CompletionTokensDetails.ReasoningTokens
 }
 
 // Adapter implements adapter.Adapter for OpenAI.
@@ -429,6 +450,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			CompletionTokens: native.Usage.CompletionTokens,
 			TotalTokens:      native.Usage.TotalTokens,
 			CacheReadTokens:  cacheReadTokensFromUsage(native.Usage),
+			ReasoningTokens:  reasoningTokensFromUsage(native.Usage),
 		},
 	}, nil
 }

@@ -678,3 +678,44 @@ func TestToProviderToolDefStrictForwardsToNativeFunctionDef(t *testing.T) {
 		t.Error("loose_tool: native.Tools[1].Function.Strict = true, want false")
 	}
 }
+
+// TestFromProviderExtractsReasoningTokens: usage.completion_tokens_details.
+// reasoning_tokens (verified 2026-10-07 against openai/openai-openapi's
+// published spec) lands on adapter.Usage.ReasoningTokens as a subset of
+// CompletionTokens; a response without the breakdown maps to 0.
+func TestFromProviderExtractsReasoningTokens(t *testing.T) {
+	raw := []byte(`{
+		"id": "chatcmpl-reasoning",
+		"model": "o4-mini",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+		"usage": {
+			"prompt_tokens": 100,
+			"completion_tokens": 300,
+			"total_tokens": 400,
+			"completion_tokens_details": {"reasoning_tokens": 256}
+		}
+	}`)
+	var nativeResp Response
+	if err := json.Unmarshal(raw, &nativeResp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	got, err := New().FromProvider(&nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Usage.ReasoningTokens != 256 {
+		t.Errorf("Usage.ReasoningTokens = %d, want 256", got.Usage.ReasoningTokens)
+	}
+	if got.Usage.CompletionTokens != 300 || got.Usage.TotalTokens != 400 {
+		t.Errorf("Usage.CompletionTokens/TotalTokens = %d/%d, want 300/400 (reasoning is a subset, never added on top)", got.Usage.CompletionTokens, got.Usage.TotalTokens)
+	}
+
+	nativeResp.Usage.CompletionTokensDetails = nil
+	got, err = New().FromProvider(&nativeResp)
+	if err != nil {
+		t.Fatalf("FromProvider without the breakdown: %v", err)
+	}
+	if got.Usage.ReasoningTokens != 0 {
+		t.Errorf("Usage.ReasoningTokens without completion_tokens_details = %d, want 0", got.Usage.ReasoningTokens)
+	}
+}

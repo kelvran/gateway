@@ -467,3 +467,57 @@ func TestDecodeRejectsDuplicateMetadataEvent(t *testing.T) {
 		t.Errorf("second Decode: err = %v, want ErrBedrockDuplicateStreamEvent", err)
 	}
 }
+
+// TestDecodeMessageStopThenMetadataCarriesThinkingTokens pins the real
+// ConverseStream ordering: additionalModelResponseFields arrives on
+// messageStop, TokenUsage on the later metadata event -- so the decoder
+// must stash the thinking count at messageStop and fold it into the usage
+// it builds at metadata.
+func TestDecodeMessageStopThenMetadataCarriesThinkingTokens(t *testing.T) {
+	dec := NewStreamDecoder()
+	if _, usage, err := dec.Decode(newEventMessage("messageStop", `{"stopReason":"end_turn","additionalModelResponseFields":{"usage":{"output_tokens_details":{"thinking_tokens":9}}}}`)); err != nil || usage != nil {
+		t.Fatalf("messageStop Decode = usage %v, err %v; want nil usage and nil error (usage only arrives at metadata)", usage, err)
+	}
+	_, usage, err := dec.Decode(newEventMessage("metadata", `{"usage":{"inputTokens":8,"outputTokens":20,"totalTokens":28}}`))
+	if err != nil {
+		t.Fatalf("metadata Decode: %v", err)
+	}
+	if usage == nil {
+		t.Fatal("usage = nil, want non-nil at metadata")
+	}
+	if usage.ReasoningTokens != 9 {
+		t.Errorf("usage.ReasoningTokens = %d, want 9 (stashed from messageStop)", usage.ReasoningTokens)
+	}
+	if usage.CompletionTokens != 20 || usage.TotalTokens != 28 {
+		t.Errorf("usage.CompletionTokens/TotalTokens = %d/%d, want 20/28 (reasoning is a subset, never added on top)", usage.CompletionTokens, usage.TotalTokens)
+	}
+}
+
+// TestDecodeMetadataWithoutThinkingFieldsHasNoReasoningTokens: a stream
+// whose messageStop carried no additionalModelResponseFields (a model
+// without thinking, or a request that never asked), and one where
+// metadata arrives with no prior messageStop at all, both yield 0.
+func TestDecodeMetadataWithoutThinkingFieldsHasNoReasoningTokens(t *testing.T) {
+	t.Run("messageStop without the field", func(t *testing.T) {
+		dec := NewStreamDecoder()
+		if _, _, err := dec.Decode(newEventMessage("messageStop", `{"stopReason":"end_turn"}`)); err != nil {
+			t.Fatalf("messageStop Decode: %v", err)
+		}
+		_, usage, err := dec.Decode(newEventMessage("metadata", `{"usage":{"inputTokens":8,"outputTokens":20,"totalTokens":28}}`))
+		if err != nil || usage == nil {
+			t.Fatalf("metadata Decode = usage %v, err %v", usage, err)
+		}
+		if usage.ReasoningTokens != 0 {
+			t.Errorf("usage.ReasoningTokens = %d, want 0", usage.ReasoningTokens)
+		}
+	})
+	t.Run("metadata with no prior messageStop", func(t *testing.T) {
+		_, usage, err := NewStreamDecoder().Decode(newEventMessage("metadata", `{"usage":{"inputTokens":8,"outputTokens":20,"totalTokens":28}}`))
+		if err != nil || usage == nil {
+			t.Fatalf("metadata Decode = usage %v, err %v", usage, err)
+		}
+		if usage.ReasoningTokens != 0 {
+			t.Errorf("usage.ReasoningTokens = %d, want 0", usage.ReasoningTokens)
+		}
+	})
+}

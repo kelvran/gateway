@@ -4416,7 +4416,11 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// comment for why this previously never reached a span attribute.
 		CacheReadTokens:     resp.Usage.CacheReadTokens,
 		CacheCreationTokens: resp.Usage.CacheCreationTokens,
-		TokenModality:       genAITokenModalityFor(req),
+		// ReasoningTokens: the subset of CompletionTokens the adapters
+		// lift out of the provider's own breakdown (Anthropic/Bedrock
+		// thinking_tokens, OpenAI reasoning_tokens); 0 when not reported.
+		ReasoningTokens: resp.Usage.ReasoningTokens,
+		TokenModality:   genAITokenModalityFor(req),
 		// telemetry stays a dependency-free leaf (no decimal.Decimal
 		// import) per docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md —
 		// the exact decimal string is formatted here, at the boundary,

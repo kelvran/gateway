@@ -3,6 +3,7 @@ package bedrock
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1568,5 +1569,81 @@ func TestToProviderResponseFormatAllowsOrdinarySupportedSchema(t *testing.T) {
 	native := nativeAny.(*Request)
 	if native.AdditionalModelRequestFields == nil {
 		t.Error("AdditionalModelRequestFields = nil, want a populated map")
+	}
+}
+
+// TestFromProviderMapsAdditionalModelResponseFieldsThinkingTokens: the
+// provider-native usage.output_tokens_details Converse copies into
+// additionalModelResponseFields (because ToProvider asked for that path)
+// lands on adapter.Usage.ReasoningTokens; absent, null, or any other shape
+// maps to 0 and never errors -- this is telemetry, not correctness.
+func TestFromProviderMapsAdditionalModelResponseFieldsThinkingTokens(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields string // raw additionalModelResponseFields JSON, "" = absent
+		want   int
+	}{
+		{"nested usage.output_tokens_details.thinking_tokens", `{"usage":{"output_tokens_details":{"thinking_tokens":123}}}`, 123},
+		{"absent", ``, 0},
+		{"null", `null`, 0},
+		{"usage is not an object", `{"usage":"x"}`, 0},
+		{"different field requested", `{"stop_sequence":"foo"}`, 0},
+		{"thinking_tokens is not a number", `{"usage":{"output_tokens_details":{"thinking_tokens":"many"}}}`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := `{"output":{"message":{"role":"assistant","content":[{"text":"hi"}]}},"stopReason":"end_turn","usage":{"inputTokens":8,"outputTokens":200,"totalTokens":208}`
+			if tt.fields != "" {
+				raw += `,"additionalModelResponseFields":` + tt.fields
+			}
+			raw += `}`
+			var native Response
+			if err := json.Unmarshal([]byte(raw), &native); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			got, err := New().FromProvider(&native)
+			if err != nil {
+				t.Fatalf("FromProvider: %v", err)
+			}
+			if got.Usage.ReasoningTokens != tt.want {
+				t.Errorf("Usage.ReasoningTokens = %d, want %d", got.Usage.ReasoningTokens, tt.want)
+			}
+			if got.Usage.CompletionTokens != 200 || got.Usage.TotalTokens != 208 {
+				t.Errorf("Usage.CompletionTokens/TotalTokens = %d/%d, want 200/208 (reasoning is a subset, never added on top)", got.Usage.CompletionTokens, got.Usage.TotalTokens)
+			}
+		})
+	}
+}
+
+// TestToProviderAsksForOutputTokensDetailsOnAnthropicModelsOnly: the
+// /usage/output_tokens_details response-field path is an Anthropic-native
+// field, so ToProvider requests it for Anthropic model ids and leaves the
+// request byte-identical to before for every other model family on
+// Bedrock -- no new field for a Llama/Mistral/Titan deployment to trip on.
+func TestToProviderAsksForOutputTokensDetailsOnAnthropicModelsOnly(t *testing.T) {
+	msgs := []adapter.Message{{Role: "user", Content: "hi"}}
+	for _, tt := range []struct {
+		model string
+		want  []string
+	}{
+		{"anthropic.claude-3-5-sonnet-20241022-v2:0", []string{"/usage/output_tokens_details"}},
+		{"global.anthropic.claude-sonnet-5", []string{"/usage/output_tokens_details"}},
+		{"us.anthropic.claude-haiku-4-5-20251001-v1:0", []string{"/usage/output_tokens_details"}},
+		{"meta.llama3-70b-instruct-v1:0", nil},
+		{"amazon.titan-text-express-v1", nil},
+	} {
+		t.Run(tt.model, func(t *testing.T) {
+			native, err := New().ToProvider(adapter.ChatRequest{Model: tt.model, Messages: msgs})
+			if err != nil {
+				t.Fatalf("ToProvider: %v", err)
+			}
+			req, ok := native.(*Request)
+			if !ok {
+				t.Fatalf("ToProvider returned %T, want *Request", native)
+			}
+			if fmt.Sprint(req.AdditionalModelResponseFieldPaths) != fmt.Sprint(tt.want) {
+				t.Errorf("AdditionalModelResponseFieldPaths = %v, want %v", req.AdditionalModelResponseFieldPaths, tt.want)
+			}
+		})
 	}
 }

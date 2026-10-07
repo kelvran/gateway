@@ -490,6 +490,21 @@ type Usage struct {
 	// cacheWriteInputTokens) -- priced ABOVE a fresh prompt token for
 	// Anthropic. Zero when no cache write occurred.
 	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
+	// ReasoningTokens is the subset of CompletionTokens the model spent
+	// on reasoning / extended thinking rather than on the visible answer
+	// -- Anthropic usage.output_tokens_details.thinking_tokens (GA
+	// 2026-05-27, no beta header), the same object surfaced by Bedrock's
+	// Converse under additionalModelResponseFields when the request asks
+	// for /usage/output_tokens_details, and OpenAI
+	// usage.completion_tokens_details.reasoning_tokens. Already folded
+	// into CompletionTokens (and so TotalTokens) by every provider, so it
+	// is NEVER added on top for token counting or billing -- providers
+	// bill thinking at the output rate; costaccounting.Calculate needs no
+	// change. Zero means "none" OR "not reported by this provider/model"
+	// (the two are indistinguishable at the wire level), which is why
+	// telemetry only emits the matching counter/attribute when > 0. Per
+	// docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // Choice is a single generated completion candidate.

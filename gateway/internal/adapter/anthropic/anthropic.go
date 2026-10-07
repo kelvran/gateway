@@ -451,6 +451,30 @@ type Usage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	// OutputTokensDetails is Anthropic's usage.output_tokens_details
+	// object (GA 2026-05-27, no beta header): ThinkingTokens is the
+	// subset of OutputTokens spent on extended thinking. nil when the
+	// response carried no such object (older API versions, or models/
+	// requests without thinking) -- a pointer so "absent" and "present
+	// with 0" stay distinguishable at the wire level, even though both
+	// map to adapter.Usage.ReasoningTokens == 0.
+	OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"`
+}
+
+// OutputTokensDetails is Anthropic's usage.output_tokens_details object --
+// see Usage.OutputTokensDetails.
+type OutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
+}
+
+// thinkingTokensOf returns d's thinking-token count, or 0 when the response
+// carried no output_tokens_details object -- shared by FromProvider and the
+// stream decoder's final message_delta so both map the field identically.
+func thinkingTokensOf(d *OutputTokensDetails) int {
+	if d == nil {
+		return 0
+	}
+	return d.ThinkingTokens
 }
 
 // Adapter implements adapter.Adapter for Anthropic.
@@ -810,6 +834,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			TotalTokens:         native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens + native.Usage.OutputTokens,
 			CacheReadTokens:     native.Usage.CacheReadInputTokens,
 			CacheCreationTokens: native.Usage.CacheCreationInputTokens,
+			ReasoningTokens:     thinkingTokensOf(native.Usage.OutputTokensDetails),
 		},
 		InputTransformations: inputTransformations,
 	}, nil

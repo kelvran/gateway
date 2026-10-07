@@ -86,6 +86,13 @@ func NewCalculator(prices PriceTable) *Calculator {
 // ever price a request AT OR ABOVE what correct cache accounting would,
 // never below), matching this package's own established "when in doubt,
 // don't undercount" precedent (the cache-rate-unset fallback above).
+//
+// Reasoning/thinking tokens (adapter.Usage.ReasoningTokens, tracked since
+// 2026-10-07 for telemetry) deliberately have NO price here and no field on
+// this package's Usage: every provider that reports them already counts
+// them inside CompletionTokens and bills them at the plain output rate, so
+// CompletionPerToken * CompletionTokens is already the right charge —
+// pricing them separately would double-bill.
 func (c *Calculator) Calculate(model string, usage Usage) decimal.Decimal {
 	price, ok := c.prices[model]
 	if !ok {

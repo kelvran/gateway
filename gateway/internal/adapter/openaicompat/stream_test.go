@@ -453,3 +453,27 @@ func TestDecodeRefusalDeltaIsForwarded(t *testing.T) {
 		t.Errorf("Delta.Content = %q, want empty -- refusal must not leak into Content", chunks[0].Choices[0].Delta.Content)
 	}
 }
+
+// TestDecodeFinalUsageChunkExtractsReasoningTokens: the include_usage final
+// chunk's completion_tokens_details.reasoning_tokens reaches the stream's
+// final adapter.Usage, exactly like cached_tokens already does.
+func TestDecodeFinalUsageChunkExtractsReasoningTokens(t *testing.T) {
+	dec := New().NewStreamDecoder()
+
+	_, done, finalUsage, err := dec.Decode(streaming.SSEEvent{
+		Data: `{"id":"x","model":"o4-mini","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":300,"total_tokens":400,"completion_tokens_details":{"reasoning_tokens":256}}}`,
+	})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if done {
+		t.Error("done = true, want false (only [DONE] sets it)")
+	}
+	if finalUsage == nil {
+		t.Fatal("finalUsage = nil, want non-nil")
+	}
+	want := adapter.Usage{PromptTokens: 100, CompletionTokens: 300, TotalTokens: 400, ReasoningTokens: 256}
+	if *finalUsage != want {
+		t.Errorf("finalUsage = %+v, want %+v", *finalUsage, want)
+	}
+}

@@ -205,6 +205,7 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 			CompletionTokens: native.Usage.CompletionTokens,
 			TotalTokens:      native.Usage.TotalTokens,
 			CacheReadTokens:  cacheReadTokensFromUsage(*native.Usage),
+			ReasoningTokens:  reasoningTokensFromUsage(*native.Usage),
 		}
 		chunk.Usage = finalUsage
 	}

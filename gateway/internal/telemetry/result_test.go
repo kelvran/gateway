@@ -127,6 +127,7 @@ func TestRecordChatCompletionResultSkipsEmptyOptionalFields(t *testing.T) {
 		AttrGenAIUsageOutputTokens,
 		AttrGenAIUsageCacheReadInputTokens,
 		AttrGenAIUsageCacheWriteInputTokens,
+		AttrGenAIUsageReasoningOutputTokens,
 		AttrKelvranPromptID,
 		AttrKelvranPromptVersion,
 		AttrKelvranResponseFormatRequestedNotEnforced,
@@ -190,8 +191,10 @@ func TestRecordChatCompletionResultEmitsCacheTokenAttributesOnlyWhenPositive(t *
 	_, span := tracer.Start(t.Context(), "test-span")
 	RecordChatCompletionResult(span, ChatCompletionResult{
 		CostUSD:             "0.0001",
+		OutputTokens:        40,
 		CacheReadTokens:     1800,
 		CacheCreationTokens: 248,
+		ReasoningTokens:     7,
 	})
 	span.End()
 
@@ -201,6 +204,16 @@ func TestRecordChatCompletionResultEmitsCacheTokenAttributesOnlyWhenPositive(t *
 	}
 	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIUsageCacheWriteInputTokens)); !ok || v.AsInt64() != 248 {
 		t.Errorf("%s = %v, ok=%v, want 248", AttrGenAIUsageCacheWriteInputTokens, v, ok)
+	}
+	// gen_ai.usage.reasoning.output_tokens follows the identical
+	// only-when-positive convention (registry: "SHOULD be included in
+	// gen_ai.usage.output_tokens" — a subset, reported alongside, never
+	// instead of, output_tokens).
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIUsageReasoningOutputTokens)); !ok || v.AsInt64() != 7 {
+		t.Errorf("%s = %v, ok=%v, want 7", AttrGenAIUsageReasoningOutputTokens, v, ok)
+	}
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrGenAIUsageOutputTokens)); !ok || v.AsInt64() != 40 {
+		t.Errorf("%s = %v, ok=%v, want 40 (reasoning tokens never replace the output total)", AttrGenAIUsageOutputTokens, v, ok)
 	}
 }
 
@@ -443,6 +456,10 @@ type cacheL3TelemetrySnapshot struct {
 	outputTokensByModelAndModality     map[[2]string]int64
 	cacheReadTokensByModelAndModality  map[[2]string]int64
 	cacheWriteTokensByModelAndModality map[[2]string]int64
+	// reasoningTokensByModelAndModality is the 5th Counter of the same
+	// family (gen_ai.client.inference.usage.reasoning.output_tokens), a
+	// subset of output_tokens.
+	reasoningTokensByModelAndModality map[[2]string]int64
 	// inputTokensOperationSumByModel/outputTokensOperationSumByModel key
 	// on model only — the 2 per-operation Histograms deliberately carry
 	// no modality attribute, per the spec's own "percentiles across
@@ -469,6 +486,7 @@ func snapshotCacheL3Telemetry(t *testing.T, rm metricdata.ResourceMetrics) cache
 		outputTokensByModelAndModality:     map[[2]string]int64{},
 		cacheReadTokensByModelAndModality:  map[[2]string]int64{},
 		cacheWriteTokensByModelAndModality: map[[2]string]int64{},
+		reasoningTokensByModelAndModality:  map[[2]string]int64{},
 		inputTokensOperationSumByModel:     map[string]float64{},
 		outputTokensOperationSumByModel:    map[string]float64{},
 	}
@@ -548,6 +566,8 @@ func snapshotCacheL3Telemetry(t *testing.T, rm metricdata.ResourceMetrics) cache
 				snapshotGenAITokenCounter(t, m, snap.cacheReadTokensByModelAndModality)
 			case "gen_ai.client.inference.usage.cache_write.input_tokens":
 				snapshotGenAITokenCounter(t, m, snap.cacheWriteTokensByModelAndModality)
+			case "gen_ai.client.inference.usage.reasoning.output_tokens":
+				snapshotGenAITokenCounter(t, m, snap.reasoningTokensByModelAndModality)
 			case "gen_ai.client.inference.operation.input_tokens":
 				hist, ok := m.Data.(metricdata.Histogram[float64])
 				if !ok {
@@ -697,6 +717,7 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 		OutputTokens:        4,
 		CacheReadTokens:     3,
 		CacheCreationTokens: 2,
+		ReasoningTokens:     2,
 		TokenModality:       GenAITokenModalityText,
 		Billable:            true,
 		Duration:            250 * time.Millisecond,
@@ -719,6 +740,7 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 		OutputTokens:        4,
 		CacheReadTokens:     3,
 		CacheCreationTokens: 2,
+		ReasoningTokens:     2,
 		TokenModality:       GenAITokenModalityText,
 		Billable:            false,
 		Duration:            5 * time.Millisecond,
@@ -829,6 +851,20 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	if got := afterSnap.cacheWriteTokensByModelAndModality[textKey] - beforeSnap.cacheWriteTokensByModelAndModality[textKey]; got != 2 {
 		t.Errorf("success scenario cache_write.input_tokens delta = %v, want 2", got)
 	}
+	// The 5th Counter: reasoning tokens, recorded with the same modality
+	// attribute, and — the spec's own subset invariant — never exceeding
+	// the output_tokens delta of the same scenario.
+	reasoningDelta := afterSnap.reasoningTokensByModelAndModality[textKey] - beforeSnap.reasoningTokensByModelAndModality[textKey]
+	if reasoningDelta != 2 {
+		t.Errorf("success scenario reasoning.output_tokens delta = %v, want 2", reasoningDelta)
+	}
+	if outputDelta := afterSnap.outputTokensByModelAndModality[textKey] - beforeSnap.outputTokensByModelAndModality[textKey]; reasoningDelta > outputDelta {
+		t.Errorf("reasoning.output_tokens delta %v exceeds output_tokens delta %v — reasoning must be a subset of output", reasoningDelta, outputDelta)
+	}
+	reasoningCacheHitKey := [2]string{"genai-metrics-cache-hit", GenAITokenModalityText}
+	if got := afterSnap.reasoningTokensByModelAndModality[reasoningCacheHitKey] - beforeSnap.reasoningTokensByModelAndModality[reasoningCacheHitKey]; got != 0 {
+		t.Errorf("cache-hit scenario reasoning.output_tokens delta = %v, want 0 (not billable: the same double-counting gate as the other four counters)", got)
+	}
 	if got := afterSnap.inputTokensOperationSumByModel["genai-metrics-success"] - beforeSnap.inputTokensOperationSumByModel["genai-metrics-success"]; got != 10 {
 		t.Errorf("success scenario operation.input_tokens Sum delta = %v, want 10", got)
 	}
@@ -855,7 +891,7 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	// The load-bearing double-counting-avoidance proof: the cache-hit
 	// scenario replayed the exact same InputTokens/OutputTokens/
 	// CacheReadTokens/CacheCreationTokens as the success scenario, but
-	// Billable=false — none of the 4 new Counters or 2 new
+	// Billable=false — none of the 5 token-usage Counters or 2 new
 	// per-operation Histograms must ever contribute a delta for it.
 	cacheHitKey := [2]string{"genai-metrics-cache-hit", GenAITokenModalityText}
 	if got := afterSnap.inputTokensByModelAndModality[cacheHitKey] - beforeSnap.inputTokensByModelAndModality[cacheHitKey]; got != 0 {

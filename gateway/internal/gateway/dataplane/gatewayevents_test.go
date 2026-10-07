@@ -292,9 +292,14 @@ type dataplaneTelemetrySnapshot struct {
 	// kelvran.guardrail.fail_open counter carries both attributes, and
 	// TestGuardrailFailOpenIncrementsMetricCounter asserts per stage.
 	guardrailFailOpenByKeyStage map[string]int64
-	cacheLookupTotal            int64
-	sawAttackerModel            bool
-	sawUnresolvedSentinel       bool
+	// reasoningTokensByModel is the gen_ai.client.inference.usage.reasoning.
+	// output_tokens Counter keyed by gen_ai.request.model — the end-to-end
+	// proof that finalize threads adapter.Usage.ReasoningTokens through
+	// ChatCompletionResult (TestHandleChatCompletionRecordsReasoningTokens).
+	reasoningTokensByModel map[string]int64
+	cacheLookupTotal       int64
+	sawAttackerModel       bool
+	sawUnresolvedSentinel  bool
 }
 
 // guardrailFailOpenSnapshotKey builds guardrailFailOpenByKeyStage's key.
@@ -307,6 +312,7 @@ func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dat
 	snap := dataplaneTelemetrySnapshot{
 		failOpenByKeyID:             map[string]int64{},
 		guardrailFailOpenByKeyStage: map[string]int64{},
+		reasoningTokensByModel:      map[string]int64{},
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -320,6 +326,16 @@ func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dat
 					keyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
 					if hasAttr {
 						snap.failOpenByKeyID[keyID.AsString()] += dp.Value
+					}
+				}
+			case "gen_ai.client.inference.usage.reasoning.output_tokens":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("gen_ai.client.inference.usage.reasoning.output_tokens data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					if model, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrGenAIRequestModel)); hasAttr {
+						snap.reasoningTokensByModel[model.AsString()] += dp.Value
 					}
 				}
 			case "kelvran.guardrail.fail_open":

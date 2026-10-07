@@ -68,6 +68,14 @@ const (
 	// key, not a versioned API contract with external consumers pinned
 	// to the old string).
 	AttrGenAIUsageCacheWriteInputTokens = "gen_ai.usage.cache_write.input_tokens"
+	// AttrGenAIUsageReasoningOutputTokens: "The number of output tokens
+	// used for reasoning (e.g. chain-of-thought, extended thinking)",
+	// which "SHOULD be included in gen_ai.usage.output_tokens" — verified
+	// 2026-10-07 against open-telemetry/semantic-conventions-genai
+	// model/gen-ai/registry.yaml and spans.yaml (recommended "when
+	// applicable"). Emitted only when > 0, see
+	// ChatCompletionResult.ReasoningTokens.
+	AttrGenAIUsageReasoningOutputTokens = "gen_ai.usage.reasoning.output_tokens"
 
 	// AttrErrorType is OTel's general (non-GenAI-specific) semantic-
 	// convention attribute for a low-cardinality description of what
@@ -305,6 +313,14 @@ type ChatCompletionResult struct {
 	// InputTokens/OutputTokens's own identical convention.
 	CacheReadTokens     int
 	CacheCreationTokens int
+	// ReasoningTokens mirrors adapter.Usage.ReasoningTokens — the subset
+	// of OutputTokens spent on reasoning/extended thinking (Anthropic
+	// thinking_tokens, Bedrock's copy of it, OpenAI reasoning_tokens).
+	// 0 means "none or not reported"; RecordChatCompletionResult and
+	// RecordChatCompletionMetrics emit the matching span attribute and
+	// Counter only when > 0, so a provider that does not report it never
+	// produces a fabricated "confirmed zero" series.
+	ReasoningTokens int
 	// TokenModality is always one of GenAITokenModalityText/
 	// GenAITokenModalityUnknown (telemetry.go) — set unconditionally by
 	// the caller (mirroring Streaming/CacheHit's own "never omit a
@@ -464,6 +480,9 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	}
 	if r.CacheCreationTokens > 0 {
 		attrs = append(attrs, attribute.Int(AttrGenAIUsageCacheWriteInputTokens, r.CacheCreationTokens))
+	}
+	if r.ReasoningTokens > 0 {
+		attrs = append(attrs, attribute.Int(AttrGenAIUsageReasoningOutputTokens, r.ReasoningTokens))
 	}
 	if r.AgentRunID != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranAgentRunID, r.AgentRunID))

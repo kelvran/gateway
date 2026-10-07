@@ -91,5 +91,8 @@
         }
       }
     ]
-  }
+  },
+  "additionalModelResponseFieldPaths": [
+    "/usage/output_tokens_details"
+  ]
 }

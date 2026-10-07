@@ -1426,3 +1426,46 @@ func TestFromProviderSurfacesInputTransformations(t *testing.T) {
 		t.Errorf("InputTransformations = %+v, want nil when the native response carried none", emptyResp.InputTransformations)
 	}
 }
+
+// TestFromProviderMapsThinkingTokensToReasoningTokens: Anthropic's
+// usage.output_tokens_details.thinking_tokens (GA 2026-05-27) lands on
+// adapter.Usage.ReasoningTokens as a SUBSET of CompletionTokens -- never
+// added to CompletionTokens or TotalTokens -- and a response without the
+// object (older API, no thinking) maps to 0.
+func TestFromProviderMapsThinkingTokensToReasoningTokens(t *testing.T) {
+	a := New()
+	withThinking := &Response{
+		ID: "msg_thinking", Model: "claude-sonnet-5", Role: "assistant",
+		Content:    []ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: "end_turn",
+		Usage: Usage{
+			InputTokens:         50,
+			OutputTokens:        40,
+			OutputTokensDetails: &OutputTokensDetails{ThinkingTokens: 33},
+		},
+	}
+	got, err := a.FromProvider(withThinking)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Usage.ReasoningTokens != 33 {
+		t.Errorf("Usage.ReasoningTokens = %d, want 33", got.Usage.ReasoningTokens)
+	}
+	if got.Usage.CompletionTokens != 40 || got.Usage.TotalTokens != 90 {
+		t.Errorf("Usage.CompletionTokens/TotalTokens = %d/%d, want 40/90 (thinking tokens are a subset, never added on top)", got.Usage.CompletionTokens, got.Usage.TotalTokens)
+	}
+
+	without := &Response{
+		ID: "msg_plain", Model: "claude-sonnet-5", Role: "assistant",
+		Content:    []ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: "end_turn",
+		Usage:      Usage{InputTokens: 50, OutputTokens: 40},
+	}
+	got, err = a.FromProvider(without)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.Usage.ReasoningTokens != 0 {
+		t.Errorf("Usage.ReasoningTokens without output_tokens_details = %d, want 0", got.Usage.ReasoningTokens)
+	}
+}
