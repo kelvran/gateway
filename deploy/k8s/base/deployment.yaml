@@ -97,7 +97,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
-          # Pinned to the real, currently-published gateway/v0.14.2
+          # Pinned to the real, currently-published gateway/v0.17.0
           # release by digest (independently re-verified via `cosign
           # verify`/`cosign verify-attestation` against the real
           # published image, not assumed) -- closes 2 real Checkov
@@ -106,7 +106,7 @@ spec:
           # current release is before applying -- this value goes stale
           # the moment a newer version ships, same as any other pinned
           # dependency.
-          image: ghcr.io/kelvran/gateway:v0.15.0@sha256:598b5c9f7b0779e5dbc01ba57c5d53e5cba8c0874eb0069167b77bae09174f03
+          image: ghcr.io/kelvran/gateway:v0.17.0@sha256:f649d74d13bb17ebc132af6c5a21be936528955ac7ee14152421f3267ff03b3a
           # Container-level securityContext, distinct from the pod-level
           # block above (Checkov's own CKV_K8S_30 checks for this
           # specifically) -- closes CKV_K8S_20 (no privilege escalation),
