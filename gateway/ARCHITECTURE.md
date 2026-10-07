@@ -301,8 +301,11 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md:
                              KeyConfig.PerModel lets one virtual key give a specific model its own,
                              entirely separate RPM bucket (checked before, never alongside, the key's own
-                             default bucket) — enforced in BOTH in-memory and Redis mode, unlike TPM
-                             (still in-memory-only). Provider/header/path matching (the rest of Kong's own
+                             default bucket) — enforced in BOTH in-memory and Redis mode, as is the per-key TPM dimension since
+                             its GCRA Redis path landed (the deployment-scoped TPM ceiling added 2026-10-07 —
+                             rate_limit.tpm_capacity on a deployment, optionally weighted to the provider's own
+                             quota math via tpm_accounting — is in-memory per gateway instance, like the
+                             deployment RPM ceiling; see internal/gateway/dataplane/deployment_tpm.go). Provider/header/path matching (the rest of Kong's own
                              multi-dimensional shape) remains scoped-out future work, deliberately, not yet
                              cheaply addable at checkRateLimit's current (virtual key, model)-only view of
                              a request — the concrete design (what new data checkRateLimit would need, how

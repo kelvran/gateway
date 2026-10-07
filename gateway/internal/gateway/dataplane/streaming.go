@@ -552,7 +552,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 				defer p.releaseDeploymentConcurrency(d.Name)
 				var hopResp adapter.ChatResponse
 				var hopErr error
-				hopResp, estimated, hopErr = p.streamDeployment(ctx, d, req, sw, &firstChunkSent, keyID, msr, &blocked)
+				hopResp, estimated, hopErr = p.streamDeploymentWithTPM(ctx, d, req, sw, &firstChunkSent, keyID, msr, &blocked)
 				return hopResp, hopErr
 			},
 			func() bool { return firstChunkSent },
@@ -584,8 +584,9 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	return resp, dep, fallback, blocked, estimated, firstChunkSent, err
 }
 
-// streamDeploymentWithCapacityCheck wraps streamDeployment with dep's
-// own checkDeploymentCapacity gate and guaranteed release — the
+// streamDeploymentWithCapacityCheck wraps streamDeploymentWithTPM (which
+// is streamDeployment behind dep's own TPM gate, deployment_tpm.go) with
+// dep's checkDeploymentCapacity gate and guaranteed release — the
 // streaming sibling of callDeploymentWithCapacityCheck (dataplane.go),
 // used for EVERY call to a deployment, hop 1 included.
 func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
@@ -596,7 +597,7 @@ func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep De
 		return adapter.ChatResponse{}, false, &DeploymentCapacityError{Deployment: dep.Name, Reason: "concurrency"}
 	}
 	defer p.releaseDeploymentConcurrency(dep.Name)
-	return p.streamDeployment(ctx, dep, req, sw, firstChunkSent, keyID, msr, blocked)
+	return p.streamDeploymentWithTPM(ctx, dep, req, sw, firstChunkSent, keyID, msr, blocked)
 }
 
 // streamDeployment runs the streaming-specific adapter+upstream-call steps

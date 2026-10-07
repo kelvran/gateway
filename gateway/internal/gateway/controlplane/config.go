@@ -194,17 +194,45 @@ type DeploymentConfig struct {
 	RateLimitRefill float64
 	// TPMCapacity/TPMRefillPerSecond configure this deployment's own
 	// aggregate tokens-per-minute ceiling. 0 (both, the default) means
-	// disabled. Parsed and validated here so the YAML surface doesn't
-	// need a second breaking change later, but deliberately NOT wired
-	// into the dataplane yet -- correct TPM accounting needs Reserve-
-	// then-Reconcile bookkeeping PER HOP (a reservation against a
-	// skipped/failed hop must be undone; only the hop that actually
-	// served the response reconciles), the same class of complexity
-	// docs/upgrade-research/gateway-tpm-permodel-fallback-2026-09-09.md
-	// found has no production precedent anywhere. Named future work, not
-	// a silent gap.
+	// disabled. Parsed since 2026-09-09; ENFORCED since 2026-10-07 (per
+	// docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md,
+	// ranked item 1) via the per-hop reserve-then-reconcile bookkeeping
+	// the original deferral asked for: dataplane.callDeploymentWithTPM/
+	// streamDeploymentWithTPM reserve against the deployment's bucket
+	// immediately before EVERY call to it (hop 1, a fallback_chains hop,
+	// the router-based single fallback), reconcile to the real usage when
+	// the call succeeds, and release the reservation when it fails. Like
+	// the RPM ceiling above, the deployment limiter is in-memory per
+	// gateway instance (cmd/gateway always builds it with
+	// NewInMemoryKeyLimiter), so this bounds one replica's own load on
+	// the deployment, not the fleet's.
 	TPMCapacity        float64
 	TPMRefillPerSecond float64
+	// TPMOutputTokenMultiplier/TPMExcludeCacheReadTokens make the TPM
+	// ceiling above count tokens the way the PROVIDER's own quota does,
+	// from rate_limit.tpm_accounting (see parseDeploymentRateLimit). AWS
+	// Bedrock's tokens-per-minute quota (docs Last-Modified 2026-10-07)
+	// counts input + cache-WRITE tokens at 1x, does NOT count cache reads
+	// at all, and "burns down" output tokens at 5x (Claude <= 4.7), 10x
+	// (Sonnet 5 / Opus 5 / Opus 5.5 / Fable 5.1) or 15x (Claude 4.8) —
+	// so a Kelvran TPM ceiling set to a Bedrock quota, counting raw
+	// tokens, lets ~10x too much output through before Bedrock itself
+	// returns ThrottlingException. The deployment's weighted token count
+	// for one call is
+	//
+	//	PromptTokens (inclusive of cache tokens)
+	//	  - CacheReadTokens, when TPMExcludeCacheReadTokens
+	//	  + CompletionTokens * TPMOutputTokenMultiplier
+	//
+	// Multiplier 0 (unset, the default) means 1; the parser rejects any
+	// value in (0, 1) or below 0. Both default to "raw tokens", so a
+	// deployment that only sets tpm_capacity keeps exactly the semantics
+	// its operator would expect. The per-VIRTUAL-KEY TPM dimension is
+	// deliberately NOT weighted — that is Kelvran's own fairness policy
+	// across callers, in raw tokens, and a key spanning a weighted and an
+	// unweighted deployment would otherwise get a bucket in mixed units.
+	TPMOutputTokenMultiplier  float64
+	TPMExcludeCacheReadTokens bool
 	// Sticky marks this deployment as the canary side of a stable/canary
 	// pair within its Model group, per router.Router.SelectSticky's own
 	// doc comment (gateway/internal/router/sticky.go) — the same tenant
@@ -1961,8 +1989,40 @@ func parseDeploymentRateLimit(deploymentName string, rl map[string]any, dep *Dep
 	if err := validateRateLimitPair(dep.TPMCapacity, dep.TPMRefillPerSecond, fmt.Sprintf("controlplane: deployment %q rate_limit.tpm_capacity/tpm_refill_per_second", deploymentName)); err != nil {
 		return err
 	}
+	if acct, ok := getMap(rl, "tpm_accounting"); ok {
+		if err := parseDeploymentTPMAccounting(deploymentName, acct, dep); err != nil {
+			return err
+		}
+	}
 	dep.MaxConcurrentRequests, _ = getInt(rl, "max_concurrent_requests")
 	return nil
+}
+
+// parseDeploymentTPMAccounting reads rate_limit.tpm_accounting — see
+// DeploymentConfig.TPMOutputTokenMultiplier's doc comment for what the
+// two keys mean. A tpm_accounting block on a deployment with no TPM
+// ceiling is a load-time error, not a silent no-op: an operator who wrote
+// it believed something was being weighted, and this repo's recurring
+// doc-vs-code gotcha (AGENTS.md) is exactly a config that looks enforced
+// but is not.
+func parseDeploymentTPMAccounting(deploymentName string, acct map[string]any, dep *DeploymentConfig) error {
+	if dep.TPMCapacity <= 0 {
+		return fmt.Errorf("controlplane: deployment %q rate_limit.tpm_accounting requires rate_limit.tpm_capacity/tpm_refill_per_second to be set", deploymentName)
+	}
+	// A PRESENT but unparseable multiplier is a loud error, mirroring
+	// assignBool's own rule for bools: getFloat's (0, false) would
+	// otherwise be indistinguishable from "unset" and silently mean 1.
+	if raw, present := acct["output_token_multiplier"]; present {
+		v, ok := getFloat(acct, "output_token_multiplier")
+		if !ok {
+			return fmt.Errorf("controlplane: deployment %q rate_limit.tpm_accounting.output_token_multiplier %v is not a number", deploymentName, raw)
+		}
+		dep.TPMOutputTokenMultiplier = v
+	}
+	if dep.TPMOutputTokenMultiplier != 0 && dep.TPMOutputTokenMultiplier < 1 {
+		return fmt.Errorf("controlplane: deployment %q rate_limit.tpm_accounting.output_token_multiplier must be >= 1 (0/unset means 1), got %v", deploymentName, dep.TPMOutputTokenMultiplier)
+	}
+	return assignBool(&dep.TPMExcludeCacheReadTokens, acct, "exclude_cache_read_tokens", fmt.Sprintf("controlplane: deployment %q rate_limit.tpm_accounting", deploymentName))
 }
 
 // validateEmbeddingModelGroupsAreProviderConsistent rejects a config

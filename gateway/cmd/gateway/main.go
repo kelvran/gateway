@@ -958,10 +958,6 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			BillingSubjectID:      vk.BillingSubjectID,
 			CacheScopeToEndUser:   vk.CacheScopeToEndUser,
 		})
-		if vk.TPMCapacity > 0 && cfg.RateLimit.RedisAddr != "" {
-			logger.Warn("virtual key configures a TPM rate limit, but Redis rate-limit mode is active; TPM is in-memory-only in v1 and will not be enforced",
-				"key", vk.Name)
-		}
 		var perModel map[string]ratelimit.ModelRateLimit
 		if len(vk.PerModelRateLimits) > 0 {
 			perModel = make(map[string]ratelimit.ModelRateLimit, len(vk.PerModelRateLimits))
@@ -1067,6 +1063,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			DisableCacheControlAutoPopulate: d.DisableCacheControlAutoPopulate,
 			SharedAcrossTenants:             d.SharedAcrossTenants,
 			Kind:                            d.Kind,
+			TPMOutputTokenMultiplier:        d.TPMOutputTokenMultiplier,
+			TPMExcludeCacheReadTokens:       d.TPMExcludeCacheReadTokens,
 		}
 		if d.Provider == "bedrock" {
 			if d.AccessKeyIDFile != "" {
@@ -1143,9 +1141,11 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			MaxInFlight: d.MaxConcurrentRequests,
 		})
 		deploymentRateLimitConfigs = append(deploymentRateLimitConfigs, ratelimit.KeyConfig{
-			ID:              d.Name,
-			Capacity:        d.RateLimitBurst,
-			RefillPerSecond: d.RateLimitRefill,
+			ID:                 d.Name,
+			Capacity:           d.RateLimitBurst,
+			RefillPerSecond:    d.RateLimitRefill,
+			TPMCapacity:        d.TPMCapacity,
+			TPMRefillPerSecond: d.TPMRefillPerSecond,
 		})
 	}
 

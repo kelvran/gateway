@@ -203,9 +203,12 @@ deployments:
     # single caller's own rate. Per docs/upgrade-research/gateway-per-
     # deployment-concurrency-2026-09-09.md. burst/refill_per_second must
     # be set together or neither (a load-time config error otherwise);
-    # tpm_capacity/tpm_refill_per_second are parsed but not yet enforced
-    # (deployment-scoped TPM is deferred — see that doc's own scope
-    # limit). max_concurrent_requests bounds simultaneous in-flight calls
+    # tpm_capacity/tpm_refill_per_second cap the deployment's own
+    # tokens-per-minute the same way, reserved before and reconciled after
+    # EVERY call to it (hop 1 and every fallback hop) — enforced since
+    # 2026-10-07; see claude-bedrock-primary below for tpm_accounting,
+    # which makes that count match a provider's own quota math.
+    # max_concurrent_requests bounds simultaneous in-flight calls
     # to this deployment specifically, checked PER HOP, unlike a virtual
     # key's own max_concurrent_requests (held for the whole request).
     rate_limit:
@@ -265,6 +268,27 @@ deployments:
     secret_access_key_env: "AWS_SECRET_ACCESS_KEY"
     # session_token_env: "AWS_SESSION_TOKEN"   # optional; only for temporary/STS credentials
     region: "us-east-1"
+    # Deployment-scoped tokens-per-minute ceiling, counted the way
+    # Bedrock's OWN quota counts tokens (AWS docs, 2026-10-07): the quota
+    # charges input + cache-WRITE tokens at 1x, does not count cache READS
+    # at all, and "burns down" output tokens at 5x for Claude 4.7 and
+    # earlier (this deployment's 3.5 Sonnet included), 10x for Sonnet 5 /
+    # Opus 5 / Opus 5.5 / Fable 5.1, 15x for Claude 4.8. Without
+    # tpm_accounting Kelvran counts raw tokens, so a ceiling set to the
+    # account's Bedrock TPM quota would let 5-15x too much output through
+    # before Bedrock itself throttled. Set tpm_capacity/tpm_refill_per_second
+    # to the quota you want to stay under (3M TPM is the on-demand default
+    # for Sonnet 5 and Sonnet 4.6 in most regions; other models' quotas
+    # differ — read your account's Service Quotas). Sonnet 5 on Bedrock has
+    # NO requests-per-minute quota at all, so burst/refill_per_second here
+    # would be purely Kelvran's own RPM ceiling — leave them unset unless
+    # you want one. In-memory per gateway instance, like burst/refill.
+    rate_limit:
+      tpm_capacity: 3000000
+      tpm_refill_per_second: 50000
+      tpm_accounting:
+        output_token_multiplier: 5      # 5 for Claude <= 4.7, 10 for Sonnet 5 / Opus 5(.5) / Fable 5.1, 15 for Claude 4.8
+        exclude_cache_read_tokens: true # Bedrock's quota does not count cache reads
     # access_key_id_file/secret_access_key_file/session_token_file are
     # OPTIONAL alternatives to the three *_env fields above: instead of
     # a fixed-at-startup env var, the gateway resolves this credential

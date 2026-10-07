@@ -18,9 +18,11 @@ type KeyConfig struct {
 	// tokens-per-minute dimension per
 	// docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md. TPMCapacity <= 0
 	// (the default) means no TPM limit for this key — matching this
-	// codebase's existing "0/negative = unlimited" convention. In-memory
-	// mode only in v1; a no-op under NewRedisKeyLimiter, per that RFC's
-	// explicit scope limit.
+	// codebase's existing "0/negative = unlimited" convention. Enforced
+	// in BOTH in-memory and Redis mode: that RFC's original "in-memory
+	// only in v1, a no-op under NewRedisKeyLimiter" scope limit was
+	// closed when ReserveTPM/ReconcileTPM gained their GCRA-backed Redis
+	// path (RedisBackend.AllowTPM/AdjustTPM).
 	TPMCapacity        float64
 	TPMRefillPerSecond float64
 	// PerModel maps a model name to that model's own, separate RPM

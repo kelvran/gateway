@@ -152,6 +152,12 @@ func TestLoadExampleConfig(t *testing.T) {
 	if bedrockDep.Region != "us-east-1" {
 		t.Errorf("claude-bedrock-primary.Region = %q, want %q", bedrockDep.Region, "us-east-1")
 	}
+	if bedrockDep.TPMCapacity != 3000000 || bedrockDep.TPMRefillPerSecond != 50000 {
+		t.Errorf("claude-bedrock-primary TPM ceiling = capacity=%v refill=%v, want 3000000/50000", bedrockDep.TPMCapacity, bedrockDep.TPMRefillPerSecond)
+	}
+	if bedrockDep.TPMOutputTokenMultiplier != 5 || !bedrockDep.TPMExcludeCacheReadTokens {
+		t.Errorf("claude-bedrock-primary tpm_accounting = multiplier %v / exclude %v, want 5 / true", bedrockDep.TPMOutputTokenMultiplier, bedrockDep.TPMExcludeCacheReadTokens)
+	}
 
 	priceGPT, ok := cfg.PriceTable["gpt-4o"]
 	if !ok {
@@ -2178,6 +2184,105 @@ func TestLoadRejectsDeploymentRateLimitTPMCapacityWithoutRefill(t *testing.T) {
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load with deployment rate_limit.tpm_capacity set but tpm_refill_per_second unset returned nil error")
+	}
+}
+
+// TestLoadDeploymentTPMAccountingParsesBothFields covers the
+// rate_limit.tpm_accounting block added 2026-10-07 — see
+// DeploymentConfig.TPMOutputTokenMultiplier's doc comment for the Bedrock
+// quota math it exists to mirror.
+func TestLoadDeploymentTPMAccountingParsesBothFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	extra := "    rate_limit:\n" +
+		"      tpm_capacity: 3000000\n" +
+		"      tpm_refill_per_second: 50000\n" +
+		"      tpm_accounting:\n" +
+		"        output_token_multiplier: 10\n" +
+		"        exclude_cache_read_tokens: true\n"
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dep := cfg.Deployments[0]
+	if dep.TPMCapacity != 3000000 || dep.TPMRefillPerSecond != 50000 {
+		t.Errorf("TPMCapacity/TPMRefillPerSecond = %v/%v, want 3000000/50000", dep.TPMCapacity, dep.TPMRefillPerSecond)
+	}
+	if dep.TPMOutputTokenMultiplier != 10 {
+		t.Errorf("TPMOutputTokenMultiplier = %v, want 10", dep.TPMOutputTokenMultiplier)
+	}
+	if !dep.TPMExcludeCacheReadTokens {
+		t.Error("TPMExcludeCacheReadTokens = false, want true")
+	}
+}
+
+// TestLoadDeploymentTPMWithoutAccountingDefaultsToRawTokens is the
+// backward-compatibility proof: a deployment that sets only the TPM pair
+// (every config written before tpm_accounting existed) keeps raw-token
+// semantics — multiplier unset (0, meaning 1) and cache reads counted.
+func TestLoadDeploymentTPMWithoutAccountingDefaultsToRawTokens(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	extra := "    rate_limit:\n      tpm_capacity: 100000\n      tpm_refill_per_second: 1000\n"
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig(extra)), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dep := cfg.Deployments[0]
+	if dep.TPMOutputTokenMultiplier != 0 || dep.TPMExcludeCacheReadTokens {
+		t.Errorf("tpm_accounting fields = multiplier %v / exclude %v, want 0 / false (raw tokens)", dep.TPMOutputTokenMultiplier, dep.TPMExcludeCacheReadTokens)
+	}
+}
+
+// TestLoadRejectsDeploymentTPMAccountingMisconfigurations: a
+// tpm_accounting block that could not possibly do what its author meant
+// is a load-time error, never a silent no-op (this repo's doc-vs-code
+// gotcha, applied to config).
+func TestLoadRejectsDeploymentTPMAccountingMisconfigurations(t *testing.T) {
+	tests := []struct {
+		name  string
+		extra string
+	}{
+		{
+			"tpm_accounting without a TPM ceiling",
+			"    rate_limit:\n      burst: 500\n      refill_per_second: 200\n      tpm_accounting:\n        output_token_multiplier: 10\n",
+		},
+		{
+			"multiplier between 0 and 1",
+			"    rate_limit:\n      tpm_capacity: 1000\n      tpm_refill_per_second: 10\n      tpm_accounting:\n        output_token_multiplier: 0.5\n",
+		},
+		{
+			"negative multiplier",
+			"    rate_limit:\n      tpm_capacity: 1000\n      tpm_refill_per_second: 10\n      tpm_accounting:\n        output_token_multiplier: -3\n",
+		},
+		{
+			"unparseable exclude_cache_read_tokens",
+			"    rate_limit:\n      tpm_capacity: 1000\n      tpm_refill_per_second: 10\n      tpm_accounting:\n        exclude_cache_read_tokens: maybe\n",
+		},
+		{
+			"unparseable output_token_multiplier must not silently mean 1",
+			"    rate_limit:\n      tpm_capacity: 1000\n      tpm_refill_per_second: 10\n      tpm_accounting:\n        output_token_multiplier: abc\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(minimalDeploymentConfig(tt.extra)), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatalf("Load with %s returned nil error, want a load-time rejection", tt.name)
+			}
+		})
 	}
 }
 

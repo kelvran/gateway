@@ -266,6 +266,17 @@ type Deployment struct {
 	// defense-in-depth guard against a client naming the wrong kind of
 	// model for the route it called.
 	Kind string
+	// TPMOutputTokenMultiplier/TPMExcludeCacheReadTokens weight this
+	// deployment's own tokens-per-minute accounting the way its
+	// PROVIDER's quota counts tokens — Bedrock excludes cache reads and
+	// burns output at 5x/10x/15x by model generation — per
+	// controlplane.DeploymentConfig's fields of the same names (the
+	// authoritative doc, including the formula) and deploymentTPMTokens
+	// (deployment_tpm.go), the only reader. Zero values mean raw tokens.
+	// Only meaningful when cmd/gateway gave this deployment a TPM bucket
+	// in Config.DeploymentLimiter.
+	TPMOutputTokenMultiplier  float64
+	TPMExcludeCacheReadTokens bool
 	// CredentialFiles/CredentialState back the OPT-IN file-based
 	// credential hot-reload mechanism -- see credential_reload.go's own
 	// package doc comment for the full design rationale (in short: an
@@ -2402,7 +2413,8 @@ func (p *Pipeline) checkDeploymentCapacity(ctx context.Context, depName string) 
 	return p.checkDeploymentConcurrency(depName)
 }
 
-// callDeploymentWithCapacityCheck wraps callDeployment with dep's own
+// callDeploymentWithCapacityCheck wraps callDeploymentWithTPM (which is
+// callDeployment behind dep's own TPM gate, deployment_tpm.go) with dep's
 // checkDeploymentCapacity gate and guaranteed release — used for EVERY
 // call to a deployment, hop 1 included, unlike the per-key rate-limit/
 // concurrency checks (checked once before routing, held for the whole
@@ -2417,7 +2429,7 @@ func (p *Pipeline) callDeploymentWithCapacityCheck(ctx context.Context, dep Depl
 		return adapter.ChatResponse{}, &DeploymentCapacityError{Deployment: dep.Name, Reason: "concurrency"}
 	}
 	defer p.releaseDeploymentConcurrency(dep.Name)
-	return p.callDeployment(ctx, dep, req)
+	return p.callDeploymentWithTPM(ctx, dep, req)
 }
 
 // fallbackInfo captures whether a request fell back away from its first
@@ -3555,7 +3567,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 				hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 					func(d Deployment) (adapter.ChatResponse, error) {
 						defer p.releaseDeploymentConcurrency(d.Name)
-						return p.callDeployment(ctx, d, req)
+						return p.callDeploymentWithTPM(ctx, d, req)
 					},
 					func() bool { return false },
 					func(model string) bool { return p.checkFallbackTargetRateLimit(ctx, vk.ID, model) },

@@ -128,7 +128,8 @@ func (e *UpstreamHTTPError) ClientSafeMessage() string {
 // ErrConcurrencyLimitExceeded, both client-facing 429s); the deployment
 // it happened to route or fall back to is simply, aggregately, at
 // capacity across every virtual key currently converging on it. Reason
-// is "concurrency" or "rate_limit", for logging only.
+// is "concurrency", "rate_limit" or "tpm" (the deployment's own
+// tokens-per-minute ceiling — see deployment_tpm.go), for logging only.
 type DeploymentCapacityError struct {
 	Deployment string
 	Reason     string
