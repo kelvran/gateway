@@ -320,11 +320,13 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// all miss, before the router. The request text is fully known here
 	// regardless of streaming/buffered, so there is no half-formed-
 	// content problem on the input side.
-	if verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages)); verdict.Blocked {
+	verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages))
+	if verdict.Blocked {
 		p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())...)
 		err = ErrGuardrailBlocked
 		return
 	}
+	p.noteGuardrailFailOpen(ctx, vk.ID, telemetry.GuardrailStagePrecall, verdict)
 
 	if p.upstreamStream == nil {
 		err = ErrStreamingNotConfigured
@@ -744,7 +746,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		}
 	}
 
-	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, blocked)
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked)
 }
 
 // streamDeploymentBedrock is streamDeployment's Bedrock-specific sibling:
@@ -899,7 +901,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 		}
 	}
 
-	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, blocked)
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked)
 }
 
 // estimateOrRealUsage returns finalUsage verbatim (estimated=false) when
@@ -948,7 +950,7 @@ func estimateOrRealUsage(req adapter.ChatRequest, acc *streamAccumulator, finalU
 // (false) — callers thread this through to finalize purely for
 // telemetry/audit disclosure, per estimateOrRealUsage's own doc comment;
 // it does not change the billing decision itself.
-func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage, blocked *bool) (adapter.ChatResponse, bool, error) {
+func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage, keyID string, blocked *bool) (adapter.ChatResponse, bool, error) {
 	usage, estimated := estimateOrRealUsage(req, acc, finalUsage)
 	if estimated {
 		// Per the RFC's Cost Accounting section: a provider stream that
@@ -1008,11 +1010,16 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	// — so *blocked signals the caller (HandleChatCompletionStream) to
 	// skip writeCache, even though the client-delivery decision above
 	// stays audit-only.
-	if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
+	postVerdict := p.guardrails.Check(ctx, serializeResponse(resp))
+	if postVerdict.Blocked {
 		p.logger.Warn("guardrail_blocked_postcall_streaming_audit_only",
-			append(traceLogFields(ctx), "deployment", dep.Name, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames())...)
+			append(traceLogFields(ctx), "key_id", keyID, "deployment", dep.Name, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames())...)
 		*blocked = true
 	}
+	// Audit-only or not, a detector error here means the response went to
+	// the client with that detector's coverage missing — the same
+	// fail-open the buffered post-call site records.
+	p.noteGuardrailFailOpen(ctx, keyID, telemetry.GuardrailStagePostcall, postVerdict)
 
 	if err := sw.WriteDone(); err != nil {
 		return adapter.ChatResponse{}, estimated, fmt.Errorf("writing done sentinel for deployment %q: %w", dep.Name, err)

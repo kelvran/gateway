@@ -38,6 +38,13 @@ func TestPromptInjectionDetectorTruePositiveHiddenUnicode(t *testing.T) {
 // U+2060 (WORD JOINER) and the U+FE00-FE0F variation-selector block as
 // a live, real-world-cited smuggling technique hiddenUnicodeRanges was
 // missing.
+//
+// The two Unicode-tag-block cases below are the 2026-10-07 widening
+// (docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md):
+// OWASP LLM01 2026 prescribes stripping the WHOLE tag block
+// U+E0000-E007F, while hiddenUnicodeRanges previously started at
+// U+E0020 -- leaving U+E0000 (the block's first code point) and
+// U+E0001 (LANGUAGE TAG, an assigned, emittable character) undetected.
 func TestPromptInjectionDetectorTruePositiveWordJoinerAndVariationSelector(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -45,6 +52,8 @@ func TestPromptInjectionDetectorTruePositiveWordJoinerAndVariationSelector(t *te
 	}{
 		{"word joiner", 0x2060},
 		{"variation selector", 0xFE0F},
+		{"tag block start U+E0000", 0xE0000},
+		{"language tag U+E0001", 0xE0001},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := "hello" + string(tc.r) + "world"

@@ -133,13 +133,24 @@ func joinAsWordSeparatedAlternation(phrases []string) string {
 // defenses ~0%, adaptive >90% success against 12 recent defenses) --
 // this list stays a real, cheap, disclosed mitigation for the known,
 // already-published vectors it covers, not a claim of completeness.
+//
+// Widened again 2026-10-07
+// (docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md):
+// the Unicode-tag entry now starts at U+E0000, the first code point of
+// the Tags block, instead of U+E0020. OWASP LLM01 2026 prescribes
+// stripping the whole U+E0000-E007F block; the previous start skipped
+// U+E0000 itself and U+E0001 (LANGUAGE TAG), an assigned character any
+// attacker can emit as easily as the E0020-E007F tag letters. The
+// unassigned code points in between are covered too — an unassigned
+// but encodable code point is exactly what a smuggler would reach for
+// once the assigned ones are filtered.
 var hiddenUnicodeRanges = [][2]rune{
 	{0x200B, 0x200D},   // zero-width space/non-joiner/joiner
 	{0x2060, 0x2060},   // word joiner
 	{0xFE00, 0xFE0F},   // variation selectors
 	{0xFEFF, 0xFEFF},   // zero-width no-break space (BOM)
 	{0x202A, 0x202E},   // bidirectional control
-	{0xE0020, 0xE007F}, // Unicode tag characters
+	{0xE0000, 0xE007F}, // Unicode Tags block (whole block, per OWASP LLM01 2026)
 }
 
 func isHiddenUnicode(r rune) bool {

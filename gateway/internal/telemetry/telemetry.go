@@ -121,6 +121,42 @@ func RecordBudgetFailOpen(ctx context.Context, keyID string) {
 	budgetFailOpenCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
 }
 
+// guardrailFailOpenCounter counts every request allowed through despite a
+// guardrail detector error — the guardrail dimension's own equivalent of
+// rateLimitFailOpenCounter/budgetFailOpenCounter above. guardrail.Engine
+// is category-tiered fail-open/fail-closed (see internal/guardrail's
+// Policy.ErrorActions): a detector in a Warn-tier category that errors
+// (or panics) leaves the request flowing with that detector's coverage
+// silently missing. Until 2026-10-07 the only trace of that was the
+// engine's own guardrail_detector_error log line, which carries neither
+// a trace id nor a virtual-key id. Attributed with kelvran.virtual_key.id
+// and kelvran.guardrail.stage ("precall"/"postcall"/"embeddings") because
+// a pre-call fail-open (an unscreened PROMPT reached a provider) is a
+// materially different signal from a post-call one (an unscreened
+// RESPONSE reached a client) — per
+// docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md.
+var guardrailFailOpenCounter = mustInt64Counter(
+	meter,
+	"kelvran.guardrail.fail_open",
+	metric.WithDescription("Requests allowed through despite a guardrail detector error (fail-open)."),
+	metric.WithUnit("{request}"),
+)
+
+// RecordGuardrailFailOpen increments the guardrail fail-open counter for
+// keyID at the given stage (one of the GuardrailStage* constants). Callers
+// (dataplane's five guardrail Check call sites) call this at the exact
+// same point they log a guardrail_fail_open warning — an additional,
+// aggregate-friendly signal, not a replacement for that log line,
+// mirroring RecordRateLimitFailOpen's identical convention. Recorded at
+// most once per request per stage, never once per detector or per
+// embeddings input.
+func RecordGuardrailFailOpen(ctx context.Context, keyID, stage string) {
+	guardrailFailOpenCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(AttrKelvranVirtualKeyID, keyID),
+		attribute.String(AttrKelvranGuardrailStage, stage),
+	))
+}
+
 func mustInt64Counter(m metric.Meter, name string, opts ...metric.Int64CounterOption) metric.Int64Counter {
 	counter, err := m.Int64Counter(name, opts...)
 	if err != nil {

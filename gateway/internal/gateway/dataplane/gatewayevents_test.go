@@ -287,15 +287,27 @@ func dataplaneTelemetryMetricsReaderForTest() *sdkmetric.ManualReader {
 // string is a static property of a single call's own attribute set, not
 // a cumulative value, so it doesn't need delta treatment.
 type dataplaneTelemetrySnapshot struct {
-	failOpenByKeyID       map[string]int64
-	cacheLookupTotal      int64
-	sawAttackerModel      bool
-	sawUnresolvedSentinel bool
+	failOpenByKeyID map[string]int64
+	// guardrailFailOpenByKeyStage is keyed "<key_id>|<stage>" — the
+	// kelvran.guardrail.fail_open counter carries both attributes, and
+	// TestGuardrailFailOpenIncrementsMetricCounter asserts per stage.
+	guardrailFailOpenByKeyStage map[string]int64
+	cacheLookupTotal            int64
+	sawAttackerModel            bool
+	sawUnresolvedSentinel       bool
+}
+
+// guardrailFailOpenSnapshotKey builds guardrailFailOpenByKeyStage's key.
+func guardrailFailOpenSnapshotKey(keyID, stage string) string {
+	return keyID + "|" + stage
 }
 
 func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dataplaneTelemetrySnapshot {
 	t.Helper()
-	snap := dataplaneTelemetrySnapshot{failOpenByKeyID: map[string]int64{}}
+	snap := dataplaneTelemetrySnapshot{
+		failOpenByKeyID:             map[string]int64{},
+		guardrailFailOpenByKeyStage: map[string]int64{},
+	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			switch m.Name {
@@ -308,6 +320,18 @@ func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dat
 					keyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
 					if hasAttr {
 						snap.failOpenByKeyID[keyID.AsString()] += dp.Value
+					}
+				}
+			case "kelvran.guardrail.fail_open":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.guardrail.fail_open data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					keyID, hasKey := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID))
+					stage, hasStage := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranGuardrailStage))
+					if hasKey && hasStage {
+						snap.guardrailFailOpenByKeyStage[guardrailFailOpenSnapshotKey(keyID.AsString(), stage.AsString())] += dp.Value
 					}
 				}
 			case "kelvran.cache.lookup":

@@ -3126,12 +3126,22 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 		}
 	}()
 
+	// failOpenVerdict keeps the last input's verdict that carried a
+	// DetectorError so the fail-open is recorded ONCE per request after
+	// the loop (the counter's unit is {request}, not {input}), and only
+	// if no input was blocked — a block anywhere returns before it.
+	var failOpenVerdict guardrail.Verdict
 	for _, text := range req.Input {
-		if verdict := p.guardrails.Check(ctx, text); verdict.Blocked {
+		verdict := p.guardrails.Check(ctx, text)
+		if verdict.Blocked {
 			err = ErrGuardrailBlocked
 			return
 		}
+		if verdict.DetectorError != nil {
+			failOpenVerdict = verdict
+		}
 	}
+	p.noteGuardrailFailOpen(ctx, vk.ID, telemetry.GuardrailStageEmbeddings, failOpenVerdict)
 
 	var found bool
 	dep, found = p.nextDeployment(req.Model, nil)
@@ -3500,10 +3510,12 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// above never reaches this check at all — its provenance was already
 		// checked under the current policy at write time, per this same RFC's
 		// cache-key/GuardrailPolicyVersion mechanism.
-		if verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages)); verdict.Blocked {
+		verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages))
+		if verdict.Blocked {
 			p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())...)
 			return nil, ErrGuardrailBlocked
 		}
+		p.noteGuardrailFailOpen(ctx, vk.ID, telemetry.GuardrailStagePrecall, verdict)
 
 		// upstreamStart brackets the deployment-selection-through-fallback-
 		// resolution block below -- including any multi-hop fallback
@@ -3604,7 +3616,8 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// populated here and nothing downstream (cache write, return to
 		// client) has happened yet — a Block verdict can still refuse
 		// DELIVERY, but never the billing for the real call already made.
-		if postVerdict := p.guardrails.Check(ctx, serializeResponse(resp)); postVerdict.Blocked {
+		postVerdict := p.guardrails.Check(ctx, serializeResponse(resp))
+		if postVerdict.Blocked {
 			p.logger.Warn("guardrail_blocked_postcall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames())...)
 			// Captured via the side channel, not the shadowed local resp/
 			// dep, so finalize's cost calculation (keyed on the real
@@ -3614,6 +3627,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			blockedResp, blockedDep = resp, dep
 			return nil, ErrGuardrailBlocked
 		}
+		p.noteGuardrailFailOpen(ctx, vk.ID, telemetry.GuardrailStagePostcall, postVerdict)
 
 		if !responseWasTruncated(resp) {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {

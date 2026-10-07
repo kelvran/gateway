@@ -85,6 +85,24 @@ const (
 	AttrKelvranAgentRunID   = "kelvran.agent_run_id"
 	AttrKelvranCacheHit     = "kelvran.cache.hit"
 	AttrKelvranCostUSD      = "kelvran.cost.usd"
+	// AttrKelvranGuardrailStage is the kelvran.guardrail.fail_open
+	// counter's second attribute: WHICH guardrail check failed open. Its
+	// values are the closed GuardrailStage* set below — never a detector
+	// name (bounded cardinality, same rule as every other attribute here).
+	AttrKelvranGuardrailStage = "kelvran.guardrail.stage"
+)
+
+// GuardrailStage* are the only values AttrKelvranGuardrailStage ever takes.
+// Defined here, not in the dataplane, so the telemetry package owns the
+// closed set of its own attribute's values (the same reason
+// GenAITokenModalityText/Unknown live in telemetry.go).
+const (
+	GuardrailStagePrecall    = "precall"
+	GuardrailStagePostcall   = "postcall"
+	GuardrailStageEmbeddings = "embeddings"
+)
+
+const (
 	// AttrKelvranSavingsUSD, per ChatCompletionResult.SavingsUSD's own
 	// doc comment -- only ever set on a genuine cache hit, never a
 	// fabricated "0" for a miss.
