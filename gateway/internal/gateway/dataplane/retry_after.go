@@ -68,6 +68,15 @@ func isRetryStormEligible(err error) bool {
 // A genuine success (err == nil) resets vk's streak — backoff only
 // escalates while rejections are genuinely consecutive for this
 // identity, never accumulating forever across occasional successes.
+//
+// When the final error is an *UpstreamHTTPError that carried a
+// Retry-After header, that value (capped at maxUpstreamRetryAfter) is a
+// FLOOR on the delay: a client told 500 ms by the local streak when the
+// provider said 5 s would only come back to be throttled again — AWS's own
+// throttling guidance is "honor Retry-After" before any local backoff. The
+// local backoff is never lowered by it, so a long per-key streak still
+// escalates past a short upstream hint. Per
+// docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md.
 func (p *Pipeline) attachRetryAfter(vk *identity.VirtualKey, err error) error {
 	if vk == nil {
 		return err
@@ -80,5 +89,8 @@ func (p *Pipeline) attachRetryAfter(vk *identity.VirtualKey, err error) error {
 		return err
 	}
 	delay := p.retryBackoff.Record(vk.ID)
+	if upstream := upstreamRetryAfter(err); upstream > delay {
+		delay = upstream
+	}
 	return &RetryAfterError{err: err, RetryAfter: delay}
 }

@@ -3236,7 +3236,8 @@ func (p *Pipeline) logEmbeddingsRequest(ctx context.Context, vk *identity.Virtua
 		fields = append(fields, "deployment", dep.Name)
 	}
 	if err != nil {
-		p.logger.Error("embeddings", append(fields, "error", err.Error())...)
+		fields = append(fields, "error", err.Error())
+		p.logger.Error("embeddings", append(fields, upstreamErrorLogFields(err)...)...)
 		return
 	}
 	fields = append(fields,
@@ -4860,7 +4861,10 @@ func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req 
 	}
 
 	if err != nil {
-		p.logger.Error("chat_completion", append(fields, "error", err.Error())...)
+		// upstreamErrorLogFields is nil for anything but a typed upstream
+		// error, so this is a no-op append on every other failure.
+		fields = append(fields, "error", err.Error())
+		p.logger.Error("chat_completion", append(fields, upstreamErrorLogFields(err)...)...)
 		return
 	}
 
@@ -5178,7 +5182,7 @@ func NewHTTPUpstreamCaller(defaultClient *http.Client, perDeployment map[string]
 			// real status/body via errors.As through callDeployment's
 			// own "%w" wrap — per
 			// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
-			return nil, &UpstreamHTTPError{StatusCode: httpResp.StatusCode, Body: string(respBody)}
+			return nil, newUpstreamHTTPError(httpResp, respBody)
 		}
 
 		unmarshal, ok := responseUnmarshalers[dep.Provider]
@@ -5247,7 +5251,7 @@ func NewHTTPEmbeddingUpstreamCaller(defaultClient *http.Client, perDeployment ma
 			return nil, fmt.Errorf("reading upstream embedding response: %w", err)
 		}
 		if httpResp.StatusCode >= 300 {
-			return nil, &UpstreamHTTPError{StatusCode: httpResp.StatusCode, Body: string(respBody)}
+			return nil, newUpstreamHTTPError(httpResp, respBody)
 		}
 
 		unmarshal, ok := embeddingResponseUnmarshalers[dep.Provider]
@@ -5403,7 +5407,7 @@ func NewHTTPUpstreamStreamCaller(defaultClient *http.Client, perDeployment map[s
 			cancel()
 			// Same typed error as NewHTTPUpstreamCaller's buffered path,
 			// for the same reason — see the comment there.
-			return nil, &UpstreamHTTPError{StatusCode: httpResp.StatusCode, Body: string(errBody)}
+			return nil, newUpstreamHTTPError(httpResp, errBody)
 		}
 
 		return newIdleTimeoutReader(httpResp.Body, idleTimer, idleTimeout, cancel), nil

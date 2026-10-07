@@ -38,15 +38,40 @@ const (
 )
 
 // UpstreamHTTPError is returned by NewHTTPUpstreamCaller/
-// NewHTTPUpstreamStreamCaller when an upstream provider responds with a
-// non-2xx status. It is the one place real, classifiable information
-// about an upstream failure exists — errors from ToProvider/FromProvider
-// (local marshaling/mapping problems) or a network-level failure carry no
-// equivalent structured data and always classify as
-// FallbackClassGeneric via classifyFallbackError below.
+// NewHTTPUpstreamStreamCaller/NewHTTPEmbeddingUpstreamCaller when an
+// upstream provider responds with a non-2xx status. It is the one place
+// real, classifiable information about an upstream failure exists — errors
+// from ToProvider/FromProvider (local marshaling/mapping problems) or a
+// network-level failure carry no equivalent structured data and always
+// classify as FallbackClassGeneric via classifyFallbackError below.
+//
+// All three callers construct it through newUpstreamHTTPError
+// (upstream_error.go), which is the only place the response HEADERS are
+// still in scope — ErrorType and RetryAfter below are read there, since
+// the UpstreamCaller/UpstreamStreamCaller signatures return a decoded body
+// or a body reader, never the *http.Response.
 type UpstreamHTTPError struct {
 	StatusCode int
 	Body       string
+	// ErrorType is the provider's machine-readable exception name when the
+	// response carried one — today AWS's X-Amzn-ErrorType header (Bedrock:
+	// "ThrottlingException", "ModelNotReadyException",
+	// "ValidationException", "ServiceUnavailableException", ...), falling
+	// back to the body's top-level "__type"/"code" exactly as smithy-go's
+	// restjson error deserializer does, and sanitised the same way (see
+	// resolveAWSErrorType). Empty for every provider that sets none of
+	// those (OpenAI nests its code under "error"; Anthropic uses "type").
+	// Logged as upstream_error_type; never put in a client-facing body.
+	// Distinguishes the two 429 causes and the two 5xx causes Bedrock
+	// reports under one status code each, per
+	// docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md.
+	ErrorType string
+	// RetryAfter is the parsed Retry-After response header (RFC 9110
+	// §10.2.3: delta-seconds or an HTTP-date), zero when absent, malformed
+	// or already past. Logged as upstream_retry_after_ms and honoured as a
+	// capped floor on the client-facing Retry-After — see
+	// attachRetryAfter/upstreamRetryAfter.
+	RetryAfter time.Duration
 }
 
 // Error implements the error interface. callDeployment wraps this with
