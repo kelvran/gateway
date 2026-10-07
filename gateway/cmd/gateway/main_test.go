@@ -71,8 +71,16 @@ func TestDrainInFlightWaitsForRequestsThatFinishWithinGrace(t *testing.T) {
 	finished := make(chan struct{})
 	go func() {
 		time.Sleep(200 * time.Millisecond)
-		wg.Done()
+		// close BEFORE Done: drainInFlight legitimately returns the moment
+		// wg.Wait() unblocks, so anything the assertion below needs to
+		// observe must already have happened by then. With Done first and
+		// close second there was a real window (seen as a CI failure on
+		// 2026-10-07, fea992b0's first run) in which drainInFlight had
+		// returned, the non-blocking select below ran, and this goroutine
+		// had not yet reached close(finished) -- a test-ordering bug, not a
+		// drainInFlight bug.
 		close(finished)
+		wg.Done()
 	}()
 
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
