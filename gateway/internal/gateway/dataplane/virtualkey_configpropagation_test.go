@@ -128,7 +128,7 @@ func subscribeVirtualKeyEvents(ctx context.Context, sub *configpropagation.PubSu
 				onErr(err)
 				return
 			}
-			if err := target.ApplyVirtualKeyUpsertFromEvent(payload, event.PublishedAtUnixNano); err != nil {
+			if err := target.ApplyVirtualKeyUpsertFromEvent(payload, event.PublishedAtUnixNano, event.OriginInstanceID); err != nil {
 				onErr(err)
 			}
 		case configpropagation.TypeVirtualKeyDelete:
@@ -137,7 +137,7 @@ func subscribeVirtualKeyEvents(ctx context.Context, sub *configpropagation.PubSu
 				onErr(err)
 				return
 			}
-			if err := target.ApplyVirtualKeyDeleteFromEvent(payload.ID, event.PublishedAtUnixNano); err != nil {
+			if err := target.ApplyVirtualKeyDeleteFromEvent(payload.ID, event.PublishedAtUnixNano, event.OriginInstanceID); err != nil {
 				onErr(err)
 			}
 		}
@@ -373,7 +373,7 @@ func TestApplyVirtualKeyUpsertFromEventDiscardsAnOutOfOrderStaleUpdate(t *testin
 	if err := p.ApplyVirtualKeyUpsertFromEvent(configpropagation.VirtualKeyUpsertPayload{
 		VirtualKey:      virtualKeyToPayload(newerVK),
 		RateLimitConfig: keyConfigToPayload(ratelimit.KeyConfig{ID: "team-gamma", Capacity: 100, RefillPerSecond: 100}),
-	}, newer); err != nil {
+	}, newer, "remote-instance"); err != nil {
 		t.Fatalf("ApplyVirtualKeyUpsertFromEvent(newer): %v", err)
 	}
 	if !canAuthenticate(p, "newer-secret") {
@@ -387,7 +387,7 @@ func TestApplyVirtualKeyUpsertFromEventDiscardsAnOutOfOrderStaleUpdate(t *testin
 	if err := p.ApplyVirtualKeyUpsertFromEvent(configpropagation.VirtualKeyUpsertPayload{
 		VirtualKey:      virtualKeyToPayload(staleVK),
 		RateLimitConfig: keyConfigToPayload(ratelimit.KeyConfig{ID: "team-gamma", Capacity: 100, RefillPerSecond: 100}),
-	}, older); err != nil {
+	}, older, "remote-instance"); err != nil {
 		t.Fatalf("ApplyVirtualKeyUpsertFromEvent(stale): %v", err)
 	}
 
@@ -418,14 +418,14 @@ func TestApplyVirtualKeyDeleteFromEventDiscardsAnOutOfOrderStaleUpdate(t *testin
 	if err := p.ApplyVirtualKeyUpsertFromEvent(configpropagation.VirtualKeyUpsertPayload{
 		VirtualKey:      virtualKeyToPayload(newerVK),
 		RateLimitConfig: keyConfigToPayload(ratelimit.KeyConfig{ID: "team-gamma", Capacity: 100, RefillPerSecond: 100}),
-	}, 2000); err != nil {
+	}, 2000, "remote-instance"); err != nil {
 		t.Fatalf("ApplyVirtualKeyUpsertFromEvent(newer): %v", err)
 	}
 
 	// A STALE delete for the SAME ID at an OLDER timestamp (t=1000) --
 	// e.g. delivered out of order relative to the upsert above -- must
 	// be discarded, never removing the genuinely newer state.
-	if err := p.ApplyVirtualKeyDeleteFromEvent("team-gamma", 1000); err != nil {
+	if err := p.ApplyVirtualKeyDeleteFromEvent("team-gamma", 1000, "remote-instance"); err != nil {
 		t.Fatalf("ApplyVirtualKeyDeleteFromEvent(stale): %v", err)
 	}
 
@@ -457,7 +457,7 @@ func TestRotateVirtualKeyPropagatedEventNeverRegistersARateLimit(t *testing.T) {
 	if err := p.ApplyVirtualKeyUpsertFromEvent(configpropagation.VirtualKeyUpsertPayload{
 		VirtualKey:      virtualKeyToPayload(rotatedVK),
 		RateLimitConfig: nil,
-	}, 1000); err != nil {
+	}, 1000, "remote-instance"); err != nil {
 		t.Fatalf("ApplyVirtualKeyUpsertFromEvent(rateLimit=nil): %v", err)
 	}
 

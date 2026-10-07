@@ -162,7 +162,7 @@ func TestIntegrationTwoPipelinesConvergeOnDeploymentWeightViaRedisPubSub(t *test
 				t.Errorf("unmarshaling received payload: %v", err)
 				return
 			}
-			if err := pipelineB.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight, event.PublishedAtUnixNano); err != nil {
+			if err := pipelineB.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight, event.PublishedAtUnixNano, event.OriginInstanceID); err != nil {
 				t.Errorf("ApplyDeploymentWeightFromEvent: %v", err)
 			}
 		})
@@ -238,7 +238,7 @@ func TestApplyDeploymentWeightFromEventDiscardsAnOutOfOrderStaleUpdate(t *testin
 	older := int64(1000)
 
 	// A genuinely newer update (weight=50, timestamp=2000) applies.
-	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 50, newer); err != nil {
+	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 50, newer, "remote-instance"); err != nil {
 		t.Fatalf("ApplyDeploymentWeightFromEvent(weight=50, t=%d): %v", newer, err)
 	}
 	afterNewer := countStableVsCanary(p, "gpt-4o", "canary", samples)
@@ -247,7 +247,7 @@ func TestApplyDeploymentWeightFromEventDiscardsAnOutOfOrderStaleUpdate(t *testin
 	// than the 2000 already applied above) must be silently discarded,
 	// never overwriting the genuinely newer weight=50 state with this
 	// older one.
-	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 1, older); err != nil {
+	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 1, older, "remote-instance"); err != nil {
 		t.Fatalf("ApplyDeploymentWeightFromEvent(weight=1, t=%d) [stale]: %v", older, err)
 	}
 	afterStale := countStableVsCanary(p, "gpt-4o", "canary", samples)
@@ -285,7 +285,7 @@ func TestApplyDeploymentWeightFromEventFailedApplyNeverConsumesTheVersionSlot(t 
 	// router.SetWeight itself must return an error for this, and that
 	// error must propagate back out.
 	const highTimestamp = int64(9_000_000_000)
-	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "does-not-exist", 50, highTimestamp); err == nil {
+	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "does-not-exist", 50, highTimestamp, "remote-instance"); err == nil {
 		t.Fatal("ApplyDeploymentWeightFromEvent against an unknown deployment name returned nil error, want a real error")
 	}
 
@@ -296,7 +296,7 @@ func TestApplyDeploymentWeightFromEventFailedApplyNeverConsumesTheVersionSlot(t 
 	// a timestamp that was never really associated with canary's state
 	// at all.
 	const lowTimestamp = int64(1000)
-	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 50, lowTimestamp); err != nil {
+	if err := p.ApplyDeploymentWeightFromEvent("gpt-4o", "canary", 50, lowTimestamp, "remote-instance"); err != nil {
 		t.Fatalf("ApplyDeploymentWeightFromEvent(canary, weight=50, t=%d): %v", lowTimestamp, err)
 	}
 

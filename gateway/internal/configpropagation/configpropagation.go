@@ -88,7 +88,18 @@ const TypeDeploymentWeight = "deployment_weight"
 //
 // PublishedAtUnixNano, added 2026-09-20, is a cross-cutting last-writer-
 // wins ordering token (the publishing instance's own wall-clock time,
-// nanosecond resolution, at the moment the mutation was decided) —
+// nanosecond resolution, at the moment the mutation was decided — or,
+// since 2026-10-07, one past the newest version that instance had
+// already applied for the same target when its clock was not strictly
+// ahead of it, so a local mutation can never look stale to the
+// instance's own guard; see dataplane's mutation_version.go. Treat it as
+// an ordering token, not as a timestamp to display or to window on. Two
+// different origins CAN publish the same token for the same target --
+// two lagging replicas each bumping past the same inherited version --
+// so the apply side breaks an equal-token tie deterministically by
+// OriginInstanceID, while an equal token from the SAME origin stays the
+// idempotent re-apply the CanaryPercent promotion below relies on; see
+// dataplane's mutationVersion.supersedes) —
 // deliberately placed on this generic envelope, not duplicated inside
 // each Type's own payload, mirroring OriginInstanceID's own placement:
 // both are properties of "when/where this mutation happened," equally
@@ -97,8 +108,9 @@ const TypeDeploymentWeight = "deployment_weight"
 // session's own end-to-end audit: without ANY ordering token, two
 // concurrent mutations to the same target could leave different
 // instances converged on different final values, with zero detection —
-// see dataplane.Pipeline.applyWeightIfNewer, this token's one real
-// consumer today.
+// see dataplane's applyWeightIfNewerLocked, applyVirtualKeyUpsertLocked
+// and applyVirtualKeyDeleteLocked, the token's consumers (one for each
+// mutation Type).
 // Signature is an HMAC-SHA256 MAC over
 // Type+"."+OriginInstanceID+"."+PublishedAtUnixNano+"."+Payload, computed
 // and verified with a shared secret every gateway instance holds — see
@@ -130,8 +142,10 @@ const TypeDeploymentWeight = "deployment_weight"
 // PublishedAtUnixNano -- reusing the existing last-writer-wins ordering
 // token rather than inventing a second "this promotes that" reference,
 // so an already-applied (in-cohort) instance's re-application is a
-// harmless idempotent no-op (the timestamp compares equal, never
-// discarded as stale) and an out-of-cohort instance's own cohort check
+// harmless idempotent no-op (same token AND same OriginInstanceID -- the
+// promotion is re-published by the instance that published the canary --
+// so it compares equal, never discarded as stale) and an out-of-cohort
+// instance's own cohort check
 // now evaluates true. Deliberately NOT a new delivery mechanism -- see
 // this package's own doc comment on why push-fire-and-forget (not poll)
 // was already chosen; this is a filter on top of that existing

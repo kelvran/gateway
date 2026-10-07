@@ -747,7 +747,7 @@ func run(configPath string, logger *slog.Logger) error {
 						logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
 						return
 					}
-					if err := pipeline.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight, event.PublishedAtUnixNano); err != nil {
+					if err := pipeline.ApplyDeploymentWeightFromEvent(payload.Model, payload.DeploymentName, payload.Weight, event.PublishedAtUnixNano, event.OriginInstanceID); err != nil {
 						logger.Warn("configpropagation_apply_failed", "type", event.Type, "deployment", payload.DeploymentName, "error", err)
 					}
 				case configpropagation.TypeVirtualKeyUpsert:
@@ -756,7 +756,7 @@ func run(configPath string, logger *slog.Logger) error {
 						logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
 						return
 					}
-					if err := pipeline.ApplyVirtualKeyUpsertFromEvent(payload, event.PublishedAtUnixNano); err != nil {
+					if err := pipeline.ApplyVirtualKeyUpsertFromEvent(payload, event.PublishedAtUnixNano, event.OriginInstanceID); err != nil {
 						logger.Warn("configpropagation_apply_failed", "type", event.Type, "key_id", payload.VirtualKey.ID, "error", err)
 					}
 				case configpropagation.TypeVirtualKeyDelete:
@@ -765,7 +765,7 @@ func run(configPath string, logger *slog.Logger) error {
 						logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
 						return
 					}
-					if err := pipeline.ApplyVirtualKeyDeleteFromEvent(payload.ID, event.PublishedAtUnixNano); err != nil {
+					if err := pipeline.ApplyVirtualKeyDeleteFromEvent(payload.ID, event.PublishedAtUnixNano, event.OriginInstanceID); err != nil {
 						logger.Warn("configpropagation_apply_failed", "type", event.Type, "key_id", payload.ID, "error", err)
 					}
 				default:

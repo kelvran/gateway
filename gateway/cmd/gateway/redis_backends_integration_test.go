@@ -145,7 +145,7 @@ func subscribeVirtualKeyAndWeightEvents(ctx context.Context, sub *configpropagat
 				logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
 				return
 			}
-			if err := target.ApplyVirtualKeyUpsertFromEvent(payload, event.PublishedAtUnixNano); err != nil {
+			if err := target.ApplyVirtualKeyUpsertFromEvent(payload, event.PublishedAtUnixNano, event.OriginInstanceID); err != nil {
 				logger.Warn("configpropagation_apply_failed", "type", event.Type, "error", err)
 			}
 		case configpropagation.TypeVirtualKeyDelete:
@@ -154,7 +154,7 @@ func subscribeVirtualKeyAndWeightEvents(ctx context.Context, sub *configpropagat
 				logger.Warn("configpropagation_payload_unmarshal_failed", "type", event.Type, "error", err)
 				return
 			}
-			if err := target.ApplyVirtualKeyDeleteFromEvent(payload.ID, event.PublishedAtUnixNano); err != nil {
+			if err := target.ApplyVirtualKeyDeleteFromEvent(payload.ID, event.PublishedAtUnixNano, event.OriginInstanceID); err != nil {
 				logger.Warn("configpropagation_apply_failed", "type", event.Type, "error", err)
 			}
 		}

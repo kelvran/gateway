@@ -623,14 +623,16 @@ type Pipeline struct {
 	// virtualKeyVersions implements the identical last-writer-wins
 	// convergence weightVersions provides for deployment-weight
 	// propagation, keyed by virtual key ID instead of
-	// (model, deploymentName) — see UpsertVirtualKey/DeleteVirtualKey/
-	// RotateVirtualKey's own shared applyVirtualKeyUpsert/
-	// applyVirtualKeyDelete choke points. Guarded by virtualKeyMutationMu
+	// (model, deploymentName) — the guard and the recording live in the
+	// applyVirtualKeyUpsertLocked/applyVirtualKeyDeleteLocked bodies and
+	// in RotateVirtualKey's own locked closure; how a local mutation
+	// derives its version, and why an equal-token tie is broken by
+	// origin, is in mutation_version.go. Guarded by virtualKeyMutationMu
 	// itself (no separate mutex, unlike weightVersionsMu) — every real
 	// access already happens while that lock is held for the surrounding
 	// CAS-retry-then-persist sequence anyway, so a second lock would only
 	// add ordering complexity with no additional safety.
-	virtualKeyVersions map[string]int64
+	virtualKeyVersions map[string]mutationVersion
 	// identityStore is nil unless Config.IdentityStore was set — see that
 	// field's own doc comment. Read only by Upsert/Delete/RotateVirtualKey,
 	// after their own CompareAndSwap has already committed the in-memory
@@ -683,6 +685,12 @@ type Pipeline struct {
 	upstream          UpstreamCaller
 	embeddingUpstream UpstreamCaller
 	configPublisher   configpropagation.Publisher
+	// instanceID is this process's own MutationEvent.OriginInstanceID
+	// (telemetry.InstanceID at NewPipeline time; tests override it to
+	// simulate several replicas in one process). It is both what every
+	// published event carries and the origin recorded for a LOCAL
+	// mutation's own version -- see mutationVersion.
+	instanceID string
 	// weightVersionsMu/weightVersions implement last-writer-wins
 	// convergence for cross-instance deployment-weight propagation --
 	// added 2026-09-20, a real gap this session's own end-to-end audit
@@ -697,11 +705,13 @@ type Pipeline struct {
 	// state diverge from what its subscribers end up applying, and
 	// letting different subscribers converge to DIFFERENT final values
 	// depending on delivery timing, with zero detection. Keyed by
-	// (model, deploymentName); the value is the UnixNano timestamp of
-	// the most recently APPLIED update for that key -- see
-	// applyWeightIfNewer.
+	// (model, deploymentName); the value is the version of the most
+	// recently APPLIED update for that key -- an ordering token (the
+	// deciding replica's wall-clock UnixNano, or one past the version it
+	// had already applied) plus that replica's instance ID for
+	// tie-breaking -- see applyWeightIfNewerLocked and mutation_version.go.
 	weightVersionsMu sync.Mutex
-	weightVersions   map[weightVersionKey]int64
+	weightVersions   map[weightVersionKey]mutationVersion
 	alertNotifier    alerting.Notifier
 	upstreamStream   UpstreamStreamCaller
 	logger           *slog.Logger
@@ -1064,8 +1074,9 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		upstream:                 wrapUpstreamCallerFor503Deweight(cfg.Upstream, cfg.Router),
 		embeddingUpstream:        wrapUpstreamCallerFor503Deweight(cfg.EmbeddingUpstream, cfg.Router),
 		configPublisher:          cfg.ConfigPublisher,
-		weightVersions:           map[weightVersionKey]int64{},
-		virtualKeyVersions:       map[string]int64{},
+		instanceID:               telemetry.InstanceID,
+		weightVersions:           map[weightVersionKey]mutationVersion{},
+		virtualKeyVersions:       map[string]mutationVersion{},
 		streamingInFlightByL1Key: map[string]int{},
 		alertNotifier:            cfg.AlertNotifier,
 		// Wrapped, not assigned bare -- same rationale/nil-preserving
@@ -1207,29 +1218,47 @@ func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.
 	// Generated ONCE and reused for both the local apply below and the
 	// published event's own ordering token — mirrors
 	// UpdateDeploymentWeight's identical rationale (applyWeightIfNewer's
-	// own doc comment) exactly.
-	publishedAtUnixNano := p.now().UnixNano()
-	if err := p.applyVirtualKeyUpsert(vk, &rateLimit, publishedAtUnixNano); err != nil {
+	// own doc comment) exactly. Derived UNDER the lock and past this
+	// replica's own recorded version — see mutation_version.go for why a
+	// local call must never be able to look "stale" to the guard in the
+	// apply path. The lock is released by defer, never a bare Unlock: a
+	// panic inside the locked body (e.g. bbolt panicking on a corrupt
+	// identity-store file, which net/http's per-request recover would
+	// otherwise swallow) must not leave the mutex held for the rest of the
+	// process lifetime, which would wedge every later admin mutation AND
+	// the configpropagation subscriber goroutine.
+	v, err := func() (mutationVersion, error) {
+		p.virtualKeyMutationMu.Lock()
+		defer p.virtualKeyMutationMu.Unlock()
+		v := p.localVirtualKeyVersionLocked(vk.ID)
+		return v, p.applyVirtualKeyUpsertLocked(vk, &rateLimit, v)
+	}()
+	if err != nil {
 		return err
 	}
-	p.publishVirtualKeyUpsert(vk, &rateLimit, publishedAtUnixNano)
+	p.publishVirtualKeyUpsert(vk, &rateLimit, v.token)
 	return nil
 }
 
-// applyVirtualKeyUpsert is the single choke point BOTH UpsertVirtualKey
-// (a local admin-API call) and ApplyVirtualKeyUpsertFromEvent (a remote,
-// event-driven apply, including one originating from ANOTHER instance's
-// RotateVirtualKey call — see TypeVirtualKeyUpsert's own doc comment for
-// why rotation reuses this same event shape) go through — mirrors
+// applyVirtualKeyUpsert is the REMOTE-apply entry: ApplyVirtualKeyUpsertFromEvent
+// (an event-driven apply, including one originating from ANOTHER
+// instance's RotateVirtualKey call — see TypeVirtualKeyUpsert's own doc
+// comment for why rotation reuses this same event shape) goes through
+// it, and it only takes virtualKeyMutationMu around
+// applyVirtualKeyUpsertLocked, the body BOTH it and the local
+// UpsertVirtualKey share (the local caller takes the lock itself so it
+// can derive its version under it — see mutation_version.go) — mirrors
 // applyWeightIfNewer's identical role for deployment-weight propagation.
 //
-// publishedAtUnixNano is compared against the most recently APPLIED
-// timestamp already recorded for vk.ID (zero, i.e. "never applied," for
-// a genuinely new ID) — an incoming update strictly OLDER than what's
-// already recorded is silently discarded (last-writer-wins by wall-clock
-// timestamp, never a distributed consensus protocol, matching
-// applyWeightIfNewer's own identical, deliberate choice for this
-// codebase's human-driven, low-frequency admin-mutation class).
+// v is compared against the most recently APPLIED version already
+// recorded for vk.ID (the zero value, i.e. "never applied," for a
+// genuinely new ID) — an incoming update that does not supersede it
+// (mutationVersion.supersedes: a strictly older token, or the same token
+// from a lexically smaller origin) is silently discarded (last-writer-
+// wins by ordering token with a deterministic origin tie-break, never a
+// distributed consensus protocol, matching applyWeightIfNewer's own
+// identical, deliberate choice for this codebase's human-driven,
+// low-frequency admin-mutation class).
 //
 // rateLimit is a pointer, not a value: nil means "do not touch the rate
 // limiter's registration for this ID at all" — the correct choice for a
@@ -1239,11 +1268,19 @@ func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.
 // guess), non-nil for a genuine Upsert, which must always register
 // vk.ID's own rate-limit config, exactly like the pre-propagation
 // UpsertVirtualKey body always did.
-func (p *Pipeline) applyVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ratelimit.KeyConfig, publishedAtUnixNano int64) error {
+func (p *Pipeline) applyVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ratelimit.KeyConfig, v mutationVersion) error {
 	p.virtualKeyMutationMu.Lock()
 	defer p.virtualKeyMutationMu.Unlock()
+	return p.applyVirtualKeyUpsertLocked(vk, rateLimit, v)
+}
 
-	if publishedAtUnixNano < p.virtualKeyVersions[vk.ID] {
+// applyVirtualKeyUpsertLocked is the single choke point BOTH UpsertVirtualKey
+// (local) and applyVirtualKeyUpsert (remote) run; the caller holds
+// virtualKeyMutationMu. UpsertVirtualKey calls it directly so it can
+// derive v under that same lock (mutation_version.go); the remote-apply
+// path goes through applyVirtualKeyUpsert above.
+func (p *Pipeline) applyVirtualKeyUpsertLocked(vk identity.VirtualKey, rateLimit *ratelimit.KeyConfig, v mutationVersion) error {
+	if !v.supersedes(p.virtualKeyVersions[vk.ID]) {
 		return nil
 	}
 	if rateLimit != nil {
@@ -1293,7 +1330,7 @@ func (p *Pipeline) applyVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *rate
 				}
 			}
 			p.persistVirtualKeyIfStoreConfigured(vk)
-			p.virtualKeyVersions[vk.ID] = publishedAtUnixNano
+			p.virtualKeyVersions[vk.ID] = v
 			return nil
 		}
 		// Lost the race to a concurrent writer -- retry against fresh state.
@@ -1308,11 +1345,13 @@ func (p *Pipeline) applyVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *rate
 // UpdateDeploymentWeight's own established fail-open posture exactly —
 // a down Redis is a propagation-latency problem for OTHER instances,
 // never a reason to fail an admin call that already succeeded locally
-// on THIS one. Published unconditionally, even if applyVirtualKeyUpsert
-// determined this specific update lost to a concurrently-newer one
-// locally, mirroring publishVirtualKeyUpsert's own "every receiver
-// independently applies the identical last-writer-wins rule" rationale
-// (see UpdateDeploymentWeight's identical comment).
+// on THIS one. Published unconditionally once the locked apply returned
+// nil -- since 2026-10-07 a LOCAL mutation can no longer lose to this
+// replica's own stale guard (mutation_version.go), so the publish always
+// describes a change this replica really made -- and every receiver
+// independently applies the identical last-writer-wins rule against the
+// carried version, which is still why a receiver may discard it (see
+// UpdateDeploymentWeight's identical comment).
 func (p *Pipeline) publishVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ratelimit.KeyConfig, publishedAtUnixNano int64) {
 	if p.configPublisher == nil {
 		return
@@ -1328,7 +1367,7 @@ func (p *Pipeline) publishVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ra
 	}
 	event := configpropagation.MutationEvent{
 		Type:                configpropagation.TypeVirtualKeyUpsert,
-		OriginInstanceID:    telemetry.InstanceID,
+		OriginInstanceID:    p.instanceID,
 		PublishedAtUnixNano: publishedAtUnixNano,
 		Payload:             body,
 	}
@@ -1350,10 +1389,15 @@ func (p *Pipeline) publishVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ra
 // side (virtualKeyToPayload/keyConfigToPayload) — cmd/gateway only ever
 // decodes the JSON envelope, never touches identity/ratelimit shapes
 // directly.
-func (p *Pipeline) ApplyVirtualKeyUpsertFromEvent(payload configpropagation.VirtualKeyUpsertPayload, publishedAtUnixNano int64) error {
+//
+// publishedAtUnixNano and originInstanceID are the event envelope's own
+// PublishedAtUnixNano and OriginInstanceID, carried through unchanged —
+// together they are the version every replica compares (see
+// ApplyDeploymentWeightFromEvent's identical contract).
+func (p *Pipeline) ApplyVirtualKeyUpsertFromEvent(payload configpropagation.VirtualKeyUpsertPayload, publishedAtUnixNano int64, originInstanceID string) error {
 	vk := payloadToVirtualKey(payload.VirtualKey)
 	rateLimit := payloadToKeyConfig(vk.ID, payload.RateLimitConfig)
-	return p.applyVirtualKeyUpsert(vk, rateLimit, publishedAtUnixNano)
+	return p.applyVirtualKeyUpsert(vk, rateLimit, mutationVersion{token: publishedAtUnixNano, origin: originInstanceID})
 }
 
 // virtualKeyToPayload/payloadToVirtualKey convert between
@@ -1573,18 +1617,31 @@ func (p *Pipeline) deletePersistedVirtualKeyIfStoreConfigured(id string) {
 // in the Verifier because a concurrent write silently overwrote the
 // removal.
 func (p *Pipeline) DeleteVirtualKey(name string) error {
-	publishedAtUnixNano := p.now().UnixNano()
-	if err := p.applyVirtualKeyDelete(name, publishedAtUnixNano); err != nil {
+	// Version derived UNDER the lock and past this replica's own recorded
+	// version — see mutation_version.go. This is what makes "exactly one of
+	// two concurrent deletes succeeds" hold: the second to take the lock
+	// always sees a strictly newer version, so it reaches the not-found
+	// check instead of the stale guard.
+	// Deferred unlock for the panic-safety reason UpsertVirtualKey spells
+	// out.
+	v, err := func() (mutationVersion, error) {
+		p.virtualKeyMutationMu.Lock()
+		defer p.virtualKeyMutationMu.Unlock()
+		v := p.localVirtualKeyVersionLocked(name)
+		return v, p.applyVirtualKeyDeleteLocked(name, v)
+	}()
+	if err != nil {
 		return err
 	}
-	p.publishVirtualKeyDelete(name, publishedAtUnixNano)
+	p.publishVirtualKeyDelete(name, v.token)
 	return nil
 }
 
-// applyVirtualKeyDelete is the single choke point BOTH DeleteVirtualKey
-// (a local admin-API call) and ApplyVirtualKeyDeleteFromEvent (a
-// remote, event-driven apply) go through — mirrors
-// applyVirtualKeyUpsert's identical role for the upsert/rotate side.
+// applyVirtualKeyDelete is the REMOTE-apply entry ApplyVirtualKeyDeleteFromEvent
+// goes through: it takes virtualKeyMutationMu around
+// applyVirtualKeyDeleteLocked, the body BOTH it and the local
+// DeleteVirtualKey share — mirrors applyVirtualKeyUpsert's identical role
+// for the upsert/rotate side.
 // See that function's own doc comment for the version-check/last-
 // writer-wins rationale, identical here.
 //
@@ -1595,11 +1652,17 @@ func (p *Pipeline) DeleteVirtualKey(name string) error {
 // occasionally and is treated as non-fatal by cmd/gateway's own
 // subscriber loop (logged, never crashes) — exactly like
 // ApplyDeploymentWeightFromEvent's identical error-handling contract.
-func (p *Pipeline) applyVirtualKeyDelete(name string, publishedAtUnixNano int64) error {
+func (p *Pipeline) applyVirtualKeyDelete(name string, v mutationVersion) error {
 	p.virtualKeyMutationMu.Lock()
 	defer p.virtualKeyMutationMu.Unlock()
+	return p.applyVirtualKeyDeleteLocked(name, v)
+}
 
-	if publishedAtUnixNano < p.virtualKeyVersions[name] {
+// applyVirtualKeyDeleteLocked is the single choke point BOTH DeleteVirtualKey
+// (local) and applyVirtualKeyDelete (remote) run; the caller holds
+// virtualKeyMutationMu (see applyVirtualKeyUpsertLocked).
+func (p *Pipeline) applyVirtualKeyDeleteLocked(name string, v mutationVersion) error {
+	if !v.supersedes(p.virtualKeyVersions[name]) {
 		return nil
 	}
 	for {
@@ -1635,7 +1698,7 @@ func (p *Pipeline) applyVirtualKeyDelete(name string, publishedAtUnixNano int64)
 				telemetry.RecordPersistenceFailed(context.Background(), "budget", name)
 				p.logger.Warn("budget_persist_failed", "key_id", name, "error", err.Error())
 			}
-			p.virtualKeyVersions[name] = publishedAtUnixNano
+			p.virtualKeyVersions[name] = v
 			return nil
 		}
 		// Lost the race to a concurrent writer -- retry against fresh state.
@@ -1655,7 +1718,7 @@ func (p *Pipeline) publishVirtualKeyDelete(name string, publishedAtUnixNano int6
 	}
 	event := configpropagation.MutationEvent{
 		Type:                configpropagation.TypeVirtualKeyDelete,
-		OriginInstanceID:    telemetry.InstanceID,
+		OriginInstanceID:    p.instanceID,
 		PublishedAtUnixNano: publishedAtUnixNano,
 		Payload:             body,
 	}
@@ -1668,8 +1731,11 @@ func (p *Pipeline) publishVirtualKeyDelete(name string, publishedAtUnixNano int6
 // never publishes, unlike DeleteVirtualKey — for cmd/gateway's own
 // subscriber loop to call when a configpropagation.MutationEvent of
 // Type TypeVirtualKeyDelete arrives from ANOTHER instance.
-func (p *Pipeline) ApplyVirtualKeyDeleteFromEvent(name string, publishedAtUnixNano int64) error {
-	return p.applyVirtualKeyDelete(name, publishedAtUnixNano)
+// publishedAtUnixNano and originInstanceID are the envelope's own
+// PublishedAtUnixNano and OriginInstanceID, carried through unchanged
+// (see ApplyDeploymentWeightFromEvent's identical contract).
+func (p *Pipeline) ApplyVirtualKeyDeleteFromEvent(name string, publishedAtUnixNano int64, originInstanceID string) error {
+	return p.applyVirtualKeyDelete(name, mutationVersion{token: publishedAtUnixNano, origin: originInstanceID})
 }
 
 // RotateVirtualKey issues a new secret for the virtual key identified by
@@ -1690,9 +1756,12 @@ func (p *Pipeline) ApplyVirtualKeyDeleteFromEvent(name string, publishedAtUnixNa
 // attempt must recompute PreviousKeyHash/PreviousKeyHashExpiresAt from a
 // FRESH read of the CURRENT k.KeyHash, since a concurrent Upsert to this
 // same ID could otherwise be silently clobbered by a rotation computed
-// against stale, pre-race data. It still participates in the identical
-// virtualKeyVersions last-writer-wins scheme (see applyVirtualKeyUpsert's
-// own doc comment) and, on success, publishes via the EXACT SAME
+// against stale, pre-race data. It applies no stale guard of its own
+// (rotation is local-only, so it is by definition a new writer) but
+// records and publishes under a version derived via
+// localVirtualKeyVersionLocked (mutation_version.go), so remote replicas
+// order it exactly like any other write, and, on success, publishes via
+// the EXACT SAME
 // TypeVirtualKeyUpsert event shape UpsertVirtualKey does — a remote
 // replica has no need to know this originated from a rotation rather
 // than a real upsert; it only needs to converge to the resulting
@@ -1703,16 +1772,18 @@ func (p *Pipeline) ApplyVirtualKeyDeleteFromEvent(name string, publishedAtUnixNa
 // this key must not have its real registration overwritten by a
 // reconstructed guess this method has no way to make correctly.
 func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Duration) error {
-	publishedAtUnixNano := p.now().UnixNano()
-
 	p.virtualKeyMutationMu.Lock()
 	var rotated identity.VirtualKey
+	var v mutationVersion
 	err := func() error {
 		defer p.virtualKeyMutationMu.Unlock()
 
-		if publishedAtUnixNano < p.virtualKeyVersions[name] {
-			return nil
-		}
+		// Rotation is local-only (a remote replica receives it as an
+		// upsert event), so there is no stale guard here at all: the
+		// version is derived under the lock, past this replica's own
+		// recorded version (mutation_version.go), and the key is either
+		// present and rotated or genuinely not found.
+		v = p.localVirtualKeyVersionLocked(name)
 		for {
 			old := p.verifier.Load()
 			current := old.Keys()
@@ -1739,7 +1810,7 @@ func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Du
 
 			if p.verifier.CompareAndSwap(old, newVerifier) {
 				p.persistVirtualKeyIfStoreConfigured(rotated)
-				p.virtualKeyVersions[name] = publishedAtUnixNano
+				p.virtualKeyVersions[name] = v
 				return nil
 			}
 			// Lost the race to a concurrent writer -- retry against fresh state.
@@ -1774,7 +1845,7 @@ func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Du
 		if cfg, ok := p.limiter.Config(rotated.ID); ok {
 			rateLimit = &cfg
 		}
-		p.publishVirtualKeyUpsert(rotated, rateLimit, publishedAtUnixNano)
+		p.publishVirtualKeyUpsert(rotated, rateLimit, v.token)
 	}
 	return nil
 }
@@ -1790,8 +1861,10 @@ var ErrDeploymentNotFound = errors.New("dataplane: deployment not found")
 // A thin pass-through to router.Router.SetWeight — p.router's own
 // identity never changes (a plain *router.Router field, set once at
 // NewPipeline time, never CAS-swapped like p.verifier), so no
-// synchronization is needed here; SetWeight's own modelsMu covers the
-// actual live mutation. This method exists only to resolve name -> its
+// synchronization is needed for p.router itself; SetWeight's own modelsMu
+// covers the actual live mutation, and weightVersionsMu is taken here
+// only to derive and apply this update's version (mutation_version.go).
+// This method exists only to resolve name -> its
 // own configured Model, which Router itself has no notion of (it only
 // knows deployment names grouped by model, per Deployment's own shape).
 //
@@ -1811,10 +1884,21 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 	// local state and what it broadcasts to every other instance always
 	// carry the IDENTICAL version -- see applyWeightIfNewer's own doc
 	// comment for why this matters.
-	publishedAtUnixNano := p.now().UnixNano()
-	if err := p.applyWeightIfNewer(dep.Model, name, weight, publishedAtUnixNano); err != nil {
+	// Version derived UNDER weightVersionsMu and past this replica's own
+	// recorded version — see mutation_version.go; the remote-apply path
+	// (ApplyDeploymentWeightFromEvent) keeps its originating timestamp and
+	// the guard.
+	key := weightVersionKey{model: dep.Model, deploymentName: name}
+	v, err := func() (mutationVersion, error) {
+		p.weightVersionsMu.Lock()
+		defer p.weightVersionsMu.Unlock()
+		v := p.localWeightVersionLocked(key)
+		return v, p.applyWeightIfNewerLocked(dep.Model, name, weight, v)
+	}()
+	if err != nil {
 		return err
 	}
+	publishedAtUnixNano := v.token
 
 	// Push-based cross-instance propagation, per
 	// internal/configpropagation's own doc comment — nil
@@ -1824,13 +1908,15 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 	// fail-open posture -- a down Redis is a propagation-latency
 	// problem for OTHER instances, never a reason to fail a request
 	// that already succeeded locally on THIS one. Published
-	// unconditionally, even if applyWeightIfNewer above determined this
-	// specific update lost to a concurrently-newer one locally --
-	// every receiver (including this instance's own future events)
-	// independently applies the identical last-writer-wins rule, so a
-	// "losing" publish is harmless: it either gets correctly ignored
-	// everywhere a newer value already arrived, or correctly applied
-	// wherever it's still the newest value seen so far. Skipping the
+	// unconditionally once the locked apply returned nil -- since
+	// 2026-10-07 a LOCAL update can no longer lose to this replica's own
+	// stale guard (mutation_version.go), so the publish always describes
+	// a change this replica really made -- and every receiver (including
+	// this instance's own future events) independently applies the
+	// identical last-writer-wins rule against the carried version, so a
+	// publish that is already superseded elsewhere is harmless: it either
+	// gets correctly ignored everywhere a newer value already arrived, or
+	// correctly applied wherever it's still the newest value seen so far. Skipping the
 	// publish here would instead risk NO instance ever learning about
 	// an update that, from some other instance's perspective, is in
 	// fact still the latest one.
@@ -1846,7 +1932,7 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 		}
 		event := configpropagation.MutationEvent{
 			Type:                configpropagation.TypeDeploymentWeight,
-			OriginInstanceID:    telemetry.InstanceID,
+			OriginInstanceID:    p.instanceID,
 			PublishedAtUnixNano: publishedAtUnixNano,
 			Payload:             payload,
 		}
@@ -1873,9 +1959,12 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 // point: this call must lose to a genuinely newer update this instance
 // may have already seen (from any source), and win over a genuinely
 // older one, using the SAME clock reading every other instance is
-// comparing against. See applyWeightIfNewer.
-func (p *Pipeline) ApplyDeploymentWeightFromEvent(model, deploymentName string, weight int, publishedAtUnixNano int64) error {
-	return p.applyWeightIfNewer(model, deploymentName, weight, publishedAtUnixNano)
+// comparing against. originInstanceID is the envelope's own
+// OriginInstanceID, likewise carried through unchanged — it breaks the
+// tie when two replicas publish the same token for the same target
+// (mutationVersion.supersedes). See applyWeightIfNewer.
+func (p *Pipeline) ApplyDeploymentWeightFromEvent(model, deploymentName string, weight int, publishedAtUnixNano int64, originInstanceID string) error {
+	return p.applyWeightIfNewer(model, deploymentName, weight, mutationVersion{token: publishedAtUnixNano, origin: originInstanceID})
 }
 
 // weightVersionKey identifies one (model, deploymentName) pair's own
@@ -1884,37 +1973,48 @@ type weightVersionKey struct {
 	model, deploymentName string
 }
 
-// applyWeightIfNewer is the single choke point BOTH UpdateDeploymentWeight
-// (a local admin-API call) and ApplyDeploymentWeightFromEvent (a
-// remote, event-driven apply) go through, closing a real cross-instance
+// applyWeightIfNewer is the REMOTE-apply entry ApplyDeploymentWeightFromEvent
+// goes through: it takes weightVersionsMu around applyWeightIfNewerLocked,
+// the body BOTH it and the local UpdateDeploymentWeight share (the local
+// caller takes the lock itself to derive its version — see
+// mutation_version.go). That shared body closes a real cross-instance
 // config-propagation gap this session's own end-to-end audit found: with
 // no ordering token at all, two concurrent weight updates to the same
 // deployment could leave different instances converged on different
 // final values, with zero detection.
 //
-// publishedAtUnixNano is compared against the most recently APPLIED
-// timestamp already recorded for this exact (model, deploymentName)
-// pair (zero, i.e. "never applied," if this is the first update ever
-// seen for it). An incoming update strictly OLDER than what's already
-// recorded is a real, detected reordering — silently discarded (never
+// v is compared against the most recently APPLIED version already
+// recorded for this exact (model, deploymentName) pair (the zero value,
+// i.e. "never applied," if this is the first update ever seen for it).
+// An incoming update that does not supersede it (mutationVersion.supersedes:
+// a strictly older token, or the same token from a lexically smaller
+// origin) is a real, detected reordering — silently discarded (never
 // an error: from this instance's own perspective, its locally-applied
 // value is already correct and newer, so there's nothing to fix) rather
 // than blindly overwriting a newer value with a stale one. An incoming
-// update at least as new is applied via router.SetWeight and recorded
-// as the new latest. This is deliberately last-writer-wins by wall-clock
-// timestamp, not a distributed consensus protocol — the correct,
+// update that supersedes it is applied via router.SetWeight and recorded
+// as the new latest. This is deliberately last-writer-wins by ordering
+// token with a deterministic origin tie-break, not a distributed
+// consensus protocol — the correct,
 // proportionate choice for a human-driven, low-frequency admin
 // operation, matching every other cross-instance mechanism in this
 // codebase's own established fail-open/eventually-consistent posture
 // (redislimiter, configpropagation's own already-disclosed fire-and-
 // forget delivery).
-func (p *Pipeline) applyWeightIfNewer(model, deploymentName string, weight int, publishedAtUnixNano int64) error {
-	key := weightVersionKey{model: model, deploymentName: deploymentName}
-
+func (p *Pipeline) applyWeightIfNewer(model, deploymentName string, weight int, v mutationVersion) error {
 	p.weightVersionsMu.Lock()
 	defer p.weightVersionsMu.Unlock()
+	return p.applyWeightIfNewerLocked(model, deploymentName, weight, v)
+}
 
-	if publishedAtUnixNano < p.weightVersions[key] {
+// applyWeightIfNewerLocked is the single choke point BOTH UpdateDeploymentWeight
+// (local) and applyWeightIfNewer (remote) run; the caller holds
+// weightVersionsMu. UpdateDeploymentWeight calls it directly so it can
+// derive v under that same lock (mutation_version.go).
+func (p *Pipeline) applyWeightIfNewerLocked(model, deploymentName string, weight int, v mutationVersion) error {
+	key := weightVersionKey{model: model, deploymentName: deploymentName}
+
+	if !v.supersedes(p.weightVersions[key]) {
 		return nil
 	}
 	// The version is recorded only AFTER SetWeight actually succeeds —
@@ -1929,7 +2029,7 @@ func (p *Pipeline) applyWeightIfNewer(model, deploymentName string, weight int, 
 	if err := p.router.SetWeight(model, deploymentName, weight); err != nil {
 		return err
 	}
-	p.weightVersions[key] = publishedAtUnixNano
+	p.weightVersions[key] = v
 	return nil
 }
 
