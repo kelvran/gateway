@@ -378,3 +378,44 @@ func TestHandleEmbeddingsRejectsDeploymentThatIsNotKindEmbedding(t *testing.T) {
 		t.Errorf("upstreamCalls = %d, want 0", upstreamCalls)
 	}
 }
+
+// TestHandleEmbeddingsSendsUpstreamModelOnTheWire is the regression test
+// for a defect every other test in this file masked by using identical
+// canonical and upstream model names: /v1/embeddings forwarded the
+// CANONICAL model name on the OpenAI wire, so an OpenAI-provider embedding
+// deployment whose `model:` alias differed from its `upstream_model:` got
+// the provider's "model not found" on every request (Bedrock was never
+// affected -- InvokeModel carries the model in the URL). Chat has always
+// translated (callDeployment: upstreamReq.Model = dep.UpstreamModel); the
+// 2026-10-08 extraction of callEmbeddingDeployment made the embedding path
+// do the same. The response still reports the canonical name to the
+// client, exactly like chat.
+func TestHandleEmbeddingsSendsUpstreamModelOnTheWire(t *testing.T) {
+	var gotReq *openai.EmbeddingRequest
+	deployments := []Deployment{{Name: "emb1", Model: "fast-embed", Provider: "openai", UpstreamModel: "text-embedding-3-small", BaseURL: "http://unused", Kind: "embedding"}}
+	p := newEmbeddingTestPipeline(t, func(ctx context.Context, dep Deployment, req any) (any, error) {
+		var ok bool
+		gotReq, ok = req.(*openai.EmbeddingRequest)
+		if !ok {
+			t.Fatalf("providerReq = %T, want *openai.EmbeddingRequest", req)
+		}
+		return &openai.EmbeddingResponseWire{
+			Model: "text-embedding-3-small",
+			Data:  []openai.EmbeddingDataWire{{Index: 0, Embedding: []float64{0.1, 0.2, 0.3}}},
+			Usage: openai.EmbeddingUsageWire{PromptTokens: 2, TotalTokens: 2},
+		}, nil
+	}, deployments, nil)
+
+	resp, err := p.HandleEmbeddings(context.Background(), "Bearer test-key", "", adapter.EmbeddingRequest{
+		Model: "fast-embed", Input: []string{"hello"},
+	})
+	if err != nil {
+		t.Fatalf("HandleEmbeddings: %v", err)
+	}
+	if gotReq == nil || gotReq.Model != "text-embedding-3-small" {
+		t.Fatalf("upstream wire model = %q, want upstream_model %q", gotReq.Model, "text-embedding-3-small")
+	}
+	if resp.Model != "fast-embed" {
+		t.Errorf("resp.Model = %q, want the canonical alias %q reported to the client", resp.Model, "fast-embed")
+	}
+}

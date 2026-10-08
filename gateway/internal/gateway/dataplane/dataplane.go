@@ -3288,25 +3288,8 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 		return
 	}
 
-	av, ok := p.adapters[dep.Provider].(adapter.EmbeddingAdapter)
-	if !ok || p.embeddingUpstream == nil {
-		err = fmt.Errorf("%w: provider %q", ErrEmbeddingsNotConfigured, dep.Provider)
-		return
-	}
-
-	providerReq, toErr := av.ToEmbeddingProvider(req)
-	if toErr != nil {
-		err = fmt.Errorf("dataplane: translating embedding request for deployment %q: %w", dep.Name, toErr)
-		return
-	}
-	providerResp, upstreamErr := p.embeddingUpstream(ctx, dep, providerReq)
-	if upstreamErr != nil {
-		err = fmt.Errorf("dataplane: embedding upstream call failed for deployment %q: %w", dep.Name, upstreamErr)
-		return
-	}
-	resp, err = av.FromEmbeddingProvider(providerResp)
+	resp, err = p.callEmbeddingDeployment(ctx, dep, req)
 	if err != nil {
-		err = fmt.Errorf("dataplane: translating embedding response for deployment %q: %w", dep.Name, err)
 		return
 	}
 	// Report the canonical model of the deployment that GENUINELY served
@@ -3326,6 +3309,54 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	spendUSD, _ := cost.Float64()
 	telemetry.RecordLLMSpend(ctx, spendUSD)
 
+	return resp, nil
+}
+
+// callEmbeddingDeployment makes the one real upstream embedding call for
+// dep: adapter lookup, canonical -> provider-native translation, the
+// (503-deweight-wrapped) embedding upstream, provider-native -> canonical
+// translation. It is the embedding twin of callDeployment and, like it,
+// is shared by real traffic (HandleEmbeddings) and the health probe
+// (probeDeployment) so that a probe exercises exactly the path a client
+// request takes -- an adapter that cannot embed, or a nil embedding
+// upstream, fails here for the probe the same way it fails for a client
+// (ErrEmbeddingsNotConfigured), and so counts as a FAILED probe rather
+// than a skipped one. Error wrapping is byte-for-byte what
+// HandleEmbeddings did inline before this was extracted (2026-10-08), so
+// errors.Is(err, ErrEmbeddingsNotConfigured) and the client-facing
+// messages are unchanged.
+//
+// One deliberate behaviour change rides along with the extraction:
+// req.Model is rewritten to dep.UpstreamModel before translation, exactly
+// as callDeployment does for chat (upstreamReq.Model = dep.UpstreamModel).
+// Before, HandleEmbeddings handed the adapter the CANONICAL model name, so
+// an OpenAI-provider embedding deployment whose `model:` alias differed
+// from its `upstream_model:` sent the alias on the wire and got the
+// provider's "model not found" on every request; every embedding test
+// used identical names and so never noticed (found by the 2026-10-08
+// review of this extraction). Bedrock was unaffected -- InvokeModel
+// carries the model in the URL and its adapter ignores req.Model. req is
+// a value copy, so the caller's request (and the canonical dep.Model the
+// client sees in resp.Model) are untouched.
+func (p *Pipeline) callEmbeddingDeployment(ctx context.Context, dep Deployment, req adapter.EmbeddingRequest) (adapter.EmbeddingResponse, error) {
+	av, ok := p.adapters[dep.Provider].(adapter.EmbeddingAdapter)
+	if !ok || p.embeddingUpstream == nil {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("%w: provider %q", ErrEmbeddingsNotConfigured, dep.Provider)
+	}
+
+	req.Model = dep.UpstreamModel
+	providerReq, toErr := av.ToEmbeddingProvider(req)
+	if toErr != nil {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: translating embedding request for deployment %q: %w", dep.Name, toErr)
+	}
+	providerResp, upstreamErr := p.embeddingUpstream(ctx, dep, providerReq)
+	if upstreamErr != nil {
+		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: embedding upstream call failed for deployment %q: %w", dep.Name, upstreamErr)
+	}
+	resp, err := av.FromEmbeddingProvider(providerResp)
+	if err != nil {
+		return resp, fmt.Errorf("dataplane: translating embedding response for deployment %q: %w", dep.Name, err)
+	}
 	return resp, nil
 }
 
@@ -3875,15 +3906,25 @@ const healthProbeCallTimeout = 5 * time.Second
 // answering, not to generate a real completion a client would pay for.
 const healthProbeMaxTokens = 1
 
-// ProbeDeployments issues one lightweight, synthetic chat-completion
-// request per configured deployment — concurrently, each bounded by
-// healthProbeCallTimeout — and reports the outcome to p.router via
-// ReportProbeResult, per
-// docs/rfcs/2026-09-07-gateway-active-health-probing.md. This is the
-// traffic-INDEPENDENT active-probe half of health-probing: it calls
-// p.callDeployment directly, bypassing auth/cache/guardrail/budget/
-// rate-limit entirely — a probe is not real client traffic, is never
-// cached, never billed, and belongs to no virtual key.
+// healthProbeInput is the one-word text every synthetic probe sends --
+// as the single user message of a chat probe, as the single input string
+// of an embedding probe. Shared so the two probe shapes stay obviously
+// the same request "size" and an operator grepping provider-side logs
+// finds both under one string.
+const healthProbeInput = "ping"
+
+// ProbeDeployments issues one lightweight, synthetic request per
+// configured deployment, shaped for that deployment's Kind (a 1-token
+// chat completion for a chat deployment, a one-string embedding for a
+// `kind: embedding` one — see probeDeployment) — concurrently, each
+// bounded by healthProbeCallTimeout — and reports the outcome to
+// p.router via ReportProbeResult, per
+// docs/rfcs/2026-09-07-gateway-active-health-probing.md (and its
+// 2026-10-08 addendum). This is the traffic-INDEPENDENT active-probe
+// half of health-probing: it calls p.callDeployment /
+// p.callEmbeddingDeployment directly, bypassing auth/cache/guardrail/
+// budget/rate-limit entirely — a probe is not real client traffic, is
+// never cached, never billed, and belongs to no virtual key.
 //
 // Exported (rather than only reachable via RunHealthProbeLoop) so tests
 // can drive deterministic probe passes without depending on real
@@ -3928,13 +3969,8 @@ func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
 	defer cancel()
 	probeCtx = withProbeContext(probeCtx)
 
-	maxTokens := healthProbeMaxTokens
-	req := adapter.ChatRequest{
-		Messages:  []adapter.Message{{Role: "user", Content: "ping"}},
-		MaxTokens: &maxTokens,
-	}
 	probeStart := p.now()
-	_, err := p.callDeployment(probeCtx, dep, req)
+	err := p.probeDeployment(probeCtx, dep)
 	if err == nil {
 		// Latency is only a meaningful load signal on a SUCCESSFUL probe
 		// -- a failed/timed-out call's own elapsed time is dominated by
@@ -3955,6 +3991,51 @@ func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
 		return
 	}
 	p.logger.Warn("health_probe_deployment_unhealthy", "deployment", dep.Name, "error", err)
+}
+
+// probeDeployment issues the one synthetic request that proves dep is
+// reachable and answering for ITS kind, and returns that call's error:
+// a chat deployment gets a 1-token chat completion through callDeployment,
+// an embedding deployment gets a one-string embedding through
+// callEmbeddingDeployment -- the same adapter and the same wrapped
+// upstream HandleEmbeddings uses for real traffic. Before 2026-10-08 every
+// deployment got the chat request regardless of Kind, so an embedding
+// deployment (whose model rejects a chat-shaped body) failed every probe,
+// was excluded from routing after health_probe.unhealthy_threshold
+// consecutive failures, and /readyz reported its canonical model not
+// ready while real /v1/embeddings traffic to it worked (live defect F3,
+// docs/upgrade-research/kelvran-deep-research-round4-discoverability-
+// 2026-10-08.md). "Skip embedding deployments" was rejected as the fix:
+// router.IsHealthy defaults to healthy for a never-reported deployment,
+// so skipping would have left a genuinely broken embedding deployment
+// reading healthy forever.
+func (p *Pipeline) probeDeployment(ctx context.Context, dep Deployment) error {
+	switch dep.Kind {
+	case "embedding":
+		_, err := p.callEmbeddingDeployment(ctx, dep, adapter.EmbeddingRequest{
+			Model: dep.Model,
+			Input: []string{healthProbeInput},
+		})
+		return err
+	case "", "chat":
+		// controlplane.Load normalizes an omitted kind to "chat"; the
+		// bare "" is what a Deployment built directly (tests) carries.
+		maxTokens := healthProbeMaxTokens
+		_, err := p.callDeployment(ctx, dep, adapter.ChatRequest{
+			Messages:  []adapter.Message{{Role: "user", Content: healthProbeInput}},
+			MaxTokens: &maxTokens,
+		})
+		return err
+	default:
+		// controlplane.Load rejects every other kind today, so this is
+		// unreachable from a loaded config -- it exists so a FUTURE kind
+		// (rerank, transcription, ...) must add its own probe shape here
+		// instead of silently inheriting the chat one, which is exactly
+		// how embedding deployments came to fail every probe (F3). Until
+		// it does, such a deployment fails its probe loudly rather than
+		// being probed with a request its model will reject anyway.
+		return fmt.Errorf("dataplane: no health probe defined for deployment %q of kind %q", dep.Name, dep.Kind)
+	}
 }
 
 // ReadinessSummary reports, per canonical model, whether at least one of
