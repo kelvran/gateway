@@ -4,7 +4,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+
 	"testing"
+
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
 
 // flushCountingRecorder wraps httptest.ResponseRecorder to additionally
@@ -97,5 +100,25 @@ func TestWriteChunkMultipleCallsEachFlushOnce(t *testing.T) {
 	}
 	if rec.flushes != 3 {
 		t.Errorf("flushes = %d, want 3 (one per WriteChunk call)", rec.flushes)
+	}
+}
+
+// TestWriteChunkEncodesNilChoicesAsEmptyArray: the usage-only final chunk is
+// built without choices; OpenAI's wire format carries "choices": [] there,
+// and clients that validate the shape (LlamaIndex's stream_chat does
+// len(choices); the Vercel AI SDK's schema requires an array) fail on null.
+func TestWriteChunkEncodesNilChoicesAsEmptyArray(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, err := NewWriter(rec)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	usage := 7
+	if err := w.WriteChunk(ChatCompletionChunk{ID: "chatcmpl-x", Object: "chat.completion.chunk", Model: "m", Usage: &adapter.Usage{TotalTokens: usage}}); err != nil {
+		t.Fatalf("WriteChunk: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"choices":[]`) || strings.Contains(body, `"choices":null`) {
+		t.Fatalf("usage-only chunk must carry \"choices\":[] on the wire, got %s", body)
 	}
 }

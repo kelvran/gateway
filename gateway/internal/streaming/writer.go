@@ -36,6 +36,14 @@ func NewWriter(w http.ResponseWriter) (*Writer, error) {
 // WriteChunk writes one canonical chunk as a single SSE "data:" frame and
 // flushes it to the client immediately.
 func (sw *Writer) WriteChunk(chunk ChatCompletionChunk) error {
+	// A chunk built without choices (the usage-only final frame) must reach
+	// the wire as "choices": [] — OpenAI's shape. Encoding the nil slice as
+	// null broke clients that validate the frame (LlamaIndex's stream_chat
+	// takes len(choices); the Vercel AI SDK's schema requires an array). The
+	// caller's value is left untouched; the copy carries the empty slice.
+	if chunk.Choices == nil {
+		chunk.Choices = []ChunkChoice{}
+	}
 	payload, err := json.Marshal(chunk)
 	if err != nil {
 		return fmt.Errorf("streaming: marshaling chunk: %w", err)

@@ -56,7 +56,7 @@ data: {"id":"chatcmpl-3f9e...","object":"chat.completion.chunk","created":175990
 
 data: {"id":"chatcmpl-3f9e...","object":"chat.completion.chunk","created":1759900000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
-data: {"id":"chatcmpl-3f9e...","object":"chat.completion.chunk","created":1759900000,"model":"gpt-4o","choices":null,"usage":{"prompt_tokens":6,"completion_tokens":2,"total_tokens":8}}
+data: {"id":"chatcmpl-3f9e...","object":"chat.completion.chunk","created":1759900000,"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":6,"completion_tokens":2,"total_tokens":8}}
 
 data: [DONE]
 ```
@@ -67,7 +67,7 @@ Whether a live stream carries `usage` depends on the provider behind the deploym
 
 | Provider | `usage` on a live stream |
 |---|---|
-| `openai`, `openaicompat` | On the provider's final frame, with `"choices":null` (the gateway always asks these upstreams for usage) |
+| `openai`, `openaicompat` | On the provider's final frame, with `"choices":[]` (the gateway always asks these upstreams for usage). On main since 2026-10-09; `gateway/v0.17.0` sends `"choices":null` there, which LlamaIndex's `stream_chat` and the Vercel AI SDK reject |
 | `gemini` | On every content frame whose Gemini `usageMetadata` carries a non-zero count; the gateway does not restrict it to the last frame, so use the last `usage` seen |
 | `anthropic`, `bedrock` | Never in any frame; usage is used for billing only |
 
