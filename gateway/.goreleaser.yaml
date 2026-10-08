@@ -1,0 +1,93 @@
+# GoReleaser configuration for the gateway deployable.
+#
+# Run by .github/workflows/release.yml in SNAPSHOT mode on every gateway/vX.Y.Z
+# tag (`goreleaser release --snapshot --clean --skip=publish,validate` with
+# GORELEASER_CURRENT_TAG set to the pushed tag): tags are gateway/vX.Y.Z because
+# Go's nested-module rule makes them load-bearing for `go install`, GoReleaser
+# OSS cannot strip a tag prefix from .Version in real-tag mode (Pro-only), and
+# snapshot.version_template below is the one place that can. Snapshot mode
+# never publishes, so the workflow signs checksums.txt with cosign, attests
+# provenance and creates the GitHub Release itself (DECISIONS.md 2026-10-08).
+# Local dry run from gateway/: goreleaser release --snapshot --clean --skip=publish
+version: 2
+project_name: kelvran-gateway
+
+# GoReleaser only packages files that live under the project directory
+# (gateway/), so the repo-root LICENSE and NOTICE and the deploy/ files are
+# staged into gateway/.release-assets/ (gitignored) first.
+before:
+  hooks:
+    - rm -rf .release-assets
+    - mkdir -p .release-assets
+    - cp ../LICENSE ../NOTICE ../deploy/systemd/kelvran-gateway.service ../deploy/nfpm/postinstall.sh .release-assets/
+
+builds:
+  - id: gateway
+    main: ./cmd/gateway
+    binary: kelvran-gateway
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ trimprefix (trimprefix .Tag "gateway/") "v" }}_{{ .Os }}_{{ .Arch }}'
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - config.example.yaml
+      - src: .release-assets/LICENSE
+        dst: LICENSE
+      - src: .release-assets/NOTICE
+        dst: NOTICE
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  # In snapshot mode .Version comes from this template, which is the only
+  # place OSS GoReleaser lets us strip the gateway/ tag prefix from .Version.
+  version_template: '{{ trimprefix (trimprefix .Tag "gateway/") "v" }}'
+
+changelog:
+  disable: true
+
+nfpms:
+  - id: packages
+    package_name: kelvran-gateway
+    vendor: Kelvran
+    homepage: https://github.com/kelvran/gateway
+    maintainer: Kelvran maintainers <noreply@github.com>
+    description: Self-hosted Go LLM gateway with a risk-gated response cache.
+    license: Apache-2.0
+    formats: [deb, rpm, apk]
+    bindir: /usr/bin
+    section: net
+    priority: optional
+    # The package installs the unit and the example config and reloads
+    # systemd -- it never enables or starts the service, because the
+    # gateway has no usable default config and the example's virtual keys
+    # are public. Operators copy config.example.yaml to config.yaml, edit it,
+    # then `systemctl enable --now kelvran-gateway` (deploy/systemd/*.service).
+    contents:
+      - src: .release-assets/kelvran-gateway.service
+        dst: /usr/lib/systemd/system/kelvran-gateway.service
+      - src: config.example.yaml
+        dst: /etc/kelvran-gateway/config.example.yaml
+        type: config|noreplace
+      - src: .release-assets/LICENSE
+        dst: /usr/share/doc/kelvran-gateway/LICENSE
+      - src: .release-assets/NOTICE
+        dst: /usr/share/doc/kelvran-gateway/NOTICE
+    scripts:
+      postinstall: .release-assets/postinstall.sh

@@ -1,0 +1,310 @@
+name: Release (gateway)
+
+# Builds, signs, attests and publishes the gateway release for one
+# gateway/vX.Y.Z tag. Shape per DECISIONS.md (2026-10-08, "release pipeline
+# shape settled by a timeboxed spike"): GoReleaser runs in SNAPSHOT mode --
+# the only mode in which GoReleaser OSS can strip the gateway/ tag prefix
+# from .Version, see gateway/.goreleaser.yaml -- so it never publishes, and
+# this workflow signs checksums.txt with cosign (keyless, GitHub OIDC),
+# attests SLSA build provenance over every asset, installs the deb on the
+# runner as an acceptance test, and creates the GitHub Release itself with
+# `gh release create --verify-tag`. The Release body is the dated changelog
+# file; `checksums.txt.sigstore.json` beside `checksums.txt` is what the
+# OpenSSF Scorecard Signed-Releases check reads.
+#
+# workflow_dispatch has two modes:
+#   * no `tag`, publish=false (the default): a DRY RUN of the dispatching
+#     ref (normally main) under the synthetic version 0.0.0-dryrun.<sha>.
+#     Preflight runs but does not block (that version has no changelog),
+#     every build/acceptance/sign/attest stage runs for real, and the assets
+#     end up as a workflow artifact. This is how the pipeline is exercised
+#     without cutting a release.
+#   * `tag` set, publish=true: build that existing tag and attach the assets
+#     to its asset-less Release, or create the Release -- how an older tag
+#     gets signed assets. Existing assets are never replaced (the signed
+#     checksums.txt names the original bytes); the run fails instead.
+#   A dry run still signs and attests for real, so it leaves a public Rekor
+#   entry and an attestation for a build nobody publishes -- harmless, by
+#   design, and the only way to prove the signing path works. Tags that predate this pipeline (<= gateway/v0.17.0)
+#     have no .goreleaser.yaml or preflight script in their tree and cannot
+#     be rebuilt this way.
+on:
+  push:
+    tags: ["gateway/v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing gateway/vX.Y.Z tag to build (leave empty for a dry run of this ref)"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Create or update the GitHub Release (needs a tag; false = build, sign and attest only)"
+        required: false
+        type: boolean
+        default: false
+
+# Zero by default; every job grants itself exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: resolve the tag, run the preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+    steps:
+      # Everything a later step uses comes from these outputs; the tag name
+      # reaches `ref:` and the Release title, so refuse anything that is not
+      # a plain gateway/vX.Y.Z[-pre] before checking anything out.
+      - name: Resolve the ref, tag and version
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          DRY_RUN=false
+          if [ "$EVENT" = "push" ]; then
+            TAG="$REF_NAME"; REF="refs/tags/$TAG"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"; REF="refs/tags/$TAG"
+            [ "$PUBLISH" = "true" ] || DRY_RUN=true
+          else
+            if [ "$PUBLISH" = "true" ]; then
+              echo "::error::publish=true needs a tag"; exit 1
+            fi
+            DRY_RUN=true; REF="$SHA"; TAG="gateway/v0.0.0-dryrun.${SHA:0:12}"
+          fi
+          if ! [[ "$TAG" =~ ^gateway/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag '$TAG' is not gateway/vX.Y.Z"; exit 1
+          fi
+          VERSION="${TAG#gateway/v}"
+          PRERELEASE=false
+          case "$VERSION" in *-*) PRERELEASE=true ;; esac
+          {
+            echo "ref=${REF}"
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "prerelease=${PRERELEASE}"
+            echo "dry_run=${DRY_RUN}"
+          } >> "$GITHUB_OUTPUT"
+          echo "ref=${REF} tag=${TAG} version=${VERSION} prerelease=${PRERELEASE} dry_run=${DRY_RUN}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.ref }}
+      - name: Run the release preflight (advisory on a dry run)
+        continue-on-error: ${{ steps.resolve.outputs.dry_run == 'true' }}
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: scripts/release-preflight.sh gateway "$VERSION"
+
+  build:
+    name: build (GoReleaser snapshot, 5 platforms, deb/rpm/apk)
+    runs-on: ubuntu-latest
+    needs: preflight
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          # GoReleaser derives the previous tag and the commit list from
+          # history; a shallow checkout would make every build look like
+          # the first release.
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: gateway/go.mod
+          cache-dependency-path: gateway/go.sum
+      - name: The checked-out commit is the tag's commit
+        if: needs.preflight.outputs.dry_run != 'true'
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          WANT=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          HEAD=$(git rev-parse HEAD)
+          [ "$WANT" = "$HEAD" ] || { echo "::error::HEAD $HEAD is not the commit tag $TAG points at ($WANT)"; exit 1; }
+      - name: Resolve the previous gateway tag
+        id: prev
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          PREV=$(git tag --list 'gateway/v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
+          echo "previous=${PREV}" >> "$GITHUB_OUTPUT"
+      - name: GoReleaser (snapshot mode; publishing is this workflow's job)
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          workdir: gateway
+          args: release --snapshot --clean --skip=publish,validate
+        env:
+          GORELEASER_CURRENT_TAG: ${{ needs.preflight.outputs.tag }}
+          GORELEASER_PREVIOUS_TAG: ${{ steps.prev.outputs.previous }}
+      - name: Keep only the release assets and metadata
+        working-directory: gateway/dist
+        run: |
+          # Per-platform build directories are inputs, not assets.
+          find . -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+          rm -f config.yaml
+          ls -la
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gateway-dist
+          path: gateway/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  acceptance:
+    name: acceptance (install the deb, verify the unit, run the binary)
+    runs-on: ubuntu-latest
+    needs: [preflight, build]
+    permissions: {}
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gateway-dist
+          path: dist
+      - name: Install the amd64 deb
+        run: sudo dpkg -i "dist/kelvran-gateway_${VERSION}_linux_amd64.deb"
+      - name: The installed binary reports the tagged version
+        run: |
+          OUT=$(kelvran-gateway -version)
+          echo "$OUT"
+          case "$OUT" in "kelvran-gateway ${VERSION} ("*) ;; *) echo "::error::unexpected -version output"; exit 1 ;; esac
+      - name: The shipped example config validates
+        run: kelvran-gateway -config /etc/kelvran-gateway/config.example.yaml -validate
+      - name: The unit file passes systemd-analyze verify
+        run: |
+          test -f /usr/lib/systemd/system/kelvran-gateway.service
+          systemd-analyze verify /usr/lib/systemd/system/kelvran-gateway.service
+          grep -q '^TimeoutStopSec=60s' /usr/lib/systemd/system/kelvran-gateway.service
+          systemctl cat kelvran-gateway >/dev/null
+      - name: The package did not enable or start the service
+        run: |
+          if systemctl is-enabled kelvran-gateway 2>/dev/null | grep -qx enabled; then
+            echo "::error::package enabled the service; it must not"; exit 1
+          fi
+          if systemctl is-active --quiet kelvran-gateway; then
+            echo "::error::package started the service; it must not"; exit 1
+          fi
+      # The runner's PID 1 is systemd, so this exercises the real unit: the
+      # DynamicUser, the seccomp filter, ProtectSystem=strict and the rest
+      # either let the gateway listen or they do not. The example config
+      # boots with warnings only (provider keys unset), so it is a usable
+      # smoke config here.
+      - name: The unit starts under its hardening, serves /healthz and stops cleanly
+        run: |
+          sudo cp /etc/kelvran-gateway/config.example.yaml /etc/kelvran-gateway/config.yaml
+          sudo systemctl start kelvran-gateway
+          for _ in $(seq 1 30); do curl -fs http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break; sleep 0.5; done
+          curl -fs http://127.0.0.1:8080/healthz
+          systemctl is-active --quiet kelvran-gateway
+          sudo systemctl stop kelvran-gateway
+          sudo journalctl -u kelvran-gateway --no-pager | tail -30
+          RESULT=$(systemctl show kelvran-gateway -p Result --value)
+          [ "$RESULT" = "success" ] || { echo "::error::unit Result=$RESULT after stop"; exit 1; }
+          sudo rm -f /etc/kelvran-gateway/config.yaml
+      - name: The tarball carries the binary, LICENSE, NOTICE and the example config
+        run: |
+          mkdir -p /tmp/archive && tar -xzf "dist/kelvran-gateway_${VERSION}_linux_amd64.tar.gz" -C /tmp/archive
+          /tmp/archive/kelvran-gateway -version
+          test -f /tmp/archive/LICENSE && test -f /tmp/archive/NOTICE && test -f /tmp/archive/config.example.yaml
+      - name: Checksums cover every asset
+        working-directory: dist
+        run: sha256sum -c checksums.txt
+
+  publish:
+    name: sign, attest and release
+    runs-on: ubuntu-latest
+    needs: [preflight, build, acceptance]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.preflight.outputs.tag }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gateway-dist
+          path: dist
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - name: SBOM (CycloneDX) per archive and package
+        working-directory: dist
+        run: |
+          for f in kelvran-gateway_*.tar.gz kelvran-gateway_*.zip kelvran-gateway_*.deb kelvran-gateway_*.rpm kelvran-gateway_*.apk; do
+            [ -f "$f" ] || continue
+            syft scan "file:$f" -o "cyclonedx-json=${f}.sbom.cdx.json" -q
+          done
+          ls -1 -- *.sbom.cdx.json
+      - name: Rewrite checksums.txt to cover the SBOMs too
+        working-directory: dist
+        run: |
+          sha256sum -- kelvran-gateway_* > checksums.txt
+          sha256sum -c checksums.txt
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign checksums.txt (keyless, GitHub OIDC)
+        working-directory: dist
+        run: |
+          cosign sign-blob --yes --bundle checksums.txt.sigstore.json checksums.txt
+          cosign verify-blob --bundle checksums.txt.sigstore.json \
+            --certificate-identity-regexp '^https://github.com/kelvran/gateway/\.github/workflows/release\.yml@' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            checksums.txt
+      - name: Attest build provenance (SLSA Build Level 2) over every asset
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/kelvran-gateway_*
+            dist/checksums.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gateway-release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Create or update the GitHub Release
+        if: needs.preflight.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="gateway/changelog/${VERSION}.md"
+          ASSETS=(dist/kelvran-gateway_* dist/checksums.txt dist/checksums.txt.sigstore.json)
+          if EXISTING=$(gh release view "$TAG" --json assets --jq '.assets | length' 2>/dev/null); then
+            # Assets are never replaced: the signed checksums.txt of a published
+            # Release names the original bytes (RELEASE.md, Rollback Procedure).
+            if [ "$EXISTING" != "0" ]; then
+              echo "::error::release $TAG already has $EXISTING asset(s); they are never replaced -- delete the Release's assets by hand first if a rebuild is really intended"; exit 1
+            fi
+            echo "release $TAG exists without assets; attaching"
+            gh release upload "$TAG" "${ASSETS[@]}"
+            gh release edit "$TAG" --notes-file "$NOTES" --title "gateway v${VERSION}"
+          else
+            FLAGS=()
+            [ "$PRERELEASE" = "true" ] && FLAGS+=(--prerelease)
+            gh release create "$TAG" --verify-tag --title "gateway v${VERSION}" --notes-file "$NOTES" "${FLAGS[@]}" "${ASSETS[@]}"
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name'

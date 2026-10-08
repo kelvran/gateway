@@ -58,3 +58,6 @@ override.tf.json
 .terraformrc
 terraform.rc
 tfplan
+
+# GoReleaser staging dir for repo-root files it must package (gateway/.goreleaser.yaml before.hooks)
+gateway/.release-assets/

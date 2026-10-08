@@ -231,7 +231,7 @@ Full detail: [ARCHITECTURE.md](ARCHITECTURE.md), [gateway/ARCHITECTURE.md](gatew
 
 ## Security and supply chain
 
-Every published image digest is cosign keyless-signed through GitHub Actions OIDC and carries a CycloneDX SBOM and a SLSA Build Level 2 provenance attestation, attached to the digest rather than a tag. The image is `FROM scratch` and non-root, and GitHub Releases carry no binaries, so the signed image is the only published build artifact. Verify it yourself, exactly as [RELEASE.md](RELEASE.md) documents:
+Every published image digest is cosign keyless-signed through GitHub Actions OIDC and carries a CycloneDX SBOM and a SLSA Build Level 2 provenance attestation, attached to the digest rather than a tag. The image is `FROM scratch` and non-root. Since 2026-10-08 on `main`, every `gateway/v*` GitHub Release also carries archives and deb/rpm/apk packages with a cosign-signed `checksums.txt`, per-archive SBOMs and a provenance attestation, built by `.github/workflows/release.yml` ([RELEASE.md](RELEASE.md) shows how to verify them); releases up to `gateway/v0.17.0` predate that and have no assets. Verify it yourself, exactly as [RELEASE.md](RELEASE.md) documents:
 
 ```bash
 docker pull ghcr.io/kelvran/gateway:latest

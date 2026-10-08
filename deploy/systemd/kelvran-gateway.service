@@ -1,0 +1,71 @@
+# systemd unit for the kelvran-gateway package (deb/rpm/apk built by
+# gateway/.goreleaser.yaml). Installed to /usr/lib/systemd/system/; the package
+# only runs `systemctl daemon-reload` -- it never enables or starts the
+# service, because the gateway refuses to start without a real config:
+#
+#   sudo cp /etc/kelvran-gateway/config.example.yaml /etc/kelvran-gateway/config.yaml
+#   sudoedit /etc/kelvran-gateway/config.yaml          # deployments, virtual keys, persist paths
+#   sudoedit /etc/kelvran-gateway/env                  # provider credentials, one KEY=value per line
+#   sudo systemctl enable --now kelvran-gateway
+#
+# Writable state (bbolt persist_path files, backups) belongs under
+# /var/lib/kelvran-gateway -- StateDirectory creates it and ProtectSystem=strict
+# makes everything else read-only. The default listen port (8080) needs no
+# capability; CapabilityBoundingSet= is empty on purpose, so a port below 1024
+# must be fronted by a reverse proxy or granted CAP_NET_BIND_SERVICE here.
+[Unit]
+Description=Kelvran LLM gateway
+Documentation=https://github.com/kelvran/gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=kelvran-gateway
+ConfigurationDirectory=kelvran-gateway
+EnvironmentFile=-/etc/kelvran-gateway/env
+ExecStartPre=/usr/bin/kelvran-gateway -config /etc/kelvran-gateway/config.yaml -validate
+ExecStart=/usr/bin/kelvran-gateway -config /etc/kelvran-gateway/config.yaml
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+# cmd/gateway/main.go waits up to 30 s (gracefulShutdownTimeout) for
+# in-flight requests after SIGTERM, then up to 15 s more
+# (postShutdownDrainGrace) for the last ones to finish naturally: 45 s
+# worst case. systemd must wait longer than that before it escalates to
+# SIGKILL, or the slow-drain path the grace exists for is cut short.
+TimeoutStopSec=60s
+
+# Hardening. Everything below is additive to DynamicUser; the gateway is a
+# static binary that needs the network, its config directory, its state
+# directory and nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# @system-service is the allow-list; @privileged is then removed from it.
+# @resources deliberately stays allowed: the Go runtime raises its own
+# RLIMIT_NOFILE soft limit with setrlimit/prlimit64 at startup, and a filter
+# that blocks @resources kills the process with SIGSYS before it listens.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

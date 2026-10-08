@@ -343,7 +343,7 @@ telemetry:
 # one — if both are set, redis_addr wins and a warning is logged at
 # startup.
 # budget:
-#   persist_path: "/var/lib/kelvran/budget.db"
+#   persist_path: "/var/lib/kelvran-gateway/budget.db"
 #   # redis_addr: "localhost:6379"
 #   # redis_password_env: "REDIS_BUDGET_PASSWORD"
 #   # redis_username: "default"
@@ -522,9 +522,9 @@ telemetry:
 #   operator_token_env: "KELVRAN_ADMIN_OPERATOR_TOKEN"
 #   enable_pprof: false
 #   on_corrupt_store: "fail"
-#   backup_dir: "/var/lib/kelvran/backups"
+#   backup_dir: "/var/lib/kelvran-gateway/backups"
 #   enable_audit_log: true
-#   persist_path: "/var/lib/kelvran/identity.db"
+#   persist_path: "/var/lib/kelvran-gateway/identity.db"
 #   # redis_addr: "localhost:6379"
 #   # redis_password_env: "REDIS_ADMIN_PASSWORD"
 #   # redis_username: "default"

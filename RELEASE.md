@@ -5,15 +5,16 @@
 **`gateway`:**
 1. Move `gateway/changelog/unreleased.md`'s content into a new `gateway/changelog/<version>.md` (e.g. `0.1.0.md`), dated, self-contained.
 2. Reset `gateway/changelog/unreleased.md` to empty category headers.
+   Then run `scripts/release-preflight.sh gateway <version>` from the repository root (added 2026-10-08): it checks that the dated file exists, that `unreleased.md` holds no entries, and that every `**BREAKING**` entry has an `UPGRADE.md` row. `.github/workflows/release.yml` runs the same script at the tag and refuses to build if it fails, so running it here saves a broken tag.
 3. Tag the release `gateway/v<version>` (SemVer — load-bearing for the Go module path: `gateway/go.mod`'s module directive is `github.com/kelvran/gateway/gateway`, not the bare `github.com/kelvran/gateway`, because `go.mod` lives one level below the repo root — the repo itself is named `kelvran/gateway` on GitHub, and Go's own subdirectory-module rule, go.dev/ref/mod's "Mapping versions to commits", requires the declared module path to carry the physical subdirectory as a literal suffix, with the tag prefixed to match. Verified empirically before this convention was adopted: tagging with the bare module path resolved to a synthesized empty stub `go.mod` via the proxy, not the real dependency graph — see `DECISIONS.md`.).
-4. Build and publish the static binary; update the Go module proxy cache picks it up automatically once tagged.
+4. **Do not build or upload release assets by hand, and do not create the GitHub Release by hand.** Pushing the `gateway/v<version>` tag triggers `.github/workflows/release.yml` (added 2026-10-08): it re-runs the preflight at the tag, builds the five binaries (linux/darwin × amd64/arm64, windows/amd64), the archives (with `LICENSE`, `NOTICE`, `config.example.yaml`), and the deb/rpm/apk packages (with the systemd unit, `deploy/systemd/kelvran-gateway.service`) via GoReleaser in snapshot mode (`gateway/.goreleaser.yaml`; see `DECISIONS.md` 2026-10-08 for why snapshot mode), writes a CycloneDX SBOM per archive and package with syft, installs the deb on the runner and verifies the unit and the `-version`/`-validate` output as an acceptance test, signs `checksums.txt` with cosign (keyless, GitHub OIDC → `checksums.txt.sigstore.json`), attests SLSA build provenance over every asset, and creates the Release with `gh release create --verify-tag`, using `gateway/changelog/<version>.md` as the body. A version with a `-` suffix is marked a pre-release. The Go module proxy picks the tag up on its own. To run the pipeline for an existing tag whose Release has no assets yet, dispatch the workflow with `tag` set and `publish: true` (a Release that already has assets makes the run fail: assets are never replaced); dispatching it with no `tag` and `publish: false` (the defaults) is a dry run of the dispatching ref under the synthetic version `0.0.0-dryrun.<sha>` — every stage runs except the Release creation, and the signed assets stay a workflow artifact. Tags that predate the pipeline (`gateway/v0.17.0` and earlier) have none of its files in their tree and cannot be rebuilt this way.
 5. Pushing that same `gateway/v<version>` tag also triggers `.github/workflows/ci.yml`'s `publish-image` job automatically — real, shipped, no manual step needed: it re-runs the full build/test/lint suite against that exact tagged commit, then pushes `ghcr.io/kelvran/gateway:<version>` (the `gateway/` prefix stripped) alongside the always-present `:latest`/`:sha-<commit>` tags, signed and attested exactly like every other push.
 
 **`evals`:**
 1. Bump `version` in `evals/pyproject.toml` to `<version>` and refresh `evals/uv.lock` (`cd evals && uv lock`); `python3 -I scripts/check_versions.py` must pass — CI runs it on every push, and it exists because the version sat at `0.8.0` through three releases (`v0.9.0`–`v0.10.1`) when this step was missing.
 2. Move `evals/changelog/unreleased.md`'s content into a new `evals/changelog/<version>.md`, dated, self-contained.
 3. Reset `evals/changelog/unreleased.md` to empty category headers.
-4. Tag the release `evals/v<version>` (SemVer by default; revisit CalVer per the note in `evals/changelog/unreleased.md` once shipping continuously).
+4. Tag the release `evals/v<version>` (SemVer by default; revisit CalVer per the note in `evals/changelog/unreleased.md` once shipping continuously). Run `scripts/release-preflight.sh evals <version>` first: it also checks the `pyproject.toml` version. Pushing the tag triggers `.github/workflows/release-evals.yml` (added 2026-10-08), which builds the sdist and wheel with `uv build`, signs `checksums.txt` with cosign, attests provenance and creates the GitHub Release with those assets — so every Release of either deployable carries signed assets (the OpenSSF Scorecard Signed-Releases check reads the last five Releases of any kind). Do not create the Release by hand.
 5. Publish to PyPI as `kelvran-evals` (PyPI has no scoping, hence the prefixed name — see `ai-infra-research/naming-and-docs-plan.md`'s naming section, "Immediate next actions").
 
 ## Contract-Version Bump-and-Validate Procedure
@@ -28,6 +29,8 @@ Any release that includes a change to `api/` (the shared OTel/proto contract) mu
 | Target | Deployable | Package name |
 |---|---|---|
 | GitHub | both | `github.com/kelvran/gateway` (and/or a monorepo-wide org page) |
+| GitHub Releases (gateway) — **real since 2026-10-08** via `release.yml` | `gateway` | `kelvran-gateway_<version>_<os>_<arch>.tar.gz` / `.zip`, `.deb`/`.rpm`/`.apk` for linux amd64+arm64, one `.sbom.cdx.json` per archive and package, `checksums.txt`, `checksums.txt.sigstore.json` |
+| GitHub Releases (evals) — **real since 2026-10-08** via `release-evals.yml` | `evals` | `kelvran_evals-<version>.tar.gz`, `kelvran_evals-<version>-py3-none-any.whl`, `checksums.txt`, `checksums.txt.sigstore.json` |
 | GHCR (container image) | `gateway` | `ghcr.io/kelvran/gateway` |
 | npm | `gateway` (client SDK, if/when one ships) | `@kelvran/gateway` |
 | PyPI | `evals` | `kelvran-evals` |
@@ -73,12 +76,28 @@ cosign verify-attestation "$DIGEST" \
 
 Each command exits `0` only if the signature/attestation is real, was produced by the `kelvran/gateway` repo's own GitHub Actions workflow (not any other identity), and has a corresponding entry in the public Sigstore Rekor transparency log. `cosign tree "$DIGEST"` shows the full artifact graph (signature + both attestations) if you want to see what exists before verifying each one.
 
+### Verifying a release binary (added 2026-10-08)
+
+Every asset on a `gateway/v*` or `evals/v*` Release created by the workflows above is covered by the signed `checksums.txt` and by a SLSA build-provenance attestation:
+
+```bash
+# 1. The checksums file was signed by this repository's release workflow (keyless; identity = the workflow, issuer = GitHub Actions)
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/kelvran/gateway/\.github/workflows/release\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+# 2. The asset you downloaded is the one the checksums file names
+sha256sum -c checksums.txt --ignore-missing
+# 3. Build provenance for one asset (who built it, from which commit, with which workflow)
+gh attestation verify kelvran-gateway_<version>_linux_amd64.tar.gz -R kelvran/gateway
+```
+
 ## Pre-flight Blockers
 
 - **USPTO TESS/WHOIS trademark clearance** (`DECISIONS.md`'s naming-clearance entry) is still open. Scope decision, made explicitly rather than left ambiguous: this blocks a first **PyPI** publish of `kelvran-evals` (a public name/filename claim that isn't cleanly reversible: PyPI won't pre-screen a first upload, but a later trademark complaint gives PSF an explicit discretionary removal/reassignment path, and the exact version file itself can never be re-uploaded once deleted) but does **not** block pushing `gateway/v<version>`/`evals/v<version>` git tags or creating GitHub Releases on the already-public `github.com/kelvran/gateway` repo — that "GitHub org/repo" prong of the blocker was already crossed when the repo went public, and a git tag/Release on an already-public repo is low-stakes and fully reversible (delete the tag/release) in a way a PyPI publish is not. A caveat worth naming honestly: once a `gateway/v<version>` tag is pushed to the public repo, nothing prevents `proxy.golang.org`/`sum.golang.org` from durably caching it if anyone runs `go get` against it — a byproduct of the already-made repo-publication decision, not something newly incurred by tagging itself. A second caveat, real since the `publish-image` job started reacting to this same tag (2026-09-13): a `gateway/v<version>` push now also publishes a real, signed, publicly-pullable `ghcr.io/kelvran/gateway:<version>` image tag — deletable from GHCR directly (unlike the Go proxy's own durable cache), but any consumer who has already pulled it can retain a local copy regardless.
 
 ## Rollback Procedure
 
-Both deployables are stateless at the request-handling layer (state lives in Redis/Postgres/ClickHouse, not in the binary/process itself), so rollback is: redeploy the previous tagged version. No database migration rollback is expected for a typical release — if a release does include a schema migration, that migration's own down-path must be verified *before* the release ships, not discovered during an incident.
+Both deployables are stateless at the request-handling layer (state lives in Redis/Postgres/ClickHouse, not in the binary/process itself), so rollback is: redeploy the previous tagged version — for a binary or package install, download the previous Release's asset and install it; never re-upload or replace an asset under an existing name, because the signed `checksums.txt` of that Release names the original bytes. No database migration rollback is expected for a typical release — if a release does include a schema migration, that migration's own down-path must be verified *before* the release ships, not discovered during an incident.
 
 *(Corrected 2026-09-13: this line previously said the whole runbook "describes intent, not a tested procedure" — no longer true for the GHCR container-image publish path specifically, which is real, shipped, and independently verified end to end (see the Verifying section above). The PyPI/npm/crates.io/Go-module-proxy rows above remain intent-only pending their own real triggers — this note now applies to those, not to the runbook as a whole.)*

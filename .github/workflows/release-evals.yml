@@ -1,0 +1,176 @@
+name: Release (evals)
+
+# Sibling of release.yml for the evals deployable (plan gate G19): a GitHub
+# Release that carries no signed assets drags the OpenSSF Scorecard
+# Signed-Releases score down for the whole repository, because the check
+# reads the last five Releases of any kind. This builds the sdist and wheel
+# with uv, signs checksums.txt with cosign (keyless), attests provenance and
+# creates the Release. PyPI publication stays a separate, still-deferred
+# step (RELEASE.md, Pre-flight Blockers).
+#
+# workflow_dispatch: no `tag` + publish=false (default) is a dry run of the
+# dispatching ref -- preflight is advisory, the version check against the
+# built artefact is skipped (pyproject keeps its real version), everything
+# else runs for real and the assets end up as a workflow artifact. `tag` +
+# publish=true rebuilds an existing tag and attaches the assets to its
+# Release. Tags that predate this pipeline have no preflight script in their
+# tree and cannot be rebuilt this way. Existing Release assets are never
+# replaced (the run fails instead). A prerelease tag needs a PEP 440 shape
+# that also satisfies the tag regex (e.g. evals/v0.11.0-rc.1 builds a wheel
+# named 0.11.0rc1 and the version check below would reject it) -- cut evals
+# prereleases only after aligning pyproject's version string with the tag.
+on:
+  push:
+    tags: ["evals/v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing evals/vX.Y.Z tag to build (leave empty for a dry run of this ref)"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Create or update the GitHub Release (needs a tag; false = build, sign and attest only)"
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: release-evals-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: resolve the tag, run the preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+    steps:
+      - name: Resolve the ref, tag and version
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          DRY_RUN=false
+          if [ "$EVENT" = "push" ]; then
+            TAG="$REF_NAME"; REF="refs/tags/$TAG"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"; REF="refs/tags/$TAG"
+            [ "$PUBLISH" = "true" ] || DRY_RUN=true
+          else
+            if [ "$PUBLISH" = "true" ]; then
+              echo "::error::publish=true needs a tag"; exit 1
+            fi
+            DRY_RUN=true; REF="$SHA"; TAG="evals/v0.0.0-dryrun.${SHA:0:12}"
+          fi
+          if ! [[ "$TAG" =~ ^evals/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag '$TAG' is not evals/vX.Y.Z"; exit 1
+          fi
+          VERSION="${TAG#evals/v}"
+          PRERELEASE=false
+          case "$VERSION" in *-*) PRERELEASE=true ;; esac
+          {
+            echo "ref=${REF}"
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "prerelease=${PRERELEASE}"
+            echo "dry_run=${DRY_RUN}"
+          } >> "$GITHUB_OUTPUT"
+          echo "ref=${REF} tag=${TAG} version=${VERSION} prerelease=${PRERELEASE} dry_run=${DRY_RUN}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.ref }}
+      - name: Run the release preflight (advisory on a dry run)
+        continue-on-error: ${{ steps.resolve.outputs.dry_run == 'true' }}
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: scripts/release-preflight.sh evals "$VERSION"
+
+  build-sign-release:
+    name: build (uv), sign, attest and release
+    runs-on: ubuntu-latest
+    needs: preflight
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.preflight.outputs.tag }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+      DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build the sdist and wheel
+        working-directory: evals
+        run: |
+          uv build --out-dir dist
+          ls -la dist
+          if [ "$DRY_RUN" != "true" ]; then
+            # The artefact version must be the tag's version, not a stale pyproject one.
+            compgen -G "dist/kelvran_evals-${VERSION}*" >/dev/null || { echo "::error::built artefacts do not carry ${VERSION}"; ls dist; exit 1; }
+          fi
+      - name: Checksums
+        working-directory: evals/dist
+        run: |
+          sha256sum -- kelvran_evals-* > checksums.txt
+          sha256sum -c checksums.txt
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign checksums.txt (keyless, GitHub OIDC)
+        working-directory: evals/dist
+        run: |
+          cosign sign-blob --yes --bundle checksums.txt.sigstore.json checksums.txt
+          cosign verify-blob --bundle checksums.txt.sigstore.json \
+            --certificate-identity-regexp '^https://github.com/kelvran/gateway/\.github/workflows/release-evals\.yml@' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            checksums.txt
+      - name: Attest build provenance (SLSA Build Level 2)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            evals/dist/kelvran_evals-*
+            evals/dist/checksums.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-release-assets
+          path: evals/dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Create or update the GitHub Release
+        if: needs.preflight.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="evals/changelog/${VERSION}.md"
+          ASSETS=(evals/dist/kelvran_evals-* evals/dist/checksums.txt evals/dist/checksums.txt.sigstore.json)
+          if EXISTING=$(gh release view "$TAG" --json assets --jq '.assets | length' 2>/dev/null); then
+            if [ "$EXISTING" != "0" ]; then
+              echo "::error::release $TAG already has $EXISTING asset(s); they are never replaced -- delete the Release's assets by hand first if a rebuild is really intended"; exit 1
+            fi
+            gh release upload "$TAG" "${ASSETS[@]}"
+            gh release edit "$TAG" --notes-file "$NOTES" --title "evals v${VERSION}"
+          else
+            FLAGS=()
+            [ "$PRERELEASE" = "true" ] && FLAGS+=(--prerelease)
+            gh release create "$TAG" --verify-tag --title "evals v${VERSION}" --notes-file "$NOTES" "${FLAGS[@]}" "${ASSETS[@]}"
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name'
