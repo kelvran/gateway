@@ -7,7 +7,7 @@ Kelvran is a self-hosted, OpenAI-compatible LLM gateway written in Go: one `POST
 | You want to… | Go to |
 |---|---|
 | Try it in ten minutes: one deployment, one virtual key, one request | [Quickstart](tutorials/quickstart.md) |
-| Point a client you already use at the gateway | [OpenAI Python SDK](how-to/clients/openai-python.md) · [OpenAI Node SDK](how-to/clients/openai-node.md) · [curl](how-to/clients/curl.md) · what of the OpenAI surface is honoured: [Compatibility](reference/compatibility.md) |
+| Point a client you already use at the gateway | [OpenAI Python SDK](how-to/clients/openai-python.md) · [OpenAI Node SDK](how-to/clients/openai-node.md) · [LangChain](how-to/clients/langchain.md) · [LlamaIndex](how-to/clients/llamaindex.md) · [Vercel AI SDK](how-to/clients/vercel-ai-sdk.md) · [curl](how-to/clients/curl.md) · what of the OpenAI surface is honoured: [Compatibility](reference/compatibility.md) |
 | Use it from Cursor, Continue or Claude Code | Those clients speak the OpenAI shape; point them at `https://<gateway>/v1` with a virtual key as the API key (see [Compatibility](reference/compatibility.md)). Dedicated pages follow; Claude Code's native Anthropic-Messages mode is not served today ([MCP/A2A and Anthropic-Messages status](explanation/mcp-a2a-status.md)). |
 | Let a coding agent configure Kelvran for you | [Configure Kelvran from a coding agent](how-to/configure-from-a-coding-agent.md) and the machine-readable index [`llms.txt`](llms.txt) |
 | Give a key a budget and see it enforced | [First virtual key and budget](tutorials/first-virtual-key-and-budget.md) |
