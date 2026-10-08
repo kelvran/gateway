@@ -176,6 +176,12 @@ type LexicalCandidate struct {
 	// GuardrailPolicyVersion/ResponseFormatFingerprint/PromptFingerprint's
 	// own convention above — never a fabricated value.
 	ReasoningBlocksFingerprint string
+	// ToolsFingerprint is dataplane.toolsFingerprint's value for the
+	// written request (canonical JSON of its tools and tool_choice, ""
+	// when it carried neither), gated by exact equality in
+	// checkLexicalCache per
+	// docs/rfcs/2026-10-08-gateway-cache-key-tools-fingerprint.md.
+	ToolsFingerprint string
 	// ThinkingBindingMode is dataplane's own record of the write-time
 	// request's adapter.ChatRequest.ThinkingBindingMode, per the
 	// 2026-09-24 addendum to
@@ -201,5 +207,5 @@ type LexicalCandidate struct {
 // partition itself, not a post-hoc filter").
 type LexicalCache interface {
 	Search(ctx context.Context, tenantID string, signature []uint64, k int) ([]LexicalCandidate, error)
-	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, ttl time.Duration) error
+	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, toolsFingerprint string, ttl time.Duration) error
 }

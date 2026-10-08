@@ -179,7 +179,19 @@ func formatOptionalInt(v *int) string {
 // block is handled on THIS call, so the identical rule applies to it.
 // "" folds in identically to every other empty-string case above; this
 // fold alone only affects the two DIFFERENT-nonempty-values case.
-func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string) string {
+//
+// toolsFingerprint (dataplane.toolsFingerprint: the canonical JSON of
+// ChatRequest.Tools and ChatRequest.ToolChoice, "" when the request
+// carries neither) is folded the same unconditional way, per
+// docs/rfcs/2026-10-08-gateway-cache-key-tools-fingerprint.md. Without
+// it, identical messages with tool_choice "required" vs "none", or
+// with and without tool definitions, collided on one key -- a response
+// that called a tool could be served to a request that offered none.
+// "" folds in like every other empty-string case, so tool-free requests
+// still share keys with EACH OTHER -- but, as with every fold above, every
+// key differs from the previous scheme's (the field is hashed even when
+// empty), so entries written before this change become unreachable.
+func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string) string {
 	h := sha256.New()
 	// The leading "layer"/"l1" field exists so Key and NormalizedKey can
 	// never collide even given byte-identical remaining inputs — cheap
@@ -198,6 +210,7 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 	writeField(h, "prompt", promptFingerprint)
 	writeField(h, "end_user", endUserID)
 	writeField(h, "thinking_binding_mode", thinkingBindingMode)
+	writeField(h, "tools", toolsFingerprint)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -235,7 +248,7 @@ func ScopeKey(tenantID, endUserID string) string {
 // import internal/adapter. promptFingerprint, endUserID, and
 // thinkingBindingMode mirror Key's own identical parameters -- see its
 // doc comment above.
-func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string) string {
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string) string {
 	h := sha256.New()
 	writeField(h, "layer", "l2")
 	writeField(h, "tenant", tenantID)
@@ -248,5 +261,6 @@ func NormalizedKey(tenantID string, model string, normalizedMessages string, tem
 	writeField(h, "prompt", promptFingerprint)
 	writeField(h, "end_user", endUserID)
 	writeField(h, "thinking_binding_mode", thinkingBindingMode)
+	writeField(h, "tools", toolsFingerprint)
 	return hex.EncodeToString(h.Sum(nil))
 }

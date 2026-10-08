@@ -2117,8 +2117,8 @@ func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, end
 
 	cacheScope := cache.ScopeKey(virtualKeyID, endUserID)
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
-	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode)
-	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode)
+	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req))
+	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req))
 
 	var result EraseCacheEntryResult
 	if _, _, ok, _ := p.cache.Get(ctx, cacheScope, l1Key); ok {
@@ -2651,10 +2651,10 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, toolsFP string, encoded []byte) {
 	_ = p.cache.Put(ctx, tenantID, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, tenantID, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, toolsFP, p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -2786,6 +2786,7 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 	queryNegationFP := NegationFingerprint(req.Messages)
 	responseFormatFP := responseFormatFingerprint(req.ResponseFormat)
 	queryReasoningFP := reasoningBlocksFingerprint(req.Messages)
+	queryToolsFP := toolsFingerprint(req)
 	for _, c := range candidates {
 		entityMismatch := !fingerprintsEqual(queryFingerprint, c.Fingerprint)
 		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateEntityMismatch, entityMismatch)
@@ -2857,6 +2858,17 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		// not one of Finding 1's three named gates either, so not counted
 		// via telemetry.RecordCacheL3GateOutcome.
 		if c.ThinkingBindingMode != req.ThinkingBindingMode {
+			continue
+		}
+		// A gate for docs/rfcs/2026-10-08-gateway-cache-key-tools-fingerprint.md
+		// -- the identical L1/L2 fold key.go's Key/NormalizedKey apply, extended
+		// to L3's near-duplicate match: an entry written for a request that
+		// offered one set of tools (or forced tool use one way) must never be
+		// served to a near-duplicate that offers another, or none. Exact
+		// string equality, both-empty counting as a match, same convention as
+		// every other gate above; not one of the three named gates
+		// telemetry.RecordCacheL3GateOutcome counts.
+		if c.ToolsFingerprint != queryToolsFP {
 			continue
 		}
 		p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", true, p.cacheL3TTL)
@@ -3558,8 +3570,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
 	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode)
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode)
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req))
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req))
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
@@ -3795,7 +3807,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 
 		if !responseWasTruncated(resp) {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, encoded)
+				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), encoded)
 			}
 		}
 
@@ -5222,6 +5234,32 @@ func responseFormatFingerprint(rf *adapter.ResponseFormat) string {
 	b, err := json.Marshal(rf)
 	if err != nil {
 		panic(fmt.Sprintf("dataplane: marshaling ResponseFormat for cache key: %v", err))
+	}
+	return string(b)
+}
+
+// toolsFingerprint is the cache-key / L3 hard-gate input for a request's
+// tool surface: the canonical JSON of ChatRequest.Tools and
+// ChatRequest.ToolChoice, "" when the request carries neither, per
+// docs/rfcs/2026-10-08-gateway-cache-key-tools-fingerprint.md. Two
+// requests that differ only in the tools they offer, or in how they force
+// tool use, are different requests: a response that called a tool must
+// never be served to one that offered none, and vice versa. encoding/json
+// writes struct fields in declaration order and ToolChoice marshals
+// canonically, so equal inputs give equal strings; ParametersJSON is folded
+// as the caller sent it (whitespace or key-order differences miss rather
+// than falsely hit -- the same conservative treatment response_format gets
+// in responseFormatFingerprint).
+func toolsFingerprint(req adapter.ChatRequest) string {
+	if len(req.Tools) == 0 && req.ToolChoice == nil {
+		return ""
+	}
+	b, err := json.Marshal(struct {
+		Tools      []adapter.ToolDef   `json:"tools"`
+		ToolChoice *adapter.ToolChoice `json:"tool_choice"`
+	}{Tools: req.Tools, ToolChoice: req.ToolChoice})
+	if err != nil {
+		panic(fmt.Sprintf("dataplane: marshaling tools for cache key: %v", err))
 	}
 	return string(b)
 }
