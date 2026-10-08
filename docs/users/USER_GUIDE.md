@@ -35,7 +35,7 @@ virtual_keys:
       gpt-4o: true
 ```
 
-Clients authenticate with `Authorization: Bearer <the raw secret>` — never the hash. Budget and rate-limit state are tracked **in memory only** and reset on restart; there is no persistent control-plane store yet (see `STATUS.md`/`DECISIONS.md`). A key that exceeds its budget gets HTTP 429 (distinguishable from a rate-limit 429 only by the error message body, per that RFC's OpenAI-SDK-compatibility rationale); a request for a model outside `allowed_models` gets HTTP 403.
+Clients authenticate with `Authorization: Bearer <the raw secret>` — never the hash. Budget and rate-limit state are tracked **in memory only** and reset on restart; there is no persistent control-plane store yet (see `STATUS.md`/`DECISIONS.md`). A key that exceeds its budget gets HTTP 429 (distinguishable from a rate-limit 429 by the JSON error envelope's `type` field since 2026-10-08 — `insufficient_quota` for budget, `rate_limit_error` for rate limits — per that RFC's OpenAI-SDK-compatibility rationale (the status itself stays 429 in both cases)); a request for a model outside `allowed_models` gets HTTP 403.
 
 **Not implemented yet:** the "teams" hierarchy (a key inheriting a team's budget/rate-limit ceiling) and live, no-restart key provisioning — both remain flat, single-level, static-YAML-only for now, per that RFC's explicit scope boundary.
 
@@ -80,8 +80,7 @@ API returns a hard 400 further upstream.
 **Retry/backoff for raw HTTP callers** (if you're not using an SDK with its own retry logic): back
 off on `408`/`409`/`429`/`5xx`, exponential with jitter, mirroring the defaults official OpenAI/
 Anthropic SDKs already ship — a `429` from Kelvran means either a virtual key's own rate limit or
-its budget was exceeded (Section 3), distinguishable only by the response body's error message,
-not the status code alone.
+its budget was exceeded (Section 3). **Corrected 2026-10-08**: the two are now distinguishable without parsing prose — every error body is an OpenAI-shaped JSON envelope `{"error":{"message","type","param","code"}}`; a rate-limit or concurrency rejection carries `type: rate_limit_error` (retry after `Retry-After`), a budget rejection carries `type: insufficient_quota` with no `Retry-After` (do not retry; raise the budget or wait for the reset window). Statuses are unchanged.
 
 ## 5. Routing & Failover Configuration
 

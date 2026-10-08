@@ -236,10 +236,11 @@ func TestIntegrationStreamingUpstreamStallsMidStreamIsBoundedByIdleTimeout(t *te
 	start := time.Now()
 	// readErr is deliberately not asserted either way: once the gateway's
 	// own idle timeout fires on the stalled upstream Read, it terminates
-	// the client-facing chunked response cleanly (writeErrorResponse's
-	// diagnostic text plus a normal chunked-encoding end, per
-	// handleStreamingChatCompletion's own doc comment on this exact
-	// "failure after the first chunk" case) — a nil error here is the
+	// the client-facing chunked response cleanly (since 2026-10-08 one
+	// in-band `data: {"error":...}` SSE frame via writeStreamErrorFrame,
+	// then a normal chunked-encoding end, per handleStreamingChatCompletion's
+	// own doc comment on this exact "failure after the first chunk" case) —
+	// a nil error here is the
 	// EXPECTED, correct outcome, not a sign the bug is still present. The
 	// bug this test guards against is a body Read that never returns at
 	// all; whether it returns with or without an error once it does is

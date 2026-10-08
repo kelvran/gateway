@@ -114,11 +114,11 @@ resp = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user",
 print(resp.choices[0].message.content)
 ```
 
-A success is `HTTP 200` with an OpenAI-shaped JSON body (`id`, `model`, `choices[0].message.content`, `usage`). Otherwise:
+A success is `HTTP 200` with an OpenAI-shaped JSON body (`id`, `model`, `choices[0].message.content`, `usage`). Every error is an OpenAI-shaped `{"error":{"message","type","param","code"}}` body, so the official SDKs raise their usual exception classes with `.code` populated. Otherwise:
 
 - `401` means the `Authorization: Bearer` header is missing or its SHA-256 matches no configured virtual key.
-- `429` means this virtual key hit its RPM/TPM limit, its concurrency cap, or its `budget_usd`; the plain-text body says which, and `Retry-After` is set for the limit and concurrency cases (not for budget).
-- `502` with the plain-text body `upstream provider returned status N` (and `Retry-After`) means your virtual key was accepted and the request reached the provider, which answered N. `N=401` is almost always a wrong or unset `OPENAI_API_KEY` (the gateway starts anyway, logging `deployment's upstream API key env var is not set`); the provider's full error text is only in the gateway's `chat_completion` log line, never in the response. The OpenAI SDK retries 5xx twice, then raises `openai.InternalServerError`.
+- `429` means this virtual key hit its RPM/TPM limit, its concurrency cap, or its `budget_usd`; the JSON error body says which (`error.type` is `rate_limit_error` for the limit and concurrency cases, `insufficient_quota` for budget, with a matching `error.code`), and `Retry-After` is set for the limit and concurrency cases (not for budget).
+- `502` with `error.message` `upstream provider returned status N` (`error.type` `server_error`, `error.code` `upstream_error`, and `Retry-After`) means your virtual key was accepted and the request reached the provider, which answered N. `N=401` is almost always a wrong or unset `OPENAI_API_KEY` (the gateway starts anyway, logging `deployment's upstream API key env var is not set`); the provider's full error text is only in the gateway's `chat_completion` log line, never in the response. The OpenAI SDK retries 5xx twice, then raises `openai.InternalServerError`.
 
 **Evals (optional).** Needs Python 3.12+ and `uv`, no provider credentials; `--llm-judge` needs AWS Bedrock credentials by default (or an Anthropic/OpenAI key with `--llm-judge-provider`), `--llm-judge-panel` always needs Bedrock, and `evals rollout` needs Docker. The golden fixture deliberately contains one wrong answer (2 of 3 pass, Wilson 95 percent CI [0.2077, 0.9385]), so a `--fail-under` of 0.5 or higher is expected to fail.
 

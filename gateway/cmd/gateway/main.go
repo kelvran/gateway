@@ -1894,7 +1894,7 @@ func readyzHandler(p *dataplane.Pipeline) http.HandlerFunc {
 func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			methodNotAllowed(w, http.MethodPost)
 			return
 		}
 
@@ -1903,16 +1903,16 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		if err != nil {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				invalidRequest(w, http.StatusRequestEntityTooLarge, "request_too_large", nil, "request body too large")
 				return
 			}
-			http.Error(w, "reading request body", http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_body", nil, "reading request body")
 			return
 		}
 
 		var req adapter.ChatRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_json", nil, fmt.Sprintf("invalid request body: %v", err))
 			return
 		}
 
@@ -1921,25 +1921,25 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		// paying for the genuinely expensive per-part/per-tool checks
 		// below (base64 decode + MIME sniff; JSON Schema tokenization).
 		if err := adapter.ValidateMessageCount(req.Messages); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_request", nil, err.Error())
 			return
 		}
 		if err := adapter.ValidateToolDefs(req.Tools); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_request", nil, err.Error())
 			return
 		}
 		if err := adapter.ValidateFieldSizes(req.Messages); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_request", nil, err.Error())
 			return
 		}
 
 		if err := adapter.ValidateContentParts(req.Messages); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_request", nil, err.Error())
 			return
 		}
 
 		if err := adapter.ValidateResponseFormatSchema(req.ResponseFormat); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_request", nil, err.Error())
 			return
 		}
 
@@ -1982,7 +1982,7 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 func embeddingsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			methodNotAllowed(w, http.MethodPost)
 			return
 		}
 
@@ -1991,24 +1991,24 @@ func embeddingsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		if err != nil {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				invalidRequest(w, http.StatusRequestEntityTooLarge, "request_too_large", nil, "request body too large")
 				return
 			}
-			http.Error(w, "reading request body", http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_body", nil, "reading request body")
 			return
 		}
 
 		var req adapter.EmbeddingRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "invalid_json", nil, fmt.Sprintf("invalid request body: %v", err))
 			return
 		}
 		if req.Model == "" {
-			http.Error(w, "model is required", http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "missing_required_parameter", codePtr("model"), "model is required")
 			return
 		}
 		if len(req.Input) == 0 {
-			http.Error(w, "input is required and must be non-empty", http.StatusBadRequest)
+			invalidRequest(w, http.StatusBadRequest, "missing_required_parameter", codePtr("input"), "input is required and must be non-empty")
 			return
 		}
 
@@ -2038,26 +2038,36 @@ func embeddingsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 // upstream connection that never sent a byte) — those produce a correct
 // HTTP status code. A failure AFTER the first chunk has already reached
 // the client cannot cleanly change the status code net/http already
-// implied (200) when that first byte was flushed; writeErrorResponse's
-// call still executes in that case (it does not crash), but only appends
-// diagnostic text to an already-open SSE body rather than a clean status
-// change — per docs/rfcs/2026-09-02-streaming-support.md's explicit
-// acknowledgment that a mid-stream failure is a real, visible failure to
-// the client, not smoothed over.
+// implied (200) when that first byte was flushed. Since 2026-10-08 that
+// case is detected (writeTracker) and reported in-band as one
+// `data: {"error":{...}}` SSE frame with no [DONE] sentinel, the same
+// convention OpenAI and Anthropic use, which the OpenAI SDKs' stream
+// parsers surface as an APIError -- per docs/rfcs/2026-09-02-streaming-
+// support.md's explicit acknowledgment that a mid-stream failure is a
+// real, visible failure to the client, not smoothed over.
 func handleStreamingChatCompletion(p *dataplane.Pipeline, w http.ResponseWriter, r *http.Request, req adapter.ChatRequest) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	tw := &writeTracker{ResponseWriter: w}
 	ctx := telemetry.ExtractContext(r.Context(), r)
-	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), r.RemoteAddr, r.Header.Get(dataplane.EndUserIDHeader), req, w, r.Header.Get("Idempotency-Key")); err != nil {
-		writeErrorResponse(w, err)
+	if err := p.HandleChatCompletionStream(ctx, r.Header.Get("Authorization"), r.RemoteAddr, r.Header.Get(dataplane.EndUserIDHeader), req, tw, r.Header.Get("Idempotency-Key")); err != nil {
+		if tw.written {
+			// The first chunk already committed status 200; see writeStreamErrorFrame.
+			writeStreamErrorFrame(tw, err)
+			return
+		}
+		writeErrorResponse(tw, err)
 	}
 }
 
 // writeErrorResponse maps a HandleChatCompletion error to the appropriate
 // HTTP status code.
-func writeErrorResponse(w http.ResponseWriter, err error) {
+// errorStatus maps a HandleChatCompletion/HandleEmbeddings error to the HTTP
+// status the client sees. This switch is the single source of truth for
+// statuses; the JSON envelope (error_envelope.go) only adds type/code to it.
+func errorStatus(err error) int {
 	status := http.StatusBadGateway
 	var capErr *dataplane.DeploymentCapacityError
 	switch {
@@ -2139,6 +2149,45 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		// all.
 		status = http.StatusBadRequest
 	}
+	return status
+}
+
+// clientSafeMessage is the error text a tenant may see: err.Error() for
+// Kelvran-authored errors, the redacted ClientSafeMessage for upstream HTTP
+// and stream errors (whose raw bodies can carry operator infrastructure
+// secrets -- see the comment in writeErrorResponse and THREAT_MODEL.md).
+func clientSafeMessage(err error) string {
+	message := err.Error()
+	var upstreamErr *dataplane.UpstreamHTTPError
+	if errors.As(err, &upstreamErr) {
+		message = upstreamErr.ClientSafeMessage()
+	}
+	// *adapter.UpstreamStreamError is UpstreamHTTPError's sibling for the
+	// case checked above: a mid-stream, in-band provider error arriving
+	// on an ALREADY-2xx streaming connection (an OpenAI/openaicompat
+	// native `data: {"error":...}` frame, an Anthropic `error` SSE
+	// event, or a Bedrock ConverseStream exception/RPC-error frame) --
+	// every streaming adapter's decoder wraps these as
+	// *adapter.UpstreamStreamError specifically so this check can catch
+	// them; none of them ever produce an UpstreamHTTPError, since no
+	// non-2xx HTTP status occurred. Without this check, that raw
+	// provider-authored text (which carries the identical secret classes
+	// UpstreamHTTPError.ClientSafeMessage already redacts above) relayed
+	// verbatim to any authenticated tenant whenever the failure happened
+	// before or after the first chunk was flushed -- see
+	// adapter.UpstreamStreamError's own doc comment for the full
+	// writeup. Checked independently of, not instead of, the
+	// UpstreamHTTPError check above: an error chain only ever contains
+	// one of the two concrete types, never both.
+	var streamErr *adapter.UpstreamStreamError
+	if errors.As(err, &streamErr) {
+		message = streamErr.ClientSafeMessage()
+	}
+	return message
+}
+
+func writeErrorResponse(w http.ResponseWriter, err error) {
+	status := errorStatus(err)
 
 	// Retry-After, per docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's
 	// design (a) — set BEFORE http.Error below, since net/http requires
@@ -2180,33 +2229,16 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 	// struct's real Body, not ClientSafeMessage) before the error ever
 	// reaches cmd/gateway at all -- an operator debugging a real
 	// upstream permission problem loses nothing to this fix.
-	message := err.Error()
-	var upstreamErr *dataplane.UpstreamHTTPError
-	if errors.As(err, &upstreamErr) {
-		message = upstreamErr.ClientSafeMessage()
+	message := clientSafeMessage(err)
+	// The status above is unchanged; the envelope only adds OpenAI's type and
+	// code vocabulary to the message that used to be a text/plain body (see
+	// error_envelope.go). Retry-After and the redaction above are untouched.
+	errType, code := errorTypeAndCode(err, status)
+	var param *string
+	if errors.Is(err, dataplane.ErrEmptyMessages) {
+		param = codePtr("messages")
 	}
-	// *adapter.UpstreamStreamError is UpstreamHTTPError's sibling for the
-	// case checked above: a mid-stream, in-band provider error arriving
-	// on an ALREADY-2xx streaming connection (an OpenAI/openaicompat
-	// native `data: {"error":...}` frame, an Anthropic `error` SSE
-	// event, or a Bedrock ConverseStream exception/RPC-error frame) --
-	// every streaming adapter's decoder wraps these as
-	// *adapter.UpstreamStreamError specifically so this check can catch
-	// them; none of them ever produce an UpstreamHTTPError, since no
-	// non-2xx HTTP status occurred. Without this check, that raw
-	// provider-authored text (which carries the identical secret classes
-	// UpstreamHTTPError.ClientSafeMessage already redacts above) relayed
-	// verbatim to any authenticated tenant whenever the failure happened
-	// before or after the first chunk was flushed -- see
-	// adapter.UpstreamStreamError's own doc comment for the full
-	// writeup. Checked independently of, not instead of, the
-	// UpstreamHTTPError check above: an error chain only ever contains
-	// one of the two concrete types, never both.
-	var streamErr *adapter.UpstreamStreamError
-	if errors.As(err, &streamErr) {
-		message = streamErr.ClientSafeMessage()
-	}
-	http.Error(w, message, status)
+	writeAPIError(w, status, errType, code, param, message)
 }
 
 // retryAfterSeconds rounds d up to the nearest whole second, with a floor
