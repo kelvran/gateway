@@ -4,6 +4,10 @@
 
 No dedicated community channel exists yet (no Discord/Slack/discussion forum has been set up). Start with `docs/users/USER_GUIDE.md` — if your question isn't answered there, open a GitHub issue.
 
+## Supported Versions
+
+The latest minor of each deployable gets all fixes; the previous minor gets security fixes for 90 days. Policy, current versions and dates: [`docs/VERSIONING.md`](docs/VERSIONING.md).
+
 ## Filing a Bug or Feature Request
 
 Open a GitHub issue including: affected component (Gateway/Cache/Evals/MCP-A2A — same vocabulary as `SECURITY.md`'s severity taxonomy), affected version, and a minimal reproduction if it's a bug.

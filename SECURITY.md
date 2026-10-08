@@ -24,8 +24,8 @@ Adapted to this system's three actual attack surfaces (not a generic CVSS-only s
 
 | Deployable | Supported |
 |---|---|
-| `gateway` | Latest minor release only, until a formal support-window policy exists (tracked for `RELEASE.md`) |
-| `evals` | Latest minor release only, same caveat |
+| `gateway` | Latest minor: all fixes. Previous minor: security fixes for 90 days after the newer minor ships. Policy and current dates: `docs/VERSIONING.md` § 6 Support window. |
+| `evals` | Same policy; current dates in `docs/VERSIONING.md` § 6. |
 
 ## Scope
 

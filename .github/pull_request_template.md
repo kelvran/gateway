@@ -18,3 +18,4 @@
 - [ ] `make verify` passes locally (build + vet + lint + test for both deployables)
 - [ ] If this touches `api/`: `buf breaking` passes, and `UPGRADE.md` has an entry if the change is intentionally breaking
 - [ ] If this changes user-facing behavior: `gateway/changelog/unreleased.md` or `evals/changelog/unreleased.md` has an entry
+- [ ] If this breaks or deprecates a public surface (`docs/VERSIONING.md` § 2): the changelog entry is marked `**BREAKING**` / `## Deprecated`, and `UPGRADE.md` / `DEPRECATED.md` has the row

@@ -16,6 +16,9 @@
 #      UPGRADE.md naming <deployable>/v<version>.
 #   4. (evals only) pyproject.toml declares exactly <version>, and
 #      scripts/check_versions.py agrees.
+#   5. WARNING only (also a ::warning:: annotation under GitHub Actions):
+#      docs/VERSIONING.md's support-window table lists the release being cut
+#      as the latest minor (RELEASE.md asks for it to be updated per release).
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -50,9 +53,12 @@ if [ -f "$unreleased" ] && grep -Eq '^\s*[-*] ' "$unreleased"; then
   fail "$deployable/changelog/unreleased.md still holds entries -- it must be reset to empty category headers (RELEASE.md step 2)"
 fi
 
-if [ -s "$dated" ] && grep -q '\*\*BREAKING\*\*' "$dated"; then
-  if ! grep -q "$deployable/v$version" "$root/UPGRADE.md"; then
-    fail "$dated has a **BREAKING** entry but UPGRADE.md has no row for $deployable/v$version"
+# The marker is the bold **BREAKING** docs/VERSIONING.md § 3 prescribes, matched
+# case-insensitively; the UPGRADE.md check wants a TABLE ROW for the release
+# ("| `<deployable>/v<version>` |"), not a passing mention in prose.
+if [ -s "$dated" ] && grep -Eiq '\*\*breaking\*\*' "$dated"; then
+  if ! grep -Eq "^\| \`$deployable/v$version\` \|" "$root/UPGRADE.md"; then
+    fail "$dated has a **BREAKING** entry but UPGRADE.md has no table row for $deployable/v$version"
   fi
 fi
 
@@ -69,6 +75,13 @@ PY
   if ! python3 -I "$root/scripts/check_versions.py"; then
     fail "scripts/check_versions.py disagrees with the newest evals changelog file"
   fi
+fi
+
+# Support-window table: the "Latest minor" column of the row for this deployable.
+if ! grep -Eq "^\| \`$deployable\` \| \`$deployable/v$version\`" "$root/docs/VERSIONING.md"; then
+  msg="docs/VERSIONING.md support-window table does not list $deployable/v$version as the latest minor -- update it (RELEASE.md)"
+  echo "preflight WARN: $msg" >&2
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning::$msg"; fi
 fi
 
 if [ "$failures" -gt 0 ]; then

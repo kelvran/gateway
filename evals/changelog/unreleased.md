@@ -5,6 +5,7 @@ Entries accumulate here under the six [Keep a Changelog](https://keepachangelog.
 Versioning: [SemVer](https://semver.org/) by default. Revisit CalVer (`YYYY.MM.PATCH`) once `evals` ships continuously without hard breaking changes — see `RELEASE.md`.
 
 ## Added
+- `docs/VERSIONING.md` states what an `evals/vX.Y.Z` version promises: the CLI commands and their options and the persisted `Run`/`Score` schemas are the public surface (no module is importable-public yet), PATCH never breaks, MINOR breaks only with a `**BREAKING**` changelog entry and an `UPGRADE.md` row (enforced by `scripts/release-preflight.sh` at the tag), and the latest minor gets all fixes while the previous minor gets security fixes for 90 days.
 
 ## Changed
 
