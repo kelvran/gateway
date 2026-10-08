@@ -31,7 +31,8 @@ Any release that includes a change to `api/` (the shared OTel/proto contract) mu
 | GitHub | both | `github.com/kelvran/gateway` (and/or a monorepo-wide org page) |
 | GitHub Releases (gateway) — **real since 2026-10-08** via `release.yml` | `gateway` | `kelvran-gateway_<version>_<os>_<arch>.tar.gz` / `.zip`, `.deb`/`.rpm`/`.apk` for linux amd64+arm64, one `.sbom.cdx.json` per archive and package, `checksums.txt`, `checksums.txt.sigstore.json` |
 | GitHub Releases (evals) — **real since 2026-10-08** via `release-evals.yml` | `evals` | `kelvran_evals-<version>.tar.gz`, `kelvran_evals-<version>-py3-none-any.whl`, `checksums.txt`, `checksums.txt.sigstore.json` |
-| GHCR (container image) | `gateway` | `ghcr.io/kelvran/gateway` |
+| GHCR (container image) | `gateway` | `ghcr.io/kelvran/gateway` — multi-platform (`linux/amd64`, `linux/arm64`) since 2026-10-08, with OCI + Artifact Hub labels |
+| Artifact Hub (container-image listing) | `gateway` | labels in place (`io.artifacthub.package.*`, reference card `docs/reference/container-image.md`); registering the repository on artifacthub.io is a one-time owner action, **not done** |
 | npm | `gateway` (client SDK, if/when one ships) | `@kelvran/gateway` |
 | PyPI | `evals` | `kelvran-evals` |
 | crates.io | reserved, not actively published yet | `kelvran` |
@@ -55,6 +56,9 @@ Any consumer of `ghcr.io/kelvran/gateway` can independently verify its signature
 # Pull and note the real digest (never trust a mutable tag alone for verification)
 docker pull ghcr.io/kelvran/gateway:latest
 DIGEST=$(docker inspect ghcr.io/kelvran/gateway:latest --format '{{index .RepoDigests 0}}')
+# Since 2026-10-08 the tag resolves to a multi-platform index (linux/amd64 + linux/arm64); the publish job signs
+# the index and each platform manifest (cosign sign --recursive), so either digest verifies. The SBOM and
+# provenance attestations are attached to the index digest, which is what `docker pull` records here.
 
 # Verify the base-image signature (keyless, via GitHub Actions OIDC)
 cosign verify "$DIGEST" \

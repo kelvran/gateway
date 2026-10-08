@@ -12,7 +12,13 @@
 # line itself is NOT valid Dockerfile syntax (confirmed by a real local
 # build failure, "FROM requires either one or three arguments", not
 # assumed), so the human-readable tag is named here instead.
-FROM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
+# The builder stage always runs on the BUILD platform and cross-compiles for
+# the TARGET platform (TARGETOS/TARGETARCH are set by BuildKit per platform
+# of a multi-platform build; empty under a legacy single-platform build,
+# where Go then defaults to the host). Only the tiny FROM scratch stage
+# below is per-platform, and it only COPYs files, so a linux/arm64 image
+# needs neither an emulated compile nor QEMU at all.
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
 
 WORKDIR /src
 
@@ -33,7 +39,9 @@ ARG DATE=unknown
 
 # CGO_ENABLED=0 for a truly static binary that runs on scratch; -trimpath and
 # -s -w for reproducible paths and a smaller binary.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/gateway ./cmd/gateway
 
