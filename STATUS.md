@@ -2,7 +2,12 @@
 
 ## Status
 
-🟢 **Kelvran's ninth release is tagged and live**: `gateway/v0.9.0` + `evals/v0.8.0` (2026-09-11), each with its own GitHub Release — see `DECISIONS.md`'s 2026-09-11 release-cut entry. This closes the round-4 upgrade plan: 11 parallel cross-disciplinary `/deep-research` passes (scaled up from the usual 3-per-round pattern) synthesized into a 4-phase plan (security → cross-provider caching → evals corpus governance → resilience design), all 4 phases shipped in sequence, each committed/pushed/CI-verified before the next started. Highlights: a top research finding (Guardrails don't scan tool-call results) was independently re-verified against the actual code and found false, saving a full scanner build; `govulncheck`, wired into CI for the first time, immediately found 6 real reachable stdlib CVEs caused by an EOL Go 1.25 toolchain pin, fixed by bumping to 1.26.8; Gemini's and Anthropic's Fable 5.1/Mythos 5.1 cache-token/pricing gaps closed; a new, previously-unwritten evals corpus "GAP" convention documented and given its own CI-gating field-swap detector (catching the exact guardrail-13/18 bug class) plus a report-only citation-staleness checker; a Redis-backed L1/L2 cache designed in full and deliberately deferred (mirroring the ConcurrencyLimiter precedent), plus a real fault-injection test harness proving fallback chains/circuit-breaker/backoff behave as designed under an injected fault. PyPI publish of `kelvran-evals` remains explicitly deferred pending trademark clearance — see Active Blockers.
+**Latest releases: `gateway/v0.17.0` (2026-10-07) and `evals/v0.10.1` (2026-09-22)**, each with its own GitHub Release at `github.com/kelvran/gateway`; CI is green on `main`. The two deployables version independently and have shipped 20 gateway releases (17 minor versions, `v0.1.0` through `v0.17.0`, plus the `v0.10.1`, `v0.14.1` and `v0.14.2` patches) and 11 evals releases (`v0.1.0` through `v0.10.1`) since the first cut on 2026-09-03.
+
+- Authoritative per-release record: `gateway/changelog/` and `evals/changelog/`, one dated file per version in Keep a Changelog categories.
+- Fixed on `main` but not yet in any release: `gateway/changelog/unreleased.md` (today: Bedrock `response_format` on Claude Sonnet 5 no longer rejected with 502; a local admin mutation can no longer be silently dropped as stale). `evals/changelog/unreleased.md` is empty.
+- Current feature surface and the open defects from the 2026-10-07/08 live verification: `README.md`.
+- The narrative sections below ("Current Phase" onward) stop at the `v0.9.0` / `v0.8.0` cut of 2026-09-11 and are kept as history, not rewritten; `docs/agents/LOGS.md` and `DECISIONS.md` carry everything since.
 
 ## IMPORTANT
 
@@ -10,7 +15,12 @@ Real source code now exists in `gateway/` and `evals/`, but it is a **deliberate
 
 ## Current Version
 
-`gateway/v0.9.0` + `evals/v0.8.0` — both tagged and released 2026-09-11 (previously `gateway/v0.8.0` alone, same day; `v0.7.0` (both), same day; `v0.6.0`, 2026-09-10; `v0.5.0`, same day; `v0.4.0`, 2026-09-11; `v0.3.0`, 2026-09-09; `v0.2.0`, same day; `v0.1.0`, 2026-09-03). `gateway/go.mod`'s module path is `github.com/kelvran/gateway/gateway` (not the bare `github.com/kelvran/gateway` — see `DECISIONS.md`'s module-path-fix entry for why). Both `changelog/unreleased.md` files are now empty (frozen content lives in `gateway/changelog/0.9.0.md`/`evals/changelog/0.8.0.md`, alongside every prior dated file) — new work accumulates in `unreleased.md` again until the next release. `evals/pyproject.toml`'s `version` now reads `0.8.0` (`uv.lock` synced).
+`gateway/v0.17.0` (tagged and released 2026-10-07) + `evals/v0.10.1` (tagged and released 2026-09-22). Full version list: `git tag -l 'gateway/*' 'evals/*'`, or the dated files in `gateway/changelog/` (20) and `evals/changelog/` (11).
+
+- `gateway/go.mod`'s module path is `github.com/kelvran/gateway/gateway` (not the bare `github.com/kelvran/gateway`; see `DECISIONS.md`'s module-path-fix entry); `go install github.com/kelvran/gateway/gateway/cmd/gateway@latest` resolves to `v0.17.0` on the public module proxy.
+- Container image `ghcr.io/kelvran/gateway`: tags `latest`, `sha-<commit>` and `v0.17.0`; linux/amd64 only; cosign keyless-signed with CycloneDX SBOM and SLSA provenance attestations (verification commands in `RELEASE.md`).
+- `kelvran-evals` is not published on PyPI; `evals/pyproject.toml` tracks the release tag (0.10.1) and `scripts/check_versions.py` enforces that in CI.
+- New work accumulates in each folder's `unreleased.md` until the next cut; a `v0.17.1` is not cut without the owner's go-ahead.
 
 ## Current Phase
 

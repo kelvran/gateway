@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-Report privately via [GitHub Security Advisories](https://github.com/kelvran/gateway/security/advisories/new) on the relevant deployable's repository (primary channel). If that's not accessible, email `security@kelvran.dev` (to be activated once the domain is registered — see `DECISIONS.md`'s open naming action).
+Report privately via [GitHub Security Advisories](https://github.com/kelvran/gateway/security/advisories/new) — private vulnerability reporting is enabled on the repository (since 2026-10-08). There is no e-mail channel: the `security@kelvran.dev` address named here until 2026-10-08 was never activated (the domain is not registered), so it has been removed rather than left as a dead contact.
 
 Please include: affected component (Gateway/Cache/Evals/MCP-A2A), affected version, a minimal reproduction, and your assessment of impact. We do not require PGP-encrypted reports.
 

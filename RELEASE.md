@@ -10,10 +10,11 @@
 5. Pushing that same `gateway/v<version>` tag also triggers `.github/workflows/ci.yml`'s `publish-image` job automatically — real, shipped, no manual step needed: it re-runs the full build/test/lint suite against that exact tagged commit, then pushes `ghcr.io/kelvran/gateway:<version>` (the `gateway/` prefix stripped) alongside the always-present `:latest`/`:sha-<commit>` tags, signed and attested exactly like every other push.
 
 **`evals`:**
-1. Move `evals/changelog/unreleased.md`'s content into a new `evals/changelog/<version>.md`, dated, self-contained.
-2. Reset `evals/changelog/unreleased.md` to empty category headers.
-3. Tag the release `evals/v<version>` (SemVer by default; revisit CalVer per the note in `evals/changelog/unreleased.md` once shipping continuously).
-4. Publish to PyPI as `kelvran-evals` (PyPI has no scoping, hence the prefixed name — see `ai-infra-research/naming-and-docs-plan.md`'s naming section, "Immediate next actions").
+1. Bump `version` in `evals/pyproject.toml` to `<version>` and refresh `evals/uv.lock` (`cd evals && uv lock`); `python3 -I scripts/check_versions.py` must pass — CI runs it on every push, and it exists because the version sat at `0.8.0` through three releases (`v0.9.0`–`v0.10.1`) when this step was missing.
+2. Move `evals/changelog/unreleased.md`'s content into a new `evals/changelog/<version>.md`, dated, self-contained.
+3. Reset `evals/changelog/unreleased.md` to empty category headers.
+4. Tag the release `evals/v<version>` (SemVer by default; revisit CalVer per the note in `evals/changelog/unreleased.md` once shipping continuously).
+5. Publish to PyPI as `kelvran-evals` (PyPI has no scoping, hence the prefixed name — see `ai-infra-research/naming-and-docs-plan.md`'s naming section, "Immediate next actions").
 
 ## Contract-Version Bump-and-Validate Procedure
 

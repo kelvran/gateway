@@ -43,3 +43,11 @@ See `AGENTS.md` for the authoritative Go/Python conventions — this file doesn'
 ## CI Gates
 
 Real and running (`.github/workflows/ci.yml`, green on every push to `main` — see `STATUS.md`): `golangci-lint run ./...` + `go build ./... && go test ./...` for `gateway`; `ruff check .` + `uv run pytest tests/` for `evals`; `buf lint`/`buf breaking` + generated-code drift check for any `api/` change. Mirrors root `make verify` exactly. Full test-pyramid strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`.
+
+## Tests Are Part of the Change
+
+Every pull request that adds or changes behaviour adds or updates the tests that pin it; a bug fix includes a regression test that fails on the unfixed code. Reviewers may ask for the failing-first run as evidence. This is the repo's standing practice (see `docs/testing/TESTING.md`), written down here so the OpenSSF Best Practices `test_policy` criterion has something to point at.
+
+## Developer Certificate of Origin
+
+Every commit must be signed off (`git commit -s`), certifying the [Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote the change or have the right to submit it under this repository's Apache-2.0 licence. There is no CLA. Pull requests with unsigned commits are rejected by the DCO check once it is enabled on the repository (tracked in `docs/agents/LOGS.md`'s 2026-10-08 entry).

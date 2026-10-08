@@ -1,12 +1,12 @@
 header:
   schema-version: "2.0.0"
   expiration-date: "2027-09-02T00:00:00.000Z"
-  last-updated: "2026-09-14"
-  last-reviewed: "2026-09-14"
+  last-updated: "2026-10-08"
+  last-reviewed: "2026-10-08"
   commit-hash: null
   project-url: "https://github.com/kelvran/gateway"
   project-release: null
-  changelog: "https://github.com/kelvran/gateway/tree/main/changelog"
+  changelog: "https://github.com/kelvran/gateway/tree/main/gateway/changelog"
   license: "https://github.com/kelvran/gateway/blob/main/LICENSE"
 
 project-lifecycle:
@@ -24,8 +24,8 @@ contribution-policy:
 dependencies:
   third-party-packages: true
   dependencies-lists:
-    - "https://github.com/kelvran/gateway/blob/main/go.sum"
-    - "https://github.com/kelvran/evals/blob/main/uv.lock"
+    - "https://github.com/kelvran/gateway/blob/main/gateway/go.sum"
+    - "https://github.com/kelvran/gateway/blob/main/evals/uv.lock"
   sbom:
     # Real since 2026-09-13: a CycloneDX SBOM is generated per image build
     # and attested (in-toto, cosign-signed) to the exact published digest
@@ -38,7 +38,9 @@ dependencies:
 
 distribution-points:
   - "https://github.com/kelvran/gateway"
-  - "https://pypi.org/project/kelvran-evals/"
+  - "https://github.com/kelvran/gateway/releases"
+  - "https://github.com/kelvran/gateway/pkgs/container/gateway"
+  # kelvran-evals is NOT published on PyPI (RELEASE.md lists it as an intent); do not list a distribution point that does not exist.
 
 documentation:
   - "https://github.com/kelvran/gateway/blob/main/README.md"
@@ -53,8 +55,10 @@ security-artifacts:
     evidence-url: null
 
 security-contacts:
-  - type: "email"
-    value: "security@kelvran.dev"
+  # The only working channel is GitHub private vulnerability reporting (enabled 2026-10-08).
+  # The security@kelvran.dev mailbox listed until 2026-10-08 was never activated and has been removed.
+  - type: "website"
+    value: "https://github.com/kelvran/gateway/security/advisories/new"
     primary: true
 
 security-testing:
@@ -92,6 +96,5 @@ security-testing:
 
 vulnerability-reporting:
   accepts-vulnerability-reports: true
-  email-contact: "security@kelvran.dev"
   security-policy: "https://github.com/kelvran/gateway/blob/main/SECURITY.md"
   bug-bounty-available: false

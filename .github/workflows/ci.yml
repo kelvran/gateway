@@ -174,6 +174,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: evals package version matches the newest changelog file
+        # evals/pyproject.toml drifted to 0.8.0 while evals/v0.10.1 was released, because
+        # RELEASE.md's evals procedure had no bump step (found 2026-10-08). The script is
+        # also run by the release preflight; here it fails the push that forgets the bump.
+        run: python3 -I scripts/check_versions.py
       - name: ruff
         working-directory: evals
         run: uvx ruff check .

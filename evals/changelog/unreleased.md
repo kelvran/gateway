@@ -13,5 +13,6 @@ Versioning: [SemVer](https://semver.org/) by default. Revisit CalVer (`YYYY.MM.P
 ## Removed
 
 ## Fixed
+- `pyproject.toml` declared `version = "0.8.0"` for the `v0.10.1` code (and had since `v0.9.0`): the release procedure had no version-bump step. Bumped to `0.10.1`, `uv.lock` refreshed, and `scripts/check_versions.py` now fails CI when the declared version lags the newest `evals/changelog/<version>.md`.
 
 ## Security
