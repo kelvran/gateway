@@ -1,174 +1,47 @@
 # User Guide
 
-Operator-facing "how do I configure and run Kelvran" guide — goes beyond `README.md`'s quickstart, never re-explains *why* something is designed the way it is (that's `ARCHITECTURE.md`/`gateway/ARCHITECTURE.md`/`evals/ARCHITECTURE.md`'s job; this document assumes you've read those or don't need to).
-
-> **Status notice**: `gateway/v0.1.0` and `evals/v0.1.0` are tagged, released, and live — real code, not just intended shape. Each section below is honestly marked real vs. not-yet-implemented, corrected as of 2026-09-04; see `STATUS.md` for the always-current snapshot.
+**This guide was split into the documentation set at [`docs/README.md`](../README.md) on 2026-10-08.** The eleven headings below are kept so that existing references to "§3", "§4" and so on still land; each now holds one pointer to the page that owns the topic. Nothing here is a second copy of that content.
 
 ## 1. Before You Start
 
-Decide your topology: local dev (Docker Compose) or production (Kubernetes) — see `docs/operations/DEPLOY.md`. You need at least one upstream LLM provider's credentials before Kelvran does anything useful.
+The ten-minute path (one deployment, one virtual key, one request) is [`tutorials/quickstart.md`](../tutorials/quickstart.md). The deployment topologies (Docker Compose, deb/rpm/apk with systemd, Kubernetes, ECS/Fargate) are under [`how-to/deploy/`](../how-to/deploy/docker-compose.md) and in [`operations/DEPLOY.md`](../operations/DEPLOY.md).
 
 ## 2. Provider Credentials
 
-See `docs/operations/PROVIDERS.md` for the full list of supported providers and what each one needs. Secrets handling: environment variables or a secrets manager only, never a committed config file — see `SECURITY.md`.
+Giving a deployment its credential, by environment variable or by hot-reloaded file, is [`how-to/provider-credentials.md`](../how-to/provider-credentials.md); rotation is [`how-to/rotate-credentials.md`](../how-to/rotate-credentials.md). [`operations/PROVIDERS.md`](../operations/PROVIDERS.md) is the data-flow and residency inventory.
 
 ## 3. Virtual Keys and Budgets
 
-Real and implemented, per `docs/rfcs/2026-09-02-virtual-keys-budgets.md`. Generate a key yourself — Kelvran never generates or stores the raw secret, only its hash:
-
-```bash
-openssl rand -hex 32                          # this is the secret — give it to the caller, keep it out of config
-printf '%s' '<that secret>' | sha256sum        # this hash goes in config.yaml as key_hash
-```
-
-Add it to `config.yaml` under `virtual_keys:`:
-
-```yaml
-virtual_keys:
-  team-alpha:
-    key_hash: "<the sha256 hash from above>"
-    budget_usd: 100.0          # optional; omit or 0 for unlimited
-    rate_limit:
-      burst: 20
-      refill_per_second: 10
-    allowed_models:            # optional; omit for "every configured model"
-      gpt-4o: true
-```
-
-Clients authenticate with `Authorization: Bearer <the raw secret>` — never the hash. Budget and rate-limit state are tracked **in memory only** and reset on restart; there is no persistent control-plane store yet (see `STATUS.md`/`DECISIONS.md`). A key that exceeds its budget gets HTTP 429 (distinguishable from a rate-limit 429 by the JSON error envelope's `type` field since 2026-10-08 — `insufficient_quota` for budget, `rate_limit_error` for rate limits — per that RFC's OpenAI-SDK-compatibility rationale (the status itself stays 429 in both cases)); a request for a model outside `allowed_models` gets HTTP 403.
-
-**Not implemented yet:** the "teams" hierarchy (a key inheriting a team's budget/rate-limit ceiling) and live, no-restart key provisioning — both remain flat, single-level, static-YAML-only for now, per that RFC's explicit scope boundary.
+The first key with a budget and a rate limit, step by step: [`tutorials/first-virtual-key-and-budget.md`](../tutorials/first-virtual-key-and-budget.md). Every key option, persistence and the live admin API: [`how-to/virtual-keys-and-budgets.md`](../how-to/virtual-keys-and-budgets.md) and [`reference/admin-api.md`](../reference/admin-api.md).
 
 ## 4. Calling Kelvran (Client Integration)
 
-Kelvran has no first-party client SDK, and none is currently planned absent validated demand
-(`docs/upgrade-research/client-sdk-strategy-2026-09-13.md`) — this is a deliberate choice, not a
-gap. Kelvran's wire format is OpenAI's Chat Completions API shape (`gateway/internal/adapter/
-openai/`), both buffered and SSE-streaming, so the fastest and most durable integration path is
-pointing an existing OpenAI SDK at Kelvran instead of calling it with raw HTTP yourself — the same
-pattern peer gateways (LiteLLM Proxy, Vercel AI Gateway) document as their own primary integration
-path, not a fallback:
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="https://your-kelvran-host/v1",
-    api_key="<the raw virtual-key secret from Section 3, never the hash>",
-)
-resp = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "hi"}])
-```
-
-**Listing models (added 2026-10-08 on `main`):** `client.models.list()` works against the same base URL — `GET /v1/models` returns the canonical model names your key may use (filtered by its `allowed_models`), one entry per name with `kind` (`chat`/`embedding`), the serving providers in `owned_by`, and the operator's `display_name`/`description` from the `models:` config section when set. The same document also satisfies the Anthropic SDK's `client.models.list()` (`display_name`, `has_more` pagination via `limit`/`after_id`/`before_id`) and Claude Code's provider discovery; note that Claude Code's picker keeps only ids containing `claude` or `anthropic`, and runs discovery only in Anthropic-Messages mode, which Kelvran does not serve yet. `created` is when the gateway instance loaded its catalog, not a model release date.
-
-```javascript
-import OpenAI from "openai";
-const client = new OpenAI({ baseURL: "https://your-kelvran-host/v1", apiKey: "<the raw secret>" });
-const resp = await client.chat.completions.create({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] });
-```
-
-This already proves out end-to-end: a separate project's own unmodified client SDK code (no
-Kelvran-specific patch of any kind) has successfully called a live Kelvran deployment this way.
-
-**Extension fields, not standard OpenAI ones.** Responses may carry a `reasoning_blocks` array
-(`adapter.Message.ReasoningBlocks`, per `docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-
-schema.md`) on assistant messages from providers that support extended thinking (Anthropic,
-Bedrock, Gemini). This is additive JSON, not part of OpenAI's own wire format — an OpenAI SDK
-simply ignores fields it doesn't recognize, so no client code breaks by default; if you need to
-read reasoning content, echo the exact `reasoning_blocks` value back unmodified on any later turn
-in the same conversation that includes a tool result, or Anthropic/Bedrock's own Claude Messages
-API returns a hard 400 further upstream.
-
-**Retry/backoff for raw HTTP callers** (if you're not using an SDK with its own retry logic): back
-off on `408`/`409`/`429`/`5xx`, exponential with jitter, mirroring the defaults official OpenAI/
-Anthropic SDKs already ship — a `429` from Kelvran means either a virtual key's own rate limit or
-its budget was exceeded (Section 3). **Corrected 2026-10-08**: the two are now distinguishable without parsing prose — every error body is an OpenAI-shaped JSON envelope `{"error":{"message","type","param","code"}}`; a rate-limit or concurrency rejection carries `type: rate_limit_error` (retry after `Retry-After`), a budget rejection carries `type: insufficient_quota` with no `Retry-After` (do not retry; raise the budget or wait for the reset window). Statuses are unchanged.
+Point an existing client at the gateway: [`how-to/clients/openai-python.md`](../how-to/clients/openai-python.md), [`how-to/clients/openai-node.md`](../how-to/clients/openai-node.md), [`how-to/clients/curl.md`](../how-to/clients/curl.md). What of the OpenAI surface is honoured, ignored or extended: [`reference/compatibility.md`](../reference/compatibility.md). Why there is no first-party SDK: [`explanation/why-no-sdk.md`](../explanation/why-no-sdk.md).
 
 ## 5. Routing & Failover Configuration
 
-Real for static + weighted routing and a single same-model fallback attempt, per `docs/rfcs/2026-09-04-weighted-routing.md`. Multiple `deployments:` entries sharing one `model` value form that model's routing pool; each gets an optional `weight` (integer, omit or `0` for equal-weight round-robin — today's default):
-
-```yaml
-deployments:
-  gpt4o-primary:
-    model: "gpt-4o"
-    provider: "openai"
-    upstream_model: "gpt-4o"
-    base_url: "https://api.openai.com/v1/chat/completions"
-    api_key_env: "OPENAI_API_KEY"
-    weight: 2        # gets ~2x the traffic of an equal-priority sibling deployment
-  gpt4o-secondary:
-    model: "gpt-4o"
-    provider: "openai"
-    upstream_model: "gpt-4o"
-    base_url: "https://api.openai.com/v1/chat/completions"
-    api_key_env: "OPENAI_API_KEY_SECONDARY"
-    weight: 1
-```
-
-Selection is weighted round-robin (`gateway/internal/router`); on an upstream error a deployment without `fallback_chains` gets exactly one fallback attempt to another deployment in the same model's pool — never a retry of the same deployment; a deployment with `fallback_chains` configured walks the chain for the error's class hop by hop (at most three failed hops, a short jittered pause between hops; see `gateway/config.example.yaml`). Once a streamed response has sent its first chunk, no fallback happens at all. **Not implemented yet:** named model *groups* (falling back to a different canonical model, not just a different deployment of the same one), an explicit fallback-chain list, and usage/latency/cost-based selection signals — none of these are in `PRD.md`'s v1 scope.
+[`how-to/routing-and-failover.md`](../how-to/routing-and-failover.md); every key with its default in [`reference/config.md`](../reference/config.md).
 
 ## 6. Cache Configuration
 
-Real for all three layers. L1 (exact-match) and L2 (normalized-match — outer whitespace trim, Unicode NFC, trailing terminal punctuation strip; deliberately not internal-whitespace collapsing or case-folding, since agent traffic can include pasted code) per `docs/rfcs/2026-09-03-cache-l2-normalized-match.md`; L3-lite (MinHash/shingling lexical near-duplicate matching, entity/number/date hard-gated, never real embedding-based semantic similarity) per `docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md`. The whole `cache:` section is optional — omit it for L1's 5-minute/L2's 75-second/L3's 5-minute TTL defaults, each capacity-bounded (LRU, 10,000 entries):
-
-```yaml
-cache:
-  ttl_seconds: 300
-  max_entries: 10000
-  l2:
-    ttl_seconds: 75
-    max_entries: 10000
-  l3:
-    ttl_seconds: 300
-    max_entries: 10000
-```
-
-**Never disable the entity/freshness hard-gate to chase a higher hit rate.** This isn't a suggestion: `AGENTS.md`'s Boundaries section lists this as a hard "Never," specifically because of the CacheAttack finding in `THREAT_MODEL.md` (an 86-90% response-hijack rate against exactly this kind of unguarded semantic cache) — and there is no config knob that weakens it; the hard-gate is unconditional in code, not a setting.
+[`how-to/caching.md`](../how-to/caching.md); why the third layer is lexical and hard-gated, and never a bare similarity threshold: [`explanation/cache-gate.md`](../explanation/cache-gate.md).
 
 ## 7. MCP/A2A Tool Brokering
 
-*(Not implemented yet — v2 per `PRD.md`'s scope.)* Registering an MCP server or A2A agent will go through the same identity/budget objects as outbound LLM routing, per `gateway/ARCHITECTURE.md`'s MCP/A2A Subsystem section. Auth-passthrough is intentionally limited — see `THREAT_MODEL.md`'s Cross-Component MCP/A2A row for why.
+Designed, not shipped: [`explanation/mcp-a2a-status.md`](../explanation/mcp-a2a-status.md).
 
 ## 8. Observability
 
-Real OTel spans on every request (buffered and streaming), per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md`: GenAI semantic-convention attributes, `agent_run_id` propagated via W3C Baggage from the first line of the pipeline through to span close, queryable end to end. Optional `telemetry:` config section — omit for the "stdout" default (spans printed locally, nothing shipped anywhere):
-
-```yaml
-telemetry:
-  exporter: "stdout"   # "stdout" | "otlp" | "none"
-  # otlp_endpoint: "localhost:4318"   # only read when exporter: "otlp"
-```
-
-See `docs/operations/TELEMETRY.md` for the full SLI/dashboard/alerting picture (that operator-facing layer — dashboards, alerting rules — is not part of `gateway` itself and is tracked separately from this real, shipped span-emission mechanism).
+Spans, metrics and log events: [`reference/metrics-and-logs.md`](../reference/metrics-and-logs.md); dashboards, SLOs and alerting: [`operations/TELEMETRY.md`](../operations/TELEMETRY.md).
 
 ## 9. Running Your First Eval Suite
 
-Real end to end: a `Run` model, JSONL Results Store, `Score` model + persistence, and real Anthropic-backed LLM-judge wiring are all shipped, per `docs/rfcs/2026-09-04-evals-rollout-scheduler.md`/`2026-09-04-evals-llm-judge-provider-wiring.md`/`2026-09-04-evals-score-model.md`.
-
-```bash
-# in-process, deterministic scoring against a baked-in expected output:
-evals run --suite path/to/suite.json --scores out/scores.jsonl
-
-# real sandboxed execution (Docker) + persisted Run records:
-evals rollout --suite path/to/suite.json --results out/runs.jsonl --scores out/scores.jsonl
-
-# either command, scored by a real Anthropic call instead of the deterministic scorer
-# (requires ANTHROPIC_API_KEY; pinned default judge model, never a bare alias):
-evals run --suite path/to/suite.json --scores out/scores.jsonl --llm-judge
-
-# a pass rate + Wilson CI over persisted Scores, grouped by scorer_type,
-# with each group's summed cost_usd (deterministic scores cost exactly $0;
-# llm_judge scores carry the real, computed Anthropic API cost):
-evals report --scores out/scores.jsonl
-```
-
-Never a bare pass rate — every `report` output carries a Wilson confidence interval, per `evals/ARCHITECTURE.md`'s harness-transparency design. v1 scoring is a single LLM-judge with bias mitigations (CoT-forcing, reference-guided grading, judge model always ≠ policy model); the adversarial skeptic-panel upgrade is v2 — don't expect panel-level rigor from the first working version, and this guide won't overclaim it once it exists either.
+[`tutorials/first-eval-suite.md`](../tutorials/first-eval-suite.md).
 
 ## 10. Upgrading
 
-See `UPGRADE.md` for the actual migration steps once a breaking change ships in a release (currently empty — none has, though a breaking `evals` CLI change is already on `main` ahead of its next release).
+[`how-to/upgrade.md`](../how-to/upgrade.md); the policy behind it is [`VERSIONING.md`](../VERSIONING.md) and the breaking-change table is [`UPGRADE.md`](../../UPGRADE.md).
 
 ## 11. Troubleshooting
 
-Common misconfigurations will be documented here once there's a real system to misconfigure. For anything not covered, see `SUPPORT.md`.
+[`how-to/troubleshooting.md`](../how-to/troubleshooting.md), derived from [`operations/FAILURE-MODES.md`](../operations/FAILURE-MODES.md). For anything not covered, [`SUPPORT.md`](../../SUPPORT.md).

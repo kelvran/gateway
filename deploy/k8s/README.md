@@ -8,6 +8,20 @@ shape; it has never been applied against a real, live cluster (no cluster
 exists yet to verify against) — treat it as a real starting point, not a
 tested-in-production artifact.
 
+**Corrected 2026-10-08**: "never applied against a real, live cluster"
+above was true when written and went stale a week later — on 2026-09-21
+(commit `e43d1504`) `base/` was applied end to end against a local kind
+cluster, reproducing the Usage section's own `kubectl apply -k base/`
+workflow on a genuinely fresh cluster. That run is what found the
+missing Namespace object (`base/namespace.yaml`'s own header comment),
+the single-node scheduling constraint behind `base/deployment.yaml`'s
+preferred-not-required `podAntiAffinity`, the PDB eviction behaviour,
+and the Secret-wipe footgun recorded under Usage below. What is still
+true: it has never been applied against a production or EKS cluster,
+and `overlays/eks-irsa/` has never been applied against any cluster at
+all (see "Secrets management" below) — "not a tested-in-production
+artifact" stands.
+
 **Updated 2026-09-17/18**, per the backlog Phase 7 infra round: `base/`
 gained a dedicated `serviceaccount.yaml` (needed for IRSA to have anything
 to attach a trust policy to), and a real `overlays/eks-irsa/` now exists —
@@ -50,10 +64,14 @@ Revisit only if a genuine multi-environment templating need appears.
 ## Usage
 
 ```sh
-# 1. Create the (gitignored, never committed) files kustomization.yaml
-#    generates a ConfigMap/Secret from:
-cp ../../gateway/config.example.yaml config.yaml   # fill in real values
-cp ../../.env.example .env                          # fill in real API keys
+# 1. Create the two (gitignored, never committed) local files below.
+#    config.yaml must live in base/, next to kustomization.yaml, whose
+#    configMapGenerator resolves `files:` relative to itself. .env is
+#    never read by kustomize (base/kustomization.yaml has no
+#    secretGenerator) -- only by step 3's `--from-env-file=base/.env`.
+#    (Corrected 2026-10-08: the paths below used to drop them one level up.)
+cp ../../gateway/config.example.yaml base/config.yaml   # fill in real values
+cp ../../.env.example base/.env                          # fill in real API keys
 
 # 2. Review base/deployment.yaml's resource requests/limits against your
 #    own real traffic before applying anything to a live cluster.
@@ -66,9 +84,11 @@ kubectl apply -k base/
 #    reference without erroring; on its own it ships an empty Secret,
 #    and every upstream provider call fails auth. On every cluster type
 #    OTHER than EKS (see "Secrets management" below for the
-#    EKS/ExternalSecrets path):
+#    EKS/ExternalSecrets path). (Corrected 2026-10-08: `base/.env`, matching
+#    where step 1 now puts it — this line and step 1 used to agree on
+#    `.env` one level up; only config.yaml's placement was ever wrong.)
 kubectl create secret generic gateway-upstream-credentials \
-  --namespace kelvran --from-env-file=.env \
+  --namespace kelvran --from-env-file=base/.env \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # 4. envFrom is read only at container START -- the Pods `kubectl apply
@@ -155,7 +175,22 @@ this footgun on every re-apply.
   It has still never been applied against a real cluster (same
   disclosure as everything else in this directory) — the schema
   validation proves the manifests are well-formed, not that they behave
-  correctly against a live ESO controller. On any OTHER cluster type
+  correctly against a live ESO controller. **Corrected 2026-10-08**:
+  "against the live `external-secrets.io` CRD schemas" overstates what
+  CI checks. `.github/workflows/iac-scan.yml`'s `kubernetes-kubeconform`
+  job validates `secretstore.yaml`/`externalsecret.yaml` against the
+  third-party datreeio `CRDs-catalog` mirror (its `-schema-location`
+  points at `raw.githubusercontent.com/datreeio/CRDs-catalog`), not at
+  schemas published by the ESO project itself, and it runs with
+  `-ignore-missing-schemas` — by that flag's own in-file comment, a
+  missing or renamed catalog entry degrades the step to "not validated"
+  and CI still passes. So: well-formed as far as that catalog's copy of
+  the CRD goes, not a guarantee against ESO's own CRDs. Also, "same
+  disclosure as everything else in this directory" no longer holds
+  since the 2026-09-21 kind dry run (see the correction at the top of
+  this file) — that run exercised `base/` only; its commit record
+  (`e43d1504`) never mentions this overlay or an ESO controller, so the
+  overlay specifically remains unapplied anywhere. On any OTHER cluster type
   (self-managed K8s without ESO, or ECS — see "Which annotation for
   which cluster type" above), `base/secret-placeholder.yaml` is still
   the plain `Secret` stub to replace with your own process.
@@ -216,3 +251,39 @@ this footgun on every re-apply.
   reads every credential via `os.Getenv`, and switching to file-mounted
   secrets would need a real code change to the gateway itself, not
   just a manifest edit.
+  **Corrected 2026-10-08**: the rationale above is stale — the code
+  change it says would be needed already shipped, in `gateway/v0.16.0`
+  (2026-09-28; commits `67cb956d` for deployments and `5947a3b4` for
+  Bedrock Guardrails/EmbedSim), and is in `gateway/v0.17.0`, the
+  release `deployment.yaml` pins. Every upstream-provider credential
+  this manifest's `gateway-upstream-credentials` Secret holds has an
+  optional file-mounted alternative: `api_key_file`,
+  `access_key_id_file`, `secret_access_key_file`, `session_token_file`
+  per deployment (`DeploymentConfig.APIKeyFile` and siblings,
+  `gateway/internal/gateway/controlplane/config.go`), and the same
+  three AWS `*_file` fields on `guardrails.bedrock_guardrails` /
+  `guardrails.embed_sim`. `cmd/gateway/main.go` reads the file when a
+  `*_file` field is set and falls back to `os.Getenv` only when it is
+  not, and `dataplane.Pipeline.RunCredentialReloadLoop`
+  (`gateway/internal/gateway/dataplane/credential_reload.go`) re-reads
+  the file on a timer, so a projected-Secret rotation reaches a running
+  Pod without a restart — something the `envFrom` path shipped here can
+  never do, since `os.Getenv` reads an environ fixed at exec time. Going
+  file-mounted is therefore a manifest-plus-`config.yaml` change today
+  (mount the Secret as a volume; set the `*_file` keys — commented
+  examples in `gateway/config.example.yaml`), not a gateway code
+  change. `envFrom.secretRef` still ships here as the default because
+  it is the zero-config path, not because the gateway forces it.
+  Honest scope limit: the admin API tokens (`admin.token_env` and its
+  `viewer_`/`cost_viewer_`/`operator_` siblings), every
+  `redis_password_env`, `alerting.webhook_url_env`, and both
+  `signing_secret_env` keys (`alerting`, and `config_propagation`'s,
+  REQUIRED once its `redis_addr` is set) remain `*_env`-only, so the
+  sentence above is still true for those. They are not upstream-provider
+  credentials, but this manifest gives them nowhere else to go:
+  `deployment.yaml`'s `envFrom` is the Pod's only environment source,
+  so whenever your `config.yaml` sets one of them it goes into step 1's
+  `.env` (per `.env.example`'s own header) and therefore into this same
+  `gateway-upstream-credentials` Secret, restart-only. Checkov's
+  preference still applies to those keys; only the upstream-provider
+  credentials have the file-mounted way out.

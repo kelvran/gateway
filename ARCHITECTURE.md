@@ -7,13 +7,13 @@ This is a thin, current-state index. It does not duplicate the substantive desig
 | Component | Purpose | Deployable | Path |
 |---|---|---|---|
 | Gateway | Unified LLM API proxy/router: schema normalization, routing/failover, quota, streaming, guardrails, cost attribution | `gateway` (Go) | `gateway/` |
-| Cache | Multi-layer response caching (exact/normalized/risk-gated semantic), embedded — not a network hop | `gateway` (Go) | `gateway/internal/cache/` |
+| Cache | Multi-layer response caching (exact/normalized/risk-gated lexical near-duplicate), embedded — not a network hop | `gateway` (Go) | `gateway/internal/cache/` |
 | Evals | Sandboxed agent-rollout execution, LLM-judge scoring, statistics, harness-transparent reporting | `evals` (Python) | `evals/` |
 | Shared contract | Versioned OTel + cost/usage event schema — the only surface either deployable is allowed to depend on across the language boundary | both | `api/` |
 
 ## Request-Flow Walkthrough
 
-**Gateway path** (every inbound LLM call): client/agent request → auth (virtual key → team/budget) → rate limit → Cache lookup (L1 exact → L2 normalized → L3 risk-gated semantic) → hit returns immediately; miss → router selects a provider deployment → provider adapter translates the canonical request → upstream call (streaming pass-through) → response translated back to canonical shape → guardrail post-call check → Cache write-back → cost/OTel finalize (always runs, even on error) → response to client. Full detail: `gateway/ARCHITECTURE.md`.
+**Gateway path** (every inbound LLM call): client/agent request → auth (virtual key → team/budget) → rate limit → Cache lookup (L1 exact → L2 normalized → L3 risk-gated lexical near-duplicate, MinHash/Jaccard behind an entity/number/date hard-gate — not embedding-based semantic) → hit returns immediately; miss → router selects a provider deployment → provider adapter translates the canonical request → upstream call (streaming pass-through) → response translated back to canonical shape → guardrail post-call check → Cache write-back → cost/OTel finalize (always runs, even on error) → response to client. Full detail: `gateway/ARCHITECTURE.md`.
 
 **Evals path** (never in the request path, two independent triggers): *offline* — a rollout scheduler calls Gateway's own API to score a candidate model/prompt/route before it's promoted; *online* — a trace collector samples Gateway's production `gatewayevents`/OTel telemetry, promotes failures into the regression dataset, and feeds judged-quality signals back toward Gateway's routing table and Cache's freshness gate (both are v2+ consumers of this signal, per `PRD.md`'s scope). Full detail: `evals/ARCHITECTURE.md`.
 
@@ -27,4 +27,4 @@ Gateway's `internal/identity` (virtual keys, teams, budgets, tenant resolution) 
 
 ## What This Document Deliberately Does Not Cover
 
-Provider-specific data flows → `docs/PROVIDERS.md`. Attack surface and mitigations → `THREAT_MODEL.md`. Directory-level file map → `REPO_LAYOUT.md`. Release/versioning mechanics → `RELEASE.md`.
+Provider-specific data flows → `docs/operations/PROVIDERS.md`. Attack surface and mitigations → `THREAT_MODEL.md`. Directory-level file map → `REPO_LAYOUT.md`. Release/versioning mechanics → `RELEASE.md`.

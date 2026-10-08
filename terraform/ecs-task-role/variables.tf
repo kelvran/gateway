@@ -5,9 +5,11 @@
 # block entries BEFORE the container starts, and a separate TASK role the
 # gateway's own running process assumes for any AWS API calls it makes
 # itself (Bedrock InvokeModel, if that deployment's provider is
-# "bedrock"). Fargate injects Secrets Manager/SSM values natively via the
-# execution role -- no External Secrets Operator equivalent needed for
-# this target, unlike the EKS path in irsa-trust/.
+# "bedrock"). Fargate injects Secrets Manager values natively via the
+# execution role (SSM Parameter Store would need an ssm:GetParameters
+# grant this module does not add -- see deploy/ecs/README.md's 2026-10-08
+# correction) -- no External Secrets Operator equivalent needed for this
+# target, unlike the EKS path in irsa-trust/.
 
 variable "secrets_manager_secret_arns" {
   description = "Secrets Manager secret ARNs the TASK EXECUTION role is scoped to read and inject into the container at launch via the task definition's own `secrets` block (see ../../deploy/ecs/). Required and must be non-empty, same reasoning as irsa-trust's own equivalent variable."

@@ -23,9 +23,29 @@ import (
 // impossible, and sniffing headers to pick a dialect would be a second
 // contract to keep -- so one document carries all three.
 //
+// Those field lists are design input taken from the clients' published API
+// shapes, not behaviour observed against the clients themselves: no test in
+// this repository drives the real openai/anthropic SDKs or Claude Code at
+// this route, and models_integration_test.go checks the document only by
+// decoding it into two hand-written structs that mirror the shapes above.
+// Claude Code in particular is not made usable by this route today: with
+// `ANTHROPIC_BASE_URL` pointed here and gateway model discovery enabled
+// its `GET /v1/models?limit=1000` would be answered (on the
+// `ANTHROPIC_AUTH_TOKEN` path its credential is a bearer, so auth already
+// fits; Kelvran never reads `x-api-key` -- Anthropic's Claude Code
+// gateway-protocol page, recorded in
+// docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md),
+// but every chat turn is a `POST /v1/messages` Kelvran does not serve (see
+// docs/explanation/mcp-a2a-status.md and docs/reference/compatibility.md),
+// and its picker then keeps only ids containing `claude` or `anthropic`.
+// The Claude Code fields are carried now so the document does not change
+// shape when that ingress (round4 plan item 11) lands.
+//
 // The pattern is registered as the EXACT path "/v1/models" (no trailing
 // slash), so "/v1/models/" is a 404, never a ServeMux 301: Claude Code
-// treats any redirect from this route as a failed provider.
+// treats any redirect from this route as a failed provider (same
+// gateway-protocol page; checked here with a redirect-refusing http.Client
+// in models_integration_test.go, not with Claude Code itself).
 //
 // `limit` defaults to "everything" (the OpenAI SDK reads exactly one page;
 // Anthropic's default of 20 would silently drop models) and is clamped to

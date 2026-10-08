@@ -13,10 +13,16 @@
 // client-facing gateway — see that RFC's "never internet-facing by
 // default" section for why.
 //
-// Two credential tiers exist, per
-// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md: Credentials.Admin
-// (required, full read/write) and an optional Credentials.Viewer
-// (read-only — GET /admin/config only, never a write route). Every
+// Four credential tiers exist — see the Credentials struct's own doc
+// comment for each tier's exact route scope. Credentials.Admin (required,
+// full read/write) and an optional Credentials.Viewer (read-only — every
+// GET route except pprof, never a write route), per
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md; plus two narrower
+// optional tiers added later: Credentials.CostViewer (authenticates only
+// GET /admin/virtual_keys/{name}/spend) and Credentials.Operator (the
+// reversible, single-named-resource writes only — virtual-key rotate,
+// deployment reweight, cache erase — per
+// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md). Every
 // successful virtual-key create/delete is logged (name, never the
 // credential/key_hash value) via the Logger passed to Handler.
 package admin
@@ -316,11 +322,13 @@ func requireBearerToken(token string, next http.Handler) http.Handler {
 
 // requireEitherBearerToken wraps next so a request authenticates with
 // EITHER creds.Admin OR, when configured (non-empty), creds.Viewer — used
-// for every read-only route (GET /admin/config, GET /admin/prompts and
-// its two sibling routes). Write routes (POST/DELETE
-// /admin/virtual_keys/{name}, POST/DELETE /admin/prompts/{id}) always use
-// requireBearerToken with creds.Admin specifically, never this function,
-// per docs/rfcs/2026-09-09-gateway-admin-viewer-role.md.
+// for every read-only route except GET /admin/virtual_keys/{name}/spend
+// (which adds CostViewer via requireAnyBearerToken) and pprof (Admin-only
+// via requireBearerToken). Write routes never use this function: the
+// Admin-only ones use requireBearerToken with creds.Admin, the three
+// Operator-tier ones use requireAdminOrOperatorBearerToken, per
+// docs/rfcs/2026-09-09-gateway-admin-viewer-role.md and
+// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md.
 //
 // Stashes WHICH tier authenticated into the request's context (never the
 // credential value itself) via contextWithCredentialTier, so a read
@@ -355,13 +363,16 @@ type tokenTier struct {
 
 // requireAnyBearerToken wraps next so a request authenticates with ANY of
 // pairs' non-empty tokens, stashing whichever tier matched into the
-// request's context exactly like requireEitherBearerToken does. Used only
-// for the new GET /admin/virtual_keys/{name}/spend route — every existing
-// route keeps using requireBearerToken/requireEitherBearerToken,
-// unchanged. A zero-value token in pairs (a tier that was never
-// configured, e.g. an unset CostViewer) never matches any presented
-// credential, mirroring requireEitherBearerToken's own "Viewer, when
-// empty, authenticates nothing" convention — skipped explicitly rather
+// request's context exactly like requireEitherBearerToken does. Used
+// directly by GET /admin/virtual_keys/{name}/spend (the one route the
+// CostViewer tier authenticates) and, through
+// requireAdminOrOperatorBearerToken below, by the three Operator-tier
+// write routes; every other route keeps using
+// requireBearerToken/requireEitherBearerToken. A zero-value token in
+// pairs (a tier that was never configured, e.g. an unset CostViewer)
+// never matches any presented credential, mirroring
+// requireEitherBearerToken's own "Viewer, when empty, authenticates
+// nothing" convention — skipped explicitly rather
 // than compared, since bearerToken already guarantees a non-empty
 // presented value whenever ok is true, so an empty pair.token could only
 // ever match a request bearerToken would have already rejected, making
@@ -411,9 +422,16 @@ func requireAdminOrOperatorBearerToken(creds Credentials, next http.Handler) htt
 type credentialTierContextKey struct{}
 
 // contextWithCredentialTier/credentialTierFromContext stash and retrieve
-// which credential tier ("admin"/"viewer") authenticated the current
-// request — set only by requireEitherBearerToken, read only by the 4
-// read-route audit-log call sites below. credentialTierFromContext
+// which credential tier ("admin"/"viewer"/"cost_viewer"/"operator")
+// authenticated the current request — set by requireEitherBearerToken
+// and by requireAnyBearerToken (and so by requireAdminOrOperatorBearerToken,
+// which wraps it); read by every audit-log call site below whose
+// authorized_by value is not already fixed by its middleware — the
+// read-route call sites (GET /admin/audit has none) plus the three
+// Operator-tier write routes (rotate, deployment reweight, cache erase).
+// The Admin-only write routes sit behind requireBearerToken, which
+// stashes nothing, so their audit lines record the literal "admin"
+// instead of calling credentialTierFromContext. credentialTierFromContext
 // returns "" (never a fabricated default) if the context has no such
 // value at all, e.g. a direct unit-test call to a handler that bypasses
 // the middleware entirely.
@@ -524,21 +542,34 @@ func queryAuditLogHandler(store *auditstore.Store) http.HandlerFunc {
 }
 
 // maxAdminIdentifierLen bounds a caller-supplied identifier (a virtual
-// key name or prompt id) accepted at write time by upsertVirtualKeyHandler/
-// upsertPromptHandler. **Fixed 2026-09-17, real bug**: neither handler
-// validated length or character content on this path parameter at all
-// before this check existed -- it becomes a map key in every in-memory
-// store this identifier touches (identity.Verifier, budget.Tracker,
+// key name, prompt id, or prompt label) accepted at write time by
+// upsertVirtualKeyHandler/upsertPromptHandler/setPromptLabelHandler.
+// **Fixed 2026-09-17, real bug**: neither handler validated length or
+// character content on this path parameter at all before this check
+// existed -- it becomes a map key in every in-memory store this
+// identifier touches (identity.Verifier, budget.Tracker,
 // ratelimit.KeyLimiter, prompt.Store) and is logged on every future
 // request that references it. 256 is far beyond any realistic name/id
 // while still bounding an operator mistake or a pathologically long
 // value to a known, finite cost -- checked only at WRITE time (upsert),
 // never at read/delete/rotate, where an oversized value just fails an
 // ordinary "not found" lookup with no growth risk.
+// **Corrected 2026-10-08**: "neither handler" above is now three --
+// setPromptLabelHandler validates the label too (1670f9f9, also
+// 2026-09-17; in gateway/v0.17.0), so "WRITE time" means upsert or
+// label set -- and "length or character content" names what was
+// MISSING, not what this check added: length is the ONLY property
+// bounded (256 is a Go len, i.e. bytes, not runes); character content
+// is still not validated by this check, and prompt.Store.Upsert/
+// SetLabel reject only "", so any non-empty byte sequence up to this
+// length is accepted as-is.
 const maxAdminIdentifierLen = 256
 
-// validateAdminIdentifier rejects an empty or oversized identifier --
-// see maxAdminIdentifierLen's own doc comment.
+// validateAdminIdentifier rejects an oversized identifier (byte length
+// above maxAdminIdentifierLen) and nothing else: it does not reject an
+// empty value (each caller checks for "" itself, before calling this) and
+// does not validate character content. See maxAdminIdentifierLen's own
+// doc comment.
 func validateAdminIdentifier(id, fieldName string) error {
 	if len(id) > maxAdminIdentifierLen {
 		return fmt.Errorf("%s exceeds %d characters", fieldName, maxAdminIdentifierLen)
@@ -590,6 +621,22 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 		// non-fatal but equally confusing operator mistake worth
 		// rejecting up front rather than producing an alert threshold
 		// that can never fire (>100) or fires immediately (<0).
+		// **Corrected 2026-10-08**: two claims above were wrong. "line 639
+		// below" was a stale line-number pointer: the convention is
+		// identity.VirtualKey.BudgetUSD's own doc comment, gated on
+		// BudgetUSD.IsPositive() by dataplane's checkBudgetWarnThreshold/
+		// checkBudgetAlertLadder and by getVirtualKeySpendHandler below.
+		// And budget_warn_percent, despite its name, is a FRACTION of
+		// budget_usd (0.8 means 80%, per identity.VirtualKey.BudgetWarnPercent's
+		// own doc comment; checkBudgetWarnThreshold computes
+		// warnAt = budget_usd * budget_warn_percent), so the [0, 100]
+		// check below is only a coarse sign/magnitude sanity bound: a
+		// negative value is rejected (dataplane would otherwise treat
+		// <= 0 as "disabled" -- it never "fires immediately"), while the
+		// common 80-instead-of-0.8 mistake passes it and yields a
+		// threshold far above the cap that can never fire before the
+		// hard budget cutoff. The static-YAML path (controlplane's config
+		// loader, getFloat) applies no range check at all.
 		if req.BudgetUSD.IsNegative() {
 			http.Error(w, "budget_usd must not be negative", http.StatusBadRequest)
 			return

@@ -12,13 +12,31 @@ kelvran/
 │   ├── otel/                   OTel semantic-convention schema (proto)
 │   └── gatewayevents/          cost/usage/decision event schema (proto)
 ├── scripts/
-│   └── README.md               dev-script index: stubbed-now vs. deferred, and why
-├── docs/
+│   └── README.md               dev-script + Makefile-target index; the targets it lists are real, not stubs (see its own header)
+├── docs/                      user documentation set (rebuilt 2026-10-08) + the engineering record
+│   ├── README.md               landing page: routes a reader to the tutorials/how-to/reference/explanation page for their job
+│   ├── llms.txt                machine-readable index of the same set, for coding agents and LLM clients
+│   ├── VERSIONING.md           what a version number promises, support window, surface retirement (policy in force from 2026-10-08)
+│   ├── tutorials/              quickstart, first-virtual-key-and-budget, first-eval-suite
+│   ├── how-to/                 one page per operator task: provider-credentials, virtual-keys-and-budgets, routing-and-failover,
+│   │                            caching, streaming, structured-output, prompt-management, admin-api-rbac, backup-and-restore,
+│   │                            rotate-credentials, upgrade, troubleshooting, configure-from-a-coding-agent
+│   │   ├── clients/             openai-python, openai-node, curl — pointing a client you already use at the gateway
+│   │   └── deploy/              docker-compose, kubernetes-kustomize, ecs-fargate, systemd-package
+│   ├── reference/              data-plane-api, admin-api, config, metrics-and-logs, error-codes, release-artifacts, compatibility,
+│   │                            glossary, container-image (the one reference page committed before this rebuild, 7686a0c8)
+│   ├── explanation/            architecture, security-model, versioning, why-no-sdk, cache-gate, design-decisions, mcp-a2a-status
 │   ├── decisions/              ADRs (MADR format) for the foundational, hard-to-reverse calls
-│   ├── rfcs/                   template + future major design proposals (empty until one is written)
+│   ├── rfcs/                   dated design proposals (YYYY-MM-DD-[<component>-]<title>.md, 2026-09-02 onward; the component segment consistently from 2026-09-05), never rewritten —
+│   │                            history, not current behaviour (rfcs/README.md); TEMPLATE.md for new ones
 │   ├── research/                running, checkbox-driven pre-RFC question list — feeds rfcs/
-│   ├── plans/                   superpowers-style task-by-task implementation-plan template
+│   ├── plans/                   task-by-task execution plans from 2026-09-02..04, each naming the RFC it implements — what was planned,
+│   │                            not what shipped (plans/README.md); TEMPLATE.md kept
+│   ├── upgrade-research/       dated research reports (<topic>-YYYY-MM-DD.md, since 2026-09-06; one synthesis is date-first) nearly all ending in point-in-time
+│   │                            verdicts (build_now / not_yet / never / deferred, variously spelled) — proposals and evidence, not descriptions of the system;
+│   │                            excluded from scripts/check-doc-paths.sh because the reports cite paths they only proposed
 │   ├── agents/                 AI-agent-facing memory/log files (not application logs)
+│   │   ├── README.md            what these files are for; why LOGS.md is excluded from the docs-path CI check
 │   │   ├── MEMORY.md            curated, ≤200-line, durable facts/gotchas
 │   │   ├── LOGS.md              append-only chronological session log
 │   │   ├── ETHOS.md             decision-priority framework + core operating principles
@@ -28,18 +46,28 @@ kelvran/
 │   ├── operations/
 │   │   ├── DEPLOY.md              deployment models, config reference, compat matrix
 │   │   ├── TELEMETRY.md           SLIs/SLOs, dashboards, alerting, privacy defaults
-│   │   └── PROVIDERS.md           provider/data-flow inventory (moved here from docs/ root)
+│   │   ├── PROVIDERS.md           provider/data-flow inventory (moved here from docs/ root)
+│   │   ├── FAILURE-MODES.md       per-dependency table: what a failure does to requests, how the operator sees it (2026-10-08)
+│   │   ├── BENCHMARKS.md          benchmark methodology + harness; no published numbers yet, only regression trends (2026-10-08)
+│   │   ├── DATA-SUBJECT-REQUESTS.md  operator procedure for data-subject (erasure/access) requests (2026-09-18)
+│   │   ├── PROCUREMENT.md         what an enterprise procurement review asks, answered for Kelvran (2026-09-23)
+│   │   ├── benchmarks/            dated raw benchmark runs (e.g. 2026-10-08-dev-laptop/)
+│   │   └── grafana/, *.json, vector-*.yaml   Grafana/Prometheus/Alertmanager provisioning, dashboard JSON, Vector sinks
+│   │                              shipping gatewayevents to S3/GCS
 │   ├── development/
 │   │   └── BRANCHES.md            branch strategy, tag-cutting mechanics
-│   │                              (a symbol-level docs/development/CODE_MAP.md belongs here once
-│   │                               gateway/evals have real package boundaries — not created yet;
-│   │                               this directory-only view is the pre-code substitute)
+│   │                              (a symbol-level code map, `CODE_MAP.md` in this directory, is still not created;
+│   │                               gateway/evals have had real package boundaries since 2026-09 — today the package-level
+│   │                               maps are gateway/ARCHITECTURE.md § Package Layout and evals/ARCHITECTURE.md § Package Layout)
 │   └── users/
-│       └── USER_GUIDE.md          operator how-to-run-and-configure guide
+│       └── USER_GUIDE.md          formerly the operator how-to-run-and-configure guide; since 2026-10-08 an eleven-heading stub
+│                                   whose headings each point at the tutorials/ how-to/ reference/ explanation/ pages that own the topic
+│                                   (several also cite operations/ or a root file) — start at docs/README.md instead
 ├── STATUS.md                   live, continuously-updated project-status dashboard
 ├── SUPPORT.md                   where to get help; routes vulnerabilities to SECURITY.md
 ├── RELEASE_NOTES.md             user-facing narrative release notes, spans both deployables
-├── Makefile                     placeholder entry points (help/setup/lint/test/verify)
+├── Makefile                     real targets (.PHONY list, Makefile:1): help setup config-safe lint[-gateway|-evals|-proto]
+│                                test[-gateway|-evals] verify gen-proto check-proto bench bench-ci (the last two on main since 2026-10-08, not in gateway/v0.17.0)
 ├── PRD.md                     one-time, dated: what to build and why
 ├── DESIGN.md                   one-time, dated: whole-system design sketch + the 3 foundational decisions' rationale
 ├── ARCHITECTURE.md             root, thin index — current-state component map and request flow
@@ -53,7 +81,7 @@ kelvran/
 ├── CODE_OF_CONDUCT.md
 ├── CODEOWNERS
 ├── RELEASE.md                   release runbook, contract-version bump procedure
-├── UPGRADE.md                    breaking-change/migration guide (stub until the first one)
+├── UPGRADE.md                    breaking-change/migration guide; first row landed (evals/v0.2.0 `--scores`), policy in docs/VERSIONING.md
 ├── DEPRECATED.md                 deprecation list (stub until the first one)
 ├── LICENSE
 └── README.md                    pitch, comparison table, links to everything above

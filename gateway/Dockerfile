@@ -22,9 +22,19 @@ FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441
 
 WORKDIR /src
 
-# Cache module downloads separately from source changes. This pass has
-# no third-party Go dependencies (go.sum doesn't exist yet), but this
-# still keeps the Dockerfile correct once real deps are ever added.
+# Cache module downloads separately from source changes. When this file
+# was first written (2026-09-02) the module had no third-party Go
+# dependencies and no go.sum; that is no longer true -- gateway/go.mod
+# carries a real direct `require` block today (aws-sdk-go-v2, go-redis,
+# bbolt, chromem-go, OpenTelemetry, protobuf, ...) and gateway/go.sum is
+# committed and is CI's Go cache key (.github/workflows/ci.yml, the
+# `gateway` job's setup-go step, via cache-dependency-path), so this
+# layer does real work.
+# Only go.mod is copied in this layer (go.sum did not exist when the
+# layer was written); the committed go.sum arrives with the `COPY . .`
+# below, ahead of `go build`, which verifies every module against it.
+# Consequence, named rather than hidden: this cache layer is keyed on
+# go.mod alone, so a go.sum-only change does not invalidate it.
 COPY go.mod ./
 RUN go mod download
 

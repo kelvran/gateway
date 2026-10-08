@@ -10,6 +10,17 @@
 // SSE, and is deliberately deferred to a follow-on RFC (see
 // gateway/internal/streaming/types.go's doc comment, which already
 // scopes Bedrock out of streaming.StreamingAdapter).
+// Corrected 2026-10-08: the paragraph above describes this adapter's first
+// pass only and is historical. ConverseStream shipped in gateway 0.2.0
+// (gateway/changelog/0.2.0.md, per docs/rfcs/2026-09-04-bedrock-converse-stream.md)
+// and lives in this same package: stream.go's StreamDecoder decodes the
+// binary eventstream.Message frames directly, driven by the dataplane's
+// streamDeploymentBedrock (internal/gateway/dataplane/streaming.go), with
+// the upstream URL derived by swapping the deployment's /converse path
+// segment for /converse-stream (dataplane.go's streamUpstreamURL). The
+// streaming/types.go remark still holds only in its narrower, current
+// form: Bedrock streams but does NOT implement streaming.StreamingAdapter,
+// because its framing is binary, not SSE.
 //
 // Like anthropic/gemini, this adapter earns its keep handling real
 // normalization hazards:

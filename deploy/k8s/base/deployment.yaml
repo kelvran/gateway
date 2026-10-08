@@ -106,7 +106,22 @@ spec:
           # "Image should use digest"). Re-pin this to whatever the
           # current release is before applying -- this value goes stale
           # the moment a newer version ships, same as any other pinned
-          # dependency.
+          # dependency. The digest below is v0.17.0's single-platform
+          # (linux/amd64) MANIFEST digest, not a multi-platform index
+          # digest: that tag (cut 2026-10-07) predates the amd64+arm64
+          # build (`platforms: linux/amd64,linux/arm64` in the
+          # publish-image job of .github/workflows/ci.yml), which is on
+          # main since 2026-10-08, not in gateway/v0.17.0 -- so arm64
+          # node pools cannot use this pin; they need an image built from
+          # main at or after commit 7686a0c8 (2026-10-08): in practice the
+          # next release tag. When re-pinning to any later tag, pin
+          # the INDEX digest (the `Digest:` line of `docker buildx
+          # imagetools inspect ghcr.io/kelvran/gateway:v<X.Y.Z>`), never
+          # one per-platform manifest digest, so every node resolves its
+          # own platform from the one reference -- see the "multi-arch
+          # image" paragraph of docs/operations/DEPLOY.md and RELEASE.md's
+          # verification block (`cosign sign --recursive` signs the index
+          # and each platform manifest, so the index digest verifies).
           image: ghcr.io/kelvran/gateway:v0.17.0@sha256:f649d74d13bb17ebc132af6c5a21be936528955ac7ee14152421f3267ff03b3a
           # Container-level securityContext, distinct from the pod-level
           # block above (Checkov's own CKV_K8S_30 checks for this

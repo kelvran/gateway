@@ -50,13 +50,26 @@ virtual_keys:
       # Optional; omit to disable. A separate tokens-per-minute
       # dimension alongside burst/refill_per_second's request-count one,
       # per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md. Real token
-      # usage is only known after a request completes, so this is
-      # retrospective: tpm_capacity/tpm_refill_per_second track a
-      # balance debited by each real completion's actual token count,
-      # and a request is rejected only when that balance (from past
-      # usage) is already at or below zero — never a prediction of the
-      # request being decided. In-memory rate-limit mode only in v1 — a
-      # no-op if rate_limit.redis_addr (below) is also configured.
+      # usage is only known after a request completes, so the pre-call
+      # check never prices THIS request: in-memory mode rejects only when
+      # the bucket's balance (from past usage) is already at or below
+      # zero (internal/ratelimit.TokenBucket.ReserveTPM) and, since
+      # docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md,
+      # provisionally reserves an estimate (this bucket's running mean of
+      # past real counts; cold start, its full balance) under that same
+      # lock, reconciled to the real token count once the response is
+      # known — so concurrent requests can no longer all pass one check.
+      # Enforced in BOTH in-memory and Redis mode since gateway/v0.14.0
+      # (2026-09-21, gateway/changelog/0.14.0.md): with rate_limit.redis_addr
+      # (below) set, the same reserve-then-reconcile runs as a GCRA
+      # admission check inside Redis (redislimiter.Limiter.AllowTPM/AdjustTPM;
+      # the estimate there is ALWAYS the configured tpm_capacity, never
+      # a running mean — Redis mode keeps no per-key usage history, a
+      # disclosed v1 simplification per
+      # internal/ratelimit.KeyLimiter.ReserveTPM) — the RFC's original
+      # "in-memory only in v1, a no-op under Redis" scope limit is
+      # closed; see internal/ratelimit.KeyConfig.TPMCapacity's doc
+      # comment.
       tpm_capacity: 100000
       tpm_refill_per_second: 1000
       # Optional; omit for no per-model override. The "consumer x model"
@@ -453,10 +466,14 @@ telemetry:
 #     # session_token_file: "/var/run/secrets/kelvran/session-token"   # optional
 #     similarity_threshold: 0.82
 
-# Admin HTTP surface: read-only config introspection (GET /admin/config)
-# plus live, no-restart virtual-key mutation (POST/DELETE
+# Admin HTTP surface: originally read-only config introspection (GET
+# /admin/config) plus live, no-restart virtual-key mutation (POST/DELETE
 # /admin/virtual_keys/{name}) — see
-# docs/rfcs/2026-09-05-gateway-admin-api.md. Optional: omit this whole
+# docs/rfcs/2026-09-05-gateway-admin-api.md — since grown to the full
+# route set internal/admin/admin.go registers: virtual-key list/rotate/
+# spend/inflight, prompt CRUD/versions/labels, POST /admin/backup,
+# deployment reweight, cache erase, GET /admin/audit and pprof, each
+# gated per the credential tiers described below. Optional: omit this whole
 # section (the default) for no admin server at all. token_env names the
 # environment variable holding the admin bearer credential — a completely
 # separate credential space from the client-facing virtual_keys above;
@@ -471,7 +488,14 @@ telemetry:
 # credential can GET /admin/config but never mutate virtual keys; omit
 # it for the single-credential behavior every config had before this
 # field existed. Same "must resolve non-empty or refuse to start" rule
-# as token_env. enable_pprof (added 2026-09-14, default false) mounts
+# as token_env. cost_viewer_token_env (added 2026-09-15) is an optional,
+# narrower-than-viewer third read-only tier, per
+# docs/upgrade-research/multi-tenancy-access-control-2026-09-14.md: a
+# cost-viewer credential authenticates ONLY
+# GET /admin/virtual_keys/{name}/spend — never config, prompts, or any
+# write route (internal/admin/admin.go's spend route is the one place it
+# is accepted, alongside admin/viewer); same refuse-to-start rule
+# (cmd/gateway). enable_pprof (added 2026-09-14, default false) mounts
 # net/http/pprof's standard handler set under /admin/debug/pprof/, on
 # this same mux, gated behind token_env specifically -- never
 # viewer_token_env, since profiling data is a stronger information-
@@ -483,21 +507,24 @@ telemetry:
 # always handled as "create fresh" regardless of this setting): "fail"
 # is a fatal startup error, exactly as every release before this field
 # existed; "reset" renames the corrupt file aside (as
-# "<path>.corrupt-<unix-seconds>", never deleted -- preserving forensic
+# "<path>.corrupt-<unix-seconds>-<nanoseconds>", cmd/gateway's
+# "%s.corrupt-%d-%d" format, never deleted -- preserving forensic
 # evidence) and starts fresh, logged loudly either way. See
 # docs/upgrade-research/state-durability-operational-recovery-2026-09-15.md
 # Finding 4 for the full design rationale, including why this
 # deliberately isn't defaulted to "reset".
 # backup_dir, if set, enables POST /admin/backup: a live bbolt backup of
 # every configured, persist_path-backed durable store, written to this
-# directory. Empty (the default, omitted here) disables the route
-# entirely -- mirrors every other optional admin capability's
+# directory. Empty (the default) disables the capability: the route
+# stays mounted but answers 501 "admin.backup_dir is not configured"
+# (internal/admin/admin.go's backupHandler) -- mirrors every other
+# optional admin capability's
 # "off unless configured" posture. enable_audit_log (default true when
 # the whole "admin" section is present but this key is unset, or absent
 # entirely) gates every admin-route audit-log line behind a single
 # config field -- set to false only to explicitly opt OUT, e.g. because
 # a separate compliance pipeline already captures the same audit trail.
-# audit_log_path (optional, omitted here) ALSO appends every admin audit
+# audit_log_path (optional) ALSO appends every admin audit
 # line to an append-only JSONL file at that path and registers
 # GET /admin/audit (admin or viewer token) to query it. Only honoured when
 # token_env is set -- the whole admin server is -- so a path set without a
@@ -527,11 +554,13 @@ telemetry:
 #   listen_addr: "127.0.0.1:8081"
 #   token_env: "KELVRAN_ADMIN_TOKEN"
 #   viewer_token_env: "KELVRAN_ADMIN_VIEWER_TOKEN"
+#   cost_viewer_token_env: "KELVRAN_ADMIN_COST_VIEWER_TOKEN"
 #   operator_token_env: "KELVRAN_ADMIN_OPERATOR_TOKEN"
 #   enable_pprof: false
 #   on_corrupt_store: "fail"
 #   backup_dir: "/var/lib/kelvran-gateway/backups"
 #   enable_audit_log: true
+#   audit_log_path: "/var/lib/kelvran-gateway/admin-audit.jsonl"
 #   persist_path: "/var/lib/kelvran-gateway/identity.db"
 #   # redis_addr: "localhost:6379"
 #   # redis_password_env: "REDIS_ADMIN_PASSWORD"
@@ -594,7 +623,11 @@ telemetry:
 # deferred, per gateway/ARCHITECTURE.md. Optional: omit this whole
 # section (the default) for no probing at all — every configured
 # deployment stays unconditionally eligible, exactly as before this
-# feature existed.
+# feature existed. interval_seconds has NO built-in default: omitted or
+# <= 0 disables probing (controlplane.HealthProbeConfig;
+# dataplane.Pipeline.RunHealthProbeLoop returns immediately, so no probe
+# ever runs) and leaves /readyz vacuously ready — the 300 below is the
+# RFC's recommended cadence, not code.
 #
 # A deployment that just recovered (its healthy_threshold-th consecutive
 # success) does not immediately receive its full configured routing

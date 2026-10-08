@@ -1,0 +1,68 @@
+# Kelvran
+
+> Self-hosted, OpenAI-compatible LLM gateway in Go: POST /v1/chat/completions, POST /v1/embeddings and GET /v1/models in front of Amazon Bedrock, Anthropic, OpenAI, Google Gemini and OpenAI-compatible endpoints, with virtual keys and budgets, weighted routing and classified failover, a hard-gated three-layer response cache, guardrails, an admin API and OpenTelemetry.
+
+Clients call the gateway at a base URL ending in /v1 with `Authorization: Bearer <virtual key secret>`; the gateway stores only the SHA-256 of the secret (`key_hash`). The admin API is a separate listener (default 127.0.0.1:8081) with admin, operator, viewer and cost-viewer bearer tokens read from environment variables. Configuration is one YAML file; `gateway -config config.yaml -validate` checks it without starting anything; `/healthz` answers 200 when the process is up and `/readyz` reports model readiness when health probing is configured.
+
+Versions follow docs/VERSIONING.md (gateway/vX.Y.Z and evals/vX.Y.Z; a PATCH never breaks, a MINOR may with an UPGRADE.md row). There is no OpenAPI document yet; the data-plane and admin references below are the route tables. Everything linked here is a raw file on the main branch of github.com/kelvran/gateway.
+
+## Docs
+- [Quickstart](https://raw.githubusercontent.com/kelvran/gateway/main/docs/tutorials/quickstart.md): one deployment, one virtual key, one chat completion in ten minutes
+- [First virtual key and budget](https://raw.githubusercontent.com/kelvran/gateway/main/docs/tutorials/first-virtual-key-and-budget.md): generate and hash a key, give it a budget and a rate limit, see the 429 types
+- [First eval suite](https://raw.githubusercontent.com/kelvran/gateway/main/docs/tutorials/first-eval-suite.md): the evals CLI: run, rollout, report
+- [Configure Kelvran from a coding agent](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/configure-from-a-coding-agent.md): what an agent needs, the -validate loop, safety boundaries, recipes
+- [Provider credentials](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/provider-credentials.md): per-provider credential keys, *_env and hot-reloaded *_file, Bedrock SigV4
+- [Virtual keys and budgets](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/virtual-keys-and-budgets.md): key_hash, budgets, rate and TPM limits, allowed models, persistence, the admin API
+- [Routing and failover](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/routing-and-failover.md): deployments sharing a model, weights, fallback chains by error class, health probing
+- [Caching](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/caching.md): the three cache layers, their keys and defaults, the hard gate, cache erase
+- [Streaming](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/streaming.md): SSE framing, usage chunk, in-band error frame, what headers streams carry
+- [Structured output](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/structured-output.md): response_format support per provider
+- [Prompt management](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/prompt-management.md): prompt_id, labels and versions, the prompt store
+- [Admin API and role tiers](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/admin-api-rbac.md): the separate admin listener and its token tiers
+- [Backup and restore](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/backup-and-restore.md): persistence files, the backup route, restore flags
+- [Rotate credentials](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/rotate-credentials.md): file-backed credentials reload without a restart
+- [Upgrade](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/upgrade.md): images, packages, rolling restarts, the stop budget
+- [Troubleshooting](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/troubleshooting.md): symptom, check, fix
+- [OpenAI Python SDK](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/openai-python.md): point the official Python client at the gateway
+- [OpenAI Node SDK](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/openai-node.md): point the official Node client at the gateway
+- [curl](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/curl.md): exact requests for every data-plane route
+
+## Reference
+- [Data-plane API](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/data-plane-api.md): every route, header and status code
+- [Admin API](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/admin-api.md): every admin route with its token tier
+- [Configuration](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/config.md): every config key with type, default and validation rule
+- [Example configuration](https://raw.githubusercontent.com/kelvran/gateway/main/gateway/config.example.yaml): the commented example every key is documented in
+- [Error codes](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/error-codes.md): the OpenAI-shaped error envelope and every type/code pair
+- [Metrics and logs](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/metrics-and-logs.md): every kelvran.* metric and log event
+- [Compatibility](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/compatibility.md): which OpenAI request fields are honoured, ignored or extended
+- [Release artifacts](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/release-artifacts.md): archives, packages, checksums, signatures, how to verify
+- [Container image](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/container-image.md): tags, platforms, verification, the runtime contract
+- [Glossary](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/glossary.md): the terms the other pages use
+
+## Operations
+- [Deploy with Docker Compose](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/deploy/docker-compose.md): single host, optional Redis and observability bundle
+- [Deploy on Kubernetes](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/deploy/kubernetes-kustomize.md): the Kustomize base and the EKS overlay
+- [Deploy on ECS Fargate](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/deploy/ecs-fargate.md): the task-definition module and what you bring yourself
+- [Install the package](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/deploy/systemd-package.md): deb, rpm, apk and the hardened systemd unit
+- [Deployment topologies](https://raw.githubusercontent.com/kelvran/gateway/main/docs/operations/DEPLOY.md): the operator reference for every topology
+- [Failure modes](https://raw.githubusercontent.com/kelvran/gateway/main/docs/operations/FAILURE-MODES.md): what each dependency's failure does to requests and startup
+- [Telemetry](https://raw.githubusercontent.com/kelvran/gateway/main/docs/operations/TELEMETRY.md): SLIs, dashboards, alerting
+- [Benchmarks](https://raw.githubusercontent.com/kelvran/gateway/main/docs/operations/BENCHMARKS.md): method, scenarios, the numbers on record and how to read them
+- [Providers](https://raw.githubusercontent.com/kelvran/gateway/main/docs/operations/PROVIDERS.md): data classes sent to each provider and where they reside
+
+## Policies
+- [Versioning](https://raw.githubusercontent.com/kelvran/gateway/main/docs/VERSIONING.md): what a version number promises, 0.x rules, support window
+- [Upgrade notes](https://raw.githubusercontent.com/kelvran/gateway/main/UPGRADE.md): every breaking change and its migration
+- [Security](https://raw.githubusercontent.com/kelvran/gateway/main/SECURITY.md): how to report a vulnerability privately
+- [Threat model](https://raw.githubusercontent.com/kelvran/gateway/main/THREAT_MODEL.md): what is defended against and how
+- [Support](https://raw.githubusercontent.com/kelvran/gateway/main/SUPPORT.md): where to ask
+
+## Optional
+- [Architecture](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/architecture.md): the pipeline, the embedded cache, where state lives
+- [Security model](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/security-model.md): what the gateway protects and does not
+- [Why there is no SDK](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/why-no-sdk.md)
+- [The cache gate](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/cache-gate.md): why the lexical tier is hard-gated
+- [Design decisions](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/design-decisions.md): the ADRs and the decision log, one line each
+- [MCP/A2A status](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/mcp-a2a-status.md): designed, not shipped
+- [Unreleased changes](https://raw.githubusercontent.com/kelvran/gateway/main/gateway/changelog/unreleased.md): what is on main but not yet in a gateway release
+- [Repository README](https://raw.githubusercontent.com/kelvran/gateway/main/README.md): feature table and quickstart

@@ -1,6 +1,14 @@
 # ECS Fargate task-definition template -- the ECS-native equivalent of
-# deploy/k8s/base/deployment.yaml, mirroring its own securityContext/
-# resource-sizing/probe disclosures where an ECS equivalent exists.
+# deploy/k8s/base/deployment.yaml, mirroring its own resource-sizing
+# (cpu/memory/container_memory below) and probe disclosures (main.tf's
+# own healthCheck comment) where an ECS equivalent exists. It does NOT
+# mirror deployment.yaml's securityContext: main.tf's container
+# definition sets no `user`, `readonlyRootFilesystem` or
+# `linuxParameters` -- the real, Fargate-supported equivalents of its
+# runAsUser / readOnlyRootFilesystem / capabilities.drop -- so the only
+# hardening a task gets is what gateway/Dockerfile bakes into the image
+# itself (`FROM scratch`, `USER 65532:65532`). Disclosed as a gap, not
+# claimed as parity; also listed in docs/how-to/deploy/ecs-fargate.md.
 #
 # Disclosed, deliberate scope limit: this module wires SECRETS only
 # (Fargate's own native mechanism, via the `secrets` block below) --

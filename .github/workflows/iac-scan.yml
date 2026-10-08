@@ -204,7 +204,7 @@ jobs:
             deploy/k8s/base/serviceaccount.yaml \
             deploy/k8s/base/namespace.yaml \
             deploy/k8s/base/poddisruptionbudget.yaml
-      - name: kubeconform (ExternalSecrets Operator CRDs, via the real external-secrets.io schema catalog)
+      - name: kubeconform (ExternalSecrets Operator CRDs, via the third-party datreeio CRDs-catalog schemas)
         # -ignore-missing-schemas: if the CRDs-catalog project's own schema
         # for a resource is ever missing/renamed upstream, this degrades
         # to "not validated" rather than failing CI on a third-party

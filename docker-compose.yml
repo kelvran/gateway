@@ -17,6 +17,12 @@ services:
     build:
       context: ./gateway
       dockerfile: Dockerfile
+    # Added 2026-10-08: the gateway stops within 50 s of SIGTERM worst case
+    # (cmd/gateway/main.go: gracefulShutdownTimeout 30 s + postShutdownDrainGrace
+    # 15 s for still-running handlers + telemetryShutdownTimeout 5 s);
+    # Compose's default 10 s would SIGKILL it mid-drain. Same 60 s budget as
+    # deploy/k8s/base/deployment.yaml and deploy/systemd/kelvran-gateway.service.
+    stop_grace_period: 60s
     ports:
       # Bound to loopback only, not 0.0.0.0 — gateway has real bearer-
       # token auth (virtual keys), but there's no reason a local-dev
@@ -104,6 +110,9 @@ services:
     build:
       context: ./gateway
       dockerfile: Dockerfile
+    # Same image, same 50 s drain budget as `gateway` above -- see that
+    # service's stop_grace_period comment.
+    stop_grace_period: 60s
     ports:
       - "127.0.0.1:8091:8080"
     env_file:

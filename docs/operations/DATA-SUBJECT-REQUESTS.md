@@ -19,6 +19,25 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   `prompt_id`/`prompt_version`/`prompt_label` the original request set). Requires the Admin
   credential. Returns `{"l1_found": bool, "l2_found": bool, "l3_skipped": true}` — `l3_skipped` is
   always `true`, named explicitly so this response can't be misread as confirming full erasure.
+  **Corrected 2026-10-08**: two statements above have drifted. (1) "Requires the Admin credential" is
+  too narrow: `POST /admin/cache/erase` is registered behind `requireAdminOrOperatorBearerToken`
+  (`gateway/internal/admin/admin.go`), so when `admin.operator_token_env` is configured the Operator
+  tier's token is accepted too — cache erase is one of exactly three Operator-tier write routes, with
+  virtual-key rotate and deployment reweight (`OperatorTokenEnv` doc comment,
+  `gateway/internal/gateway/controlplane/config.go`; shipped in `gateway/v0.14.0`). With no operator
+  tier configured the route requires the admin token exactly as before. The audit line records which
+  tier erased (`authorized_by`). See `docs/how-to/admin-api-rbac.md`. (2) The field list is
+  incomplete. The request body embeds `adapter.ChatRequest` (`eraseCacheEntryRequest`, `admin.go`), and
+  the L1/L2 keys are rebuilt from every key-bearing field (`Pipeline.EraseCacheEntry`,
+  `gateway/internal/gateway/dataplane/dataplane.go`), so the erase call must re-supply whatever the
+  original request set from: `model`, `messages`, `temperature`, `max_tokens`, `response_format`,
+  `prompt_id`/`prompt_version`/`prompt_label`, `thinking_binding_mode`, and — on `main` since
+  2026-10-08, not in `gateway/v0.17.0` — `tools` and `tool_choice` (`toolsFingerprint`, folded into
+  `cache.Key`/`cache.NormalizedKey`; `gateway/changelog/unreleased.md`). A request that carried tools
+  but is erased without them targets a different key and returns `l1_found: false, l2_found: false`.
+  Separately, `end_user_id` (present since before `v0.17.0`) must be set to the original end-user
+  value when the virtual key has `cache_scope_to_end_user` enabled; empty targets the tenant-scoped
+  entry. See `docs/how-to/caching.md`.
 - **Delete a virtual key entirely, INCLUDING its full budget-spend history**:
   `DELETE /admin/virtual_keys/{name}`. `budget.Tracker.Delete` removes both the live in-memory
   spend record and, when `budget.persist_path` is configured, the persisted bbolt record too
@@ -26,11 +45,33 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   a going-forward key revocation. It does not retroactively erase that key's own past cache
   entries or audit-log lines (see limitations below) — those are separate stores with their own,
   narrower mechanisms.
+  **Corrected 2026-10-08**: the store list above is incomplete. Since `gateway/v0.14.0` (2026-09-21) a
+  third budget store exists: when `budget.redis_addr` is set, `budget.Tracker.Delete` does not touch
+  bbolt at all — `redis_addr` wins over `persist_path` and a warning is logged (`BudgetConfig`,
+  `gateway/internal/gateway/controlplane/config.go`; `newBudgetTracker`, `gateway/cmd/gateway/main.go`)
+  — and instead calls `redisbudget.Backend.Delete`, which `DEL`s that key's spend, alert-bucket and
+  warn-alert Redis keys in one call (`gateway/internal/budget/redisbudget/redisbudget.go`). The
+  erasure is still complete for this store, and in this mode it is fleet-wide, because every replica
+  reads the same Redis keys. See `docs/how-to/virtual-keys-and-budgets.md`.
 - **Disable the admin audit log** going forward: set `admin.enable_audit_log: false` in
   `config.yaml`. This stops NEW entries from being written; it does not retroactively remove
   anything already logged (Kelvran writes to `slog`'s configured output, typically process
   stdout/stderr captured by whatever log-aggregation the operator runs — Kelvran itself never
   persists the audit log to a file or database it controls).
+  **Corrected 2026-10-08**: "Kelvran itself never persists the audit log to a file" has been false
+  since `gateway/v0.15.0` (2026-09-23). When `admin.audit_log_path` is set
+  (`AdminConfig.AuditLogPath`, `gateway/internal/gateway/controlplane/config.go`), `cmd/gateway`
+  opens that path with `auditstore.Open` and every admin audit event is ALSO appended as one JSONL
+  record to that file (`gateway/internal/admin/auditstore`), queryable via `GET /admin/audit`
+  (Admin or Viewer token; filters `msg`, `field`/`value`, `since`/`until`). The `slog` line still
+  flows as before. Both paths are governed by the same `admin.enable_audit_log` switch, so setting
+  it to `false` stops NEW entries in both; it still removes nothing already written. The JSONL file
+  is a store under the operator's control that this document previously said did not exist: Kelvran
+  never truncates or rotates it (`Open` uses `O_APPEND`; its doc comment says the file is never
+  truncated) and `auditstore` exposes only `Open`/`Append`/`Query`/`Close` — no per-entry delete,
+  so the "no per-entry deletion path" limitation below still stands. If `audit_log_path` is unset
+  (the default), the original sentence remains accurate. See `docs/how-to/admin-api-rbac.md`
+  ("Read the audit trail").
 
 ## Real limitations — read before promising a data subject anything
 
@@ -59,6 +100,19 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   instance's own in-memory/local-disk state. A multi-instance deployment with Redis-backed rate
   limiting or config propagation still has per-instance caches — an erasure call to one instance
   does not reach any other instance's own L1/L2/L3 state.
+  **Corrected 2026-10-08**: "every mechanism" is too broad since `gateway/v0.14.0` (2026-09-21). It
+  still holds for `POST /admin/cache/erase` — `configpropagation` has no cache-erase event type, only
+  `deployment_weight`, `virtual_key_upsert` and `virtual_key_delete`
+  (`gateway/internal/configpropagation/configpropagation.go`). It no longer holds for
+  `DELETE /admin/virtual_keys/{name}`: when `config_propagation.redis_addr` is set,
+  `Pipeline.DeleteVirtualKey` publishes a `virtual_key_delete` event and every other replica's
+  subscriber (`cmd/gateway`) applies it through `ApplyVirtualKeyDeleteFromEvent`, which runs the same
+  `applyVirtualKeyDeleteLocked` body — including `budget.Tracker.Delete`
+  (`gateway/internal/gateway/dataplane/dataplane.go`) — so one call removes the key and its budget
+  record on every replica; with `budget.redis_addr` the budget record is a single shared store anyway.
+  Delivery is pub/sub with no replay, so if the publish failed (`configpropagation_publish_failed`
+  log line; the matching `kelvran.configpropagation.publish_failed` counter is on `main` since
+  2026-10-08, not in `gateway/v0.17.0`) the operator still re-applies per instance exactly as before.
 
 ## Recommended interim workflow for a real request
 
@@ -70,6 +124,14 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
 3. If the request is "delete my account"/tenant-scoped: call `DELETE /admin/virtual_keys/{name}`
    on every gateway instance in the fleet — this fully erases that key's own budget-spend history
    (live and persisted), not just the key's ability to authenticate going forward.
+   **Corrected 2026-10-08**: "on every gateway instance in the fleet" is unconditional here but has
+   not been since `gateway/v0.14.0` (2026-09-21). With `config_propagation.redis_addr` set, one call
+   reaches every replica (see the fleet limitation above); a repeat call against a replica that
+   already applied the propagated delete returns `404` (`ErrVirtualKeyNotFound`,
+   `gateway/internal/admin/admin.go`), which here means "already erased", not failure. "Live and
+   persisted" covers bbolt or Redis, whichever `budget:` store is configured. Without config
+   propagation, or after a `configpropagation_publish_failed` line, call it on every gateway instance
+   exactly as written.
 4. Document, in your own organization's own records (not Kelvran's), that L3 cache entries for this
    subject's own recent requests may still exist per the limitations above, and note when they will
    naturally expire (L3's own TTL, default 300s) — this is the one real remaining gap step 2/3

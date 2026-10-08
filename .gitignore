@@ -62,3 +62,8 @@ tfplan
 # GoReleaser staging dir for repo-root files it must package (gateway/.goreleaser.yaml before.hooks)
 gateway/.release-assets/
 bench-out/
+
+# Built binaries that `go build ./cmd/gateway` or `go build -o` drop in the module root (a 36 MB one was committed by accident in abcc1a4e).
+/gateway/gateway
+/gateway/kelvran-gateway
+/gateway/kelvran-bench

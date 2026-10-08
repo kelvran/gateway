@@ -95,10 +95,13 @@ func writeAPIError(w http.ResponseWriter, status int, errType string, code, para
 // errors, which the OpenAI SDKs' stream parsers surface as an APIError
 // instead of a parse failure — and then the stream ends WITHOUT a [DONE]
 // sentinel, so a client never mistakes the truncated completion for a
-// complete one. The envelope fields are exactly those a buffered error
-// would carry (same type, code and redacted message). It is only reachable
-// before [DONE]: every dataplane path that fails after the first chunk
-// returns before finishStreamedResponse writes the sentinel.
+// complete one. The envelope carries the same type, code and redacted
+// message a buffered error would; param is always null in a stream frame
+// (this function never names a request field -- the one pipeline error
+// whose buffered envelope sets param, ErrEmptyMessages, fails before the
+// first chunk and so goes through writeErrorResponse instead). It is only
+// reachable before [DONE]: every dataplane path that fails after the first
+// chunk returns before finishStreamedResponse writes the sentinel.
 func writeStreamErrorFrame(w http.ResponseWriter, err error) {
 	status := errorStatus(err)
 	errType, code := errorTypeAndCode(err, status)

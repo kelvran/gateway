@@ -649,6 +649,32 @@ func strictPtr(strict bool) *bool {
 // outputConfigToProvider converts a canonical adapter.ResponseFormat
 // into Anthropic's native OutputConfig -- output_config.format.
 // {type,schema}, per OutputFormat's own doc comment. Nil in, nil out.
+//
+// rf.Type is forwarded verbatim and never inspected here, and nothing
+// upstream filters it for this provider: dataplane's
+// checkResponseFormatEnforceable consults only
+// adapter.SupportsStructuredOutput, a flat true for "anthropic"
+// (capabilities.go). "json_schema" is the only value whose live
+// verification on this direct-Anthropic path is recorded (doc comment of
+// TestToProviderResponseFormatMapsToOutputConfig, anthropic_test.go --
+// itself an offline ToProvider test) and the only value any test in this
+// package sends.
+// OpenAI's "json_object" mode (valid, unconstrained JSON, no schema) has
+// NOT been live-verified against api.anthropic.com in either direction
+// as of 2026-10-08; it goes out on the wire as
+// output_config.format.type=="json_object". Anthropic's published
+// Messages API reference types format.type as the literal "json_schema"
+// only, and the same value was live-rejected on Bedrock's Converse path
+// on 2026-09-13 with "Input should be 'json_schema'"
+// (bedrock.additionalModelRequestFieldsFor, whose 2026-09-23 note records
+// that AWS normalizes both request shapes into one internal
+// representation before validating) -- so a 400 from Anthropic is the
+// expected outcome, but that is inference from docs plus a sibling path,
+// not a direct observation. Unlike bedrock, this adapter neither omits
+// nor rejects a non-"json_schema" Type; the value reaches Anthropic and
+// Anthropic's own response decides. Identical in gateway/v0.17.0 and on
+// main. docs/how-to/structured-output.md therefore documents
+// "json_schema" only for anthropic.
 func outputConfigToProvider(rf *adapter.ResponseFormat) (*OutputConfig, error) {
 	if rf == nil {
 		return nil, nil

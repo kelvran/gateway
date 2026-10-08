@@ -61,15 +61,18 @@ type DeploymentConfig struct {
 	AllowInsecureHTTP bool
 	// APIKeyEnv is the name of the environment variable holding this
 	// deployment's upstream provider API key. Never the raw key value.
-	// Required for every provider except "bedrock", per
+	// Every provider except "bedrock" must set either this or APIKeyFile
+	// below — Load's *File-or-*Env check accepts either one — per
 	// docs/rfcs/2026-09-04-bedrock-adapter.md: Bedrock's real
 	// authentication is AWS SigV4 request signing, which needs
 	// AccessKeyIDEnv/SecretAccessKeyEnv instead of a single bearer secret.
 	APIKeyEnv string
 	// AccessKeyIDEnv/SecretAccessKeyEnv are the names of the environment
 	// variables holding this deployment's AWS access key ID / secret
-	// access key. Never the raw values. Required only when Provider ==
-	// "bedrock".
+	// access key. Never the raw values. Only a "bedrock" deployment needs
+	// them, and each may instead be supplied via its *File counterpart
+	// below (AccessKeyIDFile/SecretAccessKeyFile) — Load accepts either
+	// spelling for each of the two.
 	AccessKeyIDEnv     string
 	SecretAccessKeyEnv string
 	// SessionTokenEnv is the name of the environment variable holding an

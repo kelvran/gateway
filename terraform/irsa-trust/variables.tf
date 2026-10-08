@@ -40,9 +40,9 @@ variable "aws_region" {
 }
 
 variable "namespace" {
-  description = "Kubernetes namespace the trusting ServiceAccount lives in -- matches deploy/k8s/base/serviceaccount.yaml's own namespace (default namespace unless overridden)."
+  description = "Kubernetes namespace the trusting ServiceAccount lives in -- matches deploy/k8s/base/serviceaccount.yaml's own metadata.namespace (`kelvran`, the Namespace deploy/k8s/base/namespace.yaml creates and deploy/k8s/base/kustomization.yaml's `namespace:` field stamps on every base resource); with any other value the trust policy's `sub` condition never matches and the pod gets no AWS credentials."
   type        = string
-  default     = "default"
+  default     = "kelvran"
 }
 
 variable "service_account_name" {

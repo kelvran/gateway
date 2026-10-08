@@ -2,7 +2,7 @@
 
 ## Getting Help
 
-No dedicated community channel exists yet (no Discord/Slack/discussion forum has been set up). Start with `docs/users/USER_GUIDE.md` — if your question isn't answered there, open a GitHub issue.
+No dedicated community channel exists yet (no Discord/Slack/discussion forum has been set up). Start with the documentation landing page, [`docs/README.md`](docs/README.md), and for a gateway that is failing right now, [`docs/how-to/troubleshooting.md`](docs/how-to/troubleshooting.md) — **corrected 2026-10-08**: this line pointed at `docs/users/USER_GUIDE.md`, which became an eleven-heading stub of pointers into that set on 2026-10-08. If your question isn't answered there, open a GitHub issue.
 
 ## Supported Versions
 
@@ -10,7 +10,7 @@ The latest minor of each deployable gets all fixes; the previous minor gets secu
 
 ## Filing a Bug or Feature Request
 
-Open a GitHub issue including: affected component (Gateway/Cache/Evals/MCP-A2A — same vocabulary as `SECURITY.md`'s severity taxonomy), affected version, and a minimal reproduction if it's a bug.
+Open a GitHub issue including: affected component (Gateway/Cache/Evals — same vocabulary as the "Please include" line of `SECURITY.md` § Reporting a Vulnerability; **corrected 2026-10-08**: until this date this line cited `SECURITY.md`'s severity taxonomy instead, whose table lists P0–P4 severities, not components, and MCP-A2A was removed from both lists because that subsystem has no shipped code — `gateway/internal/` has no `mcp` or `a2a` package — see [`docs/explanation/mcp-a2a-status.md`](docs/explanation/mcp-a2a-status.md)), affected version, and a minimal reproduction if it's a bug.
 
 ## Reporting a Security Vulnerability
 

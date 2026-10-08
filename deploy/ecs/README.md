@@ -8,6 +8,17 @@ Manager/SSM Parameter Store values into containers natively via the task
 definition's own `secrets` block, no External Secrets Operator or IRSA
 equivalent needed for this target.
 
+**Corrected 2026-10-08**: "Secrets Manager/SSM Parameter Store" above
+describes Fargate in general, not this repo's roles. The execution role
+`../../terraform/ecs-task-role/` provisions grants only
+`secretsmanager:GetSecretValue` (its `execution_secrets` policy, scoped to
+`var.secrets_manager_secret_arns`) plus the managed
+`AmazonECSTaskExecutionRolePolicy` (ECR pull + CloudWatch Logs); it has no
+`ssm:GetParameters` grant, so an SSM parameter ARN in this module's
+`secrets` map registers fine but the task fails at launch. Read the
+sentence above as "Secrets Manager values" for this directory as shipped —
+`variables.tf` already documents `secrets` as Secrets Manager ARNs.
+
 ## What this module provisions, and what it deliberately does not
 
 **Provisions:** one `aws_ecs_task_definition` (`main.tf`) plus its

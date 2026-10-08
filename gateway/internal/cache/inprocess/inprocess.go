@@ -1,11 +1,21 @@
 // Package inprocess implements cache.Cache as adapter #1 (the ACTIVE
 // adapter, per gateway/ARCHITECTURE.md's Cache Subsystem package layout):
-// an in-process, mutex-protected, exact-match-only L1 cache. This pass
-// does not implement L3 (semantic match) — L3 specifically must never
+// an in-process, mutex-protected, exact-match-only L1 cache (the Cache
+// type, this file). L2 (normalized match) is built on top of a second
+// instance of this same type — see
+// docs/rfcs/2026-09-03-cache-l2-normalized-match.md. L3 is ALSO in this
+// package, as the separate LexicalCache type in lexical.go (implementing
+// cache.LexicalCache): Cache L3-lite, lexical near-duplicate matching via
+// MinHash/Jaccard — never embedding-based semantic matching, which is
+// explicitly deferred to a later RFC per
+// docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md. L3 must never
 // ship without the entity/freshness hard-gate (see THREAT_MODEL.md's
-// CacheAttack row), so a partial L3 is not built here at all. L2
-// (normalized match) is built on top of a second instance of this same
-// type — see docs/rfcs/2026-09-03-cache-l2-normalized-match.md.
+// CacheAttack row); that gate is enforced by the caller — dataplane's
+// checkLexicalCache — not inside this package, whose LexicalCache only
+// stores and similarity-ranks per-tenant candidates. Corrected 2026-10-08:
+// this header previously said "does not implement L3" — wording that
+// predated lexical.go, which landed later the same day, 2026-09-03, and
+// has shipped in every tagged gateway release since gateway/v0.1.0.
 package inprocess
 
 import (

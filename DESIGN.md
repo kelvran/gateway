@@ -10,7 +10,7 @@ Kelvran is one monorepo containing two deployables that share a single versioned
                         ┌─────────────────────────────────────────┐
                         │              gateway  (Go)                │
   client / agent  ───▶  │  auth → rate-limit → cache lookup          │ ───▶  OpenAI / Anthropic /
-  request               │  (L1 exact → L2 normalized → L3 semantic)  │       Gemini / Bedrock /
+  request               │  (L1 exact → L2 normalized → L3 lexical)   │       Gemini / Bedrock /
                         │  → router → provider adapter → stream      │       self-hosted (vLLM/…)
                         │  → guardrail → cache write-back            │
                         │  → cost/OTel finalize                      │
@@ -25,6 +25,8 @@ Kelvran is one monorepo containing two deployables that share a single versioned
                         │  judge: LLM-as-judge + stats (CI, pass@k)  │
                         └─────────────────────────────────────────┘
 ```
+
+**Corrected 2026-10-08**: *The cache row above reads as built, not as first sketched: L3 shipped as **lexical** near-duplicate matching — MinHash signatures over word shingles, a Jaccard-estimate similarity floor, pure Go stdlib (`gateway/internal/cache/lexical.go`), every candidate passing an entity/number/date hard-gate and a freshness/risk check in `dataplane.checkLexicalCache` before it is served — per `docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md`. This sketch originally labelled that layer "L3 semantic"; the embedding-based semantic layer it had in mind is deferred to a later RFC, and no embedding index exists in `gateway/internal/cache/` today.*
 
 `evals` never sits in the request path. It calls `gateway`'s own API to run offline eval rollouts against candidate models/prompts/routes, and it samples `gateway`'s production telemetry online to catch regressions. `gateway`'s Cache is not a third component in this diagram — it's a package inside the `gateway` binary, called in-process, never a network hop. That last point is itself one of the three foundational decisions below, so it's worth explaining why.
 
@@ -64,6 +66,6 @@ There is no shared database and no shared library between `gateway` and `evals`.
 
 These are flagged here, not resolved — they become `docs/rfcs/` entries once the corresponding feature work actually starts, per `PRD.md`'s scope boundary:
 
-- **Semantic-cache risk gating**: the exact shape of the freshness/risk model that replaces a bare similarity threshold (candidates and prior art are in the parent workspace's `ai-infra-research/cache.md` §3, §5) — not designed here, only flagged as necessary before L3 caching ships.
+- **Semantic-cache risk gating**: the exact shape of the freshness/risk model that replaces a bare similarity threshold (candidates and prior art are in the parent workspace's `ai-infra-research/cache.md` §3, §5) — not designed here, only flagged as necessary before L3 caching ships. **Corrected 2026-10-08**: the lexical L3-lite that did ship carries a first pass of it (entity/number/date hard-gate, volatile-query bypass, a single global 24-hour staleness budget, a 0.9 Jaccard floor, exact requested-model match (`req.Model` string equality) — `dataplane.checkLexicalCache`/`freshnessRiskModel`); the per-content-type Jaccard thresholds `docs/rfcs/2026-09-03-cache-l3-lite-lexical-hard-gated.md`'s own checklist (item 3) calls for — the similarity floor and the staleness budget both shipped as one global bucket — and the embedding-based layer itself, remain open.
 - **Skeptic-panel protocol**: independent-refutation vs. pairwise-comparison judge panels for Evals — research favors independent refutation, but the exact panel-size/quorum rule is an RFC, not a v1 decision.
 - **Virtual-key/budget data model**: sketched at a high level in `ARCHITECTURE.md`'s data-model section once it exists; the exact schema (hierarchical scope resolution: org → team → user → key → session) is implementation detail settled during Gateway's Phase 1 build, not here.

@@ -13,6 +13,18 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              report) and /internal/benchupstream (the mock). docs/operations/BENCHMARKS.md.
 /internal/gateway
     /controlplane          — config compilation, cert rotation, metrics; infrequent, "slow and smart"
+                             **Corrected 2026-10-08**: today this package is static-YAML config parsing and
+                             validation only — internal/gateway/controlplane/config.go, whose sole exported
+                             function is `Load(path) (*Config, error)`. No certificate rotation exists
+                             anywhere in the gateway: the upstream client TLS material and the admin mTLS
+                             server certificate are each loaded exactly once at startup
+                             (`tls.LoadX509KeyPair` in cmd/gateway/main.go, ~lines 289 and 312, the latter
+                             inside `newAdminMTLSConfig`) and never re-read. The two rotation mechanisms
+                             that DO exist live elsewhere and rotate credentials, not certificates:
+                             `dataplane.Pipeline.RunCredentialReloadLoop` (internal/gateway/dataplane/
+                             credential_reload.go, re-reads `*_file` deployment credentials) and
+                             `POST /admin/virtual_keys/{name}/rotate` (internal/admin/admin.go). Metrics
+                             are emitted by internal/telemetry (telemetry.go), not by this package.
     /dataplane              — accept/filter/forward hot path; continuous, "dumb and fast"
 /internal/adapter/{openai,anthropic,gemini,bedrock,openaicompat}
                            — bidirectional (canonical↔native) request/response transformers, one per provider.
@@ -660,6 +672,57 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              docs/operations/FAILURE-MODES.md.
 ```
 
+**Corrected 2026-10-08** — the tree above was never a complete package list. Every entry below is a real,
+non-test Go package under `gateway/internal/` today (directory listing) and a named component in
+`gateway/.go-arch-lint.yml` (`ratelimit/redislimiter` excepted — it is matched by the `ratelimit` component's
+`ratelimit/**` glob rather than named), yet none appeared in the tree until now (some are mentioned only in
+passing in another entry's prose; `bench`/`benchupstream` and `admin/auditstore` are named above but not as
+tree nodes):
+
+```
+/internal/credentialstate    — atomically-swappable snapshot of resolved credential values plus the shared
+                             `*_file` re-read helper behind every credential hot-reload path (dataplane,
+                             bedrockguard, embedsim). Pure leaf.
+/internal/backup             — live bbolt backup primitive (bbolt's own `Tx.CopyFile`, safe while serving
+                             traffic), per docs/upgrade-research/state-durability-operational-recovery-
+                             2026-09-15.md. Pure leaf.
+/internal/idempotency        — client-supplied `Idempotency-Key` deduplication for /v1/chat/completions
+    /inprocess/                (replay the first attempt's response, block on an in-flight twin, or
+                             reject), per docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md.
+                             `inprocess` is the single-instance, mutex-guarded `Store`; no Redis-backed
+                             cross-instance implementation exists (named in its own package doc as unbuilt).
+/internal/identity
+    /boltstore/              — `identity.Store` over bbolt: restart-durable admin-API-created/rotated virtual
+                             keys, single-instance only (exclusive file lock for the life of the process).
+    /redisstore/             — `identity.Store` over Redis: the same keys, shared across every replica
+                             pointed at one Redis instance.
+/internal/budget
+    /boltstore/              — (already described in /internal/budget's prose) single-process durability.
+    /redisbudget/            — `budget.RedisBackend` over Redis: atomic, cross-replica-consistent
+                             cap-check-and-debit, unlike boltstore's load-once-then-local-map durability.
+/internal/ratelimit
+    /redislimiter/           — (already described in /internal/ratelimit's prose) `ratelimit.RedisBackend` over
+                             Redis: the same continuous-refill token bucket as `ratelimit.TokenBucket`, made
+                             atomic across every gateway instance by one Lua script (EVALSHA, EVAL fallback
+                             on NOSCRIPT); used only when `rate_limit.redis_addr` is set, fail-open on a
+                             Redis error.
+/internal/prompt
+    /boltstore/              — (already described in /internal/prompt's prose) `prompt.Persister` over bbolt,
+                             file-for-file the identity/boltstore and budget/boltstore pattern; wired by
+                             cmd/gateway when `prompt.persist_path` is set.
+/internal/guardrail
+    /bedrockguard/           — (described in the Guardrails Subsystem section below) optional
+                             `guardrail.Detector` over AWS Bedrock Guardrails' `ApplyGuardrail`.
+    /embedsim/               — optional `guardrail.Detector` flagging text whose embedding is near a bundled
+                             prompt-injection corpus (`corpus.json`), via github.com/philippgille/chromem-go
+                             and a Bedrock embedder — catches rewordings the exact-phrase regex misses.
+/internal/admin/auditstore   — (described in /internal/admin's prose) durable, queryable JSONL admin audit
+                             trail alongside the slog lines.
+/internal/bench              — (described under /cmd/kelvran-bench; on main since 2026-10-08, not in
+/internal/benchupstream        gateway/v0.17.0) benchmark schedule/SSE-timing/percentile leaves and the
+                             deterministic mock upstream.
+```
+
 **Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose. **Corrected 2026-09-12**: `dataplane`'s and `admin`'s own lists below were each missing a real edge that `internal/prompt`'s own shipping introduced (per `docs/rfcs/2026-09-13-gateway-prompt-management.md`) and this doc never picked up — `dataplane → prompt`, and `admin → adapter, prompt` (the same commit that added `admin`'s new prompt-CRUD routes also added its first-ever `adapter` import, for those routes' own `[]adapter.Message` request/response bodies) — both re-verified against the real import graph and `gateway/.go-arch-lint.yml`'s own `mayDependOn` entries for `dataplane`/`admin`/`prompt`, not assumed:
 
 ```
@@ -713,6 +776,14 @@ Adapters below. The lifecycle diagram immediately following this paragraph descr
 ```
 [client/agent request, carrying session/agent_run_id if present]
   → auth (resolve virtual key → team/workspace → budget+rpm/tpm+allowed_models record)
+    **Corrected 2026-10-08**: there is no team/workspace step. `identity.VirtualKey`
+    (internal/identity/identity.go:44-179) is one flat per-key record — identity (ID, KeyHash, plus
+    PreviousKeyHash/PreviousKeyHashExpiresAt for rotation grace), budget (BudgetUSD, BudgetResetInterval,
+    BudgetWarnPercent), allow-lists (AllowedModels, AllowedRegions, AllowedSourceCIDRs), the key's own
+    rate-limit knobs (RateLimitBurst, RateLimitRefill, MaxConcurrentRequests), CacheScopeToEndUser, and an
+    opaque, never-enforced BillingSubjectID — with no Team/Org/Workspace/Session field; `Verify`
+    (identity.go:308) resolves the bearer token straight to it. Teams/hierarchical scope remain target-only,
+    exactly as /internal/identity above says. See docs/how-to/virtual-keys-and-budgets.md
   → prompt resolution (dataplane.resolvePromptIfSet), immediately after auth's own model-allowlist
     check (isModelAllowed) and before rate-limiting: if req.PromptID is set, resolves the stored,
     versioned template into real adapter.Message content via a minimal {{name}} allowlist
@@ -720,6 +791,11 @@ Adapters below. The lifecycle diagram immediately following this paragraph descr
     (ErrPromptAndMessagesBothSet), never a silent merge — see
     docs/rfcs/2026-09-13-gateway-prompt-management.md and /internal/prompt above
   → rate-limit check (hierarchical: org → team → user → key → session)
+    **Corrected 2026-10-08**: not hierarchical. `checkRateLimit(ctx, vk, model)`
+    (internal/gateway/dataplane/dataplane.go:2330) sees only the virtual key and the model, and
+    `ratelimit.KeyConfig` (internal/ratelimit/limiter.go:13-46) holds only the key's own RPM and TPM
+    buckets plus an optional per-model RPM override (`PerModel`). Org/team/user/session scope is
+    target-only, as /internal/ratelimit above already records
   → cache lookup, L1 exact hash match → hit → log, return
   → cache lookup, L2 normalized match → hit → log, return
   → cache lookup, L3-lite lexical near-duplicate (MinHash/Jaccard + entity/date hard-gate + freshness gate,
@@ -836,6 +912,8 @@ L1, L2, and L3 are each a separate `inprocess` cache instance, independently cap
 
 Shares Gateway's own auth/budget/audit objects rather than being a second gateway with a second config source — inbound (expose Kelvran's own APIs as MCP tools) and outbound (broker agent tool calls to model providers) brokering both flow through `/internal/identity` and `/internal/costaccounting`.
 
+**Corrected 2026-10-08**: the paragraph above is design intent, not shipped code — **NOT BUILT**, exactly as the `/internal/mcp` entry in the package tree records. No MCP or A2A package exists anywhere under `gateway/internal/` (directory listing, 2026-10-08), and `cmd/gateway/main.go`'s and `internal/gateway/dataplane/dataplane.go`'s own header comments both still mark MCP as not built, so nothing "flows through" `/internal/identity` or `/internal/costaccounting` today. Current status and the deferral reasoning: `docs/explanation/mcp-a2a-status.md`.
+
 ## Guardrails Subsystem
 
 Pre-call and post-call middleware hooks — **real**, per `docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md`: a pure-Go, stdlib-only `internal/guardrail` package (regex/checksum PII+secrets detection — email, phone, US SSN, IBAN with a real mod-97 checksum, credit card with a real Luhn checksum, IP address, API-key/secret prefixes with Shannon-entropy gating — plus a keyword/hidden-Unicode prompt-injection heuristic). Deliberately **not** NER in this pass — no mature, no-cgo, no-model-file Go NER library exists today, the same class of gap Cache L3-lite already found and narrowed around for real embeddings. **2026-09-13 addition — an optional ML detector backend is now real**, per `docs/rfcs/2026-09-13-gateway-bedrock-guardrails-ml-detector-design.md`: `guardrail/bedrockguard.Detector` wraps AWS Bedrock Guardrails' standalone `ApplyGuardrail` check (a real live AWS API call, decoupled from model invocation), opt-in via `GuardrailsConfig.BedrockGuardrails`, appended to the engine's detector list only when configured — `DefaultDetectors()`'s regex-only set is unaffected when it isn't. Lives in its own sibling package (`internal/guardrail/bedrockguard`), never inside `internal/guardrail` itself, since that package's own boundary ("never imports adapter, cache, or any provider-specific package") is enforced by a dedicated `go-arch-lint` component, not just documented. **Generalizing this, added 2026-09-14**: `guardrail.Detector` (`internal/guardrail/types.go`) is deliberately I/O-agnostic by design — `Detect(ctx, text) ([]Finding, error)` returns a real error, not just because `bedrockguard` needs one today, but so any FUTURE third-party-moderation provider that genuinely can error over the network can plug in the same way, in its own sibling package, without touching `internal/guardrail` itself. `bedrockguard` is the one real, shipped instance of this pattern, not the limit of it. Proven live against a real, minimal PROMPT_ATTACK-only guardrail in the pilot's AWS account: catches real attack phrasing the regex heuristic misses (e.g. "ignore all previous instructions" — the extra word between verb and target breaks `promptinjection.go`'s own exact-substring combinatoric match). Real AWS classifier behavior at `inputStrength: HIGH` initially produced false positives on imperative output-format instructions ("say X and nothing else") — retuned same-day to `inputStrength: MEDIUM` after a real A/B test against live AWS cleared both false positives with zero observed recall loss across 4 real attack patterns; the pilot now runs at `MEDIUM`. Full account in that RFC's own Status/"New finding" sections. Category-tiered fail-closed (credential/financial_id/government_id) vs. fail-open-with-logging (contact_info/network_id/prompt_injection), on both the detection axis and the detector-error axis — never a single global default, and never inherited from the rate limiter's own fail-open policy (guardrails has no independent second control the way `budget.Tracker` backstops the rate limiter). Post-call is enforcement-capable on the buffered path; on streaming it is audit-only — every chunk is already flushed to the client before a complete response exists to check, a named, accepted residual risk, not silently glossed over. A guardrail policy/detector version bump forces every existing cache entry (L1/L2 via the cache key hash, L3 via a stored, checked provenance field) to become a real miss, never a silent, unchecked serve of a hit whose provenance predates the change.
@@ -860,6 +938,7 @@ Pre-call and post-call middleware hooks — **real**, per `docs/rfcs/2026-09-03-
 | Tracing | OTel Go SDK, GenAI semantic-convention attributes — **real**, per `docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md` (the first external Go dependency this module has ever had; exporters: stdout/OTLP/none) |
 | Cost/budget arithmetic | `github.com/shopspring/decimal` — **real**, per `docs/rfcs/2026-09-02-decimal-cost-accounting.md` (the second external Go dependency; zero transitive dependencies) |
 | Container-aware memory limit | `github.com/KimMachineGun/automemlimit` — **real**, per `docs/upgrade-research/kubernetes-production-deployment-2026-09-14.md` Finding 5 (the fifth external Go dependency; `cmd/gateway/main.go` calls `memlimit.Set` explicitly at startup, not the package's own blank-import convenience, so it logs via this process's real JSON logger rather than the stdlib default). Reads the real cgroup memory limit and sets `GOMEMLIMIT` to 90% of it automatically — a no-op outside a cgroup limit (bare `docker run`, local dev, CI), since Go has no native cgroup-memory-aware equivalent and exceeding a Kubernetes memory limit triggers a hard OOM-kill, unlike a CPU limit which only throttles |
+| External Go dependencies (current) | **Corrected 2026-10-08**: the "first … fifth external Go dependency" ordinals in the rows above record adoption order and are stale as a count. `gateway/go.mod`'s direct `require` block today also lists `github.com/aws/aws-sdk-go-v2` (+ its `aws/protocol/eventstream` module — the Bedrock adapter, SigV4 signing in `dataplane`, `bedrockguard`, `embedsim`), `github.com/philippgille/chromem-go` (`embedsim`'s in-process vector store), `golang.org/x/sync` (`singleflight`, see Request Lifecycle), `golang.org/x/text` (L2's Unicode NFC normalization in `dataplane`), `google.golang.org/protobuf` (`api/gatewayevents/v1`), and `github.com/testcontainers/testcontainers-go` (+ `modules/redis`) — the last imported by `_test.go` files only, never by the shipped binary |
 | Distribution | Single static binary, scratch/alpine Docker image |
 
 ## Cross-Cutting Contract
