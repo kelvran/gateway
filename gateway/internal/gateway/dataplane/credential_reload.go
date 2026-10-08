@@ -184,7 +184,9 @@ func (p *Pipeline) RunCredentialReloadLoop(ctx context.Context, interval time.Du
 // stays a cheap, side-effect-free no-op. Logs a structured
 // "which deployment, which field changed" event on a real rotation —
 // NEVER the credential value itself. A read error (file missing,
-// permission denied, a transient volume-mount hiccup) is logged as a
+// permission denied, a transient volume-mount hiccup, or -- since
+// 2026-10-08 -- an empty or whitespace-only file, which ReadCredentialFile
+// reports as credentialstate.ErrEmptyCredentialFile) is logged as a
 // warning and otherwise ignored: the deployment keeps using its
 // last-known-good snapshot rather than ever swapping to an empty or
 // partial value, so a bad rotation attempt degrades to "credentials go

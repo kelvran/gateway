@@ -59,8 +59,10 @@ type Label struct {
 // Stack table ("Control-plane config store | Postgres (pgx/sqlc) --
 // still the target for real control-plane state") and its /internal/admin
 // section ("Admin mutations are in-memory-only in v1 ... every other
-// config section ... stays static-YAML-only"). v1 ships with no real
-// implementation of this interface anywhere in this module, mirroring
+// config section ... stays static-YAML-only"). The real implementation is
+// internal/prompt/boltstore, wired by cmd/gateway when the prompt store's
+// persist_path is set (this sentence said none existed until 2026-10-08,
+// stale since boltstore landed), mirroring
 // internal/budget.Store's own identical separation from its optional
 // boltstore backing -- that interface existed and shipped unimplemented
 // for a full RFC cycle before internal/budget/boltstore was written
@@ -117,7 +119,7 @@ type storeState struct {
 // different IDs -- see TestConcurrentUpsertGetResolveUnderRace.
 type Store struct {
 	state   atomic.Pointer[storeState]
-	persist Persister // nil = pure in-memory, the real v1 scope
+	persist Persister // nil = pure in-memory (no prompt.persist_path configured)
 }
 
 // NewStore constructs an empty, pure in-memory Store.
@@ -129,9 +131,10 @@ func NewStore() *Store {
 
 // NewStoreWithPersister constructs a Store backed by p: existing prompts
 // are loaded immediately, so a restart resumes exactly where it left
-// off. A seam only -- no real caller anywhere in this codebase yet,
-// mirroring budget.NewTrackerWithStore's own identical position before
-// internal/budget/boltstore existed.
+// off. Called by cmd/gateway when prompt.persist_path is set, with
+// internal/prompt/boltstore as the Persister (this said "no real caller
+// anywhere in this codebase yet" until 2026-10-08, stale since boltstore
+// landed), mirroring budget.NewTrackerWithStore's own position.
 func NewStoreWithPersister(ctx context.Context, p Persister) (*Store, error) {
 	loaded, err := p.Load(ctx)
 	if err != nil {

@@ -646,7 +646,7 @@ type Pipeline struct {
 	identityStore identity.Store
 	// idempotencyStore is nil unless Config.IdempotencyStore was set — see
 	// that field's own doc comment. Read by HandleChatCompletion/
-	// HandleChatCompletionStream's own claimIdempotencyIfSet helper only;
+	// HandleChatCompletionStream's own claimIdempotency helper only;
 	// an Idempotency-Key header is a guaranteed no-op when this is nil,
 	// exactly like an empty header.
 	idempotencyStore idempotency.Store
@@ -1384,6 +1384,7 @@ func (p *Pipeline) publishVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ra
 		Payload:             body,
 	}
 	if err := p.configPublisher.Publish(context.Background(), event); err != nil {
+		telemetry.RecordConfigPropagationPublishFailed(context.Background(), event.Type)
 		p.logger.Warn("configpropagation_publish_failed", "key_id", vk.ID, "error", err.Error())
 	}
 }
@@ -1735,6 +1736,7 @@ func (p *Pipeline) publishVirtualKeyDelete(name string, publishedAtUnixNano int6
 		Payload:             body,
 	}
 	if err := p.configPublisher.Publish(context.Background(), event); err != nil {
+		telemetry.RecordConfigPropagationPublishFailed(context.Background(), event.Type)
 		p.logger.Warn("configpropagation_publish_failed", "key_id", name, "error", err.Error())
 	}
 }
@@ -1949,6 +1951,7 @@ func (p *Pipeline) UpdateDeploymentWeight(ctx context.Context, name string, weig
 			Payload:             payload,
 		}
 		if err := p.configPublisher.Publish(ctx, event); err != nil {
+			telemetry.RecordConfigPropagationPublishFailed(ctx, event.Type)
 			p.logger.Warn("configpropagation_publish_failed", "deployment", name, "error", err)
 		}
 	}
@@ -3238,7 +3241,7 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	// without its TPM half.
 	allowed, rlErr := p.limiter.AllowForModel(ctx, vk.ID, req.Model)
 	if rlErr != nil {
-		p.logger.Warn("embeddings_ratelimit_backend_unavailable", "key_id", vk.ID, "error", rlErr.Error())
+		p.logger.Warn("embeddings_ratelimit_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", rlErr.Error())...)
 		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
 	} else if !allowed {
 		err = ErrRateLimited
@@ -3258,7 +3261,9 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	var realCost *decimal.Decimal
 	defer func() {
 		if budgetReserved {
-			p.budget.Reconcile(ctx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
+			settleCtx, cancelSettle := settlementContext(ctx)
+			defer cancelSettle()
+			p.budget.Reconcile(settleCtx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
 		}
 	}()
 
@@ -3308,7 +3313,7 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 		}
 	}
 	if dep.Kind != "embedding" {
-		err = fmt.Errorf("%w: deployment %q", ErrNotAnEmbeddingDeployment, dep.Name)
+		err = fmt.Errorf("%w: model %q", ErrNotAnEmbeddingDeployment, req.Model)
 		return
 	}
 
@@ -3373,13 +3378,17 @@ func (p *Pipeline) callEmbeddingDeployment(ctx context.Context, dep Deployment, 
 	if toErr != nil {
 		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: translating embedding request for deployment %q: %w", dep.Name, toErr)
 	}
+	// The transport call and the response decode are the two failures a
+	// tenant must only ever see redacted (WrapUpstreamCallFailed); the
+	// not-configured and request-translation errors above keep their own
+	// text and status.
 	providerResp, upstreamErr := p.embeddingUpstream(ctx, dep, providerReq)
 	if upstreamErr != nil {
-		return adapter.EmbeddingResponse{}, fmt.Errorf("dataplane: embedding upstream call failed for deployment %q: %w", dep.Name, upstreamErr)
+		return adapter.EmbeddingResponse{}, WrapUpstreamCallFailed(req.Model, false, fmt.Errorf("dataplane: embedding upstream call failed for deployment %q: %w", dep.Name, upstreamErr))
 	}
 	resp, err := av.FromEmbeddingProvider(providerResp)
 	if err != nil {
-		return resp, fmt.Errorf("dataplane: translating embedding response for deployment %q: %w", dep.Name, err)
+		return resp, WrapUpstreamCallFailed(req.Model, false, fmt.Errorf("dataplane: translating embedding response for deployment %q: %w", dep.Name, err))
 	}
 	return resp, nil
 }
@@ -3778,7 +3787,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			*upstreamDuration = time.Since(upstreamStart)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("dataplane: upstream call failed for model %q: %w", req.Model, err)
+			return nil, WrapUpstreamCallFailed(req.Model, false, err)
 		}
 
 		// A real, unshared upstream completion has now genuinely been
@@ -3892,7 +3901,8 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 // (weighted round-robin, per docs/rfcs/2026-09-04-weighted-routing.md).
 // The second return value is false if no deployment is configured for
 // model at all, or (when exclude is non-empty) every configured
-// deployment for model is either unhealthy or excluded.
+// deployment for model is excluded (an all-unhealthy model still returns
+// one of its deployments: Select fails open rather than refusing).
 //
 // exclude matters specifically for a same-model WRR re-pick after an
 // initial deployment's call already failed: router.Select's own WRR
@@ -4017,8 +4027,10 @@ func (p *Pipeline) probeOneDeployment(ctx context.Context, dep Deployment) {
 		// healthProbeCallTimeout or a fast connection-refused error,
 		// neither of which says anything about this deployment's real
 		// serving latency when healthy. An unhealthy deployment is
-		// already excluded from Select entirely via the health gate
-		// below, so it has no need for a latency signal regardless.
+		// excluded from Select by the health gate below whenever a healthy
+		// sibling exists (when every sibling is unhealthy, Select fails
+		// open to one of them), so it has no need for a latency signal
+		// regardless.
 		p.updateLatencyDeweighting(dep, p.now().Sub(probeStart))
 	}
 
@@ -4205,8 +4217,9 @@ const healthProbeBackoffGrowthFactor = 2
 // healthProbeBackoffMaxMultiplier caps a backed-off probe interval at
 // this many multiples of the OPERATOR'S OWN configured interval, not a
 // fixed absolute duration — that interval is itself an operator-tunable
-// value (300s default per
-// docs/rfcs/2026-09-07-gateway-active-health-probing.md), so an absolute
+// value (300s is the cadence
+// docs/rfcs/2026-09-07-gateway-active-health-probing.md recommends, not a
+// code default: an omitted or zero interval disables probing), so an absolute
 // cap could land at or below an operator's own configured cadence for a
 // longer-than-default interval, inverting the entire point of backing
 // off. 8x means a deployment that has stayed unhealthy long enough to
@@ -4455,6 +4468,9 @@ func genAITokenModalityFor(req adapter.ChatRequest) string {
 }
 
 func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64, cacheAttempted bool, costEstimated bool, streaming bool, err error, duration time.Duration) {
+	// Settlement writes must outlive the client: see settlementContext.
+	settleCtx, cancelSettle := settlementContext(ctx)
+	defer cancelSettle()
 	// Zero value (decimal.Decimal{}) is a valid, correct "no cost yet"
 	// default on the err != nil path — verified explicitly in
 	// internal/budget's own tests, not assumed here too. The gate is
@@ -4519,11 +4535,14 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			realCost = &cost
 		}
 		if budgetReserved || realCost != nil {
-			p.budget.Reconcile(ctx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
+			p.budget.Reconcile(settleCtx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
 		}
 		if realCost != nil {
-			p.checkBudgetWarnThreshold(ctx, vk)
-			p.checkBudgetAlertLadder(ctx, vk)
+			// Redis reads after the response: under the settlement context too,
+			// or a client disconnect reads spend as 0 and logs spurious
+			// budget_redis_backend_unavailable lines with Redis healthy.
+			p.checkBudgetWarnThreshold(settleCtx, vk)
+			p.checkBudgetAlertLadder(settleCtx, vk)
 		}
 
 		var realTokens *float64
@@ -4532,7 +4551,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			realTokens = &rt
 		}
 		if tpmReserved || realTokens != nil {
-			p.limiter.ReconcileTPM(ctx, vk.ID, req.Model, tpmReservedTokens, tpmReservationEpoch, realTokens)
+			p.limiter.ReconcileTPM(settleCtx, vk.ID, req.Model, tpmReservedTokens, tpmReservationEpoch, realTokens)
 		}
 	}
 

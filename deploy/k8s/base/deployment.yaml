@@ -42,11 +42,12 @@ spec:
       labels:
         app.kubernetes.io/name: kelvran-gateway
     spec:
-      # 60s = comfortably above the 45s worst-case graceful-shutdown
-      # budget cmd/gateway/main.go's own gracefulShutdownTimeout (30s) +
-      # postShutdownDrainGrace (15s) constants document, plus headroom
+      # 60s = above the 50s worst-case graceful-shutdown budget
+      # cmd/gateway/main.go's own gracefulShutdownTimeout (30s) +
+      # postShutdownDrainGrace (15s) + telemetryShutdownTimeout (5s, the
+      # final telemetry flush) constants document, plus headroom
       # for the preStop hook below -- K8s' own default of 30s is LESS
-      # than that 45s budget on its own, meaning a rolling update or
+      # than the 45s drain alone, meaning a rolling update or
       # scale-down could SIGKILL the process mid-drain, before its own
       # graceful-shutdown logic ever finishes. Confirmed against K8s'
       # own docs (this session's own /deep-research pass): preStop-hook

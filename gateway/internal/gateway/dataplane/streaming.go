@@ -350,7 +350,12 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens, tpmReservationEpoch: &tpmReservationEpoch}
+	// A request whose pre-call check already failed open is already counted
+	// under the {request}-unit fail-open counters; seeding the once-per-stream
+	// notes from that outcome keeps a later top-up failure from counting the
+	// same request twice.
+	budgetTopupFailOpenNoted, tpmTopupFailOpenNoted := budgetErr != nil, rateLimitFailedOpen
+	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens, tpmReservationEpoch: &tpmReservationEpoch, budgetTopupFailOpenNoted: &budgetTopupFailOpenNoted, tpmTopupFailOpenNoted: &tpmTopupFailOpenNoted}
 	var blocked bool
 	var firstChunkSent bool
 	resp, dep, fallback, blocked, costEstimated, firstChunkSent, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)
@@ -368,7 +373,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		// streaming error path (auth, rate limit, no deployment, etc.),
 		// since none of those ever set firstChunkSent.
 		billable = firstChunkSent
-		err = fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", req.Model, err)
+		err = WrapUpstreamCallFailed(req.Model, true, err)
 		return
 	}
 	// The streaming path has no singleflight coalescing (unlike
@@ -1047,7 +1052,10 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	}
 	// Audit-only or not, a detector error here means the response went to
 	// the client with that detector's coverage missing — the same
-	// fail-open the buffered post-call site records.
+	// fail-open the buffered post-call site records. One gap, recorded in
+	// docs/operations/FAILURE-MODES.md (G2): a Block-tier detector error
+	// sets Blocked, so noteGuardrailFailOpen counts nothing even though the
+	// response was delivered in full.
 	p.noteGuardrailFailOpen(ctx, keyID, telemetry.GuardrailStagePostcall, postVerdict)
 
 	if err := sw.WriteDone(); err != nil {

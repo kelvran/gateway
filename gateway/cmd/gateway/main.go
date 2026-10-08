@@ -109,7 +109,9 @@ var gracefulShutdownTimeout = 30 * time.Second
 // accounting/audit blackout, on every routine deploy that happens to
 // catch a request mid-stream. Total worst-case shutdown time is
 // gracefulShutdownTimeout + postShutdownDrainGrace (45s at these
-// defaults) — a request still running past that point is still
+// defaults), plus telemetryShutdownTimeout for the final telemetry flush
+// that runs after the drain (50s in all) — a request still running past
+// the drain is still
 // force-killed (a genuinely stuck request, e.g. no context deadline
 // against a hung upstream, was never going to bill correctly regardless
 // of how long it's given).
@@ -117,6 +119,21 @@ var gracefulShutdownTimeout = 30 * time.Second
 // **Changed 2026-09-17**: a package-level var for the same
 // test-overridability reason as gracefulShutdownTimeout above.
 var postShutdownDrainGrace = 15 * time.Second
+
+// telemetryShutdownTimeout bounds the final OTel flush run() performs after
+// the HTTP drain: the metrics PeriodicReader's last collect+export and the
+// trace BatchSpanProcessor's queue drain. The reader honours the context; the
+// span processor returns at the deadline and its drain goroutine is abandoned
+// (it dies with the process), but the
+// shutdown call used context.Background() until 2026-10-08, so a collector
+// that accepted connections and never answered (the OTLP exporter's own
+// per-batch export timeout is 30 s) could hold the process for minutes past
+// gracefulShutdownTimeout + postShutdownDrainGrace -- long enough for
+// systemd's TimeoutStopSec or Kubernetes' terminationGracePeriodSeconds to
+// SIGKILL it mid-flush. Five seconds is far above what a healthy collector
+// needs (a batch exports in milliseconds) and keeps the documented
+// worst-case stop at 30 s + 15 s + 5 s = 50 s, inside both 60 s budgets.
+const telemetryShutdownTimeout = 5 * time.Second
 
 // trackInFlight wraps next so wg.Add/Done bracket every request the
 // returned handler serves — used only on the client-facing mux, never
@@ -574,7 +591,13 @@ func run(configPath string, logger *slog.Logger) error {
 	// ListenAndServe error return AND a real SIGTERM/SIGINT, since
 	// server.Shutdown below now always returns before this defer runs,
 	// on every exit path.
-	defer func() { _ = shutdown(context.Background()) }()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+		defer cancel()
+		if err := shutdown(shutdownCtx); err != nil {
+			logger.Warn("telemetry_shutdown_failed", "error", err.Error())
+		}
+	}()
 
 	pipeline, err := buildPipeline(cfg, logger)
 	if err != nil {
@@ -789,8 +812,8 @@ func run(configPath string, logger *slog.Logger) error {
 				}
 			})
 			if err != nil && ctx.Err() == nil {
-				logger.Warn("configpropagation_subscribe_stopped", "error", err)
 				telemetry.RecordConfigPropagationSubscribeStopped(ctx)
+				logger.Warn("configpropagation_subscribe_stopped", "error", err)
 			}
 		}()
 	}
@@ -1010,7 +1033,16 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	// bbolt file only ever provides single-process restart durability.
 	// Opening a redisstore.Store never fails on an unreachable address
 	// (go-redis dials lazily), mirroring newKeyLimiter/newBudgetTracker's
-	// identical rationale.
+	// identical rationale -- but the Load that mergePersistedVirtualKeys
+	// runs right below DOES fail on one, so unlike the rate-limit and
+	// budget backends an unreachable identity Redis is fail-CLOSED at
+	// startup: run() returns "hydrating virtual keys from redis at ..."
+	// and the process exits 1 before binding a listener. That is the
+	// right call, not an oversight (corrected 2026-10-08, the comment used
+	// to imply otherwise): starting without the persisted keys would
+	// silently drop every admin-created credential and resurrect any
+	// config-only one that was revoked. Recorded in
+	// docs/operations/FAILURE-MODES.md.
 	var identityStore identity.Store
 	switch {
 	case cfg.Admin.RedisAddr != "":
@@ -1394,7 +1426,7 @@ func validateFallbackChainTargets(deployments []dataplane.Deployment) error {
 // "reset" is only reached on a genuine open FAILURE (a path that simply
 // doesn't exist yet already succeeds on the first open call, since
 // bbolt creates it) -- it renames the corrupt file aside to
-// "<path>.corrupt-<unix-seconds>" (preserving forensic evidence, never
+// "<path>.corrupt-<unix-seconds>-<nanoseconds>" (preserving forensic evidence, never
 // deleting it outright, per the finding's own "even a reset shouldn't
 // destroy evidence of what went wrong" framing) and retries open ONCE
 // against the now-clear path. A rename failure (e.g. a permissions
@@ -1413,9 +1445,11 @@ func validateFallbackChainTargets(deployments []dataplane.Deployment) error {
 // ErrChecksum, confirmed returned unwrapped through bolt.Open and
 // preserved across every boltstore package's own fmt.Errorf("...: %w",
 // err) wrapping) -- any other error (permissions, disk-full, a locked
-// file -- though bbolt's own DefaultOptions.Timeout of 0 means a locked
-// file blocks forever rather than ever returning an error here) is
-// treated exactly like mode == "fail", never reset.
+// file -- which since 2026-10-08 surfaces as bbolt's ErrTimeout wrapped in
+// an "another process holds the file lock" error after each boltstore
+// package's one-second openLockTimeout, instead of blocking forever as
+// bbolt's default Options.Timeout of 0 did) is treated exactly like
+// mode == "fail", never reset.
 func openPersistStoreWithRecovery[T any](path string, mode string, logger *slog.Logger, open func(string) (T, error)) (T, error) {
 	store, err := open(path)
 	if err == nil {
@@ -1831,7 +1865,7 @@ type credentialReloader interface {
 func readCredentialFileOrWarn(logger *slog.Logger, subsystem, fieldLabel, path string) string {
 	value, err := dataplane.ReadCredentialFile(path)
 	if err != nil {
-		logger.Warn("credential file could not be read; calls will fail",
+		logger.Warn("credential file could not be read or is empty; calls will fail",
 			"subsystem", subsystem, "field", fieldLabel, "path", path, "error", err.Error())
 		return ""
 	}
@@ -2198,6 +2232,24 @@ func clientSafeMessage(err error) string {
 	var streamErr *adapter.UpstreamStreamError
 	if errors.As(err, &streamErr) {
 		message = streamErr.ClientSafeMessage()
+	}
+	// Kelvran's own capacity decision keeps its reason but not the
+	// operator's deployment name.
+	var capErr *dataplane.DeploymentCapacityError
+	if errors.As(err, &capErr) {
+		message = capErr.ClientSafeMessage()
+	}
+	// A failed upstream call that nothing above recognised and that maps
+	// to the 502 default is a transport or decode failure: its text names
+	// the deployment and its BaseURL/host:port ("dial tcp 10.0.0.5:8000:
+	// connect: connection refused"), which tenants must not see
+	// (2026-10-08; the operator log line keeps the full text). Sentinels
+	// raised inside the upstream stage (streaming not supported,
+	// embeddings not configured, ...) map to their own status and keep
+	// their own text.
+	var called *dataplane.UpstreamCallFailedError
+	if message == err.Error() && errors.As(err, &called) && errorStatus(err) == http.StatusBadGateway {
+		message = fmt.Sprintf("upstream call failed for model %q", called.Model())
 	}
 	return message
 }

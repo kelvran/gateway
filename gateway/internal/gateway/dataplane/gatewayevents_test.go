@@ -288,10 +288,15 @@ func dataplaneTelemetryMetricsReaderForTest() *sdkmetric.ManualReader {
 // a cumulative value, so it doesn't need delta treatment.
 type dataplaneTelemetrySnapshot struct {
 	failOpenByKeyID map[string]int64
+	// budgetFailOpenByKeyID is kelvran.budget.fail_open by key id.
+	budgetFailOpenByKeyID map[string]int64
 	// guardrailFailOpenByKeyStage is keyed "<key_id>|<stage>" — the
 	// kelvran.guardrail.fail_open counter carries both attributes, and
 	// TestGuardrailFailOpenIncrementsMetricCounter asserts per stage.
 	guardrailFailOpenByKeyStage map[string]int64
+	// configPropagationPublishFailedByType is keyed by the
+	// kelvran.configpropagation.event_type attribute.
+	configPropagationPublishFailedByType map[string]int64
 	// reasoningTokensByModel is the gen_ai.client.inference.usage.reasoning.
 	// output_tokens Counter keyed by gen_ai.request.model — the end-to-end
 	// proof that finalize threads adapter.Usage.ReasoningTokens through
@@ -310,9 +315,11 @@ func guardrailFailOpenSnapshotKey(keyID, stage string) string {
 func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dataplaneTelemetrySnapshot {
 	t.Helper()
 	snap := dataplaneTelemetrySnapshot{
-		failOpenByKeyID:             map[string]int64{},
-		guardrailFailOpenByKeyStage: map[string]int64{},
-		reasoningTokensByModel:      map[string]int64{},
+		failOpenByKeyID:                      map[string]int64{},
+		budgetFailOpenByKeyID:                map[string]int64{},
+		guardrailFailOpenByKeyStage:          map[string]int64{},
+		configPropagationPublishFailedByType: map[string]int64{},
+		reasoningTokensByModel:               map[string]int64{},
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -348,6 +355,26 @@ func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dat
 					stage, hasStage := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranGuardrailStage))
 					if hasKey && hasStage {
 						snap.guardrailFailOpenByKeyStage[guardrailFailOpenSnapshotKey(keyID.AsString(), stage.AsString())] += dp.Value
+					}
+				}
+			case "kelvran.budget.fail_open":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.budget.fail_open data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					if keyID, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranVirtualKeyID)); hasAttr {
+						snap.budgetFailOpenByKeyID[keyID.AsString()] += dp.Value
+					}
+				}
+			case "kelvran.configpropagation.publish_failed":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.configpropagation.publish_failed data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					if eventType, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranConfigPropagationEventType)); hasAttr {
+						snap.configPropagationPublishFailedByType[eventType.AsString()] += dp.Value
 					}
 				}
 			case "kelvran.cache.lookup":

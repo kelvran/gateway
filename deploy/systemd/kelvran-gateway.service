@@ -32,7 +32,8 @@ RestartSec=2s
 KillSignal=SIGTERM
 # cmd/gateway/main.go waits up to 30 s (gracefulShutdownTimeout) for
 # in-flight requests after SIGTERM, then up to 15 s more
-# (postShutdownDrainGrace) for the last ones to finish naturally: 45 s
+# (postShutdownDrainGrace) for the last ones to finish naturally, then up
+# to 5 s (telemetryShutdownTimeout) for the final telemetry flush: 50 s
 # worst case. systemd must wait longer than that before it escalates to
 # SIGKILL, or the slow-drain path the grace exists for is cut short.
 TimeoutStopSec=60s

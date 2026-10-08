@@ -21,6 +21,8 @@
 package credentialstate
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -73,15 +75,33 @@ func NewState(initial Credentials) *atomic.Pointer[Credentials] {
 	return state
 }
 
+// ErrEmptyCredentialFile is what ReadFile returns for a file whose trimmed
+// contents are empty. Reporting that as a read failure rather than as the
+// value "" is what lets every reload loop keep its last-known-good
+// credential across a rotation script that truncated the file before
+// writing it, or a volume caught mid-update -- and what makes the startup
+// warning fire for an empty *_file the way it already did for an empty
+// *_env. Before 2026-10-08 the empty string was stored and logged as a
+// successful rotation, which sent every request to the deployment upstream
+// with no credential for up to one reload interval. A session token that
+// is legitimately being cleared cannot be expressed through an empty file
+// either; remove the session_token_file setting instead.
+var ErrEmptyCredentialFile = errors.New("credentialstate: credential file is empty")
+
 // ReadFile reads path and returns its trimmed contents — the leading/
 // trailing whitespace strip matters because a Kubernetes projected
 // Secret volume's file (and most operator-written rotation scripts)
 // commonly ends in a trailing newline that isn't part of the actual
-// credential value.
+// credential value. An empty or whitespace-only file is reported as
+// ErrEmptyCredentialFile (wrapped, with the path), never returned as "".
 func ReadFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(data)), nil
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", fmt.Errorf("%w: %s", ErrEmptyCredentialFile, path)
+	}
+	return value, nil
 }

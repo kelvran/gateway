@@ -155,8 +155,9 @@ type perModelRateLimitRequest struct {
 // admin-mutation audit trail (e.g. because a separate compliance pipeline
 // already captures the same events) without a per-call-site conditional
 // at each of this package's own logging points. Every logger call in this
-// package IS an audit entry (confirmed: this file has zero Warn/Error/Debug
-// calls, only Info) — so wrapping the single Info method here is
+// package IS an audit entry (this file's only non-Info call is the
+// admin_audit_durable_append_failed Warn inside Info itself, behind the
+// same enabled check) — so wrapping the single Info method here is
 // sufficient to gate all of them, not just some.
 //
 // store, when non-nil, ALSO appends every entry to a durable, queryable

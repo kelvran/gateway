@@ -226,6 +226,13 @@ const (
 	// write failed" is one alertable event type regardless of which
 	// subsystem.
 	AttrKelvranPersistenceStoreKind = "kelvran.persistence.store_kind"
+	// AttrKelvranConfigPropagationEventType is the configpropagation
+	// MutationEvent.Type ("virtual_key_upsert" / "virtual_key_delete" /
+	// "deployment_weight") a RecordConfigPropagationPublishFailed-reported
+	// publish failure carried. A closed three-value set, so safe as a
+	// metric attribute; the paired configpropagation_publish_failed log
+	// line carries the key id or deployment name the counter leaves out.
+	AttrKelvranConfigPropagationEventType = "kelvran.configpropagation.event_type"
 )
 
 // genAIProviderNameOverrides maps Kelvran's own internal provider

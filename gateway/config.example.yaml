@@ -497,6 +497,14 @@ telemetry:
 # entirely) gates every admin-route audit-log line behind a single
 # config field -- set to false only to explicitly opt OUT, e.g. because
 # a separate compliance pipeline already captures the same audit trail.
+# audit_log_path (optional, omitted here) ALSO appends every admin audit
+# line to an append-only JSONL file at that path and registers
+# GET /admin/audit (admin or viewer token) to query it. Only honoured when
+# token_env is set -- the whole admin server is -- so a path set without a
+# token is silently ignored. A failed append is a Warn
+# (admin_audit_durable_append_failed) that never fails the admin request;
+# the file is not part of POST /admin/backup. See
+# docs/operations/FAILURE-MODES.md.
 # operator_token_env (added 2026-09-20, per
 # docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md) is an optional,
 # write-capable-but-narrower-than-admin credential tier: an operator

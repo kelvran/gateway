@@ -262,3 +262,49 @@ func TestOpenPersistStoreWithRecoveryRealBoltCorruption(t *testing.T) {
 		t.Errorf("Load on the reset store: %v", err)
 	}
 }
+
+// TestOpenPersistStoreWithRecoveryResetModeNeverResetsOnALockedFile is the
+// real-bbolt proof for the one non-corruption open failure an operator is
+// most likely to meet: a second process (or a restart racing its
+// predecessor) opening a persist_path another process still holds. Since
+// 2026-10-08 the boltstore packages bound bbolt's lock wait
+// (openLockTimeout), so this returns ErrTimeout instead of hanging forever
+// with no log line; and because ErrTimeout is not one of the three
+// corruption sentinels, "reset" mode must leave the live file exactly where
+// it is -- renaming a merely locked store aside would have discarded the
+// running process's own data.
+func TestOpenPersistStoreWithRecoveryResetModeNeverResetsOnALockedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "budget.db")
+	holder, err := budgetboltstore.Open(path)
+	if err != nil {
+		t.Fatalf("Open (holder): %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	_, err = openPersistStoreWithRecovery(path, "reset", logger, budgetboltstore.Open)
+	if !errors.Is(err, berrors.ErrTimeout) {
+		t.Fatalf("error = %v, want one wrapping bbolt ErrTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "another process holds the file lock") {
+		t.Errorf("error = %q, want the operator-facing lock-holder explanation", err.Error())
+	}
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".corrupt-") {
+			t.Errorf("locked store was renamed aside to %q, but a locked file is not corruption", e.Name())
+		}
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("live store at %q was touched: %v", path, statErr)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected zero log output for a locked file even in reset mode, got: %s", buf.String())
+	}
+}

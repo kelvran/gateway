@@ -16,9 +16,12 @@ package boltstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 
 	"github.com/kelvran/gateway/gateway/internal/identity"
 )
@@ -33,14 +36,28 @@ type Store struct {
 	db *bolt.DB
 }
 
+// openLockTimeout bounds how long Open waits for bbolt's exclusive file
+// lock. bbolt's default (Options.Timeout == 0) waits forever, so a second
+// gateway process pointed at the same persist_path -- or a restart racing a
+// predecessor that has not released the file yet -- hung at startup with no
+// log line and no exit code. One second is far above the milliseconds a
+// clean close takes to release the lock and far below any supervisor's
+// start timeout. The resulting error wraps bbolt's ErrTimeout, which
+// cmd/gateway's openPersistStoreWithRecovery never mistakes for corruption,
+// so on_corrupt_store: reset never renames a merely locked file aside.
+const openLockTimeout = time.Second
+
 // Open opens (creating if absent) the bbolt file at path and ensures the
 // virtual_keys bucket exists. bbolt takes an exclusive lock on the file
 // for the lifetime of the returned Store — a second process opening the
 // same path fails clearly rather than silently corrupting the file,
 // mirroring budget/boltstore.Open's identical single-instance-only scope.
 func Open(path string) (*Store, error) {
-	db, err := bolt.Open(path, 0o600, nil)
+	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: openLockTimeout})
 	if err != nil {
+		if errors.Is(err, berrors.ErrTimeout) {
+			return nil, fmt.Errorf("boltstore: opening %s: another process holds the file lock (waited %s): %w", path, openLockTimeout, err)
+		}
 		return nil, fmt.Errorf("boltstore: opening %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {

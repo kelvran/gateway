@@ -159,10 +159,12 @@ type KeyLimiter struct {
 	perModelBuckets map[string]map[string]*TokenBucket
 	// perModelTPMBuckets mirrors perModelBuckets exactly, one dimension
 	// over: keyID -> model -> that model's own TPM TokenBucket, in-memory
-	// mode only, absent entirely in Redis mode — TPM as a whole has no
-	// Redis-backed path anywhere in this package (see tpmBuckets' own
-	// doc comment), so this stays nil forever whenever backend != nil,
-	// exactly like tpmBuckets itself.
+	// mode only, absent entirely in Redis mode — there the TPM state lives
+	// in Redis (ReserveTPM/IncreaseReservationTPM/ReconcileTPM go through
+	// RedisBackend.AllowTPM/AdjustTPM; this sentence said TPM had "no
+	// Redis-backed path" until 2026-10-08, stale since Redis TPM shipped),
+	// so this stays nil forever whenever backend != nil, exactly like
+	// tpmBuckets itself.
 	perModelTPMBuckets map[string]map[string]*TokenBucket
 	backend            RedisBackend // non-nil in Redis mode only
 }
@@ -388,9 +390,10 @@ func perModelBackendKey(keyID, model string) string {
 // since the request being decided hasn't run yet and its own real cost
 // is unknown (see RecordTokens). Returns true unconditionally when TPM
 // isn't configured for keyID (no entry in tpmBuckets — either
-// TPMCapacity <= 0, or a Redis-mode KeyLimiter, where TPM is a deliberate
-// no-op in v1 per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md's scope
-// limit).
+// TPMCapacity <= 0, or a Redis-mode KeyLimiter, whose TPM decisions are
+// made by ReserveTPM against Redis instead of this in-memory bucket; the
+// "deliberate no-op in v1" this comment described until 2026-10-08 ended
+// when Redis-mode TPM shipped).
 func (l *KeyLimiter) AllowTPM(keyID string) bool {
 	l.mu.RLock()
 	bucket := l.tpmBuckets[keyID]
@@ -508,9 +511,10 @@ func resolveTPMRedisParams(keyID, model string, cfg KeyConfig) (burst, rate floa
 // ReconcileTPM undoes a previous ReserveTPM call's provisional debit and,
 // if realTokens is non-nil, debits the real usage in its place — a
 // no-op, matching RecordTokens' own existing "no TPM bucket for keyID"
-// behavior, when TPM isn't configured for keyID/model (including a
-// Redis-mode KeyLimiter, where TPM is a deliberate v1 no-op per
-// docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md) — safe to call
+// behavior, when TPM isn't configured for keyID/model (a Redis-mode
+// KeyLimiter is no longer the exception: it reconciles through the
+// backend's AdjustTPM; this sentence called Redis TPM "a deliberate v1
+// no-op" until 2026-10-08, stale since Redis-mode TPM shipped) — safe to call
 // unconditionally with whatever reservedTokens/reservationEpoch a prior
 // ReserveTPM call returned, even 0, since ReconcileTPM(0, epoch, nil)
 // against a real bucket is itself a genuine no-op (tokens += 0). model

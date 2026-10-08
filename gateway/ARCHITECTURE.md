@@ -120,8 +120,10 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              unhealthy at once). The N-of-M consecutive thresholds (3 failures to exclude,
                              2 successes to re-include, both configurable) are this package's own
                              adapter-agnostic bookkeeping only; the probe LOOP itself (issuing the actual
-                             lightweight synthetic request on a timer, per `health_probe.interval_seconds`,
-                             default 300s) lives in `dataplane.Pipeline.ProbeDeployments`/
+                             lightweight synthetic request on a timer, per `health_probe.interval_seconds`;
+                             **corrected 2026-10-08**: that key has NO default -- omitted or 0 disables
+                             probing entirely and leaves `/readyz` vacuously ready; the RFC's 300 s is a
+                             recommended cadence, not code) lives in `dataplane.Pipeline.ProbeDeployments`/
                              `RunHealthProbeLoop`, since only `dataplane` has access to each deployment's
                              BaseURL/adapter/credentials — this package still has zero I/O and zero
                              `internal/adapter` dependency. **Updated 2026-09-07**: `dataplane.go`'s router
@@ -393,7 +395,10 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              other method there. See `THREAT_MODEL.md`'s Cache Repudiation row for
                              the real, disclosed limitation: `Delete` has zero live callers anywhere
                              outside its own tests today (no admin route, no CLI) — the primitive
-                             exists, the operational capability doesn't yet
+                             exists, the operational capability doesn't yet. **Corrected 2026-10-08**:
+                             stale since 2026-09-18 — `POST /admin/cache/erase` (EraseCacheEntry) is a
+                             live caller of `Delete`, as the 2026-09-18 and 2026-09-26 notes further
+                             down already record.
     /grpc/cache.proto        — **NOT BUILT.** No `.proto` contract exists for this seam —
                                confirmed via a repo-wide `find . -iname '*.proto'` (the only
                                one present is `api/gatewayevents/v1/gatewayevents.proto`,
@@ -641,6 +646,13 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              internal/budget's own boltstore separation — prompts are
                              in-memory-only, lost on restart, the same disclosed v1 limitation
                              virtual keys already have.
+                             **Corrected 2026-10-08**: the Persister has a real implementation,
+                             internal/prompt/boltstore, wired by cmd/gateway when `prompt.persist_path`
+                             is set; version history survives a restart, label assignments do not
+                             (never persisted). A persistence write failure there is returned to the
+                             admin caller (400 on upsert, 500 on delete) after the in-memory change
+                             has already applied, with no log line and no metric — see
+                             docs/operations/FAILURE-MODES.md.
 ```
 
 **Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose. **Corrected 2026-09-12**: `dataplane`'s and `admin`'s own lists below were each missing a real edge that `internal/prompt`'s own shipping introduced (per `docs/rfcs/2026-09-13-gateway-prompt-management.md`) and this doc never picked up — `dataplane → prompt`, and `admin → adapter, prompt` (the same commit that added `admin`'s new prompt-CRUD routes also added its first-ever `adapter` import, for those routes' own `[]adapter.Message` request/response bodies) — both re-verified against the real import graph and `gateway/.go-arch-lint.yml`'s own `mayDependOn` entries for `dataplane`/`admin`/`prompt`, not assumed:

@@ -181,11 +181,18 @@ func mustFloat64Counter(m metric.Meter, name string, opts ...metric.Float64Count
 	return counter
 }
 
-// RecordRateLimitFailOpen increments the fail-open counter for keyID. The
-// caller (dataplane.checkRateLimit) calls this at the exact same point it
-// already logs a rate_limit_backend_unavailable warning — this is an
-// additional, aggregate-friendly signal, not a replacement for that log
-// line.
+// RecordRateLimitFailOpen increments the rate-limit fail-open counter for
+// keyID. Callers record it at the exact point they already log their
+// fail-open Warn line -- checkRateLimit (ratelimit_backend_unavailable and
+// ratelimit_tpm_backend_unavailable), HandleEmbeddings
+// (embeddings_ratelimit_backend_unavailable) and the mid-stream TPM top-up
+// (ratelimit_tpm_backend_unavailable, once per stream) -- never as a
+// replacement for that log line, which carries the backend error text. The
+// fallback-hop admission check (ratelimit_backend_unavailable_fallback_hop)
+// logs without counting: when the primary check also failed open the request
+// is already counted, and the unit is {request}; when the primary check
+// passed and Redis failed before the hop, the admission goes uncounted -- a
+// known gap, docs/operations/FAILURE-MODES.md section 9.
 func RecordRateLimitFailOpen(ctx context.Context, keyID string) {
 	rateLimitFailOpenCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
 }
@@ -664,10 +671,14 @@ func RecordBudgetThresholdCrossed(ctx context.Context, keyID string, percentBuck
 }
 
 // persistenceFailedCounter is per
-// docs/upgrade-research/admin-operator-experience-2026-09-14.md: 6
-// existing Warn-log-only call sites (budget_persist_failed x4,
-// identity_persist_failed x2, across internal/budget and
-// gateway/dataplane) had no paired metric at all — a durable-store write
+// docs/upgrade-research/admin-operator-experience-2026-09-14.md: the
+// Warn-log-only call sites (six when this was written, eight today:
+// budget_persist_failed x5, identity_persist_failed x2, across
+// internal/budget and gateway/dataplane, plus -- since 2026-10-08 -- the
+// Redis-mode Reconcile's budget_redis_backend_unavailable op=reconcile,
+// whose lost write locks the key at its cap rather than merely losing
+// restart durability; each one records this counter first) had no
+// paired metric at all — a durable-store write
 // failure was invisible to any dashboard/alert that doesn't tail logs.
 // One shared counter, not one per store kind — see
 // AttrKelvranPersistenceStoreKind's own doc comment.
@@ -724,6 +735,34 @@ var configPropagationSubscribeStoppedCounter = mustInt64Counter(
 func RecordConfigPropagationSubscribeStopped(ctx context.Context) {
 	configPropagationSubscribeStoppedCounter.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(AttrKelvranInstanceID, InstanceID),
+	))
+}
+
+// configPropagationPublishFailedCounter is the publish-side twin of
+// configPropagationSubscribeStoppedCounter, added 2026-10-08 while
+// writing docs/operations/FAILURE-MODES.md. The dataplane's three publish
+// sites (virtual-key upsert, virtual-key delete, deployment weight) logged
+// configpropagation_publish_failed and nothing else, so a Redis outage
+// that left every OTHER replica stale -- the local mutation applied and
+// the admin caller got its success -- was invisible to any dashboard or
+// alert. Attributed by instance and by the closed set of event types,
+// never by key or deployment name; the paired log line carries those.
+var configPropagationPublishFailedCounter = mustInt64Counter(
+	meter,
+	"kelvran.configpropagation.publish_failed",
+	metric.WithDescription("Config-propagation mutation events this instance applied locally but failed to publish to the other replicas, by event type."),
+	metric.WithUnit("{event}"),
+)
+
+// RecordConfigPropagationPublishFailed increments the publish-failed
+// counter for eventType (one of configpropagation's Type* constants).
+// Callers record counter-then-log at the existing
+// configpropagation_publish_failed Warn sites, never instead of them --
+// the log line carries the key id or deployment name and the error text.
+func RecordConfigPropagationPublishFailed(ctx context.Context, eventType string) {
+	configPropagationPublishFailedCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(AttrKelvranInstanceID, InstanceID),
+		attribute.String(AttrKelvranConfigPropagationEventType, eventType),
 	))
 }
 

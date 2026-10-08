@@ -139,6 +139,12 @@ func (e *DeploymentCapacityError) Error() string {
 	return fmt.Sprintf("deployment %q at capacity (%s)", e.Deployment, e.Reason)
 }
 
+// ClientSafeMessage is the text a tenant may see: the reason, never the
+// operator's deployment name (which the operator log line keeps).
+func (e *DeploymentCapacityError) ClientSafeMessage() string {
+	return fmt.Sprintf("deployment at capacity (%s)", e.Reason)
+}
+
 // contextWindowExceededKeywords and contentPolicyKeywords are checked,
 // lowercased, against an UpstreamHTTPError's Body — a best-effort,
 // provider-agnostic heuristic over free text, not a structured field.

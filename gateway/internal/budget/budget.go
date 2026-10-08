@@ -663,6 +663,11 @@ func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decim
 			delta = realCost.Sub(reservedUSD)
 		}
 		if err := t.backend.Adjust(ctx, keyID, usdToNanoUSD(delta), reservationEpoch); err != nil {
+			// A lost settlement write, not a read: the reservation stays
+			// debited and the real cost is never recorded, so it counts
+			// under the same durable-write-failure counter the bbolt Save
+			// path below records (added 2026-10-08; this was Warn-only).
+			telemetry.RecordPersistenceFailed(ctx, "budget", keyID)
 			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "reconcile", "error", err.Error())
 		}
 		return

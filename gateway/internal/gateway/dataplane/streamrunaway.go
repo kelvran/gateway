@@ -8,6 +8,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/gateway/internal/identity"
+	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
 // Mid-stream runaway-completion guard, per
@@ -141,6 +142,14 @@ type midStreamReservation struct {
 	// closed-over-pointer shape, for the TPM dimension's own epoch
 	// contract — see TokenBucket.resetEpoch's field comment.
 	tpmReservationEpoch *int64
+	// budgetTopupFailOpenNoted / tpmTopupFailOpenNoted record that this
+	// stream has already logged and counted a top-up backend error, so a
+	// Redis outage that fails every chunk's retry produces ONE
+	// budget_backend_unavailable / ratelimit_tpm_backend_unavailable line
+	// and one fail-open increment per stream, not one per chunk (the
+	// counters' unit is {request}). nil when the caller does not track it.
+	budgetTopupFailOpenNoted *bool
+	tpmTopupFailOpenNoted    *bool
 }
 
 // checkMidStreamReservationTopup is the mid-stream reservation top-up
@@ -197,7 +206,13 @@ func (p *Pipeline) checkMidStreamReservationTopup(ctx context.Context, dep Deplo
 			// happened — this stream simply keeps its prior reservation
 			// floor and continues rather than being cut off for a
 			// Redis-reachability problem, never for a real, decided
-			// TPM-exhaustion rejection.
+			// TPM-exhaustion rejection. Logged and counted once per
+			// stream, like the pre-call site (silent until 2026-10-08).
+			if msr.tpmTopupFailOpenNoted != nil && !*msr.tpmTopupFailOpenNoted {
+				*msr.tpmTopupFailOpenNoted = true
+				p.logger.Warn("ratelimit_tpm_backend_unavailable", append(traceLogFields(ctx), "key_id", msr.vk.ID, "op", "mid_stream_topup", "error", tpmErr.Error())...)
+				telemetry.RecordRateLimitFailOpen(ctx, msr.vk.ID)
+			}
 			return true
 		}
 		if !allowed {
@@ -217,7 +232,13 @@ func (p *Pipeline) checkMidStreamReservationTopup(ctx context.Context, dep Deplo
 			// policy above: IncreaseReservation already returns applied/
 			// newEpoch UNCHANGED on error, so this stream simply keeps its
 			// prior reservation floor and continues rather than being cut
-			// off for a Redis-reachability problem.
+			// off for a Redis-reachability problem. Logged and counted once
+			// per stream, like the pre-call Reserve site.
+			if msr.budgetTopupFailOpenNoted != nil && !*msr.budgetTopupFailOpenNoted {
+				*msr.budgetTopupFailOpenNoted = true
+				p.logger.Warn("budget_backend_unavailable", append(traceLogFields(ctx), "key_id", msr.vk.ID, "op", "mid_stream_topup", "error", budgetErr.Error())...)
+				telemetry.RecordBudgetFailOpen(ctx, msr.vk.ID)
+			}
 			return true
 		}
 		if !allowed {

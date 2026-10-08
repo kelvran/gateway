@@ -26,12 +26,12 @@ func TestWriteErrorResponseMapsDeploymentCapacityErrorTo503(t *testing.T) {
 }
 
 // TestWriteErrorResponseMapsWrappedDeploymentCapacityErrorTo503 proves the
-// mapping survives a fmt.Errorf("...: %w", ...) wrap — the shape
-// runMissPath's own error return actually produces — not just a bare,
-// unwrapped *DeploymentCapacityError.
+// mapping survives the dataplane.WrapUpstreamCallFailed wrap — the shape
+// runMissPath's own error return actually produces since 2026-10-08 — not
+// just a bare, unwrapped *DeploymentCapacityError.
 func TestWriteErrorResponseMapsWrappedDeploymentCapacityErrorTo503(t *testing.T) {
 	rec := httptest.NewRecorder()
-	wrapped := fmt.Errorf("dataplane: upstream call failed for model %q: %w", "gpt-4o", &dataplane.DeploymentCapacityError{Deployment: "shared", Reason: "rate_limit"})
+	wrapped := dataplane.WrapUpstreamCallFailed("gpt-4o", false, &dataplane.DeploymentCapacityError{Deployment: "shared", Reason: "rate_limit"})
 	writeErrorResponse(rec, wrapped)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -131,7 +131,7 @@ func TestWriteErrorResponseRedactsWrappedUpstreamHTTPErrorBody(t *testing.T) {
 		StatusCode: 403,
 		Body:       fmt.Sprintf(`{"message":"User: %s is not authorized to perform: bedrock:InvokeModel on resource: ..."}`, arn),
 	}
-	wrapped := fmt.Errorf("dataplane: upstream call failed for model %q: %w", "claude-3-sonnet", upstreamErr)
+	wrapped := dataplane.WrapUpstreamCallFailed("claude-3-sonnet", false, upstreamErr)
 
 	rec := httptest.NewRecorder()
 	writeErrorResponse(rec, wrapped)
@@ -175,9 +175,9 @@ func TestWriteErrorResponseRedactsUpstreamStreamErrorBody(t *testing.T) {
 // streamDeployment/streamDeploymentBedrock wrap the decoder's returned
 // error with fmt.Errorf("decoding stream from deployment %q: %w", ...),
 // and HandleChatCompletionStream wraps that again with
-// fmt.Errorf("dataplane: streaming upstream call failed for model %q:
-// %w", ...) before it ever reaches writeErrorResponse -- not just a
-// bare, unwrapped *UpstreamStreamError.
+// dataplane.WrapUpstreamCallFailed (the "dataplane: streaming upstream call
+// failed for model %q" shape) before it ever reaches writeErrorResponse --
+// not just a bare, unwrapped *UpstreamStreamError.
 func TestWriteErrorResponseRedactsWrappedUpstreamStreamErrorBody(t *testing.T) {
 	hostname := "internal-vllm-shard-07.corp.internal"
 	streamErr := &adapter.UpstreamStreamError{
@@ -185,7 +185,7 @@ func TestWriteErrorResponseRedactsWrappedUpstreamStreamErrorBody(t *testing.T) {
 		Raw:      fmt.Sprintf(`upstream stream error (server_error): connection refused to %s`, hostname),
 	}
 	decodeWrapped := fmt.Errorf("decoding stream from deployment %q: %w", "self-hosted-vllm", streamErr)
-	wrapped := fmt.Errorf("dataplane: streaming upstream call failed for model %q: %w", "llama-3.1-70b", decodeWrapped)
+	wrapped := dataplane.WrapUpstreamCallFailed("llama-3.1-70b", true, decodeWrapped)
 
 	rec := httptest.NewRecorder()
 	writeErrorResponse(rec, wrapped)

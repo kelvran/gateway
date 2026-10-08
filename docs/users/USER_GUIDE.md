@@ -106,7 +106,7 @@ deployments:
     weight: 1
 ```
 
-Selection is weighted round-robin (`gateway/internal/router`); on an upstream error, exactly one fallback attempt is made to another deployment in the same model's pool — never a retry loop, never a second fallback. **Not implemented yet:** named model *groups* (falling back to a different canonical model, not just a different deployment of the same one), an explicit fallback-chain list, and usage/latency/cost-based selection signals — none of these are in `PRD.md`'s v1 scope.
+Selection is weighted round-robin (`gateway/internal/router`); on an upstream error a deployment without `fallback_chains` gets exactly one fallback attempt to another deployment in the same model's pool — never a retry of the same deployment; a deployment with `fallback_chains` configured walks the chain for the error's class hop by hop (at most three failed hops, a short jittered pause between hops; see `gateway/config.example.yaml`). Once a streamed response has sent its first chunk, no fallback happens at all. **Not implemented yet:** named model *groups* (falling back to a different canonical model, not just a different deployment of the same one), an explicit fallback-chain list, and usage/latency/cost-based selection signals — none of these are in `PRD.md`'s v1 scope.
 
 ## 6. Cache Configuration
 

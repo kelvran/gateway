@@ -222,3 +222,18 @@ finding used — proving the fix bounds admission correctly, and, via a temporar
 sanity check, that the same test fails (reproducing the original 20/20-allowed race) against the
 pre-fix code. `evals/tests/fixtures/regression_corpus_cost_abuse.json`'s two TOCTOU cases bumped to
 revision 2 with `output` updated to the real, re-verified fixed behavior.
+
+## Addendum 2026-10-08 — the Redis-backed mode this RFC said did not exist
+
+Two statements above are stale. "Budget has no Redis-backed mode at all today" ended when
+`budget.NewRedisTracker` over `internal/budget/redisbudget` shipped (wired by `budget.redis_addr`),
+and "TPM's Redis mode is already a deliberate no-op" ended when Redis-mode TPM shipped
+(`ReserveTPM` admits through the backend's `AllowTPM` and `ReconcileTPM` settles through `AdjustTPM`). The crash analysis in
+this RFC's scope section ("the reservation is transient, in-memory-only, never persisted") therefore
+holds only for `NewTracker`/`NewTrackerWithStore`. In Redis mode the reservation IS durably
+written — `Reserve` debits the full remaining headroom into the key's window hash — so a replica
+that dies between `Reserve` and `Reconcile`, or a `Reconcile` whose `Adjust` fails, leaves the key
+at its cap for every replica until the window's `PEXPIRE` fires (or for good, when
+`budget_reset_interval_seconds` is unset). The per-subsystem consequences, the operator levers and
+the 2026-10-08 settlement-context fix (a client disconnect no longer cancels the `Reconcile`) are
+recorded in `docs/operations/FAILURE-MODES.md`; the text above is left as written.
