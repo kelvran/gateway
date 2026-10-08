@@ -1,0 +1,96 @@
+# Nightly benchmark trend. Hosted runners are shared, noisy machines, so these
+# numbers are a TREND to catch regressions between commits, never the numbers
+# docs/operations/BENCHMARKS.md publishes (those come from a dedicated
+# instance the maintainer runs `make bench-ci` on — the full preset windows;
+# this job runs the short `make bench` shape). Results land as a workflow
+# artifact, in the job summary, and as a history on the `bench-data` branch
+# that github-action-benchmark charts; an alert is logged (never fails the
+# job) when a metric regresses past 150 % of its previous value.
+name: Benchmarks (nightly trend)
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Measured window per scenario (Go duration)"
+        default: "30s"
+      rps:
+        description: "Offered requests per second"
+        default: "100"
+
+permissions: {}
+
+concurrency:
+  group: bench-nightly
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # pushes the trend history to the bench-data branch
+    services:
+      redis:
+        image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499 # redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The job's own GITHUB_TOKEN stays in the checkout so the bootstrap
+          # step below can create the bench-data branch; github-action-benchmark
+          # pushes with the same token. Nothing else in this job runs git.
+          persist-credentials: true
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.8"
+          cache-dependency-path: gateway/go.sum
+      - name: Run the benchmark scenarios
+        env:
+          BENCH_OUT: ${{ github.workspace }}/bench-out
+          BENCH_DURATION: ${{ inputs.duration || '30s' }}
+          BENCH_WARMUP: 5s
+          BENCH_RPS: ${{ inputs.rps || '100' }}
+          BENCH_REDIS_ADDR: 127.0.0.1:6379
+        run: ./scripts/bench-ci.sh
+      - name: Job summary
+        env:
+          BENCH_OUT: ${{ github.workspace }}/bench-out
+        run: |
+          {
+            echo "## Benchmark trend (hosted runner — a trend, not a published number)"
+            echo
+            echo "Runner: $(uname -srm), $(getconf _NPROCESSORS_ONLN) vCPU. Scenarios: docs/operations/BENCHMARKS.md."
+            echo
+            cat "$BENCH_OUT/summary.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() # the logs are most useful when the run failed
+        with:
+          name: bench-${{ github.run_id }}
+          path: bench-out/
+          retention-days: 90
+      - name: Ensure the bench-data branch exists
+        run: |
+          if ! git ls-remote --exit-code --heads origin bench-data >/dev/null 2>&1; then
+            tree=$(git hash-object -t tree /dev/null)
+            commit=$(git -c user.name=github-actions -c user.email=github-actions@github.com commit-tree -m "bench-data: trend history for the nightly benchmarks" "$tree")
+            git push origin "$commit:refs/heads/bench-data"
+          fi
+      - name: Store the trend and alert on regressions
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
+        with:
+          name: kelvran-gateway (hosted-runner trend)
+          tool: customSmallerIsBetter
+          output-file-path: bench-out/bench.json
+          gh-pages-branch: bench-data
+          benchmark-data-dir-path: .
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: "150%"
+          fail-on-alert: false
+          comment-on-alert: false
+          summary-always: true

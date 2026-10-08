@@ -44,11 +44,14 @@ components:
   configpropagation:      { in: configpropagation }
   alerting:               { in: alerting }
   anomaly:                { in: anomaly }
+  bench:                  { in: bench }
+  benchupstream:          { in: benchupstream }
 
 # Components deliberately absent from `deps:` below (credentialstate,
 # identity, ratelimit, router, costaccounting, guardrail, telemetry,
 # cache-correlation, cache, adapter, controlplane, backup, idempotency,
-# configpropagation, alerting, budget-redisbudget, anomaly) are pure
+# configpropagation, alerting, budget-redisbudget, anomaly, bench,
+# benchupstream) are pure
 # leaves per
 # gateway/ARCHITECTURE.md's dependency direction rules: a component with
 # no entry here may depend on nothing else in this project (verified

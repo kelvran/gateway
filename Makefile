@@ -1,4 +1,4 @@
-.PHONY: help setup config-safe lint lint-gateway lint-evals lint-proto test test-gateway test-evals verify gen-proto check-proto
+.PHONY: help setup config-safe lint lint-gateway lint-evals lint-proto test test-gateway test-evals verify gen-proto check-proto bench bench-ci
 
 help:
 	@echo "Kelvran — real targets as of the api/gatewayevents contract pass (see docs/agents/LOGS.md)."
@@ -9,6 +9,8 @@ help:
 	@echo "  make verify      - build + vet + lint + test + check-proto, both deployables — what CI runs"
 	@echo "  make gen-proto   - regenerate Go/Python bindings from api/*.proto (requires buf)"
 	@echo "  make check-proto - gen-proto, then fail if the committed generated code drifted"
+	@echo "  make bench       - quick local benchmark trend: S1a S1b S2 S3, 30 s at 100 rps (docs/operations/BENCHMARKS.md)"
+	@echo "  make bench-ci    - the benchmark scenarios with the presets' full windows (the shape for published numbers)"
 
 setup:
 	cd gateway && go mod download
@@ -55,6 +57,12 @@ gen-proto:
 check-proto: gen-proto
 	@git diff --exit-code -- gateway/api/gatewayevents evals/evals/contracts || \
 		(echo "Generated code in gateway/api/gatewayevents or evals/evals/contracts is out of date with api/*.proto — run 'make gen-proto' and commit the result." && exit 1)
+
+bench-ci:
+	BENCH_OUT=$${BENCH_OUT:-$(CURDIR)/bench-out} ./scripts/bench-ci.sh
+
+bench:
+	BENCH_DURATION=$${BENCH_DURATION:-30s} BENCH_WARMUP=$${BENCH_WARMUP:-5s} BENCH_RPS=$${BENCH_RPS:-100} ./scripts/bench-ci.sh
 
 verify: lint test check-proto
 	@echo "verify: lint + test + check-proto passed for both gateway/ and evals/"

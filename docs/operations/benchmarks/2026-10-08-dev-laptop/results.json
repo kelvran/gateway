@@ -1,0 +1,700 @@
+[
+  {
+    "scenario": "S1a",
+    "target": "http://127.0.0.1:9402",
+    "model": "bench",
+    "stream": false,
+    "offered_rps": 100,
+    "duration_ns": 20000000000,
+    "warmup_ns": 3000000000,
+    "started_at": "2026-10-08T19:40:00.744707+05:30",
+    "requests": 2006,
+    "errors": 0,
+    "transport_errors": 0,
+    "dropped_arrivals": 0,
+    "cancelled_by_harness": 0,
+    "status_counts": {
+      "200": 2006
+    },
+    "sent_rps": 100.3,
+    "completed_rps": 100.3,
+    "schedule_lateness": {
+      "count": 2006,
+      "min_ms": 0.018146,
+      "max_ms": 6.629273,
+      "mean_ms": 1.089298,
+      "p50_ms": 0.978822,
+      "p95_ms": 2.132608,
+      "p99_ms": 2.195814
+    },
+    "latency": {
+      "count": 2006,
+      "min_ms": 0.492667,
+      "max_ms": 6.651542,
+      "mean_ms": 1.314228,
+      "p50_ms": 1.152917,
+      "p95_ms": 2.508958,
+      "p99_ms": 3.688458
+    },
+    "overhead_header": {
+      "count": 2006,
+      "min_ms": 0,
+      "max_ms": 5,
+      "mean_ms": 0.299102,
+      "p50_ms": 0,
+      "p95_ms": 1,
+      "p99_ms": 2
+    },
+    "ttft": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "inter_chunk": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "frames_per_stream": {
+      "count": 0,
+      "min": 0,
+      "max": 0,
+      "mean": 0,
+      "p50": 0,
+      "p99": 0
+    },
+    "incomplete_streams": 0,
+    "error_frames": 0,
+    "gateway_rss": {
+      "idle_bytes": 20660224,
+      "peak_bytes": 44466176,
+      "end_bytes": 44466176
+    },
+    "meta": {
+      "cpus": "10",
+      "gateway_version": "kelvran-gateway dev (none, built unknown, go1.27.1, darwin/arm64)",
+      "harness_go": "go1.27.1",
+      "harness_gomaxprocs": "10",
+      "harness_os_arch": "darwin/arm64",
+      "host": "Darwin 27.0.0 arm64",
+      "redis": "none"
+    }
+  },
+  {
+    "scenario": "S1a-baseline",
+    "target": "http://127.0.0.1:9401",
+    "model": "bench",
+    "stream": false,
+    "offered_rps": 100,
+    "duration_ns": 20000000000,
+    "warmup_ns": 3000000000,
+    "started_at": "2026-10-08T19:40:23.773627+05:30",
+    "requests": 2006,
+    "errors": 0,
+    "transport_errors": 0,
+    "dropped_arrivals": 0,
+    "cancelled_by_harness": 0,
+    "status_counts": {
+      "200": 2006
+    },
+    "sent_rps": 100.3,
+    "completed_rps": 100.3,
+    "schedule_lateness": {
+      "count": 2006,
+      "min_ms": 0.023898,
+      "max_ms": 8.236874,
+      "mean_ms": 1.236801,
+      "p50_ms": 1.200396,
+      "p95_ms": 2.140513,
+      "p99_ms": 2.998101
+    },
+    "latency": {
+      "count": 2006,
+      "min_ms": 0.098042,
+      "max_ms": 7.177584,
+      "mean_ms": 0.278803,
+      "p50_ms": 0.2,
+      "p95_ms": 0.447292,
+      "p99_ms": 2.762125
+    },
+    "overhead_header": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "ttft": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "inter_chunk": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "frames_per_stream": {
+      "count": 0,
+      "min": 0,
+      "max": 0,
+      "mean": 0,
+      "p50": 0,
+      "p99": 0
+    },
+    "incomplete_streams": 0,
+    "error_frames": 0,
+    "meta": {
+      "baseline": "true",
+      "cpus": "10",
+      "gateway_version": "kelvran-gateway dev (none, built unknown, go1.27.1, darwin/arm64)",
+      "harness_go": "go1.27.1",
+      "harness_gomaxprocs": "10",
+      "harness_os_arch": "darwin/arm64",
+      "host": "Darwin 27.0.0 arm64",
+      "redis": "none"
+    }
+  },
+  {
+    "scenario": "S1b",
+    "target": "http://127.0.0.1:9412",
+    "model": "bench",
+    "stream": false,
+    "offered_rps": 100,
+    "duration_ns": 20000000000,
+    "warmup_ns": 3000000000,
+    "started_at": "2026-10-08T19:40:48.452474+05:30",
+    "requests": 2006,
+    "errors": 0,
+    "transport_errors": 0,
+    "dropped_arrivals": 0,
+    "cancelled_by_harness": 0,
+    "status_counts": {
+      "200": 2006
+    },
+    "sent_rps": 100.3,
+    "completed_rps": 100.3,
+    "schedule_lateness": {
+      "count": 2006,
+      "min_ms": 0.018013,
+      "max_ms": 8.851866,
+      "mean_ms": 0.953979,
+      "p50_ms": 0.762358,
+      "p95_ms": 2.125938,
+      "p99_ms": 2.902698
+    },
+    "latency": {
+      "count": 2006,
+      "min_ms": 200.687208,
+      "max_ms": 217.449333,
+      "mean_ms": 202.476562,
+      "p50_ms": 202.134292,
+      "p95_ms": 204.763292,
+      "p99_ms": 209.850916
+    },
+    "overhead_header": {
+      "count": 2006,
+      "min_ms": 0,
+      "max_ms": 6,
+      "mean_ms": 0.292622,
+      "p50_ms": 0,
+      "p95_ms": 1,
+      "p99_ms": 2
+    },
+    "ttft": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "inter_chunk": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "frames_per_stream": {
+      "count": 0,
+      "min": 0,
+      "max": 0,
+      "mean": 0,
+      "p50": 0,
+      "p99": 0
+    },
+    "incomplete_streams": 0,
+    "error_frames": 0,
+    "gateway_rss": {
+      "idle_bytes": 20971520,
+      "peak_bytes": 47923200,
+      "end_bytes": 47923200
+    },
+    "meta": {
+      "cpus": "10",
+      "gateway_version": "kelvran-gateway dev (none, built unknown, go1.27.1, darwin/arm64)",
+      "harness_go": "go1.27.1",
+      "harness_gomaxprocs": "10",
+      "harness_os_arch": "darwin/arm64",
+      "host": "Darwin 27.0.0 arm64",
+      "redis": "none"
+    }
+  },
+  {
+    "scenario": "S1b-baseline",
+    "target": "http://127.0.0.1:9411",
+    "model": "bench",
+    "stream": false,
+    "offered_rps": 100,
+    "duration_ns": 20000000000,
+    "warmup_ns": 3000000000,
+    "started_at": "2026-10-08T19:41:11.686944+05:30",
+    "requests": 2006,
+    "errors": 0,
+    "transport_errors": 0,
+    "dropped_arrivals": 0,
+    "cancelled_by_harness": 0,
+    "status_counts": {
+      "200": 2006
+    },
+    "sent_rps": 100.3,
+    "completed_rps": 100.3,
+    "schedule_lateness": {
+      "count": 2006,
+      "min_ms": 0.022471,
+      "max_ms": 3.016759,
+      "mean_ms": 0.922138,
+      "p50_ms": 0.746678,
+      "p95_ms": 2.13763,
+      "p99_ms": 2.211427
+    },
+    "latency": {
+      "count": 2006,
+      "min_ms": 200.157875,
+      "max_ms": 204.845792,
+      "mean_ms": 201.195588,
+      "p50_ms": 201.057584,
+      "p95_ms": 202.411417,
+      "p99_ms": 202.547875
+    },
+    "overhead_header": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "ttft": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "inter_chunk": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "frames_per_stream": {
+      "count": 0,
+      "min": 0,
+      "max": 0,
+      "mean": 0,
+      "p50": 0,
+      "p99": 0
+    },
+    "incomplete_streams": 0,
+    "error_frames": 0,
+    "meta": {
+      "baseline": "true",
+      "cpus": "10",
+      "gateway_version": "kelvran-gateway dev (none, built unknown, go1.27.1, darwin/arm64)",
+      "harness_go": "go1.27.1",
+      "harness_gomaxprocs": "10",
+      "harness_os_arch": "darwin/arm64",
+      "host": "Darwin 27.0.0 arm64",
+      "redis": "none"
+    }
+  },
+  {
+    "scenario": "S2",
+    "target": "http://127.0.0.1:9422",
+    "model": "bench",
+    "stream": true,
+    "offered_rps": 100,
+    "duration_ns": 20000000000,
+    "warmup_ns": 3000000000,
+    "started_at": "2026-10-08T19:41:36.307605+05:30",
+    "requests": 2006,
+    "errors": 0,
+    "transport_errors": 0,
+    "dropped_arrivals": 0,
+    "cancelled_by_harness": 0,
+    "status_counts": {
+      "200": 2006
+    },
+    "sent_rps": 100.3,
+    "completed_rps": 100.3,
+    "schedule_lateness": {
+      "count": 2006,
+      "min_ms": 0.023301,
+      "max_ms": 12.699386,
+      "mean_ms": 0.436479,
+      "p50_ms": 0.303147,
+      "p95_ms": 1.168005,
+      "p99_ms": 2.039238
+    },
+    "latency": {
+      "count": 2006,
+      "min_ms": 551.172333,
+      "max_ms": 645.574209,
+      "mean_ms": 565.660316,
+      "p50_ms": 563.857667,
+      "p95_ms": 578.849917,
+      "p99_ms": 607.069542
+    },
+    "overhead_header": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "ttft": {
+      "count": 2006,
+      "min_ms": 50.551833,
+      "max_ms": 62.216083,
+      "mean_ms": 51.834238,
+      "p50_ms": 51.558667,
+      "p95_ms": 53.580916,
+      "p99_ms": 56.865625
+    },
+    "inter_chunk": {
+      "count": 98294,
+      "min_ms": 2.561292,
+      "max_ms": 22.604041,
+      "mean_ms": 10.47755,
+      "p50_ms": 10.335792,
+      "p95_ms": 11.606708,
+      "p99_ms": 12.605791
+    },
+    "frames_per_stream": {
+      "count": 2006,
+      "min": 53,
+      "max": 53,
+      "mean": 53,
+      "p50": 53,
+      "p99": 53
+    },
+    "incomplete_streams": 0,
+    "error_frames": 0,
+    "gateway_rss": {
+      "idle_bytes": 21004288,
+      "peak_bytes": 63717376,
+      "end_bytes": 63717376
+    },
+    "meta": {
+      "cpus": "10",
+      "gateway_version": "kelvran-gateway dev (none, built unknown, go1.27.1, darwin/arm64)",
+      "harness_go": "go1.27.1",
+      "harness_gomaxprocs": "10",
+      "harness_os_arch": "darwin/arm64",
+      "host": "Darwin 27.0.0 arm64",
+      "redis": "none"
+    }
+  },
+  {
+    "scenario": "S2-baseline",
+    "target": "http://127.0.0.1:9421",
+    "model": "bench",
+    "stream": true,
+    "offered_rps": 100,
+    "duration_ns": 20000000000,
+    "warmup_ns": 3000000000,
+    "started_at": "2026-10-08T19:41:59.989955+05:30",
+    "requests": 2006,
+    "errors": 0,
+    "transport_errors": 0,
+    "dropped_arrivals": 0,
+    "cancelled_by_harness": 0,
+    "status_counts": {
+      "200": 2006
+    },
+    "sent_rps": 100.3,
+    "completed_rps": 100.3,
+    "schedule_lateness": {
+      "count": 2006,
+      "min_ms": 0.015678,
+      "max_ms": 10.72255,
+      "mean_ms": 0.435105,
+      "p50_ms": 0.302103,
+      "p95_ms": 1.201576,
+      "p99_ms": 2.074708
+    },
+    "latency": {
+      "count": 2006,
+      "min_ms": 547.933667,
+      "max_ms": 624.425,
+      "mean_ms": 565.824699,
+      "p50_ms": 562.841667,
+      "p95_ms": 592.224792,
+      "p99_ms": 607.269625
+    },
+    "overhead_header": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "ttft": {
+      "count": 2006,
+      "min_ms": 50.11225,
+      "max_ms": 65.194917,
+      "mean_ms": 50.729365,
+      "p50_ms": 50.511042,
+      "p95_ms": 51.879042,
+      "p99_ms": 54.804875
+    },
+    "inter_chunk": {
+      "count": 98294,
+      "min_ms": 1.692917,
+      "max_ms": 34.655834,
+      "mean_ms": 10.511526,
+      "p50_ms": 10.349791,
+      "p95_ms": 11.626916,
+      "p99_ms": 13.082958
+    },
+    "frames_per_stream": {
+      "count": 2006,
+      "min": 53,
+      "max": 53,
+      "mean": 53,
+      "p50": 53,
+      "p99": 53
+    },
+    "incomplete_streams": 0,
+    "error_frames": 0,
+    "meta": {
+      "baseline": "true",
+      "cpus": "10",
+      "gateway_version": "kelvran-gateway dev (none, built unknown, go1.27.1, darwin/arm64)",
+      "harness_go": "go1.27.1",
+      "harness_gomaxprocs": "10",
+      "harness_os_arch": "darwin/arm64",
+      "host": "Darwin 27.0.0 arm64",
+      "redis": "none"
+    }
+  },
+  {
+    "scenario": "S3",
+    "target": "http://127.0.0.1:9432",
+    "model": "bench",
+    "stream": false,
+    "offered_rps": 100,
+    "duration_ns": 20000000000,
+    "warmup_ns": 3000000000,
+    "started_at": "2026-10-08T19:42:25.253475+05:30",
+    "requests": 2006,
+    "errors": 0,
+    "transport_errors": 0,
+    "dropped_arrivals": 0,
+    "cancelled_by_harness": 0,
+    "status_counts": {
+      "200": 2006
+    },
+    "sent_rps": 100.3,
+    "completed_rps": 100.3,
+    "schedule_lateness": {
+      "count": 2006,
+      "min_ms": 0.025301,
+      "max_ms": 5.313606,
+      "mean_ms": 1.161135,
+      "p50_ms": 1.081813,
+      "p95_ms": 2.142175,
+      "p99_ms": 2.353084
+    },
+    "latency": {
+      "count": 2006,
+      "min_ms": 0.161667,
+      "max_ms": 208.691334,
+      "mean_ms": 11.373496,
+      "p50_ms": 0.363583,
+      "p95_ms": 201.062125,
+      "p99_ms": 203.137542
+    },
+    "overhead_header": {
+      "count": 2006,
+      "min_ms": 0,
+      "max_ms": 165,
+      "mean_ms": 0.284147,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "ttft": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "inter_chunk": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "frames_per_stream": {
+      "count": 0,
+      "min": 0,
+      "max": 0,
+      "mean": 0,
+      "p50": 0,
+      "p99": 0
+    },
+    "incomplete_streams": 0,
+    "error_frames": 0,
+    "cache_hit_ratio": 0.9471585244267199,
+    "gateway_rss": {
+      "idle_bytes": 20807680,
+      "peak_bytes": 31342592,
+      "end_bytes": 31342592
+    },
+    "meta": {
+      "cpus": "10",
+      "gateway_version": "kelvran-gateway dev (none, built unknown, go1.27.1, darwin/arm64)",
+      "harness_go": "go1.27.1",
+      "harness_gomaxprocs": "10",
+      "harness_os_arch": "darwin/arm64",
+      "host": "Darwin 27.0.0 arm64",
+      "redis": "none"
+    }
+  },
+  {
+    "scenario": "S3-baseline",
+    "target": "http://127.0.0.1:9431",
+    "model": "bench",
+    "stream": false,
+    "offered_rps": 100,
+    "duration_ns": 20000000000,
+    "warmup_ns": 3000000000,
+    "started_at": "2026-10-08T19:42:48.284814+05:30",
+    "requests": 2006,
+    "errors": 0,
+    "transport_errors": 0,
+    "dropped_arrivals": 0,
+    "cancelled_by_harness": 0,
+    "status_counts": {
+      "200": 2006
+    },
+    "sent_rps": 100.3,
+    "completed_rps": 100.3,
+    "schedule_lateness": {
+      "count": 2006,
+      "min_ms": 0.021531,
+      "max_ms": 3.063197,
+      "mean_ms": 0.940314,
+      "p50_ms": 0.766891,
+      "p95_ms": 2.145862,
+      "p99_ms": 2.215882
+    },
+    "latency": {
+      "count": 2006,
+      "min_ms": 200.150083,
+      "max_ms": 208.248,
+      "mean_ms": 201.216979,
+      "p50_ms": 201.057208,
+      "p95_ms": 202.4585,
+      "p99_ms": 202.59475
+    },
+    "overhead_header": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "ttft": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "inter_chunk": {
+      "count": 0,
+      "min_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0
+    },
+    "frames_per_stream": {
+      "count": 0,
+      "min": 0,
+      "max": 0,
+      "mean": 0,
+      "p50": 0,
+      "p99": 0
+    },
+    "incomplete_streams": 0,
+    "error_frames": 0,
+    "cache_hit_ratio": 0,
+    "meta": {
+      "baseline": "true",
+      "cpus": "10",
+      "gateway_version": "kelvran-gateway dev (none, built unknown, go1.27.1, darwin/arm64)",
+      "harness_go": "go1.27.1",
+      "harness_gomaxprocs": "10",
+      "harness_os_arch": "darwin/arm64",
+      "host": "Darwin 27.0.0 arm64",
+      "redis": "none"
+    }
+  }
+]

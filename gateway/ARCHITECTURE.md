@@ -6,6 +6,11 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 
 ```
 /cmd/gateway              — main binary entrypoint (single static binary)
+/cmd/kelvran-bench        — benchmark harness (added 2026-10-08): `run` drives open-loop Poisson load
+                             through a gateway and measures latency, the overhead header, TTFT and
+                             inter-chunk gaps; `upstream` serves the deterministic OpenAI-shaped mock
+                             provider. Pure leaves: /internal/bench (schedule, SSE timing, percentiles,
+                             report) and /internal/benchupstream (the mock). docs/operations/BENCHMARKS.md.
 /internal/gateway
     /controlplane          — config compilation, cert rotation, metrics; infrequent, "slow and smart"
     /dataplane              — accept/filter/forward hot path; continuous, "dumb and fast"

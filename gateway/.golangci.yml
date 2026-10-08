@@ -155,6 +155,39 @@ linters:
         linters:
           - gosec
         text: "G304"
+      # The benchmark harness (plan item 5, 2026-10-08) is a developer tool
+      # that never serves attacker-reachable input: `kelvran-bench run`
+      # reads the virtual-key secret from the file the operator names with
+      # -key-file (G304, the same reasoning as config.go above); its load
+      # schedule is seeded math/rand/v2 on purpose, so a run is
+      # reproducible from its seed (G404 -- nothing here is a secret or a
+      # security token); RSS sampling on macOS shells out to ps with the
+      # gateway pid the operator passed (G204, an int, never a string from
+      # the network); and the mock upstream's tests post to the httptest
+      # server's own URL (G107).
+      - path: cmd/kelvran-bench/main\.go
+        linters:
+          - gosec
+        text: "G304"
+      - path: internal/bench/(runner|schedule_test)\.go
+        linters:
+          - gosec
+        text: "G404"
+      - path: internal/bench/rss\.go
+        linters:
+          - gosec
+        text: "G204"
+      - path: internal/benchupstream/benchupstream_test\.go
+        linters:
+          - gosec
+        text: "G107"
+      # The PII guard test reads three guardrail source files by fixed name
+      # (a map literal in the test) to prove its copied patterns have not
+      # drifted; the leaf package cannot import internal/guardrail (G304).
+      - path: internal/bench/prompt_pii_test\.go
+        linters:
+          - gosec
+        text: "G304"
       # writeTestPEMLeafCert reads a CA cert/key path it was JUST handed
       # by a sibling t.TempDir()-rooted writeTestPEMCert call in the same
       # test -- the identical test-fixture-only, never-attacker-reachable
