@@ -59,6 +59,8 @@ client = OpenAI(
 resp = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "hi"}])
 ```
 
+**Listing models (added 2026-10-08 on `main`):** `client.models.list()` works against the same base URL — `GET /v1/models` returns the canonical model names your key may use (filtered by its `allowed_models`), one entry per name with `kind` (`chat`/`embedding`), the serving providers in `owned_by`, and the operator's `display_name`/`description` from the `models:` config section when set. The same document also satisfies the Anthropic SDK's `client.models.list()` (`display_name`, `has_more` pagination via `limit`/`after_id`/`before_id`) and Claude Code's provider discovery; note that Claude Code's picker keeps only ids containing `claude` or `anthropic`, and runs discovery only in Anthropic-Messages mode, which Kelvran does not serve yet. `created` is when the gateway instance loaded its catalog, not a model release date.
+
 ```javascript
 import OpenAI from "openai";
 const client = new OpenAI({ baseURL: "https://your-kelvran-host/v1", apiKey: "<the raw secret>" });

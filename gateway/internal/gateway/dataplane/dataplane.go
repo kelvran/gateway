@@ -534,8 +534,13 @@ type Config struct {
 	// docs/rfcs/2026-09-04-weighted-routing.md. Required, like every
 	// other dependency here; built by the caller (cmd/gateway) from the
 	// same Deployments list below.
-	Router         *router.Router
-	Deployments    []Deployment
+	Router      *router.Router
+	Deployments []Deployment
+	// ModelMetadata is the optional operator-supplied display metadata for
+	// canonical models (controlplane's top-level `models:` section), keyed
+	// by canonical model name. GET /v1/models reports it (models.go); nil,
+	// or a model with no entry, is fine -- the handler falls back to the id.
+	ModelMetadata  map[string]ModelMetadata
 	CostCalculator *costaccounting.Calculator
 	Upstream       UpstreamCaller
 	// EmbeddingUpstream calls a Kind=="embedding" deployment's own
@@ -681,6 +686,11 @@ type Pipeline struct {
 	adapters          adapter.Registry
 	router            *router.Router
 	deploymentsByName map[string]Deployment
+	// modelMetadata and catalogLoadedAt back GET /v1/models (models.go):
+	// the operator's display metadata by canonical model, and when this
+	// process built its catalog (the `created` every entry reports).
+	modelMetadata     map[string]ModelMetadata
+	catalogLoadedAt   time.Time
 	costCalc          *costaccounting.Calculator
 	upstream          UpstreamCaller
 	embeddingUpstream UpstreamCaller
@@ -1066,6 +1076,8 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		adapters:              cfg.Adapters,
 		router:                cfg.Router,
 		deploymentsByName:     byName,
+		modelMetadata:         cfg.ModelMetadata,
+		catalogLoadedAt:       time.Now(),
 		costCalc:              cfg.CostCalculator,
 		// Wrapped, not assigned bare -- see wrapUpstreamCallerFor503Deweight's
 		// own doc comment. cfg.Router is guaranteed non-nil here (validated

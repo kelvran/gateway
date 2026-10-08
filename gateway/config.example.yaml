@@ -617,6 +617,20 @@ telemetry:
 # credential_reload:
 #   interval_seconds: 60
 
+# Optional display metadata for GET /v1/models, keyed by canonical model
+# name. Every key must match some deployment's `model:` (an unknown name
+# fails to load, so a typo cannot be silently ignored); both fields are
+# optional. The route reports id, kind (chat/embedding), owned_by (the
+# serving providers) and created (when this instance loaded its catalog)
+# from the deployments themselves -- this section only adds what a model
+# picker shows: `display_name` (Anthropic SDK, Claude Code) and
+# `description` (Claude Code). A model without an entry is listed with its
+# id as display_name and an empty description.
+models:
+  gpt-4o:
+    display_name: "GPT-4o"
+    description: "General-purpose chat, routed to OpenAI."
+
 # Static per-model price table (USD per token), used by
 # internal/costaccounting for Decimal-precision cost calculation — see
 # docs/rfcs/2026-09-02-decimal-cost-accounting.md. Each value below is

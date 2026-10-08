@@ -591,6 +591,9 @@ func run(configPath string, logger *slog.Logger) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
 	mux.HandleFunc("/v1/embeddings", embeddingsHandler(pipeline))
+	// Exact path on purpose (no "/v1/models/" pattern): a trailing-slash
+	// request must be a 404, never a ServeMux 301 -- see models_handler.go.
+	mux.HandleFunc("/v1/models", modelsHandler(pipeline))
 	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/readyz", readyzHandler(pipeline))
 
@@ -1215,6 +1218,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	return dataplane.NewPipeline(dataplane.Config{
 		Verifier:      verifier,
 		IdentityStore: identityStore,
+		ModelMetadata: modelMetadataFromConfig(cfg.Models),
 		// Always constructed, never nil — mirrors Cache/CacheL2/CacheL3's
 		// own "no config gate, just always wire it in" precedent below:
 		// idempotency.Store's own contract already makes an empty

@@ -297,6 +297,17 @@ var validFallbackClasses = map[string]bool{
 	fallbackClassGeneric:               true,
 }
 
+// ModelMetadataConfig is one entry of the optional top-level `models:`
+// section: operator-supplied display metadata for a canonical model, which
+// GET /v1/models reports. The key must name a model some deployment
+// serves (an entry for an unknown model is a load error -- the same
+// "silently ignored config is a doc-vs-code trap" rule tpm_accounting
+// follows); both fields are optional and the route falls back to the id.
+type ModelMetadataConfig struct {
+	DisplayName string
+	Description string
+}
+
 // ModelPriceConfig is the static per-token price for one model.
 // Decimal, not float64, per docs/rfcs/2026-09-02-decimal-cost-accounting.md
 // — these values are parsed from their original YAML source string via
@@ -970,6 +981,9 @@ type Config struct {
 	Deployments []DeploymentConfig
 	// PriceTable is the static per-model cost table.
 	PriceTable map[string]ModelPriceConfig
+	// Models is the optional top-level `models:` section (display metadata
+	// for GET /v1/models), keyed by canonical model name; nil when absent.
+	Models map[string]ModelMetadataConfig
 	// Telemetry configures OTel span export. Optional.
 	Telemetry TelemetryConfig
 	// Budget configures budget-spend persistence. Optional.
@@ -1471,6 +1485,36 @@ func Load(path string) (*Config, error) {
 				entry.CacheCreationPerToken = &cacheCreationPer
 			}
 			cfg.PriceTable[model] = entry
+		}
+	}
+
+	if modelsRaw, ok := getMap(root, "models"); ok {
+		configured := make(map[string]struct{}, len(cfg.Deployments))
+		for _, dep := range cfg.Deployments {
+			configured[dep.Model] = struct{}{}
+		}
+		cfg.Models = make(map[string]ModelMetadataConfig, len(modelsRaw))
+		for model, raw := range modelsRaw {
+			entryMap, ok := raw.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("controlplane: models entry %q must be a mapping", model)
+			}
+			if _, known := configured[model]; !known {
+				return nil, fmt.Errorf("controlplane: models entry %q does not match any deployment's model", model)
+			}
+			for field := range entryMap {
+				if field != "display_name" && field != "description" {
+					return nil, fmt.Errorf("controlplane: models entry %q has unknown field %q (want display_name, description)", model, field)
+				}
+			}
+			entry := ModelMetadataConfig{}
+			if v, ok := getString(entryMap, "display_name"); ok {
+				entry.DisplayName = v
+			}
+			if v, ok := getString(entryMap, "description"); ok {
+				entry.Description = v
+			}
+			cfg.Models[model] = entry
 		}
 	}
 
