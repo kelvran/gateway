@@ -243,3 +243,37 @@ func TestRegressionFromProviderMatchesCanonicalWireFormatWithCacheTokens(t *test
 	wantJSON := mustReadTestdata(t, "response_canonical_cached.golden.json")
 	assertJSONEqual(t, gotJSON, wantJSON)
 }
+
+// TestRegressionToProviderInboundToolChoiceStringReachesConverseWire: the same
+// OpenAI bare-string fixture, translated to Converse's toolChoice union
+// ("required" is Converse's {"any":{}}), proving inbound parsing and the
+// cross-provider mapping compose.
+func TestRegressionToProviderInboundToolChoiceStringReachesConverseWire(t *testing.T) {
+	canonicalJSON := mustReadTestdata(t, "request_canonical_tool_choice.json")
+	var req adapter.ChatRequest
+	if err := json.Unmarshal(canonicalJSON, &req); err != nil {
+		t.Fatalf("unmarshaling request_canonical_tool_choice.json: %v", err)
+	}
+	if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
+		t.Fatalf("fixture tool_choice decoded to %+v, want Mode required", req.ToolChoice)
+	}
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	gotJSON, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling ToProvider output: %v", err)
+	}
+	var wire struct {
+		ToolConfig struct {
+			ToolChoice json.RawMessage `json:"toolChoice"`
+		} `json:"toolConfig"`
+	}
+	if err := json.Unmarshal(gotJSON, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if string(wire.ToolConfig.ToolChoice) != `{"any":{}}` {
+		t.Errorf("Converse toolChoice = %s, want {\"any\":{}}", wire.ToolConfig.ToolChoice)
+	}
+}

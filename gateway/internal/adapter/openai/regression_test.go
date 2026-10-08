@@ -195,3 +195,35 @@ func TestRegressionToProviderNilResponseFormatMatchesExistingGoldenFixture(t *te
 	wantJSON := mustReadTestdata(t, "request_openai_native.golden.json")
 	assertJSONEqual(t, gotJSON, wantJSON)
 }
+
+// TestRegressionToProviderInboundToolChoiceStringReachesOpenAIWire proves the
+// fixture path end to end: a canonical request carrying OpenAI's bare-string
+// tool_choice ("required", exactly what every OpenAI SDK sends) decodes
+// through ToolChoice.UnmarshalJSON and is re-emitted on the OpenAI wire as the
+// same bare string. Before 2026-10-08 the fixture itself failed to decode
+// (live defect F4).
+func TestRegressionToProviderInboundToolChoiceStringReachesOpenAIWire(t *testing.T) {
+	canonicalJSON := mustReadTestdata(t, "request_canonical_tool_choice.json")
+	var req adapter.ChatRequest
+	if err := json.Unmarshal(canonicalJSON, &req); err != nil {
+		t.Fatalf("unmarshaling request_canonical_tool_choice.json: %v", err)
+	}
+	if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
+		t.Fatalf("fixture tool_choice decoded to %+v, want Mode required", req.ToolChoice)
+	}
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	gotJSON, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling ToProvider output: %v", err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(gotJSON, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if string(wire["tool_choice"]) != `"required"` {
+		t.Errorf("wire tool_choice = %s, want \"required\"", wire["tool_choice"])
+	}
+}

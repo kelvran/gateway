@@ -1912,6 +1912,14 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 
 		var req adapter.ChatRequest
 		if err := json.Unmarshal(body, &req); err != nil {
+			// A bad tool_choice is the one malformed-body case worth naming: every
+			// OpenAI SDK sends it, and until 2026-10-08 the string form was rejected
+			// here (live defect F4). ToolChoice.UnmarshalJSON returns its own
+			// sentinel, which encoding/json passes through unwrapped.
+			if errors.Is(err, adapter.ErrInvalidToolChoice) {
+				invalidRequest(w, http.StatusBadRequest, "invalid_tool_choice", codePtr("tool_choice"), err.Error())
+				return
+			}
 			invalidRequest(w, http.StatusBadRequest, "invalid_json", nil, fmt.Sprintf("invalid request body: %v", err))
 			return
 		}
@@ -1926,6 +1934,10 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		}
 		if err := adapter.ValidateToolDefs(req.Tools); err != nil {
 			invalidRequest(w, http.StatusBadRequest, "invalid_request", nil, err.Error())
+			return
+		}
+		if err := adapter.ValidateToolChoice(req.ToolChoice, req.Tools); err != nil {
+			invalidRequest(w, http.StatusBadRequest, "invalid_tool_choice", codePtr("tool_choice"), err.Error())
 			return
 		}
 		if err := adapter.ValidateFieldSizes(req.Messages); err != nil {
