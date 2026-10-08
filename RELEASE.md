@@ -40,6 +40,12 @@ Any release that includes a change to `api/` (the shared OTel/proto contract) mu
 
 ### Verifying the published gateway image
 
+First confirm which build the tag resolves to — the binary reports the version, commit and build date the publish job injected (`-ldflags -X main.version=…`; a value of `dev` means the image was built outside CI):
+
+```bash
+docker run --rm ghcr.io/kelvran/gateway:latest -version
+```
+
 Any consumer of `ghcr.io/kelvran/gateway` can independently verify its signature and attestations — no special access needed, the package is public:
 
 ```bash

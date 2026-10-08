@@ -465,9 +465,15 @@ jobs:
         run: |
           TAGS="ghcr.io/kelvran/gateway:latest
           ghcr.io/kelvran/gateway:sha-${SHA}"
+          # Build identity for `gateway -version` / the build_info log line
+          # (-X main.version via the Dockerfile ARGs). A release tag yields its
+          # semver; a main push yields a semver PRERELEASE naming the commit, so
+          # a :latest image never claims to be a release or a dev build.
+          BUILD_VERSION="0.0.0-main.${SHA:0:12}"
           if [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == gateway/v* ]]; then
             VERSION="${REF_NAME}"
             VERSION="${VERSION#gateway/}"
+            BUILD_VERSION="${VERSION#v}"
             TAGS="$TAGS
           ghcr.io/kelvran/gateway:${VERSION}"
           fi
@@ -475,6 +481,8 @@ jobs:
             echo "tags<<TAGS_EOF"
             echo "$TAGS"
             echo "TAGS_EOF"
+            echo "version=${BUILD_VERSION}"
+            echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
       - name: Build and push gateway image
         id: build
@@ -483,6 +491,10 @@ jobs:
           context: ./gateway
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.tags.outputs.version }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.tags.outputs.date }}
       - name: Trivy vulnerability scan of the published image
         # govulncheck (gateway job, above) and pip-audit (evals job) scan
         # SOURCE dependencies -- nothing previously scanned the actual BUILT

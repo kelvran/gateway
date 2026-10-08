@@ -24,8 +24,18 @@ RUN go mod download
 
 COPY . .
 
-# CGO_ENABLED=0 for a truly static binary that runs on scratch.
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/gateway ./cmd/gateway
+# Build identity for `gateway -version` and the build_info log line. The
+# defaults keep a plain `docker build` honest ("dev"); CI passes the real
+# values as build-args (see .github/workflows/ci.yml's publish-image job).
+ARG VERSION=dev
+ARG COMMIT=none
+ARG DATE=unknown
+
+# CGO_ENABLED=0 for a truly static binary that runs on scratch; -trimpath and
+# -s -w for reproducible paths and a smaller binary.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -o /out/gateway ./cmd/gateway
 
 # --- final stage ---
 FROM scratch

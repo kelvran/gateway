@@ -126,4 +126,6 @@ See `UPGRADE.md` for the actual breaking-change list (currently empty — no bre
 
 ## Troubleshooting / Health Checks
 
+**Which version is running?** (added 2026-10-08) `gateway -version` prints `kelvran-gateway <version> (<commit>, built <date>, <go>, <os/arch>)` and every start logs the same fields once as a `build_info` JSON record; `docker run --rm ghcr.io/kelvran/gateway:<tag> -version` answers it for an image without starting the server. Replicas reporting different versions is the first thing to check after a rollout.
+
 For deeper diagnosis once something's actually running, see `docs/operations/TELEMETRY.md` — this document covers standing the system up, not debugging it once it's misbehaving.

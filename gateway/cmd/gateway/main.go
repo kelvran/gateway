@@ -343,8 +343,17 @@ func main() {
 	validateOnly := flag.Bool("validate", false, "load and validate the config file, then exit (0 if valid, 1 if not) -- no listener, no store, no telemetry, nothing else started")
 	restoreStore := flag.String("restore-store", "", "run a one-shot OFFLINE restore for this store's persist_path (identity|budget|prompt), then exit -- no listener, no server started. The gateway process must be STOPPED before running this, and must not be started again against the same persist_path until it completes; see internal/backup.Restore's own doc comment for why a live restore-while-serving is not supported")
 	restoreFrom := flag.String("restore-from", "", "backup file path to restore from (e.g. one written by POST /admin/backup) -- required when -restore-store is set")
+	showVersion := flag.Bool("version", false, "print the build identity (version, commit, build date, Go version, platform) on one line and exit 0")
 	restoreForce := flag.Bool("restore-force", false, "overwrite an existing destination persist_path file when restoring -- refused by default, mirroring backup.CopyFile's own refuses-to-overwrite convention")
 	flag.Parse()
+
+	// -version is the cheapest one-shot: no config read, no store, no logger.
+	// It exists so operators, package managers and the release workflow can
+	// confirm which build is on disk (see cmd/gateway/version.go).
+	if *showVersion {
+		fmt.Println(buildInfoString(version, commit, date))
+		return
+	}
 
 	// -restore-store is evaluated before -validate and before the normal
 	// server-start path below: it is a one-shot operator action (like
@@ -377,6 +386,7 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+	logBuildInfo(logger)
 
 	// Go has no native cgroup-memory-aware GOMEMLIMIT equivalent (unlike
 	// GOMAXPROCS, which Go 1.25+ already sets container-aware, but only

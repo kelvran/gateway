@@ -5,6 +5,7 @@ Entries accumulate here under the six [Keep a Changelog](https://keepachangelog.
 Versioning: [SemVer](https://semver.org/) — load-bearing for the Go module path/tag (`v0.1.0`, `v0.2.0`, ...).
 
 ## Added
+- `gateway -version` prints the build identity on one line and exits 0 (`kelvran-gateway <version> (<commit>, built <date>, <go version>, <os/arch>)`), and every start logs the same fields once as `build_info`. The values are injected at build time through `-ldflags "-X main.version=… -X main.commit=… -X main.date=…"` (`gateway/Dockerfile` now takes `ARG VERSION COMMIT DATE` and builds with `-trimpath -s -w`); a plain `go build`/`go run` identifies itself as `dev (none, built unknown, …)` rather than printing a stale or empty version. Groundwork for release binaries and packages (plan item 4 of `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md`).
 
 ## Changed
 
