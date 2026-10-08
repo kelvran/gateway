@@ -516,7 +516,18 @@ type Choice struct {
 
 // ChatResponse is the canonical, provider-agnostic chat completion response.
 type ChatResponse struct {
-	ID      string   `json:"id"`
+	ID string `json:"id"`
+	// Object and Created are the OpenAI wire envelope every chat completion
+	// carries: the literal "chat.completion" and the Unix creation time.
+	// No adapter sets them -- FromProvider reports only what the provider
+	// said, and no provider's native shape is translated into these -- the
+	// dataplane stamps them (internal/gateway/dataplane/
+	// completion_envelope.go) on the completion the gateway delivers, and
+	// fills ID there too when the provider has none (Bedrock). omitempty is
+	// load-bearing: every adapter response golden compares the translated
+	// shape field-for-field, and that shape has neither.
+	Object  string   `json:"object,omitempty"`
+	Created int64    `json:"created,omitempty"`
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
 	Usage   Usage    `json:"usage"`

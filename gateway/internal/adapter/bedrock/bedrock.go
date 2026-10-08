@@ -30,6 +30,12 @@
 //  4. No native response-ID field exists on Converse's response, unlike
 //     OpenAI/Anthropic/Gemini — ChatResponse.ID is left empty, an honest
 //     absence, never a fabricated placeholder.
+//     Addendum 2026-10-08: that empty ID no longer reaches clients. The
+//     dataplane stamps a gateway-issued id ("chatcmpl-" + 32 hex) plus
+//     object/created on every completion and chunk it delivers
+//     (internal/gateway/dataplane/completion_envelope.go), filling only
+//     what is empty, so this adapter is unchanged and still reports the
+//     absence honestly.
 package bedrock
 
 import (
@@ -1032,7 +1038,9 @@ func reasoningBlockFromProvider(rc *ReasoningContentBlock, sequence int) adapter
 
 // FromProvider implements adapter.Adapter, converting a Bedrock native
 // Response back into the canonical ChatResponse shape. ID is left empty —
-// Converse has no native response-ID field, per hazard #4.
+// Converse has no native response-ID field, per hazard #4 (the dataplane
+// fills it before the response reaches a client; see that hazard's
+// 2026-10-08 addendum).
 func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	native, ok := resp.(*Response)
 	if !ok {

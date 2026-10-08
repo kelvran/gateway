@@ -3492,6 +3492,10 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 	if idempotencyReplay {
+		// A response stored before the envelope existed has no id; mint
+		// one for this replay rather than return "id":"". Stored
+		// responses written since carry their id and this is a no-op.
+		stampCompletionEnvelope(&resp, p.clock())
 		return
 	}
 
@@ -3552,6 +3556,9 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
 			cacheInfo = cacheProvenance{Layer: layer, AgeMs: float64(time.Since(writtenAt).Milliseconds())}
+			// Pre-upgrade cache entries only (see the idempotency replay
+			// above); an entry written since carries its own envelope.
+			stampCompletionEnvelope(&resp, p.clock())
 			return
 		}
 		// A corrupt cache entry is treated as a miss, not a request
@@ -3563,6 +3570,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
 			cacheInfo = cacheProvenance{Layer: "L3", Similarity: similarity, AgeMs: ageMs}
+			stampCompletionEnvelope(&resp, p.clock())
 			return
 		}
 		// A corrupt cache entry is treated as a miss, not a request
@@ -3845,6 +3853,14 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	// reported the truth since the earlier billing fix; this closes the
 	// same gap for the client-visible response body.
 	resp.Model = dep.Model
+	// Envelope (id/object/created) is stamped HERE, on the one path every
+	// buffered upstream completion takes, and before the post-call
+	// guardrail, the cache write and the idempotency store all see resp --
+	// so the cached JSON carries the id a later replay must return
+	// unchanged. Fill-only-when-empty: an OpenAI/Anthropic/Gemini id is
+	// kept; Bedrock's honest "" gets a gateway-issued one. See
+	// completion_envelope.go.
+	stampCompletionEnvelope(&resp, p.clock())
 	return resp, nil
 }
 
@@ -4577,11 +4593,15 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		requestModelForMetrics = "unresolved"
 	}
 	result := telemetry.ChatCompletionResult{
-		VirtualKeyID:    virtualKeyID,
-		Provider:        dep.Provider,
-		DeploymentName:  dep.Name,
-		RequestModel:    requestModelForMetrics,
-		ResponseModel:   responseModel,
+		VirtualKeyID:   virtualKeyID,
+		Provider:       dep.Provider,
+		DeploymentName: dep.Name,
+		RequestModel:   requestModelForMetrics,
+		ResponseModel:  responseModel,
+		// ResponseID is a SPAN attribute only (gen_ai.response.id), never
+		// a metric attribute: since 2026-10-08 every completion carries a
+		// unique id (gateway-issued when the provider has none), so it
+		// would be an unbounded-cardinality label on any counter.
 		ResponseID:      resp.ID,
 		FinishReasons:   finishReasons(resp),
 		InputTokens:     resp.Usage.PromptTokens,

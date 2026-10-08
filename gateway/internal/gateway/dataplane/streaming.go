@@ -212,7 +212,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	}
 	if idempotencyReplay {
 		resp = idempotencyCachedResp
-		err = writeFakeStream(sw, idempotencyCachedResp)
+		err = writeFakeStream(sw, idempotencyCachedResp, p.clock())
 		return
 	}
 
@@ -270,7 +270,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
 			cacheInfo = cacheProvenance{Layer: layer, AgeMs: float64(time.Since(writtenAt).Milliseconds())}
-			err = writeFakeStream(sw, cachedResp)
+			err = writeFakeStream(sw, cachedResp, p.clock())
 			return
 		}
 		// A corrupt cache entry is treated as a miss, not a request
@@ -282,7 +282,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		if unmarshalErr := json.Unmarshal(cached, &cachedResp); unmarshalErr == nil {
 			resp = cachedResp
 			cacheInfo = cacheProvenance{Layer: "L3", Similarity: similarity, AgeMs: ageMs}
-			err = writeFakeStream(sw, cachedResp)
+			err = writeFakeStream(sw, cachedResp, p.clock())
 			return
 		}
 		// A corrupt cache entry is treated as a miss, not a request
@@ -410,12 +410,21 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 // the RFC's Unresolved Questions: chunking the content more finely to
 // mimic real streaming UX is a possible future refinement, not required
 // for correctness).
-func writeFakeStream(sw *streaming.Writer, resp adapter.ChatResponse) error {
+//
+// Every frame carries the cached response's own envelope (id, created),
+// so a replay returns the id the completion was stored with. A response
+// cached before the envelope existed (2026-10-08) has none: it is stamped
+// ONCE here, from the pipeline clock passed in as now, so all of its
+// frames share one minted id rather than each carrying "id":"".
+func writeFakeStream(sw *streaming.Writer, resp adapter.ChatResponse, now time.Time) error {
+	stampCompletionEnvelope(&resp, now)
 	for _, c := range resp.Choices {
 		finishReason := c.FinishReason
 		chunk := streaming.ChatCompletionChunk{
-			ID:    resp.ID,
-			Model: resp.Model,
+			ID:      resp.ID,
+			Object:  completionChunkObject,
+			Created: resp.Created,
+			Model:   resp.Model,
 			Choices: []streaming.ChunkChoice{{
 				Index: c.Index,
 				Delta: streaming.MessageDelta{
@@ -433,7 +442,7 @@ func writeFakeStream(sw *streaming.Writer, resp adapter.ChatResponse) error {
 	}
 
 	usage := resp.Usage
-	if err := sw.WriteChunk(streaming.ChatCompletionChunk{ID: resp.ID, Model: resp.Model, Usage: &usage}); err != nil {
+	if err := sw.WriteChunk(streaming.ChatCompletionChunk{ID: resp.ID, Object: completionChunkObject, Created: resp.Created, Model: resp.Model, Usage: &usage}); err != nil {
 		return fmt.Errorf("writing fake-streamed usage chunk: %w", err)
 	}
 	if err := sw.WriteDone(); err != nil {
@@ -659,6 +668,10 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 	decoder := streamAdapter.NewStreamDecoder()
 	reader := streaming.NewReader(body)
 	acc := newStreamAccumulator()
+	// One envelope per stream: every chunk below, and the accumulated
+	// response that gets cached, share this id and created (see
+	// completion_envelope.go). Minted from p.now, never time.Now.
+	env := newStreamEnvelope(dep.Model, p.clock())
 	var finalUsage *adapter.Usage
 	runawayCeiling := streamRunawayCharsCeiling(req.MaxTokens)
 
@@ -693,6 +706,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 			finalUsage = usage
 		}
 		for _, c := range chunks {
+			env.stampChunk(&c)
 			acc.add(c)
 			if writeErr := sw.WriteChunk(c); writeErr != nil {
 				return adapter.ChatResponse{}, false, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
@@ -747,7 +761,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		}
 	}
 
-	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked)
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked, env)
 }
 
 // streamDeploymentBedrock is streamDeployment's Bedrock-specific sibling:
@@ -812,6 +826,10 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	decoder := bedrock.NewStreamDecoder()
 	eventDecoder := eventstream.NewDecoder()
 	acc := newStreamAccumulator()
+	// One envelope per stream: every chunk below, and the accumulated
+	// response that gets cached, share this id and created (see
+	// completion_envelope.go). Minted from p.now, never time.Now.
+	env := newStreamEnvelope(dep.Model, p.clock())
 	var finalUsage *adapter.Usage
 	runawayCeiling := streamRunawayCharsCeiling(req.MaxTokens)
 
@@ -867,6 +885,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 			finalUsage = usage
 		}
 		for _, c := range chunks {
+			env.stampChunk(&c)
 			acc.add(c)
 			if writeErr := sw.WriteChunk(c); writeErr != nil {
 				return adapter.ChatResponse{}, false, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
@@ -902,7 +921,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 		}
 	}
 
-	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked)
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked, env)
 }
 
 // estimateOrRealUsage returns finalUsage verbatim (estimated=false) when
@@ -951,7 +970,7 @@ func estimateOrRealUsage(req adapter.ChatRequest, acc *streamAccumulator, finalU
 // (false) — callers thread this through to finalize purely for
 // telemetry/audit disclosure, per estimateOrRealUsage's own doc comment;
 // it does not change the billing decision itself.
-func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage, keyID string, blocked *bool) (adapter.ChatResponse, bool, error) {
+func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage, keyID string, blocked *bool, env streamEnvelope) (adapter.ChatResponse, bool, error) {
 	usage, estimated := estimateOrRealUsage(req, acc, finalUsage)
 	if estimated {
 		// Per the RFC's Cost Accounting section: a provider stream that
@@ -992,6 +1011,15 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	// response gets cached, for a FUTURE cache-hit client's replayed
 	// resp.Model (writeFakeStream echoes whatever was cached verbatim).
 	resp.Model = dep.Model
+	// Complete the envelope here, before anything below inspects or logs
+	// resp: the id is already env's (every chunk was stamped before
+	// acc.add, so acc.id carried it into build), object/created come from
+	// the same envelope, and the cached JSON therefore replays exactly
+	// what the live stream carried. serializeResponse (the post-call
+	// guardrail input) reads message content only, so the verdict never
+	// depended on these fields -- stamping first just keeps "the response
+	// is final before it is examined" true by construction.
+	env.stampResponse(&resp)
 
 	// Guardrail post-call, streaming path — audit-only for CLIENT DELIVERY
 	// ONLY, per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md's

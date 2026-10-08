@@ -25,7 +25,16 @@ type SSEEvent struct {
 // client-facing wire format for every streaming response, regardless of
 // which upstream provider actually served it.
 type ChatCompletionChunk struct {
-	ID      string        `json:"id"`
+	ID string `json:"id"`
+	// Object and Created mirror adapter.ChatResponse's envelope for the
+	// streaming shape ("chat.completion.chunk" and the Unix creation time
+	// of the whole stream). No StreamDecoder sets them; the dataplane
+	// stamps every chunk from one per-stream envelope before it is
+	// accumulated and written (completion_envelope.go), filling ID and
+	// Model too when the provider's chunks carry none (Bedrock). omitempty
+	// keeps this package's byte-exact SSE goldens unchanged.
+	Object  string        `json:"object,omitempty"`
+	Created int64         `json:"created,omitempty"`
 	Model   string        `json:"model"`
 	Choices []ChunkChoice `json:"choices"`
 	// Usage is non-nil only on the chunk (typically the final one) where

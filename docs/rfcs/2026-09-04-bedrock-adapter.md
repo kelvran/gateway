@@ -77,6 +77,8 @@ Confirmed against AWS's real Converse API reference (`docs.aws.amazon.com/bedroc
 
 **A real, named gap**: Converse's response has no native response-ID field, unlike OpenAI/Anthropic/Gemini (which have `id`/`responseId`). `ChatResponse.ID` is left empty for Bedrock — an honest absence, never a fabricated placeholder, matching this codebase's existing "`None`/empty means genuinely not applicable" convention (`Run.cost_usd`, `Score.rubric_axis`, etc.).
 
+**Corrected 2026-10-08**: the "honest absence" above is still exactly what this adapter does, but it is no longer what a client sees. Live-verified on 2026-10-07/08 (defect F7), `"id": ""` reached clients verbatim on every Bedrock completion, streaming chunks carried an empty `id` and `model`, and no response of any provider carried `object` or `created` — the OpenAI SDKs tolerate that, tooling that keys traces or dedups on `id` does not. The gateway now stamps its own envelope on the completion it delivers (`internal/gateway/dataplane/completion_envelope.go`: `chatcmpl-` + 32 hex from `crypto/rand`, `object`, `created` from the pipeline clock), filling only empty fields, so OpenAI/Anthropic/Gemini ids pass through unchanged, a cache or idempotency replay returns the id it was stored with, and a stream shares one id across every frame. The adapter layer is deliberately untouched: no provider id is fabricated here, and every adapter golden is byte-for-byte the same.
+
 ### `responseUnmarshalers`
 
 One new entry, identical shape to every other provider's:
