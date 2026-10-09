@@ -3870,3 +3870,19 @@ Stale comments corrected where the verification contradicted them: `main.go`'s i
 **Bugs found:** none in Kelvran code; eleven upstream vulnerabilities reachable from it, closed by the bumps.
 
 **Next steps / resume point:** item 16 (comparison pages) in flight; then the item-11 RFC.
+
+---
+
+## [2026-10-09] main — plan item 16: three comparison pages, evidence-only
+
+**Files touched:** `docs/explanation/compare/{litellm,portkey,bifrost}.md` (new), `docs/README.md`, `docs/llms.txt`; this entry.
+
+**Intent/summary:** plan item 16. Three "Kelvran vs X" pages in the Langfuse structure the plan specifies — scope note, five-bullet TL;DR, "Choose Kelvran if / Choose X if" that concedes ground, one table per dimension (deployment model, provider coverage, cache semantics, budgets and keys, failover and routing, observability, supply chain, licence, maturity), FAQ, sources — with no cost or performance figure for either side (Kelvran publishes none yet; the pages quote no competitor benchmarks) and no "why teams move" section (no evidence exists). One honest differentiator per page: agent-run cost attribution (LiteLLM), the correctness-gated lexical cache (Portkey), signed and attested release artefacts (Bifrost). Research first: seven agents — one compiled 53 Kelvran facts from the code-cited reference pages; two per competitor (product-and-trust, runtime behaviour) fetched primary sources only (README, docs site, releases, LICENSE) and returned 455 facts with URL and quote (LiteLLM 174, Portkey 143, Bifrost 138) plus 64 dimensions they could not establish from primary sources, which the pages state as such instead of guessing.
+
+**Decisions made:** competitor facts come only from each project's own README, docs site, releases page and LICENSE, fetched on 2026-10-09 with the URL and a quote recorded for every fact; a dimension with no primary-source fact reads "not established from primary sources on 2026-10-09" rather than a guess; Kelvran facts come from the code-cited reference pages and name what is on main but not in `gateway/v0.17.0`. The pages are dated and tell the reader to verify before relying on competitor facts.
+
+**Verification performed:** Two adversarial readers per page — one holding every Kelvran claim to the code and the reference pages, one re-fetching every cited competitor URL — raised 76 findings (LiteLLM 19, Portkey 27, Bifrost 30), none a blocker; three fixers applied 79 repairs; three re-verifications: LiteLLM clean with wording nits, Portkey and Bifrost each with one residual item, all applied by hand (the release pipeline had run once as a dry run on 2026-10-08, so "never yet run" was false; the Trivy step entered CI on 2026-09-17, four days after cosign and the attestations; the Scorecard trigger list omitted branch-protection changes; the LiteLLM licence sentence was over-broad and cited the wrong page; four relative links were missing from its Sources line). Both link checks over the tree after the pages and links landed.
+
+**Bugs found:** none.
+
+**Next steps / resume point:** RFC-1 for item 11 (`POST /v1/messages`, gate G8 presented both ways); item 15a once a tagged release with assets exists; items 14 and 15b gated on G5/G6; the owner's items from item 10 (badge registration, advisory decision, push protection, directory PRs on go-ahead, Artifact Hub).

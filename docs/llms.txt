@@ -67,5 +67,8 @@ Versions follow docs/VERSIONING.md (gateway/vX.Y.Z and evals/vX.Y.Z; a PATCH nev
 - [The cache gate](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/cache-gate.md): why the lexical tier is hard-gated
 - [Design decisions](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/design-decisions.md): the ADRs and the decision log, one line each
 - [MCP/A2A status](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/mcp-a2a-status.md): designed, not shipped
+- [Kelvran vs LiteLLM](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/compare/litellm.md): comparison from primary sources, no benchmark figures
+- [Kelvran vs Portkey Gateway](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/compare/portkey.md): comparison from primary sources, no benchmark figures
+- [Kelvran vs Bifrost](https://raw.githubusercontent.com/kelvran/gateway/main/docs/explanation/compare/bifrost.md): comparison from primary sources, no benchmark figures
 - [Unreleased changes](https://raw.githubusercontent.com/kelvran/gateway/main/gateway/changelog/unreleased.md): what is on main but not yet in a gateway release
 - [Repository README](https://raw.githubusercontent.com/kelvran/gateway/main/README.md): feature table and quickstart

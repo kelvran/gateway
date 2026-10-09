@@ -38,6 +38,8 @@ The commented [`gateway/config.example.yaml`](../gateway/config.example.yaml) is
 
 [Architecture](explanation/architecture.md) · [Security model](explanation/security-model.md) · [Versioning](explanation/versioning.md) · [Why there is no SDK](explanation/why-no-sdk.md) · [The cache gate](explanation/cache-gate.md) · [Design decisions](explanation/design-decisions.md) · [MCP/A2A status](explanation/mcp-a2a-status.md)
 
+Comparisons, from each project's own documentation on 2026-10-09 and with no benchmark figures: [Kelvran vs LiteLLM](explanation/compare/litellm.md) · [Kelvran vs Portkey Gateway](explanation/compare/portkey.md) · [Kelvran vs Bifrost](explanation/compare/bifrost.md)
+
 Policies: [`VERSIONING.md`](VERSIONING.md) (what a version number promises) · [`SECURITY.md`](../SECURITY.md) (reporting a vulnerability, privately) · [`SUPPORT.md`](../SUPPORT.md) · [`CONTRIBUTING.md`](../CONTRIBUTING.md) · [`THREAT_MODEL.md`](../THREAT_MODEL.md).
 
 ## Project internals, not user documentation
