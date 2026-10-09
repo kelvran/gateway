@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791469777874,
+  "lastUpdate": 1791544056641,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -181,6 +181,208 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 latency p99",
             "value": 53.581196,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "c451705795809f064b94eeaa72c245ee37b74ac3",
+          "message": "feat(telemetry): kelvran.fallback.rescued counter, fallback outcome on the duration histogram, hops on the span\n\nPlan item 13b (docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md).\nA fallback was visible only as a per-hop span event, three decision-event\nfields and the anomaly detector's warning; nothing aggregated how often the\nchain saved a request.\n\nfallbackInfo gains class (the first failure's classifyFallbackError) and\nhops, counted by the call closure the chain sites already pass so the\nchain's signature is untouched. finalize records kelvran.fallback.rescued\n{virtual_key.id, fallback.from, deployment.name, fallback.hop.error_class}\nunder the same gate it uses for pricing (err == nil || billable), puts\nkelvran.fallback.outcome (none / rescued / exhausted) on\ngen_ai.client.operation.duration only (its own attribute slice: the shared\nattrs feeds eight instruments), and sets kelvran.fallback.hops on the span.\n\nFixed on the way: runMissPath dropped its fallback record on the error\nbranch, so an exhausted buffered chain or a rescued-then-guardrail-blocked\nrequest read as \"no fallback\". The closure now assigns the named return;\na failed buffered request's decision event therefore carries its fallback\nfields (streaming always did) and the anomaly detector observes those too.\nCoalesced followers of a rescued leader count as rescued, as their decision\nevent always said.\n\nTwelve tests, written red first or added from review; full -race run clean;\nlint and arch-lint clean. Live on real Bedrock through a scratch gateway:\n3 of 12 extractor requests landed on the broken twin and were rescued, with\ncounter, histogram and decision events agreeing. Two Grafana panels, the\ntelemetry and reference tables, FAILURE-MODES U1 and the changelog updated.\nThree-lens review with two refuters per finding (18 confirmed, no code\ndefect) and a fresh reviewer over the repairs (none).\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-09T10:41:02Z",
+          "url": "https://github.com/kelvran/gateway/commit/c451705795809f064b94eeaa72c245ee37b74ac3"
+        },
+        "date": 1791544055942,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.504564,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 2.886591,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 3.604871,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 201.874131,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 202.851929,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 203.757086,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 567.130608,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 572.764211,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 575.479835,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 51.916058,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 54.076017,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.554307,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.363438,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.617999,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.594653,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 52.335704,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 52.982267,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 53.390541,
             "unit": "ms"
           },
           {
