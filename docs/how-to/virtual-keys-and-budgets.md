@@ -146,7 +146,7 @@ admin:
   persist_path: "/var/lib/kelvran-gateway/identity.db"   # or redis_addr, see above
 ```
 
-Create or replace a key. The body mirrors the YAML names with three exceptions: allow-lists are JSON arrays; `max_concurrent_requests` and `billing_subject_id` are not accepted (an unknown field is silently ignored, so the key gets no concurrency cap and no billing subject); and an upsert is a full replace, never a merge:
+Create or replace a key. The body mirrors the YAML names with three exceptions: allow-lists are JSON arrays; `max_concurrent_requests` is not accepted (an unknown field is silently ignored, so the key gets no concurrency cap; `billing_subject_id` and `expires_at` are accepted since 2026-10-10); and an upsert is a full replace, never a merge:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8081/admin/virtual_keys/team-gamma \
@@ -204,7 +204,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
    curl -sS http://127.0.0.1:8081/admin/virtual_keys -H "Authorization: Bearer $KELVRAN_ADMIN_TOKEN"
    ```
 
-   Returns a JSON array with one entry per key. `id`, `budget_usd`, `budget_reset_interval_seconds` and `budget_warn_percent` are always present; `allowed_models`, `allowed_regions`, `allowed_source_cidrs`, `cache_scope_to_end_user`, `rate_limit_burst`, `rate_limit_refill_per_second` and `billing_subject_id` appear only when set. Key hashes are never included.
+   Returns a JSON array with one entry per key. `id`, `budget_usd`, `budget_reset_interval_seconds` and `budget_warn_percent` are always present; `allowed_models`, `allowed_regions`, `allowed_source_cidrs`, `cache_scope_to_end_user`, `rate_limit_burst`, `rate_limit_refill_per_second`, `billing_subject_id`, `attribution_capture_ids_disabled` and `expires_at` appear only when set. Key hashes are never included.
 
 3. Spend is tracked (admin, viewer or cost_viewer token):
 
@@ -219,6 +219,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
    | Condition | Status | Envelope `code` | `Retry-After` header |
    |---|---|---|---|
    | Wrong or unknown secret | `401` | `invalid_api_key` | no |
+   | Expired key (`expires_at` passed) | `401` | `key_expired` | no |
    | Model not in `allowed_models` | `403` | `model_not_allowed` | no |
    | Client IP outside `allowed_source_cidrs` | `403` | `source_ip_not_allowed` | yes |
    | RPM or TPM exhausted | `429` | `rate_limit_exceeded` (type `rate_limit_error`) | yes |
@@ -233,7 +234,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
 - A distributed per-key concurrency limiter. `max_concurrent_requests` is counted per gateway instance even with Redis configured.
 - An admin route that resets a key's spend without deleting the key. The levers are `DELETE` then re-create (which also zeroes legitimate spend) or, in Redis budget mode only, `DEL budget:<url.QueryEscape(key id)>` directly in Redis; see row R7 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md).
 - Persistence of `per_model` and TPM overrides across restarts for any key ever upserted or rotated through the admin API (config-declared keys included).
-- Setting `max_concurrent_requests` or `billing_subject_id` through the admin API. Both are config.yaml-only. An admin upsert of a config-declared key records `max_concurrent_requests` as 0; with `admin.persist_path` or `admin.redis_addr` set, that key's cap is unlimited after the next restart.
+- Setting `max_concurrent_requests` through the admin API. It is config.yaml-only (`billing_subject_id` and `expires_at` are body fields since 2026-10-10). An admin upsert of a config-declared key records `max_concurrent_requests` as 0; with `admin.persist_path` or `admin.redis_addr` set, that key's cap is unlimited after the next restart.
 - Server-side generation of virtual-key secrets. You generate the secret and supply the hash.
 - Propagation of prompt mutations across replicas; only virtual-key and deployment-weight mutations propagate.
 - A custom CA or client certificate for Redis connections. `redis_tls` uses the system CA only.

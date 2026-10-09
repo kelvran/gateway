@@ -238,3 +238,30 @@ func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
 		t.Fatal("Load() against an unreachable Redis address succeeded, want an error")
 	}
 }
+
+// TestLoadDecodesALegacyRecordWithoutNewerFields mirrors boltstore's test
+// of the same name for the Redis hash: a record written by a build that
+// predates ExpiresAt (RFC-3 slice (b)) decodes with a zero ExpiresAt and
+// every stored field intact.
+func TestLoadDecodesALegacyRecordWithoutNewerFields(t *testing.T) {
+	s := freshStore(t)
+	ctx := context.Background()
+	legacy := `{"ID":"legacy-key","KeyHash":"aa11","BudgetUSD":"7.5","RateLimitBurst":5,"RateLimitRefill":1,"BillingSubjectID":"cc-9"}`
+	if err := s.client.HSet(ctx, hashKey, "legacy-key", legacy).Err(); err != nil {
+		t.Fatalf("HSET legacy record: %v", err)
+	}
+	got, err := s.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	vk, ok := got["legacy-key"]
+	if !ok {
+		t.Fatal("legacy record not loaded")
+	}
+	if vk.KeyHash != "aa11" || vk.RateLimitBurst != 5 || vk.BillingSubjectID != "cc-9" || !vk.BudgetUSD.Equal(decimal.RequireFromString("7.5")) {
+		t.Errorf("stored fields changed on decode: %+v", vk)
+	}
+	if !vk.ExpiresAt.IsZero() {
+		t.Errorf("ExpiresAt absent from the record must decode to zero, got %v", vk.ExpiresAt)
+	}
+}

@@ -33,6 +33,8 @@ func wireSamples() map[string]any {
 			AllowedSourceCIDRs:         []string{"10.0.0.0/8"},
 			CacheScopeToEndUser:        true,
 			AttributionIDsDisabled:     true,
+			ExpiresAt:                  "2099-01-01T00:00:00Z",
+			BillingSubjectID:           "cost-centre-7",
 			RateLimit: &RateLimitRequest{
 				Burst: 20, RefillPerSecond: 10, TPMCapacity: 1000, TPMRefillPerSecond: 100,
 				PerModel: map[string]PerModelRateLimitRequest{
@@ -41,7 +43,7 @@ func wireSamples() map[string]any {
 			},
 		},
 		"VirtualKeyRequest.zero":        VirtualKeyRequest{},
-		"RotateVirtualKeyRequest":       RotateVirtualKeyRequest{NewKeyHash: strings.Repeat("cd", 32), GracePeriodSeconds: 600},
+		"RotateVirtualKeyRequest":       RotateVirtualKeyRequest{NewKeyHash: strings.Repeat("cd", 32), GracePeriodSeconds: 600, ExpiresAt: "2099-01-01T00:00:00Z"},
 		"AuditEntryResponse":            AuditEntryResponse{Time: at, Msg: "admin_virtual_key_upserted", Fields: map[string]string{"name": "team-a"}},
 		"AuditEntryResponse.zero":       AuditEntryResponse{},
 		"BackupResponse":                BackupResponse{Files: []string{"identity.db"}},
@@ -50,7 +52,7 @@ func wireSamples() map[string]any {
 		"EraseCacheEntryRequest":        EraseCacheEntryRequest{VirtualKeyID: "team-a", EndUserID: "u1", ChatRequest: adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}}},
 		"EraseCacheEntryResponse":       EraseCacheEntryResponse{L1Found: true, L2Found: false, L3Skipped: true},
 		"VirtualKeySpendResponse":       VirtualKeySpendResponse{SpentUSD: "1.25", BudgetUSD: "5", BudgetResetIntervalSeconds: 86400, PercentUsed: 25},
-		"VirtualKeyListEntry":           VirtualKeyListEntry{ID: "team-a", BudgetUSD: "5", BudgetResetIntervalSeconds: 86400, BudgetWarnPercent: 0.8, AllowedModels: []string{"gpt-4o"}, AllowedRegions: []string{"eu-west-1"}, AllowedSourceCIDRs: []string{"10.0.0.0/8"}, CacheScopeToEndUser: true, AttributionIDsDisabled: true, RateLimitBurst: 20, RateLimitRefill: 10, BillingSubjectID: "cost-centre-7"},
+		"VirtualKeyListEntry":           VirtualKeyListEntry{ID: "team-a", BudgetUSD: "5", BudgetResetIntervalSeconds: 86400, BudgetWarnPercent: 0.8, AllowedModels: []string{"gpt-4o"}, AllowedRegions: []string{"eu-west-1"}, AllowedSourceCIDRs: []string{"10.0.0.0/8"}, CacheScopeToEndUser: true, AttributionIDsDisabled: true, RateLimitBurst: 20, RateLimitRefill: 10, BillingSubjectID: "cost-centre-7", ExpiresAt: "2099-01-01T00:00:00Z"},
 		"VirtualKeyListEntry.zero":      VirtualKeyListEntry{},
 		"VirtualKeyInFlightResponse":    VirtualKeyInFlightResponse{TotalInFlight: 2, ByAgentRunID: map[string]int{"run-1": 2}},
 		"PromptRequest":                 PromptRequest{Messages: []adapter.Message{{Role: "system", Content: "be brief"}}},

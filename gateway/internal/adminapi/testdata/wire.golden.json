@@ -74,7 +74,8 @@
   },
   "RotateVirtualKeyRequest": {
     "new_key_hash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-    "grace_period_seconds": 600
+    "grace_period_seconds": 600,
+    "expires_at": "2099-01-01T00:00:00Z"
   },
   "SetPromptLabelRequest": {
     "version": 2
@@ -106,7 +107,8 @@
     "attribution_capture_ids_disabled": true,
     "rate_limit_burst": 20,
     "rate_limit_refill_per_second": 10,
-    "billing_subject_id": "cost-centre-7"
+    "billing_subject_id": "cost-centre-7",
+    "expires_at": "2099-01-01T00:00:00Z"
   },
   "VirtualKeyListEntry.zero": {
     "id": "",
@@ -143,7 +145,9 @@
           "tpm_refill_per_second": 50
         }
       }
-    }
+    },
+    "expires_at": "2099-01-01T00:00:00Z",
+    "billing_subject_id": "cost-centre-7"
   },
   "VirtualKeyRequest.zero": {
     "key_hash": "",

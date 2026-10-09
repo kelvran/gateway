@@ -996,6 +996,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			BillingSubjectID:       vk.BillingSubjectID,
 			CacheScopeToEndUser:    vk.CacheScopeToEndUser,
 			AttributionIDsDisabled: vk.AttributionIDsDisabled,
+			ExpiresAt:              vk.ExpiresAt,
 		})
 		var perModel map[string]ratelimit.ModelRateLimit
 		if len(vk.PerModelRateLimits) > 0 {
@@ -2096,7 +2097,10 @@ func errorStatus(err error) int {
 	status := http.StatusBadGateway
 	var capErr *dataplane.DeploymentCapacityError
 	switch {
-	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey):
+	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey), errors.Is(err, identity.ErrKeyExpired):
+		// An expired key (RFC-3 decision 4) is an authentication failure
+		// like the other two — the same Verify lookup rejected it — and is
+		// told apart by the envelope code key_expired, never by the status.
 		status = http.StatusUnauthorized
 	case errors.Is(err, dataplane.ErrRateLimited), errors.Is(err, dataplane.ErrBudgetExceeded), errors.Is(err, dataplane.ErrConcurrencyLimitExceeded):
 		// All three map to 429: OpenAI's own API returns 429 for both

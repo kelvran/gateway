@@ -65,12 +65,13 @@ If marshalling the envelope ever fails, this fixed body is written instead, with
 
 These are produced after the request body is accepted, by the shared error writer for all three routes. `Retry-After` is as described under [`Retry-After`](#retry-after); the column states the outcome for `/v1/chat/completions`. `/v1/embeddings` and `/v1/models` never set it.
 
-`/v1/models` can produce only the two 401 codes and 403 `source_ip_not_allowed`. `/v1/embeddings` never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded`, `empty_messages`, `invalid_prompt_reference`, `streaming_not_supported` or `streaming_not_configured`; `/v1/chat/completions` never produces `not_an_embedding_model` or `embeddings_not_configured`; every other row applies to both POST routes.
+`/v1/models` can produce only the three 401 codes and 403 `source_ip_not_allowed`. `/v1/embeddings` never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded`, `empty_messages`, `invalid_prompt_reference`, `streaming_not_supported` or `streaming_not_configured`; `/v1/chat/completions` never produces `not_an_embedding_model` or `embeddings_not_configured`; every other row applies to both POST routes.
 
 | Status | `type` | `code` | `param` | `Retry-After` (chat) | Raised when | Message begins with (not a contract) |
 |---|---|---|---|---|---|---|
 | 401 | `authentication_error` | `null` | `null` | no | `Authorization: Bearer` header missing or malformed | `dataplane: auth: identity: missing or malformed Authorization header` |
 | 401 | `authentication_error` | `invalid_api_key` | `null` | no | The bearer token hashes to no configured virtual key | `dataplane: auth: identity: invalid virtual key` |
+| 401 | `authentication_error` | `key_expired` | `null` | no | The bearer token matches a configured virtual key whose `expires_at` has passed (RFC 3339 instant, inclusive). The message never names the key; on `/v1/chat/completions` and `/v1/embeddings` the gateway's log line carries `virtual_key_id` and `key_expired_at` (`/v1/models` writes no request log line). On `main` since 2026-10-10 | `dataplane: auth: identity: virtual key expired` |
 | 429 | `rate_limit_error` | `rate_limit_exceeded` | `null` | yes | The key's RPM or TPM bucket is empty | `dataplane: rate limit exceeded` |
 | 429 | `rate_limit_error` | `concurrency_limit_exceeded` | `null` | yes | The key already has its `rate_limit.max_concurrent_requests` requests outstanding | `dataplane: concurrency limit exceeded` |
 | 429 | `insufficient_quota` | `insufficient_quota` | `null` | no | The key has spent its `budget_usd` | `dataplane: budget exceeded` |

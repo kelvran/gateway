@@ -92,6 +92,7 @@ Each entry is a tenant credential issued by Kelvran. The entry name is the key's
 | `billing_subject_id` | `string` | empty | Opaque external billing identifier. Never read by an enforcement path |
 | `cache_scope_to_end_user` | `bool` | `false` | Folds the caller's `X-Kelvran-End-User-Id` header into this key's L1/L2 cache partition |
 | `attribution_capture_ids` | `bool` | `true` | `false` keeps this key's requests from carrying the Claude Code identifiers (session, agent, parent-agent, prompt ids, agent type) onto the request span; the bounded attribution fields (client tool, request class) are always captured. Identifiers are only ever recorded for authenticated requests. A non-boolean value fails startup. On `main` since 2026-10-09 |
+| `expires_at` | `string` | absent (never expires) | RFC 3339 instant (for example `"2099-01-01T00:00:00Z"`, quoted or bare) from which the gateway rejects this key with 401 `key_expired`, inclusive. A value that is not RFC 3339 (a date alone, an epoch integer, an empty string) is a load error `-validate` detects; a past instant loads, so an already-expired key never stops the gateway. On `main` since 2026-10-10 |
 
 ### `virtual_keys.<name>.rate_limit`
 
@@ -465,7 +466,7 @@ The process exits 1 before binding a listener when any of the following holds. T
 
 | Detected by `-validate` | Condition |
 |---|---|
-| yes | Any load error in this page's tables (missing required key, pair rule, negative value, bad boolean, duplicate key, tab indentation, unknown `kind`, unknown `fallback_chains` class, bad CIDR, non-`https` `base_url` without `allow_insecure_http`, `tls`/`mtls` block rules, `tpm_accounting` without `tpm_capacity`, `models` entry for an unserved model) |
+| yes | Any load error in this page's tables (missing required key, pair rule, negative value, bad boolean, duplicate key, tab indentation, unknown `kind`, unknown `fallback_chains` class, bad CIDR, non-RFC-3339 `expires_at`, non-`https` `base_url` without `allow_insecure_http`, `tls`/`mtls` block rules, `tpm_accounting` without `tpm_capacity`, `models` entry for an unserved model) |
 | yes | A `provider` that is not one of the five adapter names |
 | yes | A `fallback_chains` target that is not a configured deployment |
 | no | `admin.token_env`, `viewer_token_env`, `cost_viewer_token_env` or `operator_token_env` set but resolving to an empty variable |

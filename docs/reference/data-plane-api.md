@@ -26,6 +26,7 @@ Not available today: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POS
 | Lookup | The gateway computes SHA-256 of the presented token and looks the hex digest up against the configured `key_hash` values. The raw secret is never stored. |
 | Missing or malformed header | `401`, `type` `authentication_error`, `code` `null`. |
 | Unknown token | `401`, `type` `authentication_error`, `code` `invalid_api_key`. |
+| Expired key | `401`, `type` `authentication_error`, `code` `key_expired`: the token matches a key whose `expires_at` (RFC 3339, inclusive) has passed. The message never names the key. On `main` since 2026-10-10. |
 | Rotation grace | After a rotation with a grace period, the previous secret authenticates only until its expiry instant; afterwards it is rejected as `invalid_api_key`. |
 | Source-IP allowlist | A key with `allowed_source_cidrs` accepts only requests whose TCP peer address (`RemoteAddr`) falls inside one of the CIDRs. Other sources get `403`, `type` `permission_error`, `code` `source_ip_not_allowed`. The check runs once per request, immediately after bearer verification, on all four `/v1/*` handlers (buffered chat, streaming chat, embeddings, models). |
 | `X-Forwarded-For` | Ignored. The allowlist reads the TCP peer only; there is no configuration knob to trust a proxy header. |
@@ -486,6 +487,7 @@ Upstream failures are redacted. A provider HTTP status reads `upstream provider 
 | `400` | `invalid_request_error` | `not_an_embedding_model` | `/v1/embeddings` routed to a chat deployment | no |
 | `401` | `authentication_error` | `null` | `Authorization` missing or not `Bearer ` | no |
 | `401` | `authentication_error` | `invalid_api_key` | token matches no key, or a rotated-out key past its grace period | no |
+| `401` | `authentication_error` | `key_expired` | token matches a key whose `expires_at` has passed (on `main` since 2026-10-10) | no |
 | `403` | `permission_error` | `model_not_allowed` | key's `allowed_models` excludes `model` | no |
 | `403` | `permission_error` | `source_ip_not_allowed` | key's `allowed_source_cidrs` excludes the TCP peer | yes |
 | `405` | `invalid_request_error` | `method_not_allowed` | wrong method on a `/v1/*` route; `Allow` header set | no |

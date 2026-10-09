@@ -83,7 +83,7 @@ The gateway begins shutting down on `SIGTERM` or `SIGINT` and logs `gateway shut
 
 Two facts shape the restart on every platform:
 
-- Mixed versions during a rollout are tolerated. A replica that receives a config-propagation event type it does not know skips it instead of failing.
+- Mixed versions during a rollout are tolerated. A replica that receives a config-propagation event type it does not know skips it instead of failing. That tolerance covers unknown event *types*, not new *fields* on `virtual_key_upsert`: a replica built before a field re-persists, without it, every key it mutates and every key whose `virtual_key_upsert` event it receives, and the receive side's carry-forward (on `main` since 2026-10-10, for `expires_at`) protects only replicas that already have the field. Finish the rollout on every replica sharing `admin.redis_addr` / `config_propagation` before setting `expires_at` on any key, and re-upsert any key given an expiry during a mixed window once the last old replica is gone.
 - A bbolt `persist_path` file belongs to one process. A second process opening it fails with `another process holds the file lock (waited 1s)`; that 1 s timeout is on main since 2026-10-08, not in `gateway/v0.17.0`, which blocks forever with no log line. Either way the restart on a host with `persist_path` must be stop-then-start.
 
 Pick the variant below for your platform.

@@ -41,6 +41,7 @@ Not available today:
 | Lookup | SHA-256 of the presented secret, matched against configured `key_hash` values |
 | Missing or malformed header | `401`, `type: authentication_error`, `code: null` |
 | Unknown key | `401`, `type: authentication_error`, `code: invalid_api_key` |
+| Expired key | `401`, `type: authentication_error`, `code: key_expired` — the key's `expires_at` has passed (on `main` since 2026-10-10) |
 | `x-api-key` header | Not read. It appears only on the outgoing upstream request the gateway builds for `anthropic` deployments (`gateway/internal/gateway/dataplane/dataplane.go`, `setUpstreamAuthHeaders`) |
 
 The OpenAI SDKs send the `api_key` constructor argument as `Authorization: Bearer`, so `OpenAI(base_url=…, api_key=os.environ["KELVRAN_KEY"])` authenticates with the raw virtual-key secret. The Anthropic SDK's default `x-api-key` path does not authenticate. Example secrets in [gateway/config.example.yaml](../../gateway/config.example.yaml) are `example-team-alpha-secret-do-not-use` and `example-team-beta-secret-do-not-use`.
@@ -346,7 +347,7 @@ All four keys are always present (`null` when unknown). The OpenAI SDKs choose t
 | Status | `type` | `code` values | Notes |
 |---|---|---|---|
 | `400` | `invalid_request_error` | `invalid_body`, `invalid_json`, `invalid_request`, `invalid_tool_choice`, `missing_required_parameter`, `model_not_found`, `content_policy_violation`, `streaming_not_supported`, `not_an_embedding_model`, `empty_messages`, `invalid_prompt_reference` | `model_not_found` is `400`, not OpenAI's `404` (recorded decision) |
-| `401` | `authentication_error` | `invalid_api_key`, or `null` for a missing header | |
+| `401` | `authentication_error` | `invalid_api_key`, `key_expired`, or `null` for a missing header | |
 | `403` | `permission_error` | `model_not_allowed`, `source_ip_not_allowed` | |
 | `405` | `invalid_request_error` | `method_not_allowed` | `Allow` header set |
 | `413` | `invalid_request_error` | `request_too_large` | |

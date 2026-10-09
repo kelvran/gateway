@@ -44,6 +44,13 @@ virtual_keys:
     # a percentage of budget_usd, not a second absolute dollar figure, so
     # it can't drift out of sync if budget_usd is ever changed.
     budget_warn_percent: 0.8
+    # Optional; omit for a key that never expires. An RFC 3339 instant from
+    # which this key is rejected with 401 key_expired (inclusive, like the
+    # rotation grace boundary). A past value loads -- the gateway must start
+    # with an already-expired key -- while a value that is not RFC 3339 is a
+    # load error -validate reports. Admin upserts take the same field and
+    # additionally require a future instant.
+    # expires_at: "2027-01-01T00:00:00Z"
     rate_limit:
       burst: 20
       refill_per_second: 10

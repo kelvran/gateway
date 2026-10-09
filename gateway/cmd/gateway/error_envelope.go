@@ -200,6 +200,11 @@ func errorTypeAndCode(err error, status int) (errType string, code *string) {
 		return errTypeAuthentication, nil
 	case errors.Is(err, identity.ErrInvalidKey):
 		return errTypeAuthentication, codePtr("invalid_api_key")
+	case errors.Is(err, identity.ErrKeyExpired):
+		// The key's own expires_at has passed (RFC-3 decision 4): a distinct
+		// code so the holder knows to ask for a new key rather than retype
+		// this one. The message never names the key; the log line does.
+		return errTypeAuthentication, codePtr("key_expired")
 	case errors.Is(err, dataplane.ErrBudgetExceeded):
 		// OpenAI's own vocabulary for "you are out of money", which clients
 		// treat as permanent, unlike rate_limit_error which they retry.

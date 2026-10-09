@@ -93,7 +93,7 @@ With `admin.mtls` set, a client without a valid certificate fails at the TLS han
 | GET | `/admin/virtual_keys` | Admin, Viewer | 200 JSON | | `admin_virtual_keys_read` |
 | POST | `/admin/virtual_keys/{name}` | Admin | 204 | 400 | `admin_virtual_key_upserted` |
 | DELETE | `/admin/virtual_keys/{name}` | Admin | 204 | 400, 404, 409, 500 | `admin_virtual_key_deleted` |
-| POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404 | `admin_virtual_key_rotated` |
+| POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404, 409 | `admin_virtual_key_rotated` |
 | GET | `/admin/virtual_keys/{name}/spend` | Admin, Viewer, CostViewer | 200 JSON | 404 | `admin_virtual_key_spend_read` |
 | GET | `/admin/virtual_keys/{name}/inflight` | Admin, Viewer | 200 JSON | 404 | `admin_virtual_key_inflight_read` |
 | GET | `/admin/prompts` | Admin, Viewer | 200 JSON | | `admin_prompts_read` |
@@ -164,7 +164,8 @@ Each element:
 | `attribution_capture_ids_disabled` | bool | when `true` | The key's Claude Code identifier capture is off (`attribution_capture_ids: false`). On `main` since 2026-10-09. |
 | `rate_limit_burst` | number | when non-zero | Key-level RPM bucket capacity. |
 | `rate_limit_refill_per_second` | number | when non-zero | Key-level RPM refill. |
-| `billing_subject_id` | string | when non-empty | Settable only through `virtual_keys.<name>.billing_subject_id` in `config.yaml`. |
+| `billing_subject_id` | string | when non-empty | Settable through this API since 2026-10-10 or through `virtual_keys.<name>.billing_subject_id` in `config.yaml`. |
+| `expires_at` | string | when set | RFC 3339 (UTC) instant from which the key is rejected with 401 `key_expired`; an expired key stays listed with a past value. On `main` since 2026-10-10. |
 
 Per-model and TPM rate-limit settings are not part of this response.
 
@@ -185,6 +186,8 @@ Request body:
 | `allowed_source_cidrs` | string[] | no | each entry parses as a CIDR | Client source networks this key may call from. Omitted or empty: no source allow-list. |
 | `cache_scope_to_end_user` | bool | no | | Scope this key's cache entries by the request's end-user identifier. See [caching.md](../how-to/caching.md). |
 | `attribution_capture_ids_disabled` | bool | no | | `true` keeps this key's requests from carrying the Claude Code identifiers onto the request span (the YAML key is the positive-sense `attribution_capture_ids`; the wire field is negative so an omitted field means capture on). On `main` since 2026-10-09. |
+| `expires_at` | string | no | RFC 3339, strictly in the future | Instant from which the key is rejected with 401 `key_expired` (inclusive). Omitted, `""` or `null`: the key never expires — and, because an upsert is a full replace, re-upserting without it clears an existing expiry. On `main` since 2026-10-10. |
+| `billing_subject_id` | string | no | | Opaque external billing identifier, metadata only. Settable here since 2026-10-10; before, only in `config.yaml`. |
 | `rate_limit` | object | no | | See below. Omitted: `burst` and `refill_per_second` resolve to the defaults. |
 
 `rate_limit` object:
@@ -224,6 +227,8 @@ Status codes:
 | 400 | `budget_usd must not be negative` |
 | 400 | `budget_reset_interval_seconds must not be negative` |
 | 400 | `budget_warn_percent must be between 0 and 100` |
+| 400 | `expires_at "<value>" is not a valid RFC 3339 timestamp: ...` |
+| 400 | `expires_at must be in the future` |
 | 400 | `allowed_source_cidrs entry "<entry>": ...` |
 | 400 | `rate_limit.per_model.<model> must set positive burst and refill_per_second` |
 | 400 | `rate_limit.per_model.<model>.tpm_capacity/tpm_refill_per_second must both be set, or neither` |
@@ -233,7 +238,7 @@ Side effects:
 
 - The rate limiter entry is registered before the new key becomes resolvable, never after.
 - A name that did not exist before also clears any leftover budget-spend state recorded under that id. An update of an existing name keeps its accumulated spend.
-- `billing_subject_id` is not a field of this body; after an upsert the key has none.
+- `expires_at` and `billing_subject_id` are fields of this body since 2026-10-10; an upsert that omits them leaves the key with no expiry and no billing subject (full replace).
 - The key is written to the identity store when `admin.persist_path` or `admin.redis_addr` is set. Without either, the key is lost at restart.
 - A `virtual_key_upsert` event is published when `config_propagation` is configured.
 - Audit entry `admin_virtual_key_upserted` with `name` and `authorized_by=admin`. The hash is never logged.
@@ -254,7 +259,7 @@ Side effects: the key's budget-spend record is removed from memory and from the 
 
 ## POST /admin/virtual_keys/{name}/rotate
 
-Issues a new secret for the key while keeping the old one valid for a grace period. The id, budget, allow-lists and rate limits are unchanged.
+Issues a new secret for the key while keeping the old one valid for a grace period. The id, budget, allow-lists and rate limits are unchanged; the expiry is kept unless the body sets `expires_at`.
 
 Request body:
 
@@ -262,6 +267,7 @@ Request body:
 |---|---|---|---|
 | `new_key_hash` | string | yes | Hex SHA-256 of the new secret: 64 hex characters, any case, stored lowercased; must not equal another key's current or grace-period hash. A malformed hash is a 400 with `dataplane: RotateVirtualKey: identity: NewVerifier: ...` as raw text; a hash equal to another key's current or grace-period hash is a 400 with `dataplane: RotateVirtualKey: identity: duplicate virtual key hash in config: virtual key "<id>"` (with a ` (previous_key_hash)` suffix when the collision is with a grace-period hash). |
 | `grace_period_seconds` | int | no | How long the previous secret keeps working. `<= 0`: the old secret stops immediately. |
+| `expires_at` | string | no (yes for an expired key) | RFC 3339, in the future; replaces the key's expiry in the same rotation. Required when the key's current `expires_at` has passed — a fresh secret on an expired key would still be rejected with `key_expired` — answered 409 otherwise. On `main` since 2026-10-10. |
 
 | Status | Body |
 |---|---|
@@ -269,8 +275,10 @@ Request body:
 | 400 | `virtual key name is required` |
 | 400 | `invalid request body: ...` |
 | 400 | `new_key_hash is required` |
+| 400 | `expires_at "<value>" is not a valid RFC 3339 timestamp: ...` or `expires_at must be in the future` |
 | 400 | any other pipeline error, as raw text |
 | 404 | `dataplane: virtual key not found: "<name>"` |
+| 409 | `virtual key "<name>" expired at <RFC 3339>; supply expires_at to rotate it` |
 
 Semantics:
 
@@ -605,7 +613,7 @@ A replica ignores its own events and applies the others with last-writer-wins or
 - An admin web UI, by recorded decision.
 - A dedicated read route for deployments or for one deployment's current weight. `GET /admin/config` returns the configured `Deployments`; the live weight set through this API is not exposed by any route.
 - Per-entry deletion from the audit log. Only `admin.enable_audit_log: false` exists, and it stops new entries only.
-- Setting `billing_subject_id` or `rate_limit.max_concurrent_requests` (the key's concurrency cap) through this API. Neither is a field of the upsert body (an unknown body field is ignored). `billing_subject_id` is reported by `GET /admin/virtual_keys` when set; `max_concurrent_requests` is reported by no route; an unknown body field is ignored. An upsert stores the key with no concurrency cap: the live limiter on this replica keeps the cap registered at startup until the next restart, after which a persisted key is reloaded with none.
+- Setting `rate_limit.max_concurrent_requests` (the key's concurrency cap) through this API. It is not a field of the upsert body (an unknown body field is ignored) and is reported by no route; `billing_subject_id` became a body field on 2026-10-10. An upsert stores the key with no concurrency cap: the live limiter on this replica keeps the cap registered at startup until the next restart, after which a persisted key is reloaded with none.
 
 ## Examples
 

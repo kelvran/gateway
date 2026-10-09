@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -3612,5 +3613,86 @@ func TestAttributionCaptureIDsRejectsNonBoolean(t *testing.T) {
 		if !strings.Contains(err.Error(), "attribution") {
 			t.Errorf("Load error for snippet %q does not name the attribution section: %v", snippet, err)
 		}
+	}
+}
+
+// virtual_keys.<name>.expires_at (RFC-3 decision 4): RFC 3339 only, a load
+// error otherwise so -validate catches it, zero when absent, and a past
+// instant loads so an already-expired key never stops the gateway.
+func TestVirtualKeyExpiresAtParsesRFC3339AndRejectsOtherShapes(t *testing.T) {
+	skeleton := func(expiresLine string) string {
+		return "listen_addr: \":8080\"\n" +
+			"virtual_keys:\n" +
+			"  team-alpha:\n" +
+			"    key_hash: \"aa\"\n" + expiresLine +
+			"  team-beta:\n" +
+			"    key_hash: \"bb\"\n" +
+			"deployments:\n" +
+			"  d1:\n" +
+			"    model: \"m\"\n" +
+			"    provider: \"openai\"\n" +
+			"    upstream_model: \"m\"\n" +
+			"    base_url: \"https://x\"\n" +
+			"    api_key_env: \"X\"\n"
+	}
+	loadWith := func(t *testing.T, expiresLine string) (*Config, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(skeleton(expiresLine)), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		return Load(path)
+	}
+	byName := func(cfg *Config) map[string]VirtualKeyConfig {
+		out := map[string]VirtualKeyConfig{}
+		for _, vk := range cfg.VirtualKeys {
+			out[vk.Name] = vk
+		}
+		return out
+	}
+
+	cfg, err := loadWith(t, "    expires_at: \"2099-01-01T00:00:00Z\"\n")
+	if err != nil {
+		t.Fatalf("Load with a quoted RFC 3339 expires_at: %v", err)
+	}
+	keys := byName(cfg)
+	if !keys["team-alpha"].ExpiresAt.Equal(time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("team-alpha ExpiresAt = %v, want 2099-01-01T00:00:00Z", keys["team-alpha"].ExpiresAt)
+	}
+	if !keys["team-beta"].ExpiresAt.IsZero() {
+		t.Errorf("team-beta (no expires_at) must be zero, got %v", keys["team-beta"].ExpiresAt)
+	}
+
+	// Unquoted: the subset splits a line at its FIRST colon, so the value
+	// keeps its own colons and parses the same.
+	cfg, err = loadWith(t, "    expires_at: 2099-06-01T12:00:00+02:00\n")
+	if err != nil {
+		t.Fatalf("Load with an unquoted RFC 3339 expires_at: %v", err)
+	}
+	if got := byName(cfg)["team-alpha"].ExpiresAt; !got.Equal(time.Date(2099, 6, 1, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("offset form ExpiresAt = %v, want 2099-06-01T10:00:00Z", got)
+	}
+
+	// A past instant loads: the gateway must start with an expired key.
+	if _, err := loadWith(t, "    expires_at: \"2000-01-01T00:00:00Z\"\n"); err != nil {
+		t.Errorf("a past expires_at must load, got %v", err)
+	}
+
+	for name, line := range map[string]string{
+		"date only":      "    expires_at: \"2099-01-01\"\n",
+		"epoch integer":  "    expires_at: 4102444800\n",
+		"boolean":        "    expires_at: true\n",
+		"empty string":   "    expires_at: \"\"\n",
+		"nested mapping": "    expires_at:\n      at: \"2099-01-01T00:00:00Z\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadWith(t, line)
+			if err == nil {
+				t.Fatal("Load accepted a non-RFC-3339 expires_at, want a load error")
+			}
+			if !strings.Contains(err.Error(), `virtual key "team-alpha" expires_at`) {
+				t.Errorf("error = %v, want it to name the key and the field", err)
+			}
+		})
 	}
 }

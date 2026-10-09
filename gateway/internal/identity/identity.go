@@ -37,6 +37,31 @@ var ErrInvalidKey = errors.New("identity: invalid virtual key")
 // virtual keys hash to the same value — a config error, not a runtime one.
 var ErrDuplicateKeyHash = errors.New("identity: duplicate virtual key hash in config")
 
+// ErrKeyExpired is the sentinel every KeyExpiredError matches through
+// errors.Is: the presented secret resolved to a configured virtual key whose
+// ExpiresAt instant has passed. Deliberately distinct from ErrInvalidKey
+// (RFC-3 decision 4, docs/rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md):
+// the holder of an expired key is its legitimate owner, and the envelope
+// code `key_expired` tells them what to do, while the key's id stays out of
+// the client-facing message and goes to the gateway's log line instead.
+var ErrKeyExpired = errors.New("identity: virtual key expired")
+
+// KeyExpiredError is what Verify returns for an expired key. Its Error text
+// is fixed and never names the key — clients see exactly ErrKeyExpired's
+// text — while ID and ExpiresAt are for the gateway's own log line and
+// decision event, read with errors.As. Is makes errors.Is(err, ErrKeyExpired)
+// true for bare and %w-wrapped values alike, so the status, envelope and
+// outcome switches match the sentinel without knowing this type.
+type KeyExpiredError struct {
+	ID        string
+	ExpiresAt time.Time
+}
+
+func (e *KeyExpiredError) Error() string { return ErrKeyExpired.Error() }
+
+// Is reports whether target is ErrKeyExpired.
+func (e *KeyExpiredError) Is(target error) bool { return target == ErrKeyExpired }
+
 // VirtualKey is one statically-configured tenant: its identity, its
 // spending cap, its optional model allow-list, and its own rate-limit
 // knobs. See docs/rfcs/2026-09-02-virtual-keys-budgets.md for the full
@@ -175,6 +200,16 @@ type VirtualKey struct {
 	// comment.
 	PreviousKeyHash          string
 	PreviousKeyHashExpiresAt time.Time
+	// ExpiresAt, when non-zero, is the instant from which Verify rejects
+	// this key — every secret it has, current or grace-period — with a
+	// KeyExpiredError, inclusive: the same boundary PreviousKeyHashExpiresAt
+	// applies to a rotated-out hash (RFC-3 decision 4). The zero value means
+	// the key never expires: every key configured before this field existed,
+	// and every admin upsert whose body omits expires_at (an upsert is a full
+	// replace). An expired key stays configured and listed until it is
+	// deleted or given a later instant; a plain rotation keeps the instant,
+	// a rotation whose body sets expires_at replaces it.
+	ExpiresAt time.Time
 	// BillingSubjectID is an opaque, operator-supplied external billing
 	// identifier, per docs/upgrade-research/billing-monetization-
 	// integration-2026-09-15.md — never read by any enforcement path in
@@ -238,6 +273,12 @@ type Store interface {
 // about the raw secret itself.
 type Verifier struct {
 	keys map[string]*VirtualKey // hex key hash -> resolved VirtualKey
+	// now is the one clock Verify consults, for the key expiry and the
+	// rotation-grace boundary alike; NewVerifier sets time.Now and tests in
+	// this package override it on the constructed value (a field, not a
+	// package variable, so a test's clock never races another test's
+	// Verify under -race). The budget leaf's Tracker.now is the precedent.
+	now func() time.Time
 }
 
 // NewVerifier constructs a Verifier for the given virtual keys, which must
@@ -290,7 +331,7 @@ func NewVerifier(keys []VirtualKey) (*Verifier, error) {
 		byHash[normalizedHash] = &k
 	}
 
-	return &Verifier{keys: byHash}, nil
+	return &Verifier{keys: byHash, now: time.Now}, nil
 }
 
 // normalizeKeyHash validates that hash is a well-formed hex-encoded
@@ -341,6 +382,12 @@ func (v *Verifier) Verify(authorizationHeader string) (*VirtualKey, error) {
 	if !ok {
 		return nil, ErrInvalidKey
 	}
+	// Whole-key expiry is checked on the resolved key before the grace
+	// check below, so an expired key reads as expired through either of
+	// its hashes. Inclusive at the instant, like the grace boundary.
+	if !key.ExpiresAt.IsZero() && !v.now().Before(key.ExpiresAt) {
+		return nil, &KeyExpiredError{ID: key.ID, ExpiresAt: key.ExpiresAt}
+	}
 	// A match via PreviousKeyHash specifically (never via the current
 	// KeyHash) is only valid for the remainder of its grace period — see
 	// VirtualKey.PreviousKeyHash's own doc comment. presentedHash equals
@@ -348,7 +395,7 @@ func (v *Verifier) Verify(authorizationHeader string) (*VirtualKey, error) {
 	// the only way v.keys[presentedHash] could have resolved to key at
 	// all (both are normalized identically to presentedHash's own
 	// hex.EncodeToString(sha256) shape by NewVerifier).
-	if presentedHash == key.PreviousKeyHash && !time.Now().Before(key.PreviousKeyHashExpiresAt) {
+	if presentedHash == key.PreviousKeyHash && !v.now().Before(key.PreviousKeyHashExpiresAt) {
 		return nil, ErrInvalidKey
 	}
 	return key, nil

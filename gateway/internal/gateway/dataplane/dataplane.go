@@ -1287,9 +1287,23 @@ func (p *Pipeline) UpsertVirtualKey(vk identity.VirtualKey, rateLimit ratelimit.
 // guess), non-nil for a genuine Upsert, which must always register
 // vk.ID's own rate-limit config, exactly like the pre-propagation
 // UpsertVirtualKey body always did.
-func (p *Pipeline) applyVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ratelimit.KeyConfig, v mutationVersion) error {
+func (p *Pipeline) applyVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ratelimit.KeyConfig, v mutationVersion, carryForwardExpiry bool) error {
 	p.virtualKeyMutationMu.Lock()
 	defer p.virtualKeyMutationMu.Unlock()
+	if carryForwardExpiry {
+		// The event came from a replica that predates ExpiresAt (the member
+		// was absent, not zero), so it says nothing about the expiry: keep
+		// this replica's current value rather than writing zero into the
+		// Verifier and, through persistVirtualKeyIfStoreConfigured, into
+		// the shared store (RFC-3 decision 4). Read under the lock the
+		// apply itself holds, so no concurrent mutation slips between.
+		for _, k := range p.verifier.Load().Keys() {
+			if k.ID == vk.ID {
+				vk.ExpiresAt = k.ExpiresAt
+				break
+			}
+		}
+	}
 	return p.applyVirtualKeyUpsertLocked(vk, rateLimit, v)
 }
 
@@ -1417,7 +1431,10 @@ func (p *Pipeline) publishVirtualKeyUpsert(vk identity.VirtualKey, rateLimit *ra
 func (p *Pipeline) ApplyVirtualKeyUpsertFromEvent(payload configpropagation.VirtualKeyUpsertPayload, publishedAtUnixNano int64, originInstanceID string) error {
 	vk := payloadToVirtualKey(payload.VirtualKey)
 	rateLimit := payloadToKeyConfig(vk.ID, payload.RateLimitConfig)
-	return p.applyVirtualKeyUpsert(vk, rateLimit, mutationVersion{token: publishedAtUnixNano, origin: originInstanceID})
+	// A nil ExpiresAt member means the sender predates the field; a
+	// non-nil zero time means "never expires" and is applied as sent.
+	carryForwardExpiry := payload.VirtualKey.ExpiresAt == nil
+	return p.applyVirtualKeyUpsert(vk, rateLimit, mutationVersion{token: publishedAtUnixNano, origin: originInstanceID}, carryForwardExpiry)
 }
 
 // virtualKeyToPayload/payloadToVirtualKey convert between
@@ -1428,6 +1445,11 @@ func (p *Pipeline) ApplyVirtualKeyUpsertFromEvent(payload configpropagation.Virt
 // AllowedRegions is the only real shape change; every other field is a
 // direct copy.
 func virtualKeyToPayload(vk identity.VirtualKey) configpropagation.VirtualKeyPayload {
+	// Always a non-nil pointer, even for the zero time: a receiver reads a
+	// nil member as "sender predates the field" and carries its own expiry
+	// forward (see ApplyVirtualKeyUpsertFromEvent), so a sender on this
+	// build must say "no expiry" explicitly.
+	expiresAt := vk.ExpiresAt
 	return configpropagation.VirtualKeyPayload{
 		ID:                       vk.ID,
 		KeyHash:                  vk.KeyHash,
@@ -1442,6 +1464,7 @@ func virtualKeyToPayload(vk identity.VirtualKey) configpropagation.VirtualKeyPay
 		MaxConcurrentRequests:    vk.MaxConcurrentRequests,
 		PreviousKeyHash:          vk.PreviousKeyHash,
 		PreviousKeyHashExpiresAt: vk.PreviousKeyHashExpiresAt,
+		ExpiresAt:                &expiresAt,
 		BillingSubjectID:         vk.BillingSubjectID,
 		CacheScopeToEndUser:      vk.CacheScopeToEndUser,
 		AttributionIDsDisabled:   vk.AttributionIDsDisabled,
@@ -1463,10 +1486,21 @@ func payloadToVirtualKey(p configpropagation.VirtualKeyPayload) identity.Virtual
 		MaxConcurrentRequests:    p.MaxConcurrentRequests,
 		PreviousKeyHash:          p.PreviousKeyHash,
 		PreviousKeyHashExpiresAt: p.PreviousKeyHashExpiresAt,
+		ExpiresAt:                timeFromPointer(p.ExpiresAt),
 		BillingSubjectID:         p.BillingSubjectID,
 		CacheScopeToEndUser:      p.CacheScopeToEndUser,
 		AttributionIDsDisabled:   p.AttributionIDsDisabled,
 	}
+}
+
+// timeFromPointer is payloadToVirtualKey's nil-tolerant read of
+// VirtualKeyPayload.ExpiresAt; whether a nil member should instead keep
+// the local value is decided by the caller (ApplyVirtualKeyUpsertFromEvent).
+func timeFromPointer(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
 }
 
 // ipNetsToStrings/stringsToIPNets convert AllowedSourceCIDRs between its
@@ -1795,6 +1829,17 @@ func (p *Pipeline) ApplyVirtualKeyDeleteFromEvent(name string, publishedAtUnixNa
 // this key must not have its real registration overwritten by a
 // reconstructed guess this method has no way to make correctly.
 func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Duration) error {
+	return p.RotateVirtualKeyWithExpiry(name, newKeyHash, gracePeriod, time.Time{})
+}
+
+// RotateVirtualKeyWithExpiry is RotateVirtualKey that also sets the key's
+// ExpiresAt when expiresAt is non-zero (RFC-3 decision 4: the rotate body's
+// optional expires_at, mandatory for an already-expired key, which the
+// admin handler enforces with a 409). A zero expiresAt keeps the current
+// expiry — a plain rotation never clears one. The persisted record and the
+// published upsert event already carry the whole key, so replicas and the
+// store converge on the new instant for free.
+func (p *Pipeline) RotateVirtualKeyWithExpiry(name, newKeyHash string, gracePeriod time.Duration, expiresAt time.Time) error {
 	p.virtualKeyMutationMu.Lock()
 	var rotated identity.VirtualKey
 	var v mutationVersion
@@ -1817,6 +1862,9 @@ func (p *Pipeline) RotateVirtualKey(name, newKeyHash string, gracePeriod time.Du
 					k.PreviousKeyHash = k.KeyHash
 					k.PreviousKeyHashExpiresAt = time.Now().Add(gracePeriod)
 					k.KeyHash = newKeyHash
+					if !expiresAt.IsZero() {
+						k.ExpiresAt = expiresAt
+					}
 					found = true
 					rotated = k
 				}
@@ -3423,6 +3471,11 @@ func (p *Pipeline) logEmbeddingsRequest(ctx context.Context, vk *identity.Virtua
 	)
 	if vk != nil {
 		fields = append(fields, "virtual_key_id", vk.ID)
+	} else if expired := expiredKeyFromErr(err); expired != nil {
+		// An expired key never resolves to a vk, but the operator needs to
+		// know WHICH key is failing; the client envelope never carries the
+		// id (RFC-3 decision 4).
+		fields = append(fields, "virtual_key_id", expired.ID, "key_expired_at", expired.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	fields = append(fields, attributionLogFields(ctx)...)
 	if dep.Name != "" {
@@ -4594,6 +4647,10 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if vk != nil {
 		virtualKeyID = vk.ID
 		billingSubjectID = vk.BillingSubjectID
+	} else if expired := expiredKeyFromErr(err); expired != nil {
+		// OUTCOME_AUTH_FAILED rows for an expired key carry the key id the
+		// error resolved (RFC-3 decision 4); the client envelope does not.
+		virtualKeyID = expired.ID
 	}
 	// outcome is computed once and shared by GatewayDecisionEvent.Outcome
 	// below and, via errorTypeFor, the GenAI error.type attribute — both
@@ -4977,11 +5034,23 @@ func (p *Pipeline) checkBudgetAlertLadder(ctx context.Context, vk *identity.Virt
 // already return — per docs/rfcs/2026-09-03-api-gatewayevents-contract.md,
 // no new rejection categories, no changes to either method's control
 // flow, only classification of what err already is.
+// expiredKeyFromErr returns the *identity.KeyExpiredError wrapped in err,
+// or nil — the one auth failure that knows which key it was, read by the
+// log lines and the decision event so the id reaches the operator while
+// staying out of the client-facing message (RFC-3 decision 4).
+func expiredKeyFromErr(err error) *identity.KeyExpiredError {
+	var expired *identity.KeyExpiredError
+	if errors.As(err, &expired) {
+		return expired
+	}
+	return nil
+}
+
 func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 	switch {
 	case err == nil:
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_OK
-	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey):
+	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey), errors.Is(err, identity.ErrKeyExpired):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_AUTH_FAILED
 	case errors.Is(err, ErrModelNotAllowed):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_MODEL_NOT_ALLOWED
@@ -5162,6 +5231,11 @@ func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req 
 	}
 	if vk != nil {
 		fields = append(fields, "virtual_key_id", vk.ID)
+	} else if expired := expiredKeyFromErr(err); expired != nil {
+		// An expired key never resolves to a vk, but the operator needs to
+		// know WHICH key is failing; the client envelope never carries the
+		// id (RFC-3 decision 4).
+		fields = append(fields, "virtual_key_id", expired.ID, "key_expired_at", expired.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	fields = append(fields, attributionLogFields(ctx)...)
 	// gatewayevents_v1 is added on BOTH the error and success paths below

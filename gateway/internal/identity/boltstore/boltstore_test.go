@@ -177,3 +177,32 @@ func TestLoadRejectsCorruptValue(t *testing.T) {
 		t.Fatal("Load with a corrupt stored value returned nil error, want an error")
 	}
 }
+
+// TestLoadDecodesALegacyRecordWithoutNewerFields pins the compatibility
+// property the package doc promises: a record persisted by a build that
+// predates a field (here ExpiresAt, RFC-3 slice (b), 2026-10-10) decodes
+// with that field at its zero value and every stored field intact — the
+// store is JSON precisely so that this needs no migration.
+func TestLoadDecodesALegacyRecordWithoutNewerFields(t *testing.T) {
+	s, _ := openTestStore(t)
+	legacy := []byte(`{"ID":"legacy-key","KeyHash":"aa11","BudgetUSD":"7.5","BudgetResetInterval":3600000000000,"RateLimitBurst":5,"RateLimitRefill":1,"BillingSubjectID":"cc-9"}`)
+	if err := s.DB().Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(bucketName)).Put([]byte("legacy-key"), legacy)
+	}); err != nil {
+		t.Fatalf("writing legacy record: %v", err)
+	}
+	got, err := s.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	vk, ok := got["legacy-key"]
+	if !ok {
+		t.Fatal("legacy record not loaded")
+	}
+	if vk.ID != "legacy-key" || vk.KeyHash != "aa11" || !vk.BudgetUSD.Equal(decimal.RequireFromString("7.5")) || vk.RateLimitBurst != 5 || vk.BillingSubjectID != "cc-9" {
+		t.Errorf("stored fields changed on decode: %+v", vk)
+	}
+	if !vk.ExpiresAt.IsZero() || vk.PreviousKeyHash != "" {
+		t.Errorf("fields absent from the legacy record must decode to zero: ExpiresAt=%v PreviousKeyHash=%q", vk.ExpiresAt, vk.PreviousKeyHash)
+	}
+}

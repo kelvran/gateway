@@ -593,6 +593,11 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 			http.Error(w, "budget_warn_percent must be between 0 and 100", http.StatusBadRequest)
 			return
 		}
+		expiresAt, err := parseExpiresAt(req.ExpiresAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		var allowedModels map[string]struct{}
 		if len(req.AllowedModels) > 0 {
@@ -665,6 +670,8 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 			AttributionIDsDisabled: req.AttributionIDsDisabled,
 			RateLimitBurst:         burst,
 			RateLimitRefill:        refill,
+			BillingSubjectID:       req.BillingSubjectID,
+			ExpiresAt:              expiresAt,
 		}
 		rateLimitCfg := ratelimit.KeyConfig{
 			ID:                 name,
@@ -737,8 +744,23 @@ func rotateVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 			return
 		}
 
+		expiresAt, err := parseExpiresAt(req.ExpiresAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if expiresAt.IsZero() {
+			// A fresh secret on an already-expired key would still be
+			// rejected with key_expired, which the caller would read as a
+			// failed rotation — so the server insists on a new expires_at
+			// rather than a CLI pre-GET that an Operator token cannot make.
+			if current, ok := pipeline.GetVirtualKey(name); ok && !current.ExpiresAt.IsZero() && !current.ExpiresAt.After(time.Now()) {
+				http.Error(w, fmt.Sprintf("virtual key %q expired at %s; supply expires_at to rotate it", name, formatExpiresAt(current.ExpiresAt)), http.StatusConflict)
+				return
+			}
+		}
 		gracePeriod := secondsToDuration(req.GracePeriodSeconds)
-		err := pipeline.RotateVirtualKey(name, req.NewKeyHash, gracePeriod)
+		err = pipeline.RotateVirtualKeyWithExpiry(name, req.NewKeyHash, gracePeriod, expiresAt)
 		switch {
 		case err == nil:
 			logger.Info("admin_virtual_key_rotated", "name", name, "grace_period_seconds", req.GracePeriodSeconds, "authorized_by", credentialTierFromContext(r.Context()))
@@ -934,7 +956,39 @@ func virtualKeyToListEntry(vk identity.VirtualKey) virtualKeyListEntry {
 		RateLimitBurst:             vk.RateLimitBurst,
 		RateLimitRefill:            vk.RateLimitRefill,
 		BillingSubjectID:           vk.BillingSubjectID,
+		ExpiresAt:                  formatExpiresAt(vk.ExpiresAt),
 	}
+}
+
+// parseExpiresAt reads an admin body's optional expires_at (RFC-3 decision
+// 4): "" (also what an absent or null field decodes to) means no expiry;
+// otherwise RFC 3339 — the shape GET /admin/audit's since/until already
+// use — and strictly in the future. The past-value rule lives only here:
+// Load, both stores and the propagation apply path accept past instants
+// unchanged, so replicas and persisted records never diverge from this
+// handler's answer, and an already-expired stored key is re-upserted only
+// with a later instant, without one, or deleted.
+func parseExpiresAt(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("expires_at %q is not a valid RFC 3339 timestamp: %w", raw, err)
+	}
+	if !t.After(time.Now()) {
+		return time.Time{}, errors.New("expires_at must be in the future")
+	}
+	return t, nil
+}
+
+// formatExpiresAt renders a key's expiry for the admin wire: RFC 3339 in
+// UTC, "" (omitted) when the key never expires.
+func formatExpiresAt(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // ipNetStringsSorted mirrors sortedKeysOf's own role for

@@ -264,7 +264,14 @@ type VirtualKeyPayload struct {
 	MaxConcurrentRequests    int       `json:"max_concurrent_requests"`
 	PreviousKeyHash          string    `json:"previous_key_hash,omitempty"`
 	PreviousKeyHashExpiresAt time.Time `json:"previous_key_hash_expires_at,omitempty"`
-	BillingSubjectID         string    `json:"billing_subject_id,omitempty"`
+	// ExpiresAt is identity.VirtualKey.ExpiresAt as a POINTER, so a receiver
+	// can tell "the sender set no expiry" (non-nil zero time) from "the
+	// sender predates the field" (nil, omitted on the wire): MutationEvent
+	// carries no field-set version, so dataplane's receive side carries its
+	// own current expiry forward when the member is absent instead of
+	// erasing it (RFC-3 decision 4). Senders on this build always set it.
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	BillingSubjectID string     `json:"billing_subject_id,omitempty"`
 	// CacheScopeToEndUser mirrors identity.VirtualKey.CacheScopeToEndUser's
 	// own doc comment exactly -- a plain bool, direct copy, no shape
 	// translation needed.

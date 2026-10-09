@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -430,6 +431,12 @@ type VirtualKeyConfig struct {
 	// zero value is the default (identifier capture on). See
 	// identity.VirtualKey.AttributionIDsDisabled.
 	AttributionIDsDisabled bool
+	// ExpiresAt is `expires_at`, an RFC 3339 instant from which the gateway
+	// rejects this key with 401 `key_expired` (identity.VirtualKey.ExpiresAt;
+	// RFC-3 decision 4). Zero when absent: the key never expires. A value
+	// that is not RFC 3339 is a load error, so -validate catches it; a past
+	// instant loads (an already-expired key must not stop the gateway).
+	ExpiresAt time.Time
 }
 
 // ModelRateLimitConfig is one virtual key's per-model RPM override — see
@@ -1155,6 +1162,11 @@ func Load(path string) (*Config, error) {
 		} else if present && !captureIDs {
 			vk.AttributionIDsDisabled = true
 		}
+		if expiresAt, present, err := getTime(vkMap, "expires_at"); err != nil {
+			return nil, fmt.Errorf("controlplane: virtual key %q expires_at: %w", name, err)
+		} else if present {
+			vk.ExpiresAt = expiresAt
+		}
 		cfg.VirtualKeys = append(cfg.VirtualKeys, vk)
 	}
 	sort.Slice(cfg.VirtualKeys, func(i, j int) bool { return cfg.VirtualKeys[i].Name < cfg.VirtualKeys[j].Name })
@@ -1759,6 +1771,30 @@ func parseYAMLScalar(s string) any {
 		return false
 	}
 	return s
+}
+
+// getTime reads an RFC 3339 timestamp — the only timestamp shape the loader
+// accepts, added for virtual_keys.<name>.expires_at (RFC-3 decision 4).
+// Absent returns (zero, false, nil). Present but not a string, or not RFC
+// 3339, is an error so -validate catches it: unlike the numeric getters,
+// whose call sites discard a parse failure, a silently ignored expiry would
+// mean a key that was meant to expire never does. A past instant is
+// accepted — Load must not refuse to start a gateway over one already-expired
+// key.
+func getTime(m map[string]any, key string) (time.Time, bool, error) {
+	v, ok := m[key]
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	str, ok := v.(string)
+	if !ok {
+		return time.Time{}, true, fmt.Errorf("%q has value %v, which is not an RFC 3339 timestamp string", key, v)
+	}
+	t, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		return time.Time{}, true, fmt.Errorf("%q is not an RFC 3339 timestamp: %w", key, err)
+	}
+	return t, true, nil
 }
 
 func getString(m map[string]any, key string) (string, bool) {

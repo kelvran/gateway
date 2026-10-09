@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
@@ -64,6 +65,7 @@ func TestWriteErrorResponseEnvelopeTable(t *testing.T) {
 	}{
 		{"missing header", identity.ErrMissingHeader, http.StatusUnauthorized, "authentication_error", nil, identity.ErrMissingHeader.Error()},
 		{"invalid key", identity.ErrInvalidKey, http.StatusUnauthorized, "authentication_error", strPtr("invalid_api_key"), identity.ErrInvalidKey.Error()},
+		{"key expired", &identity.KeyExpiredError{ID: "team-expired-fixture", ExpiresAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}, http.StatusUnauthorized, "authentication_error", strPtr("key_expired"), identity.ErrKeyExpired.Error()},
 		{"rate limited", dataplane.ErrRateLimited, http.StatusTooManyRequests, "rate_limit_error", strPtr("rate_limit_exceeded"), dataplane.ErrRateLimited.Error()},
 		{"budget exceeded", dataplane.ErrBudgetExceeded, http.StatusTooManyRequests, "insufficient_quota", strPtr("insufficient_quota"), dataplane.ErrBudgetExceeded.Error()},
 		{"concurrency", dataplane.ErrConcurrencyLimitExceeded, http.StatusTooManyRequests, "rate_limit_error", strPtr("concurrency_limit_exceeded"), dataplane.ErrConcurrencyLimitExceeded.Error()},
@@ -106,6 +108,9 @@ func TestWriteErrorResponseEnvelopeTable(t *testing.T) {
 				}
 				if !strings.Contains(body.Error.Message, tc.wantMsg) {
 					t.Errorf("message = %q, want it to contain %q", body.Error.Message, tc.wantMsg)
+				}
+				if strings.Contains(body.Error.Message, "team-expired-fixture") {
+					t.Errorf("message = %q names the expired key; the id belongs on the log line only", body.Error.Message)
 				}
 			})
 		}

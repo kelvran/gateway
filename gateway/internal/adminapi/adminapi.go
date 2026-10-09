@@ -59,6 +59,17 @@ type VirtualKeyRequest struct {
 	// negative `attribution_capture_ids_disabled`.
 	AttributionIDsDisabled bool              `json:"attribution_capture_ids_disabled"`
 	RateLimit              *RateLimitRequest `json:"rate_limit"`
+	// ExpiresAt is the RFC 3339 instant from which the key's secret is
+	// rejected with 401 key_expired (RFC-3 decision 4). Absent, "" and null
+	// all mean the key never expires — and, because an upsert is a full
+	// replace, re-upserting without it clears an existing expiry. Must be
+	// in the future when set (400 otherwise).
+	ExpiresAt string `json:"expires_at,omitempty"`
+	// BillingSubjectID is the opaque external billing identifier
+	// identity.VirtualKey.BillingSubjectID documents — pure metadata, never
+	// read by an enforcement path. Settable here since 2026-10-10; before,
+	// only in config.yaml.
+	BillingSubjectID string `json:"billing_subject_id,omitempty"`
 }
 
 // RotateVirtualKeyRequest is the POST /admin/virtual_keys/{name}/rotate
@@ -70,6 +81,12 @@ type VirtualKeyRequest struct {
 type RotateVirtualKeyRequest struct {
 	NewKeyHash         string `json:"new_key_hash"`
 	GracePeriodSeconds int    `json:"grace_period_seconds"`
+	// ExpiresAt, when set (RFC 3339, in the future), replaces the key's
+	// expiry in the same rotation; when absent the current expiry is kept.
+	// Rotating a key whose expiry has already passed REQUIRES it — the
+	// server answers 409 otherwise, because a fresh secret on an expired
+	// key would still be rejected with key_expired.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // RateLimitRequest is VirtualKeyRequest's rate_limit section.
@@ -189,6 +206,9 @@ type VirtualKeyListEntry struct {
 	RateLimitBurst             float64  `json:"rate_limit_burst,omitempty"`
 	RateLimitRefill            float64  `json:"rate_limit_refill_per_second,omitempty"`
 	BillingSubjectID           string   `json:"billing_subject_id,omitempty"`
+	// ExpiresAt is the key's expiry as RFC 3339 (UTC); omitted when the key
+	// never expires. An expired key stays listed with a past value.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // VirtualKeyInFlightResponse is GET /admin/virtual_keys/{name}/inflight's

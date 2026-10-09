@@ -217,7 +217,8 @@ One line per chat completion. Level `INFO` on success, `ERROR` on failure.
 | `cache_layer` | string | Cache hit: `L1`, `L2`, `L3`. |
 | `cache_age_ms` | number | Cache hit. |
 | `cache_similarity` | number | L3 hit. |
-| `virtual_key_id` | string | A virtual key was resolved. |
+| `virtual_key_id` | string | A virtual key was resolved, or the bearer matched an expired key (then `key_expired_at` is set too; on `main` since 2026-10-10). |
+| `key_expired_at` | string | The bearer matched an expired key: its `expires_at`, RFC 3339 in UTC. On `main` since 2026-10-10. |
 | `client_tool`, `request_class` | string | Always (on `main` since 2026-10-09): the two bounded attribution values, `other` / `none` when unknown or absent. Identifiers (session, agent, prompt ids) are never log fields. |
 | `gatewayevents_v1` | string (JSON) | Always, success and failure, unless marshalling failed (then `gatewayevents_marshal_failed` is logged at `WARN` and the field is omitted). See the next table. |
 | `error` | string | Failure. |
@@ -231,14 +232,14 @@ One line per chat completion. Level `INFO` on success, `ERROR` on failure.
 
 ### `gatewayevents_v1`: the `GatewayDecisionEvent`
 
-The `gatewayevents_v1` value is a `GatewayDecisionEvent` message from `api/gatewayevents/v1/gatewayevents.proto`, serialised with protojson's default options: keys are lowerCamelCase (`traceId`, `virtualKeyId`), every field at its proto3 zero value (`""`, `false`, `0`) is omitted from the JSON rather than written, `outcome` is the enum name string (`OUTCOME_OK`) and `occurredAt` is an RFC 3339 string. A `""` or `false` in the table below therefore means the key is absent from the JSON, not present with that value: a non-hit row has no `savingsUsd` key, an auth failure has no `virtualKeyId` key, and `fallbackHappened`, `rateLimitFailOpen` and `costIsEstimated` appear only when `true`. Decode it with a protojson decoder rather than matching hand-written keys; the decoder yields the proto default for an absent key. It is the one record built for durable, offline analysis; the span is not.
+The `gatewayevents_v1` value is a `GatewayDecisionEvent` message from `api/gatewayevents/v1/gatewayevents.proto`, serialised with protojson's default options: keys are lowerCamelCase (`traceId`, `virtualKeyId`), every field at its proto3 zero value (`""`, `false`, `0`) is omitted from the JSON rather than written, `outcome` is the enum name string (`OUTCOME_OK`) and `occurredAt` is an RFC 3339 string. A `""` or `false` in the table below therefore means the key is absent from the JSON, not present with that value: a non-hit row has no `savingsUsd` key, an auth failure has no `virtualKeyId` key unless the bearer matched an expired key (on `main` since 2026-10-10), and `fallbackHappened`, `rateLimitFailOpen` and `costIsEstimated` appear only when `true`. Decode it with a protojson decoder rather than matching hand-written keys; the decoder yields the proto default for an absent key. It is the one record built for durable, offline analysis; the span is not.
 
 | Proto field | JSON key | Type | Meaning |
 |---|---|---|---|
 | `trace_id` | `traceId` | string | Same span as the log line's top-level `trace_id`. |
 | `span_id` | `spanId` | string | |
 | `occurred_at` | `occurredAt` | `google.protobuf.Timestamp` | |
-| `virtual_key_id` | `virtualKeyId` | string | `""` when auth failed and no key was resolved. |
+| `virtual_key_id` | `virtualKeyId` | string | `""` when auth failed and no key was resolved; set when the bearer matched an expired key (on `main` since 2026-10-10). |
 | `requested_model` | `requestedModel` | string | |
 | `outcome` | `outcome` | `Outcome` enum | See the next table. |
 | `rate_limit_fail_open` | `rateLimitFailOpen` | bool | `true` only when the rate limiter errored and the request was allowed through. `false` also covers "the rate limiter never ran". |
@@ -281,7 +282,8 @@ One line per embeddings request. Level `INFO` on success, `ERROR` on failure. Th
 | `model` | string | Always. |
 | `input_count` | int | Always: the number of inputs in the request. |
 | `duration_ms` | int | Always. |
-| `virtual_key_id` | string | A virtual key was resolved. |
+| `virtual_key_id` | string | A virtual key was resolved, or the bearer matched an expired key (then `key_expired_at` is set too; on `main` since 2026-10-10). |
+| `key_expired_at` | string | The bearer matched an expired key: its `expires_at`, RFC 3339 in UTC. On `main` since 2026-10-10. |
 | `client_tool`, `request_class` | string | Always (on `main` since 2026-10-09): the two bounded attribution values, `other` / `none` when unknown or absent. Identifiers (session, agent, prompt ids) are never log fields. |
 | `deployment` | string | A deployment was selected. |
 | `error` | string | Failure. |
