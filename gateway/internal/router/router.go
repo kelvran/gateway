@@ -164,6 +164,36 @@ func (r *Router) Select(model string, exclude map[string]bool) (string, bool) {
 	return r.selectHealthy(ms, exclude)
 }
 
+// Weight reports deploymentName's current routing weight — the configured
+// value, or the one the last SetWeight installed — and whether the
+// deployment is known to any model group. Read-only, for GET
+// /admin/deployments (RFC-3 decision 5); it never touches the selection
+// cursor. The value is the one routing uses: the router already stores a
+// configured 0 as 1 when it builds a model group, so nothing is normalised
+// here.
+func (r *Router) Weight(deploymentName string) (int, bool) {
+	r.modelsMu.RLock()
+	defer r.modelsMu.RUnlock()
+	for _, ms := range r.models {
+		ms.mu.Lock()
+		for _, d := range ms.deps {
+			if d.name == deploymentName {
+				w := d.weight
+				ms.mu.Unlock()
+				return w, true
+			}
+		}
+		ms.mu.Unlock()
+	}
+	return 0, false
+}
+
+// IsSticky reports deploymentName's configured Sticky flag (false for an
+// unknown deployment). Read-only, for GET /admin/deployments.
+func (r *Router) IsSticky(deploymentName string) bool {
+	return r.stickyDeployments[deploymentName]
+}
+
 // SetWeight live-mutates deploymentName's own weight within model's
 // routing group to weight (weight <= 0 normalizes to 1, the same "unset"
 // convention newModelState itself already applies) — every OTHER

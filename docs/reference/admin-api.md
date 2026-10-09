@@ -90,7 +90,7 @@ With `admin.mtls` set, a client without a valid certificate fails at the TLS han
 |---|---|---|---|---|---|
 | GET | `/admin/config` | Admin, Viewer | 200 JSON | 500 | `admin_config_read` |
 | GET | `/admin/audit` | Admin, Viewer | 200 JSON | 400, 500 | none |
-| GET | `/admin/virtual_keys` | Admin, Viewer | 200 JSON | | `admin_virtual_keys_read` |
+| GET | `/admin/virtual_keys` | Admin, Viewer | 200 JSON | 400 | `admin_virtual_keys_read` |
 | POST | `/admin/virtual_keys/{name}` | Admin | 204 | 400 | `admin_virtual_key_upserted` |
 | DELETE | `/admin/virtual_keys/{name}` | Admin | 204 | 400, 404, 409, 500 | `admin_virtual_key_deleted` |
 | POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404, 409 | `admin_virtual_key_rotated` |
@@ -104,6 +104,7 @@ With `admin.mtls` set, a client without a valid certificate fails at the TLS han
 | PUT | `/admin/prompts/{id}/labels/{label}` | Admin | 200 JSON | 400, 404 | `admin_prompt_label_set` |
 | DELETE | `/admin/prompts/{id}/labels/{label}` | Admin | 204 | 404, 500 | `admin_prompt_label_deleted` |
 | POST | `/admin/backup` | Admin | 200 JSON | 500, 501 | `admin_backup_completed` |
+| GET | `/admin/deployments` | Admin, Viewer | 200 JSON | | `admin_deployments_read` |
 | POST | `/admin/deployments/{name}/weight` | Admin, Operator | 204 | 400, 404, 500 | `admin_deployment_weight_updated` |
 | POST | `/admin/cache/erase` | Admin, Operator | 200 JSON | 400, 404, 500 | `admin_cache_entry_erased` |
 | GET | `/admin/debug/pprof/` and named profiles | Admin | pprof output | | none |
@@ -149,6 +150,8 @@ This read is not itself audit-logged.
 
 Returns every virtual key the gateway currently accepts, sorted by `id`. `key_hash` is never included.
 
+`?include=spend` (on `main` since 2026-10-10) adds `spent_usd`, `percent_used` and, on failure, `spend_unavailable` to every entry — the same read `GET /admin/virtual_keys/{name}/spend` performs, one per key inside one request instead of N requests. The cost is O(N) over configured keys: in Redis budget mode one backend read per key, and in bbolt/in-memory mode a read that may durably persist a just-elapsed window reset when `budget.persist_path` is set (the per-key route behaves the same). Every per-key read shares one 2 s deadline. A key whose read errors carries `spend_unavailable: true` and no `spent_usd`/`percent_used` while the other entries are unaffected; once the shared deadline elapses, that key and every key after it (in `id` order) are reported unavailable. Every entry is still returned and the status stays `200`, so an outage is never reported as `"0"`; the request also writes one Warn line `admin_spend_read_failed` with `count` and the first `error`, never a spend figure. The tier is unchanged (Admin or Viewer; CostViewer still has the per-key route only). Any other `include` value is `400` `include must be "spend"`. The audit entry gains `include=spend`.
+
 Each element:
 
 | Field | Type | Present | Meaning |
@@ -166,6 +169,11 @@ Each element:
 | `rate_limit_refill_per_second` | number | when non-zero | Key-level RPM refill. |
 | `billing_subject_id` | string | when non-empty | Settable through this API since 2026-10-10 or through `virtual_keys.<name>.billing_subject_id` in `config.yaml`. |
 | `expires_at` | string | when set | RFC 3339 (UTC) instant from which the key is rejected with 401 `key_expired`; an expired key stays listed with a past value. On `main` since 2026-10-10. |
+| `previous_key_hash_expires_at` | string | while a previous hash is recorded | End of the rotation grace period (RFC 3339, UTC). Rotation always records it, so it stays listed with a past value after the grace ends (immediately, for a zero grace) until the next upsert replaces the key. The previous hash itself is never listed. On `main` since 2026-10-10. |
+| `max_concurrent_requests` | int | when non-zero | The key's concurrency cap, settable only in `config.yaml`. On `main` since 2026-10-10. |
+| `spent_usd` | string | with `?include=spend`, unless unavailable | Decimal spend within the current window, as the per-key spend route reports it. |
+| `percent_used` | number | with `?include=spend`, unless unavailable | `spent_usd / budget_usd` as a fraction; `0` when `budget_usd` is not positive. |
+| `spend_unavailable` | bool | with `?include=spend`, when `true` | The budget backend could not be read for this key within the shared 2 s deadline; `spent_usd` and `percent_used` are omitted. |
 
 Per-model and TPM rate-limit settings are not part of this response.
 
@@ -297,17 +305,18 @@ Response:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `spent_usd` | string | Decimal spend within the current window. |
+| `spent_usd` | string | Decimal spend within the current window. Omitted when `spend_unavailable` is `true`. |
 | `budget_usd` | string | Decimal cap. `"0"` means unlimited. |
 | `budget_reset_interval_seconds` | int | The key's window. |
-| `percent_used` | number | `spent_usd / budget_usd` as a fraction (`0.5` means 50 %). `0` when `budget_usd` is not positive. |
+| `percent_used` | number | `spent_usd / budget_usd` as a fraction (`0.5` means 50 %). `0` when `budget_usd` is not positive. Omitted when `spend_unavailable` is `true`. |
+| `spend_unavailable` | bool | `true` (and otherwise absent) when the Redis budget backend could not be read within 2 s; the response is still `200` with the budget fields, and a Warn line `admin_spend_read_failed` with `name` and `error` is written. On `main` since 2026-10-10 — before, a backend error read as `"0"`. |
 
 | Status | Body |
 |---|---|
 | 200 | The object. |
 | 404 | `virtual key "<name>" not found` |
 
-Audit entry `admin_virtual_key_spend_read` with `name` and `authorized_by`; the figures are not logged. In Redis budget mode a backend error makes `spent_usd` read as `0`; see row R8 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md).
+Audit entry `admin_virtual_key_spend_read` with `name` and `authorized_by`; the figures are not logged. In Redis budget mode a backend error, or a read not answered within 2 s, omits `spent_usd` and `percent_used` and sets `spend_unavailable: true` (before 2026-10-10 it read as `0`); see row R8 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md).
 
 ## GET /admin/virtual_keys/{name}/inflight
 
@@ -468,6 +477,27 @@ Response: `{"files": [<string>, ...]}`, the file names written; `{"files": null}
 
 The audit JSONL file at `admin.audit_log_path` is not a bbolt store and is not included. Redis-backed stores are not included. Audit entry `admin_backup_completed` with `files` and `authorized_by=admin`. Restore is an offline operation; see [backup-and-restore.md](../how-to/backup-and-restore.md).
 
+## GET /admin/deployments
+
+On `main` since 2026-10-10. Returns every configured deployment, sorted by `name`, with the router's live view of it. Read-only and in-memory, the mirror image of `POST /admin/deployments/{name}/weight`; it never contacts a provider.
+
+Each element:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name`, `model`, `upstream_model`, `provider` | string | As configured. |
+| `kind` | string | `chat` or `embedding` (the config's empty default is reported as `chat`). |
+| `healthy` | bool | `false` only while the health prober has excluded the deployment; a never-probed deployment reads `true`. |
+| `weight` | int | The live routing weight: the configured value or the last `POST .../weight`; a configured `0` is reported as the `1` the router uses. |
+| `latency_factor_percent` | int | `0` when no latency signal is applied (full weight), otherwise the percentage of `weight` the router currently admits. |
+| `sticky` | bool | The configured `sticky` flag. |
+
+| Status | Body |
+|---|---|
+| 200 | JSON array |
+
+Audit entry `admin_deployments_read` with `count` and `authorized_by`; the rows are not logged.
+
 ## POST /admin/deployments/{name}/weight
 
 Sets the routing weight of one deployment, live.
@@ -553,7 +583,7 @@ Every successful call to a route with an audit event in the route index writes o
 | Event | Fields besides `authorized_by` |
 |---|---|
 | `admin_config_read` | none |
-| `admin_virtual_keys_read` | `count` |
+| `admin_virtual_keys_read` | `count`; `include` (value `spend`) when the request carried `?include=spend` |
 | `admin_virtual_key_upserted` | `name` |
 | `admin_virtual_key_deleted` | `name` |
 | `admin_virtual_key_rotated` | `name`, `grace_period_seconds` |
@@ -565,6 +595,7 @@ Every successful call to a route with an audit event in the route index writes o
 | `admin_prompt_label_set` | `id`, `label`, `version` |
 | `admin_prompt_label_deleted` | `id`, `label` |
 | `admin_backup_completed` | `files` |
+| `admin_deployments_read` | `count` |
 | `admin_deployment_weight_updated` | `name`, `weight` |
 | `admin_cache_entry_erased` | `virtual_key_id`, `model`, `l1_found`, `l2_found` |
 
@@ -611,9 +642,8 @@ A replica ignores its own events and applies the others with last-writer-wins or
 - Propagation of prompt mutations across replicas. Only virtual-key and deployment-weight events are published. Prompts are per replica: send every prompt mutation to every replica, or stop a replica and restart it from a copy of another replica's `prompt.persist_path` file. A bbolt file cannot be shared by two running replicas; the second fails to start within one second with `another process holds the file lock` (row P2 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md)).
 - A JSON error envelope on admin routes. Every error is plain text.
 - An admin web UI, by recorded decision.
-- A dedicated read route for deployments or for one deployment's current weight. `GET /admin/config` returns the configured `Deployments`; the live weight set through this API is not exposed by any route.
 - Per-entry deletion from the audit log. Only `admin.enable_audit_log: false` exists, and it stops new entries only.
-- Setting `rate_limit.max_concurrent_requests` (the key's concurrency cap) through this API. It is not a field of the upsert body (an unknown body field is ignored) and is reported by no route; `billing_subject_id` became a body field on 2026-10-10. An upsert stores the key with no concurrency cap: the live limiter on this replica keeps the cap registered at startup until the next restart, after which a persisted key is reloaded with none.
+- Setting `rate_limit.max_concurrent_requests` (the key's concurrency cap) through this API. It is not a field of the upsert body (an unknown body field is ignored); the configured value is reported by `GET /admin/virtual_keys` as `max_concurrent_requests` since 2026-10-10, and `billing_subject_id` became a body field the same day. An upsert stores the key with no concurrency cap: the live limiter on this replica keeps the cap registered at startup until the next restart, after which a persisted key is reloaded with none.
 
 ## Examples
 

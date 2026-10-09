@@ -41,6 +41,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/admin/auditstore"
 	"github.com/kelvran/gateway/gateway/internal/adminapi"
@@ -108,11 +110,12 @@ type rotateVirtualKeyRequest = adminapi.RotateVirtualKeyRequest
 // cfg.Admin.EnableAuditLog, so an operator can disable Kelvran's own
 // admin-mutation audit trail (e.g. because a separate compliance pipeline
 // already captures the same events) without a per-call-site conditional
-// at each of this package's own logging points. Every logger call in this
-// package IS an audit entry (this file's only non-Info call is the
-// admin_audit_durable_append_failed Warn inside Info itself, behind the
-// same enabled check) — so wrapping the single Info method here is
-// sufficient to gate all of them, not just some.
+// at each of this package's own logging points. Every Info call in this
+// package IS an audit entry (the admin_audit_durable_append_failed Warn
+// inside Info sits behind the same enabled check) — so wrapping the single
+// Info method here is sufficient to gate all of them, not just some. Warn
+// is the one deliberate exception: an operational line, not an audit
+// entry, so it is neither gated nor stored.
 //
 // store, when non-nil, ALSO appends every entry to a durable, queryable
 // JSONL trail (internal/admin/auditstore) -- see that package's own doc
@@ -139,6 +142,16 @@ func (a auditLogger) Info(msg string, args ...any) {
 			a.logger.Warn("admin_audit_durable_append_failed", "error", err.Error())
 		}
 	}
+}
+
+// Warn writes an operational warning — not an audit entry, so it is not
+// gated by enabled and never reaches the durable store. The spend routes
+// use it when a budget-backend read fails (RFC-3 decision 5): the response
+// says "unavailable", this line says why, and it never carries a figure.
+// budget.Tracker.SpentUSDErr deliberately does not log, so without this
+// the failure would be silent.
+func (a auditLogger) Warn(msg string, args ...any) {
+	a.logger.Warn(msg, args...)
 }
 
 // Handler builds the admin HTTP surface. cfg is the already-loaded,
@@ -216,6 +229,7 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 	// reporting. Admin-or-Operator, per
 	// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md: reversible
 	// (re-set the weight) and scoped to a single named deployment.
+	mux.Handle("GET /admin/deployments", requireEitherBearerToken(creds, listDeploymentsHandler(pipeline, audit)))
 	mux.Handle("POST /admin/deployments/{name}/weight", requireAdminOrOperatorBearerToken(creds, updateDeploymentWeightHandler(pipeline, audit)))
 	// Admin-or-Operator, same RFC as above: a cache erasure is reversible
 	// in the sense that it only removes a cached entry (never mutates
@@ -957,6 +971,8 @@ func virtualKeyToListEntry(vk identity.VirtualKey) virtualKeyListEntry {
 		RateLimitRefill:            vk.RateLimitRefill,
 		BillingSubjectID:           vk.BillingSubjectID,
 		ExpiresAt:                  formatExpiresAt(vk.ExpiresAt),
+		PreviousKeyHashExpiresAt:   formatExpiresAt(vk.PreviousKeyHashExpiresAt),
+		MaxConcurrentRequests:      vk.MaxConcurrentRequests,
 	}
 }
 
@@ -1016,13 +1032,106 @@ func ipNetStringsSorted(nets []*net.IPNet) []string {
 // tier GET .../spend also accepts.
 func listVirtualKeysHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		keys := pipeline.ListVirtualKeys()
-		entries := make([]virtualKeyListEntry, 0, len(keys))
-		for _, vk := range keys {
-			entries = append(entries, virtualKeyToListEntry(vk))
+		withSpend := false
+		switch include := r.URL.Query().Get("include"); include {
+		case "":
+		case "spend":
+			withSpend = true
+		default:
+			// A typo must not silently return the plain list a CLI would
+			// then render as "no spend"; "spend" is the one accepted value.
+			http.Error(w, `include must be "spend"`, http.StatusBadRequest)
+			return
+		}
+		ctx := r.Context()
+		if withSpend {
+			// One deadline for every per-key read (RFC-3 decision 5): a
+			// Redis blip costs one timeout for the whole response, not N
+			// go-redis defaults, on a server with no WriteTimeout.
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, spendReadTimeout)
+			defer cancel()
+		}
+		entries, unavailable, firstErr := virtualKeyListEntries(ctx, pipeline, withSpend)
+		if unavailable > 0 {
+			// One line per request, not per key; the first error is the
+			// informative one once the shared deadline has elapsed.
+			logger.Warn("admin_spend_read_failed", "count", unavailable, "error", firstErr.Error())
 		}
 		writeJSONResponse(w, entries)
-		logger.Info("admin_virtual_keys_read", "count", len(entries), "authorized_by", credentialTierFromContext(r.Context()))
+		fields := []any{"count", len(entries)}
+		if withSpend {
+			// So GET /admin/audit?msg=admin_virtual_keys_read&field=include&value=spend
+			// answers who read spend figures; the figures are never logged.
+			fields = append(fields, "include", "spend")
+		}
+		fields = append(fields, "authorized_by", credentialTierFromContext(r.Context()))
+		logger.Info("admin_virtual_keys_read", fields...)
+	}
+}
+
+// virtualKeyListEntries builds the GET /admin/virtual_keys body from the
+// pipeline's current keys, joining the spend fields when withSpend is set,
+// and reports how many spend reads failed plus the first error so the
+// handler can warn once per request rather than once per key.
+func virtualKeyListEntries(ctx context.Context, pipeline *dataplane.Pipeline, withSpend bool) ([]virtualKeyListEntry, int, error) {
+	keys := pipeline.ListVirtualKeys()
+	entries := make([]virtualKeyListEntry, 0, len(keys))
+	unavailable := 0
+	var firstErr error
+	for _, vk := range keys {
+		entry := virtualKeyToListEntry(vk)
+		if withSpend {
+			spent, err := pipeline.SpentUSDErr(ctx, vk.ID, vk.BudgetResetInterval)
+			entry.SpentUSD, entry.PercentUsed, entry.SpendUnavailable = spendFields(spent, err, vk.BudgetUSD)
+			if err != nil {
+				unavailable++
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries, unavailable, firstErr
+}
+
+// spendReadTimeout bounds every budget-backend read a spend route performs
+// — the whole ?include=spend list shares one deadline (RFC-3 decision 5).
+const spendReadTimeout = 2 * time.Second
+
+// spendFields turns a SpentUSDErr result into the wire triple both spend
+// routes use: on success the decimal string and the fraction of budgetUSD
+// (0 when the budget is not positive) with unavailable=false; on a backend
+// error empty/nil/true, so an outage is reported as unknown, never as $0.
+func spendFields(spent decimal.Decimal, err error, budgetUSD decimal.Decimal) (string, *float64, bool) {
+	if err != nil {
+		return "", nil, true
+	}
+	var percentUsed float64
+	if budgetUSD.IsPositive() {
+		percentUsed, _ = spent.Div(budgetUSD).Float64()
+	}
+	return spent.String(), &percentUsed, false
+}
+
+// listDeploymentsHandler serves GET /admin/deployments: every configured
+// deployment with its live health, weight, latency factor and sticky flag
+// (dataplane.Pipeline.ListDeployments; RFC-3 decision 5). Read-only and
+// in-memory, the mirror image of POST /admin/deployments/{name}/weight.
+// logger records the read (count + tier), never the rows.
+func listDeploymentsHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		statuses := pipeline.ListDeployments()
+		entries := make([]adminapi.DeploymentEntry, 0, len(statuses))
+		for _, d := range statuses {
+			entries = append(entries, adminapi.DeploymentEntry{
+				Name: d.Name, Model: d.Model, UpstreamModel: d.UpstreamModel, Provider: d.Provider, Kind: d.Kind,
+				Healthy: d.Healthy, Weight: d.Weight, LatencyFactorPercent: d.LatencyFactorPercent, Sticky: d.Sticky,
+			})
+		}
+		writeJSONResponse(w, entries)
+		logger.Info("admin_deployments_read", "count", len(entries), "authorized_by", credentialTierFromContext(r.Context()))
 	}
 }
 
@@ -1043,17 +1152,21 @@ func getVirtualKeySpendHandler(pipeline *dataplane.Pipeline, logger auditLogger)
 			http.Error(w, fmt.Sprintf("virtual key %q not found", name), http.StatusNotFound)
 			return
 		}
-		spent := pipeline.SpentUSD(r.Context(), vk.ID, vk.BudgetResetInterval)
-		var percentUsed float64
-		if vk.BudgetUSD.IsPositive() {
-			percentUsed, _ = spent.Div(vk.BudgetUSD).Float64()
-		}
-		writeJSONResponse(w, virtualKeySpendResponse{
-			SpentUSD:                   spent.String(),
+		ctx, cancel := context.WithTimeout(r.Context(), spendReadTimeout)
+		defer cancel()
+		resp := virtualKeySpendResponse{
 			BudgetUSD:                  vk.BudgetUSD.String(),
 			BudgetResetIntervalSeconds: int(vk.BudgetResetInterval.Seconds()),
-			PercentUsed:                percentUsed,
-		})
+		}
+		// Same fail-open shape as ?include=spend (RFC-3 decision 5): a
+		// backend error omits spent_usd/percent_used and sets
+		// spend_unavailable, so the two routes never silently disagree.
+		spent, err := pipeline.SpentUSDErr(ctx, vk.ID, vk.BudgetResetInterval)
+		resp.SpentUSD, resp.PercentUsed, resp.SpendUnavailable = spendFields(spent, err, vk.BudgetUSD)
+		if err != nil {
+			logger.Warn("admin_spend_read_failed", "name", name, "error", err.Error())
+		}
+		writeJSONResponse(w, resp)
 		logger.Info("admin_virtual_key_spend_read", "name", name, "authorized_by", credentialTierFromContext(r.Context()))
 	}
 }

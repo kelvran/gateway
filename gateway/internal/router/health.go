@@ -341,6 +341,20 @@ func admitLatencyThinnedTurn(h *deploymentHealth) bool {
 	return false
 }
 
+// LatencyFactorPercent reports the latency de-weighting currently applied
+// to name: 0 when no latency signal has been set (full configured weight),
+// otherwise the clamped percentage SetLatencyFactor stored. Read-only, for
+// GET /admin/deployments (RFC-3 decision 5).
+func (r *Router) LatencyFactorPercent(name string) int {
+	r.healthMu.Lock()
+	defer r.healthMu.Unlock()
+	h, ok := r.health[name]
+	if !ok {
+		return 0
+	}
+	return h.latencyFactorPercent
+}
+
 // SetLatencyFactor records a soft de-weighting signal for name, as a
 // percentage (1-100) of its configured Weight it should now effectively
 // receive -- e.g. 50 means "half its normal share," never a hard

@@ -22,6 +22,7 @@ Admin is a superset of every other tier. Operator authenticates no read route. C
 | `GET /admin/virtual_keys` | yes | yes | - | - |
 | `GET /admin/virtual_keys/{name}/spend` | yes | yes | yes | - |
 | `GET /admin/virtual_keys/{name}/inflight` | yes | yes | - | - |
+| `GET /admin/deployments` (on `main` since 2026-10-10) | yes | yes | - | - |
 | `GET /admin/prompts`, `GET /admin/prompts/{id}`, `GET /admin/prompts/{id}/versions/{version}` | yes | yes | - | - |
 | `POST /admin/virtual_keys/{name}/rotate` | yes | - | - | yes |
 | `POST /admin/deployments/{name}/weight` | yes | - | - | yes |
@@ -125,7 +126,7 @@ curl -H "Authorization: Bearer $KELVRAN_ADMIN_VIEWER_TOKEN" \
 
 Query parameters are optional and combine: `msg` (exact event name), `field` plus `value` (exact match on one field), `since` and `until` (RFC 3339, half-open range). No parameters returns every entry. A bad timestamp answers `400`. Field values are always strings. `time` is RFC 3339 with fractional seconds in the gateway process's local zone, so it ends in `Z` only when the process runs in UTC.
 
-Event names: `admin_config_read`, `admin_virtual_keys_read`, `admin_virtual_key_spend_read`, `admin_virtual_key_inflight_read`, `admin_prompts_read`, `admin_virtual_key_upserted`, `admin_virtual_key_deleted`, `admin_virtual_key_rotated`, `admin_deployment_weight_updated`, `admin_cache_entry_erased`, `admin_backup_completed`, `admin_prompt_upserted`, `admin_prompt_deleted`, `admin_prompt_label_set`, `admin_prompt_label_deleted`. Secrets, key hashes, prompt bodies and message content are never logged; entries carry identifiers (`name`, `id`, `virtual_key_id`, `label`) and a few scalar fields (`weight`, `grace_period_seconds`, `model`, `version`, `count`, `files`, `l1_found`, `l2_found`). See [Metrics and logs](../reference/metrics-and-logs.md).
+Event names: `admin_config_read`, `admin_virtual_keys_read`, `admin_virtual_key_spend_read`, `admin_virtual_key_inflight_read`, `admin_prompts_read`, `admin_virtual_key_upserted`, `admin_virtual_key_deleted`, `admin_virtual_key_rotated`, `admin_deployments_read`, `admin_deployment_weight_updated`, `admin_cache_entry_erased`, `admin_backup_completed`, `admin_prompt_upserted`, `admin_prompt_deleted`, `admin_prompt_label_set`, `admin_prompt_label_deleted`. Secrets, key hashes, prompt bodies and message content are never logged; entries carry identifiers (`name`, `id`, `virtual_key_id`, `label`) and a few scalar fields (`weight`, `grace_period_seconds`, `model`, `version`, `count`, `include`, `files`, `l1_found`, `l2_found`). See [Metrics and logs](../reference/metrics-and-logs.md).
 
 ## Variants
 

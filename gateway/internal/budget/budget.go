@@ -433,20 +433,33 @@ func (t *Tracker) Allow(keyID string, capUSD decimal.Decimal, resetInterval time
 // since this is an observability read that must never itself block a
 // request. ctx is only ever consulted in Redis mode.
 func (t *Tracker) SpentUSD(ctx context.Context, keyID string, resetInterval time.Duration) decimal.Decimal {
+	spent, err := t.SpentUSDErr(ctx, keyID, resetInterval)
+	if err != nil {
+		t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "spent_usd", "error", err.Error())
+		return decimal.Zero
+	}
+	return spent
+}
+
+// SpentUSDErr is SpentUSD without the fail-open: in Redis mode a backend
+// error is returned instead of being logged and read as zero, so a caller
+// that can say "unknown" (the admin spend routes' `spend_unavailable`,
+// RFC-3 decision 5) is not handed a false $0; the in-memory branch never
+// errors. SpentUSD wraps this, so the two can never disagree on the value.
+func (t *Tracker) SpentUSDErr(ctx context.Context, keyID string, resetInterval time.Duration) (decimal.Decimal, error) {
 	if t.backend != nil {
 		nano, err := t.backend.SpentNanoUSD(ctx, keyID)
 		if err != nil {
-			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "spent_usd", "error", err.Error())
-			return decimal.Zero
+			return decimal.Zero, err
 		}
-		return nanoUSDToUSD(nano)
+		return nanoUSDToUSD(nano), nil
 	}
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
 		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.spent[keyID]
+	return t.spent[keyID], nil
 }
 
 // Record adds costUSD to keyID's cumulative spend. Callers record once per

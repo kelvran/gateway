@@ -126,7 +126,7 @@ func TestGetVirtualKeySpendReflectsRealBudgetShape(t *testing.T) {
 	if got.SpentUSD != "0" {
 		t.Errorf("SpentUSD = %q, want %q (a never-billed key)", got.SpentUSD, "0")
 	}
-	if got.PercentUsed != 0 {
-		t.Errorf("PercentUsed = %v, want 0 (a never-billed key)", got.PercentUsed)
+	if got.PercentUsed == nil || *got.PercentUsed != 0 {
+		t.Errorf("PercentUsed = %v, want a present 0 (a never-billed key; nil would mean spend_unavailable)", got.PercentUsed)
 	}
 }

@@ -2247,6 +2247,70 @@ func (p *Pipeline) SpentUSD(ctx context.Context, keyID string, resetInterval tim
 	return p.budget.SpentUSD(ctx, keyID, resetInterval)
 }
 
+// SpentUSDErr is SpentUSD's error-returning twin (budget.Tracker.SpentUSDErr):
+// the admin routes use it to report spend as unavailable rather than as a
+// false zero when the Redis budget backend errors (RFC-3 decision 5).
+func (p *Pipeline) SpentUSDErr(ctx context.Context, keyID string, resetInterval time.Duration) (decimal.Decimal, error) {
+	return p.budget.SpentUSDErr(ctx, keyID, resetInterval)
+}
+
+// DeploymentStatus is one row of ListDeployments: the deployment's static
+// configuration plus the router's live view of it. Read-only and in-memory,
+// mirroring UpdateDeploymentWeight's scope; it never reaches a provider.
+type DeploymentStatus struct {
+	Name          string
+	Model         string
+	UpstreamModel string
+	Provider      string
+	// Kind is "chat" or "embedding" (the config's empty default is
+	// reported as "chat").
+	Kind string
+	// Healthy is router.IsHealthy: false only after the health prober has
+	// excluded the deployment; a never-probed deployment reads healthy.
+	Healthy bool
+	// Weight is the live routing weight (configured, or the last admin
+	// weight update), as the router stores it: a configured 0 is already 1.
+	Weight int
+	// LatencyFactorPercent is the latency de-weighting currently applied:
+	// 0 when no signal has been set (full weight), otherwise the clamped
+	// percentage of Weight the router admits.
+	LatencyFactorPercent int
+	Sticky               bool
+}
+
+// ListDeployments returns every configured deployment, sorted by name, with
+// its live router state — GET /admin/deployments (RFC-3 decision 5). The
+// static fields come from the pipeline's own registry so the admin package
+// never imports the router.
+func (p *Pipeline) ListDeployments() []DeploymentStatus {
+	names := make([]string, 0, len(p.deploymentsByName))
+	for name := range p.deploymentsByName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]DeploymentStatus, 0, len(names))
+	for _, name := range names {
+		dep := p.deploymentsByName[name]
+		kind := dep.Kind
+		if kind == "" {
+			kind = "chat"
+		}
+		weight, _ := p.router.Weight(name)
+		out = append(out, DeploymentStatus{
+			Name:                 dep.Name,
+			Model:                dep.Model,
+			UpstreamModel:        dep.UpstreamModel,
+			Provider:             dep.Provider,
+			Kind:                 kind,
+			Healthy:              p.router.IsHealthy(name),
+			Weight:               weight,
+			LatencyFactorPercent: p.router.LatencyFactorPercent(name),
+			Sticky:               p.router.IsSticky(name),
+		})
+	}
+	return out
+}
+
 // UpsertPrompt creates a NEW version of id from messages, live -- see
 // prompt.Store.Upsert's own doc comment for the exact version-bump rule.
 // Delegates straight through to p.prompts, mirroring

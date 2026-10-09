@@ -325,7 +325,8 @@ Every other structured event name in non-test gateway code, grouped by subsystem
 
 | Subsystem | Event names |
 |---|---|
-| Admin API audit | `admin_backup_completed`, `admin_cache_entry_erased`, `admin_config_read`, `admin_deployment_weight_updated`, `admin_prompt_deleted`, `admin_prompt_label_deleted`, `admin_prompt_label_set`, `admin_prompt_upserted`, `admin_prompts_read`, `admin_virtual_key_deleted`, `admin_virtual_key_inflight_read`, `admin_virtual_key_rotated`, `admin_virtual_key_spend_read`, `admin_virtual_key_upserted`, `admin_virtual_keys_read`; `admin_audit_durable_append_failed` |
+| Admin API audit | `admin_backup_completed`, `admin_cache_entry_erased`, `admin_config_read`, `admin_deployment_weight_updated`, `admin_deployments_read`, `admin_prompt_deleted`, `admin_prompt_label_deleted`, `admin_prompt_label_set`, `admin_prompt_upserted`, `admin_prompts_read`, `admin_virtual_key_deleted`, `admin_virtual_key_inflight_read`, `admin_virtual_key_rotated`, `admin_virtual_key_spend_read`, `admin_virtual_key_upserted`, `admin_virtual_keys_read`; `admin_audit_durable_append_failed` |
+| Admin API operational (not audit entries) | `admin_audit_durable_append_failed`, `admin_spend_read_failed` |
 | Alerting webhooks | `alerting_webhook_delivery_failed`, `alerting_webhook_id_generation_failed`, `alerting_webhook_marshal_failed`, `alerting_webhook_signing_secret_not_base64`, `alerting_webhook_signing_secret_not_whsec_prefixed`, `alerting_webhook_url_env_unset` |
 | Anomaly detection | `anomaly_detected_fallback_rate_shift`, `anomaly_detected_finish_reason_shift` |
 | Budget | `budget_backend_unavailable`, `budget_persist_failed`, `budget_redis_addr_and_persist_path_both_set`, `budget_redis_backend_unavailable`, `budget_threshold_crossed`, `budget_warn_threshold_crossed` |

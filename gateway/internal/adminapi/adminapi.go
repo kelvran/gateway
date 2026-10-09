@@ -179,10 +179,16 @@ type EraseCacheEntryResponse struct {
 // PercentUsed is 0 whenever BudgetUSD is zero/unlimited (nothing to
 // divide by) — never a fabricated 100% or a divide-by-zero.
 type VirtualKeySpendResponse struct {
-	SpentUSD                   string  `json:"spent_usd"`
-	BudgetUSD                  string  `json:"budget_usd"`
-	BudgetResetIntervalSeconds int     `json:"budget_reset_interval_seconds"`
-	PercentUsed                float64 `json:"percent_used"`
+	// SpentUSD and PercentUsed are omitted — and SpendUnavailable is true —
+	// when the Redis budget backend could not be read, so a backend outage
+	// is never reported as $0 (RFC-3 decision 5). A genuine "0" spend is a
+	// non-empty string and stays on the wire; PercentUsed is a pointer so a
+	// genuine 0 stays too.
+	SpentUSD                   string   `json:"spent_usd,omitempty"`
+	BudgetUSD                  string   `json:"budget_usd"`
+	BudgetResetIntervalSeconds int      `json:"budget_reset_interval_seconds"`
+	PercentUsed                *float64 `json:"percent_used,omitempty"`
+	SpendUnavailable           bool     `json:"spend_unavailable,omitempty"`
 }
 
 // VirtualKeyListEntry is one entry in GET /admin/virtual_keys's list
@@ -209,6 +215,39 @@ type VirtualKeyListEntry struct {
 	// ExpiresAt is the key's expiry as RFC 3339 (UTC); omitted when the key
 	// never expires. An expired key stays listed with a past value.
 	ExpiresAt string `json:"expires_at,omitempty"`
+	// PreviousKeyHashExpiresAt is the end of the last rotation's grace
+	// period (RFC 3339, UTC), present while a previous hash is recorded —
+	// i.e. from a rotation until the next upsert, with a past value once
+	// the grace has ended; the hash itself is never listed. MaxConcurrentRequests is the key's
+	// configured concurrency cap (config.yaml only; omitted when none).
+	// Both exist so a client replacing a key can see what a full-replace
+	// upsert would drop (RFC-3 decision 4).
+	PreviousKeyHashExpiresAt string `json:"previous_key_hash_expires_at,omitempty"`
+	MaxConcurrentRequests    int    `json:"max_concurrent_requests,omitempty"`
+	// SpentUSD, PercentUsed and SpendUnavailable are present only on
+	// GET /admin/virtual_keys?include=spend: the same figures the per-key
+	// spend route serves, or spend_unavailable when the budget backend
+	// could not be read for this key (RFC-3 decision 5).
+	SpentUSD         string   `json:"spent_usd,omitempty"`
+	PercentUsed      *float64 `json:"percent_used,omitempty"`
+	SpendUnavailable bool     `json:"spend_unavailable,omitempty"`
+}
+
+// DeploymentEntry is one element of GET /admin/deployments: the static
+// configuration plus the router's live health, weight, latency factor and
+// sticky flag (dataplane.DeploymentStatus on the wire; RFC-3 decision 5).
+type DeploymentEntry struct {
+	Name          string `json:"name"`
+	Model         string `json:"model"`
+	UpstreamModel string `json:"upstream_model"`
+	Provider      string `json:"provider"`
+	Kind          string `json:"kind"`
+	Healthy       bool   `json:"healthy"`
+	Weight        int    `json:"weight"`
+	// LatencyFactorPercent is 0 when no latency signal is applied (full
+	// weight), otherwise the percentage of weight currently admitted.
+	LatencyFactorPercent int  `json:"latency_factor_percent"`
+	Sticky               bool `json:"sticky"`
 }
 
 // VirtualKeyInFlightResponse is GET /admin/virtual_keys/{name}/inflight's
