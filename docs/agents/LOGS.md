@@ -4030,3 +4030,13 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** none in `DECISIONS.md`; a CI-reliability change under the standing push authorisation.
 
 **Next steps / resume point:** watch CI for this push; then slice (d) part 2 (`cmd/kelvran`, `init`, packaging, docs).
+
+## [2026-10-10] main — ci(gateway): pre-pull the two test container images once per run
+
+**Files touched:** `.github/workflows/ci.yml` (a retried pre-pull step ahead of the gateway `build + test` step; the `env:` comment now names `nginx:alpine` too).
+
+**Intent/summary:** The ECR Public prefix from `791880e2` worked — run 37994788338 (head `6934ffeb`) shows testcontainers-go rewriting every `redis:7-alpine` pull to the mirror and the containers starting — but cmd/gateway's chaos-partition test then failed starting its `nginx:alpine` mock upstream with ECR Public's own `toomanyrequests: Rate exceeded`: eight test packages start their containers concurrently and race to pull. The new step pulls `public.ecr.aws/docker/library/redis:7-alpine` and `…/nginx:alpine` once each (the post-substitution names, so the daemon's cache matches what testcontainers-go asks for), retrying up to six times with a growing pause, so every later container start is a local image lookup. No test code changes. This is the third CI-only commit chasing registry rate limits; if the pre-pull itself is throttled, the next step is an authenticated pull with an owner-provided secret, not a fourth anonymous workaround.
+
+**Decisions made:** none in `DECISIONS.md`.
+
+**Next steps / resume point:** watch CI for this push (the first run that can show the exporterkind commit green); slice (d) part 2 continues in the working tree (`cmd/kelvran`, `internal/cli` init, packaging, docs — uncommitted at this point).

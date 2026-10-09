@@ -110,13 +110,34 @@ jobs:
       - name: govulncheck (dependency CVE scanning)
         working-directory: gateway
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - name: Pre-pull the test container images, once each, with retries
+        # The Redis-backed packages and cmd/gateway's chaos test start their
+        # containers concurrently; without this, several packages race to
+        # pull the same image and run 37994788338 (2026-10-10) hit ECR
+        # Public's own `toomanyrequests: Rate exceeded` on the nginx pull
+        # after the redis pulls had succeeded. One pull per image per run,
+        # retried with a growing pause, keeps every later start a local
+        # image lookup. The names must be the post-substitution ones (the
+        # TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX below), or the daemon's cache
+        # would not match what testcontainers-go asks for.
+        run: |
+          set -u
+          for img in public.ecr.aws/docker/library/redis:7-alpine public.ecr.aws/docker/library/nginx:alpine; do
+            for attempt in 1 2 3 4 5 6; do
+              if docker pull --quiet "$img"; then break; fi
+              if [ "$attempt" = 6 ]; then echo "::error::could not pull $img after 6 attempts"; exit 1; fi
+              sleep $((attempt * 15))
+            done
+          done
+          docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E 'redis|nginx'
       - name: build + test
         working-directory: gateway
         env:
           # The Redis-backed suites (budget/redisbudget, identity/redisstore,
           # ratelimit/redislimiter, configpropagation, dataplane, cmd/gateway)
-          # each start a `redis:7-alpine` testcontainer, and testcontainers-go's
-          # Ryuk reaper is a second Docker Hub image. Docker Hub's anonymous
+          # each start a `redis:7-alpine` testcontainer, cmd/gateway's chaos test
+          # starts `nginx:alpine`, and testcontainers-go's Ryuk reaper is a third
+          # Docker Hub image. Docker Hub's anonymous
           # pull limit is per source IP and shared by every GitHub-hosted
           # runner behind that IP: run 37992388342 (2026-10-10) failed with
           # `toomanyrequests` on exactly those pulls, with no code change
