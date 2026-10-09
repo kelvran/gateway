@@ -112,6 +112,26 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: build + test
         working-directory: gateway
+        env:
+          # The Redis-backed suites (budget/redisbudget, identity/redisstore,
+          # ratelimit/redislimiter, configpropagation, dataplane, cmd/gateway)
+          # each start a `redis:7-alpine` testcontainer, and testcontainers-go's
+          # Ryuk reaper is a second Docker Hub image. Docker Hub's anonymous
+          # pull limit is per source IP and shared by every GitHub-hosted
+          # runner behind that IP: run 37992388342 (2026-10-10) failed with
+          # `toomanyrequests` on exactly those pulls, with no code change
+          # involved. The prefix makes testcontainers-go pull the official
+          # image from AWS's ECR Public mirror instead (its prependHubRegistry
+          # substitutor does path.Join(prefix, image), so `redis:7-alpine`
+          # becomes public.ecr.aws/docker/library/redis:7-alpine; proven
+          # locally against colima before this landed). Ryuk is disabled
+          # because the same prefix would rewrite its Hub-only image to a
+          # path the mirror does not serve, and a runner VM discarded after
+          # the job needs no container reaper. The test code still names
+          # `redis:7-alpine`; local runs are untouched (AGENTS.md's colima
+          # gotcha already documents the Ryuk trade-off).
+          TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: public.ecr.aws/docker/library
+          TESTCONTAINERS_RYUK_DISABLED: "true"
         # -coverprofile/-covermode=atomic/-coverpkg=./... generate a real
         # coverage profile from this same run -- no second test pass, no
         # third-party upload. -covermode=atomic (not the default `set`)
