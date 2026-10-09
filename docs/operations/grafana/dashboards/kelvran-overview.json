@@ -1,5 +1,5 @@
 {
-  "_comment": "Real, provisioned Kelvran pilot dashboard -- wired via docs/operations/grafana/provisioning/dashboards.yaml, not an example-only file (unlike docs/operations/grafana-cache-dashboard.json). Three panels, each backed by a real, already-shipped gateway/internal/telemetry/telemetry.go metric (kelvran.cache.lookup, kelvran.llm.spend_usd, gen_ai.client.operation.duration's error.type=\"guardrail_blocked\" dimension -- see dataplane.go's outcomeFor/errorTypeFor for that last one, OUTCOME_GUARDRAIL_BLOCKED lowercased). PromQL uses the OTel-to-Prometheus-native-OTLP-ingestion name translation confirmed live against this pilot's own grafana/otel-lgtm backend (dot -> underscore, '_total' suffix on a monotonic Sum, '_seconds_bucket'/'_sum'/'_count' suffixes on a Histogram) -- verify against your own collector before reusing elsewhere, per grafana-cache-dashboard.json's own identical caveat.",
+  "_comment": "Real, provisioned Kelvran pilot dashboard -- wired via docs/operations/grafana/provisioning/dashboards.yaml, not an example-only file (unlike docs/operations/grafana-cache-dashboard.json). Five panels, each backed by a real, already-shipped gateway/internal/telemetry/telemetry.go metric (kelvran.cache.lookup, kelvran.llm.spend_usd, gen_ai.client.operation.duration's error.type=\"guardrail_blocked\" dimension (see dataplane.go's outcomeFor/errorTypeFor for that one, OUTCOME_GUARDRAIL_BLOCKED lowercased), kelvran.fallback.rescued and gen_ai.client.operation.duration's kelvran.fallback.outcome dimension (finalize's fallbackOutcome switch) -- the last two added 2026-10-09 per docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md). PromQL uses the OTel-to-Prometheus-native-OTLP-ingestion name translation confirmed live against this pilot's own grafana/otel-lgtm backend (dot -> underscore, '_total' suffix on a monotonic Sum, '_seconds_bucket'/'_sum'/'_count' suffixes on a Histogram) -- verify against your own collector before reusing elsewhere, per grafana-cache-dashboard.json's own identical caveat.",
   "title": "Kelvran Gateway Overview",
   "uid": "kelvran-gateway-overview",
   "schemaVersion": 39,
@@ -63,6 +63,44 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum(rate(gen_ai_client_operation_duration_seconds_count{error_type=\"guardrail_blocked\"}[5m])) / sum(rate(gen_ai_client_operation_duration_seconds_count[5m]))",
           "legendFormat": "blocked / total"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Fallback rescues per hour, by error class",
+      "description": "kelvran.fallback.rescued -- requests whose first deployment failed and whose fallback produced the billed response, recorded once per request in dataplane.go's finalize under the same gate it uses for pricing (err == nil || billable). kelvran_fallback_hop_error_class here is the class of the FIRST deployment's failure (content_policy, context_window_exceeded, generic), not of a chain hop. See docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (kelvran_fallback_hop_error_class) (rate(kelvran_fallback_rescued_total[5m])) * 3600",
+          "legendFormat": "{{kelvran_fallback_hop_error_class}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Fallback rescue ratio (rescued / (rescued + exhausted))",
+      "description": "gen_ai.client.operation.duration's kelvran.fallback.outcome dimension (none / rescued / exhausted; every chat data point carries it). rescued = a fallback happened and the request was billed; exhausted = a fallback happened and nothing was billed. Requests that never fell back (none) are excluded from both sides, so this is the share of fallback walks that saved the request. See docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(gen_ai_client_operation_duration_seconds_count{kelvran_fallback_outcome=\"rescued\"}[5m])) / sum(rate(gen_ai_client_operation_duration_seconds_count{kelvran_fallback_outcome=~\"rescued|exhausted\"}[5m]))",
+          "legendFormat": "rescued / (rescued + exhausted)"
         }
       ]
     }

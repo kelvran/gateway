@@ -2554,16 +2554,22 @@ func (p *Pipeline) callDeploymentWithCapacityCheck(ctx context.Context, dep Depl
 // docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md. A single
 // request may now walk a multi-hop fallback chain (per
 // docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md), but
-// this stays a fixed 3-field record on purpose: from/reason always
+// the three wire-backed fields stay what they were: from/reason always
 // capture the FIRST (originally abandoned) deployment/error, never an
 // intermediate hop — api/gatewayevents/v1's wire schema is unchanged by
 // that RFC, deliberately; which hop ultimately served the request is
 // already visible via the existing per-request OTel DeploymentName/
-// Provider attributes at the point of success.
+// Provider attributes at the point of success. class and hops (added per
+// docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md)
+// feed telemetry only — kelvran.fallback.rescued's error-class attribute
+// and the kelvran.fallback.hops span attribute — and never the decision
+// event.
 type fallbackInfo struct {
 	happened bool
 	from     string // Deployment.Name first tried and abandoned.
 	reason   string // err.Error() from the first attempt.
+	class    string // classifyFallbackError of the FIRST failure (not a hop's).
+	hops     int    // Fallback hops admitted to the deployment call (a hop the deployment's TPM/capacity gate rejected before any upstream request still counts, like the fallback_hop span event); 1 on the legacy single-fallback path.
 }
 
 // cacheProvenance records which cache layer (if any) served this request,
@@ -3726,7 +3732,6 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		}
 
 		resp, err := p.callDeploymentWithCapacityCheck(ctx, dep, req)
-		var fallback fallbackInfo
 		if err != nil {
 			// Error-classified, multi-hop fallback, per
 			// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md
@@ -3736,8 +3741,17 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 			originalDep, originalErr := dep, err
 			if targets, configured := fallbackTargets(dep, err); configured {
 				tried := map[string]bool{dep.Name: true}
+				// hops counts the hops admitted to the deployment call: the chain
+				// invokes this closure exactly once per admitted hop (a hop the
+				// deployment TPM gate then rejects before any upstream request still
+				// counts, matching the fallback_hop span event), so the
+				// count lives here rather than in attemptFallbackChain's
+				// signature (its internal realAttempts increments before the
+				// inter-hop backoff and over-counts a context-cancelled hop).
+				hops := 0
 				hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 					func(d Deployment) (adapter.ChatResponse, error) {
+						hops++
 						defer p.releaseDeploymentConcurrency(d.Name)
 						return p.callDeploymentWithTPM(ctx, d, req)
 					},
@@ -3750,7 +3764,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 					func(d Deployment) bool { return isModelAllowed(vk, d.Model) },
 				)
 				if attempted {
-					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
+					fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error(), class: classifyFallbackError(originalErr), hops: hops}
 					dep, resp, err = hopDep, hopResp, hopErr
 				}
 			} else if fallbackDep, hasFallback := p.nextEligibleDeployment(req.Model, dep.Name, func(d Deployment) bool {
@@ -3778,7 +3792,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 				// rerouteToCapableDeploymentIfNeeded's first-pick
 				// contract, this never falls through to an ineligible
 				// deployment; the original error propagates instead.
-				fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
+				fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error(), class: classifyFallbackError(err), hops: 1}
 				dep = fallbackDep
 				resp, err = p.callDeploymentWithCapacityCheck(ctx, dep, req)
 			}
@@ -3830,7 +3844,16 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// already-billable response/deployment for that one path — zero
 		// values (harmless, since finalize's cost math on zero Usage is
 		// zero) on every other doErr path.
-		return blockedResp, blockedDep, fallbackInfo{}, billable, doErr
+		// fallback is this function's named return, assigned inside the
+		// closure (like billable), so a chain that exhausted every hop or a
+		// rescue the post-call guardrail then blocked reaches finalize with
+		// its fallback record intact; a zero value here read as "no fallback"
+		// (kelvran.fallback.outcome=none) for both. Singleflight followers
+		// never ran the closure and keep the zero value, exactly as they keep
+		// billable=false; on the SUCCESS path they receive the leader's record
+		// through cacheMissOutcome (as their decision event always has), so a
+		// rescued leader's followers count as rescued requests too.
+		return blockedResp, blockedDep, fallback, billable, doErr
 	}
 	outcome := result.(cacheMissOutcome)
 	return outcome.resp, outcome.dep, outcome.fallback, billable, nil
@@ -4566,6 +4589,24 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// are the same classification of err, not two separately-maintained
 	// taxonomies.
 	outcome := outcomeFor(err)
+	// kelvran.fallback.outcome / kelvran.fallback.rescued, per
+	// docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md:
+	// a rescue is a fallback whose response this function bills — the same
+	// `err == nil || billable` gate the cost block above uses — so a streamed
+	// rescue that died after its first byte and a rescue the post-call
+	// guardrail blocked both count as the billed rescues they are; a fallback
+	// that happened and billed nothing is exhausted. A singleflight follower
+	// of a rescued leader (err == nil, billable=false, the leader's record via
+	// cacheMissOutcome) counts as rescued: its request was saved by that
+	// fallback and its decision event already says so.
+	fallbackOutcome := telemetry.FallbackOutcomeNone
+	switch {
+	case fallback.happened && (err == nil || billable):
+		fallbackOutcome = telemetry.FallbackOutcomeRescued
+		telemetry.RecordFallbackRescued(ctx, virtualKeyID, fallback.from, dep.Name, fallback.class)
+	case fallback.happened:
+		fallbackOutcome = telemetry.FallbackOutcomeExhausted
+	}
 	var errorType string
 	if err != nil {
 		errorType = errorTypeFor(outcome)
@@ -4676,6 +4717,8 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		Billable:                           billable,
 		Duration:                           duration,
 		ErrorType:                          errorType,
+		FallbackOutcome:                    fallbackOutcome,
+		FallbackHops:                       fallback.hops,
 		Err:                                err,
 		PromptID:                           req.PromptID,
 		PromptVersion:                      req.PromptVersion,

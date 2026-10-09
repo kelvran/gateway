@@ -561,8 +561,12 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 	originalDep, originalErr := dep, err
 	if targets, configured := fallbackTargets(dep, err); configured {
 		tried := map[string]bool{dep.Name: true}
+		// hops: see runMissPath's chain site — one closure call per hop
+		// admitted to the deployment call, counted here rather than in the chain.
+		hops := 0
 		hopDep, hopResp, hopErr, attempted := p.attemptFallbackChain(ctx, targets, tried,
 			func(d Deployment) (adapter.ChatResponse, error) {
+				hops++
 				defer p.releaseDeploymentConcurrency(d.Name)
 				var hopResp adapter.ChatResponse
 				var hopErr error
@@ -578,7 +582,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 			func(d Deployment) bool { return isModelAllowed(msr.vk, d.Model) },
 		)
 		if attempted {
-			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error()}
+			fallback = fallbackInfo{happened: true, from: originalDep.Name, reason: originalErr.Error(), class: classifyFallbackError(originalErr), hops: hops}
 			dep, resp, err = hopDep, hopResp, hopErr
 		}
 	} else if fallbackDep, hasFallback := p.nextEligibleDeployment(req.Model, dep.Name, func(d Deployment) bool {
@@ -591,7 +595,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 		// plain nextDeployment with no eligibility filter, letting a
 		// data-residency-restricted key silently land on an out-of-region
 		// deployment on an ordinary transient upstream error.
-		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error()}
+		fallback = fallbackInfo{happened: true, from: dep.Name, reason: err.Error(), class: classifyFallbackError(err), hops: 1}
 		dep = fallbackDep
 		resp, estimated, err = p.streamDeploymentWithCapacityCheck(ctx, dep, req, sw, &firstChunkSent, keyID, msr, &blocked)
 	}

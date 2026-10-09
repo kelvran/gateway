@@ -188,8 +188,29 @@ const (
 	// deployment name (AttrKelvranDeploymentName, reused — same meaning,
 	// different scope: this event's deployment, not the request's final
 	// one), never a second span or a fabricated success record.
+	// Also carried by the kelvran.fallback.rescued counter, where it means
+	// the class of the FIRST deployment's failure (never a hop) — see
+	// AttrKelvranFallbackFrom below.
 	AttrKelvranFallbackHopErrorClass = "kelvran.fallback.hop.error_class"
 	AttrKelvranFallbackHopDurationMs = "kelvran.fallback.hop.duration_ms"
+	// AttrKelvranFallbackFrom is the deployment a request was first routed
+	// to and abandoned (fallbackInfo.from) — on the kelvran.fallback.rescued
+	// counter only, paired there with AttrKelvranDeploymentName (the
+	// deployment that served) and AttrKelvranFallbackHopErrorClass, which on
+	// that counter means the class of the FIRST deployment's failure (never a
+	// hop), a second documented meaning for one key — per
+	// docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md.
+	AttrKelvranFallbackFrom = "kelvran.fallback.from"
+	// AttrKelvranFallbackOutcome is one of the FallbackOutcome* values below,
+	// carried by gen_ai.client.operation.duration ONLY (never the token
+	// instruments — a rescued request's tokens are not a different modality).
+	AttrKelvranFallbackOutcome = "kelvran.fallback.outcome"
+	// AttrKelvranFallbackHops is the number of fallback hops admitted to the
+	// deployment call for this request (a hop the deployment's TPM or
+	// capacity gate rejected before any upstream request still counts, as it
+	// does for the fallback_hop span event); a span attribute, never a metric
+	// dimension, and absent when no fallback happened.
+	AttrKelvranFallbackHops = "kelvran.fallback.hops"
 	// AttrKelvranCacheLookupOutcome is "hit" or "miss", per
 	// telemetry.RecordCacheLookup — the aggregate, queryable counterpart
 	// to AttrKelvranCacheHit (a per-request span attribute only), per
@@ -274,6 +295,19 @@ func genAIProviderName(provider string) string {
 // on an auth failure) leaves it at its zero value, and
 // RecordChatCompletionResult skips setting the corresponding attribute
 // rather than writing an empty/zero placeholder.
+// FallbackOutcome* are the closed set of AttrKelvranFallbackOutcome values:
+// none (no fallback happened), rescued (the first deployment failed and the
+// fallback produced the response finalize bills — the same gate finalize
+// uses for pricing, so a streamed rescue that fails after its first byte or
+// a rescue the post-call guardrail blocks counts as the billed rescue it
+// is), exhausted (a fallback happened, the request failed and nothing was
+// billed).
+const (
+	FallbackOutcomeNone      = "none"
+	FallbackOutcomeRescued   = "rescued"
+	FallbackOutcomeExhausted = "exhausted"
+)
+
 type ChatCompletionResult struct {
 	VirtualKeyID   string
 	Provider       string
@@ -448,6 +482,14 @@ type ChatCompletionResult struct {
 	// here — this package stays a dependency-free leaf with no knowledge
 	// of dataplane's sentinel errors or GatewayDecisionEvent_Outcome enum.
 	ErrorType string
+
+	// FallbackOutcome is one of the FallbackOutcome* constants; empty is
+	// treated as FallbackOutcomeNone by RecordChatCompletionMetrics so every
+	// gen_ai.client.operation.duration data point carries the attribute.
+	FallbackOutcome string
+	// FallbackHops is fallbackInfo.hops: the fallback hops admitted to the
+	// deployment call. 0 when no fallback happened; set on the span only.
+	FallbackHops int
 }
 
 // RecordChatCompletionResult sets every attribute only knowable once a
@@ -490,6 +532,9 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	}
 	if r.ReasoningTokens > 0 {
 		attrs = append(attrs, attribute.Int(AttrGenAIUsageReasoningOutputTokens, r.ReasoningTokens))
+	}
+	if r.FallbackHops > 0 {
+		attrs = append(attrs, attribute.Int(AttrKelvranFallbackHops, r.FallbackHops))
 	}
 	if r.AgentRunID != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranAgentRunID, r.AgentRunID))

@@ -197,6 +197,37 @@ func RecordRateLimitFailOpen(ctx context.Context, keyID string) {
 	rateLimitFailOpenCounter.Add(ctx, 1, metric.WithAttributes(attribute.String(AttrKelvranVirtualKeyID, keyID)))
 }
 
+// fallbackRescuedCounter counts requests whose first deployment failed and
+// whose fallback produced the response finalize bills — the aggregate
+// counterpart to the per-hop fallback_hop span event RecordFallbackHop
+// emits (which records only FAILED hops; the rescue itself was invisible in
+// aggregate). Recorded once per request from dataplane's finalize under the
+// same gate finalize uses for pricing, per
+// docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md.
+// Attributes are all bounded: the virtual key id, the deployment first
+// tried (AttrKelvranFallbackFrom), the deployment that served
+// (AttrKelvranDeploymentName) and the class of the first failure
+// (AttrKelvranFallbackHopErrorClass — see that constant's doc comment for
+// its two meanings).
+var fallbackRescuedCounter = mustInt64Counter(
+	meter,
+	"kelvran.fallback.rescued",
+	metric.WithDescription("Requests whose first deployment failed and whose fallback produced the billed response."),
+	metric.WithUnit("{request}"),
+)
+
+// RecordFallbackRescued increments fallbackRescuedCounter. from is the
+// deployment first tried and abandoned, to the deployment that served, and
+// errorClass the classifyFallbackError class of the first failure.
+func RecordFallbackRescued(ctx context.Context, keyID, from, to, errorClass string) {
+	fallbackRescuedCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(AttrKelvranVirtualKeyID, keyID),
+		attribute.String(AttrKelvranFallbackFrom, from),
+		attribute.String(AttrKelvranDeploymentName, to),
+		attribute.String(AttrKelvranFallbackHopErrorClass, errorClass),
+	))
+}
+
 // streamCostEstimatedCounter is per
 // docs/upgrade-research/request-lifecycle-reliability-2026-09-15.md — an
 // aggregate, alertable signal for how often a streamed response's cost
@@ -460,7 +491,19 @@ func RecordChatCompletionMetrics(ctx context.Context, r ChatCompletionResult) {
 		attrs = append(attrs, attribute.String(AttrErrorType, r.ErrorType))
 	}
 
-	operationDurationHistogram.Record(ctx, r.Duration.Seconds(), metric.WithAttributes(attrs...))
+	// kelvran.fallback.outcome rides on the duration histogram ONLY. It gets
+	// its own copy of attrs because attrs is also copied into modalityAttrs
+	// (the five token counters below) and passed bare to the two
+	// *OperationHistogram records — appending to attrs here would put the
+	// outcome on eight instruments. Empty FallbackOutcome means none, so every
+	// duration data point carries the attribute and a ratio over the
+	// histogram's count is well-defined.
+	fallbackOutcome := r.FallbackOutcome
+	if fallbackOutcome == "" {
+		fallbackOutcome = FallbackOutcomeNone
+	}
+	durationAttrs := append(append([]attribute.KeyValue{}, attrs...), attribute.String(AttrKelvranFallbackOutcome, fallbackOutcome))
+	operationDurationHistogram.Record(ctx, r.Duration.Seconds(), metric.WithAttributes(durationAttrs...))
 
 	if !r.Billable {
 		return

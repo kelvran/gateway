@@ -59,7 +59,7 @@ On exit the gateway flushes both providers. A failed final metrics flush logs `t
 
 ## Metrics
 
-All instruments are registered once at package init. Every attribute below is a closed set, except `kelvran.virtual_key.id` (one series per virtual key, bounded by the operator's own key count), `kelvran.instance.id` (one series per running process), and `gen_ai.request.model` / `gen_ai.response.model` (one series per configured model name and per provider-reported model name; `gen_ai.request.model` is sentinelled to `unresolved` when no deployment was resolved).
+All instruments are registered once at package init. Every attribute below is a closed set, except `kelvran.virtual_key.id` (one series per virtual key, bounded by the operator's own key count), `kelvran.instance.id` (one series per running process), and `gen_ai.request.model` / `gen_ai.response.model` (one series per configured model name and per provider-reported model name; `gen_ai.request.model` is sentinelled to `unresolved` when no deployment was resolved) — and, on `kelvran.fallback.rescued` only, `kelvran.fallback.from` / `kelvran.deployment.name` (one series per configured deployment name).
 
 ### Kelvran instruments
 
@@ -68,6 +68,7 @@ All instruments are registered once at package init. Every attribute below is a 
 | `kelvran.ratelimit.fail_open` | Int64 counter, `{request}` | `kelvran.virtual_key.id` | A request is allowed through after the rate-limiter backend errored: the per-key check (`ratelimit_backend_unavailable`, `ratelimit_tpm_backend_unavailable`), the embeddings check (`embeddings_ratelimit_backend_unavailable`), and, on main since 2026-10-08 and not in gateway/v0.17.0, once per stream for the mid-stream TPM top-up (`ratelimit_tpm_backend_unavailable` with `op=mid_stream_topup`). The fallback-hop admission check (`ratelimit_backend_unavailable_fallback_hop`) logs without counting. |
 | `kelvran.budget.fail_open` | Int64 counter, `{request}` | `kelvran.virtual_key.id` | A request is allowed through after the Redis-mode budget tracker errored. Paired with the `budget_backend_unavailable` log line. On main since 2026-10-08, not in gateway/v0.17.0, the mid-stream budget top-up also counts once per stream (`budget_backend_unavailable` with `op=mid_stream_topup`). |
 | `kelvran.guardrail.fail_open` | Int64 counter, `{request}` | `kelvran.virtual_key.id`, `kelvran.guardrail.stage` | A guardrail detector errored and the request kept flowing with that detector's coverage missing. At most once per request per stage. Paired with `guardrail_fail_open`. |
+| `kelvran.fallback.rescued` | Int64 counter, `{request}` | `kelvran.virtual_key.id`, `kelvran.fallback.from`, `kelvran.deployment.name`, `kelvran.fallback.hop.error_class` | A fallback happened and the request produced a billed response (`err == nil || billable` in `finalize`): the first deployment failed and a fallback produced the response — including a streamed rescue that failed after its first byte, a rescue the post-call guardrail then blocked, and a coalesced singleflight follower of a rescued leader (it shares the leader's fallback record, as its decision event always has). `kelvran.fallback.from` is the deployment first tried, `kelvran.deployment.name` the one that served, and the class is the first failure's (see the attribute table). On `main` since 2026-10-09, not in gateway/v0.17.0. |
 | `kelvran.streaming.cost_estimated` | Int64 counter, `{response}` | `kelvran.virtual_key.id` | A streamed response was billed from an estimated token count because the provider sent no terminal usage frame. |
 | `kelvran.streaming.near_duplicate_collision` | Int64 counter, `{collision}` | `kelvran.virtual_key.id` | A streaming request found another streaming request for the identical exact-match cache key already in flight. Observation only; nothing is coalesced or blocked. Paired with `streaming_near_duplicate_collision`. |
 | `kelvran.cache.l3.gate_outcome` | Int64 counter, `{check}` | `kelvran.cache.l3.gate`, `kelvran.cache.l3.outcome`, `kelvran.instance.id` | Each decision of the four named gates in the L3-lite (lexical) cache check: `volatile_bypass` once per check, the other three once per candidate. The L3 equality gates on guardrail policy version, response format, prompt, reasoning-blocks, thinking-binding-mode and tools fingerprints are not counted. |
@@ -85,7 +86,7 @@ These are recorded once per chat completion (buffered and streaming) at the end 
 
 | Name | Instrument, unit | Attributes | Recorded when |
 |---|---|---|---|
-| `gen_ai.client.operation.duration` | Float64 histogram, `s` | `gen_ai.operation.name` = `chat`, `gen_ai.request.model`, `gen_ai.provider.name` (when a deployment was resolved), `gen_ai.response.model` (when a response was produced), `error.type` (failures only) | Every finished chat request that reached the pipeline, success or rejection, measured from the pipeline's `HandleChatCompletion`/`HandleChatCompletionStream` entry (after the HTTP handler has read, decoded and validated the body; a 400 for a malformed body is not recorded) to the end of the request. |
+| `gen_ai.client.operation.duration` | Float64 histogram, `s` | `gen_ai.operation.name` = `chat`, `gen_ai.request.model`, `gen_ai.provider.name` (when a deployment was resolved), `gen_ai.response.model` (when a response was produced), `error.type` (failures only), `kelvran.fallback.outcome` (`none` / `rescued` / `exhausted`, on every data point; on `main` since 2026-10-09) | Every finished chat request that reached the pipeline, success or rejection, measured from the pipeline's `HandleChatCompletion`/`HandleChatCompletionStream` entry (after the HTTP handler has read, decoded and validated the body; a 400 for a malformed body is not recorded) to the end of the request. |
 | `gen_ai.client.inference.usage.input_tokens` | Int64 counter, `{token}` | the duration attributes plus `gen_ai.token.modality` | Billable request with input tokens > 0. |
 | `gen_ai.client.inference.usage.output_tokens` | Int64 counter, `{token}` | same | Billable request with output tokens > 0. |
 | `gen_ai.client.inference.usage.cache_read.input_tokens` | Int64 counter, `{token}` | same | Billable request with provider cache-read tokens > 0. |
@@ -115,7 +116,10 @@ Explicit bucket boundaries for the two token histograms: 1, 4, 16, 64, 256, 1024
 | `kelvran.budget.percent_bucket` | `0.5`, `0.75`, `0.9`, `1.0` | float64 |
 | `kelvran.persistence.store_kind` | `budget`, `identity` | |
 | `kelvran.configpropagation.event_type` | `virtual_key_upsert`, `virtual_key_delete`, `deployment_weight` | On main since 2026-10-08, not in gateway/v0.17.0 (only on `kelvran.configpropagation.publish_failed`). |
-| `kelvran.fallback.hop.error_class` | `content_policy`, `context_window_exceeded`, `generic` | Span event attribute only. |
+| `kelvran.fallback.hop.error_class` | `content_policy`, `context_window_exceeded`, `generic` | On the `fallback_hop` span event: the class of a FAILED hop. On `kelvran.fallback.rescued` (main since 2026-10-09): the class of the FIRST deployment's failure, which is never a hop. One key, two documented meanings. |
+| `kelvran.fallback.outcome` | `none`, `rescued`, `exhausted` | On `gen_ai.client.operation.duration` only, every chat data point. `rescued` = a fallback happened and the request is billed; `exhausted` = a fallback happened and nothing was billed. On `main` since 2026-10-09. |
+| `kelvran.fallback.from` | a deployment name | On `kelvran.fallback.rescued` only: the deployment first tried and abandoned. |
+| `kelvran.deployment.name` | a deployment name | On `kelvran.fallback.rescued` (the deployment that served) — its only use on a metric; also a request-span attribute and, on the `fallback_hop` span event, the hop's target. |
 | `kelvran.instance.id` | `<hostname>:<pid>` | Same value as the `service.instance.id` resource attribute. |
 | `kelvran.virtual_key.id` | a virtual key id | |
 
@@ -166,6 +170,7 @@ Attributes are set at the end of the request. A value that is not known is omitt
 | `kelvran.prompt.version` | int | Set together with `kelvran.prompt.id`. |
 | `kelvran.response_format.requested_not_enforced` | bool | Only ever `true`: the request asked for structured output and the serving deployment could not enforce it. Never `false`. |
 | `kelvran.cost.estimated` | bool | Only ever `true`: a streamed response was billed from an estimate. Never `false`. |
+| `kelvran.fallback.hops` | int | Fallback hops admitted to the deployment call (a hop a deployment gate rejected before any upstream request still counts, like the `fallback_hop` event); set only when a fallback happened (on `main` since 2026-10-09). |
 | `kelvran.savings.usd` | string (decimal) | Cache hit only: the notional cost the hit avoided. |
 | `kelvran.cache.layer` | string | Cache hit only: `L1`, `L2` or `L3`. |
 | `kelvran.cache.age_ms` | float64 | Cache hit only, every layer. |
