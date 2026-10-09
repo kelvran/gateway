@@ -492,8 +492,9 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              correlation unit; Analyze([]Event) groups by (tenant, key) and flags a
                              miss as cross-instance-avoidable when a different instance had an open
                              TTL window for the same key. Registered in gateway/.go-arch-lint.yml as
-                             its own cache-correlation component — a pure leaf like telemetry itself
-                             (stdlib-only, zero project-internal imports). **Standalone analysis
+                             its own cache-correlation component — a pure leaf (stdlib-only, zero
+                             project-internal imports; telemetry itself was one until 2026-10-10, when
+                             it gained the telemetry/exporterkind sub-leaf). **Standalone analysis
                              unit, NOT wired into the live request pipeline**: dataplane's
                              checkCache/checkLexicalCache already emit the raw
                              cache_cross_instance_check log lines this package's Analyze would
@@ -749,7 +750,13 @@ router    ✗→ dataplane, cache     (router.Deployment is its own decoupled ty
                                   mirrors ratelimit.KeyConfig's existing decoupling from identity.VirtualKey)
 {identity, budget, ratelimit, router, telemetry, adapter, costaccounting, controlplane, guardrail,
  alerting} ✗→ dataplane, cache    (shared kernel is a leaf — verified: every one of these packages has
-                                  zero internal cross-package imports of its own)
+                                  zero internal cross-package imports of its own. **Corrected 2026-10-10**:
+                                  two leaf-ward exceptions, neither reaching dataplane or cache —
+                                  budget → telemetry (its counters; `.go-arch-lint.yml`'s `budget`
+                                  entry) and telemetry → telemetry/exporterkind, its own stdlib-only
+                                  sub-package holding the exporter-name vocabulary so the `kelvran`
+                                  CLI's `doctor` can validate `telemetry.exporter` without importing
+                                  OTel; RFC-3 decision 7)
 budget    ✗→ identity              (budget tracks by key ID string only — it doesn't need to know what a
                                   VirtualKey is, only that it's a string; keeps both packages independently
                                   testable and reusable)

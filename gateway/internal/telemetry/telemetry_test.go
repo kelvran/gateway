@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kelvran/gateway/gateway/internal/telemetry/exporterkind"
+
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -143,6 +145,29 @@ func TestInitRejectsUnknownExporter(t *testing.T) {
 	_, err := Init(context.Background(), Config{Exporter: "carrier-pigeon"})
 	if err == nil {
 		t.Fatal("Init with an unknown exporter returned nil error, want an error")
+	}
+	// docs/how-to/troubleshooting.md quotes this line verbatim.
+	if want := `telemetry: unknown exporter "carrier-pigeon" (want "stdout", "otlp", or "none")`; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestInitAgreesWithExporterKind pins that Init accepts exactly the names
+// exporterkind.Valid accepts (plus the empty default), so a fourth exporter
+// must be added to exporterkind.Names to be reachable by name and the
+// kelvran CLI's doctor check can never disagree with startup.
+func TestInitAgreesWithExporterKind(t *testing.T) {
+	candidates := append([]string{"", "carrier-pigeon", "STDOUT"}, exporterkind.Names...)
+	for _, name := range candidates {
+		shutdown, err := Init(context.Background(), Config{Exporter: name, OTLPEndpoint: "localhost:4318"})
+		if accepted := err == nil; accepted != exporterkind.Valid(name) {
+			t.Errorf("Init(%q) accepted=%v, exporterkind.Valid=%v; the two must agree", name, accepted, exporterkind.Valid(name))
+		}
+		if err == nil {
+			if err := shutdown(context.Background()); err != nil {
+				t.Errorf("shutdown after Init(%q): %v", name, err)
+			}
+		}
 	}
 }
 

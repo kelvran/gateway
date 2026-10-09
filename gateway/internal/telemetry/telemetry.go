@@ -23,6 +23,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/kelvran/gateway/gateway/internal/telemetry/exporterkind"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
@@ -852,12 +854,18 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 		propagation.Baggage{},
 	))
 
+	// The accepted names live in exporterkind so the kelvran CLI can validate
+	// a config without importing this package (and OTel with it); a name
+	// absent from exporterkind.Names is rejected before any exporter is built.
+	if !exporterkind.Valid(cfg.Exporter) {
+		return nil, fmt.Errorf("telemetry: unknown exporter %q (want %s)", cfg.Exporter, exporterkind.WantList())
+	}
 	exporterKind := cfg.Exporter
 	if exporterKind == "" {
-		exporterKind = "stdout"
+		exporterKind = exporterkind.Stdout
 	}
 
-	if exporterKind == "none" {
+	if exporterKind == exporterkind.None {
 		return func(context.Context) error { return nil }, nil
 	}
 
@@ -876,7 +884,7 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 	var traceExporter sdktrace.SpanExporter
 	var metricExporter sdkmetric.Exporter
 	switch exporterKind {
-	case "stdout":
+	case exporterkind.Stdout:
 		traceExporter, err = stdouttrace.New()
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: constructing stdout trace exporter: %w", err)
@@ -885,7 +893,7 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: constructing stdout metric exporter: %w", err)
 		}
-	case "otlp":
+	case exporterkind.OTLP:
 		traceExporter, err = otlptracehttp.New(ctx, otlptracehttp.WithEndpoint(cfg.OTLPEndpoint))
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: constructing OTLP trace exporter: %w", err)
@@ -895,7 +903,9 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 			return nil, fmt.Errorf("telemetry: constructing OTLP metric exporter: %w", err)
 		}
 	default:
-		return nil, fmt.Errorf("telemetry: unknown exporter %q (want \"stdout\", \"otlp\", or \"none\")", cfg.Exporter)
+		// Unreachable while Names and the cases above agree; kept so a
+		// name added to Names without a case here fails loudly, not silently.
+		return nil, fmt.Errorf("telemetry: exporter %q is named in exporterkind.Names but has no constructor here", exporterKind)
 	}
 
 	tracerProvider := sdktrace.NewTracerProvider(

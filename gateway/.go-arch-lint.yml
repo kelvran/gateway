@@ -24,6 +24,7 @@ components:
   telemetry:         { in: telemetry }
   cache-correlation: { in: telemetry/cachecorrelation }
   spend-velocity:    { in: telemetry/spendvelocity }
+  telemetry-exporterkind: { in: telemetry/exporterkind }
   cache:             { in: cache }
   cache-inprocess:   { in: cache/inprocess }
   cache-grpcserver:  { in: cache/grpcserver }
@@ -49,8 +50,9 @@ components:
   benchupstream:          { in: benchupstream }
 
 # Components deliberately absent from `deps:` below (credentialstate,
-# identity, ratelimit, router, costaccounting, guardrail, telemetry,
-# cache-correlation, cache, adapter, controlplane, backup, idempotency,
+# identity, ratelimit, router, costaccounting, guardrail,
+# telemetry-exporterkind, cache-correlation, cache, adapter, controlplane,
+# backup, idempotency,
 # configpropagation, alerting, budget-redisbudget, anomaly, bench,
 # benchupstream) are pure
 # leaves per
@@ -63,7 +65,7 @@ components:
 # check entirely (validator_deps.go), so they are omitted on purpose, not
 # forgotten. cache-correlation (telemetry/cachecorrelation, per
 # docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md) is a pure leaf
-# for the same reason telemetry itself is: stdlib-only, no
+# for the same reason telemetry itself was until 2026-10-10: stdlib-only, no
 # project-internal imports, nothing in this project depends on it either
 # (it's a standalone analysis unit, not wired into the live pipeline).
 # spend-velocity (telemetry/spendvelocity, per docs/upgrade-research/
@@ -107,6 +109,13 @@ deps:
   budget-boltstore:
     mayDependOn:
       - budget
+  # telemetry's one project-internal import is its own stdlib-only sub-leaf,
+  # the exporter-name vocabulary (RFC-3 decision 7): the kelvran CLI's doctor
+  # validates telemetry.exporter through telemetry-exporterkind and must never
+  # name telemetry here, because importing it pulls OTel into the CLI.
+  telemetry:
+    mayDependOn:
+      - telemetry-exporterkind
   budget:
     mayDependOn:
       - telemetry
