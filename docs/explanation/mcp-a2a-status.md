@@ -14,7 +14,7 @@ Not available today:
 - Session or context isolation per concurrent tool call. No tool-call surface exists to isolate.
 - Per-tool short-lived scoped credentials.
 - Any integration test against a real MCP client.
-- An Anthropic Messages-style `POST /v1/messages` ingress. This is not MCP/A2A work: it is item 11 of the 2026-10-08 round-4 discoverability plan (`docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md`), RFC first, and the `models_handler.go` comment above points here only because it names this page alongside [compatibility.md](../reference/compatibility.md), which lists what the gateway does accept.
+- An Anthropic Messages-style `POST /v1/messages` ingress. This is not MCP/A2A work: it is item 11 of the 2026-10-08 round-4 discoverability plan (`docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md`), RFC first (the RFC is `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md`, status proposed, decision pending), and the `models_handler.go` comment above points here only because it names this page alongside [compatibility.md](../reference/compatibility.md), which lists what the gateway does accept.
 
 MCP/A2A brokering is not scheduled work. [PRD.md](../../PRD.md) places MCP/A2A tool brokering "explicitly out of scope for v1", tracked as a future `docs/rfcs/` candidate, and makes no v2 promise. [README.md](../../README.md) lists it under "Not built, by recorded decision".
 

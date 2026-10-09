@@ -402,7 +402,7 @@ Per-client how-tos: [OpenAI Python](../how-to/clients/openai-python.md), [OpenAI
 - OpenAI `content` arrays on inbound messages (`[{type: text | image_url …}]`); multimodal content uses `parts`.
 - OpenAI request fields `n`, `top_p`, `stop`, `seed`, `user`, `logprobs`, `top_logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `max_completion_tokens`, `parallel_tool_calls`, client-side `stream_options`, `store`, `metadata`, `service_tier`, `reasoning_effort`, `modalities`, `audio`, `prediction`, `web_search_options`; all dropped silently.
 - `tool_choice` types `allowed_tools` and `custom`; explicitly rejected with `400 invalid_tool_choice`.
-- Anthropic Messages ingress (`POST /v1/messages`) and `x-api-key` authentication.
+- Anthropic Messages ingress (`POST /v1/messages`) and `x-api-key` authentication. Designed, not built: `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md` (status proposed, awaiting the owner's decision).
 - OpenAI Responses API, Completions API, images, audio and files routes.
 - OpenAI-shaped streaming tool-call deltas (`delta.tool_calls[].function.arguments`).
 - `object` fields on the embeddings response.
