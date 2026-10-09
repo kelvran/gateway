@@ -103,8 +103,12 @@ type virtualKeyRequest struct {
 	AllowedSourceCIDRs []string `json:"allowed_source_cidrs"`
 	// CacheScopeToEndUser mirrors identity.VirtualKey.CacheScopeToEndUser's
 	// own doc comment exactly.
-	CacheScopeToEndUser bool              `json:"cache_scope_to_end_user"`
-	RateLimit           *rateLimitRequest `json:"rate_limit"`
+	CacheScopeToEndUser bool `json:"cache_scope_to_end_user"`
+	// AttributionIDsDisabled is the per-key identifier-capture opt-out
+	// (13a); omitted means capture ON, which is why the wire field is the
+	// negative `attribution_capture_ids_disabled`.
+	AttributionIDsDisabled bool              `json:"attribution_capture_ids_disabled"`
+	RateLimit              *rateLimitRequest `json:"rate_limit"`
 }
 
 // rotateVirtualKeyRequest is the POST /admin/virtual_keys/{name}/rotate
@@ -709,17 +713,18 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 		burst, refill = ratelimit.ResolveKeyRateLimit(burst, refill)
 
 		vk := identity.VirtualKey{
-			ID:                  name,
-			KeyHash:             req.KeyHash,
-			BudgetUSD:           req.BudgetUSD,
-			BudgetResetInterval: secondsToDuration(req.BudgetResetIntervalSeconds),
-			BudgetWarnPercent:   req.BudgetWarnPercent,
-			AllowedModels:       allowedModels,
-			AllowedRegions:      allowedRegions,
-			AllowedSourceCIDRs:  allowedSourceCIDRs,
-			CacheScopeToEndUser: req.CacheScopeToEndUser,
-			RateLimitBurst:      burst,
-			RateLimitRefill:     refill,
+			ID:                     name,
+			KeyHash:                req.KeyHash,
+			BudgetUSD:              req.BudgetUSD,
+			BudgetResetInterval:    secondsToDuration(req.BudgetResetIntervalSeconds),
+			BudgetWarnPercent:      req.BudgetWarnPercent,
+			AllowedModels:          allowedModels,
+			AllowedRegions:         allowedRegions,
+			AllowedSourceCIDRs:     allowedSourceCIDRs,
+			CacheScopeToEndUser:    req.CacheScopeToEndUser,
+			AttributionIDsDisabled: req.AttributionIDsDisabled,
+			RateLimitBurst:         burst,
+			RateLimitRefill:        refill,
 		}
 		rateLimitCfg := ratelimit.KeyConfig{
 			ID:                 name,
@@ -1000,6 +1005,7 @@ type virtualKeyListEntry struct {
 	AllowedRegions             []string `json:"allowed_regions,omitempty"`
 	AllowedSourceCIDRs         []string `json:"allowed_source_cidrs,omitempty"`
 	CacheScopeToEndUser        bool     `json:"cache_scope_to_end_user,omitempty"`
+	AttributionIDsDisabled     bool     `json:"attribution_capture_ids_disabled,omitempty"`
 	RateLimitBurst             float64  `json:"rate_limit_burst,omitempty"`
 	RateLimitRefill            float64  `json:"rate_limit_refill_per_second,omitempty"`
 	BillingSubjectID           string   `json:"billing_subject_id,omitempty"`
@@ -1027,6 +1033,7 @@ func virtualKeyToListEntry(vk identity.VirtualKey) virtualKeyListEntry {
 		AllowedRegions:             sortedKeysOf(vk.AllowedRegions),
 		AllowedSourceCIDRs:         ipNetStringsSorted(vk.AllowedSourceCIDRs),
 		CacheScopeToEndUser:        vk.CacheScopeToEndUser,
+		AttributionIDsDisabled:     vk.AttributionIDsDisabled,
 		RateLimitBurst:             vk.RateLimitBurst,
 		RateLimitRefill:            vk.RateLimitRefill,
 		BillingSubjectID:           vk.BillingSubjectID,

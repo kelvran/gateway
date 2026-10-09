@@ -68,13 +68,14 @@ All instruments are registered once at package init. Every attribute below is a 
 | `kelvran.ratelimit.fail_open` | Int64 counter, `{request}` | `kelvran.virtual_key.id` | A request is allowed through after the rate-limiter backend errored: the per-key check (`ratelimit_backend_unavailable`, `ratelimit_tpm_backend_unavailable`), the embeddings check (`embeddings_ratelimit_backend_unavailable`), and, on main since 2026-10-08 and not in gateway/v0.17.0, once per stream for the mid-stream TPM top-up (`ratelimit_tpm_backend_unavailable` with `op=mid_stream_topup`). The fallback-hop admission check (`ratelimit_backend_unavailable_fallback_hop`) logs without counting. |
 | `kelvran.budget.fail_open` | Int64 counter, `{request}` | `kelvran.virtual_key.id` | A request is allowed through after the Redis-mode budget tracker errored. Paired with the `budget_backend_unavailable` log line. On main since 2026-10-08, not in gateway/v0.17.0, the mid-stream budget top-up also counts once per stream (`budget_backend_unavailable` with `op=mid_stream_topup`). |
 | `kelvran.guardrail.fail_open` | Int64 counter, `{request}` | `kelvran.virtual_key.id`, `kelvran.guardrail.stage` | A guardrail detector errored and the request kept flowing with that detector's coverage missing. At most once per request per stage. Paired with `guardrail_fail_open`. |
+| `kelvran.attribution.dropped` | Int64 counter, `{header}` | `kelvran.attribution.header` | The attribution middleware refused a request header: an identifier (`x-claude-code-session-id`, `-agent-id`, `-parent-agent-id`, `-prompt-id`) longer than 128 bytes or outside `[A-Za-z0-9._:-]`, an `x-claude-code-agent-type` over 64 bytes or not printable ASCII, or an `x-claude-code-prev-tool-durations` value from which no entry could be kept (well-formed: printable ASCII, a percent-decodable name, a duration of at most 86,400,000 ms; nothing is kept either when the first well-formed entry alone exceeds 4 KB). The attribute is the header name, never the value. On `main` since 2026-10-09. |
 | `kelvran.fallback.rescued` | Int64 counter, `{request}` | `kelvran.virtual_key.id`, `kelvran.fallback.from`, `kelvran.deployment.name`, `kelvran.fallback.hop.error_class` | A fallback happened and the request produced a billed response (`err == nil || billable` in `finalize`): the first deployment failed and a fallback produced the response — including a streamed rescue that failed after its first byte, a rescue the post-call guardrail then blocked, and a coalesced singleflight follower of a rescued leader (it shares the leader's fallback record, as its decision event always has). `kelvran.fallback.from` is the deployment first tried, `kelvran.deployment.name` the one that served, and the class is the first failure's (see the attribute table). On `main` since 2026-10-09, not in gateway/v0.17.0. |
 | `kelvran.streaming.cost_estimated` | Int64 counter, `{response}` | `kelvran.virtual_key.id` | A streamed response was billed from an estimated token count because the provider sent no terminal usage frame. |
 | `kelvran.streaming.near_duplicate_collision` | Int64 counter, `{collision}` | `kelvran.virtual_key.id` | A streaming request found another streaming request for the identical exact-match cache key already in flight. Observation only; nothing is coalesced or blocked. Paired with `streaming_near_duplicate_collision`. |
 | `kelvran.cache.l3.gate_outcome` | Int64 counter, `{check}` | `kelvran.cache.l3.gate`, `kelvran.cache.l3.outcome`, `kelvran.instance.id` | Each decision of the four named gates in the L3-lite (lexical) cache check: `volatile_bypass` once per check, the other three once per candidate. The L3 equality gates on guardrail policy version, response format, prompt, reasoning-blocks, thinking-binding-mode and tools fingerprints are not counted. |
 | `kelvran.cache.savings_usd` | Float64 counter, `{USD}` | `kelvran.cache.layer` | Every cache hit, incremented by the request's notional cost (what the call would have cost upstream). Never recorded on a miss. |
 | `kelvran.cache.lookup` | Int64 counter, `{lookup}` | `kelvran.cache.lookup_outcome`, `kelvran.instance.id`, `kelvran.cache.layer` (hit only) | Every finalized chat request that reached the cache check. A request rejected before the cache check (auth failure, model not allowed, rate limit, concurrency cap, budget exceeded, prompt-resolve failure) is not counted as a miss. |
-| `kelvran.llm.spend_usd` | Float64 counter, `{USD}` | none | Real USD cost of upstream calls this process paid for: every billable chat request (not a cache hit, not a singleflight follower) and every successful embeddings request. |
+| `kelvran.llm.spend_usd` | Float64 counter, `{USD}` | `kelvran.virtual_key.id`, `kelvran.client.tool`, `kelvran.claude_code.request_class` (on `main` since 2026-10-09; before, no attributes) | Real USD cost of upstream calls this process paid for: every billable chat request (not a cache hit, not a singleflight follower) and every successful embeddings request. |
 | `kelvran.budget.threshold_crossed` | Int64 counter, `{crossing}` | `kelvran.virtual_key.id`, `kelvran.budget.percent_bucket` | A virtual key newly crosses a bucket of the fixed 50/75/90/100 % budget ladder; once per key per rolling-window epoch per bucket. Paired with `budget_threshold_crossed`. The per-key configurable warn threshold (`budget_warn_threshold_crossed`) is a log line only. |
 | `kelvran.persistence.failed` | Int64 counter, `{write}` | `kelvran.persistence.store_kind`, `kelvran.virtual_key.id` | A durable-store write failed: a bbolt budget or identity write (paired with `budget_persist_failed`, `identity_persist_failed`) and, on main since 2026-10-08 and not in gateway/v0.17.0, the Redis-mode budget reconcile (paired with `budget_redis_backend_unavailable`, `op=reconcile`). |
 | `kelvran.configpropagation.subscribe_stopped` | Int64 counter, `{event}` | `kelvran.instance.id` | The config-propagation Redis subscribe loop returned an error other than context cancellation. Paired with `configpropagation_subscribe_stopped`. |
@@ -86,7 +87,7 @@ These are recorded once per chat completion (buffered and streaming) at the end 
 
 | Name | Instrument, unit | Attributes | Recorded when |
 |---|---|---|---|
-| `gen_ai.client.operation.duration` | Float64 histogram, `s` | `gen_ai.operation.name` = `chat`, `gen_ai.request.model`, `gen_ai.provider.name` (when a deployment was resolved), `gen_ai.response.model` (when a response was produced), `error.type` (failures only), `kelvran.fallback.outcome` (`none` / `rescued` / `exhausted`, on every data point; on `main` since 2026-10-09) | Every finished chat request that reached the pipeline, success or rejection, measured from the pipeline's `HandleChatCompletion`/`HandleChatCompletionStream` entry (after the HTTP handler has read, decoded and validated the body; a 400 for a malformed body is not recorded) to the end of the request. |
+| `gen_ai.client.operation.duration` | Float64 histogram, `s` | `gen_ai.operation.name` = `chat`, `gen_ai.request.model`, `gen_ai.provider.name` (when a deployment was resolved), `gen_ai.response.model` (when a response was produced), `error.type` (failures only), `kelvran.fallback.outcome` (`none` / `rescued` / `exhausted`, on every data point; on `main` since 2026-10-09), `kelvran.client.tool` and `kelvran.claude_code.request_class` (on every data point; on `main` since 2026-10-09) | Every finished chat request that reached the pipeline, success or rejection, measured from the pipeline's `HandleChatCompletion`/`HandleChatCompletionStream` entry (after the HTTP handler has read, decoded and validated the body; a 400 for a malformed body is not recorded) to the end of the request. |
 | `gen_ai.client.inference.usage.input_tokens` | Int64 counter, `{token}` | the duration attributes plus `gen_ai.token.modality` | Billable request with input tokens > 0. |
 | `gen_ai.client.inference.usage.output_tokens` | Int64 counter, `{token}` | same | Billable request with output tokens > 0. |
 | `gen_ai.client.inference.usage.cache_read.input_tokens` | Int64 counter, `{token}` | same | Billable request with provider cache-read tokens > 0. |
@@ -120,6 +121,9 @@ Explicit bucket boundaries for the two token histograms: 1, 4, 16, 64, 256, 1024
 | `kelvran.fallback.outcome` | `none`, `rescued`, `exhausted` | On `gen_ai.client.operation.duration` only, every chat data point. `rescued` = a fallback happened and the request is billed; `exhausted` = a fallback happened and nothing was billed. On `main` since 2026-10-09. |
 | `kelvran.fallback.from` | a deployment name | On `kelvran.fallback.rescued` only: the deployment first tried and abandoned. |
 | `kelvran.deployment.name` | a deployment name | On `kelvran.fallback.rescued` (the deployment that served) — its only use on a metric; also a request-span attribute and, on the `fallback_hop` span event, the hop's target. |
+| `kelvran.client.tool` | `claude_code`, `openai_python`, `openai_node`, `openai_go`, `anthropic_python`, `anthropic_node`, `anthropic_go`, `codex`, `aider`, `continue`, `litellm`, `curl`, `other` | Normalised from the `User-Agent` product (a leading `Async`, then `Azure`, stripped) and, for the Stainless SDKs, the trailer language; `other` when absent or unknown. Verified wire values: `OpenAI/Python 3.14.1` and the Async/Azure/Bedrock/Vertex/AWS/GoogleCloud/BedrockMantle client classes of openai 3.14.1 / anthropic 1.6.0; `claude-cli/2.1.295 (external, sdk-cli)` and `claude-code/2.1.295` from Claude Code 2.1.295. On `main` since 2026-10-09. |
+| `kelvran.claude_code.request_class` | `main`, `subagent`, `workflow`, `compaction`, `auxiliary`, `other`, `none` | The five page values pass through; `other` for an unknown value; `none` when the header was absent (the default behind a custom base URL without `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`). On `main` since 2026-10-09. |
+| `kelvran.attribution.header` | `x-claude-code-session-id`, `x-claude-code-agent-id`, `x-claude-code-parent-agent-id`, `x-claude-code-prompt-id`, `x-claude-code-agent-type`, `x-claude-code-prev-tool-durations` | On `kelvran.attribution.dropped` only. |
 | `kelvran.instance.id` | `<hostname>:<pid>` | Same value as the `service.instance.id` resource attribute. |
 | `kelvran.virtual_key.id` | a virtual key id | |
 
@@ -140,10 +144,10 @@ The provisioned Grafana dashboard `docs/operations/grafana/dashboards/kelvran-ov
 
 | Span name | Source | Covers |
 |---|---|---|
-| `gateway.http` | otelhttp server middleware on the data-plane listener | Every request to the data-plane listener: `/v1/chat/completions`, `/v1/embeddings`, `/healthz`, `/readyz`, and `/v1/models` (on main since 2026-10-08, not in gateway/v0.17.0). The admin listener is not wrapped. |
+| `{METHOD} {route}` (for example `POST /v1/chat/completions`; a request matching no registered route keeps the method-only name, such as `HEAD` for Claude Code's `/api/hello` probe; `gateway.http` is the operation name Kelvran passes to `otelhttp.NewHandler`, which otelhttp's default formatter does not use as the span name) | otelhttp server middleware on the data-plane listener | Every request to the data-plane listener: `/v1/chat/completions`, `/v1/embeddings`, `/healthz`, `/readyz`, and `/v1/models` (on main since 2026-10-08, not in gateway/v0.17.0). The admin listener is not wrapped. |
 | `chat <model>` | the dataplane tracer | One chat completion, buffered or streaming. `<model>` is the requested model name truncated to 256 bytes. |
 
-The embeddings route starts no dataplane span of its own; its only span is `gateway.http`.
+The embeddings route starts no dataplane span of its own; its only span is the otelhttp server span (operation `gateway.http`).
 
 ### Attributes on `chat <model>`
 
@@ -166,6 +170,12 @@ Attributes are set at the end of the request. A value that is not known is omitt
 | `gen_ai.usage.cache_write.input_tokens` | int | > 0. |
 | `gen_ai.usage.reasoning.output_tokens` | int | > 0. |
 | `kelvran.agent_run_id` | string | The `agent_run_id` Baggage member was present on the request. |
+| `kelvran.client.tool` | string | The request passed the attribution middleware (every request through the data server); the normalised `User-Agent` product, `other` when unknown. On `main` since 2026-10-09. |
+| `kelvran.claude_code.session_id`, `kelvran.claude_code.agent_id`, `kelvran.claude_code.parent_agent_id`, `kelvran.claude_code.prompt_id` | string | The corresponding `x-claude-code-*` header was present and passed the identifier grammar, the request authenticated (an unauthenticated request never carries identifiers), and identifier capture is on for the gateway and the key. Span attributes only — never a metric label or log field. |
+| `kelvran.claude_code.request_class`, `kelvran.claude_code.compaction`, `kelvran.claude_code.context_compacted` | string | The corresponding hint header was present (bounded vocabularies; `other` for an unknown value). |
+| `kelvran.claude_code.agent_type` | string | `x-claude-code-agent-type` was present, ≤ 64 printable-ASCII bytes, the request authenticated, and identifier capture is on (an open set, so treated as an identifier). |
+| `kelvran.claude_code.prev_tool_durations` | string | `x-claude-code-prev-tool-durations` had at least one well-formed entry (printable ASCII, a percent-decodable name, a duration ≤ 86,400,000 ms); the wire form of the kept entries only (≤ 32 entries, ≤ 4 KB), so the attribute is always valid UTF-8. |
+| `kelvran.claude_code.prev_tool_count`, `kelvran.claude_code.prev_tool_total_ms` | int | Set together with `prev_tool_durations`. |
 | `kelvran.prompt.id` | string | The request used server-side prompt management (`prompt_id`). |
 | `kelvran.prompt.version` | int | Set together with `kelvran.prompt.id`. |
 | `kelvran.response_format.requested_not_enforced` | bool | Only ever `true`: the request asked for structured output and the serving deployment could not enforce it. Never `false`. |
@@ -208,6 +218,7 @@ One line per chat completion. Level `INFO` on success, `ERROR` on failure.
 | `cache_age_ms` | number | Cache hit. |
 | `cache_similarity` | number | L3 hit. |
 | `virtual_key_id` | string | A virtual key was resolved. |
+| `client_tool`, `request_class` | string | Always (on `main` since 2026-10-09): the two bounded attribution values, `other` / `none` when unknown or absent. Identifiers (session, agent, prompt ids) are never log fields. |
 | `gatewayevents_v1` | string (JSON) | Always, success and failure, unless marshalling failed (then `gatewayevents_marshal_failed` is logged at `WARN` and the field is omitted). See the next table. |
 | `error` | string | Failure. |
 | `upstream_status` | int | Failure caused by an upstream HTTP error: the provider's HTTP status. |
@@ -271,6 +282,7 @@ One line per embeddings request. Level `INFO` on success, `ERROR` on failure. Th
 | `input_count` | int | Always: the number of inputs in the request. |
 | `duration_ms` | int | Always. |
 | `virtual_key_id` | string | A virtual key was resolved. |
+| `client_tool`, `request_class` | string | Always (on `main` since 2026-10-09): the two bounded attribution values, `other` / `none` when unknown or absent. Identifiers (session, agent, prompt ids) are never log fields. |
 | `deployment` | string | A deployment was selected. |
 | `error` | string | Failure. |
 | `upstream_status`, `upstream_error_type`, `upstream_retry_after_ms`, `upstream_provider`, `upstream_stream_error` | as above | Failure, same rules as `chat_completion`. |
@@ -343,7 +355,7 @@ Every other structured event name in non-test gateway code, grouped by subsystem
 - [`docs/operations/FAILURE-MODES.md`](../operations/FAILURE-MODES.md): which metric and log event each dependency failure produces.
 - [`config.md`](config.md): every configuration key, including the `telemetry` block.
 - [`error-codes.md`](error-codes.md): the client-facing error vocabulary that `error.type` and `Outcome` classify.
-- [`data-plane-api.md`](data-plane-api.md): the routes the `gateway.http` span covers.
+- [`data-plane-api.md`](data-plane-api.md): the routes the otelhttp server span (operation `gateway.http`) covers.
 - [`../how-to/deploy/docker-compose.md`](../how-to/deploy/docker-compose.md): the bundled OTLP collector, Prometheus, Tempo and Grafana profile.
 - [`../how-to/troubleshooting.md`](../how-to/troubleshooting.md): reading these signals during an incident.
 - [`../how-to/caching.md`](../how-to/caching.md) and [`../explanation/cache-gate.md`](../explanation/cache-gate.md): what the `kelvran.cache.*` signals measure.

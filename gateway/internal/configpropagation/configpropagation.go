@@ -269,6 +269,9 @@ type VirtualKeyPayload struct {
 	// own doc comment exactly -- a plain bool, direct copy, no shape
 	// translation needed.
 	CacheScopeToEndUser bool `json:"cache_scope_to_end_user,omitempty"`
+	// AttributionIDsDisabled is the per-key identifier-capture opt-out (13a),
+	// inverted so an omitted field means the default (capture on).
+	AttributionIDsDisabled bool `json:"attribution_ids_disabled,omitempty"`
 }
 
 // ModelRateLimitPayload mirrors ratelimit.ModelRateLimit's own field set

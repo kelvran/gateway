@@ -26,8 +26,9 @@ import (
 // dataplane, which alone knows it is the one delivering this completion,
 // issues the id for it.
 //
-// Why not the trace id: ExtractContext honours a client-sent traceparent,
-// so the client would control a supposedly unique id; one agent run that
+// Why not the trace id: the otelhttp wrapper around the data mux
+// (cmd/gateway's wrapHTTPServerSpan) honours a client-sent traceparent, so
+// the client would control a supposedly unique id; one agent run that
 // shares a trace across calls would repeat it; and an unsampled context
 // yields the zero id.
 //

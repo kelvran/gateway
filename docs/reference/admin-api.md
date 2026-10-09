@@ -161,6 +161,7 @@ Each element:
 | `allowed_regions` | string[] | when non-empty | Sorted. |
 | `allowed_source_cidrs` | string[] | when non-empty | Sorted CIDR strings. |
 | `cache_scope_to_end_user` | bool | when `true` | |
+| `attribution_capture_ids_disabled` | bool | when `true` | The key's Claude Code identifier capture is off (`attribution_capture_ids: false`). On `main` since 2026-10-09. |
 | `rate_limit_burst` | number | when non-zero | Key-level RPM bucket capacity. |
 | `rate_limit_refill_per_second` | number | when non-zero | Key-level RPM refill. |
 | `billing_subject_id` | string | when non-empty | Settable only through `virtual_keys.<name>.billing_subject_id` in `config.yaml`. |
@@ -183,6 +184,7 @@ Request body:
 | `allowed_regions` | string[] | no | | Deployment regions this key may route to. Omitted or empty: no region allow-list. |
 | `allowed_source_cidrs` | string[] | no | each entry parses as a CIDR | Client source networks this key may call from. Omitted or empty: no source allow-list. |
 | `cache_scope_to_end_user` | bool | no | | Scope this key's cache entries by the request's end-user identifier. See [caching.md](../how-to/caching.md). |
+| `attribution_capture_ids_disabled` | bool | no | | `true` keeps this key's requests from carrying the Claude Code identifiers onto the request span (the YAML key is the positive-sense `attribution_capture_ids`; the wire field is negative so an omitted field means capture on). On `main` since 2026-10-09. |
 | `rate_limit` | object | no | | See below. Omitted: `burst` and `refill_per_second` resolve to the defaults. |
 
 `rate_limit` object:

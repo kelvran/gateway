@@ -114,6 +114,8 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   log line; the matching `kelvran.configpropagation.publish_failed` counter is on `main` since
   2026-10-08, not in `gateway/v0.17.0`) the operator still re-applies per instance exactly as before.
 
+- **Identifiers on exported spans have no erasure path in Kelvran.** Since 2026-10-09 every request span can carry Claude Code's session, agent, parent-agent and prompt ids (and the client tool) beside the `agent_run_id` that was already there; they are exported through `telemetry.exporter` and retained by the tracing backend for as long as it keeps spans. Kelvran cannot delete a span it has exported. The levers are preventive: `attribution.capture_ids: false` (gateway-wide) or `attribution_capture_ids: false` on a key stops the Claude Code identifiers from being recorded (a request that fails authentication never carries them); `agent_run_id` has no switch. Erasure of an exported span is the backend operator's procedure. See `SECURITY.md`'s retention table.
+
 ## Recommended interim workflow for a real request
 
 1. Confirm the requestor's identity and scope per your own organization's standard data-subject-

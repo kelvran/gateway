@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -38,11 +39,15 @@ func TestMain(m *testing.M) {
 	otel.SetTracerProvider(tp)
 	// telemetry.Init would normally set this too, but no test in this
 	// package calls run() (the only caller of Init) — without this, the
-	// global propagator stays the SDK's no-op default and
-	// telemetry.ExtractContext silently extracts nothing, regardless of
-	// what headers a request actually carries. This is exactly what a
-	// real production process gets for free from Init at startup; this
-	// test binary has to set it up itself since it never calls Init.
+	// global propagator stays the SDK's no-op default and the otelhttp
+	// wrapper (wrapHTTPServerSpan, which captures the propagator at
+	// construction) would extract neither traceparent nor baggage, so the
+	// server span could never be parented to a client trace
+	// (TestChatSpanIsChildOfGatewayHTTPSpanWithClientTraceparent depends on
+	// exactly this). telemetry.ExtractContext itself is Baggage-only since
+	// 13a and does not consult the global propagator. This is what a real
+	// production process gets for free from Init at startup; this test
+	// binary has to set it up itself since it never calls Init.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
@@ -154,10 +159,13 @@ func TestIntegrationOtelHTTPMiddlewareNestsGenAISpanAsChild(t *testing.T) {
 }
 
 // newIntegrationServerWithOtelHTTP mirrors newIntegrationServer's exact
-// pipeline/config construction, but wraps the mux with wrapHTTPServerSpan
-// — exactly what run() does — since newIntegrationServer deliberately
-// does not, to keep every other integration test's span-count assertions
-// (e.g. the "want 1" check above) unaffected by this addition.
+// pipeline/config construction, but serves the mux through
+// dataPlaneHandler — the full chain run() installs (in-flight tracking,
+// attribution capture, the otelhttp server span) — since
+// newIntegrationServer deliberately does not, to keep every other
+// integration test's span-count assertions (e.g. the "want 1" check above)
+// unaffected by this addition. It is the one test server that drives a
+// real request through the real middleware AND the real handler.
 func newIntegrationServerWithOtelHTTP(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvVar string) *httptest.Server {
 	t.Helper()
 	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
@@ -191,7 +199,8 @@ func newIntegrationServerWithOtelHTTP(t *testing.T, upstreamURL, gatewayKey, ups
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
 
-	srv := httptest.NewServer(wrapHTTPServerSpan(mux))
+	var inFlight sync.WaitGroup
+	srv := httptest.NewServer(dataPlaneHandler(mux, &inFlight, true))
 	t.Cleanup(srv.Close)
 	return srv
 }

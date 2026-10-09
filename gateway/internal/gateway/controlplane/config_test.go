@@ -3454,3 +3454,163 @@ func TestLoadWithoutCredentialReloadSectionDefaultsToZeroValue(t *testing.T) {
 		t.Errorf("CredentialReload.IntervalSeconds = %d, want 0 (the zero value) when the section is omitted", cfg.CredentialReload.IntervalSeconds)
 	}
 }
+
+// attribution_capture_ids (per key) and attribution.capture_ids (top level)
+// are positive-sense YAML keys stored inverted (AttributionIDsDisabled /
+// CaptureIDsDisabled) so that the Go zero value is the documented default,
+// identifier capture ON — per docs/rfcs/2026-10-09-gateway-attribution-and-
+// spend-ledger.md (13a).
+func TestAttributionCaptureIDsKeysParseInverted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"attribution:\n" +
+		"  capture_ids: false\n" +
+		"virtual_keys:\n" +
+		"  team-off:\n" +
+		"    key_hash: \"aa\"\n" +
+		"    attribution_capture_ids: false\n" +
+		"  team-on:\n" +
+		"    key_hash: \"bb\"\n" +
+		"    attribution_capture_ids: true\n" +
+		"  team-default:\n" +
+		"    key_hash: \"cc\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Attribution.CaptureIDsDisabled {
+		t.Error("attribution.capture_ids: false must set Attribution.CaptureIDsDisabled")
+	}
+	byName := map[string]VirtualKeyConfig{}
+	for _, vk := range cfg.VirtualKeys {
+		byName[vk.Name] = vk
+	}
+	if !byName["team-off"].AttributionIDsDisabled {
+		t.Error("team-off: attribution_capture_ids: false must set AttributionIDsDisabled")
+	}
+	if byName["team-on"].AttributionIDsDisabled {
+		t.Error("team-on: attribution_capture_ids: true must leave AttributionIDsDisabled false")
+	}
+	if byName["team-default"].AttributionIDsDisabled {
+		t.Error("team-default: an absent key must leave AttributionIDsDisabled false (capture ON by default)")
+	}
+}
+
+func TestAttributionCaptureIDsAbsentSectionMeansCaptureOn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "listen_addr: \":8080\"\n" +
+		"virtual_keys:\n" +
+		"  team-alpha:\n" +
+		"    key_hash: \"aa\"\n" +
+		"deployments:\n" +
+		"  d1:\n" +
+		"    model: \"m\"\n" +
+		"    provider: \"openai\"\n" +
+		"    upstream_model: \"m\"\n" +
+		"    base_url: \"https://x\"\n" +
+		"    api_key_env: \"X\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Attribution.CaptureIDsDisabled {
+		t.Error("no attribution section: CaptureIDsDisabled must be false")
+	}
+}
+
+// The top-level switch is only set by `capture_ids: false`; an explicit
+// `true` and a bare `attribution:` line with no keys both leave identifier
+// capture ON. (The per-key key is covered for all three states in
+// TestAttributionCaptureIDsKeysParseInverted. This loader's YAML subset has
+// no flow style and no null, so `attribution: {}` and `attribution: null`
+// are scalars, rejected by TestAttributionCaptureIDsRejectsNonBoolean below
+// rather than tested here.)
+func TestAttributionCaptureIDsPresentButOnLeavesCaptureOn(t *testing.T) {
+	for name, section := range map[string]string{
+		"explicit true": "attribution:\n  capture_ids: true\n",
+		"bare line":     "attribution:\n",
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		content := "listen_addr: \":8080\"\n" + section +
+			"virtual_keys:\n" +
+			"  team-alpha:\n" +
+			"    key_hash: \"aa\"\n" +
+			"deployments:\n" +
+			"  d1:\n" +
+			"    model: \"m\"\n" +
+			"    provider: \"openai\"\n" +
+			"    upstream_model: \"m\"\n" +
+			"    base_url: \"https://x\"\n" +
+			"    api_key_env: \"X\"\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("%s: WriteFile: %v", name, err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("%s: Load: %v", name, err)
+		}
+		if cfg.Attribution.CaptureIDsDisabled {
+			t.Errorf("%s: CaptureIDsDisabled must be false (identifier capture ON)", name)
+		}
+	}
+}
+
+// A non-boolean switch, or an `attribution:` section that is not a mapping
+// (`attribution: false` is the natural typo for "turn it off"), fails
+// startup rather than silently leaving identifier capture ON: this is a
+// privacy switch, so failing open without a word is the wrong default.
+func TestAttributionCaptureIDsRejectsNonBoolean(t *testing.T) {
+	for _, snippet := range []string{
+		"attribution:\n  capture_ids: \"no\"\n",
+		"attribution: false\n",
+		"attribution: [capture_ids]\n",
+		"attribution: {}\n",
+		"attribution: null\n",
+		"",
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		perKey := ""
+		if snippet == "" {
+			perKey = "    attribution_capture_ids: \"no\"\n"
+		}
+		content := "listen_addr: \":8080\"\n" + snippet +
+			"virtual_keys:\n" +
+			"  team-alpha:\n" +
+			"    key_hash: \"aa\"\n" + perKey +
+			"deployments:\n" +
+			"  d1:\n" +
+			"    model: \"m\"\n" +
+			"    provider: \"openai\"\n" +
+			"    upstream_model: \"m\"\n" +
+			"    base_url: \"https://x\"\n" +
+			"    api_key_env: \"X\"\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		_, err := Load(path)
+		if err == nil {
+			t.Errorf("Load accepted an invalid attribution switch (snippet %q)", snippet)
+			continue
+		}
+		if !strings.Contains(err.Error(), "attribution") {
+			t.Errorf("Load error for snippet %q does not name the attribution section: %v", snippet, err)
+		}
+	}
+}

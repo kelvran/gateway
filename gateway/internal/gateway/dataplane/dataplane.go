@@ -566,7 +566,12 @@ type Config struct {
 	// is completely unaffected, exactly as before this feature existed.
 	AlertNotifier alerting.Notifier
 	Logger        *slog.Logger
-	CacheTTL      time.Duration
+	// AttributionIDsDisabled is the global identifier-capture switch
+	// (`attribution.capture_ids: false`): when set, finalize and
+	// HandleEmbeddings blank the identifier fields of the request's
+	// telemetry.Attribution for every key (13a). Bounded fields are kept.
+	AttributionIDsDisabled bool
+	CacheTTL               time.Duration
 	// CacheL2TTL defaults to 75 seconds when unset — shorter than
 	// CacheTTL's 5-minute default, as defense-in-depth per the RFC's TTL
 	// rationale (not a substitute for the normalization allowlist's own
@@ -720,14 +725,15 @@ type Pipeline struct {
 	// deciding replica's wall-clock UnixNano, or one past the version it
 	// had already applied) plus that replica's instance ID for
 	// tie-breaking -- see applyWeightIfNewerLocked and mutation_version.go.
-	weightVersionsMu sync.Mutex
-	weightVersions   map[weightVersionKey]mutationVersion
-	alertNotifier    alerting.Notifier
-	upstreamStream   UpstreamStreamCaller
-	logger           *slog.Logger
-	cacheTTL         time.Duration
-	cacheL2TTL       time.Duration
-	cacheL3TTL       time.Duration
+	weightVersionsMu       sync.Mutex
+	weightVersions         map[weightVersionKey]mutationVersion
+	alertNotifier          alerting.Notifier
+	upstreamStream         UpstreamStreamCaller
+	logger                 *slog.Logger
+	attributionIDsDisabled bool
+	cacheTTL               time.Duration
+	cacheL2TTL             time.Duration
+	cacheL3TTL             time.Duration
 	// missGroup deduplicates concurrent identical cache misses — see
 	// runMissPath's own doc comment. Zero value is ready to use, per
 	// golang.org/x/sync/singleflight's own documented contract; no
@@ -1096,6 +1102,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		// wrapUpstreamStreamCallerFor503Deweight's own doc comment.
 		upstreamStream:              wrapUpstreamStreamCallerFor503Deweight(cfg.UpstreamStream, cfg.Router),
 		logger:                      logger,
+		attributionIDsDisabled:      cfg.AttributionIDsDisabled,
 		cacheTTL:                    ttl,
 		cacheL2TTL:                  l2TTL,
 		cacheL3TTL:                  l3TTL,
@@ -1437,6 +1444,7 @@ func virtualKeyToPayload(vk identity.VirtualKey) configpropagation.VirtualKeyPay
 		PreviousKeyHashExpiresAt: vk.PreviousKeyHashExpiresAt,
 		BillingSubjectID:         vk.BillingSubjectID,
 		CacheScopeToEndUser:      vk.CacheScopeToEndUser,
+		AttributionIDsDisabled:   vk.AttributionIDsDisabled,
 	}
 }
 
@@ -1457,6 +1465,7 @@ func payloadToVirtualKey(p configpropagation.VirtualKeyPayload) identity.Virtual
 		PreviousKeyHashExpiresAt: p.PreviousKeyHashExpiresAt,
 		BillingSubjectID:         p.BillingSubjectID,
 		CacheScopeToEndUser:      p.CacheScopeToEndUser,
+		AttributionIDsDisabled:   p.AttributionIDsDisabled,
 	}
 }
 
@@ -3342,7 +3351,8 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	})
 	realCost = &cost
 	spendUSD, _ := cost.Float64()
-	telemetry.RecordLLMSpend(ctx, spendUSD)
+	attribution := p.effectiveAttribution(ctx, vk)
+	telemetry.RecordLLMSpend(ctx, spendUSD, vk.ID, attribution.ClientTool, attribution.RequestClass)
 
 	return resp, nil
 }
@@ -3414,6 +3424,7 @@ func (p *Pipeline) logEmbeddingsRequest(ctx context.Context, vk *identity.Virtua
 	if vk != nil {
 		fields = append(fields, "virtual_key_id", vk.ID)
 	}
+	fields = append(fields, attributionLogFields(ctx)...)
 	if dep.Name != "" {
 		fields = append(fields, "deployment", dep.Name)
 	}
@@ -4676,6 +4687,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if dep.Name == "" {
 		requestModelForMetrics = "unresolved"
 	}
+	attribution := p.effectiveAttribution(ctx, vk)
 	result := telemetry.ChatCompletionResult{
 		VirtualKeyID:   virtualKeyID,
 		Provider:       dep.Provider,
@@ -4719,6 +4731,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		ErrorType:                          errorType,
 		FallbackOutcome:                    fallbackOutcome,
 		FallbackHops:                       fallback.hops,
+		Attribution:                        attribution,
 		Err:                                err,
 		PromptID:                           req.PromptID,
 		PromptVersion:                      req.PromptVersion,
@@ -4771,7 +4784,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// replays another call's already-recorded spend a second time.
 	if billable {
 		spendUSD, _ := cost.Float64()
-		telemetry.RecordLLMSpend(ctx, spendUSD)
+		telemetry.RecordLLMSpend(ctx, spendUSD, virtualKeyID, attribution.ClientTool, attribution.RequestClass)
 	}
 
 	// savingsUsd was already computed above (before result), shared by
@@ -5150,6 +5163,7 @@ func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req 
 	if vk != nil {
 		fields = append(fields, "virtual_key_id", vk.ID)
 	}
+	fields = append(fields, attributionLogFields(ctx)...)
 	// gatewayevents_v1 is added on BOTH the error and success paths below
 	// — Outcome is exactly as meaningful for a rejection as for a
 	// success, per docs/rfcs/2026-09-03-api-gatewayevents-contract.md. A

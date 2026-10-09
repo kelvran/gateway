@@ -180,6 +180,10 @@ Two restart rules apply once `admin.persist_path` or `admin.redis_addr` is set:
 
 Every admin mutation is audit-logged unless `admin.enable_audit_log: false`. With `admin.audit_log_path` set, entries also go to a JSONL file readable through `GET /admin/audit`.
 
+### Keep Claude Code identifiers off a key's spans
+
+Every request is attributed by the client tool normalised from `User-Agent` and by the `x-claude-code-*` headers Claude Code sends (on `main` since 2026-10-09). The bounded values (client tool, request class) are always recorded; the identifiers (session, agent, parent-agent and prompt ids, agent type) land on the request span by default. `attribution_capture_ids: false` on a key keeps them off that key's spans; the top-level `attribution.capture_ids: false` does it for every key. A request that fails authentication never carries identifiers. See [the configuration reference](../reference/config.md) and [metrics and logs](../reference/metrics-and-logs.md).
+
 ### Scope the response cache to end users
 
 `cache_scope_to_end_user: true` on a key partitions its response cache by the caller-supplied `X-Kelvran-End-User-Id` header. When the header is absent the request gets its own private scope. See [Caching](caching.md). `billing_subject_id` is opaque metadata on the decision event and is never read by enforcement.

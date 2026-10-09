@@ -502,7 +502,13 @@ func RecordChatCompletionMetrics(ctx context.Context, r ChatCompletionResult) {
 	if fallbackOutcome == "" {
 		fallbackOutcome = FallbackOutcomeNone
 	}
-	durationAttrs := append(append([]attribute.KeyValue{}, attrs...), attribute.String(AttrKelvranFallbackOutcome, fallbackOutcome))
+	durationAttrs := append(append([]attribute.KeyValue{}, attrs...),
+		attribute.String(AttrKelvranFallbackOutcome, fallbackOutcome),
+		// The two bounded attribution dimensions (13a) ride the duration
+		// histogram the same way: its own slice, never the token instruments.
+		attribute.String(AttrKelvranClientTool, NormalizedClientTool(r.Attribution.ClientTool)),
+		attribute.String(AttrKelvranClaudeCodeRequestClass, NormalizedRequestClass(r.Attribution.RequestClass)),
+	)
 	operationDurationHistogram.Record(ctx, r.Duration.Seconds(), metric.WithAttributes(durationAttrs...))
 
 	if !r.Billable {
@@ -680,8 +686,18 @@ var llmSpendCounter = mustFloat64Counter(
 // RecordChatCompletionMetrics's own gen_ai.client.token.usage gating, so
 // a cache hit or coalesced singleflight follower never replays another
 // call's already-recorded spend a second time.
-func RecordLLMSpend(ctx context.Context, spendUSD float64) {
-	llmSpendCounter.Add(ctx, spendUSD)
+// RecordLLMSpend adds spendUSD to kelvran.llm.spend_usd with its three
+// bounded dimensions (13a): the virtual key id, the normalised client tool
+// and the Claude Code request class — never an identifier. Callers pass
+// the Attribution fields after the identifier switches have been applied;
+// empty tool/class are normalised to other/none so every data point
+// carries all three.
+func RecordLLMSpend(ctx context.Context, spendUSD float64, keyID, clientTool, requestClass string) {
+	llmSpendCounter.Add(ctx, spendUSD, metric.WithAttributes(
+		attribute.String(AttrKelvranVirtualKeyID, keyID),
+		attribute.String(AttrKelvranClientTool, NormalizedClientTool(clientTool)),
+		attribute.String(AttrKelvranClaudeCodeRequestClass, NormalizedRequestClass(requestClass)),
+	))
 }
 
 // budgetThresholdCrossedCounter counts each NEW crossing of
@@ -915,14 +931,26 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 	}, nil
 }
 
-// ExtractContext returns a copy of ctx carrying any W3C trace context and
-// Baggage present in r's headers, via the global TextMapPropagator Init
-// installed. Callers pass the returned context into the dataplane
-// pipeline so a caller's own trace (if any) becomes the parent of
-// Kelvran's span, and agent_run_id (carried as a Baggage member) becomes
-// readable via AgentRunIDFromContext.
+// ExtractContext returns a copy of ctx carrying the W3C Baggage present in
+// r's headers, so agent_run_id (a Baggage member) becomes readable via
+// AgentRunIDFromContext when callers pass the returned context into the
+// dataplane pipeline. Trace context is deliberately NOT extracted here, and
+// the global TextMapPropagator is not consulted: cmd/gateway's otelhttp
+// wrapper (wrapHTTPServerSpan) extracts traceparent and starts the server
+// span the chat span is nested under — the body explains why re-extracting
+// it here used to re-parent the chat span.
 func ExtractContext(ctx context.Context, r *http.Request) context.Context {
-	return otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
+	// Baggage ONLY. The otelhttp wrapper around the data mux (cmd/gateway's
+	// wrapHTTPServerSpan) already extracts the W3C trace context and starts
+	// the server span (operation "gateway.http"; otelhttp names the span
+	// "{METHOD} {route}"); re-extracting traceparent here with the composite
+	// propagator replaced that span context with the client's remote one, so
+	// the chat span was parented to the CLIENT's span instead of the server
+	// span (13a, docs/rfcs/2026-10-09-gateway-attribution-and-
+	// spend-ledger.md). Baggage is still read here because the test servers
+	// that build a bare mux have no wrapper, and because the wrapper's
+	// propagator is captured at construction while this reads the live one.
+	return propagation.Baggage{}.Extract(ctx, propagation.HeaderCarrier(r.Header))
 }
 
 // AgentRunIDFromContext extracts the "agent_run_id" Baggage member from

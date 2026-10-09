@@ -133,6 +133,18 @@ type VirtualKey struct {
 	// to tenant-only scoping, which would defeat the whole point of
 	// enabling this flag.
 	CacheScopeToEndUser bool
+	// AttributionIDsDisabled, when true, keeps this key's requests from
+	// carrying the Claude Code identifiers (session, agent, parent-agent and
+	// prompt ids, and the open-set agent type) onto the request span, the
+	// identifiers' only sink today (13d's planned spend ledger will read the
+	// same filtered record); the bounded attribution fields (client tool,
+	// request class) are unaffected. Stored INVERTED on purpose: the YAML
+	// key is the positive-sense `attribution_capture_ids` and the admin
+	// field `attribution_capture_ids_disabled`, and both the config loader
+	// (assignBool) and JSON decoding preserve the Go zero value, so false
+	// here means the documented default — identifier capture ON (gate G14
+	// of docs/rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md).
+	AttributionIDsDisabled bool
 	// RateLimitBurst and RateLimitRefill configure this key's own
 	// token-bucket rate limiter (see internal/ratelimit.TokenBucket).
 	RateLimitBurst  float64

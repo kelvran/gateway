@@ -211,6 +211,29 @@ const (
 	// does for the fallback_hop span event); a span attribute, never a metric
 	// dimension, and absent when no fallback happened.
 	AttrKelvranFallbackHops = "kelvran.fallback.hops"
+	// Attribution attributes, per
+	// docs/rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md (13a).
+	// AttrKelvranClientTool is the normalised User-Agent product (a closed
+	// vocabulary, see Attribution.ClientTool): a span attribute AND a metric
+	// dimension on kelvran.llm.spend_usd and gen_ai.client.operation.duration.
+	// AttrKelvranClaudeCodeRequestClass is the other bounded dimension.
+	// Every other kelvran.claude_code.* attribute is an identifier or an
+	// open set and is a span attribute ONLY — never a metric label, never a
+	// log field. AttrKelvranAttributionHeader is the single attribute of the
+	// kelvran.attribution.dropped counter (a header name, never a value).
+	AttrKelvranClientTool                  = "kelvran.client.tool"
+	AttrKelvranClaudeCodeSessionID         = "kelvran.claude_code.session_id"
+	AttrKelvranClaudeCodeAgentID           = "kelvran.claude_code.agent_id"
+	AttrKelvranClaudeCodeParentAgentID     = "kelvran.claude_code.parent_agent_id"
+	AttrKelvranClaudeCodePromptID          = "kelvran.claude_code.prompt_id"
+	AttrKelvranClaudeCodeRequestClass      = "kelvran.claude_code.request_class"
+	AttrKelvranClaudeCodeAgentType         = "kelvran.claude_code.agent_type"
+	AttrKelvranClaudeCodeCompaction        = "kelvran.claude_code.compaction"
+	AttrKelvranClaudeCodeContextCompacted  = "kelvran.claude_code.context_compacted"
+	AttrKelvranClaudeCodePrevToolDurations = "kelvran.claude_code.prev_tool_durations"
+	AttrKelvranClaudeCodePrevToolCount     = "kelvran.claude_code.prev_tool_count"
+	AttrKelvranClaudeCodePrevToolTotalMS   = "kelvran.claude_code.prev_tool_total_ms"
+	AttrKelvranAttributionHeader           = "kelvran.attribution.header"
 	// AttrKelvranCacheLookupOutcome is "hit" or "miss", per
 	// telemetry.RecordCacheLookup — the aggregate, queryable counterpart
 	// to AttrKelvranCacheHit (a per-request span attribute only), per
@@ -490,6 +513,13 @@ type ChatCompletionResult struct {
 	// FallbackHops is fallbackInfo.hops: the fallback hops admitted to the
 	// deployment call. 0 when no fallback happened; set on the span only.
 	FallbackHops int
+
+	// Attribution is the request's attribution record (13a), already
+	// filtered by the identifier switches: finalize blanks the identifier
+	// fields before building this result when the virtual key or the
+	// gateway has identifier capture off. Bounded fields feed metric
+	// dimensions; identifiers feed span attributes only.
+	Attribution Attribution
 }
 
 // RecordChatCompletionResult sets every attribute only knowable once a
@@ -536,6 +566,7 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	if r.FallbackHops > 0 {
 		attrs = append(attrs, attribute.Int(AttrKelvranFallbackHops, r.FallbackHops))
 	}
+	attrs = appendAttributionSpanAttrs(attrs, r.Attribution)
 	if r.AgentRunID != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranAgentRunID, r.AgentRunID))
 	}
@@ -591,4 +622,34 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 		span.RecordError(r.Err)
 		span.SetStatus(codes.Error, r.Err.Error())
 	}
+}
+
+// appendAttributionSpanAttrs appends every set field of a as a span
+// attribute (identifiers included — spans are the one sink identifiers are
+// allowed on). ClientTool is appended whenever set; an empty ClientTool means
+// the request never passed the capture middleware and nothing is fabricated.
+func appendAttributionSpanAttrs(attrs []attribute.KeyValue, a Attribution) []attribute.KeyValue {
+	for _, kv := range []struct{ key, val string }{
+		{AttrKelvranClientTool, a.ClientTool},
+		{AttrKelvranClaudeCodeSessionID, a.SessionID},
+		{AttrKelvranClaudeCodeAgentID, a.AgentID},
+		{AttrKelvranClaudeCodeParentAgentID, a.ParentAgentID},
+		{AttrKelvranClaudeCodePromptID, a.ClaudeCodePromptID},
+		{AttrKelvranClaudeCodeRequestClass, a.RequestClass},
+		{AttrKelvranClaudeCodeAgentType, a.AgentType},
+		{AttrKelvranClaudeCodeCompaction, a.Compaction},
+		{AttrKelvranClaudeCodeContextCompacted, a.ContextCompacted},
+		{AttrKelvranClaudeCodePrevToolDurations, a.PrevToolDurations},
+	} {
+		if kv.val != "" {
+			attrs = append(attrs, attribute.String(kv.key, kv.val))
+		}
+	}
+	if a.PrevToolCount > 0 {
+		attrs = append(attrs,
+			attribute.Int(AttrKelvranClaudeCodePrevToolCount, a.PrevToolCount),
+			attribute.Int(AttrKelvranClaudeCodePrevToolTotalMS, a.PrevToolTotalMS),
+		)
+	}
+	return attrs
 }

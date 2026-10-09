@@ -139,9 +139,9 @@ const telemetryShutdownTimeout = 5 * time.Second
 // returned handler serves — used only on the client-facing mux, never
 // the admin mux (admin writes are already short/synchronous, with
 // nothing analogous to a long-running streamed request's own deferred
-// finalize to protect). Applied around wrapHTTPServerSpan's own span
-// creation (Handler: trackInFlight(wg, wrapHTTPServerSpan(mux)) at this
-// function's call site), so a request drained by drainInFlight below
+// finalize to protect). Applied outermost by dataPlaneHandler
+// (attribution.go) — trackInFlight → captureAttribution →
+// wrapHTTPServerSpan → mux — so a request drained by drainInFlight below
 // still gets a properly-closed span, not one abandoned mid-flight.
 func trackInFlight(wg *sync.WaitGroup, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -626,8 +626,10 @@ func run(configPath string, logger *slog.Logger) error {
 	// postShutdownDrainGrace's own doc comment.
 	var inFlight sync.WaitGroup
 	server := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: trackInFlight(&inFlight, wrapHTTPServerSpan(mux)),
+		Addr: cfg.ListenAddr,
+		// dataPlaneHandler (attribution.go): in-flight tracking, attribution
+		// capture, the otelhttp server span, then the mux.
+		Handler: dataPlaneHandler(mux, &inFlight, !cfg.Attribution.CaptureIDsDisabled),
 		// ReadHeaderTimeout: an unset value leaves this server open to a
 		// real Slowloris attack (a client trickling request headers in
 		// to hold a connection slot open indefinitely), caught by gosec.
@@ -980,19 +982,20 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			allowedSourceCIDRs = append(allowedSourceCIDRs, network)
 		}
 		virtualKeys = append(virtualKeys, identity.VirtualKey{
-			ID:                    vk.Name,
-			KeyHash:               vk.KeyHash,
-			BudgetUSD:             vk.BudgetUSD,
-			BudgetResetInterval:   time.Duration(vk.BudgetResetIntervalSeconds) * time.Second,
-			BudgetWarnPercent:     vk.BudgetWarnPercent,
-			AllowedModels:         allowedModels,
-			AllowedRegions:        allowedRegions,
-			AllowedSourceCIDRs:    allowedSourceCIDRs,
-			RateLimitBurst:        burst,
-			RateLimitRefill:       refill,
-			MaxConcurrentRequests: vk.MaxConcurrentRequests,
-			BillingSubjectID:      vk.BillingSubjectID,
-			CacheScopeToEndUser:   vk.CacheScopeToEndUser,
+			ID:                     vk.Name,
+			KeyHash:                vk.KeyHash,
+			BudgetUSD:              vk.BudgetUSD,
+			BudgetResetInterval:    time.Duration(vk.BudgetResetIntervalSeconds) * time.Second,
+			BudgetWarnPercent:      vk.BudgetWarnPercent,
+			AllowedModels:          allowedModels,
+			AllowedRegions:         allowedRegions,
+			AllowedSourceCIDRs:     allowedSourceCIDRs,
+			RateLimitBurst:         burst,
+			RateLimitRefill:        refill,
+			MaxConcurrentRequests:  vk.MaxConcurrentRequests,
+			BillingSubjectID:       vk.BillingSubjectID,
+			CacheScopeToEndUser:    vk.CacheScopeToEndUser,
+			AttributionIDsDisabled: vk.AttributionIDsDisabled,
 		})
 		var perModel map[string]ratelimit.ModelRateLimit
 		if len(vk.PerModelRateLimits) > 0 {
@@ -1309,11 +1312,12 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		// streaming upstream used to hang indefinitely, bounded only by
 		// the original inbound client disconnecting). See that function's
 		// own doc comment for the full design rationale.
-		UpstreamStream: dataplane.NewHTTPUpstreamStreamCaller(&http.Client{Transport: upstreamTransport}, perDeploymentStreamClients, streamIdleTimeout),
-		Logger:         logger,
-		CacheTTL:       time.Duration(cfg.Cache.TTLSeconds) * time.Second,
-		CacheL2TTL:     time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
-		CacheL3TTL:     time.Duration(cfg.Cache.L3.TTLSeconds) * time.Second,
+		UpstreamStream:         dataplane.NewHTTPUpstreamStreamCaller(&http.Client{Transport: upstreamTransport}, perDeploymentStreamClients, streamIdleTimeout),
+		Logger:                 logger,
+		AttributionIDsDisabled: cfg.Attribution.CaptureIDsDisabled,
+		CacheTTL:               time.Duration(cfg.Cache.TTLSeconds) * time.Second,
+		CacheL2TTL:             time.Duration(cfg.Cache.L2.TTLSeconds) * time.Second,
+		CacheL3TTL:             time.Duration(cfg.Cache.L3.TTLSeconds) * time.Second,
 	})
 }
 

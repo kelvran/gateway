@@ -425,6 +425,11 @@ type VirtualKeyConfig struct {
 	// the caller-supplied X-Kelvran-End-User-Id header into this key's
 	// own L1/L2 response-cache partitioning.
 	CacheScopeToEndUser bool
+	// AttributionIDsDisabled is set when the YAML key
+	// `attribution_capture_ids` is present and false; stored inverted so the
+	// zero value is the default (identifier capture on). See
+	// identity.VirtualKey.AttributionIDsDisabled.
+	AttributionIDsDisabled bool
 }
 
 // ModelRateLimitConfig is one virtual key's per-model RPM override — see
@@ -464,6 +469,15 @@ type TelemetryConfig struct {
 	Exporter string
 	// OTLPEndpoint is read only when Exporter == "otlp".
 	OTLPEndpoint string
+}
+
+// AttributionConfig is the optional top-level `attribution:` section, per
+// docs/rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md (13a).
+// CaptureIDsDisabled is set when `capture_ids` is present and false; it is
+// stored inverted so the zero value is the default (identifier capture
+// on). The bounded attribution fields are always captured.
+type AttributionConfig struct {
+	CaptureIDsDisabled bool
 }
 
 // RedisAuthConfig holds optional AUTH/TLS settings for a Redis
@@ -988,7 +1002,8 @@ type Config struct {
 	// for GET /v1/models), keyed by canonical model name; nil when absent.
 	Models map[string]ModelMetadataConfig
 	// Telemetry configures OTel span export. Optional.
-	Telemetry TelemetryConfig
+	Telemetry   TelemetryConfig
+	Attribution AttributionConfig
 	// Budget configures budget-spend persistence. Optional.
 	Budget BudgetConfig
 	// Prompt configures prompt-template persistence. Optional.
@@ -1135,6 +1150,11 @@ func Load(path string) (*Config, error) {
 		if err := assignBool(&vk.CacheScopeToEndUser, vkMap, "cache_scope_to_end_user", fmt.Sprintf("controlplane: virtual key %q", name)); err != nil {
 			return nil, err
 		}
+		if captureIDs, present, err := getBool(vkMap, "attribution_capture_ids"); err != nil {
+			return nil, fmt.Errorf("controlplane: virtual key %q attribution_capture_ids: %w", name, err)
+		} else if present && !captureIDs {
+			vk.AttributionIDsDisabled = true
+		}
 		cfg.VirtualKeys = append(cfg.VirtualKeys, vk)
 	}
 	sort.Slice(cfg.VirtualKeys, func(i, j int) bool { return cfg.VirtualKeys[i].Name < cfg.VirtualKeys[j].Name })
@@ -1257,6 +1277,24 @@ func Load(path string) (*Config, error) {
 	if telemetryRaw, ok := getMap(root, "telemetry"); ok {
 		cfg.Telemetry.Exporter, _ = getString(telemetryRaw, "exporter")
 		cfg.Telemetry.OTLPEndpoint, _ = getString(telemetryRaw, "otlp_endpoint")
+	}
+	// attribution's only key is a privacy switch, so a section that is not
+	// a mapping (`attribution: false`, the natural typo for "turn it off")
+	// fails startup instead of being skipped with identifier capture left
+	// ON. A bare `attribution:` line with no keys parses as an empty
+	// mapping and means the defaults; this YAML subset has no flow style
+	// and no null, so `attribution: {}` and `attribution: null` are scalars
+	// and fail here too.
+	if raw, present := root["attribution"]; present {
+		attributionRaw, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("controlplane: attribution must be a mapping (got %T)", raw)
+		}
+		if captureIDs, set, err := getBool(attributionRaw, "capture_ids"); err != nil {
+			return nil, fmt.Errorf("controlplane: attribution.capture_ids: %w", err)
+		} else if set && !captureIDs {
+			cfg.Attribution.CaptureIDsDisabled = true
+		}
 	}
 
 	if budgetRaw, ok := getMap(root, "budget"); ok {

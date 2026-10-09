@@ -679,8 +679,8 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 	RecordCacheLookup(ctx, "L3", true)
 	RecordCacheLookup(ctx, "", false)
 	RecordCacheLookup(ctx, "", false)
-	RecordLLMSpend(ctx, 0.01)
-	RecordLLMSpend(ctx, 0.02)
+	RecordLLMSpend(ctx, 0.01, "test-key", ClientToolCurl, "main")
+	RecordLLMSpend(ctx, 0.02, "test-key", ClientToolCurl, "main")
 
 	// kelvran.persistence.failed, per
 	// docs/upgrade-research/admin-operator-experience-2026-09-14.md —

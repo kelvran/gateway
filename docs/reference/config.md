@@ -63,6 +63,7 @@ The gateway parses `config.yaml` with a hand-rolled YAML subset, not a YAML libr
 | `price_table` | `mapping` | empty | Per-model USD prices. See [price_table](#price_tablemodel) | cost accounting |
 | `models` | `mapping` | absent | Display metadata for `GET /v1/models`. See [models](#modelsmodel). On `main` since 2026-10-08, not in gateway/v0.17.0 | `GET /v1/models` |
 | `telemetry` | `mapping` | stdout exporter | See [telemetry](#telemetry) | telemetry |
+| `attribution` | `mapping` | identifier capture on | See [attribution](#attribution). On `main` since 2026-10-09 | attribution middleware, dataplane |
 | `budget` | `mapping` | in-memory | See [budget](#budget) | budget tracker |
 | `prompt` | `mapping` | in-memory | See [prompt](#prompt) | prompt store |
 | `rate_limit` | `mapping` | in-memory | See [rate_limit](#rate_limit) | per-key limiter |
@@ -90,6 +91,7 @@ Each entry is a tenant credential issued by Kelvran. The entry name is the key's
 | `allowed_source_cidrs` | `name → bool` | empty (no constraint) | CIDR blocks the client source IP must fall within (`"10.0.0.0/8"`, `"203.0.113.4/32"`). Each `true` entry must parse with `net.ParseCIDR` at load time; a `false` entry is not syntax-checked |
 | `billing_subject_id` | `string` | empty | Opaque external billing identifier. Never read by an enforcement path |
 | `cache_scope_to_end_user` | `bool` | `false` | Folds the caller's `X-Kelvran-End-User-Id` header into this key's L1/L2 cache partition |
+| `attribution_capture_ids` | `bool` | `true` | `false` keeps this key's requests from carrying the Claude Code identifiers (session, agent, parent-agent, prompt ids, agent type) onto the request span; the bounded attribution fields (client tool, request class) are always captured. Identifiers are only ever recorded for authenticated requests. A non-boolean value fails startup. On `main` since 2026-10-09 |
 
 ### `virtual_keys.<name>.rate_limit`
 
@@ -234,6 +236,16 @@ The model name must match some deployment's `model`, else load error. Any key ot
 | `otlp_endpoint` | `string` | empty | Read only when `exporter` is `otlp`. A `host:port` value; the scheme defaults to HTTPS. Set the environment variable `OTEL_EXPORTER_OTLP_INSECURE=true` for a plain-HTTP collector |
 
 Exporter construction never dials, so an unreachable collector does not stop startup. Details in [TELEMETRY.md](../operations/TELEMETRY.md) and [metrics-and-logs.md](metrics-and-logs.md).
+
+## `attribution`
+
+On `main` since 2026-10-09, not in gateway/v0.17.0. The whole section is optional; when present it must be a mapping: `attribution: false`, `attribution: {}` and `attribution: null` all fail startup (the configuration's YAML subset has no flow style and no null, so each is read as a scalar), while a bare `attribution:` line with no keys means the defaults.
+
+| Key | Type | Default | Meaning and validation |
+|---|---|---|---|
+| `capture_ids` | `bool` | `true` | `false` keeps every request from carrying the Claude Code identifiers (`x-claude-code-session-id`, `-agent-id`, `-parent-agent-id`, `-prompt-id`, `-agent-type`) onto the request span. The bounded attribution values — the normalised `User-Agent` client tool and the request class — are always captured as metric dimensions and log fields (normalised to `other` / `none` when absent) and as span attributes when present (the request class reaches the span only when its header was sent). A request that fails authentication never carries identifiers, whatever this switch says. A non-boolean value fails startup. Per-key opt-out: `virtual_keys.<name>.attribution_capture_ids`. |
+
+See [the attribution and spend-ledger RFC](../rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md) and [metrics-and-logs.md](metrics-and-logs.md).
 
 ## `budget`
 

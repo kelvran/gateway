@@ -327,6 +327,16 @@ telemetry:
   exporter: "stdout" # "stdout" | "otlp" | "none"
   # otlp_endpoint: "localhost:4318"   # only read when exporter: "otlp"
 
+# Request attribution (docs/rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md).
+# Optional (when present, a mapping). The normalised User-Agent client tool and
+# the Claude Code request class are always captured as metric dimensions and
+# log fields, and as span attributes when present.
+# capture_ids: false keeps the Claude Code identifiers (session, agent,
+# parent-agent and prompt ids, agent type) off the request span for every
+# key; the per-key form is virtual_keys.<name>.attribution_capture_ids: false.
+# attribution:
+#   capture_ids: true
+
 # Distributed (Redis-backed) rate limiting — see
 # docs/rfcs/2026-09-03-distributed-rate-limiting.md. Optional: omit this
 # whole section (or leave it commented out) for the default in-memory,

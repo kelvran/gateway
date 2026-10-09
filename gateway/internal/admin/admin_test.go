@@ -1816,3 +1816,55 @@ func TestEraseCacheEntryHandlerOnNeverCachedEntryStillReturns200(t *testing.T) {
 		t.Errorf("response = %+v, want both found flags false", resp)
 	}
 }
+
+// attribution_capture_ids_disabled round-trips through the admin API (13a):
+// the per-key identifier switch is stored inverted so an omitted field keeps
+// capture ON, and a key created through POST must carry an explicit opt-out
+// to the pipeline and back out through GET.
+func TestUpsertVirtualKeyAttributionCaptureIDsDisabledRoundTrips(t *testing.T) {
+	pipeline := newTestPipeline(t)
+	h := Handler(testConfig(), pipeline, Credentials{Admin: fakeAdminCredential()}, discardLogger(), nil)
+	body := `{"key_hash":"` + strings.Repeat("ab", 32) + `","budget_usd":"5","attribution_capture_ids_disabled":true}`
+	if rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/attr-off", fakeAdminCredential(), body); rec.Code != http.StatusNoContent {
+		t.Fatalf("POST status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	vk, ok := pipeline.GetVirtualKey("attr-off")
+	if !ok || !vk.AttributionIDsDisabled {
+		t.Fatalf("pipeline key attr-off: present=%v AttributionIDsDisabled=%v, want true", ok, vk.AttributionIDsDisabled)
+	}
+	rec := doRequest(t, h, http.MethodGet, "/admin/virtual_keys", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"attribution_capture_ids_disabled":true`) {
+		t.Errorf("list entry must expose the opt-out: %s", rec.Body.String())
+	}
+	// A key created WITHOUT the field keeps capture on, and its list entry
+	// omits the field (omitempty) while attr-off's still carries it.
+	body = `{"key_hash":"` + strings.Repeat("cd", 32) + `","budget_usd":"5"}`
+	if rec := doRequest(t, h, http.MethodPost, "/admin/virtual_keys/attr-default", fakeAdminCredential(), body); rec.Code != http.StatusNoContent {
+		t.Fatalf("POST default status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if vk, ok := pipeline.GetVirtualKey("attr-default"); !ok || vk.AttributionIDsDisabled {
+		t.Errorf("attr-default: AttributionIDsDisabled = %v, want false (capture ON by default)", vk.AttributionIDsDisabled)
+	}
+	rec = doRequest(t, h, http.MethodGet, "/admin/virtual_keys", fakeAdminCredential(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second GET status = %d", rec.Code)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decoding GET /admin/virtual_keys: %v (body %q)", err, rec.Body.String())
+	}
+	byID := map[string]map[string]any{}
+	for _, e := range entries {
+		id, _ := e["id"].(string)
+		byID[id] = e
+	}
+	if _, present := byID["attr-default"]["attribution_capture_ids_disabled"]; present {
+		t.Errorf("attr-default entry must omit attribution_capture_ids_disabled: %v", byID["attr-default"])
+	}
+	if v, _ := byID["attr-off"]["attribution_capture_ids_disabled"].(bool); !v {
+		t.Errorf("attr-off entry must still carry attribution_capture_ids_disabled:true: %v", byID["attr-off"])
+	}
+}
