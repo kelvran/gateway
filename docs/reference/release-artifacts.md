@@ -59,7 +59,7 @@ One `gateway/vX.Y.Z` tag produces the following set. Every file except `checksum
 | `CGO_ENABLED` | `0` |
 | Flags | `-trimpath` |
 | ldflags | `-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}` |
-| Go toolchain | `go 1.26.8`, the `go` directive of `gateway/go.mod`, resolved by `actions/setup-go` (`go-version-file`). The container image is built with `golang:1.27.1-alpine` instead (see "Image contents"), so the `<go version>` field of `-version` differs between a package and the image of the same release |
+| Go toolchain | `go 1.26.9`, the `go` directive of `gateway/go.mod`, resolved by `actions/setup-go` (`go-version-file`). The container image is built with `golang:1.27.1-alpine` instead (see "Image contents"), so the `<go version>` field of `-version` differs between a package and the image of the same release |
 | GoReleaser mode | `release --snapshot --clean --skip=publish,validate`, `GORELEASER_CURRENT_TAG` set to the pushed tag |
 | Version source in snapshot mode | `snapshot.version_template: '{{ trimprefix (trimprefix .Tag "gateway/") "v" }}'` |
 | GoReleaser changelog | Disabled (`changelog.disable: true`); the Release body is the dated changelog file |

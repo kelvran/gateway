@@ -23,7 +23,7 @@ What it does that most gateways do not, with the code that proves it:
 ## Quickstart (five minutes)
 
 ```bash
-# (a) Go 1.26.8+ (or any Go 1.21+ with the default GOTOOLCHAIN=auto, which fetches 1.26.8); the binary lands at $(go env GOPATH)/bin/gateway
+# (a) Go 1.26.9+ (or any Go 1.21+ with the default GOTOOLCHAIN=auto, which fetches 1.26.9); the binary lands at $(go env GOPATH)/bin/gateway
 go install github.com/kelvran/gateway/gateway/cmd/gateway@latest
 ```
 

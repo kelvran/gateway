@@ -6,7 +6,7 @@ This tutorial takes you from a fresh clone to one successful, OpenAI-shaped chat
 
 You need:
 
-- A Go toolchain that satisfies `gateway/go.mod` (`go 1.26.8`).
+- A Go toolchain that satisfies `gateway/go.mod` (`go 1.26.9`).
 - `git`, `curl`, `openssl`, and `shasum` (macOS) or `sha256sum` (Linux). The steps below use `shasum -a 256`; on Linux, substitute `sha256sum` in the same position.
 - An OpenAI API key. The gateway reads it from an environment variable at startup and never stores it.
 - Python 3 with the OpenAI SDK, for Step 9 only: `python3 -m pip install openai`. Skip Step 9 if you do not want Python; Steps 7 and 8 already prove the gateway works.
@@ -24,7 +24,7 @@ go build -o /tmp/kelvran-gateway ./cmd/gateway
 /tmp/kelvran-gateway -version
 ```
 
-What you should see: one line of the form `kelvran-gateway dev (none, built unknown, go1.26.8, darwin/arm64)`. A source build identifies itself as `dev`; the Go version and platform reflect your machine. The binary prints this without reading any config.
+What you should see: one line of the form `kelvran-gateway dev (none, built unknown, go1.26.9, darwin/arm64)`. A source build identifies itself as `dev`; the Go version and platform reflect your machine. The binary prints this without reading any config.
 
 ## Step 2: Generate a virtual key
 
@@ -103,7 +103,7 @@ cat /tmp/kelvran-gateway.log
 What you should see on a Linux host: three JSON log lines, in this order.
 
 ```text
-{"time":"...","level":"INFO","msg":"build_info","version":"dev","commit":"none","date":"unknown","go_version":"go1.26.8","platform":"linux/amd64"}
+{"time":"...","level":"INFO","msg":"build_info","version":"dev","commit":"none","date":"unknown","go_version":"go1.26.9","platform":"linux/amd64"}
 {"time":"...","level":"INFO","msg":"gateway_starting","instance_id":"..."}
 {"time":"...","level":"INFO","msg":"gateway listening","addr":":8080"}
 ```

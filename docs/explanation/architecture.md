@@ -66,7 +66,7 @@ A second binary, `cmd/kelvran-bench`, drives open-loop load through a gateway an
 
 ## What is real in the stack, and what is only a target
 
-The Go toolchain floor is `go 1.26.8`. The direct dependencies that ship in the binary are the standard library's `net/http`, `go-redis/v9`, `bbolt`, the OpenTelemetry SDK with OTLP and stdout exporters, `shopspring/decimal` for cost arithmetic, `automemlimit` for a cgroup-aware `GOMEMLIMIT`, `aws-sdk-go-v2` for Bedrock SigV4 and event streams, `chromem-go` for the embedding-similarity guardrail, `golang.org/x/sync` for singleflight, `golang.org/x/text` for NFC normalization and `google.golang.org/protobuf` for the contract. Upstream calls and the SSE relay are hand-rolled over `net/http`; nothing imports `httputil.ReverseProxy`. The Tech Stack table in [gateway/ARCHITECTURE.md](../../gateway/ARCHITECTURE.md) names Postgres and ClickHouse as targets; they are not code.
+The Go toolchain floor is `go 1.26.9`. The direct dependencies that ship in the binary are the standard library's `net/http`, `go-redis/v9`, `bbolt`, the OpenTelemetry SDK with OTLP and stdout exporters, `shopspring/decimal` for cost arithmetic, `automemlimit` for a cgroup-aware `GOMEMLIMIT`, `aws-sdk-go-v2` for Bedrock SigV4 and event streams, `chromem-go` for the embedding-similarity guardrail, `golang.org/x/sync` for singleflight, `golang.org/x/text` for NFC normalization and `google.golang.org/protobuf` for the contract. Upstream calls and the SSE relay are hand-rolled over `net/http`; nothing imports `httputil.ReverseProxy`. The Tech Stack table in [gateway/ARCHITECTURE.md](../../gateway/ARCHITECTURE.md) names Postgres and ClickHouse as targets; they are not code.
 
 ## Not available today
 

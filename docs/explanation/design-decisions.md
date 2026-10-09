@@ -43,7 +43,7 @@ The boundary between the two is a versioned protobuf contract in `api/`, generat
 
 The ADR allows one refinement: a narrow, profiled Rust FFI island inside the cache for similarity or tokenization math, behind a stable interface, and never touching auth, routing, quota or spend logic. The ADR grounds that hard rule in a community Rust port of LiteLLM's auth and rate-limiting that surfaced eleven open security findings, including auth bypass and spend-limit bypass.
 
-ADR 0003 also carries a correction dated 2026-10-08. The toolchain and library specifics in its outcome paragraph recorded the 2026-09-02 intent and drifted from the code; the decision itself is unchanged. Today the Go floor is `go 1.26.8` in `gateway/go.mod`, upstream calls and the SSE relay are hand-rolled over `net/http`, evals orchestration is `asyncio` only, and Ray and the numeric libraries named in the original text are not dependencies. Ray was evaluated and declined on 2026-09-07 in [the sandbox-pool RFC](../rfcs/2026-09-07-evals-sandbox-pool-deferred-decision.md).
+ADR 0003 also carries a correction dated 2026-10-08. The toolchain and library specifics in its outcome paragraph recorded the 2026-09-02 intent and drifted from the code; the decision itself is unchanged. Today the Go floor is `go 1.26.9` in `gateway/go.mod`, upstream calls and the SSE relay are hand-rolled over `net/http`, evals orchestration is `asyncio` only, and Ray and the numeric libraries named in the original text are not dependencies. Ray was evaluated and declined on 2026-09-07 in [the sandbox-pool RFC](../rfcs/2026-09-07-evals-sandbox-pool-deferred-decision.md).
 
 ## What DESIGN.md got right and where it moved
 

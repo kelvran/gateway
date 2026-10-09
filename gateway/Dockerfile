@@ -4,10 +4,10 @@
 
 # --- builder stage ---
 # Pinned by digest (independently re-verified via `docker buildx
-# imagetools inspect golang:1.27.1-alpine` -- matches exactly, not
+# imagetools inspect golang:1.27.2-alpine` -- matches exactly, not
 # blindly copied from a remediation suggestion) -- closes a real open
 # OpenSSF Scorecard Pinned-Dependencies finding (PinnedDependenciesID:
-# "containerImage not pinned by hash"). Resolves to golang:1.27.1-alpine
+# "containerImage not pinned by hash"). Resolves to golang:1.27.2-alpine
 # as of this pin -- a trailing "# 1.27.1-alpine" comment on the FROM
 # line itself is NOT valid Dockerfile syntax (confirmed by a real local
 # build failure, "FROM requires either one or three arguments", not
@@ -18,7 +18,7 @@
 # where Go then defaults to the host). Only the tiny FROM scratch stage
 # below is per-platform, and it only COPYs files, so a linux/arm64 image
 # needs neither an emulated compile nor QEMU at all.
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:85dc1069ac644ea3c527b177303a406eb3358192816cd7f9e5848eb658851673 AS builder
 
 WORKDIR /src
 

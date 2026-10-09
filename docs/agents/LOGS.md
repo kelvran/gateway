@@ -3854,3 +3854,19 @@ Stale comments corrected where the verification contradicted them: `main.go`'s i
 **Bugs found:** none in code. One record gap: the v0.16.0 changelog never named the 2026-09-26 redaction fix; the outline tells the owner to add a dated line if the advisory is published.
 
 **Next steps / resume point:** owner: register at bestpractices.dev and paste; decide on the retroactive advisory; enable push protection; Artifact Hub registration; open the two directory PRs on go-ahead. Then plan item 16 (comparison pages), the item-11 RFC, and 15a once a tagged release with assets exists.
+
+---
+
+## [2026-10-09] main — toolchain point releases: eleven reachable Go vulnerabilities closed
+
+**Files touched:** `gateway/go.mod`, `gateway/go.sum`, `gateway/Dockerfile`, `.github/workflows/{ci,bench-nightly,codeql,iac-scan}.yml`, `README.md`, `docs/explanation/{architecture,design-decisions}.md`, `docs/tutorials/quickstart.md`, `docs/reference/release-artifacts.md`, `gateway/changelog/unreleased.md`; this entry.
+
+**Intent/summary:** CI failed on `29851bca` (a docs-only commit) in `govulncheck`: Go 1.26.9 and 1.27.2 had shipped that morning with fixes for eleven standard-library vulnerabilities (`net/http`, `crypto/tls`, `html/template`, `mime/multipart`) that the gateway reaches, and `golang.org/x/net` v0.60.0 carries four of the same fixes. Every pin moved together: `go 1.26.9` in `go.mod`, `setup-go` in the four workflows that pin a version (`release.yml` reads `go.mod`), the builder image to `golang:1.27.2-alpine` by digest, `x/net` to v0.60.0 (`x/crypto` v0.57.0 and `x/sys` v0.48.0 moved with it, `go mod tidy` also dropped 81 stale `go.sum` lines). Living docs that quote the floor follow; dated history (THREAT_MODEL change log, STATUS narrative, older changelogs, RFCs) keeps `1.26.8`.
+
+**Decisions made:** bump the module floor to the exact patched point release rather than leaving `go 1.26.8` and relying on `GOTOOLCHAIN=auto`, so `govulncheck`, the build and the binary all see the same standard library; keep CI's `govulncheck` as a hard gate — this is exactly the failure it exists for.
+
+**Verification performed:** `GOTOOLCHAIN=go1.26.9 govulncheck ./...` and `GOTOOLCHAIN=go1.27.2 govulncheck ./...` both "No vulnerabilities found" (before the `x/net` bump the 1.26.9 run still reported the four `x/net` copies — GO-2026-6617, 6612, 6611, 6603 — which is how the second bump was found); `go build`, `go vet`, `golangci-lint` clean on 1.26.9; `actionlint` on the four workflows; the module's race suite on 1.26.9: 40 packages ok, exit 0 (`GOTOOLCHAIN=go1.26.9 go test ./... -race -count=1`).
+
+**Bugs found:** none in Kelvran code; eleven upstream vulnerabilities reachable from it, closed by the bumps.
+
+**Next steps / resume point:** item 16 (comparison pages) in flight; then the item-11 RFC.
