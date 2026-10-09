@@ -8,6 +8,8 @@ Please include: affected component (Gateway/Cache/Evals — MCP/A2A brokering ha
 
 **Acknowledgement / resolution targets** (real and contractual as of `gateway/v0.1.0`/`evals/v0.1.0`, tagged 2026-09-03 — the "first real release" condition below has been met): acknowledgement within 3 business days; a fix or mitigation plan communicated within 14 days for Critical/High severity.
 
+**CVE numbering (added 2026-10-09)**: Kelvran uses GitHub as its CVE Numbering Authority through repository security advisories. Maintainers request a CVE for every vulnerability fixed in a shipped release, including Low severity, and publish the advisory on the fix's release day. No CVE has been assigned to a Kelvran vulnerability so far; the security fixes shipped before this statement are listed in each release's `## Security` section under `gateway/changelog/` and `evals/changelog/`, and whether to publish a retroactive advisory for any of them is the maintainer's decision.
+
 ## Vulnerability Severity Taxonomy
 
 Adapted to this system's three actual attack surfaces (not a generic CVSS-only scale):
