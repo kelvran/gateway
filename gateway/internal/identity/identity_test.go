@@ -221,3 +221,26 @@ func TestKeysReturnsEveryConfiguredKey(t *testing.T) {
 		t.Errorf("team-alpha KeyHash = %q, want the normalized hash of alpha-secret", byID["team-alpha"].KeyHash)
 	}
 }
+
+// TestHashSecretMatchesTheDocumentedRecipeAndVerify pins HashSecret to the
+// operator recipe the README documents (`printf '%s' 'test-key' | shasum -a
+// 256` produced the literal below on 2026-10-10) and proves it is the same
+// digest Verify looks up, so a key whose key_hash was minted with
+// HashSecret authenticates its secret and no other.
+func TestHashSecretMatchesTheDocumentedRecipeAndVerify(t *testing.T) {
+	const want = "62af8704764faf8ea82fc61ce9c4c3908b6cb97d463a634e9e587d7c885db0ef"
+	if got := HashSecret("test-key"); got != want {
+		t.Fatalf("HashSecret(\"test-key\") = %q, want the sha256sum recipe's %q", got, want)
+	}
+	v, err := NewVerifier([]VirtualKey{{ID: "k", KeyHash: HashSecret("pw-one")}})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	key, err := v.Verify("Bearer pw-one")
+	if err != nil || key.ID != "k" {
+		t.Fatalf("Verify with the minted secret: key=%v err=%v", key, err)
+	}
+	if _, err := v.Verify("Bearer test-key"); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("Verify with a different secret: err = %v, want ErrInvalidKey", err)
+	}
+}

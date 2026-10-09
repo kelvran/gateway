@@ -307,6 +307,18 @@ func normalizeKeyHash(hash string) (string, error) {
 	return strings.ToLower(hash), nil
 }
 
+// HashSecret returns the hex-encoded, lower-case SHA-256 digest of a raw
+// virtual-key secret: the key_hash the config file and the admin API store,
+// and the exact lookup key Verify computes for a presented bearer, so a
+// caller that mints a secret (kelvran init / keys create, RFC-3) writes
+// precisely what Verify will match. It is the Go form of the documented
+// recipe `printf '%s' "$SECRET" | sha256sum`. Exported 2026-10-10; Verify
+// itself calls it, so the two cannot drift.
+func HashSecret(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
+}
+
 // Verify checks the raw value of an incoming Authorization header against
 // the configured virtual keys and returns the one that matches.
 //
@@ -323,8 +335,7 @@ func (v *Verifier) Verify(authorizationHeader string) (*VirtualKey, error) {
 	}
 	presented := strings.TrimPrefix(authorizationHeader, bearerPrefix)
 
-	sum := sha256.Sum256([]byte(presented))
-	presentedHash := hex.EncodeToString(sum[:])
+	presentedHash := HashSecret(presented)
 
 	key, ok := v.keys[presentedHash]
 	if !ok {

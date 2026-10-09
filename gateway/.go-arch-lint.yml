@@ -35,6 +35,7 @@ components:
   dataplane:         { in: gateway/dataplane }
   admin:             { in: admin }
   admin-auditstore:  { in: admin/auditstore }
+  adminapi:          { in: adminapi }
   prompt:            { in: prompt }
   prompt-boltstore:  { in: prompt/boltstore }
   gatewayevents:     { in: ../api/gatewayevents/v1 }
@@ -160,10 +161,14 @@ deps:
       - router
       - streaming
       - telemetry
+  adminapi:
+    mayDependOn:
+      - adapter
   admin:
     mayDependOn:
       - adapter
       - admin-auditstore
+      - adminapi
       - controlplane
       - dataplane
       - identity

@@ -587,6 +587,11 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              just for traffic. `CanaryPercent` is itself covered by the same HMAC
                              signature every other event field already is, proven by a dedicated
                              tampered-field regression test.
+/internal/adminapi            — Added 2026-10-10 (RFC-3 decision 2): the exported request/response body
+                             types of every /admin/* route, shared by /internal/admin (which keeps
+                             unexported aliases, so its handlers and tests are unchanged) and the planned
+                             kelvran CLI. A leaf over /internal/adapter only; the wire JSON is pinned
+                             byte-for-byte by its golden test (testdata/wire.golden.json).
 /internal/admin               — Real, per docs/rfcs/2026-09-05-gateway-admin-api.md: an optional,
                              off-by-default HTTP surface on its own separate net.Listener (never the
                              client-facing gateway's mux/port) exposing read-only config introspection
@@ -753,12 +758,16 @@ ratelimit/redislimiter ✗→ ratelimit   (the interface (RedisBackend) lives in
                                   Redis-specific implementation never imports it back — the same pattern
                                   budget/boltstore already established, so go-redis stays out of
                                   ratelimit's own dependency graph in the default, in-memory-only case)
-admin → adapter, controlplane, dataplane, identity, prompt, ratelimit   (the HTTP handler layer for GET
+admin → adapter, adminapi, admin/auditstore, controlplane, dataplane, identity, prompt, ratelimit
+                                  (the HTTP handler layer for GET
                                   /admin/config, POST/DELETE /admin/virtual_keys/{name}, and the new
                                   prompt-CRUD routes; adapter is pulled in only for those routes' own
                                   []adapter.Message request/response bodies, never for any provider-calling
-                                  behavior; never imported BY any of those six — admin is a top-level
+                                  behavior; never imported BY any of those packages — admin is a top-level
                                   consumer, not a shared-kernel package)
+adminapi → adapter               (the admin wire shapes, added 2026-10-10 for the kelvran CLI; adapter only
+                                  for adapter.ChatRequest/adapter.Message on the cache-erase and prompt
+                                  bodies; never imports admin or dataplane)
 ```
 
 ## Request Lifecycle

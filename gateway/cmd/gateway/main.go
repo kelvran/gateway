@@ -1325,7 +1325,9 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 // gateway ships, in construction (never per-request) order. Shared by
 // buildPipeline (the real, wired registry) and validateConfig (which
 // only ever checks provider NAME membership) so the two lists can never
-// drift apart.
+// drift apart. adapter.ProviderNames() is the kelvran CLI's copy of this
+// map's key set; TestAdapterRegistryMatchesProviderNames pins the two
+// equal in both directions and each key equal to its adapter's Name().
 func newAdapterRegistry() adapter.Registry {
 	return adapter.Registry{
 		"openai":       openai.New(),
@@ -1336,63 +1338,32 @@ func newAdapterRegistry() adapter.Registry {
 	}
 }
 
-// validateConfig runs every startup check that depends ONLY on cfg's own
-// content -- never opening a file, never touching the network, never
-// reading an environment variable -- so it's safe to call from the
-// -validate dry-run flag with no other side effect at all, and safe to
-// call as buildPipeline's own first statement, before identityStore ever
-// opens a bbolt file (a strict improvement over this check's prior
-// position deep inside buildPipeline's deployment loop, after the store
-// was already open). Both checks it runs (adapter registration,
-// fallback_chains referential integrity) already existed inside
-// buildPipeline before this function extracted them; see -validate's own
-// flag description in main() and TestValidateConfigNeverOpensAnyBoltStore
-// for the actual "no side effects" proof.
+// validateConfig is the gateway's view of controlplane.Validate: the
+// config-only startup checks (adapter registration, fallback_chains
+// referential integrity) run against the names of the adapters THIS binary
+// registers, so -validate and buildPipeline can never drift from the real
+// registry. The checks themselves moved to controlplane on 2026-10-10
+// (RFC-3 slice (a), docs/rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md,
+// so the kelvran CLI's doctor can run them without importing this
+// package) and are tested there; see controlplane.Validate's doc comment,
+// -validate's own flag description in main(), and
+// TestValidateFlagPrintsConfigIsValid for the flag's pinned output. Safe to
+// call from the -validate dry run (no side effects at all) and as
+// buildPipeline's own first statement, before identityStore opens a store.
 func validateConfig(cfg *controlplane.Config) error {
-	registry := newAdapterRegistry()
-	deployments := make([]dataplane.Deployment, 0, len(cfg.Deployments))
-	for _, d := range cfg.Deployments {
-		// Fail fast at startup, not per-request, per
-		// docs/rfcs/2026-09-05-gateway-gen-ai-provider-name-validation.md
-		// — before this check, an unregistered provider produced a
-		// generic error only once a real request happened to route to
-		// that deployment (dataplane.callDeployment's own "no adapter
-		// registered" error), which could sit unnoticed until traffic
-		// actually hit it.
-		if _, ok := registry[d.Provider]; !ok {
-			return fmt.Errorf("deployment %q: no adapter registered for provider %q", d.Name, d.Provider)
-		}
-		deployments = append(deployments, dataplane.Deployment{
-			Name:           d.Name,
-			FallbackChains: d.FallbackChains,
-		})
-	}
-	return validateFallbackChainTargets(deployments)
+	return controlplane.Validate(cfg, providerNames(newAdapterRegistry()))
 }
 
-// validateFallbackChainTargets fails startup, not first-request, if any
-// deployment's fallback_chains names a target deployment that doesn't
-// exist — controlplane.Load can't check this itself (it parses one
-// deployment's mapping at a time, with no visibility into the full,
-// still-being-built deployment set), so this runs here instead, in the
-// same spirit as this function's existing "no adapter registered for
-// provider" fail-fast check above, per
-// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
-func validateFallbackChainTargets(deployments []dataplane.Deployment) error {
-	names := make(map[string]struct{}, len(deployments))
-	for _, d := range deployments {
-		names[d.Name] = struct{}{}
+// providerNames returns registry's key set — the only thing
+// controlplane.Validate needs from it. adapter.ProviderNames() is the
+// CLI's copy of the same set; TestAdapterRegistryMatchesProviderNames pins
+// the two equal.
+func providerNames(registry adapter.Registry) map[string]struct{} {
+	names := make(map[string]struct{}, len(registry))
+	for name := range registry {
+		names[name] = struct{}{}
 	}
-	for _, d := range deployments {
-		for class, targets := range d.FallbackChains {
-			for _, target := range targets {
-				if _, ok := names[target]; !ok {
-					return fmt.Errorf("deployment %q fallback_chains.%s names %q, which is not a configured deployment", d.Name, class, target)
-				}
-			}
-		}
-	}
-	return nil
+	return names
 }
 
 // mergePersistedVirtualKeys overlays store's persisted virtual keys onto

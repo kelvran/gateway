@@ -41,10 +41,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shopspring/decimal"
-
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/admin/auditstore"
+	"github.com/kelvran/gateway/gateway/internal/adminapi"
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/gateway/internal/identity"
@@ -80,36 +79,16 @@ type Credentials struct {
 }
 
 // virtualKeyRequest is the POST /admin/virtual_keys/{name} request body.
+// Every request/response body type in this file is an unexported alias of
+// its exported twin in internal/adminapi (moved 2026-10-10, RFC-3 decision
+// 2) so the kelvran CLI decodes the same shapes; the JSON is byte-identical
+// and pinned by adminapi's golden test.
 // Field names deliberately mirror config.yaml's own virtual_keys.<name>
 // section (key_hash, budget_usd, budget_reset_interval_seconds,
 // allowed_models, rate_limit.{burst,refill_per_second}) — an operator
 // already familiar with the static config shape needs no second
 // vocabulary for the live-mutation API.
-type virtualKeyRequest struct {
-	KeyHash                    string          `json:"key_hash"`
-	BudgetUSD                  decimal.Decimal `json:"budget_usd"`
-	BudgetResetIntervalSeconds int             `json:"budget_reset_interval_seconds"`
-	BudgetWarnPercent          float64         `json:"budget_warn_percent"`
-	AllowedModels              []string        `json:"allowed_models"`
-	// AllowedRegions restricts this key to deployments in a subset of
-	// regions (Deployment.Region), per
-	// docs/upgrade-research/data-residency-regional-routing-2026-09-15.md
-	// — mirrors AllowedModels's own convention exactly.
-	AllowedRegions []string `json:"allowed_regions"`
-	// AllowedSourceCIDRs restricts this key to requests whose resolved
-	// client source IP falls within at least one of these CIDR blocks —
-	// mirrors AllowedModels/AllowedRegions' own convention exactly. See
-	// identity.VirtualKey.AllowedSourceCIDRs' own doc comment.
-	AllowedSourceCIDRs []string `json:"allowed_source_cidrs"`
-	// CacheScopeToEndUser mirrors identity.VirtualKey.CacheScopeToEndUser's
-	// own doc comment exactly.
-	CacheScopeToEndUser bool `json:"cache_scope_to_end_user"`
-	// AttributionIDsDisabled is the per-key identifier-capture opt-out
-	// (13a); omitted means capture ON, which is why the wire field is the
-	// negative `attribution_capture_ids_disabled`.
-	AttributionIDsDisabled bool              `json:"attribution_capture_ids_disabled"`
-	RateLimit              *rateLimitRequest `json:"rate_limit"`
-}
+type virtualKeyRequest = adminapi.VirtualKeyRequest
 
 // rotateVirtualKeyRequest is the POST /admin/virtual_keys/{name}/rotate
 // request body, per docs/upgrade-research/admin-operator-experience-2026-09-14.md
@@ -117,48 +96,13 @@ type virtualKeyRequest struct {
 // -- the old secret stops working immediately, identical in effect to a
 // delete-then-recreate but atomic and without the intervening window
 // where the key doesn't exist at all.
-type rotateVirtualKeyRequest struct {
-	NewKeyHash         string `json:"new_key_hash"`
-	GracePeriodSeconds int    `json:"grace_period_seconds"`
-}
+type rotateVirtualKeyRequest = adminapi.RotateVirtualKeyRequest
 
-type rateLimitRequest struct {
-	Burst              float64 `json:"burst"`
-	RefillPerSecond    float64 `json:"refill_per_second"`
-	TPMCapacity        float64 `json:"tpm_capacity"`
-	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
-	// PerModel mirrors config.yaml's rate_limit.per_model section — see
-	// controlplane.VirtualKeyConfig.PerModelRateLimits' doc comment and
-	// docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md. An
-	// upsert is a full replace of this key's rate-limit configuration,
-	// never a partial merge — like every other field on this request
-	// struct — so omitting per_model on an update to an already-overridden
-	// key clears its overrides, exactly as omitting rate_limit entirely
-	// resets burst/refill to zero before upsertVirtualKeyHandler's own
-	// ratelimit.ResolveKeyRateLimit call resolves that zero pair to
-	// ratelimit.DefaultKeyBurstCapacity/DefaultKeyRefillPerSecond — a
-	// round-3 backlog audit found this comment's prior wording ("which
-	// UpsertVirtualKey's caller then resolves to the gateway's own
-	// default") was FALSE: no such resolution existed anywhere on this
-	// path, and a key created with no rate_limit section got a permanent,
-	// never-refilling zero-capacity bucket instead.
-	PerModel map[string]perModelRateLimitRequest `json:"per_model"`
-}
-
-// perModelRateLimitRequest is one model's per-model RPM override within a
-// rateLimitRequest. Burst/RefillPerSecond are both required and must be
-// positive — see upsertVirtualKeyHandler's validation, mirroring
-// controlplane.parsePerModelRateLimits' identical rule for the static
-// config file, so an operator gets the same validation regardless of
-// which of the two surfaces they use. TPMCapacity/TPMRefillPerSecond are
-// the optional per-model TPM override (must be set together or neither),
-// mirroring controlplane.ModelRateLimitConfig's identical fields.
-type perModelRateLimitRequest struct {
-	Burst              float64 `json:"burst"`
-	RefillPerSecond    float64 `json:"refill_per_second"`
-	TPMCapacity        float64 `json:"tpm_capacity"`
-	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
-}
+// The rate_limit section's types (adminapi.RateLimitRequest and
+// adminapi.PerModelRateLimitRequest) are reached only through
+// virtualKeyRequest.RateLimit, so they need no alias here; the upsert
+// handler's validation of them mirrors controlplane.parsePerModelRateLimits
+// so an operator gets the same rules on both surfaces.
 
 // auditLogger gates every admin audit-log line behind
 // cfg.Admin.EnableAuditLog, so an operator can disable Kelvran's own
@@ -492,11 +436,7 @@ func getConfigHandler(cfg *controlplane.Config, logger auditLogger) http.Handler
 // package's type directly on the wire, matching this file's own
 // established convention (e.g. virtualKeyListEntry vs.
 // identity.VirtualKey) of a dedicated response shape per route.
-type auditEntryResponse struct {
-	Time   time.Time         `json:"time"`
-	Msg    string            `json:"msg"`
-	Fields map[string]string `json:"fields,omitempty"`
-}
+type auditEntryResponse = adminapi.AuditEntryResponse
 
 // queryAuditLogHandler serves GET /admin/audit -- see
 // internal/admin/auditstore's own doc comment for what this closes: the
@@ -821,9 +761,7 @@ func rotateVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 // divide by) — never a fabricated 100% or a divide-by-zero.
 // backupResponse is POST /admin/backup's response body -- the filenames
 // actually written, per backupHandler's own doc comment.
-type backupResponse struct {
-	Files []string `json:"files"`
-}
+type backupResponse = adminapi.BackupResponse
 
 // backupHandler backs up every configured, bbolt-backed durable store to
 // cfg.Admin.BackupDir, via dataplane.Pipeline.BackupStores -- see that
@@ -849,9 +787,7 @@ func backupHandler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, logge
 
 // updateDeploymentWeightRequest is POST
 // /admin/deployments/{name}/weight's own request body.
-type updateDeploymentWeightRequest struct {
-	Weight int `json:"weight"`
-}
+type updateDeploymentWeightRequest = adminapi.UpdateDeploymentWeightRequest
 
 // eraseCacheEntryRequest carries the exact request-defining fields the
 // ORIGINAL request used, plus the virtual key ID it was made under (no
@@ -861,30 +797,9 @@ type updateDeploymentWeightRequest struct {
 // embedded anonymously so its fields (Model/Messages/Temperature/
 // MaxTokens/ResponseFormat/PromptID/PromptVersion/PromptLabel) flatten
 // into this same JSON object rather than nesting under a sub-key.
-type eraseCacheEntryRequest struct {
-	VirtualKeyID string `json:"virtual_key_id"`
-	// EndUserID targets the exact end-user-scoped entry a request with
-	// CacheScopeToEndUser enabled and this same header value would have
-	// been cached under -- see dataplane.Pipeline.EraseCacheEntry's own
-	// doc comment. Empty (the default) targets the tenant-only-scoped
-	// entry, correct for every virtual key that never enabled that flag.
-	EndUserID string `json:"end_user_id"`
-	adapter.ChatRequest
-}
+type eraseCacheEntryRequest = adminapi.EraseCacheEntryRequest
 
-type eraseCacheEntryResponse struct {
-	L1Found bool `json:"l1_found"`
-	L2Found bool `json:"l2_found"`
-	// L3Skipped is always true -- named explicitly in the response
-	// itself, not just a code comment, so a caller relying on this
-	// endpoint for compliance purposes can't miss that L3 isn't
-	// covered. Confirmed to matter in practice, not just a theoretical
-	// gap: a byte-identical follow-up request for the erased content
-	// CAN still be served from L3 with zero new upstream call, since
-	// the original write populated all three layers -- see
-	// dataplane.Pipeline.EraseCacheEntry's own doc comment.
-	L3Skipped bool `json:"l3_skipped"`
-}
+type eraseCacheEntryResponse = adminapi.EraseCacheEntryResponse
 
 // updateDeploymentWeightHandler live-mutates name's own routing weight,
 // via dataplane.Pipeline.UpdateDeploymentWeight -- see that method's own
@@ -981,12 +896,7 @@ func eraseCacheEntryHandler(pipeline *dataplane.Pipeline, logger auditLogger) ht
 	}
 }
 
-type virtualKeySpendResponse struct {
-	SpentUSD                   string  `json:"spent_usd"`
-	BudgetUSD                  string  `json:"budget_usd"`
-	BudgetResetIntervalSeconds int     `json:"budget_reset_interval_seconds"`
-	PercentUsed                float64 `json:"percent_used"`
-}
+type virtualKeySpendResponse = adminapi.VirtualKeySpendResponse
 
 // virtualKeyListEntry is one entry in GET /admin/virtual_keys's list
 // response -- deliberately NEVER includes KeyHash, mirroring
@@ -996,20 +906,7 @@ type virtualKeySpendResponse struct {
 // controlplane.VirtualKeyConfig's identical existing JSON convention
 // (config.go sorts these at load time too) rather than marshaling a Go
 // map directly.
-type virtualKeyListEntry struct {
-	ID                         string   `json:"id"`
-	BudgetUSD                  string   `json:"budget_usd"`
-	BudgetResetIntervalSeconds int      `json:"budget_reset_interval_seconds"`
-	BudgetWarnPercent          float64  `json:"budget_warn_percent"`
-	AllowedModels              []string `json:"allowed_models,omitempty"`
-	AllowedRegions             []string `json:"allowed_regions,omitempty"`
-	AllowedSourceCIDRs         []string `json:"allowed_source_cidrs,omitempty"`
-	CacheScopeToEndUser        bool     `json:"cache_scope_to_end_user,omitempty"`
-	AttributionIDsDisabled     bool     `json:"attribution_capture_ids_disabled,omitempty"`
-	RateLimitBurst             float64  `json:"rate_limit_burst,omitempty"`
-	RateLimitRefill            float64  `json:"rate_limit_refill_per_second,omitempty"`
-	BillingSubjectID           string   `json:"billing_subject_id,omitempty"`
-}
+type virtualKeyListEntry = adminapi.VirtualKeyListEntry
 
 func sortedKeysOf(m map[string]struct{}) []string {
 	if len(m) == 0 {
@@ -1119,10 +1016,7 @@ func getVirtualKeySpendHandler(pipeline *dataplane.Pipeline, logger auditLogger)
 // admission/throttling decision anywhere in this codebase -- see
 // ratelimit.ConcurrencyLimiter's own package-level doc comment for the
 // full observability-only rule this response type surfaces.
-type virtualKeyInFlightResponse struct {
-	TotalInFlight int            `json:"total_in_flight"`
-	ByAgentRunID  map[string]int `json:"by_agent_run_id"`
-}
+type virtualKeyInFlightResponse = adminapi.VirtualKeyInFlightResponse
 
 // getVirtualKeyInFlightHandler serves name's current in-flight load,
 // broken down by agent_run_id -- mirrors getVirtualKeySpendHandler's own
@@ -1154,19 +1048,12 @@ func getVirtualKeyInFlightHandler(pipeline *dataplane.Pipeline, logger auditLogg
 // here (prompts are Admin-API-only, per this feature's own design), so
 // this shape is simply the raw canonical message list a caller wants
 // stored as the next version.
-type promptRequest struct {
-	Messages []adapter.Message `json:"messages"`
-}
+type promptRequest = adminapi.PromptRequest
 
 // promptResponse is what every read/write prompt route returns --
 // mirrors virtualKeyRequest's own "never expose the internal package
 // type directly across the HTTP boundary" convention.
-type promptResponse struct {
-	ID        string            `json:"id"`
-	Version   int               `json:"version"`
-	Messages  []adapter.Message `json:"messages"`
-	CreatedAt time.Time         `json:"created_at"`
-}
+type promptResponse = adminapi.PromptResponse
 
 func promptToResponse(p prompt.Prompt) promptResponse {
 	return promptResponse{ID: p.ID, Version: p.Version, Messages: p.Messages, CreatedAt: p.CreatedAt}
@@ -1322,18 +1209,11 @@ func deletePromptHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.
 // request body -- Version <= 0 means "whichever version is currently
 // latest," resolved to a concrete number at call time (see
 // prompt.Store.SetLabel's own doc comment).
-type setPromptLabelRequest struct {
-	Version int `json:"version"`
-}
+type setPromptLabelRequest = adminapi.SetPromptLabelRequest
 
 // labelResponse mirrors promptResponse's own "never expose the internal
 // package type directly across the HTTP boundary" convention.
-type labelResponse struct {
-	PromptID  string    `json:"prompt_id"`
-	Label     string    `json:"label"`
-	Version   int       `json:"version"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
+type labelResponse = adminapi.LabelResponse
 
 func labelToResponse(l prompt.Label) labelResponse {
 	return labelResponse{PromptID: l.PromptID, Label: l.Name, Version: l.Version, UpdatedAt: l.UpdatedAt}

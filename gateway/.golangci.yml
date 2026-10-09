@@ -155,6 +155,21 @@ linters:
         linters:
           - gosec
         text: "G304"
+      # adminapi's golden test reads its own testdata/wire.golden.json by a
+      # fixed relative name -- the same fixture pattern as the adapter
+      # regression tests above (G304).
+      - path: internal/adminapi/adminapi_test\.go
+        linters:
+          - gosec
+        text: "G304"
+      # TestValidateFlagPrintsConfigIsValid runs the gateway binary the test
+      # itself just built into a t.TempDir() (buildGatewayBinaryForTest) with
+      # fixed flags; the "variable" gosec sees is that temp path, never
+      # attacker-reachable input (G204).
+      - path: cmd/gateway/validate_config_test\.go
+        linters:
+          - gosec
+        text: "G204"
       # The benchmark harness (plan item 5, 2026-10-08) is a developer tool
       # that never serves attacker-reachable input: `kelvran-bench run`
       # reads the virtual-key secret from the file the operator names with
