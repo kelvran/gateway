@@ -33,7 +33,7 @@ while IFS= read -r hit; do
     printf '%s:%s: cites missing path %s\n' "$file" "$line" "$cited"
     fail=1
   fi
-done < <(git grep -n -o -P '(?<![A-Za-z0-9_/.-])docs/[A-Za-z0-9_][A-Za-z0-9_./-]*\.(md|txt|yaml|yml|json)' -- \
+done < <(git grep --untracked -n -o -P '(?<![A-Za-z0-9_/.-])docs/[A-Za-z0-9_][A-Za-z0-9_./-]*\.(md|txt|yaml|yml|json)' -- \
   '*.md' '*.go' '*.py' '*.yaml' '*.yml' \
   ':(exclude)docs/upgrade-research/**' ':(exclude)docs/agents/LOGS.md' ':(exclude)DECISIONS.md' || true)
 

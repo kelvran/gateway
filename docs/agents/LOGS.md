@@ -3900,3 +3900,17 @@ Stale comments corrected where the verification contradicted them: `main.go`'s i
 **Bugs found:** none in code. One doc-vs-plan correction recorded above (the plan's remedy for a Bedrock-only gateway was incomplete).
 
 **Next steps / resume point:** the owner decides G8 (and questions 2-6 in the RFC's Unresolved Questions). On acceptance the sequence is 13b → 13a → gap fills (each its own commit, tests first) → ingress core with the compat matrix as merge gate → docs and the `THREAT_MODEL.md` rewrite. The passthrough path's live proof needs an Anthropic API key in the e2e secrets, which the environment does not load today. Item 15a waits for a tagged release; 14 and 15b stay gated on G5/G6; the owner's items from item 10 stand.
+
+## [2026-10-09] main — docs-links CI red on 74caa2cd: two future pages cited by path; checker now scans untracked files
+
+**Files touched:** `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md` (§10 docs list), `scripts/check-doc-paths.sh`; this entry.
+
+**Intent/summary:** CI's `docs (links and cited paths resolve)` job failed on the RFC commit: the RFC's §10 named the two how-to pages it will create (`claude-code.md`, `anthropic-python.md` under `docs/how-to/clients/`) as full `docs/…` paths, which the checker rightly reports as missing. Reworded both as descriptions of files to be created. Root cause of the local miss: `git grep` does not search untracked files, and the RFC was untracked when the checker ran locally (1957 citations locally vs 1973 in CI). The script now passes `--untracked`, so a new file is checked before it is staged.
+
+**Decisions made:** an RFC names a future file in words, never by a `docs/…` path, until the file exists. The checker scans untracked files (gitignored paths such as `scratch-pad/` stay excluded).
+
+**Verification performed:** sanity-check-by-breaking — an untracked scratch file citing `docs/this-file-does-not-exist.md` makes the script exit 1 and name the line; removed, the tree is clean (1971 citations resolve); shellcheck clean.
+
+**Bugs found:** none in code.
+
+**Next steps / resume point:** watch CI on the fix commit; then RFC-4 (13b `kelvran.fallback.rescued` + 13c Prometheus pull endpoint), for which the source map is already gathered.
