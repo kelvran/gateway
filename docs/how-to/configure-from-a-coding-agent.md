@@ -8,7 +8,7 @@ This page is for a developer who drives a coding agent (Claude Code, Codex, Curs
 
 - A gateway binary (`go install`, a source build or the image `ghcr.io/kelvran/gateway`). See the [quickstart](../tutorials/quickstart.md).
 - One provider credential, exported in the shell or written to a file. The config never holds it. See [Provider credentials](provider-credentials.md).
-- `curl` and `openssl` (or any SHA-256 tool) on the machine the agent runs on.
+- `curl` on the machine the agent runs on; `openssl` (or any SHA-256 tool) only for the by-hand key recipe below — `kelvran init` (on `main` since 2026-10-10, not in `gateway/v0.17.0`) needs neither.
 
 ## Steps
 
@@ -217,7 +217,7 @@ Read `/readyz` with care:
 
 - No JSON Schema or machine-generated reference for `config.yaml`; the annotated `gateway/config.example.yaml` is the reference.
 - No OpenAPI document for `/v1/*` or the admin API.
-- No `kelvran` CLI (`init`, `doctor`, `keys`, `connect`).
+- No `kelvran doctor`, `keys` or `connect` yet. `kelvran init` is on `main` since 2026-10-10, not in `gateway/v0.17.0` ([reference](../reference/kelvran-cli.md)).
 - No Anthropic Messages API (`/v1/messages`); Claude Code's native Anthropic mode cannot target Kelvran. See [Compatibility](../reference/compatibility.md).
 - No `-validate` strict mode, unknown-key detection, JSON output, or env-var, file or Redis reachability checks.
 - No `${VAR}` interpolation inside `config.yaml`; the parser is a literal `key: value` subset.

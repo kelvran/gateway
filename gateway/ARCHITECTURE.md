@@ -5,7 +5,11 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 ## Package Layout
 
 ```
-/cmd/gateway              — main binary entrypoint (single static binary)
+/cmd/gateway              — main binary entrypoint (static binary)
+/cmd/kelvran              — companion CLI (RFC-3, 2026-10-10): `init` today; doctor, keys, connect, status and
+                             spend follow. A second static binary in the same archives, deb/rpm/apk and
+                             image (/kelvran); a thin dispatcher — the logic is /internal/cli, a leaf over
+                             adminapi, controlplane, identity, adapter and telemetry/exporterkind only.
 /cmd/kelvran-bench        — benchmark harness (added 2026-10-08): `run` drives open-loop Poisson load
                              through a gateway and measures latency, the overhead header, TTFT and
                              inter-chunk gaps; `upstream` serves the deterministic OpenAI-shaped mock
@@ -14,8 +18,10 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 /internal/gateway
     /controlplane          — config compilation, cert rotation, metrics; infrequent, "slow and smart"
                              **Corrected 2026-10-08**: today this package is static-YAML config parsing and
-                             validation only — internal/gateway/controlplane/config.go, whose sole exported
-                             function is `Load(path) (*Config, error)`. No certificate rotation exists
+                             validation only — internal/gateway/controlplane/config.go, whose exported
+                             entry points are `Load(path)`, `Parse(data, source)` (its in-memory twin,
+                             2026-10-10, for `kelvran init`'s self-check) and validate.go's `Validate`
+                             (2026-10-10, shared with the CLI). No certificate rotation exists
                              anywhere in the gateway: the upstream client TLS material and the admin mTLS
                              server certificate are each loaded exactly once at startup
                              (`tls.LoadX509KeyPair` in cmd/gateway/main.go, ~lines 289 and 312, the latter
@@ -766,6 +772,9 @@ ratelimit/redislimiter ✗→ ratelimit   (the interface (RedisBackend) lives in
                                   budget/boltstore already established, so go-redis stays out of
                                   ratelimit's own dependency graph in the default, in-memory-only case)
 admin → adapter, adminapi, admin/auditstore, controlplane, dataplane, identity, prompt, ratelimit
+cli   → adminapi, controlplane, identity, adapter, telemetry/exporterkind   (the kelvran CLI, RFC-3: never
+                                  telemetry — that would pull OTel into a diagnostic tool — and never
+                                  dataplane or admin; it talks to a running gateway over HTTP only)
                                   (the HTTP handler layer for GET
                                   /admin/config, POST/DELETE /admin/virtual_keys/{name}, and the new
                                   prompt-CRUD routes; adapter is pulled in only for those routes' own
@@ -955,7 +964,7 @@ Pre-call and post-call middleware hooks — **real**, per `docs/rfcs/2026-09-03-
 | Cost/budget arithmetic | `github.com/shopspring/decimal` — **real**, per `docs/rfcs/2026-09-02-decimal-cost-accounting.md` (the second external Go dependency; zero transitive dependencies) |
 | Container-aware memory limit | `github.com/KimMachineGun/automemlimit` — **real**, per `docs/upgrade-research/kubernetes-production-deployment-2026-09-14.md` Finding 5 (the fifth external Go dependency; `cmd/gateway/main.go` calls `memlimit.Set` explicitly at startup, not the package's own blank-import convenience, so it logs via this process's real JSON logger rather than the stdlib default). Reads the real cgroup memory limit and sets `GOMEMLIMIT` to 90% of it automatically — a no-op outside a cgroup limit (bare `docker run`, local dev, CI), since Go has no native cgroup-memory-aware equivalent and exceeding a Kubernetes memory limit triggers a hard OOM-kill, unlike a CPU limit which only throttles |
 | External Go dependencies (current) | **Corrected 2026-10-08**: the "first … fifth external Go dependency" ordinals in the rows above record adoption order and are stale as a count. `gateway/go.mod`'s direct `require` block today also lists `github.com/aws/aws-sdk-go-v2` (+ its `aws/protocol/eventstream` module — the Bedrock adapter, SigV4 signing in `dataplane`, `bedrockguard`, `embedsim`), `github.com/philippgille/chromem-go` (`embedsim`'s in-process vector store), `golang.org/x/sync` (`singleflight`, see Request Lifecycle), `golang.org/x/text` (L2's Unicode NFC normalization in `dataplane`), `google.golang.org/protobuf` (`api/gatewayevents/v1`), and `github.com/testcontainers/testcontainers-go` (+ `modules/redis`) — the last imported by `_test.go` files only, never by the shipped binary |
-| Distribution | Single static binary, scratch/alpine Docker image |
+| Distribution | Two static binaries — `kelvran-gateway` and, since 2026-10-10, the companion `kelvran` CLI — in one scratch image (`/gateway`, `/kelvran`) and in every archive and deb/rpm/apk |
 
 ## Cross-Cutting Contract
 

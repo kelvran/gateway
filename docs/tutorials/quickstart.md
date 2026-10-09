@@ -28,6 +28,8 @@ What you should see: one line of the form `kelvran-gateway dev (none, built unkn
 
 ## Step 2: Generate a virtual key
 
+`kelvran init [--single-user]` (on `main` since 2026-10-10, not in `gateway/v0.17.0`; build it beside Step 1's binary with `go build -o /tmp/kelvran ./cmd/kelvran`) does Steps 2–4 for you: it generates the secret, writes `config.yaml` for the provider credential it finds in your shell, validates it and prints the client exports — paste only the `KELVRAN_KEY` line into this one shell, or run the client exports in a second shell, because the `OPENAI_API_KEY="$KELVRAN_KEY"` line would replace the provider key Step 5 exports. See [the CLI reference](../reference/kelvran-cli.md). The manual path below stays valid; it is the documented `key_hash` contract.
+
 A virtual key is a bearer secret the gateway issues to a client. The config file stores only the SHA-256 hash of the secret, never the secret. `printf '%s'` matters: the gateway hashes the exact bytes the client sends, with no trailing newline.
 
 ```bash

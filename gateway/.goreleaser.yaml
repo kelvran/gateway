@@ -1,4 +1,6 @@
-# GoReleaser configuration for the gateway deployable.
+# GoReleaser configuration for the gateway deployable: two binaries,
+# kelvran-gateway and its companion CLI kelvran (RFC-3), in every archive and
+# package.
 #
 # Run by .github/workflows/release.yml in SNAPSHOT mode on every gateway/vX.Y.Z
 # tag (`goreleaser release --snapshot --clean --skip=publish,validate` with
@@ -25,6 +27,27 @@ builds:
   - id: gateway
     main: ./cmd/gateway
     binary: kelvran-gateway
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+  # The companion CLI (docs/rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md,
+  # decision 1): the same five targets and the same ldflags line, bound to
+  # cmd/kelvran/version.go's own version/commit/date (ldflags symbols are per
+  # main package). Archives and nfpms carry no `ids:` filter (the `builds:`
+  # key is deprecated since GoReleaser 2.18), so both binaries land in every
+  # kelvran-gateway_* archive and at /usr/bin in the deb/rpm/apk
+  # without touching release.yml's globs.
+  - id: cli
+    main: ./cmd/kelvran
+    binary: kelvran
     env:
       - CGO_ENABLED=0
     goos: [linux, darwin, windows]

@@ -40,7 +40,7 @@ The public-surface tables draw one line. Anything a documented client, config fi
 
 **The container contract is public; the base image is not.** `ENTRYPOINT ["/gateway"]`, `CMD ["-config", "/config.yaml"]`, port `8080`, UID/GID `65532` and the CA bundle at `/etc/ssl/certs/ca-certificates.crt` are covered. The base image digest and the Go toolchain are build details. Platforms: `gateway/v0.17.0` and earlier images are `linux/amd64` only; the `linux/amd64` + `linux/arm64` index is on main since 2026-10-08, not in `gateway/v0.17.0`. See [Container image](../reference/container-image.md).
 
-**Release-asset names and the package layout are public; the unit's hardening is not.** The deb/rpm/apk packages install `/usr/bin/kelvran-gateway`, the [systemd unit](../../deploy/systemd/kelvran-gateway.service) and `/etc/kelvran-gateway/config.example.yaml`. The unit's hardening directives only ever tighten, so they are outside the promise. See [Release artifacts](../reference/release-artifacts.md).
+**Release-asset names and the package layout are public; the unit's hardening is not.** The deb/rpm/apk packages install `/usr/bin/kelvran-gateway`, `/usr/bin/kelvran` (the companion CLI, since 2026-10-10), the [systemd unit](../../deploy/systemd/kelvran-gateway.service) and `/etc/kelvran-gateway/config.example.yaml`. The unit's hardening directives only ever tighten, so they are outside the promise. See [Release artifacts](../reference/release-artifacts.md).
 
 **OpenTelemetry names are public; log lines are not.** The covered set is what the code registers, described in [Metrics and logs](../reference/metrics-and-logs.md) and [`docs/operations/TELEMETRY.md`](../operations/TELEMETRY.md). Log messages and field names are best effort, not a contract.
 

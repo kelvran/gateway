@@ -90,7 +90,7 @@ Pick the variant below for your platform.
 
 #### systemd package (deb, rpm, apk)
 
-The package installs `/usr/bin/kelvran-gateway`, the unit at `/usr/lib/systemd/system/kelvran-gateway.service` and `/etc/kelvran-gateway/config.example.yaml`. Its post-install runs `systemctl daemon-reload` and `systemctl try-restart kelvran-gateway.service`: a running service picks up the new binary; a stopped one stays stopped. The unit's `ExecStartPre` runs `-validate` with the new binary, `TimeoutStopSec=60s` exceeds the 50 s budget, `KillSignal=SIGTERM`, and `Restart=on-failure` with `RestartSec=2s` retries a failed start.
+The package installs `/usr/bin/kelvran-gateway`, `/usr/bin/kelvran` (the companion CLI, since 2026-10-10), the unit at `/usr/lib/systemd/system/kelvran-gateway.service` and `/etc/kelvran-gateway/config.example.yaml`. Its post-install runs `systemctl daemon-reload` and `systemctl try-restart kelvran-gateway.service`: a running service picks up the new binary; a stopped one stays stopped. The unit's `ExecStartPre` runs `-validate` with the new binary, `TimeoutStopSec=60s` exceeds the 50 s budget, `KillSignal=SIGTERM`, and `Restart=on-failure` with `RestartSec=2s` retries a failed start.
 
 ```bash
 sudo dpkg -i kelvran-gateway_<version>_linux_amd64.deb      # or rpm -U / apk add --allow-untrusted

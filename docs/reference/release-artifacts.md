@@ -39,8 +39,8 @@ One `gateway/vX.Y.Z` tag produces the following set. Every file except `checksum
 
 | Asset | Count | Platforms | Contents |
 |---|---|---|---|
-| `kelvran-gateway_<version>_<os>_<arch>.tar.gz` | 4 | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` | `kelvran-gateway` binary, `config.example.yaml`, `LICENSE`, `NOTICE` |
-| `kelvran-gateway_<version>_windows_amd64.zip` | 1 | `windows/amd64` | `kelvran-gateway.exe`, `config.example.yaml`, `LICENSE`, `NOTICE` |
+| `kelvran-gateway_<version>_<os>_<arch>.tar.gz` | 4 | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` | `kelvran-gateway` and `kelvran` binaries, `config.example.yaml`, `LICENSE`, `NOTICE` |
+| `kelvran-gateway_<version>_windows_amd64.zip` | 1 | `windows/amd64` | `kelvran-gateway.exe`, `kelvran.exe`, `config.example.yaml`, `LICENSE`, `NOTICE` |
 | `kelvran-gateway_<version>_linux_<arch>.deb` | 2 | `linux/amd64`, `linux/arm64` | See "Package layout" below |
 | `kelvran-gateway_<version>_linux_<arch>.rpm` | 2 | `linux/amd64`, `linux/arm64` | Same as the deb |
 | `kelvran-gateway_<version>_linux_<arch>.apk` | 2 | `linux/amd64`, `linux/arm64` | Same as the deb |
@@ -48,29 +48,30 @@ One `gateway/vX.Y.Z` tag produces the following set. Every file except `checksum
 | `checksums.txt` | 1 | | `sha256sum` lines for every `kelvran-gateway_*` file, SBOMs included |
 | `checksums.txt.sigstore.json` | 1 | | Sigstore bundle from `cosign sign-blob` (keyless, GitHub OIDC) |
 
-`windows/arm64` is excluded (`ignore` in `gateway/.goreleaser.yaml`). Only `./cmd/gateway` is built; `kelvran-bench` is not a release asset. The SLSA Build Level 2 provenance attestation produced by `actions/attest-build-provenance` is not a Release asset: GitHub stores it against the repository, keyed by each subject's digest, and `gh attestation verify <asset> -R kelvran/gateway` retrieves it.
+`windows/arm64` is excluded (`ignore` in `gateway/.goreleaser.yaml`). Two binaries are built — `./cmd/gateway` and, on `main` since 2026-10-10 (first shipped by the next `gateway/v*` tag), the companion CLI `./cmd/kelvran` — and both land in every archive and package; `kelvran-bench` is not a release asset. The SLSA Build Level 2 provenance attestation produced by `actions/attest-build-provenance` is not a Release asset: GitHub stores it against the repository, keyed by each subject's digest, and `gh attestation verify <asset> -R kelvran/gateway` retrieves it.
 
 ### Binary build parameters
 
 | Parameter | Value |
 |---|---|
-| Binary name | `kelvran-gateway` |
-| Main package | `./cmd/gateway` (within `gateway/`) |
+| Binary names | `kelvran-gateway` (GoReleaser build id `gateway`) and, since 2026-10-10, `kelvran` (build id `cli`); archives and packages carry no `ids:` filter (the `builds:` key is deprecated since GoReleaser 2.18), so both land in every one |
+| Main packages | `./cmd/gateway` and `./cmd/kelvran` (within `gateway/`) |
 | `CGO_ENABLED` | `0` |
 | Flags | `-trimpath` |
 | ldflags | `-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}` |
-| Go toolchain | `go 1.26.9`, the `go` directive of `gateway/go.mod`, resolved by `actions/setup-go` (`go-version-file`). The container image is built with `golang:1.27.1-alpine` instead (see "Image contents"), so the `<go version>` field of `-version` differs between a package and the image of the same release |
+| Go toolchain | `go 1.26.9`, the `go` directive of `gateway/go.mod`, resolved by `actions/setup-go` (`go-version-file`). The container image is built with `golang:1.27.2-alpine` instead (see "Image contents"), so the `<go version>` field of `-version` differs between a package and the image of the same release |
 | GoReleaser mode | `release --snapshot --clean --skip=publish,validate`, `GORELEASER_CURRENT_TAG` set to the pushed tag |
 | Version source in snapshot mode | `snapshot.version_template: '{{ trimprefix (trimprefix .Tag "gateway/") "v" }}'` |
 | GoReleaser changelog | Disabled (`changelog.disable: true`); the Release body is the dated changelog file |
 
-The three ldflags variable names (`main.version`, `main.commit`, `main.date`) are a contract between `gateway/cmd/gateway/version.go` and the build scripts; a plain `go build` leaves them at `dev`, `none`, `unknown`.
+The three ldflags variable names (`main.version`, `main.commit`, `main.date`) are a contract between `gateway/cmd/gateway/version.go`, `gateway/cmd/kelvran/version.go` (its own copy — ldflags symbols are per main package, so each build entry and the Dockerfile's second `go build` inject them again) and the build scripts; a plain `go build` leaves them at `dev`, `none`, `unknown`.
 
 ### Package layout (deb, rpm, apk)
 
 | Path | Type | Source |
 |---|---|---|
 | `/usr/bin/kelvran-gateway` | binary | `bindir: /usr/bin` |
+| `/usr/bin/kelvran` | binary | `bindir: /usr/bin` (the `cli` build; since 2026-10-10) |
 | `/usr/lib/systemd/system/kelvran-gateway.service` | file | [deploy/systemd/kelvran-gateway.service](../../deploy/systemd/kelvran-gateway.service) |
 | `/etc/kelvran-gateway/config.example.yaml` | `config\|noreplace` (a package upgrade never overwrites a modified copy) | [gateway/config.example.yaml](../../gateway/config.example.yaml) |
 | `/usr/share/doc/kelvran-gateway/LICENSE` | file | repository `LICENSE` (Apache-2.0) |
@@ -213,13 +214,13 @@ Build arguments passed to `gateway/Dockerfile`: `VERSION=<build identity>`, `COM
 | Property | Value |
 |---|---|
 | Base | `FROM scratch` |
-| Files | `/gateway` (static binary, `CGO_ENABLED=0 -trimpath -ldflags "-s -w -X main.version -X main.commit -X main.date"`) and `/etc/ssl/certs/ca-certificates.crt` |
+| Files | `/gateway` (static binary, `CGO_ENABLED=0 -trimpath -ldflags "-s -w -X main.version -X main.commit -X main.date"`), `/kelvran` (the companion CLI, same flags and ldflags from a second `go build`; since 2026-10-10) and `/etc/ssl/certs/ca-certificates.crt` |
 | `EXPOSE` | `8080` |
 | `USER` | `65532:65532` |
 | `ENTRYPOINT` | `["/gateway"]` |
 | `CMD` | `["-config", "/config.yaml"]` |
 | Default build args | `VERSION=dev`, `COMMIT=none`, `DATE=unknown` |
-| Builder base | `golang:1.27.1-alpine`, pinned by digest |
+| Builder base | `golang:1.27.2-alpine`, pinned by digest |
 
 No shell, package manager or libc is present. The config is not baked in; mount it at `/config.yaml`.
 
@@ -390,7 +391,7 @@ A pre-release (`-rc.N` or similar) has no support window and may change or disap
 
 - Homebrew tap or cask, Scoop, winget, Nix, hosted apt or rpm repositories. `gateway/.goreleaser.yaml` has no `brews` or `casks` stanza and no `kelvran/homebrew-tap` repository exists.
 - A Helm chart, by recorded decision ([README.md](../../README.md), "Status and known limitations"). Kubernetes deployment uses the Kustomize base; see [docs/how-to/deploy/kubernetes-kustomize.md](../how-to/deploy/kubernetes-kustomize.md).
-- `kelvran-bench` as a release asset. Only `./cmd/gateway` is built.
+- `kelvran-bench` as a release asset. Only `./cmd/gateway` and `./cmd/kelvran` are built.
 - PyPI publication of `kelvran-evals`. Blocked on trademark clearance.
 - An Artifact Hub listing for the image. The `io.artifacthub.package.*` labels are in place; registering the repository on artifacthub.io is a one-time owner action that has not been taken.
 - Any gateway or evals Release that carries signed assets, as of 2026-10-08. The newest tags (`gateway/v0.17.0`, `evals/v0.10.1`) predate both pipelines and cannot be rebuilt by them.

@@ -47,6 +47,7 @@ components:
   alerting:               { in: alerting }
   anomaly:                { in: anomaly }
   bench:                  { in: bench }
+  cli:                    { in: cli }
   benchupstream:          { in: benchupstream }
 
 # Components deliberately absent from `deps:` below (credentialstate,
@@ -170,6 +171,17 @@ deps:
       - router
       - streaming
       - telemetry
+  # The kelvran CLI (RFC-3 decision 1): the admin wire types, the config
+  # loader/validator, identity.HashSecret, adapter.ProviderNames and the
+  # exporter-name vocabulary — and nothing else. Never telemetry (OTel) and
+  # never dataplane/admin: the CLI talks to a running gateway over HTTP only.
+  cli:
+    mayDependOn:
+      - adminapi
+      - controlplane
+      - identity
+      - adapter
+      - telemetry-exporterkind
   adminapi:
     mayDependOn:
       - adapter

@@ -12,7 +12,7 @@ Kelvran is a self-hosted, OpenAI-compatible LLM gateway: one static Go binary th
 
 ## Choose Kelvran if …
 
-- You want a single static binary with no Postgres, no Python runtime and no admin UI, configured from one `config.yaml`, and you can run Redis only when you need more than one replica ([container image](../../reference/container-image.md), [configuration](../../reference/config.md)).
+- You want a static binary (plus its companion CLI) with no Postgres, no Python runtime and no admin UI, configured from one `config.yaml`, and you can run Redis only when you need more than one replica ([container image](../../reference/container-image.md), [configuration](../../reference/config.md)).
 - Your traffic is agentic and you want a near-duplicate cache that refuses a hit on an entity, number, date, negation, freshness or model mismatch rather than on a similarity score alone ([the cache gate](../cache-gate.md)).
 - You want `agent_run_id` carried by standard W3C baggage into the span and the decision event, so per-run cost roll-up is a query over your own logs ([metrics and logs](../../reference/metrics-and-logs.md)).
 - One licence for everything matters more than feature count: Apache-2.0, no enterprise directory, no licence key ([LICENSE](../../../LICENSE), [NOTICE](../../../NOTICE)).

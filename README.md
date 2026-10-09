@@ -35,12 +35,15 @@ docker pull ghcr.io/kelvran/gateway:latest
 ```
 
 ```bash
-# (c) From source; the result is a single self-contained binary (statically linked in the published Linux image)
+# (c) From source; the result is two self-contained binaries, the gateway and its companion CLI (statically linked in the published Linux image)
 git clone https://github.com/kelvran/gateway.git && cd gateway/gateway
 go build -o /tmp/kelvran-gateway ./cmd/gateway   # out of tree: a gateway/gateway binary is not gitignored
+go build -o /tmp/kelvran ./cmd/kelvran           # the companion CLI (on `main` since 2026-10-10, not in `gateway/v0.17.0`): `kelvran init` writes the config below for you
 ```
 
 ### Minimal config
+
+`kelvran init [--single-user]` (on `main` since 2026-10-10, not in `gateway/v0.17.0`; [reference](docs/reference/kelvran-cli.md)) does this section for you: it generates the key, writes `config.yaml` with a priced deployment for each provider credential set in your shell, validates it with the gateway's own loader and prints the client exports once — `kelvran init --dry-run` shows the file first. The manual path below stays valid and is the documented `key_hash` contract.
 
 A virtual key is a bearer secret you generate; `config.yaml` stores only its SHA-256 hash and the gateway can never recover the secret. Generate the pair (`export` so the Python snippet below can read it; `printf '%s'` so no trailing newline is hashed; if `sha256sum` is missing (older macOS), use `shasum -a 256`):
 

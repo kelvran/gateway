@@ -16,9 +16,9 @@ uv sync
 uv run pytest
 ```
 
-**Cross-language contract (`api/`):** once `.proto` files exist, run `buf lint` and `buf breaking --against '.git#branch=main'` before opening a PR that touches anything under `api/`.
+**Cross-language contract (`api/`):** `api/gatewayevents/v1/gatewayevents.proto` is the contract (since 2026-09-03). Run `make lint-proto` — `buf lint` and `buf breaking --against '../.git#branch=main,subdir=api'` from `api/` — before opening a PR that touches anything under `api/`.
 
-*(This section will be filled in with exact, verified commands once each deployable is actually scaffolded — right now it describes the intended shape per each deployable's `ARCHITECTURE.md`, not a tested setup.)*
+*(Commands above re-verified against `.github/workflows/ci.yml` and the root `Makefile` on 2026-10-10.)*
 
 ## Branching / PR Conventions
 
@@ -42,7 +42,7 @@ See `AGENTS.md` for the authoritative Go/Python conventions — this file doesn'
 
 ## CI Gates
 
-Real and running (`.github/workflows/ci.yml`, green on every push to `main` — see `STATUS.md`): `golangci-lint run ./...` + `go build ./... && go test ./...` for `gateway`; `ruff check .` + `uv run pytest tests/` for `evals`; `buf lint`/`buf breaking` + generated-code drift check for any `api/` change. Mirrors root `make verify` exactly. Full test-pyramid strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`.
+Real and running (`.github/workflows/ci.yml`, green on every push to `main` — see `STATUS.md`): `golangci-lint run ./...` + `go build ./... && go test ./...` for `gateway`; `ruff check .` + `uv run pytest tests/` for `evals`; `buf lint`/`buf breaking` + generated-code drift check for any `api/` change. Root `make verify` runs the fast local subset; `AGENTS.md`'s Testing section lists the eight CI steps it deliberately omits. Full test-pyramid strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`.
 
 ## Tests Are Part of the Change
 

@@ -62,7 +62,7 @@ Several of those rules encode a design choice. `budget` and `ratelimit` do not i
 
 One `signal.NotifyContext` on SIGTERM and SIGINT governs the health-probe loop, the credential-reload loop, the config-propagation subscriber and both HTTP servers. Health probing is off unless `health_probe.interval_seconds` is set; the key has no default, and with it omitted `/readyz` reports ready without having probed anything. With probing off, a failing deployment is handled only at request time, by a fallback chain or the same-model fallback.
 
-A second binary, `cmd/kelvran-bench`, drives open-loop load through a gateway and serves a deterministic mock upstream; its packages `internal/bench` and `internal/benchupstream` are pure leaves. It is on main since 2026-10-08, not in gateway/v0.17.0. Methodology and results are in [BENCHMARKS.md](../operations/BENCHMARKS.md).
+A second binary, `cmd/kelvran-bench`, drives open-loop load through a gateway and serves a deterministic mock upstream; its packages `internal/bench` and `internal/benchupstream` are pure leaves. It is on main since 2026-10-08, not in gateway/v0.17.0. Methodology and results are in [BENCHMARKS.md](../operations/BENCHMARKS.md). A third binary, `cmd/kelvran` (on main since 2026-10-10), is the companion CLI — `init` today, more verbs to follow — whose logic is the leaf `internal/cli`; unlike kelvran-bench it ships in every release archive, package and image ([CLI reference](../reference/kelvran-cli.md)).
 
 ## What is real in the stack, and what is only a target
 

@@ -187,6 +187,21 @@ jobs:
           OUT=$(kelvran-gateway -version)
           echo "$OUT"
           case "$OUT" in "kelvran-gateway ${VERSION} ("*) ;; *) echo "::error::unexpected -version output"; exit 1 ;; esac
+      - name: The installed CLI reports the tagged version
+        run: |
+          test -x /usr/bin/kelvran
+          OUT=$(kelvran -version)
+          echo "$OUT"
+          case "$OUT" in "kelvran ${VERSION} ("*) ;; *) echo "::error::unexpected kelvran -version output"; exit 1 ;; esac
+      - name: kelvran init --dry-run writes a config the gateway validates
+        # stdout is the YAML only; the next-steps block (which carries the
+        # generated secret) goes to stderr and is not echoed here.
+        run: |
+          if ! kelvran init --dry-run --provider openai > /tmp/init.yaml 2> /tmp/init.stderr; then
+            # Show init's own diagnostics but never its export lines (the secret).
+            grep -v '^  export ' /tmp/init.stderr; exit 1
+          fi
+          kelvran-gateway -config /tmp/init.yaml -validate
       - name: The shipped example config validates
         run: kelvran-gateway -config /etc/kelvran-gateway/config.example.yaml -validate
       - name: The unit file passes systemd-analyze verify
@@ -220,10 +235,31 @@ jobs:
           RESULT=$(systemctl show kelvran-gateway -p Result --value)
           [ "$RESULT" = "success" ] || { echo "::error::unit Result=$RESULT after stop"; exit 1; }
           sudo rm -f /etc/kelvran-gateway/config.yaml
-      - name: The tarball carries the binary, LICENSE, NOTICE and the example config
+      # A real DynamicUser read of a config `kelvran init` wrote into the
+      # package layout: the file must come out 0644 root:root (RFC-3 decision
+      # 6), `-validate` must read it without sudo, and the hardened unit must
+      # start on it. stdout (the generated secret's export line) is discarded.
+      - name: kelvran init writes a 0644 root-owned config the unit can read and start on
+        run: |
+          sudo kelvran init --out /etc/kelvran-gateway/config.yaml --single-user --provider openai --force > /dev/null
+          STAT=$(stat -c '%a %U:%G' /etc/kelvran-gateway/config.yaml)
+          echo "config.yaml: $STAT"
+          [ "$STAT" = "644 root:root" ] || { echo "::error::kelvran init wrote $STAT, want 644 root:root"; exit 1; }
+          kelvran-gateway -config /etc/kelvran-gateway/config.yaml -validate
+          sudo systemctl start kelvran-gateway
+          for _ in $(seq 1 30); do curl -fs http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break; sleep 0.5; done
+          curl -fs http://127.0.0.1:8080/healthz || { sudo journalctl -u kelvran-gateway --no-pager | tail -50; exit 1; }
+          sudo systemctl stop kelvran-gateway
+          RESULT=$(systemctl show kelvran-gateway -p Result --value)
+          [ "$RESULT" = "success" ] || { echo "::error::unit Result=$RESULT after stop on the init-written config"; sudo journalctl -u kelvran-gateway --no-pager | tail -50; exit 1; }
+          sudo rm -f /etc/kelvran-gateway/config.yaml
+      - name: The tarball carries both binaries, LICENSE, NOTICE and the example config
         run: |
           mkdir -p /tmp/archive && tar -xzf "dist/kelvran-gateway_${VERSION}_linux_amd64.tar.gz" -C /tmp/archive
           /tmp/archive/kelvran-gateway -version
+          OUT=$(/tmp/archive/kelvran -version)
+          echo "$OUT"
+          case "$OUT" in "kelvran ${VERSION} ("*) ;; *) echo "::error::unexpected tarball kelvran -version output"; exit 1 ;; esac
           test -f /tmp/archive/LICENSE && test -f /tmp/archive/NOTICE && test -f /tmp/archive/config.example.yaml
       - name: Checksums cover every asset
         working-directory: dist

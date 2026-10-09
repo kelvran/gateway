@@ -20,9 +20,9 @@ Pin by index digest, which covers every platform: `docker buildx imagetools insp
 
 ## What is inside
 
-- `FROM scratch`: exactly two files, the static binary at `/gateway` and the CA bundle at `/etc/ssl/certs/ca-certificates.crt`. No shell, no package manager, no libc.
+- `FROM scratch`: three files — the static gateway binary at `/gateway`, its companion CLI at `/kelvran` (since 2026-10-10; run it with `docker run --rm --entrypoint /kelvran <image> …` or `docker exec <container> /kelvran …`, see [the CLI reference](kelvran-cli.md)) and the CA bundle at `/etc/ssl/certs/ca-certificates.crt`. No shell, no package manager, no libc.
 - Runs as UID/GID `65532:65532`; listens on `8080` (`listen_addr` in the config); the admin API listens on a second, separate port when configured.
-- `ENTRYPOINT ["/gateway"]`, `CMD ["-config", "/config.yaml"]`: mount your config at `/config.yaml`. `-validate` checks a config and exits; `-version` prints the build identity.
+- `ENTRYPOINT ["/gateway"]`, `CMD ["-config", "/config.yaml"]`: mount your config at `/config.yaml`. `-validate` checks a config and exits; `-version` prints the build identity. `/kelvran -version` prints the CLI's, and `docker run --rm --entrypoint /kelvran <image> init --dry-run --provider openai > config.yaml` writes a starter config on the host.
 - Provider credentials and other secrets come from environment variables named in the config (`api_key_env`, `access_key_id_env`, …), or from files via the `*_file` fields — never from the image.
 
 ## Run

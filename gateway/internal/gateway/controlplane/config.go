@@ -1043,16 +1043,25 @@ type Config struct {
 	CredentialReload CredentialReloadConfig
 }
 
-// Load reads and parses the YAML config file at path.
+// Load reads and parses the YAML config file at path: os.ReadFile followed
+// by Parse, so the two can never disagree on a document.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("controlplane: reading config %s: %w", path, err)
 	}
+	return Parse(data, path)
+}
 
+// Parse parses a config document already in memory. source names it in
+// error messages (a path, or a description such as "the generated config").
+// Exported 2026-10-10 for kelvran init, which checks the YAML it rendered
+// through the gateway's own loader before writing it and runs where no
+// writable directory may exist (the scratch image has no /tmp).
+func Parse(data []byte, source string) (*Config, error) {
 	root, err := parseYAMLMini(data)
 	if err != nil {
-		return nil, fmt.Errorf("controlplane: parsing config %s: %w", path, err)
+		return nil, fmt.Errorf("controlplane: parsing config %s: %w", source, err)
 	}
 
 	cfg := &Config{PriceTable: map[string]ModelPriceConfig{}}

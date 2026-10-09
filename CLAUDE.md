@@ -6,7 +6,7 @@ Do not duplicate `AGENTS.md` here. Everything a generic coding agent (Codex, Cur
 
 ## Claude-Code-runtime specifics
 
-- **Slash commands / skills**: none configured yet — pre-scaffolding. Add here once any project-specific skill or slash command exists.
+- **Slash commands / skills**: one project skill, `gateway/.claude/skills/verify/SKILL.md` (the live-pilot verification checklist); no slash commands. (Corrected 2026-10-10: this line said "none" after the skill existed.)
 - **Subagents**: none configured yet. When they are, list each with its auto-trigger condition (e.g. "security-touching diffs in `gateway/internal/identity/` or `gateway/internal/cache/` → run a security-review subagent before merge").
 - **MCP servers**: none configured for this repo yet.
 - **Hooks**: none configured yet. A likely future candidate, given `THREAT_MODEL.md`'s known threat classes: a pre-commit hook that flags diffs touching `gateway/internal/cache/` or `gateway/internal/identity/` for mandatory security review, since those are exactly the two subsystems `THREAT_MODEL.md` flags as highest-priority (cross-tenant isolation, cache poisoning/hijacking).

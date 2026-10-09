@@ -589,6 +589,21 @@ jobs:
             VERSION=${{ steps.tags.outputs.version }}
             COMMIT=${{ github.sha }}
             DATE=${{ steps.tags.outputs.date }}
+      - name: The published image's companion CLI reports the build version
+        # The only check that can pin the SECOND `go build`'s ldflags (the
+        # release acceptance job has no image): run /kelvran from the exact
+        # index digest just pushed and assert its -version prefix carries the
+        # same VERSION build-arg the gateway binary received (RFC-3 decision 1).
+        # Ref-derived text is bound through env:, never interpolated into the
+        # script (the rule the tags step above states): a tag name may carry
+        # shell syntax, and this job holds packages/attestations write.
+        env:
+          IMAGE_REF: ghcr.io/kelvran/gateway@${{ steps.build.outputs.digest }}
+          WANT_VERSION: ${{ steps.tags.outputs.version }}
+        run: |
+          OUT=$(docker run --rm --entrypoint /kelvran "$IMAGE_REF" -version)
+          echo "$OUT"
+          case "$OUT" in "kelvran ${WANT_VERSION} ("*) ;; *) echo "::error::unexpected /kelvran -version output"; exit 1 ;; esac
       - name: Trivy vulnerability scan of the published image
         # govulncheck (gateway job, above) and pip-audit (evals job) scan
         # SOURCE dependencies -- nothing previously scanned the actual BUILT

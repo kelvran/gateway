@@ -18,6 +18,7 @@ Which releases have packages: the release pipeline (`.github/workflows/release.y
 | Path | What it is |
 |---|---|
 | `/usr/bin/kelvran-gateway` | Static binary (`CGO_ENABLED=0`) built from `gateway/cmd/gateway` |
+| `/usr/bin/kelvran` | The companion CLI (`kelvran init`; since 2026-10-10), built from `gateway/cmd/kelvran` — see [the CLI reference](../../reference/kelvran-cli.md) |
 | `/usr/lib/systemd/system/kelvran-gateway.service` | The unit; source is [`deploy/systemd/kelvran-gateway.service`](../../../deploy/systemd/kelvran-gateway.service) |
 | `/etc/kelvran-gateway/config.example.yaml` | The example config, marked `config|noreplace`; source is [`gateway/config.example.yaml`](../../../gateway/config.example.yaml) |
 | `/usr/share/doc/kelvran-gateway/LICENSE`, `/usr/share/doc/kelvran-gateway/NOTICE` | License files |
@@ -182,7 +183,7 @@ To roll back, install the previous Release's package the same way. Assets are ne
 
 The unit runs the gateway as `DynamicUser=yes` with `StateDirectory=kelvran-gateway` and `ConfigurationDirectory=kelvran-gateway`, `Restart=on-failure`, `RestartSec=2s` and `KillSignal=SIGTERM`. Hardening on top of that: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`, `RestrictSUIDSGID`, `RestrictRealtime`, `RestrictNamespaces`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service` followed by `SystemCallFilter=~@privileged` (`@resources` stays allowed because the Go runtime raises its own `RLIMIT_NOFILE` at startup), empty `CapabilityBoundingSet=` and `AmbientCapabilities=`, and `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`.
 
-Per [docs/VERSIONING.md](../../VERSIONING.md), the package layout (`/usr/bin/kelvran-gateway`, `/usr/lib/systemd/system/kelvran-gateway.service`, `/etc/kelvran-gateway/`), the release-asset names and verification identities, and the CLI flags are part of the gateway's SemVer-covered surface. The unit's hardening directives are not; they only tighten between releases.
+Per [docs/VERSIONING.md](../../VERSIONING.md), the package layout (`/usr/bin/kelvran-gateway`, `/usr/bin/kelvran` since 2026-10-10, `/usr/lib/systemd/system/kelvran-gateway.service`, `/etc/kelvran-gateway/`), the release-asset names and verification identities, and the CLI flags are part of the gateway's SemVer-covered surface. The unit's hardening directives are not; they only tighten between releases.
 
 ## Not available today
 

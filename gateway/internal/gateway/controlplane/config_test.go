@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -193,6 +194,32 @@ func TestLoadExampleConfig(t *testing.T) {
 // entirely must still load successfully, with Config.Telemetry left at
 // its zero value (internal/telemetry.Init, not this package, is
 // responsible for turning "" into "stdout").
+// TestParseMatchesLoadForTheExampleConfig pins Parse as Load's in-memory
+// twin (Load is os.ReadFile + Parse): kelvran init self-checks its rendered
+// YAML through Parse because it runs where no writable directory may exist
+// (the scratch image has no /tmp), and the two must never diverge.
+func TestParseMatchesLoadForTheExampleConfig(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "config.example.yaml")
+	fromFile, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the repository's own example config, a fixed relative path
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromBytes, err := Parse(data, "config.example.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !reflect.DeepEqual(fromFile, fromBytes) {
+		t.Errorf("Parse and Load disagree on the example config:\nLoad  = %+v\nParse = %+v", fromFile, fromBytes)
+	}
+	if _, err := Parse([]byte("listen_addr: \":1\"\n\tbad: tab\n"), "generated"); err == nil || !strings.Contains(err.Error(), "generated") {
+		t.Errorf("Parse must name its source in the error, got %v", err)
+	}
+}
+
 func TestLoadWithoutTelemetrySectionDefaultsToZeroValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

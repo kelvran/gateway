@@ -1,6 +1,8 @@
-# Kelvran gateway — multi-stage build producing a single static binary,
-# matching gateway/ARCHITECTURE.md's stated distribution shape
-# ("Single static binary, scratch/alpine Docker image").
+# Kelvran gateway — multi-stage build producing two static binaries on a
+# scratch base: the gateway at /gateway (the ENTRYPOINT) and its companion
+# CLI at /kelvran (RFC-3; run it with `docker run --rm --entrypoint /kelvran
+# <image> …` or `docker exec <ctr> /kelvran …`), the distribution shape
+# gateway/ARCHITECTURE.md records.
 
 # --- builder stage ---
 # Pinned by digest (independently re-verified via `docker buildx
@@ -54,6 +56,13 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/gateway ./cmd/gateway
+# The companion CLI is a second main package, so the three -X symbols are
+# injected again for it (cmd/kelvran/version.go). ci.yml's publish-image job
+# smoke-tests `/kelvran -version` after the push, the only check that can
+# pin this build's ldflags.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -o /out/kelvran ./cmd/kelvran
 
 # --- final stage ---
 FROM scratch
@@ -63,6 +72,7 @@ FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 COPY --from=builder /out/gateway /gateway
+COPY --from=builder /out/kelvran /kelvran
 
 # The gateway's own config file is not baked into the image — mount a
 # real config.yaml (never config.example.yaml with real secrets in it,
