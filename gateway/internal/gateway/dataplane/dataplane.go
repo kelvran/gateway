@@ -5564,10 +5564,11 @@ func thinkingFingerprint(req adapter.ChatRequest) string {
 
 // noteDroppedRequestFields records, one request_field_dropped Warn line
 // per field, every canonical request field the adapter about to run will
-// leave out of the upstream request -- thinking (item 11 slice S4) and
-// top_k (slice S5) today: the bedrock adapter omits a value the served
+// leave out of the upstream request -- thinking (item 11 slice S4), top_k
+// and effort (slice S5) today: the bedrock adapter omits a value the served
 // model's Claude generation rejects (adapter.BedrockForwardsThinking /
-// BedrockForwardsTopK -- the same predicates the adapter consults, so this
+// BedrockForwardsTopK / BedrockForwardsEffort -- the same predicates the
+// adapter consults, so this
 // never disagrees with the wire), and a provider with no such field at all
 // ignores the value. The request proceeds without the field either way;
 // until slice S9b adds the telemetry carrier these lines are the only
@@ -5581,6 +5582,26 @@ func (p *Pipeline) noteDroppedRequestFields(ctx context.Context, dep Deployment,
 	}
 	if upstreamReq.TopK != nil {
 		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "top_k", strconv.Itoa(*upstreamReq.TopK), topKDropReason(dep, upstreamReq))
+	}
+	if upstreamReq.Effort != "" {
+		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "effort", upstreamReq.Effort, effortDropReason(dep, upstreamReq))
+	}
+}
+
+// effortDropReason is "" when dep's adapter forwards the canonical effort,
+// else why it will not.
+func effortDropReason(dep Deployment, upstreamReq adapter.ChatRequest) string {
+	switch dep.Provider {
+	case "anthropic":
+		return ""
+	case "bedrock":
+		forward, why := adapter.BedrockForwardsEffort(upstreamReq.Model)
+		if forward {
+			return ""
+		}
+		return why
+	default:
+		return "provider " + dep.Provider + " has no effort control; the value is ignored"
 	}
 }
 

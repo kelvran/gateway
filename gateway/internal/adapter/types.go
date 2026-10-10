@@ -374,7 +374,22 @@ type ChatRequest struct {
 	// request_field_dropped log line (dataplane.noteDroppedRequestFields).
 	// Folded into every cache key, the L3 gate and the Idempotency-Key
 	// fingerprint (dataplane.samplingFingerprint).
-	TopK   *int      `json:"-"`
+	TopK *int `json:"-"`
+	// Effort is the caller's effort level -- Anthropic's output_config.effort
+	// (low, medium, high) -- set only by the Anthropic Messages ingress (item
+	// 11 slice S5). json:"-": OpenAI's reasoning_effort is a different
+	// vocabulary and is deliberately not mapped, so a /v1/chat/completions
+	// body carrying either keeps today's silent unknown-field drop and the
+	// OpenAI wire never gains a key. The anthropic adapter forwards it
+	// verbatim inside output_config (beside a structured-output format);
+	// bedrock forwards it only where the served model's Claude generation
+	// accepts it (BedrockForwardsEffort, capabilities.go); openai,
+	// openaicompat and gemini have no field and ignore it. Never validated
+	// here: a model that needs the effort beta header, or rejects the
+	// vocabulary, answers with its own 400. Every omission is a
+	// request_field_dropped log line. Folded into every cache key, the L3
+	// gate and the Idempotency-Key fingerprint (dataplane.samplingFingerprint).
+	Effort string    `json:"-"`
 	Tools  []ToolDef `json:"tools,omitempty"`
 	Stream bool      `json:"stream,omitempty"`
 	// ResponseFormat, when set, requests structured JSON output

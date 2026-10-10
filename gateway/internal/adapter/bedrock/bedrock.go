@@ -690,7 +690,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 	}
 
-	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, req.TopK, req.Model)
+	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, req.TopK, req.Effort, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -852,18 +852,32 @@ func outputConfigFormatFor(rf *adapter.ResponseFormat, model string) (map[string
 // additionalModelRequestFields escape hatch from its independent parts --
 // structured output (outputConfigFormatFor, the output_config key), the
 // caller's canonical thinking configuration (thinkingFieldFor, the
-// thinking key; item 11 slice S4) and top_k (slice S5) -- and returns nil
+// thinking key; item 11 slice S4), top_k and output_config.effort (slice
+// S5) -- and returns nil
 // when none contributes, so a request carrying none stays byte-identical
 // to one built before any of them existed (every request golden relies on
 // omitempty seeing nil here).
-func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapter.ThinkingConfig, topK *int, model string) (map[string]any, error) {
+func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapter.ThinkingConfig, topK *int, effort string, model string) (map[string]any, error) {
 	fields := map[string]any{}
 	format, err := outputConfigFormatFor(rf, model)
 	if err != nil {
 		return nil, err
 	}
+	outputConfig := map[string]any{}
 	if format != nil {
-		fields["output_config"] = map[string]any{"format": format}
+		outputConfig["format"] = format
+	}
+	if effort != "" {
+		// output_config.effort shares the object with the structured-output
+		// format, gated by the same per-generation table
+		// (adapter.BedrockForwardsEffort; item 11 slice S5); an omission is
+		// recorded by the dataplane like a thinking one.
+		if forward, _ := adapter.BedrockForwardsEffort(model); forward {
+			outputConfig["effort"] = effort
+		}
+	}
+	if len(outputConfig) > 0 {
+		fields["output_config"] = outputConfig
 	}
 	if field := thinkingFieldFor(thinking, model); field != nil {
 		fields["thinking"] = field

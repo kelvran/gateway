@@ -145,6 +145,9 @@ type BlockBinding struct {
 // object.
 type OutputConfig struct {
 	Format *OutputFormat `json:"format,omitempty"`
+	// Effort is output_config.effort (low, medium, high), the canonical
+	// ChatRequest.Effort forwarded verbatim (item 11 slice S5).
+	Effort string `json:"effort,omitempty"`
 }
 
 // OutputFormat is Anthropic's real output_config.format shape --
@@ -651,7 +654,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		maxTokens = *req.MaxTokens
 	}
 
-	outputConfig, err := outputConfigToProvider(req.ResponseFormat)
+	outputConfig, err := outputConfigToProvider(req.ResponseFormat, req.Effort)
 	if err != nil {
 		return nil, err
 	}
@@ -696,7 +699,9 @@ func strictPtr(strict bool) *bool {
 
 // outputConfigToProvider converts a canonical adapter.ResponseFormat
 // into Anthropic's native OutputConfig -- output_config.format.
-// {type,schema}, per OutputFormat's own doc comment. Nil in, nil out.
+// {type,schema}, per OutputFormat's own doc comment -- and, since item 11
+// slice S5, carries the canonical Effort as output_config.effort in the
+// same object. Nil and "" in, nil out.
 //
 // rf.Type is forwarded verbatim and never inspected here, and nothing
 // upstream filters it for this provider: dataplane's
@@ -723,9 +728,13 @@ func strictPtr(strict bool) *bool {
 // Anthropic's own response decides. Identical in gateway/v0.17.0 and on
 // main. docs/how-to/structured-output.md therefore documents
 // "json_schema" only for anthropic.
-func outputConfigToProvider(rf *adapter.ResponseFormat) (*OutputConfig, error) {
-	if rf == nil {
+func outputConfigToProvider(rf *adapter.ResponseFormat, effort string) (*OutputConfig, error) {
+	if rf == nil && effort == "" {
 		return nil, nil
+	}
+	oc := &OutputConfig{Effort: effort}
+	if rf == nil {
+		return oc, nil
 	}
 	format := &OutputFormat{Type: rf.Type}
 	if rf.JSONSchema != nil && len(rf.JSONSchema.Schema) > 0 {
@@ -735,7 +744,8 @@ func outputConfigToProvider(rf *adapter.ResponseFormat) (*OutputConfig, error) {
 		}
 		format.Schema = schema
 	}
-	return &OutputConfig{Format: format}, nil
+	oc.Format = format
+	return oc, nil
 }
 
 // contentPartToBlock converts one canonical adapter.ContentPart into

@@ -213,3 +213,34 @@ func TestBedrockForwardsTopKIsPerFamily(t *testing.T) {
 		}
 	}
 }
+
+// TestBedrockForwardsEffortIsPerFamily is the effort half of the 2026-10-10
+// probes (item 11 slice S5): the Claude 5.x and 4.6 generations accept
+// output_config.effort, 4.5 rejects it ("does not support the effort
+// parameter"), and an unlisted family or a non-Anthropic model forwards
+// verbatim, the same asymmetry as thinking and top_k.
+func TestBedrockForwardsEffortIsPerFamily(t *testing.T) {
+	tests := []struct {
+		model   string
+		forward bool
+	}{
+		{"global.anthropic.claude-sonnet-5", true},
+		{"global.anthropic.claude-fable-5-1", true},
+		{"global.anthropic.claude-haiku-5-5", true},
+		{"global.anthropic.claude-sonnet-4-6", true},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", false},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", false},
+		{"global.anthropic.claude-opus-4-5-20251101-v1:0", false},
+		{"anthropic.claude-3-5-sonnet-20241022-v2:0", true},
+		{"amazon.nova-pro-v1:0", true},
+	}
+	for _, tt := range tests {
+		forward, reason := BedrockForwardsEffort(tt.model)
+		if forward != tt.forward {
+			t.Errorf("BedrockForwardsEffort(%q) = %v (%q), want %v", tt.model, forward, reason, tt.forward)
+		}
+		if !forward && reason == "" {
+			t.Errorf("BedrockForwardsEffort(%q) dropped with an empty reason", tt.model)
+		}
+	}
+}

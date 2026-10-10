@@ -298,3 +298,19 @@ func BedrockForwardsTopK(model string) (forward bool, reason string) {
 	}
 	return false, "the model's Claude generation rejects top_k on Bedrock (deprecated for this model)"
 }
+
+// BedrockForwardsEffort decides whether the bedrock adapter sends a
+// canonical ChatRequest.Effort to model as output_config.effort inside
+// additionalModelRequestFields and, when it does not, why (item 11 slice
+// S5). The same asymmetry as BedrockForwardsThinking: only a family the
+// table knows rejects effort -- the Claude 4.5 generation, a 400 "This
+// model does not support the effort parameter" in the 2026-10-10 probes --
+// is dropped; an accepting family (5.x, 4.6), an unlisted family or a
+// non-Anthropic model forwards verbatim.
+func BedrockForwardsEffort(model string) (forward bool, reason string) {
+	capability, known := BedrockThinkingCapabilityFor(model)
+	if !known || capability.Effort {
+		return true, ""
+	}
+	return false, "the model's Claude generation rejects output_config.effort on Bedrock (does not support the effort parameter)"
+}

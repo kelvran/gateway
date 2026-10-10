@@ -1653,3 +1653,51 @@ func TestToProviderTopKForwarded(t *testing.T) {
 		t.Errorf("wire = %s, want top_k 5", wire)
 	}
 }
+
+// TestToProviderEffortForwarded (item 11 slice S5): canonical Effort
+// becomes output_config.effort verbatim -- alone it materialises
+// output_config, and beside a response_format it shares the one object
+// with format. The value is never validated (low/medium/high is the
+// upstream's vocabulary to enforce).
+func TestToProviderEffortForwarded(t *testing.T) {
+	req := thinkingBindingChatRequest("claude-sonnet-4-6", "")
+	req.Effort = "low"
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.OutputConfig == nil || native.OutputConfig.Effort != "low" || native.OutputConfig.Format != nil {
+		t.Fatalf("OutputConfig = %+v, want {Effort low, no Format}", native.OutputConfig)
+	}
+	wire, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"output_config":{"effort":"low"}`) {
+		t.Errorf("wire = %s, want output_config {effort: low}", wire)
+	}
+
+	req.ResponseFormat = &adapter.ResponseFormat{Type: "json_schema", JSONSchema: &adapter.JSONSchema{Name: "x", Schema: json.RawMessage(`{"type":"object"}`)}}
+	nativeAny, err = New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider(with response_format): %v", err)
+	}
+	native = nativeAny.(*Request)
+	if native.OutputConfig == nil || native.OutputConfig.Effort != "low" || native.OutputConfig.Format == nil || native.OutputConfig.Format.Type != "json_schema" {
+		t.Errorf("OutputConfig = %+v, want effort AND format in the one object", native.OutputConfig)
+	}
+}
+
+// TestToProviderNoEffortLeavesOutputConfigNil names the guarantee every
+// existing golden relies on: without Effort or ResponseFormat there is no
+// output_config at all.
+func TestToProviderNoEffortLeavesOutputConfigNil(t *testing.T) {
+	nativeAny, err := New().ToProvider(thinkingBindingChatRequest("claude-sonnet-4-6", ""))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	if oc := nativeAny.(*Request).OutputConfig; oc != nil {
+		t.Errorf("OutputConfig = %+v, want nil", oc)
+	}
+}

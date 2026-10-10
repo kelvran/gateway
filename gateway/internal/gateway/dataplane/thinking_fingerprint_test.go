@@ -332,3 +332,41 @@ func TestCallDeploymentLogsRequestFieldDroppedForTopK(t *testing.T) {
 		t.Errorf("want a request_field_dropped line naming top_k and the openai provider; logs:\n%s", noField)
 	}
 }
+
+// TestCallDeploymentLogsRequestFieldDroppedForEffort (item 11 slice S5):
+// effort is recorded on the same request_field_dropped line when the 4.5
+// generation rejects it on Bedrock and when the provider has no effort
+// at all (openai -- its reasoning_effort is a different vocabulary and
+// is deliberately not mapped), and is silent on a 5.x family.
+func TestCallDeploymentLogsRequestFieldDroppedForEffort(t *testing.T) {
+	run := func(t *testing.T, provider, upstreamModel string, upstream UpstreamCaller, register bool) string {
+		t.Helper()
+		var logBuf bytes.Buffer
+		p := newTestPipeline(t, upstream, []Deployment{{Name: "d-1", Model: "m", Provider: provider, UpstreamModel: upstreamModel, BaseURL: "http://unused"}})
+		p.logger = slog.New(slog.NewJSONHandler(&logBuf, nil))
+		if register {
+			p.adapters["bedrock"] = bedrock.New()
+		}
+		req := adapter.ChatRequest{Model: "m", Messages: []adapter.Message{{Role: "user", Content: "hi"}}, Effort: "low"}
+		if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
+			t.Fatalf("HandleChatCompletion(%s/%s): %v", provider, upstreamModel, err)
+		}
+		return logBuf.String()
+	}
+	bedrockUpstream := func(ctx context.Context, dep Deployment, req any) (any, error) { return fakeBedrockResponse("ok"), nil }
+	openaiUpstream := func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}
+
+	dropped := run(t, "bedrock", "global.anthropic.claude-haiku-4-5-20251001-v1:0", bedrockUpstream, true)
+	if !strings.Contains(dropped, `"msg":"request_field_dropped"`) || !strings.Contains(dropped, `"field":"effort"`) || !strings.Contains(dropped, `"value":"low"`) {
+		t.Errorf("want a request_field_dropped line with field effort and value low for a 4.5 Bedrock model; logs:\n%s", dropped)
+	}
+	if kept := run(t, "bedrock", "global.anthropic.claude-fable-5-1", bedrockUpstream, true); strings.Contains(kept, `"field":"effort"`) {
+		t.Errorf("effort drop logged for a family that accepts it:\n%s", kept)
+	}
+	noField := run(t, "openai", "gpt-4o", openaiUpstream, false)
+	if !strings.Contains(noField, `"field":"effort"`) || !strings.Contains(noField, "openai") {
+		t.Errorf("want a request_field_dropped line naming effort and the openai provider; logs:\n%s", noField)
+	}
+}

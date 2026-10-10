@@ -347,3 +347,26 @@ func TestChatRequestTopKIsUnreachableFromJSON(t *testing.T) {
 		t.Errorf("Marshal leaked top_k onto the wire: %s", out)
 	}
 }
+
+// TestChatRequestEffortIsUnreachableFromJSON pins json:"-" on
+// ChatRequest.Effort (item 11 slice S5): output_config.effort is an
+// Anthropic-dialect field the Messages ingress sets; OpenAI's own
+// reasoning_effort is a different vocabulary and is NOT mapped, so a
+// /v1/chat/completions body carrying either keeps today's silent
+// unknown-field drop and the OpenAI wire never gains a key.
+func TestChatRequestEffortIsUnreachableFromJSON(t *testing.T) {
+	var req ChatRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","messages":[],"effort":"low","output_config":{"effort":"low"}}`), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if req.Effort != "" {
+		t.Errorf("Effort = %q after unmarshaling a body with effort, want \"\" (json:\"-\")", req.Effort)
+	}
+	out, err := json.Marshal(ChatRequest{Model: "m", Effort: "low"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "effort") {
+		t.Errorf("Marshal leaked effort onto the wire: %s", out)
+	}
+}

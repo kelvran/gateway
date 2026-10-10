@@ -1872,3 +1872,45 @@ func TestToProviderTopKForwardedOrDroppedByFamily(t *testing.T) {
 		}
 	}
 }
+
+// TestToProviderEffortForwardedOrDroppedByFamily (item 11 slice S5):
+// output_config.effort rides additionalModelRequestFields when the served
+// model's Claude generation accepts it (5.x, 4.6, any family outside the
+// table), shares the one output_config object with a structured-output
+// format, and is omitted on 4.5 ("does not support the effort parameter").
+func TestToProviderEffortForwardedOrDroppedByFamily(t *testing.T) {
+	for _, model := range []string{"global.anthropic.claude-fable-5-1", "global.anthropic.claude-sonnet-4-6", "anthropic.claude-3-5-sonnet-20241022-v2:0"} {
+		req := bedrockThinkingRequest(model, nil)
+		req.Effort = "medium"
+		nativeAny, err := New().ToProvider(req)
+		if err != nil {
+			t.Fatalf("ToProvider(%s): %v", model, err)
+		}
+		oc, ok := nativeAny.(*Request).AdditionalModelRequestFields["output_config"].(map[string]any)
+		if !ok || oc["effort"] != "medium" {
+			t.Errorf("ToProvider(%s): additionalModelRequestFields.output_config = %v, want {effort: medium}", model, nativeAny.(*Request).AdditionalModelRequestFields)
+		}
+	}
+	req := bedrockThinkingRequest("global.anthropic.claude-haiku-4-5-20251001-v1:0", nil)
+	req.Effort = "medium"
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider(haiku-4-5): %v", err)
+	}
+	if fields := nativeAny.(*Request).AdditionalModelRequestFields; fields != nil {
+		t.Errorf("ToProvider(haiku-4-5): additionalModelRequestFields = %v, want nil (effort is rejected by the 4.5 generation)", fields)
+	}
+
+	// Effort and a structured-output format share the one output_config.
+	both := bedrockThinkingRequest("global.anthropic.claude-sonnet-4-6", nil)
+	both.Effort = "high"
+	both.ResponseFormat = &adapter.ResponseFormat{Type: "json_schema", JSONSchema: &adapter.JSONSchema{Name: "x", Schema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)}}
+	nativeAny, err = New().ToProvider(both)
+	if err != nil {
+		t.Fatalf("ToProvider(both): %v", err)
+	}
+	oc, ok := nativeAny.(*Request).AdditionalModelRequestFields["output_config"].(map[string]any)
+	if !ok || oc["effort"] != "high" || oc["format"] == nil {
+		t.Errorf("output_config = %v, want effort AND format in the one object", nativeAny.(*Request).AdditionalModelRequestFields)
+	}
+}
