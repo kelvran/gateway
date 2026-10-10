@@ -925,3 +925,35 @@ func TestRecordCacheL3GateOutcomeIncrementsPerGateAndOutcome(t *testing.T) {
 		t.Errorf("kelvran.configpropagation.subscribe_stopped delta = %d, want 2", got)
 	}
 }
+
+// TestRecordChatCompletionResultEmitsIngressAttributesOnlyWhenSet: the
+// Anthropic Messages ingress sets IngressFormat, Passthrough and
+// DroppedFields (item 11 slice S9b); a result from the OpenAI route leaves
+// them unset and no attribute appears.
+func TestRecordChatCompletionResultEmitsIngressAttributesOnlyWhenSet(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
+	tracer := tp.Tracer("result_test")
+	_, span := tracer.Start(t.Context(), "ingress")
+	RecordChatCompletionResult(span, ChatCompletionResult{CostUSD: "0", IngressFormat: "anthropic-messages", Passthrough: true, DroppedFields: "/a,/b"})
+	span.End()
+	attrs := sr.Ended()[0].Attributes()
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranIngressFormat)); !ok || v.AsString() != "anthropic-messages" {
+		t.Errorf("%s = %v, ok=%v", AttrKelvranIngressFormat, v, ok)
+	}
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranIngressPassthrough)); !ok || !v.AsBool() {
+		t.Errorf("%s = %v, ok=%v", AttrKelvranIngressPassthrough, v, ok)
+	}
+	if v, ok := attrValue(t, attrs, attribute.Key(AttrKelvranIngressDroppedFields)); !ok || v.AsString() != "/a,/b" {
+		t.Errorf("%s = %v, ok=%v", AttrKelvranIngressDroppedFields, v, ok)
+	}
+	_, span2 := tracer.Start(t.Context(), "openai")
+	RecordChatCompletionResult(span2, ChatCompletionResult{CostUSD: "0"})
+	span2.End()
+	for _, key := range []string{AttrKelvranIngressFormat, AttrKelvranIngressPassthrough, AttrKelvranIngressDroppedFields} {
+		if _, ok := attrValue(t, sr.Ended()[1].Attributes(), attribute.Key(key)); ok {
+			t.Errorf("%s set on an OpenAI-route result; must be absent", key)
+		}
+	}
+}

@@ -174,6 +174,18 @@ const (
 	// (not even `false`) for a request that never asked for structured
 	// output at all, or that got it correctly enforced.
 	AttrKelvranResponseFormatRequestedNotEnforced = "kelvran.response_format.requested_not_enforced"
+	// AttrKelvranIngressFormat, AttrKelvranIngressPassthrough and
+	// AttrKelvranIngressDroppedFields are the Anthropic Messages ingress
+	// carrier (item 11 slice S9b, RFC-1 §8): the dialect a request arrived
+	// in, whether the serving hop relayed the body as received, and the
+	// sorted RFC 6901 pointers of the members a translate hop dropped
+	// (bounded by the dataplane to 512 bytes). None is emitted for a
+	// request from the OpenAI route; the format and the passthrough flag
+	// are emitted together whenever the format is set, dropped_fields
+	// only when something was dropped.
+	AttrKelvranIngressFormat        = "kelvran.ingress.format"
+	AttrKelvranIngressPassthrough   = "kelvran.ingress.passthrough"
+	AttrKelvranIngressDroppedFields = "kelvran.ingress.dropped_fields"
 	// AttrKelvranFallbackHopErrorClass/FallbackHopDurationMs are per the
 	// round-2 backlog audit's gateway-observability finding: fallback.go's
 	// attemptFallbackChain already computes both classifyFallbackError's
@@ -413,6 +425,20 @@ type ChatCompletionResult struct {
 	// limit). See AttrKelvranResponseFormatRequestedNotEnforced's own
 	// doc comment.
 	ResponseFormatRequestedNotEnforced bool
+	// IngressFormat is adapter.Passthrough.Format ("anthropic-messages")
+	// when the request arrived through the Anthropic Messages ingress and
+	// "" for the OpenAI route; Passthrough and DroppedFields are only
+	// meaningful when it is set. See AttrKelvranIngressFormat's own doc
+	// comment.
+	IngressFormat string
+	// Passthrough is true when the serving hop relayed the body as
+	// received (an anthropic deployment, from slice S11 on) and false on a
+	// translate hop, whose DroppedFields says what it could not carry.
+	Passthrough bool
+	// DroppedFields is dataplane.droppedFieldsSummary's value: the sorted,
+	// comma-joined pointers of the members the translate hop dropped, ""
+	// when nothing was.
+	DroppedFields string
 	// CostUSD is a pre-formatted decimal string (e.g. "0.0000575"), not a
 	// float64 — per docs/rfcs/2026-09-02-decimal-cost-accounting.md, OTel's
 	// attribute value model has no decimal type, and converting back to
@@ -578,6 +604,15 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	}
 	if r.ResponseFormatRequestedNotEnforced {
 		attrs = append(attrs, attribute.Bool(AttrKelvranResponseFormatRequestedNotEnforced, true))
+	}
+	if r.IngressFormat != "" {
+		attrs = append(attrs,
+			attribute.String(AttrKelvranIngressFormat, r.IngressFormat),
+			attribute.Bool(AttrKelvranIngressPassthrough, r.Passthrough),
+		)
+		if r.DroppedFields != "" {
+			attrs = append(attrs, attribute.String(AttrKelvranIngressDroppedFields, r.DroppedFields))
+		}
 	}
 	// kelvran.cache.hit, kelvran.cost.usd, and gen_ai.request.stream are
 	// always meaningful (false/"0" are real values, not "unknown"), so

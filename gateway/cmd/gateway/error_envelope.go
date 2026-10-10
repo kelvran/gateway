@@ -197,6 +197,7 @@ func methodNotAllowed(w http.ResponseWriter, allowed string) {
 // readability; they are not the status switch and need not share its order.
 func errorTypeAndCode(err error, status int) (errType string, code *string) {
 	var capErr *dataplane.DeploymentCapacityError
+	var lossyErr *dataplane.ErrLossyIngressRejected
 	switch {
 	case errors.Is(err, identity.ErrMissingHeader):
 		return errTypeAuthentication, nil
@@ -245,6 +246,10 @@ func errorTypeAndCode(err error, status int) (errType string, code *string) {
 		// Item 11 slice S6: a tool message carries parts no deployment in the
 		// pool can carry -- known from the request alone, so a 400.
 		return errTypeInvalidRequest, codePtr("tool_result_parts_unsupported")
+	case errors.As(err, &lossyErr):
+		// Item 11 slice S9b: members no deployment in the pool can carry --
+		// known from the request alone, so a 400; param lists the pointers.
+		return errTypeInvalidRequest, codePtr("lossy_ingress_rejected")
 	case errors.Is(err, dataplane.ErrPromptAndMessagesBothSet),
 		errors.Is(err, dataplane.ErrPromptResolutionFailed),
 		errors.Is(err, dataplane.ErrPromptLabelAndVersionBothSet),
@@ -272,4 +277,29 @@ func errorTypeAndCode(err error, status int) (errType string, code *string) {
 	default:
 		return errTypeServer, nil
 	}
+}
+
+// errorParam is the envelope's param member: the request field (or header)
+// an error is about, nil when the error is not about one field. The
+// vocabulary is OpenAI's where a field exists (messages, response_format);
+// a header name for the idempotency contradiction; and, for a lossy-ingress
+// rejection (item 11 slice S9b), every unknown member's RFC 6901 pointer,
+// comma-joined and bounded like the dropped_fields summary
+// (ErrLossyIngressRejected.Param), so a client sees which members the
+// message only counted.
+func errorParam(err error) *string {
+	var lossyErr *dataplane.ErrLossyIngressRejected
+	switch {
+	case errors.Is(err, dataplane.ErrEmptyMessages):
+		return codePtr("messages")
+	case errors.Is(err, adapter.ErrStructuredOutputUnsupported):
+		return codePtr("response_format")
+	case errors.Is(err, idempotency.ErrFingerprintMismatch):
+		return codePtr("Idempotency-Key")
+	case errors.Is(err, adapter.ErrToolResultPartsUnsupported):
+		return codePtr("messages")
+	case errors.As(err, &lossyErr):
+		return codePtr(lossyErr.Param())
+	}
+	return nil
 }

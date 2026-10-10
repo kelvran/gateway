@@ -390,3 +390,20 @@ func TestMarshalEnvelopeNeverEmpty(t *testing.T) {
 		t.Fatalf("marshalEnvelope produced unparseable output %q: %v", out, err)
 	}
 }
+
+// TestErrorEnvelopeLossyIngressRejected: RFC-1 §6's refusal is a 400
+// invalid_request_error with its own code, decided before any upstream call,
+// and param carries the pointers of the members that could not be translated.
+func TestErrorEnvelopeLossyIngressRejected(t *testing.T) {
+	err := &dataplane.ErrLossyIngressRejected{Pointers: []string{"/foo", "/thinking/display"}, TopLevelFields: 1, NestedCount: 1}
+	if status := errorStatus(err); status != http.StatusBadRequest {
+		t.Errorf("errorStatus = %d, want 400", status)
+	}
+	typ, code := errorTypeAndCode(err, http.StatusBadRequest)
+	if typ != errTypeInvalidRequest || code == nil || *code != "lossy_ingress_rejected" {
+		t.Errorf("errorTypeAndCode = %q/%v, want invalid_request_error/lossy_ingress_rejected", typ, code)
+	}
+	if param := errorParam(err); param == nil || *param != "/foo,/thinking/display" {
+		t.Errorf("errorParam = %v, want the comma-joined pointers", param)
+	}
+}

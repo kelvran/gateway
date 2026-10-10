@@ -179,6 +179,9 @@ Attributes are set at the end of the request. A value that is not known is omitt
 | `kelvran.prompt.id` | string | The request used server-side prompt management (`prompt_id`). |
 | `kelvran.prompt.version` | int | Set together with `kelvran.prompt.id`. |
 | `kelvran.response_format.requested_not_enforced` | bool | Only ever `true`: the request asked for structured output and the serving deployment could not enforce it. Never `false`. |
+| `kelvran.ingress.format` | string | The request arrived through the Anthropic Messages ingress (`anthropic-messages`); absent for `/v1/chat/completions`. Since item 11 slice S9b; no route sets it until `/v1/messages` lands. |
+| `kelvran.ingress.passthrough` | bool | Set together with `kelvran.ingress.format`: whether the serving hop relayed the body as received. `false` on every hop until the raw-body relay (slice S11). |
+| `kelvran.ingress.dropped_fields` | string | Set together with `kelvran.ingress.format` when the body carried members the canonical schema cannot hold (dropped on every hop until the raw-body relay lands, and reported on a cache hit too): their sorted, comma-joined JSON pointers, cut on a pointer boundary at 512 bytes with a trailing `…+N`. |
 | `kelvran.cost.estimated` | bool | Only ever `true`: a streamed response was billed from an estimate. Never `false`. |
 | `kelvran.fallback.hops` | int | Fallback hops admitted to the deployment call (a hop a deployment gate rejected before any upstream request still counts, like the `fallback_hop` event); set only when a fallback happened (since `gateway/v0.18.0`). |
 | `kelvran.savings.usd` | string (decimal) | Cache hit only: the notional cost the hit avoided. |
@@ -220,6 +223,8 @@ One line per chat completion. Level `INFO` on success, `ERROR` on failure.
 | `virtual_key_id` | string | A virtual key was resolved, or the bearer matched an expired key (then `key_expired_at` is set too; since `gateway/v0.18.0`). |
 | `key_expired_at` | string | The bearer matched an expired key: its `expires_at`, RFC 3339 in UTC. Since `gateway/v0.18.0`. |
 | `client_tool`, `request_class` | string | Always (since `gateway/v0.18.0`): the two bounded attribution values, `other` / `none` when unknown or absent. Identifiers (session, agent, prompt ids) are never log fields. |
+| `ingress_format`, `passthrough` | string, bool | The request arrived through the Anthropic Messages ingress (since item 11 slice S9b; no route sets it until `/v1/messages` lands): `anthropic-messages`, and whether the hop relayed the body as received (`false` until slice S11). |
+| `dropped_fields` | string | Success on an ingress request whose body carried members the canonical schema cannot hold: their sorted, comma-joined JSON pointers, ≤ 512 bytes, cut on a pointer boundary with a trailing `…+N`. |
 | `gatewayevents_v1` | string (JSON) | Always, success and failure, unless marshalling failed (then `gatewayevents_marshal_failed` is logged at `WARN` and the field is omitted). See the next table. |
 | `error` | string | Failure. |
 | `upstream_status` | int | Failure caused by an upstream HTTP error: the provider's HTTP status. |

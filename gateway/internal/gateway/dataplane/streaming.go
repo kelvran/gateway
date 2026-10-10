@@ -288,8 +288,8 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 
 	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
 	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req))
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req))
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
@@ -380,6 +380,9 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 	if err = checkToolResultPartsCarriable(dep, req); err != nil {
 		return
 	}
+	if err = checkLossyIngressEligible(dep, req); err != nil {
+		return
+	}
 
 	// A request whose pre-call check already failed open is already counted
 	// under the {request}-unit fail-open counters; seeding the once-per-stream
@@ -434,7 +437,7 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 	// ever running again, for the life of the cache TTL.
 	if !blocked && !responseWasTruncated(resp) && !resp.Unrepresentable {
 		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-			p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), encoded)
+			p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req), encoded)
 		}
 	}
 	return
@@ -681,7 +684,9 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 	upstreamReq := req
 	upstreamReq.Model = dep.UpstreamModel
 	upstreamReq.Stream = true
-	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled()
+	// OR'd with the ingress, as in callDeployment: the client owns
+	// cache_control on /v1/messages (RFC-1 §8, slice S9b).
+	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled() || req.Passthrough != nil
 
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
@@ -834,7 +839,9 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	upstreamReq := req
 	upstreamReq.Model = dep.UpstreamModel
 	upstreamReq.Stream = true
-	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled()
+	// OR'd with the ingress, as in callDeployment: the client owns
+	// cache_control on /v1/messages (RFC-1 §8, slice S9b).
+	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled() || req.Passthrough != nil
 
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 

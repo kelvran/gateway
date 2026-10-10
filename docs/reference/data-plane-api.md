@@ -77,7 +77,7 @@ Buffered and streaming chat completions in OpenAI Chat Completions shape, plus K
 | `messages` length | 2000 | `400`, `code` `invalid_request` |
 | `tools` length | 256 | `400`, `code` `invalid_request` |
 | Any single `tools[].function.parameters` or `response_format.json_schema.schema` | depth 32 levels; 10000 JSON tokens | `400`, `code` `invalid_request` |
-| Any single `content` string or `parts[].data` string | 8 MiB | `400`, `code` `invalid_request` |
+| Any single `content`, `parts[].text` or `parts[].data` string | 8 MiB | `400`, `code` `invalid_request` |
 | Non-streaming upstream call | 60 s whole call (`upstreamHTTPTimeout`) | `502`, `code` `upstream_error` |
 | Streaming upstream call | 60 s idle gap, reset on every byte (`streamIdleTimeout`) | error envelope or in-band error frame |
 | Server read-header timeout | 10 s | connection closed by the server |
@@ -99,7 +99,7 @@ Checks run in this order, before authentication. The first failure wins. All use
 | 7 | more than 2000 `messages` | `400` | `invalid_request` | `null` |
 | 8 | more than 256 `tools`, or a tool `parameters` schema deeper than 32 levels or longer than 10000 JSON tokens | `400` | `invalid_request` | `null` |
 | 9 | `tool_choice` mode `tool` names a tool that `tools[]` does not define | `400` | `invalid_tool_choice` | `tool_choice` |
-| 10 | a `content` or `parts[].data` string longer than 8 MiB | `400` | `invalid_request` | `null` |
+| 10 | a `content`, `parts[].text` or `parts[].data` string longer than 8 MiB | `400` | `invalid_request` | `null` |
 | 11 | a `parts[].data` value is not valid standard (padded) base64, or its sniffed MIME category (the part before `/`) differs from the declared `media_type` category; a sniff of `application/octet-stream` is inconclusive and never rejected | `400` | `invalid_request` | `null` |
 | 12 | `response_format.json_schema.schema` deeper than 32 levels or longer than 10000 JSON tokens | `400` | `invalid_request` | `null` |
 
@@ -147,7 +147,7 @@ Prompt fields are covered in [prompt-management.md](../how-to/prompt-management.
 | Field | Type | Meaning |
 |---|---|---|
 | `type` | string | `text`, `image` or `document`. |
-| `text` | string | Set when `type` is `text`. |
+| `text` | string | Set when `type` is `text`. At most 8 MiB (since gateway/v0.19.0). |
 | `media_type` | string | MIME type, for example `image/png` or `application/pdf`. Set when `type` is not `text`. |
 | `data` | string | Base64-encoded inline bytes. Exactly one of `data` and `url` is set when `type` is not `text`. At most 8 MiB. Its sniffed MIME category must match `media_type`. |
 | `url` | string | Remote reference passed to the provider verbatim. The gateway never fetches it. |

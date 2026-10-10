@@ -99,7 +99,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentThinkingFingerprint(t *testi
 	writtenMessages := []adapter.Message{{Role: "user", Content: "hi"}}
 	written := adapter.ChatRequest{Model: "gpt-4o", Messages: writtenMessages, Thinking: &adapter.ThinkingConfig{Type: "adaptive"}}
 	writtenResp := []byte(`{"id":"cached-resp"}`)
-	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), "", "", thinkingFingerprint(written), "", time.Hour); err != nil {
+	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), "", "", thinkingFingerprint(written), "", "", time.Hour); err != nil {
 		t.Fatalf("cacheL3.Put: %v", err)
 	}
 

@@ -316,12 +316,16 @@ func (d Deployment) effectiveCacheControlAutoDisabled() bool {
 }
 
 // capabilityOKForRequest reports whether dep can satisfy req's own
-// capability requirements -- in v1, exclusively whether dep can satisfy
-// a non-nil req.ResponseFormat, via adapter.SupportsStructuredOutput. A
-// nil ResponseFormat (the default, and every ChatRequest built before
-// this field existed) is always OK, regardless of dep -- this function
-// only ever narrows the set of eligible fallback targets when the
-// CLIENT'S OWN request actually asked for structured output. Passed as
+// capability requirements -- three routing properties, each a fact about
+// the CLIENT'S OWN request: a non-nil req.ResponseFormat (via
+// adapter.SupportsStructuredOutput), tool-result Parts (slice S6, via
+// adapter.SupportsToolResultParts), and lossiness (slice S9b: members of
+// an Anthropic Messages request the shadow cannot express, via
+// lossyIngressIneligible). A request asking for none of them -- the
+// default, and every ChatRequest built before these fields existed -- is
+// always OK, regardless of dep: this function only ever narrows the set
+// of eligible deployments when the request actually needs something a
+// deployment may lack. Passed as
 // attemptFallbackChain's capabilityOK closure (fallback.go) at both real
 // call sites (runMissPath here; streamDeploymentWithFallback in
 // streaming.go).
@@ -330,6 +334,15 @@ func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
 	// (item 11 slice S6): openai/openaicompat carry text parts only, gemini
 	// none, anthropic/bedrock all (adapter.SupportsToolResultParts).
 	if media, any := toolResultPartsIn(req); any && !adapter.SupportsToolResultParts(dep.Provider, media) {
+		return false
+	}
+	// Lossiness is the third routing property (item 11 slice S9b, RFC-1 §6):
+	// a request from the Anthropic Messages ingress carrying members the
+	// shadow cannot express is served whole only by an anthropic deployment
+	// or one the operator marked accept_lossy_anthropic_ingress -- see
+	// lossyIngressIneligible (lossy_ingress.go). Before the ResponseFormat
+	// early return below, so a request without structured output is gated.
+	if lossyIngressIneligible(dep, req) {
 		return false
 	}
 	if req.ResponseFormat == nil {
@@ -345,14 +358,14 @@ func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
 
 // rerouteToCapableDeploymentIfNeeded checks whether dep -- the
 // deployment nextDeployment(req.Model, nil) just picked as the first
-// attempt -- can satisfy req's own ResponseFormat (via
+// attempt -- can satisfy req's own capability requirements (via
 // capabilityOKForRequest) AND vk's own AllowedRegions constraint, if any
 // (via isRegionAllowed). If not, it walks the rest of req.Model's own
 // deployment pool (excluding dep and every other ineligible candidate
 // already tried) looking for one that satisfies both, returning the
 // first eligible deployment found. If every deployment in the pool is
-// ineligible -- or req.ResponseFormat is nil AND vk has no region
-// constraint, in which case neither check is relevant -- dep is returned
+// ineligible -- or req needs nothing capabilityOKForRequest gates AND vk
+// has no region constraint, in which case neither check is relevant -- dep is returned
 // unchanged: never a hard error, only ever a best-effort improvement
 // before the first real upstream call happens.
 //
@@ -2224,8 +2237,8 @@ func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, end
 
 	cacheScope := cache.ScopeKey(virtualKeyID, endUserID)
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
-	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
-	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
+	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req))
+	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req))
 
 	var result EraseCacheEntryResult
 	if _, _, ok, _ := p.cache.Get(ctx, cacheScope, l1Key); ok {
@@ -2828,10 +2841,10 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, toolsFP string, thinkingFP string, samplingFP string, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, toolsFP string, thinkingFP string, samplingFP string, passthroughFP string, encoded []byte) {
 	_ = p.cache.Put(ctx, tenantID, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, tenantID, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, toolsFP, thinkingFP, samplingFP, p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, toolsFP, thinkingFP, samplingFP, passthroughFP, p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -2966,6 +2979,7 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 	queryToolsFP := toolsFingerprint(req)
 	queryThinkingFP := thinkingFingerprint(req)
 	querySamplingFP := samplingFingerprint(req)
+	queryPassthroughFP := passthroughFingerprint(req)
 	for _, c := range candidates {
 		entityMismatch := !fingerprintsEqual(queryFingerprint, c.Fingerprint)
 		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateEntityMismatch, entityMismatch)
@@ -3069,6 +3083,13 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		// as every gate above; not one of Finding 1's three named gates, so
 		// not counted via telemetry.RecordCacheL3GateOutcome.
 		if c.SamplingFingerprint != querySamplingFP {
+			continue
+		}
+		// A gate for item 11 slice S9b (the same RFC §3): the passthrough
+		// fingerprint -- the ingress's unknown members and is_error tool
+		// results -- folded into L1/L2 by key.go, extended to L3's
+		// near-duplicate match under the identical exact-equality convention.
+		if c.PassthroughFingerprint != queryPassthroughFP {
 			continue
 		}
 		p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", true, p.cacheL3TTL)
@@ -3324,6 +3345,14 @@ func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKe
 // ErrFingerprintMismatch. The separator is a raw NUL, which JSON never
 // emits, so the fold is injective.
 func idempotencyFingerprint(req adapter.ChatRequest) ([sha256.Size]byte, error) {
+	// Item 11 slice S9b: on the Anthropic Messages ingress the fingerprint
+	// is sha256 of the body as received, which covers every member -- the
+	// unknown ones at any depth, is_error, whatever the shadow drops --
+	// without enumerating them; the shadow's own marshal below would let
+	// two bodies differing only there replay each other's response.
+	if req.Passthrough != nil && len(req.Passthrough.RawBody) > 0 {
+		return sha256.Sum256(req.Passthrough.RawBody), nil
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return [sha256.Size]byte{}, fmt.Errorf("dataplane: idempotency: marshal request for fingerprint: %w", err)
@@ -3816,8 +3845,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
 	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req))
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req))
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
@@ -3964,6 +3993,9 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		if err := checkToolResultPartsCarriable(dep, req); err != nil {
 			return nil, err
 		}
+		if err := checkLossyIngressEligible(dep, req); err != nil {
+			return nil, err
+		}
 
 		resp, err := p.callDeploymentWithCapacityCheck(ctx, dep, req)
 		if err != nil {
@@ -4064,7 +4096,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 
 		if !responseWasTruncated(resp) && !resp.Unrepresentable {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), encoded)
+				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req), encoded)
 			}
 		}
 
@@ -4109,8 +4141,10 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	upstreamReq.Model = dep.UpstreamModel
 	// Per-deployment CacheControl-auto-populate opt-out, per
 	// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md — a
-	// no-op field read only by the anthropic/bedrock adapters.
-	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled()
+	// no-op field read only by the anthropic/bedrock adapters. OR'd with
+	// the ingress: on /v1/messages the client owns cache_control (RFC-1 §8,
+	// slice S9b), so a request carrying Passthrough is never auto-marked.
+	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled() || req.Passthrough != nil
 
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
@@ -4967,6 +5001,13 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		PromptID:                           req.PromptID,
 		PromptVersion:                      req.PromptVersion,
 		ResponseFormatRequestedNotEnforced: responseFormatRequestedNotEnforced,
+		// The Anthropic Messages ingress carrier (item 11 slice S9b, RFC-1
+		// §8), "" / "" for the OpenAI route. Passthrough is left false:
+		// every hop translates until slice S11 relays the raw body on an
+		// anthropic deployment, so reporting true here would describe the
+		// RFC, not the code. The same helpers feed logRequest's keys.
+		IngressFormat: ingressFormat(req),
+		DroppedFields: droppedFields(req, err),
 	}
 	telemetry.RecordChatCompletionResult(span, result)
 	// kelvran.streaming.cost_estimated, per
@@ -5428,6 +5469,7 @@ func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req 
 		fields = append(fields, "virtual_key_id", expired.ID, "key_expired_at", expired.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	fields = append(fields, attributionLogFields(ctx)...)
+	fields = append(fields, ingressLogFields(req, err)...)
 	// gatewayevents_v1 is added on BOTH the error and success paths below
 	// — Outcome is exactly as meaningful for a rejection as for a
 	// success, per docs/rfcs/2026-09-03-api-gatewayevents-contract.md. A

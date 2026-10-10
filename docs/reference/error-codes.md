@@ -119,7 +119,7 @@ These are produced before the pipeline runs, while the handler reads and validat
 | 400 | `invalid_body` | `null` | chat, embeddings | The body could not be read for a reason other than size | `reading request body` |
 | 400 | `invalid_json` | `null` | chat, embeddings | The body is not valid JSON for the request type | `invalid request body: <decoder error>` |
 | 400 | `invalid_tool_choice` | `"tool_choice"` | chat | `tool_choice` is not `"auto"`, `"required"`, `"none"`, `{"type":"function","function":{"name":...}}` or the canonical `{"mode":...}` object; `type` is `allowed_tools` or `custom`; `mode` and `type` both set; `{"type":"function"}` without a `function.name`; `mode: "tool"` without `tool_name`; or the forced tool is not defined in `tools[]` | `adapter: invalid tool_choice: <detail>` |
-| 400 | `invalid_request` | `null` | chat | More than 2000 messages; more than 256 tool definitions; one message `content` or content-part `data` field over 8 MiB; a content part whose base64 does not decode; a content part whose declared `media_type` category differs from the sniffed type; or a `response_format.json_schema.schema` or `tools[].parameters` schema that is not valid JSON or exceeds 32 levels of nesting or 10000 JSON tokens | names the bound or check that failed, for example `adapter: messages exceeds this gateway's per-request message-count bound: 2001 messages, max 2000` |
+| 400 | `invalid_request` | `null` | chat | More than 2000 messages; more than 256 tool definitions; one message `content`, content-part `text` or content-part `data` field over 8 MiB; a content part whose base64 does not decode; a content part whose declared `media_type` category differs from the sniffed type; or a `response_format.json_schema.schema` or `tools[].parameters` schema that is not valid JSON or exceeds 32 levels of nesting or 10000 JSON tokens | names the bound or check that failed, for example `adapter: messages exceeds this gateway's per-request message-count bound: 2001 messages, max 2000` |
 | 400 | `invalid_request` | `"limit"` | models | `limit` is not a positive integer | `limit must be a positive integer` |
 | 400 | `invalid_request` | `"after_id"` | models | `after_id` and `before_id` are both set | `after_id and before_id cannot be combined` |
 | 400 | `invalid_request` | `"after_id"` or `"before_id"` | models | The cursor names a model this key cannot see | `<param> does not name a model this key can see` |
@@ -135,11 +135,12 @@ These are produced before the pipeline runs, while the handler reads and validat
 | `empty_messages` | `"messages"` | chat |
 | `response_format_unsupported` | `"response_format"` | chat |
 | `idempotency_key_reused` | `"Idempotency-Key"` (a request header, not a body field) | chat |
+| `tool_result_parts_unsupported` | `"messages"` | chat |
 | `invalid_tool_choice` | `"tool_choice"` | chat |
 | `invalid_request` | `"limit"`, `"after_id"` or `"before_id"` | models |
 | `missing_required_parameter` | `"model"` or `"input"` | embeddings |
 
-In a mid-stream error frame `param` is always `null`; the three pipeline codes that set it (`empty_messages`, `response_format_unsupported`, `idempotency_key_reused`) all fail before the first chunk and so never appear in a frame.
+In a mid-stream error frame `param` is always `null`; the four pipeline codes that set it (`empty_messages`, `response_format_unsupported`, `idempotency_key_reused`, `tool_result_parts_unsupported`) all fail before the first chunk and so never appear in a frame.
 
 ## `Retry-After`
 

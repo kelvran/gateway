@@ -306,3 +306,15 @@ func TestValidateFieldSizesRejectsContentPartDataOneByteBeyondLimit(t *testing.T
 		t.Fatalf("ValidateFieldSizes() = %v, want ErrFieldTooLarge for a content part data field one byte beyond the %d-byte limit", err, maxFieldSizeBytes)
 	}
 }
+
+func TestValidateFieldSizesRejectsContentPartTextOneByteBeyondLimit(t *testing.T) {
+	messages := []Message{{Role: "user", Parts: []ContentPart{{Type: "text", Text: strings.Repeat("a", maxFieldSizeBytes+1)}}}}
+	err := ValidateFieldSizes(messages)
+	if !errors.Is(err, ErrFieldTooLarge) {
+		t.Fatalf("ValidateFieldSizes() = %v, want ErrFieldTooLarge for a text part one byte beyond the %d-byte limit", err, maxFieldSizeBytes)
+	}
+	messages[0].Parts[0].Text = strings.Repeat("a", maxFieldSizeBytes)
+	if err := ValidateFieldSizes(messages); err != nil {
+		t.Fatalf("ValidateFieldSizes() = %v, want nil for a text part exactly at the limit", err)
+	}
+}

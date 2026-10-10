@@ -2096,6 +2096,7 @@ func handleStreamingChatCompletion(p *dataplane.Pipeline, w http.ResponseWriter,
 func errorStatus(err error) int {
 	status := http.StatusBadGateway
 	var capErr *dataplane.DeploymentCapacityError
+	var lossyErr *dataplane.ErrLossyIngressRejected
 	switch {
 	case errors.Is(err, identity.ErrMissingHeader), errors.Is(err, identity.ErrInvalidKey), errors.Is(err, identity.ErrKeyExpired):
 		// An expired key (RFC-3 decision 4) is an authentication failure
@@ -2144,6 +2145,11 @@ func errorStatus(err error) int {
 	case errors.Is(err, adapter.ErrToolResultPartsUnsupported):
 		// 400 (item 11 slice S6): a tool message carries parts no deployment
 		// in the pool can carry, decided before any upstream call.
+		status = http.StatusBadRequest
+	case errors.As(err, &lossyErr):
+		// 400 (item 11 slice S9b): an Anthropic Messages request carries
+		// members no deployment in the pool can carry, decided before any
+		// upstream call; the envelope's param lists them.
 		status = http.StatusBadRequest
 	case errors.Is(err, dataplane.ErrNotAnEmbeddingDeployment):
 		// 400, not the 502 default -- naming a model that resolves to a
@@ -2295,18 +2301,7 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 	// code vocabulary to the message that used to be a text/plain body (see
 	// error_envelope.go). Retry-After and the redaction above are untouched.
 	errType, code := errorTypeAndCode(err, status)
-	var param *string
-	switch {
-	case errors.Is(err, dataplane.ErrEmptyMessages):
-		param = codePtr("messages")
-	case errors.Is(err, adapter.ErrStructuredOutputUnsupported):
-		param = codePtr("response_format")
-	case errors.Is(err, idempotency.ErrFingerprintMismatch):
-		param = codePtr("Idempotency-Key")
-	case errors.Is(err, adapter.ErrToolResultPartsUnsupported):
-		param = codePtr("messages")
-	}
-	writeAPIError(w, status, errType, code, param, message)
+	writeAPIError(w, status, errType, code, errorParam(err), message)
 }
 
 // retryAfterSeconds rounds d up to the nearest whole second, with a floor

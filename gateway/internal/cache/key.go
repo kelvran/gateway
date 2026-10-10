@@ -205,6 +205,10 @@ func formatOptionalInt(v *int) string {
 // sampling, S9b passthrough); a release carrying all three still costs
 // one cold cache.
 //
+// passthroughFingerprint (dataplane.passthroughFingerprint: sha256 of the
+// canonical JSON of an Anthropic Messages request's unknown members, "" for
+// the OpenAI route and for an Anthropic request with nothing unknown, so
+// cross-format hits still happen; item 11 slice S9b) is the fourteenth input.
 // samplingFingerprint (dataplane.samplingFingerprint: the canonical JSON of
 // ChatRequest.TopP, TopK, StopSequences and Effort, "" when the request
 // carries none) is folded the same unconditional way (item 11 slice S5,
@@ -212,7 +216,7 @@ func formatOptionalInt(v *int) string {
 // two requests differing only in one of them must never share a key. One
 // release carrying this fold and the thinking one still costs one cold
 // cache.
-func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string, samplingFingerprint string) string {
+func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string, samplingFingerprint string, passthroughFingerprint string) string {
 	h := sha256.New()
 	// The leading "layer"/"l1" field exists so Key and NormalizedKey can
 	// never collide even given byte-identical remaining inputs — cheap
@@ -234,6 +238,7 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 	writeField(h, "tools", toolsFingerprint)
 	writeField(h, "thinking", thinkingFingerprint)
 	writeField(h, "sampling", samplingFingerprint)
+	writeField(h, "passthrough", passthroughFingerprint)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -269,10 +274,10 @@ func ScopeKey(tenantID, endUserID string) string {
 // opinion on normalization itself, matching Key's own "primitive/
 // serialized inputs only" contract so this package still never needs to
 // import internal/adapter. promptFingerprint, endUserID, and
-// thinkingBindingMode, toolsFingerprint, thinkingFingerprint and
-// samplingFingerprint mirror Key's own identical parameters -- see its doc
-// comment above.
-func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string, samplingFingerprint string) string {
+// thinkingBindingMode, toolsFingerprint, thinkingFingerprint,
+// samplingFingerprint and passthroughFingerprint mirror Key's own identical
+// parameters -- see its doc comment above.
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string, samplingFingerprint string, passthroughFingerprint string) string {
 	h := sha256.New()
 	writeField(h, "layer", "l2")
 	writeField(h, "tenant", tenantID)
@@ -288,5 +293,6 @@ func NormalizedKey(tenantID string, model string, normalizedMessages string, tem
 	writeField(h, "tools", toolsFingerprint)
 	writeField(h, "thinking", thinkingFingerprint)
 	writeField(h, "sampling", samplingFingerprint)
+	writeField(h, "passthrough", passthroughFingerprint)
 	return hex.EncodeToString(h.Sum(nil))
 }

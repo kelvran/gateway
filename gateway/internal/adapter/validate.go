@@ -229,11 +229,12 @@ func ValidateContentParts(messages []Message) error {
 }
 
 // ErrFieldTooLarge is returned by ValidateFieldSizes when a single
-// Message.Content or ContentPart.Data field exceeds maxFieldSizeBytes.
+// Message.Content, ContentPart.Text or ContentPart.Data field exceeds
+// maxFieldSizeBytes.
 var ErrFieldTooLarge = errors.New("adapter: a single message/content-part field exceeds this gateway's per-field size bound")
 
-// maxFieldSizeBytes bounds a single Message.Content string or
-// ContentPart.Data (base64) string, independently of
+// maxFieldSizeBytes bounds a single Message.Content string, ContentPart.Text
+// string or ContentPart.Data (base64) string, independently of
 // cmd/gateway/main.go's own maxRequestBodyBytes (32MiB) whole-body cap.
 // Defense-in-depth alongside ValidateMessageCount/ValidateToolDefs:
 // those bound the NUMBER of items; this bounds any ONE item from
@@ -245,14 +246,20 @@ var ErrFieldTooLarge = errors.New("adapter: a single message/content-part field 
 // a single pathological field below the whole-body cap.
 const maxFieldSizeBytes = 8 << 20
 
-// ValidateFieldSizes bounds every Message.Content and ContentPart.Data
-// field's own length -- see maxFieldSizeBytes's own doc comment.
+// ValidateFieldSizes bounds every Message.Content, ContentPart.Text and
+// ContentPart.Data field's own length -- see maxFieldSizeBytes's own doc
+// comment. The Text bound (item 11 slice S9b) closes the one unbounded
+// per-field string: the Anthropic Messages ingress turns every text block
+// into a text part, and the OpenAI route accepts them as well.
 func ValidateFieldSizes(messages []Message) error {
 	for _, m := range messages {
 		if len(m.Content) > maxFieldSizeBytes {
 			return fmt.Errorf("%w: message content is %d bytes, max %d", ErrFieldTooLarge, len(m.Content), maxFieldSizeBytes)
 		}
 		for _, part := range m.Parts {
+			if len(part.Text) > maxFieldSizeBytes {
+				return fmt.Errorf("%w: content part text is %d bytes, max %d", ErrFieldTooLarge, len(part.Text), maxFieldSizeBytes)
+			}
 			if len(part.Data) > maxFieldSizeBytes {
 				return fmt.Errorf("%w: content part data is %d bytes, max %d", ErrFieldTooLarge, len(part.Data), maxFieldSizeBytes)
 			}
