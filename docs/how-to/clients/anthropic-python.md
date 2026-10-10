@@ -97,7 +97,7 @@ except NotFoundError as e:
 
 ## How errors surface in this client
 
-Every error is Anthropic's envelope with Kelvran's `code` and `param` kept, so `e.body["error"]["code"]` tells the cases apart; the SDK maps the status to its exception classes and retries `429` and `5xx` on its own schedule, honouring `Retry-After` ([error-codes.md](../../reference/error-codes.md)):
+Every error is Anthropic's envelope with Kelvran's `code` and `param` kept — except an `anthropic` deployment's own `400`/`422`, relayed exactly as Anthropic sent it — so `e.body["error"]["code"]` tells the cases apart where present; the SDK maps the status to its exception classes and retries `429` and `5xx` on its own schedule, honouring `Retry-After` ([error-codes.md](../../reference/error-codes.md)):
 
 | Status | Envelope `type` | `code` | SDK exception (check your version) |
 |---|---|---|---|
@@ -107,6 +107,7 @@ Every error is Anthropic's envelope with Kelvran's `code` and `param` kept, so `
 | 404 | `not_found_error` | `count_tokens_unavailable` | `NotFoundError` |
 | 413 | `request_too_large` | `request_too_large` | `APIStatusError` |
 | 422 | `invalid_request_error` | `idempotency_key_reused` (`param` `Idempotency-Key`) | `UnprocessableEntityError` |
+| 400 / 422 | Anthropic's own | none — an `anthropic` deployment's own rejection, relayed as sent; read `message` | `BadRequestError` / `UnprocessableEntityError` |
 | 429 | `rate_limit_error` | `rate_limit_exceeded`, `concurrency_limit_exceeded` (with `Retry-After`) or `insufficient_quota` (budget spent, no `Retry-After`) | `RateLimitError` |
 | 502 / 503 | `api_error` | `upstream_error`, `deployment_capacity_exceeded` | `InternalServerError` / `APIStatusError` |
 
@@ -122,7 +123,7 @@ Run step 2, then look at the gateway's log: one `chat_completion` line with `ing
 
 ## Not available today
 
-- The response relay for `anthropic` deployments (item 11 slice S11b): the request body already reaches an `anthropic` deployment as received, but the response is re-encoded from the canonical shadow and an upstream error body is redacted. Every other deployment is a translate hop and drops the members the schema cannot hold (reported in `dropped_fields`).
+- The streaming relay for `anthropic` deployments (item 11 slice S11b2): a buffered `messages.create` already answers with Anthropic's own bytes and relays its `400`/`422` verbatim, but `messages.stream` is re-encoded event by event from the canonical chunks. Every other deployment is a translate hop and drops the members the schema cannot hold (reported in `dropped_fields`).
 - Exact token counts (`count_tokens` answers `404`; see above).
 - Forwarding `anthropic-beta` values to Bedrock (`anthropic_beta_policy: forward_known` is applied by the upstream leg).
 - The `anthropic-ratelimit-unified-*` and `x-should-retry` response headers: the gateway synthesises none.

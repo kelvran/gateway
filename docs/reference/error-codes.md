@@ -38,7 +38,7 @@ Every data-plane error body has this shape. All four keys are always present; `p
 {"type":"error","error":{"type":"invalid_request_error","message":"dataplane: no deployment configured for requested model","code":"model_not_found"}}
 ```
 
-The `type` is Anthropic's vocabulary, derived from the status: `400`/`405`/`422` `invalid_request_error`, `401` `authentication_error`, `403` `permission_error`, `404` `not_found_error`, `413` `request_too_large`, `429` `rate_limit_error` (a budget 429 as well; its `code` stays `insufficient_quota`), every 5xx `api_error` (`404` `not_found_error` appears only on `/v1/messages/count_tokens`). Every `code` in the tables below means the same thing on both envelopes. One addition: when an upstream rejected the prompt as too long, the `message` starts with `capability_rejected: prompt_too_long` (the marker Claude Code's recovery matches on), then the redacted text.
+The `type` is Anthropic's vocabulary, derived from the status: `400`/`405`/`422` `invalid_request_error`, `401` `authentication_error`, `403` `permission_error`, `404` `not_found_error`, `413` `request_too_large`, `429` `rate_limit_error` (a budget 429 as well; its `code` stays `insufficient_quota`), every 5xx `api_error` (`404` `not_found_error` appears only on `/v1/messages/count_tokens`). Every `code` in the tables below means the same thing on both envelopes. One addition: when an upstream rejected the prompt as too long, the `message` starts with `capability_rejected: prompt_too_long` (the marker Claude Code's recovery matches on), then the redacted text. A second addition (slice S11b): an `anthropic` deployment's own `400` or `422` whose body is Anthropic's error object is relayed unchanged — the upstream's status, `type` and `message`, no `code`, no `param`, no `Retry-After` — so Claude Code's recovery can match Anthropic's wording; every other upstream status, body shape or provider stays the redacted `502` `upstream_error`.
 
 ### Response headers on every error
 
@@ -49,6 +49,7 @@ The `type` is Anthropic's vocabulary, derived from the status: `400`/`405`/`422`
 | `Content-Length` | cleared before the body is written |
 | `Retry-After` | integer seconds, only on the responses listed under [`Retry-After`](#retry-after) |
 | `Allow` | only on 405, the permitted method list (`POST` for `/v1/chat/completions` and `/v1/embeddings`, `GET` for `/v1/models`) |
+| `x-should-retry`, `anthropic-ratelimit-unified-*` | only on `/v1/messages` errors answered by an `anthropic` deployment: the upstream's own values, forwarded unchanged (slice S11b) |
 
 The body is written in one write with no trailing newline.
 
@@ -169,7 +170,7 @@ In a mid-stream error frame `param` is always `null`; the six pipeline codes tha
 |---|---|
 | Format | a plain integer number of seconds (RFC 9110 delay-seconds form) |
 | Value | the key's per-key retry backoff: 500 ms doubled per consecutive rejection with equal jitter, capped at 30 s, rounded up to a whole second, floor 1 (so 1-30 s). When the final upstream response carried its own `Retry-After`, that value (capped at 60 s) is a floor on the delay |
-| Routes | `/v1/chat/completions` only. `/v1/embeddings` and `/v1/models` never set it |
+| Routes | `/v1/chat/completions` and `/v1/messages` (the same rule on both envelopes; `/v1/messages/count_tokens` on its `429`; not on an `anthropic` deployment's relayed `400`/`422`). `/v1/embeddings` and `/v1/models` never set it |
 | Before authentication | never (401 responses carry no `Retry-After`) |
 
 | Carries `Retry-After` on chat | Never carries `Retry-After` |
@@ -189,7 +190,7 @@ The 403, 400 and 501 entries in the left column are local errors that carry the 
 
 ## Message redaction
 
-The `message` never contains an upstream provider's response body, a deployment's internal `base_url` or `host:port`, or the operator's deployment name. The unredacted text reaches only the gateway's `chat_completion` / `embeddings` log line.
+The `message` never contains an upstream provider's response body (except the `anthropic` `400`/`422` relayed on `/v1/messages`, above, where the whole body is the upstream's), a deployment's internal `base_url` or `host:port`, or the operator's deployment name. The unredacted text reaches only the gateway's `chat_completion` / `embeddings` log line.
 
 | Condition | Client-facing `message` |
 |---|---|

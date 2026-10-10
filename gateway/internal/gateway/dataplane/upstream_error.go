@@ -65,10 +65,11 @@ const (
 // error type and Retry-After the provider sent.
 func newUpstreamHTTPError(resp *http.Response, body []byte) *UpstreamHTTPError {
 	return &UpstreamHTTPError{
-		StatusCode: resp.StatusCode,
-		Body:       string(body),
-		ErrorType:  resolveAWSErrorType(resp.Header, body),
-		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		StatusCode:   resp.StatusCode,
+		Body:         string(body),
+		ErrorType:    resolveAWSErrorType(resp.Header, body),
+		RetryAfter:   parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		RelayHeaders: relayResponseHeaders(resp.Header),
 	}
 }
 

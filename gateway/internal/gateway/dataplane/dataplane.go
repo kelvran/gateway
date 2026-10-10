@@ -3409,6 +3409,18 @@ func (p *Pipeline) completeIdempotency(ctx context.Context, tenantID, idempotenc
 		}
 		return
 	}
+	// RFC-1 §8 (item 11 slice S11b): a response the canonical shadow cannot
+	// represent is never replayed re-encoded -- the response cache skips it
+	// (the S6 flag) and so does the idempotency store. The claim is released
+	// (Fail), so a reused key re-runs the call, billed again, rather than
+	// returning a copy with a block missing.
+	if resp.Unrepresentable {
+		p.logger.Info("idempotency_complete_skipped_unrepresentable", "key", idempotencyKey)
+		if failErr := p.idempotencyStore.Fail(ctx, storeKey, token); failErr != nil {
+			p.logger.Warn("idempotency_fail_failed", "key", idempotencyKey, "error", failErr)
+		}
+		return
+	}
 	body, marshalErr := json.Marshal(resp)
 	if marshalErr != nil {
 		p.logger.Warn("idempotency_complete_marshal_failed", "key", idempotencyKey, "error", marshalErr)
@@ -4171,11 +4183,16 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 
 	providerResp, err := p.upstream(ctx, dep, providerReq)
 	if err != nil {
+		// A passthrough 2xx the caller could not decode has already filled the
+		// response carrier (RFC-1 §9, slice S11b); the fallback hop that follows
+		// must not inherit those bytes.
+		clearUpstreamResponseMeta(ctx)
 		return adapter.ChatResponse{}, fmt.Errorf("upstream call to deployment %q: %w", dep.Name, err)
 	}
 
 	resp, err := a.FromProvider(providerResp)
 	if err != nil {
+		clearUpstreamResponseMeta(ctx)
 		return adapter.ChatResponse{}, fmt.Errorf("adapter %q FromProvider: %w", dep.Provider, err)
 	}
 
@@ -6026,7 +6043,17 @@ func NewHTTPUpstreamCaller(defaultClient *http.Client, perDeployment map[string]
 			// real status/body via errors.As through callDeployment's
 			// own "%w" wrap — per
 			// docs/rfcs/2026-09-07-gateway-error-classified-fallback-chains.md.
-			return nil, newUpstreamHTTPError(httpResp, respBody)
+			upErr := newUpstreamHTTPError(httpResp, respBody)
+			upErr.Provider = dep.Provider
+			return nil, upErr
+		}
+		// Passthrough path (RFC-1 §9, slice S11b): an anthropic deployment's
+		// 2xx bytes and relayable response headers are handed back beside the
+		// canonical response, for the handler to relay byte-for-byte once the
+		// pipeline has accepted the response; the shadow below is still
+		// decoded for usage, cost, the cache and the post-call guardrail.
+		if _, passthrough := providerReq.(rawBodyProvider); passthrough && dep.Provider == "anthropic" {
+			recordUpstreamResponseMeta(ctx, dep.Provider, httpResp, respBody)
 		}
 
 		unmarshal, ok := responseUnmarshalers[dep.Provider]
@@ -6251,7 +6278,9 @@ func NewHTTPUpstreamStreamCaller(defaultClient *http.Client, perDeployment map[s
 			cancel()
 			// Same typed error as NewHTTPUpstreamCaller's buffered path,
 			// for the same reason — see the comment there.
-			return nil, newUpstreamHTTPError(httpResp, errBody)
+			upErr := newUpstreamHTTPError(httpResp, errBody)
+			upErr.Provider = dep.Provider
+			return nil, upErr
 		}
 
 		return newIdleTimeoutReader(httpResp.Body, idleTimer, idleTimeout, cancel), nil

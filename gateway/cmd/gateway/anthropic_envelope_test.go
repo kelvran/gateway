@@ -79,3 +79,20 @@ func TestAnthropicClientMessagePrefixesPromptTooLong(t *testing.T) {
 		t.Errorf("message = %q", got)
 	}
 }
+
+// copyRelayHeaders replaces, never accumulates: a value the handler already
+// holds under a relayed name gives way to the upstream's, multi-valued
+// headers keep every value, and unrelated headers are untouched.
+func TestCopyRelayHeadersReplacesExistingValues(t *testing.T) {
+	dst := http.Header{"X-Should-Retry": {"false"}, "Content-Type": {"application/json"}}
+	copyRelayHeaders(dst, http.Header{"X-Should-Retry": {"true"}, "Anthropic-Ratelimit-Unified-Status": {"allowed", "allowed_warning"}})
+	if got := dst.Values("X-Should-Retry"); len(got) != 1 || got[0] != "true" {
+		t.Errorf("X-Should-Retry = %v, want exactly [true]", got)
+	}
+	if got := dst.Values("Anthropic-Ratelimit-Unified-Status"); len(got) != 2 {
+		t.Errorf("Anthropic-Ratelimit-Unified-Status = %v, want both values", got)
+	}
+	if got := dst.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want untouched", got)
+	}
+}

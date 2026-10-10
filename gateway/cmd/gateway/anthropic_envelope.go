@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
@@ -70,7 +71,11 @@ func writeAnthropicStatus(w http.ResponseWriter, status int, code, param, messag
 // same status (errorStatus), the same Retry-After rule (setRetryAfterHeader),
 // the same code and param, the same redacted message (plus the
 // prompt_too_long marker, anthropicClientMessage) -- under Anthropic's type
-// names. Callers must not have written headers already; the streaming
+// names. The one exception is RFC-1 §9's verbatim path below: an anthropic
+// deployment's own 400 or 422 whose body is Anthropic's error object is
+// written as received, with its status, and its x-should-retry and
+// anthropic-ratelimit-unified-* headers travel on every anthropic error.
+// Callers must not have written headers already; the streaming
 // handler uses the encoder's own error event once the stream has started.
 func writeAnthropicError(w http.ResponseWriter, err error) {
 	// count_tokens on a deployment that cannot count (every deployment until
@@ -81,6 +86,31 @@ func writeAnthropicError(w http.ResponseWriter, err error) {
 	if errors.Is(err, dataplane.ErrCountTokensUnavailable) {
 		writeAnthropicStatus(w, http.StatusNotFound, "count_tokens_unavailable", "", anthropicClientMessage(err))
 		return
+	}
+	// An anthropic deployment's own answer (RFC-1 §9, slice S11b): its
+	// x-should-retry and anthropic-ratelimit-unified-* headers are forwarded
+	// on every error, and a 400 or 422 whose body IS Anthropic's error
+	// object -- the classes Claude Code's recovery matches on (a rejected
+	// thinking field, a mid-conversation system message, a preserved-
+	// thinking mismatch) -- is written verbatim with its own status instead
+	// of the redacted 502. The exception is exactly {anthropic, 400|422,
+	// parsed Anthropic error object} (THREAT_MODEL's Tampering row); every
+	// other upstream body, status or provider stays redacted below, and
+	// clientSafeMessage/ClientSafeMessage are untouched.
+	var upstreamErr *dataplane.UpstreamHTTPError
+	if errors.As(err, &upstreamErr) && upstreamErr.Provider == "anthropic" {
+		copyRelayHeaders(w.Header(), upstreamErr.RelayHeaders)
+		if upstreamErr.StatusCode == http.StatusBadRequest || upstreamErr.StatusCode == http.StatusUnprocessableEntity {
+			if _, _, ok := anthropicmsgs.ParseErrorEnvelope([]byte(upstreamErr.Body)); ok {
+				h := w.Header()
+				h.Del("Content-Length")
+				h.Set("Content-Type", "application/json; charset=utf-8")
+				h.Set("X-Content-Type-Options", "nosniff")
+				w.WriteHeader(upstreamErr.StatusCode)
+				_, _ = io.WriteString(w, upstreamErr.Body)
+				return
+			}
+		}
 	}
 	status := errorStatus(err)
 	setRetryAfterHeader(w, err)
@@ -101,6 +131,22 @@ func anthropicClientMessage(err error) string {
 		return promptTooLongMarker + ": " + message
 	}
 	return message
+}
+
+// copyRelayHeaders adds every header of src (already filtered to
+// x-should-retry and anthropic-ratelimit-unified-* by the dataplane) onto
+// the client response, so Claude Code's retry decision and usage display
+// see the upstream's own values (protocol page).
+// copyRelayHeaders puts src's headers on dst, replacing any value dst already
+// holds under the same name rather than accumulating beside it, so the
+// client sees exactly the upstream's values.
+func copyRelayHeaders(dst, src http.Header) {
+	for name, values := range src {
+		dst.Del(name)
+		for _, v := range values {
+			dst.Add(name, v)
+		}
+	}
 }
 
 func derefString(s *string) string {

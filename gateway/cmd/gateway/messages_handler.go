@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -97,6 +98,7 @@ func messagesHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		}
 
 		ctx, upstreamDuration := dataplane.WithOverheadTracker(ctx)
+		ctx, upstreamMeta := dataplane.WithUpstreamResponseMeta(ctx)
 		requestStart := time.Now()
 		resp, err := p.HandleChatCompletion(ctx, bearer, r.RemoteAddr, endUser, req, idempotencyKey)
 		if err != nil {
@@ -106,6 +108,20 @@ func messagesHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set(overheadDurationHeader, strconv.FormatInt((time.Since(requestStart)-*upstreamDuration).Milliseconds(), 10))
+		// Passthrough path (RFC-1 §9, slice S11b): an anthropic deployment's
+		// own 2xx bytes, relayed as received -- model included -- together
+		// with its x-should-retry and anthropic-ratelimit-unified-* headers,
+		// once the pipeline accepted the response (a post-call block returns
+		// an error above and relays nothing). A cache hit or an
+		// Idempotency-Key replay made no upstream call, so the carrier is
+		// empty and the canonical response is re-encoded below.
+		if upstreamMeta.Relayable() {
+			copyRelayHeaders(w.Header(), upstreamMeta.Header)
+			if _, err := io.Copy(w, bytes.NewReader(upstreamMeta.Body)); err != nil {
+				slog.Error("relaying anthropic message response", "error", err)
+			}
+			return
+		}
 		// Through the JSON encoder as a RawMessage rather than a bare Write:
 		// the bytes are EncodeResponse's own json.Marshal output, and the
 		// encoder validates them once more on the way out (the same shape

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strings"
 	"time"
 
@@ -53,6 +54,16 @@ const (
 type UpstreamHTTPError struct {
 	StatusCode int
 	Body       string
+	// Provider names the provider of the deployment the response came from
+	// ("anthropic", "bedrock", ...), set by the HTTP callers. It scopes the
+	// verbatim-body exception of RFC-1 §9 (slice S11b) to anthropic
+	// deployments and is never itself a client-facing value.
+	Provider string
+	// RelayHeaders are the upstream response headers the Anthropic Messages
+	// handler forwards on an anthropic deployment's error -- x-should-retry
+	// and anthropic-ratelimit-unified-* (relayResponseHeaders) -- nil for
+	// every other header; the handler ignores them for other providers.
+	RelayHeaders http.Header
 	// ErrorType is the provider's machine-readable exception name when the
 	// response carried one — today AWS's X-Amzn-ErrorType header (Bedrock:
 	// "ThrottlingException", "ModelNotReadyException",
@@ -94,7 +105,11 @@ func (e *UpstreamHTTPError) Error() string {
 // ClientSafeMessage returns the ONLY text about this failure that
 // cmd/gateway's writeErrorResponse may put in a client-facing HTTP error
 // body — never Body itself, and never Error()'s string (which embeds
-// Body verbatim). Fixes a real, confirmed medium-severity information
+// Body verbatim) — except on RFC-1 §9's verbatim path (slice S11b), where
+// cmd/gateway's writeAnthropicError relays an anthropic deployment's own
+// 400 or 422 as received when the body is Anthropic's error object; every
+// other provider, status and body shape still goes through this method.
+// Fixes a real, confirmed medium-severity information
 // disclosure: a Bedrock deployment's real AWS AccessDeniedException body
 // looks like `{"message":"User: arn:aws:iam::<account>:role/<role> is
 // not authorized to perform: bedrock:InvokeModel on resource: ..."}` —
