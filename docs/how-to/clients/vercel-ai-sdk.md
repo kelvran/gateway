@@ -63,7 +63,7 @@ console.log(result.usage);
  "totalTokens":24,"raw":{"prompt_tokens":13,"completion_tokens":11,"total_tokens":24}}
 ```
 
-Of OpenAI's request fields the gateway reads only `model`, `messages`, `temperature`, `max_tokens`, `tools`, `tool_choice`, `stream` and `response_format`; every other field the SDK may send (`top_p`, `stop`, `seed`, `user`, `stream_options`, `max_completion_tokens` and so on) is dropped silently, not rejected. Field by field: [Compatibility](../../reference/compatibility.md).
+Of OpenAI's request fields the gateway reads only `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream` and `response_format`; every other field the SDK may send (`seed`, `user`, `stream_options`, `max_completion_tokens` and so on) is dropped silently, not rejected. Field by field: [Compatibility](../../reference/compatibility.md).
 
 ### 3. Make a streaming call
 

@@ -41,7 +41,7 @@ What you should see: `HTTP/1.1 200 OK`, `Content-Type: application/json`, an `X-
 {"id":"chatcmpl-…","object":"chat.completion","created":1760000000,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Hello there, nice to meet you."},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":8,"total_tokens":21}}
 ```
 
-The gateway reads these request fields: `model`, `messages[].role`, `messages[].content` (a string), `messages[].tool_calls`, `messages[].tool_call_id`, `temperature`, `max_tokens`, `tools`, `tool_choice`, `stream`, `response_format`. Any other OpenAI field (`n`, `top_p`, `stop`, `seed`, `user`, `max_completion_tokens`, `stream_options`, `messages[].name`, …) is dropped silently; the request still succeeds. The full field table is in [compatibility](../../reference/compatibility.md). `object` and `created`, and a gateway-minted `id` for providers that return none, first shipped in gateway/v0.18.0.
+The gateway reads these request fields: `model`, `messages[].role`, `messages[].content` (a string), `messages[].tool_calls`, `messages[].tool_call_id`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format`. Any other OpenAI field (`n`, `seed`, `user`, `max_completion_tokens`, `stream_options`, `messages[].name`, …) is dropped silently; the request still succeeds. The full field table is in [compatibility](../../reference/compatibility.md). `object` and `created`, and a gateway-minted `id` for providers that return none, first shipped in gateway/v0.18.0.
 
 ### 3. Stream a completion
 

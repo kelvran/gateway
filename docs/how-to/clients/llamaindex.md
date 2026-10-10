@@ -40,7 +40,7 @@ print(resp.raw.usage)   # CompletionUsage(completion_tokens=11, prompt_tokens=13
 
 `chat()` returns a `ChatResponse`. `.message.content` is the answer; `.raw` is the completion the underlying `openai` package parsed, so `.raw.usage` is its `CompletionUsage` with `prompt_tokens`, `completion_tokens` and `total_tokens`. `complete()` also works with `is_chat_model=True`: `llm.complete("Say hello in five words.")` returns a `CompletionResponse` whose `.text` is the answer.
 
-The gateway reads `model`, `messages`, `temperature`, `max_tokens`, `tools`, `tool_choice`, `stream` and `response_format`, plus its own extensions, and silently drops every other request field; nothing else the client sends changes the result. Field-by-field: [Compatibility](../../reference/compatibility.md).
+The gateway reads `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream` and `response_format`, plus its own extensions, and silently drops every other request field; nothing else the client sends changes the result. Field-by-field: [Compatibility](../../reference/compatibility.md).
 
 ### 3. Make one streaming call
 

@@ -171,7 +171,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentReasoningBlocksFingerprint(t
 		{Role: "assistant", ReasoningBlocks: []adapter.ReasoningBlock{{Sequence: 0, Text: "original reasoning"}}},
 	}
 	writtenResp := []byte(`{"id":"cached-resp"}`)
-	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), "", "", "", time.Hour); err != nil {
+	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), "", "", "", "", time.Hour); err != nil {
 		t.Fatalf("cacheL3.Put: %v", err)
 	}
 
@@ -227,7 +227,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentThinkingBindingMode(t *testi
 
 	writtenMessages := []adapter.Message{{Role: "user", Content: "hi"}}
 	writtenResp := []byte(`{"id":"cached-resp"}`)
-	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), "non_strict", "", "", time.Hour); err != nil {
+	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(writtenMessages), "non_strict", "", "", "", time.Hour); err != nil {
 		t.Fatalf("cacheL3.Put: %v", err)
 	}
 
@@ -392,7 +392,7 @@ func (failingLexicalCache) Search(_ context.Context, _ string, _ []uint64, _ int
 	return nil, errors.New("simulated L3 backend failure")
 }
 
-func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ time.Duration) error {
+func (failingLexicalCache) Put(_ context.Context, _ string, _ []uint64, _ []byte, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ map[string]struct{}, _ string, _ string, _ string, _ string, _ string, _ time.Duration) error {
 	return nil
 }
 

@@ -16,6 +16,8 @@ Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several i
 | `claude-sonnet-5` on the Bedrock structured-output whitelist | `gateway/internal/adapter/capabilities.go` | `response_format` to a Sonnet 5 Bedrock deployment fails with `400` `response_format_unsupported` (`502` before gateway/v0.19.0) unless another capable deployment serves the same `model` |
 | `tools` and `tool_choice` folded into cache keys | `gateway/changelog/0.18.0.md` | Identical messages with different `tool_choice` can share a cached response |
 | Thinking configuration (`adapter.ChatRequest.Thinking`, a `/v1/messages` field) folded into cache keys | `gateway/changelog/unreleased.md` | Field absent; keys do not fold it. No `/v1/chat/completions` behaviour differs — every key changes once on upgrade |
+| `stop` (string or array) and `top_p` forwarded to every provider | `gateway/changelog/unreleased.md` | Both accepted and dropped silently; the provider never saw them |
+| `top_k` and `effort` (`/v1/messages` fields) canonical, by provider capability; the sampling fields folded into cache keys and the `Idempotency-Key` fingerprint | `gateway/changelog/unreleased.md` | Fields absent; keys do not fold them. A `/v1/chat/completions` body carrying `top_k` or `effort` is ignored as before |
 
 ## Routes
 
@@ -80,6 +82,8 @@ The handler decodes the body with plain `json.Unmarshal` into `adapter.ChatReque
 | `messages` | array | At most 2000 entries, else `400 invalid_request`. Zero messages after prompt resolution is `400`, `code: empty_messages`, `param: messages` |
 | `temperature` | number | Forwarded |
 | `max_tokens` | integer | Forwarded |
+| `top_p` | number | Forwarded (since gateway/v0.19.0; dropped silently before) |
+| `stop` | string or array of strings | Forwarded as an array to every provider (since gateway/v0.19.0; dropped silently before); provider limits are the provider's own `400` |
 | `tools` | array | At most 256 entries, else `400 invalid_request`; see [tools](#tools) |
 | `stream` | boolean | Selects the SSE path |
 | `response_format` | object | See [response_format](#response_format) |
@@ -87,7 +91,7 @@ The handler decodes the body with plain `json.Unmarshal` into `adapter.ChatReque
 
 ### OpenAI fields the gateway drops silently
 
-`ChatRequest` has no field for any of these. A request that sets them is accepted and the value is never forwarded: `n`, `top_p`, `stop`, `seed`, `user`, `logprobs`, `top_logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stream_options`, `store`, `metadata`, `parallel_tool_calls`, `service_tier`, `max_completion_tokens`, `reasoning_effort`, `modalities`, `audio`, `prediction`, `web_search_options`.
+`ChatRequest` has no field for any of these. A request that sets them is accepted and the value is never forwarded: `n`, `seed`, `user`, `logprobs`, `top_logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stream_options`, `store`, `metadata`, `parallel_tool_calls`, `service_tier`, `max_completion_tokens`, `reasoning_effort`, `modalities`, `audio`, `prediction`, `web_search_options`.
 
 Consequences: `max_completion_tokens` does not cap output (use `max_tokens`); `n` never yields more than one choice; `stream_options.include_usage` from the client is ignored (the gateway sets it itself, see [Streaming](#streaming)).
 
@@ -370,7 +374,7 @@ The full catalogue is in [error codes](error-codes.md).
 | Header | `Idempotency-Key` on `/v1/chat/completions`, buffered and streaming | Same header |
 | Scope | Per virtual key (the key's server-assigned id plus the header value) | Per API key |
 | Window | 10 minutes from the claim (`idempotencyKeyTTL`) | Not documented here |
-| Fingerprint | SHA-256 of the canonical JSON of the decoded request (`json.Marshal(req)`), so the three accepted `tool_choice` input forms of one choice fingerprint identically; since gateway/v0.19.0 the thinking configuration (a `/v1/messages` field, never on this route) is folded in when one is set, and a request without one fingerprints exactly as before | Not documented here |
+| Fingerprint | SHA-256 of the canonical JSON of the decoded request (`json.Marshal(req)`), so the three accepted `tool_choice` input forms of one choice fingerprint identically; since gateway/v0.19.0 the fields the OpenAI wire cannot carry (the thinking configuration, `top_k`, `effort` — `/v1/messages` fields, never on this route) are folded in when set, and a request without any of them, and without `stop` or `top_p`, fingerprints exactly as before; `stop` and `top_p` are in the marshaled body like every other wire field (the previous build dropped them, so a body carrying either fingerprints differently than it did there) | Not documented here |
 | Replay | The stored response is returned verbatim, including its `id` and `created`, with no upstream call | Same |
 | Same key, different body | `422`, `type: invalid_request_error`, `code: idempotency_key_reused`, `param: Idempotency-Key`, no `Retry-After` (since gateway/v0.19.0; `502` plus `Retry-After` before) | `400` |
 | Same key while the first request is in flight | The second waits for the first to finish, then replays | Not documented here |
@@ -405,7 +409,7 @@ Per-client how-tos: [OpenAI Python](../how-to/clients/openai-python.md), [OpenAI
 ## Not available today
 
 - OpenAI `content` arrays on inbound messages (`[{type: text | image_url …}]`); multimodal content uses `parts`.
-- OpenAI request fields `n`, `top_p`, `stop`, `seed`, `user`, `logprobs`, `top_logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `max_completion_tokens`, `parallel_tool_calls`, client-side `stream_options`, `store`, `metadata`, `service_tier`, `reasoning_effort`, `modalities`, `audio`, `prediction`, `web_search_options`; all dropped silently.
+- OpenAI request fields `n`, `seed`, `user`, `logprobs`, `top_logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `max_completion_tokens`, `parallel_tool_calls`, client-side `stream_options`, `store`, `metadata`, `service_tier`, `reasoning_effort`, `modalities`, `audio`, `prediction`, `web_search_options`; all dropped silently.
 - `tool_choice` types `allowed_tools` and `custom`; explicitly rejected with `400 invalid_tool_choice`.
 - Anthropic Messages ingress (`POST /v1/messages`) and `x-api-key` authentication. Designed, not built: `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md` (status proposed, awaiting the owner's decision).
 - OpenAI Responses API, Completions API, images, audio and files routes.

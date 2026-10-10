@@ -191,7 +191,7 @@ Only these five adapters exist; a deployment naming any other `provider` fails a
 
 The Gemini `:generateContent` and Bedrock `/converse` suffixes are not checked at load or by `-validate`: a wrong suffix fails on the first `stream: true` request (the dataplane derives `:streamGenerateContent?alt=sse` / `/converse-stream` from it), while buffered requests are sent to the configured URL as-is.
 
-Tool calling: OpenAI's `tools[]`, `tool_calls` and `tool_choice` work on all five providers. `tool_choice` accepts OpenAI's bare strings (`"auto"`, `"required"`, `"none"`), OpenAI's `{"type":"function","function":{"name":...}}` object and Kelvran's canonical `{"mode","tool_name","disable_parallel_tool_use"}` object; any other shape is a `400` whose envelope names `tool_choice` (since `gateway/v0.18.0`). Unknown request fields (`n`, `stop`, `top_p`, `seed`, ...) are dropped silently, neither forwarded nor rejected.
+Tool calling: OpenAI's `tools[]`, `tool_calls` and `tool_choice` work on all five providers. `tool_choice` accepts OpenAI's bare strings (`"auto"`, `"required"`, `"none"`), OpenAI's `{"type":"function","function":{"name":...}}` object and Kelvran's canonical `{"mode","tool_name","disable_parallel_tool_use"}` object; any other shape is a `400` whose envelope names `tool_choice` (since `gateway/v0.18.0`). Unknown request fields (`n`, `seed`, ...) are dropped silently, neither forwarded nor rejected.
 
 ## How it compares
 

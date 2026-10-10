@@ -203,6 +203,12 @@ type LexicalCandidate struct {
 	// L3's near-duplicate match. Exact string-equality gate, both-empty
 	// counting as a match, mirroring every other fingerprint field above.
 	ThinkingFingerprint string
+	// SamplingFingerprint is dataplane.samplingFingerprint's value for the
+	// written request (canonical JSON of its top_p, top_k, stop sequences
+	// and effort, "" when it carried none), gated by exact equality in
+	// checkLexicalCache (item 11 slice S5) -- the same fold Key/
+	// NormalizedKey apply, extended to L3's near-duplicate match.
+	SamplingFingerprint string
 }
 
 // LexicalCache is Cache L3-lite's own interface — deliberately not Cache,
@@ -215,5 +221,5 @@ type LexicalCandidate struct {
 // partition itself, not a post-hoc filter").
 type LexicalCache interface {
 	Search(ctx context.Context, tenantID string, signature []uint64, k int) ([]LexicalCandidate, error)
-	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string, ttl time.Duration) error
+	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string, samplingFingerprint string, ttl time.Duration) error
 }

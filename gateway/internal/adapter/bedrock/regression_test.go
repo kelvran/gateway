@@ -312,3 +312,36 @@ func TestRegressionToProviderThinkingMatchesGoldenFixture(t *testing.T) {
 	wantJSON := mustReadTestdata(t, "request_bedrock_native_thinking.golden.json")
 	assertJSONEqual(t, gotJSON, wantJSON)
 }
+
+// TestRegressionToProviderSamplingMatchesGoldenFixture is item 11 slice
+// S5's wire-format proof for this adapter: request_canonical_sampling.json
+// (the canonical fixture plus top_p and stop from the fixture plus top_k and effort set in code (json:"-"), on a Claude 4.6 model, the one generation the 2026-10-10 probes proved accepts every one of them) must match the checked-in golden,
+// which differs from this adapter's base golden by exactly the sampling
+// fields (the reviewer diffs the two files, per the generated-hunk rule).
+func TestRegressionToProviderSamplingMatchesGoldenFixture(t *testing.T) {
+	canonicalJSON := mustReadTestdata(t, "request_canonical_sampling.json")
+
+	var req adapter.ChatRequest
+	if err := json.Unmarshal(canonicalJSON, &req); err != nil {
+		t.Fatalf("unmarshaling request_canonical_sampling.json: %v", err)
+	}
+	if req.TopP == nil || len(req.StopSequences) == 0 {
+		t.Fatal("setup: the sampling fixture must set top_p and stop")
+	}
+	req.Model = "global.anthropic.claude-sonnet-4-6"
+	topK := 5
+	req.TopK = &topK
+	req.Effort = "low"
+
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	gotJSON, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling ToProvider output: %v", err)
+	}
+
+	wantJSON := mustReadTestdata(t, "request_bedrock_native_sampling.golden.json")
+	assertJSONEqual(t, gotJSON, wantJSON)
+}

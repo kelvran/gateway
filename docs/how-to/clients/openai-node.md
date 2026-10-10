@@ -41,7 +41,7 @@ console.log(completion.usage); // { prompt_tokens, completion_tokens, total_toke
 The response carries `id`, `object: "chat.completion"`, `created`, `model`, `choices[]` and `usage`, so the SDK's response types fit. Two request rules differ from OpenAI:
 
 - `messages[].content` must be a string. The content-array form (`content: [{ type: "text", ... }, { type: "image_url", ... }]`) fails to decode and returns 400 with `code: "invalid_json"`. Multimodal input uses Kelvran's own `parts` field; see [Compatibility](../../reference/compatibility.md).
-- Of OpenAI's request fields, only `model`, `messages`, `temperature`, `max_tokens`, `tools`, `tool_choice`, `stream` and `response_format` are read (Kelvran's own extensions are listed under "What Kelvran adds that this client ignores"). `max_completion_tokens`, `n`, `top_p`, `stop`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stream_options`, `store`, `metadata`, `parallel_tool_calls`, `service_tier` and `reasoning_effort` are dropped silently. Use `max_tokens`, not `max_completion_tokens`.
+- Of OpenAI's request fields, only `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream` and `response_format` are read (Kelvran's own extensions are listed under "What Kelvran adds that this client ignores"). `max_completion_tokens`, `n`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stream_options`, `store`, `metadata`, `parallel_tool_calls`, `service_tier` and `reasoning_effort` are dropped silently. Use `max_tokens`, not `max_completion_tokens`.
 
 ### 3. Stream
 
@@ -169,7 +169,7 @@ These behaviours first shipped in gateway/v0.18.0; gateway/v0.17.0 and earlier l
 - The Responses API, the Completions API, images, audio, files and fine-tuning routes. Only chat completions, embeddings and models exist.
 - OpenAI content-array `content` on inbound messages (400 `invalid_json`).
 - OpenAI-shaped streaming tool-call deltas. The gateway streams flat `{ index, id, name, arguments_json }` elements with no `type` and no `function` nesting, so this client's tool-call stream accumulators do not reassemble arguments (check your client version). Buffered tool calls use the OpenAI nesting.
-- Client-side `stream_options`, `n`, `top_p`, `stop`, `seed`, `user`, `logprobs`, `max_completion_tokens` and the other dropped fields listed in step 2.
+- Client-side `stream_options`, `n`, `seed`, `user`, `logprobs`, `max_completion_tokens` and the other dropped fields listed in step 2.
 - `X-Kelvran-Overhead-Duration-Ms` on streaming responses.
 - A first-party Kelvran SDK or an OpenAPI document. The `openai` package with `baseURL` is the integration path by recorded decision; see [Why no SDK](../../explanation/why-no-sdk.md).
 - A CI compatibility test against `openai-node`. No Node client code exists in this repository; the examples follow the gateway's wire contract and the package's public API shape.

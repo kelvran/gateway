@@ -2178,8 +2178,8 @@ func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, end
 
 	cacheScope := cache.ScopeKey(virtualKeyID, endUserID)
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
-	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req))
-	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req))
+	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
+	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
 
 	var result EraseCacheEntryResult
 	if _, _, ok, _ := p.cache.Get(ctx, cacheScope, l1Key); ok {
@@ -2782,10 +2782,10 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, toolsFP string, thinkingFP string, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, toolsFP string, thinkingFP string, samplingFP string, encoded []byte) {
 	_ = p.cache.Put(ctx, tenantID, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, tenantID, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, toolsFP, thinkingFP, p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, toolsFP, thinkingFP, samplingFP, p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -2919,6 +2919,7 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 	queryReasoningFP := reasoningBlocksFingerprint(req.Messages)
 	queryToolsFP := toolsFingerprint(req)
 	queryThinkingFP := thinkingFingerprint(req)
+	querySamplingFP := samplingFingerprint(req)
 	for _, c := range candidates {
 		entityMismatch := !fingerprintsEqual(queryFingerprint, c.Fingerprint)
 		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateEntityMismatch, entityMismatch)
@@ -3013,6 +3014,15 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		// above -- not one of Finding 1's three named gates, so not counted
 		// via telemetry.RecordCacheL3GateOutcome.
 		if c.ThinkingFingerprint != queryThinkingFP {
+			continue
+		}
+		// A gate for item 11 slice S5 (the same RFC §3): the sampling
+		// fingerprint -- top_p, top_k, stop sequences, effort -- folded into
+		// L1/L2 by key.go, extended to L3's near-duplicate match. Exact
+		// string equality, both-empty counting as a match, same convention
+		// as every gate above; not one of Finding 1's three named gates, so
+		// not counted via telemetry.RecordCacheL3GateOutcome.
+		if c.SamplingFingerprint != querySamplingFP {
 			continue
 		}
 		p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", true, p.cacheL3TTL)
@@ -3253,31 +3263,33 @@ func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKe
 
 // idempotencyFingerprint is the body fingerprint claimIdempotency stores
 // beside an Idempotency-Key: sha256 of the request's canonical JSON, plus
-// -- when the request carries one -- its thinking configuration, which
-// json:"-" keeps out of that JSON. Found by the slice-S4 security review:
-// ChatRequest.Thinking is the first CALLER-controlled field ever excluded
-// from the marshaled body (DisableCacheControlAutoPopulate, the other
-// json:"-" field, is operator-set), so without this fold two bodies
-// differing only in thinking would replay each other's response -- the
-// same cross-configuration serving thinkingFingerprint's cache fold
-// prevents, one layer over. A request WITHOUT a thinking configuration
-// fingerprints byte-for-byte as before (sha256.Sum256 of the body alone),
-// deliberately unlike the cache fold, which hashes the empty value too: a
-// key claimed by the previous build and reused across an upgrade inside
-// its window must not become a spurious ErrFingerprintMismatch.
+// -- when the request carries any -- the caller-controlled fields json:"-"
+// keeps out of that JSON (hiddenFieldsFingerprint: thinking, top_k,
+// effort). Found by the slice-S4 security review: ChatRequest.Thinking was
+// the first CALLER-controlled field ever excluded from the marshaled body
+// (DisableCacheControlAutoPopulate, the older json:"-" field, is
+// operator-set), so without this fold two bodies differing only in a hidden
+// field would replay each other's response -- the same cross-configuration
+// serving the cache folds prevent, one layer over. A request WITHOUT any
+// hidden field fingerprints byte-for-byte as before (sha256.Sum256 of the
+// body alone), deliberately unlike the cache folds, which hash the empty
+// value too: a key claimed by the previous build and reused across an
+// upgrade inside its window must not become a spurious
+// ErrFingerprintMismatch. The separator is a raw NUL, which JSON never
+// emits, so the fold is injective.
 func idempotencyFingerprint(req adapter.ChatRequest) ([sha256.Size]byte, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return [sha256.Size]byte{}, fmt.Errorf("dataplane: idempotency: marshal request for fingerprint: %w", err)
 	}
-	thinkingFP := thinkingFingerprint(req)
-	if thinkingFP == "" {
+	hidden := hiddenFieldsFingerprint(req)
+	if hidden == "" {
 		return sha256.Sum256(body), nil
 	}
 	h := sha256.New()
 	h.Write(body)
-	h.Write([]byte("\x00thinking="))
-	h.Write([]byte(thinkingFP))
+	h.Write([]byte("\x00hidden="))
+	h.Write([]byte(hidden))
 	var sum [sha256.Size]byte
 	copy(sum[:], h.Sum(nil))
 	return sum, nil
@@ -3758,8 +3770,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
 	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req))
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req))
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req))
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
@@ -4003,7 +4015,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 
 		if !responseWasTruncated(resp) {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), encoded)
+				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), encoded)
 			}
 		}
 
@@ -5558,6 +5570,53 @@ func thinkingFingerprint(req adapter.ChatRequest) string {
 	b, err := json.Marshal(req.Thinking)
 	if err != nil {
 		panic(fmt.Sprintf("dataplane: marshaling thinking for cache key: %v", err))
+	}
+	return string(b)
+}
+
+// samplingFingerprint is the cache-key / L3 hard-gate input for a request's
+// sampling surface (item 11 slice S5, docs/rfcs/2026-10-09-gateway-anthropic-
+// messages-ingress.md §3): the canonical JSON of TopP, TopK, StopSequences
+// and Effort -- only the set ones, omitempty, in declaration order so equal
+// inputs give equal strings -- and "" when the request carries none, so
+// every request without them keeps folding the empty string exactly like
+// every other empty-string input. Each of the four changes what the model
+// produces, so two requests differing only in one of them must never share
+// an entry at any layer (the 2026-09-24 every-layer rule).
+func samplingFingerprint(req adapter.ChatRequest) string {
+	if req.TopP == nil && req.TopK == nil && len(req.StopSequences) == 0 && req.Effort == "" {
+		return ""
+	}
+	b, err := json.Marshal(struct {
+		TopP   *float64              `json:"top_p,omitempty"`
+		TopK   *int                  `json:"top_k,omitempty"`
+		Stop   adapter.StopSequences `json:"stop,omitempty"`
+		Effort string                `json:"effort,omitempty"`
+	}{TopP: req.TopP, TopK: req.TopK, Stop: req.StopSequences, Effort: req.Effort})
+	if err != nil {
+		panic(fmt.Sprintf("dataplane: marshaling sampling fields for cache key: %v", err))
+	}
+	return string(b)
+}
+
+// hiddenFieldsFingerprint is the canonical JSON of every CALLER-controlled
+// json:"-" field on ChatRequest -- Thinking (slice S4), TopK and Effort
+// (slice S5) -- and "" when none is set. json:"-" keeps these off the
+// OpenAI wire, which also keeps them out of json.Marshal(req), so anything
+// fingerprinting the marshaled request (idempotencyFingerprint) must fold
+// this in explicitly or two requests differing only here would collide.
+// TopP and StopSequences carry wire tags and are already in the body.
+func hiddenFieldsFingerprint(req adapter.ChatRequest) string {
+	if req.Thinking == nil && req.TopK == nil && req.Effort == "" {
+		return ""
+	}
+	b, err := json.Marshal(struct {
+		Thinking *adapter.ThinkingConfig `json:"thinking,omitempty"`
+		TopK     *int                    `json:"top_k,omitempty"`
+		Effort   string                  `json:"effort,omitempty"`
+	}{Thinking: req.Thinking, TopK: req.TopK, Effort: req.Effort})
+	if err != nil {
+		panic(fmt.Sprintf("dataplane: marshaling hidden request fields for the idempotency fingerprint: %v", err))
 	}
 	return string(b)
 }

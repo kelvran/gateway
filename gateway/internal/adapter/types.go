@@ -552,7 +552,10 @@ func (s *StopSequences) UnmarshalJSON(data []byte) error {
 	if strings.HasPrefix(trimmed, "\"") {
 		var one string
 		if err := json.Unmarshal(data, &one); err != nil {
-			return fmt.Errorf("stop must be a string or an array of strings: %w", err)
+			// Unreachable while the outer decoder validates syntax first, but
+			// the handler relays this text to the client, so it is the same
+			// fixed sentence as the array branch, never encoding/json's own.
+			return errors.New("stop must be a string or an array of strings")
 		}
 		*s = StopSequences{one}
 		return nil

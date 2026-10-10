@@ -142,7 +142,7 @@ Nothing in the HTTP response marks a hit. The body is the stored completion. The
 
 ## What is in the key
 
-Two requests share an L1 entry only when all of these match: virtual key, model, the serialized messages, `temperature`, `max_tokens`, `guardrails.policy_version`, `response_format`, the resolved prompt reference, the end-user scope, `thinking_binding_mode`, the `tools` plus `tool_choice` definitions and, since gateway/v0.19.0, the thinking configuration. L2 uses the same fields over normalized messages. L3 gates by exact equality on model, `guardrails.policy_version`, `response_format`, the resolved prompt reference, the reasoning-blocks history, `thinking_binding_mode`, `tools` plus `tool_choice` and the thinking configuration; it does not gate on `temperature` or `max_tokens`, which is why a truncated response is never written.
+Two requests share an L1 entry only when all of these match: virtual key, model, the serialized messages, `temperature`, `max_tokens`, `guardrails.policy_version`, `response_format`, the resolved prompt reference, the end-user scope, `thinking_binding_mode`, the `tools` plus `tool_choice` definitions and, since gateway/v0.19.0, the thinking configuration and the sampling fields (`top_p`, `top_k`, `stop`, `effort`). L2 uses the same fields over normalized messages. L3 gates by exact equality on model, `guardrails.policy_version`, `response_format`, the resolved prompt reference, the reasoning-blocks history, `thinking_binding_mode`, `tools` plus `tool_choice`, the thinking configuration and the sampling fields; it does not gate on `temperature` or `max_tokens`, which is why a truncated response is never written.
 
 The L3 layer additionally refuses a candidate unless the entity/number/date fingerprint and the negation fingerprint are identical, the candidate is at most 24 hours old, the similarity is at least 0.9, and the model matches. Any user message containing one of the words `weather`, `price`, `stock`, `score`, `today`, `current`, `currently`, `now` or `latest` bypasses L3 entirely. None of this is configurable. See [`THREAT_MODEL.md`](../../THREAT_MODEL.md) for why.
 
@@ -152,9 +152,9 @@ Folding `tools` and `tool_choice` into the L1 and L2 keys and the L3 gate first 
 
 Because the field is hashed even when empty, every L1 and L2 key differs from an earlier build's. The in-process cache is empty after the restart an upgrade requires, so there is nothing to flush. See [Upgrade](upgrade.md).
 
-## Upgrade note: the thinking configuration in the key
+## Upgrade note: the thinking configuration and the sampling fields in the key
 
-gateway/v0.19.0 folds the request's thinking configuration — the `thinking` object a `/v1/messages` request carries; a `/v1/chat/completions` request has none, and a `thinking` key in its body is ignored as before — into the L1 and L2 keys and the L3 gate, so a reply produced without extended thinking is never served to a request that asked for it, or the reverse. The RFC is [2026-10-09-gateway-anthropic-messages-ingress.md](../rfcs/2026-10-09-gateway-anthropic-messages-ingress.md) §3. As with the tools fold, the field is hashed even when empty, so every L1 and L2 key differs from a gateway/v0.18.0 build's: one cold cache on upgrade, nothing to flush.
+gateway/v0.19.0 folds the request's thinking configuration — the `thinking` object a `/v1/messages` request carries; a `/v1/chat/completions` request has none, and a `thinking` key in its body is ignored as before — and its sampling fields (`top_p` and `stop`, which `/v1/chat/completions` now forwards instead of dropping; `top_k` and `effort`, `/v1/messages` fields) into the L1 and L2 keys and the L3 gate, so a reply produced under one configuration is never served to a request that asked for another. The RFC is [2026-10-09-gateway-anthropic-messages-ingress.md](../rfcs/2026-10-09-gateway-anthropic-messages-ingress.md) §3. As with the tools fold, the field is hashed even when empty, so every L1 and L2 key differs from a gateway/v0.18.0 build's: one cold cache on upgrade, nothing to flush.
 
 ## Not available today
 

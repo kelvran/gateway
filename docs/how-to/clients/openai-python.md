@@ -42,7 +42,7 @@ print(resp.choices[0].message.content)
 print(resp.usage.prompt_tokens, resp.usage.completion_tokens, resp.usage.total_tokens)
 ```
 
-The gateway reads these request fields: `model`, `messages`, `temperature`, `max_tokens`, `tools`, `tool_choice`, `stream`, `response_format`, plus Kelvran's own extensions. Every other field the SDK lets you pass (`n`, `top_p`, `stop`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `parallel_tool_calls`, `max_completion_tokens`, `store`, `metadata`, `reasoning_effort`) is silently dropped: the request succeeds and the field has no effect.
+The gateway reads these request fields: `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format`, plus Kelvran's own extensions. Every other field the SDK lets you pass (`n`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `parallel_tool_calls`, `max_completion_tokens`, `store`, `metadata`, `reasoning_effort`) is silently dropped: the request succeeds and the field has no effect.
 
 `messages[].content` must be a string. OpenAI's array-of-parts `content` is rejected with `400` `invalid_json` (see "Not available today").
 
@@ -201,7 +201,7 @@ Expected: `401 invalid_api_key dataplane: auth: identity: invalid virtual key` (
 ## Not available today
 
 - OpenAI's array-of-parts `content` on inbound messages. `content` is a string; multimodal input goes in Kelvran's `parts`. An SDK multimodal request fails with `400` `invalid_json`.
-- The dropped request fields listed in step 2 (`n`, `top_p`, `stop`, `seed`, `user`, `logprobs`, penalties, `logit_bias`, `max_completion_tokens`, `parallel_tool_calls`, `stream_options`, `store`, `metadata`, `reasoning_effort`). They do not error; they do nothing.
+- The dropped request fields listed in step 2 (`n`, `seed`, `user`, `logprobs`, penalties, `logit_bias`, `max_completion_tokens`, `parallel_tool_calls`, `stream_options`, `store`, `metadata`, `reasoning_effort`). They do not error; they do nothing.
 - OpenAI-shaped streaming tool-call deltas (`delta.tool_calls[].function.{name,arguments}`).
 - The Responses API, the legacy Completions API, and the images, audio, files, batches and fine-tuning routes: only `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz` and `GET /readyz` exist. Anything else is a `404`.
 - `tool_choice` types `allowed_tools` and `custom`.

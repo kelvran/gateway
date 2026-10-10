@@ -227,3 +227,32 @@ func TestRegressionToProviderInboundToolChoiceStringReachesOpenAIWire(t *testing
 		t.Errorf("wire tool_choice = %s, want \"required\"", wire["tool_choice"])
 	}
 }
+
+// TestRegressionToProviderSamplingMatchesGoldenFixture is item 11 slice
+// S5's wire-format proof for this adapter: request_canonical_sampling.json
+// (the canonical fixture plus top_p and stop, the two wire-settable fields; this provider has no top_k or effort) must match the checked-in golden,
+// which differs from this adapter's base golden by exactly the sampling
+// fields (the reviewer diffs the two files, per the generated-hunk rule).
+func TestRegressionToProviderSamplingMatchesGoldenFixture(t *testing.T) {
+	canonicalJSON := mustReadTestdata(t, "request_canonical_sampling.json")
+
+	var req adapter.ChatRequest
+	if err := json.Unmarshal(canonicalJSON, &req); err != nil {
+		t.Fatalf("unmarshaling request_canonical_sampling.json: %v", err)
+	}
+	if req.TopP == nil || len(req.StopSequences) == 0 {
+		t.Fatal("setup: the sampling fixture must set top_p and stop")
+	}
+
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	gotJSON, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling ToProvider output: %v", err)
+	}
+
+	wantJSON := mustReadTestdata(t, "request_openai_native_sampling.golden.json")
+	assertJSONEqual(t, gotJSON, wantJSON)
+}

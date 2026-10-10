@@ -149,7 +149,7 @@ What you should see: status `HTTP/1.1 200 OK`, `Content-Type: application/json`,
 
 The gateway hashed the bearer token, matched it to `quickstart`, routed `gpt-4o` to the `gpt4o-primary` deployment, sent the request upstream with your `OPENAI_API_KEY`, and priced the `usage` against `price_table` toward the key's 25 USD budget.
 
-The request body is OpenAI Chat Completions shaped: `model`, `messages[]` of `{role, content}`, and optional `temperature`, `max_tokens`, `tools`, `stream`, `response_format`. Unknown fields are dropped silently.
+The request body is OpenAI Chat Completions shaped: `model`, `messages[]` of `{role, content}`, and optional `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format`. Unknown fields are dropped silently.
 
 ## Step 8: See the key being enforced
 

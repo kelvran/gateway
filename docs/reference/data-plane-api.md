@@ -104,7 +104,7 @@ Checks run in this order, before authentication. The first failure wins. All use
 
 Rows 5 and 6 are both raised while the body is decoded, and their relative order is not a contract: a body that has both a malformed `tool_choice` and a wrong-type field reports whichever error the JSON engine meets first in document order on the shipped binary (built with Go 1.27, whose `encoding/json` runs on json/v2), while the classic engine reported the `tool_choice` sentinel first. Rows 1 to 4 always precede both, and rows 7 to 12 always follow.
 
-Unknown top-level fields (`n`, `stop`, `top_p`, `seed`, and so on) are ignored: the body is decoded with plain `json.Unmarshal`, not forwarded and not rejected.
+Unknown top-level fields (`n`, `seed`, `top_k`, and so on) are ignored: the body is decoded with plain `json.Unmarshal`, not forwarded and not rejected.
 
 ### Request body
 
@@ -114,6 +114,8 @@ Unknown top-level fields (`n`, `stop`, `top_p`, `seed`, and so on) are ignored: 
 | `messages` | `Message[]` | yes, unless `prompt_id` supplies them | At most 2000. A request that resolves to zero messages is `400`, `code` `empty_messages`, `param` `messages`. Setting both `prompt_id` and a non-empty `messages` is `400`, `code` `invalid_prompt_reference`. |
 | `temperature` | number | no | Forwarded to the provider. |
 | `max_tokens` | integer | no | Forwarded to the provider. |
+| `top_p` | number | no | Forwarded to the provider (since gateway/v0.19.0; dropped silently before). Sonnet 4.5 and Haiku 4.5 reject `temperature` and `top_p` together; that is the provider's own `400`. |
+| `stop` | string or string array | no | Forwarded to the provider as an array (since gateway/v0.19.0; dropped silently before). Provider limits (OpenAI: four) are the provider's own `400`. |
 | `tools` | `ToolDef[]` | no | At most 256. OpenAI nested shape; see below. |
 | `tool_choice` | string or object | no | See `tool_choice` below. |
 | `stream` | boolean | no, default `false` | `true` selects the SSE response. |
@@ -229,7 +231,7 @@ Any other shape (Anthropic's `{"type":"auto"}`, OpenAI `allowed_tools`, a mix of
 | `usage` | object | See `Usage`. |
 | `input_transformations[]` | array | Anthropic only. Each entry is `{"type", "path", "reason"}`: `type` is `thinking_dropped` or `thinking_mismatch_allowed`; `path` is the affected block's location in the request, verbatim from Anthropic (for example `messages.3.content.0`); `reason` is `prefix_binding_mismatch` or `model_binding_mismatch`. Omitted when empty. |
 | `stop_reason` | string | Set on responses served by `anthropic` and `bedrock` deployments when the provider reported a stop reason (since gateway/v0.19.0): the native vocabulary (`end_turn`, `tool_use`, `stop_sequence`, `max_tokens`, …). `finish_reason` stays the canonical vocabulary. Absent for other providers, on a stream a guard cut short, and on cached entries written before gateway/v0.19.0. |
-| `stop_sequence` | string | Anthropic only: the matched stop sequence when `stop_reason` is `stop_sequence`; absent otherwise. No `/v1/chat/completions` request can set stop sequences today (`stop` is dropped), so it appears only once that field is honoured. |
+| `stop_sequence` | string | Anthropic only: the matched stop sequence when `stop_reason` is `stop_sequence`; absent otherwise. Set `stop` on the request (honoured since gateway/v0.19.0) to see it. |
 
 A cache hit or an `Idempotency-Key` replay returns the `id` and `created` the completion was stored with. The `id`, `object` and `created` envelope is present since gateway/v0.18.0; gateway/v0.17.0 and earlier return `"id": ""` for Bedrock and no `object` or `created` for any provider.
 
