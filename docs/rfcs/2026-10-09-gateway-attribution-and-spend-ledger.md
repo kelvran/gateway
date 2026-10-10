@@ -1,6 +1,6 @@
 # RFC: Zero-client-config attribution and a bounded spend ledger
 
-- **Status**: proposed. 13a (attribution carrier) is the next code item; it ships with G14's default (identifier capture ON, both switches present) unless the owner flips it first. 13d (spend ledger) is sequenced after the planned CLI RFC (RFC-3 in the plan's numbering, not yet written) and the CLI's Stage 1 by the discoverability plan approved on 2026-10-08 (a file outside the repository; its sequence is 13b → 13a → RFC-1 + 11 gap fills → 11 core → 13c → RFC-3 + 12 Stage 1 → RFC-2 + 13d + `spend --by` → RFC-5 + 17) *(Note added 2026-10-10: RFC-3 was written 2026-10-09 as `docs/rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md`; `GET /admin/virtual_keys?include=spend` is slice (c) of its Stage 1.)*
+- **Status**: accepted 2026-10-10 (owner decisions in `docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md`). Previously: proposed. 13a (attribution carrier) is the next code item; it ships with G14's default (identifier capture ON, both switches present) unless the owner flips it first. 13d (spend ledger) is sequenced after the planned CLI RFC (RFC-3 in the plan's numbering, not yet written) and the CLI's Stage 1 by the discoverability plan approved on 2026-10-08 (a file outside the repository; its sequence is 13b → 13a → RFC-1 + 11 gap fills → 11 core → 13c → RFC-3 + 12 Stage 1 → RFC-2 + 13d + `spend --by` → RFC-5 + 17) *(Note added 2026-10-10: RFC-3 was written 2026-10-09 as `docs/rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md`; `GET /admin/virtual_keys?include=spend` is slice (c) of its Stage 1.)*
 - **Date**: 2026-10-09
 - **Author(s)**: gateway maintainers (plan items 13a and 13d, RFC-2 of that plan; written against `main` at c4517057 from a four-area code map with a refuter pass per area, `scratch-pad/research/rfc2-source-map-2026-10-09.md`, not committed)
 
@@ -124,6 +124,12 @@ For the owner (each with a recommendation; none has code behind it yet). The pla
 | G29 Ledger defaults: 168 h retention, 2,000 sessions per key, in-memory when no `persist_path` and no Redis | 13d | yes |
 
 For implementation, confirmed before the corresponding code merges: the exact `User-Agent` strings of the Go and TypeScript SDKs in the §11 compat matrix and of Claude Code itself (the Python SDKs' are verified, see the normalisation table); whether `x-claude-code-agent-id` and `-parent-agent-id` are indeed sent without the hint flag on subagent requests against a live Claude Code (the protocol page's header table says they are flag-independent but subagent-only; the round-4 report, line 161, placed them under the flag).
+
+## Owner decisions (2026-10-10)
+
+Resolved by the owner on 2026-10-10; the consolidated record with reasoning and the red-team's modifications is `docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md`.
+
+- **G14**: ON with both switches; the owner classifies Claude Code session, agent and prompt ids as not personal data for this deployment. **G27**: as recommended, across every `group_by`. **G28**: as recommended, with the audit line carrying a 16-hex SHA-256 prefix of the session id instead of the raw id, and the per-replica erase procedure written into `docs/operations/DATA-SUBJECT-REQUESTS.md`. **G29**: as recommended, plus `ledger.max_rows_per_key` (default 50,000) folding overflow into one `other` session per hour bucket.
 
 ## Verification
 

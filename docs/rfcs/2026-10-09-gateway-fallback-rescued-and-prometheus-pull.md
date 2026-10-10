@@ -1,6 +1,6 @@
 # RFC: Fallback rescue telemetry and a Prometheus pull endpoint
 
-- **Status**: accepted for 13b (no owner gate; next code item in the plan's Tier D sequence); proposed for 13c until the owner answers the three questions under "Unresolved Questions" (an unauthenticated third listener, two new dependencies, and whether Go runtime metrics ride along)
+- **Status**: accepted for 13b (no owner gate; next code item in the plan's Tier D sequence); accepted for 13c as well on 2026-10-10 (G24–G26 decided; see the Owner decisions section and `docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md`)
 - **Date**: 2026-10-09
 - **Author(s)**: gateway maintainers (plan items 13b and 13c, item 13 of `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md` (line 234), RFC-4 of the discoverability plan approved on 2026-10-08 — a file outside the repository, whose Tier D sequence and gate table are quoted where this RFC relies on them; written against `main` at 03056fe6)
 
@@ -110,6 +110,12 @@ For the owner before 13c's code lands (13b has none). The plan's gate tables (G1
 3. Go runtime and process collectors on the endpoint by default. Recommendation: yes (standard for a Go service; adds ~40 series).
 
 For implementation, confirmed live rather than decided: the exposition names derived in the Decisions table (`gen_ai_client_operation_duration_seconds_{count,sum,bucket}`, `kelvran_llm_spend_usd_total`, `kelvran_cache_lookup_total`, `kelvran_fallback_rescued_total`) as they appear in a real scrape.
+
+## Owner decisions (2026-10-10)
+
+Resolved by the owner on 2026-10-10; the consolidated record with reasoning and the red-team's modifications is `docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md`.
+
+- **G24**: as designed, plus `promhttp.HandlerOpts{MaxRequestsInFlight: 4, Timeout: 10s}`, a `SECURITY.md` operator bullet on the exposition's contents and bind, and recipes that state the non-loopback bind scraping needs behind the NetworkPolicy. **G25**: exactly as listed, pinned, with the reason recorded (v0.69.0 would force OTel SDK v1.47.0). **G26**: on by default, no switch; `metric_relabel_configs` as the opt-out; `docs/operations/TELEMETRY.md` states the collectors exist on the pull path only.
 
 ## Verification
 

@@ -1,6 +1,6 @@
 # RFC: Gateway inbound Anthropic Messages API — passthrough-first ingress
 
-- **Status**: proposed (decision gate G8 of the 2026-10-08 discoverability plan; the owner picks between the three options in "The decision"; no code lands before that)
+- **Status**: accepted 2026-10-10 (G8 Option C; owner decisions in `docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md`). Previously: proposed (decision gate G8 of the 2026-10-08 discoverability plan; the owner picks between the three options in "The decision"; no code lands before that)
 - **Date**: 2026-10-09
 - **Author(s)**: gateway maintainers (plan item 11, RFC-1 of `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md`; the 2026-10-08 design pass re-verified against `main` at 891e7770 and against Anthropic's Claude Code gateway-protocol page as archived on 2026-10-08)
 
@@ -181,6 +181,12 @@ For implementation, to be settled live before the corresponding code merges:
 - Whether Bedrock accepts `thinking: {"type":"adaptive"}` through `additionalModelRequestFields`, per model. Until proven, the translate path drops the field.
 - Which `anthropic-beta` values Bedrock honours through `additionalModelRequestFields.anthropic_beta`, per model, for `forward_known`.
 - Whether the Anthropic SDK's `count_tokens` and Claude Code's estimate differ enough to justify a per-key toggle to disable the route.
+
+## Owner decisions (2026-10-10)
+
+Resolved by the owner on 2026-10-10; the consolidated record with reasoning and the red-team's modifications is `docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md`.
+
+- **G8**: Option C. **Q2**: yes, Authorization wins; plus the one-credential-variable sentence in the how-to and `connect claude`, and a `THREAT_MODEL.md` row naming `x-api-key`. **Q3**: yes; the test pins no auth, no body, no status variation. **Q4**: `strip`; the `forward_known` transport and each value need a live 200 first; archive the AWS Converse pages; forward `thinking`/`output_config.effort` once proven. **Q5**: `false`; the 400's `message` is a fixed sentence with top-level field names only and the pointer list in `error.param`, pinned against Claude Code's recovery strings. **G16**: resolved with this RFC — 400 `response_format_unsupported`, 422 `idempotency_key_reused`, shipped in the same minor. **Q6/G15**: Go and Python legs block merges; the TypeScript leg is nightly, non-blocking, container-only, and the one-line ADR 0003 test-tooling note is accepted now.
 
 ## Verification
 
