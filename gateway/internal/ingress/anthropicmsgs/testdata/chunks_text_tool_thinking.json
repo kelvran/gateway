@@ -1,0 +1,11 @@
+[
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_blocks": [{"index": 0, "text": "Let me "}]}, "finish_reason": null}]},
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [{"index": 0, "delta": {"reasoning_blocks": [{"index": 0, "text": "think."}]}, "finish_reason": null}]},
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [{"index": 0, "delta": {"reasoning_blocks": [{"index": 0, "signature": "EqQBsig=="}]}, "finish_reason": null}]},
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [{"index": 0, "delta": {"content": "Hel"}, "finish_reason": null}]},
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [{"index": 0, "delta": {"content": "lo."}, "finish_reason": null}]},
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "toolu_01A", "name": "Read", "arguments_json": "{\"file_path\":"}]}, "finish_reason": null}]},
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "arguments_json": "\"/tmp/a.txt\"}"}]}, "finish_reason": null}]},
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls", "stop_reason": "tool_use"}]},
+  {"id": "chatcmpl-s1", "model": "planner", "choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125, "cache_read_tokens": 60, "cache_creation_tokens": 5, "reasoning_tokens": 8}}
+]

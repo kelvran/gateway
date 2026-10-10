@@ -1,0 +1,8 @@
+{
+  "id": "chatcmpl-ghi",
+  "model": "synthesizer",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "1 2 3 4"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+  "stop_reason": "stop_sequence",
+  "stop_sequence": " 5"
+}

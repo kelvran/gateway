@@ -586,7 +586,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 					ToolResult: &ToolResult{
 						ToolUseID: m.ToolCallID,
 						Content:   toolResultContent,
-						Status:    "success",
+						Status:    toolResultStatus(m.ToolResultIsError),
 					},
 				},
 			}
@@ -1067,6 +1067,16 @@ func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
 	default:
 		return ContentBlock{}, fmt.Errorf("bedrock: unsupported content part type %q", p.Type)
 	}
+}
+
+// toolResultStatus is Converse's toolResult.status for a canonical tool
+// result: "error" when the caller marked the call failed (item 11 slice
+// S7), else "success" exactly as before.
+func toolResultStatus(isError bool) string {
+	if isError {
+		return "error"
+	}
+	return "success"
 }
 
 // toolResultContentFor builds a tool result's content blocks from the

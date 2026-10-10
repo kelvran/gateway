@@ -1,0 +1,8 @@
+{
+  "id": "chatcmpl-abc",
+  "model": "planner",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "Reading.", "tool_calls": [{"id": "toolu_01A", "type": "function", "function": {"name": "Read", "arguments": "{\"file_path\":\"/tmp/a.txt\"}"}}], "reasoning_blocks": [{"sequence": 0, "text": "I should read it first.", "signature": "EqQBCkYIBhgCKkD3sig=="}, {"sequence": 1, "redacted": true, "data": "EmQBCkYIBhgC"}]}, "finish_reason": "tool_calls"}],
+  "usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150, "cache_read_tokens": 80, "cache_creation_tokens": 10, "reasoning_tokens": 12},
+  "stop_reason": "tool_use",
+  "input_transformations": [{"type": "thinking_dropped", "path": "messages.1.content.0", "reason": "prefix_binding_mismatch"}]
+}

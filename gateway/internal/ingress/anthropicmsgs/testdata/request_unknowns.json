@@ -1,0 +1,20 @@
+{
+  "model": "planner",
+  "max_tokens": 1024,
+  "system": "Be terse.",
+  "messages": [
+    {"role": "user", "content": [
+      {"type": "text", "text": "hi", "citations": {"enabled": true}},
+      {"type": "tool_reference", "tool_name": "get_weather"},
+      {"type": "search_result", "source": "https://x.test", "title": "A page", "content": [{"type": "text", "text": "page text"}]}
+    ], "unknown_message_member": 1},
+    {"role": "assistant", "content": "ok", "display": "verbose"}
+  ],
+  "tools": [{"name": "get_weather", "input_schema": {"type": "object"}, "defer_loading": true}],
+  "tool_choice": {"type": "any", "future_flag": true},
+  "thinking": {"type": "enabled", "budget_tokens": 2048, "display": "summarized"},
+  "output_config": {"format": {"type": "json_schema", "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}}, "new_knob": 1},
+  "metadata": {"user_id": "u1", "session_id": "s-9"},
+  "context_management": {"edits": []},
+  "service_tier": "auto"
+}

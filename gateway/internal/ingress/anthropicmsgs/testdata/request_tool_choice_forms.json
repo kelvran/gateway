@@ -1,0 +1,1 @@
+{"model": "m", "max_tokens": 8, "messages": [{"role": "user", "content": "x"}], "tools": [{"name": "t", "input_schema": {"type": "object"}}], "tool_choice": {"type": "tool", "name": "t"}}

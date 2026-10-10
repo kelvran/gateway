@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -41,6 +42,12 @@ type Message struct {
 	// ToolCallID identifies which prior ToolCall this message is a result
 	// for. Only set on role:"tool" messages.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	// ToolResultIsError marks a role:"tool" message as a failed tool call --
+	// Anthropic's tool_result.is_error, Converse's toolResult.status "error"
+	// (item 11 slice S7). json:"-": OpenAI's wire has no such member, so the
+	// Anthropic Messages ingress is the only setter; the openai, openaicompat
+	// and gemini adapters ignore it. False (the default) emits nothing.
+	ToolResultIsError bool `json:"-"`
 	// CacheControl, when set, opts this whole message into provider-side
 	// prompt caching, per
 	// docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md. Nil (the
@@ -389,9 +396,18 @@ type ChatRequest struct {
 	// vocabulary, answers with its own 400. Every omission is a
 	// request_field_dropped log line. Folded into every cache key, the L3
 	// gate and the Idempotency-Key fingerprint (dataplane.samplingFingerprint).
-	Effort string    `json:"-"`
-	Tools  []ToolDef `json:"tools,omitempty"`
-	Stream bool      `json:"stream,omitempty"`
+	Effort string `json:"-"`
+	// Passthrough is set only by the Anthropic Messages ingress
+	// (docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md §2, item 11
+	// slice S7): the raw body and everything in it the canonical schema did
+	// not consume, so an anthropic deployment can be sent the client's bytes
+	// unchanged and a translate hop can be refused when they carry something
+	// the shadow lost. json:"-": unreachable from any request body, the same
+	// precedent as DisableCacheControlAutoPopulate. Nil for every other
+	// ingress.
+	Passthrough *Passthrough `json:"-"`
+	Tools       []ToolDef    `json:"tools,omitempty"`
+	Stream      bool         `json:"stream,omitempty"`
 	// ResponseFormat, when set, requests structured JSON output
 	// conforming to a caller-supplied schema. Nil (the default, and every
 	// ChatRequest built before this field existed) is a silent no-op --
@@ -533,6 +549,41 @@ type ThinkingConfig struct {
 	// and omitempty keeps it off the wire -- Anthropic rejects a budget on
 	// "adaptive", and 0 would be a value, not an absence.
 	BudgetTokens int `json:"budget_tokens,omitempty"`
+}
+
+// Passthrough is what the Anthropic Messages ingress keeps beside the
+// canonical shadow of a request (ChatRequest.Passthrough): the body
+// byte-for-byte, every member the parser did not consume -- keyed by RFC
+// 6901 JSON pointer, at every depth, so a fingerprint of UnknownFields
+// covers the whole body -- the content blocks no canonical form exists for,
+// the end-user id, and the anthropic-* request headers a passthrough hop
+// forwards (set by the handler, not the parser).
+type Passthrough struct {
+	// Format names the ingress dialect; "anthropic-messages" today.
+	Format string
+	// RawBody is the request body as received, which the passthrough path
+	// sends to an anthropic deployment unchanged.
+	RawBody json.RawMessage
+	// UnknownFields maps the JSON pointer of every member the parser did not
+	// consume into the canonical shadow to that member's raw value. Empty
+	// when the body is fully known. A translate hop with any entry is lossy.
+	UnknownFields map[string]json.RawMessage
+	// UntranslatableBlocks lists, by JSON pointer, the content blocks that
+	// have no canonical form -- tool_reference (known to Anthropic, kept for
+	// Claude Code's tool search) and any block type newer than the parser.
+	// Each is also recorded whole in UnknownFields under the same pointer,
+	// so a fingerprint of UnknownFields covers it; this list is the
+	// per-block fact a translate hop reads (any entry: the request cannot
+	// be encoded). Their strings still reach the guardrail scan through the
+	// shadow.
+	UntranslatableBlocks []string
+	// EndUserID is metadata.user_id, the Anthropic form of the end-user
+	// scope the OpenAI route reads from X-Kelvran-End-User-Id.
+	EndUserID string
+	// ForwardHeaders carries the anthropic-* request headers for a
+	// passthrough hop (anthropic-version, anthropic-beta, ...). The handler
+	// fills it; the parser never sees headers.
+	ForwardHeaders http.Header
 }
 
 // StopSequences is ChatRequest.StopSequences' wire type: it decodes

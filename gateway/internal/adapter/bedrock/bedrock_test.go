@@ -1933,3 +1933,21 @@ func TestToProviderEffortForwardedOrDroppedByFamily(t *testing.T) {
 		t.Errorf("output_config = %v, want effort AND format in the one object", nativeAny.(*Request).AdditionalModelRequestFields)
 	}
 }
+
+// TestToProviderToolResultIsError (item 11 slice S7): a tool result the
+// caller marked as an error carries Converse's toolResult.status "error";
+// the default omits status, so every existing golden holds.
+func TestToProviderToolResultIsError(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model:    "global.anthropic.claude-sonnet-4-6",
+		Messages: []adapter.Message{{Role: "tool", ToolCallID: "tooluse_1", Content: "ENOENT", ToolResultIsError: true}},
+	}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	tr := nativeAny.(*Request).Messages[0].Content[0].ToolResult
+	if tr == nil || tr.Status != "error" {
+		t.Errorf("toolResult = %+v, want status error", tr)
+	}
+}

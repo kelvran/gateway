@@ -32,6 +32,11 @@ components:
   adapter:           { in: adapter }
   adapter-impl:      { in: adapter/*/** }
   streaming:         { in: streaming }
+  # The Anthropic Messages ingress (RFC-1, docs/rfcs/2026-10-09-gateway-
+  # anthropic-messages-ingress.md §1): a leaf that depends only on the two
+  # canonical schemas; dataplane imports it (slice S9b), cmd/gateway sits
+  # outside workdir and needs no entry.
+  ingress-anthropicmsgs: { in: ingress/anthropicmsgs }
   controlplane:      { in: gateway/controlplane }
   dataplane:         { in: gateway/dataplane }
   admin:             { in: admin }
@@ -150,6 +155,10 @@ deps:
   prompt:
     mayDependOn:
       - adapter
+  ingress-anthropicmsgs:
+    mayDependOn:
+      - adapter
+      - streaming
   dataplane:
     mayDependOn:
       - adapter
@@ -166,6 +175,7 @@ deps:
       - guardrail
       - identity
       - idempotency
+      - ingress-anthropicmsgs
       - prompt
       - ratelimit
       - router

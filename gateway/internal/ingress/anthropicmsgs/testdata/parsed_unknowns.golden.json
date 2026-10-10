@@ -1,0 +1,113 @@
+{
+  "request": {
+    "model": "planner",
+    "messages": [
+      {
+        "role": "system",
+        "content": "Be terse."
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "hi"
+          },
+          {
+            "type": "text",
+            "text": "get_weather"
+          },
+          {
+            "type": "text",
+            "text": "page text\ntext\nhttps://x.test\nA page"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "ok"
+          },
+          {
+            "type": "text",
+            "text": "verbose"
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      }
+    ],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "output",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "tool_choice": {
+      "mode": "required"
+    }
+  },
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 2048
+  },
+  "disable_cache_control_auto_populate": true,
+  "end_user_id": "u1",
+  "format": "anthropic-messages",
+  "unknown_fields": {
+    "/context_management": {
+      "edits": []
+    },
+    "/messages/0/content/0/citations": {
+      "enabled": true
+    },
+    "/messages/0/content/1": {
+      "type": "tool_reference",
+      "tool_name": "get_weather"
+    },
+    "/messages/0/content/2": {
+      "type": "search_result",
+      "source": "https://x.test",
+      "title": "A page",
+      "content": [
+        {
+          "type": "text",
+          "text": "page text"
+        }
+      ]
+    },
+    "/messages/0/unknown_message_member": 1,
+    "/messages/1/display": "verbose",
+    "/metadata/session_id": "s-9",
+    "/output_config/new_knob": 1,
+    "/service_tier": "auto",
+    "/thinking/display": "summarized",
+    "/tool_choice/future_flag": true,
+    "/tools/0/defer_loading": true
+  },
+  "untranslatable_blocks": [
+    "/messages/0/content/1",
+    "/messages/0/content/2"
+  ],
+  "raw_body_bytes": 990
+}

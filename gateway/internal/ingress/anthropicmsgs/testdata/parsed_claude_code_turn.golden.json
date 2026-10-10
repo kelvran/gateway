@@ -1,0 +1,158 @@
+{
+  "request": {
+    "model": "planner",
+    "messages": [
+      {
+        "role": "system",
+        "content": "x-anthropic-billing-header: cc_version=2.1.0; cc_entrypoint=cli; cch=abc12;",
+        "cache_control": {}
+      },
+      {
+        "role": "system",
+        "content": "You are Claude Code.",
+        "cache_control": {
+          "ttl": "1h"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Read the file and summarise it."
+      },
+      {
+        "role": "assistant",
+        "content": "Reading.",
+        "tool_calls": [
+          {
+            "id": "toolu_01A",
+            "type": "function",
+            "function": {
+              "name": "Read",
+              "arguments": "{\"file_path\":\"/tmp/a.txt\"}"
+            }
+          }
+        ],
+        "reasoning_blocks": [
+          {
+            "sequence": 0,
+            "text": "I should read it first.",
+            "signature": "EqQBCkYIBhgCKkD3sig=="
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "hello world",
+        "tool_call_id": "toolu_01A",
+        "cache_control": {}
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "toolu_01B",
+            "type": "function",
+            "function": {
+              "name": "Screenshot",
+              "arguments": "{}"
+            }
+          }
+        ],
+        "reasoning_blocks": [
+          {
+            "sequence": 0,
+            "redacted": true,
+            "data": "EmQBCkYIBhgC"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "parts": [
+          {
+            "type": "text",
+            "text": "screenshot attached"
+          },
+          {
+            "type": "image",
+            "media_type": "image/png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+          }
+        ],
+        "tool_call_id": "toolu_01B"
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "type": "image",
+            "url": "https://example.test/diagram.png"
+          },
+          {
+            "type": "document",
+            "media_type": "application/pdf",
+            "data": "UERG",
+            "cache_control": {}
+          },
+          {
+            "type": "text",
+            "text": "What do you see?"
+          }
+        ]
+      }
+    ],
+    "temperature": 1,
+    "max_tokens": 4096,
+    "stop": [
+      "END"
+    ],
+    "top_p": 0.95,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "Read",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "file_path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "file_path"
+            ]
+          }
+        },
+        "cache_control": {}
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Screenshot",
+          "description": "Take a screenshot",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        "strict": true
+      }
+    ],
+    "stream": true,
+    "tool_choice": {
+      "mode": "auto",
+      "disable_parallel_tool_use": true
+    },
+    "thinking_binding_mode": "strict"
+  },
+  "thinking": {
+    "type": "adaptive"
+  },
+  "top_k": 40,
+  "effort": "high",
+  "disable_cache_control_auto_populate": true,
+  "end_user_id": "user-7f3a",
+  "format": "anthropic-messages",
+  "raw_body_bytes": 2438
+}

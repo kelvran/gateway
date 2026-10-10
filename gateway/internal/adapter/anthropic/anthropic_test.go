@@ -1825,3 +1825,27 @@ func TestToProviderNoEffortLeavesOutputConfigNil(t *testing.T) {
 		t.Errorf("OutputConfig = %+v, want nil", oc)
 	}
 }
+
+// TestToProviderToolResultIsError (item 11 slice S7): a tool result the
+// caller marked as an error carries Anthropic's is_error on the tool_result
+// block; the default omits the key, so every existing golden holds.
+func TestToProviderToolResultIsError(t *testing.T) {
+	req := adapter.ChatRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []adapter.Message{
+			{Role: "assistant", ToolCalls: []adapter.ToolCall{{ID: "toolu_1", Name: "Read", ArgumentsJSON: "{}"}}},
+			{Role: "tool", ToolCallID: "toolu_1", Content: "ENOENT", ToolResultIsError: true},
+		},
+	}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"content":"ENOENT","is_error":true}`) {
+		t.Errorf("wire = %s, want is_error true on the tool_result block", wire)
+	}
+}

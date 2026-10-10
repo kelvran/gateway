@@ -385,3 +385,24 @@ func TestChatResponseUnrepresentableIsNotOnTheWire(t *testing.T) {
 		t.Errorf("Marshal leaked the Unrepresentable flag onto the wire: %s", out)
 	}
 }
+
+// TestChatRequestPassthroughAndToolResultIsErrorAreNotOnTheWire pins json:"-"
+// on the two slice-S7 members: Passthrough is set only by the Anthropic
+// Messages ingress, and ToolResultIsError (Anthropic's tool_result.is_error,
+// Converse's toolResult.status) has no OpenAI wire form.
+func TestChatRequestPassthroughAndToolResultIsErrorAreNotOnTheWire(t *testing.T) {
+	var req ChatRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","messages":[{"role":"tool","tool_call_id":"c","content":"x","tool_result_is_error":true}],"passthrough":{"format":"anthropic-messages"}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Passthrough != nil || req.Messages[0].ToolResultIsError {
+		t.Errorf("wire set hidden members: passthrough %v, is_error %v", req.Passthrough, req.Messages[0].ToolResultIsError)
+	}
+	out, err := json.Marshal(ChatRequest{Model: "m", Passthrough: &Passthrough{Format: "anthropic-messages"}, Messages: []Message{{Role: "tool", ToolResultIsError: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "passthrough") || strings.Contains(string(out), "is_error") {
+		t.Errorf("Marshal leaked a hidden member: %s", out)
+	}
+}

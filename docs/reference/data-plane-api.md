@@ -14,7 +14,7 @@ The gateway registers exactly five routes on one `http.ServeMux`. Every pattern 
 | `GET` | `/healthz` | none | `200`, `application/json` | `405`, plain text, no `Allow` header |
 | `GET` | `/readyz` | none | `200` or `503`, `application/json` | `405`, plain text, no `Allow` header |
 
-Not available today: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/completions`, `POST /v1/responses`, and a `/metrics` route. None is registered. The Anthropic Messages ingress is a future RFC item; see [mcp-a2a-status.md](../explanation/mcp-a2a-status.md) for the status of other planned surfaces.
+Not available today: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/completions`, `POST /v1/responses`, and a `/metrics` route. None is registered. The Anthropic Messages ingress is in progress as item 11 under `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md` (decided 2026-10-10): its parser exists, no route yet; see [mcp-a2a-status.md](../explanation/mcp-a2a-status.md) for the status of other planned surfaces.
 
 `listen_addr` is a required `config.yaml` key with no default; [config.example.yaml](../../gateway/config.example.yaml) sets it to `:8080`, and the examples below use `http://127.0.0.1:8080`.
 
@@ -525,7 +525,7 @@ Design: [2026-09-07-gateway-retry-storm-mitigation.md](../rfcs/2026-09-07-gatewa
 
 | Capability | Status |
 |---|---|
-| Anthropic Messages ingress (`POST /v1/messages`, `/v1/messages/count_tokens`) | Not registered. A future RFC item. |
+| Anthropic Messages ingress (`POST /v1/messages`, `/v1/messages/count_tokens`) | Not registered. In progress as item 11 (RFC-1, `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md`, decided 2026-10-10): the parser exists, no route yet. |
 | `x-api-key` authentication | Not accepted; only `Authorization: Bearer`. |
 | Trusting `X-Forwarded-For` for source-IP allowlists | Not implemented; no configuration knob exists. |
 | OpenAI-shaped streaming `tool_calls` deltas (`function.{name,arguments}`) | Not implemented. Streaming deltas are flat `{index, id, name, arguments_json}`; buffered `tool_calls` are OpenAI-nested. |

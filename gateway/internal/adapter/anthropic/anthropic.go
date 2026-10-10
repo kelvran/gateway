@@ -342,6 +342,9 @@ type ContentBlock struct {
 	// string this field used to be.
 	ToolUseID string            `json:"tool_use_id,omitempty"`
 	Content   ToolResultContent `json:"content,omitzero"`
+	// IsError is tool_result's is_error, from the canonical
+	// Message.ToolResultIsError (item 11 slice S7); false emits nothing.
+	IsError bool `json:"is_error,omitempty"`
 
 	// "image"/"document" block, per
 	// docs/rfcs/2026-09-06-gateway-multimodal-content.md.
@@ -647,7 +650,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			// array -- the text Content first, then each part via
 			// contentPartToBlock (text, image, document; which kinds a
 			// tool_result may carry is Anthropic's own validation).
-			block := ContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID}
+			block := ContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, IsError: m.ToolResultIsError}
 			if len(m.Parts) == 0 {
 				block.Content = ToolResultContent{Text: m.Content}
 			} else {
