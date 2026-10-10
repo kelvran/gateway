@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791544056641,
+  "lastUpdate": 1791627864588,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -393,6 +393,208 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 overhead p99",
             "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "c8f1d5b5044792ec82f795f9618da2e321fa9e6c",
+          "message": "docs(deploy): the Kustomize how-to names the v0.18.0 pin\n\nThe re-pin commit 9aab55e9 moved deploy/k8s/base/deployment.yaml to the\ngateway/v0.18.0 index digest and updated README.md and the upgrade\nhow-to, but missed the Kustomize how-to's own sentence describing the pin.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-10T10:21:20Z",
+          "url": "https://github.com/kelvran/gateway/commit/c8f1d5b5044792ec82f795f9618da2e321fa9e6c"
+        },
+        "date": 1791627863935,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 0.814352,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 2.811341,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 3.812283,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 3,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 201.324572,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 202.06807,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 202.668788,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 573.222082,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 577.444955,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 579.205094,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 51.878687,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 54.201915,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.392748,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.207269,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.534182,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.43423,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 51.57766,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 52.108128,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 53.002353,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 1,
             "unit": "ms"
           },
           {
