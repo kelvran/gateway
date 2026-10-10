@@ -181,7 +181,8 @@ type rawContentBlockStop struct {
 
 type rawMessageDelta struct {
 	Delta struct {
-		StopReason string `json:"stop_reason"`
+		StopReason   string `json:"stop_reason"`
+		StopSequence string `json:"stop_sequence"`
 	} `json:"delta"`
 	// Usage on the final message_delta is cumulative: output_tokens and
 	// output_tokens_details.thinking_tokens are the whole response's
@@ -413,6 +414,9 @@ func (d *streamDecoder) decodeMessageDelta(data string) ([]streaming.ChatComplet
 	// specifically to prevent.
 	finishReason := finishReasonFromStopReason(m.Delta.StopReason)
 	chunk := d.chunk(streaming.MessageDelta{}, &finishReason)
+	// The native values ride beside the canonical finish_reason (item 11 S3).
+	chunk.Choices[0].StopReason = m.Delta.StopReason
+	chunk.Choices[0].StopSequence = m.Delta.StopSequence
 	return []streaming.ChatCompletionChunk{chunk}, false, usage, nil
 }
 

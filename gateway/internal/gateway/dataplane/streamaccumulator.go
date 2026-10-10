@@ -34,6 +34,9 @@ type accumulatingChoice struct {
 	reasoningBlocks map[int]*accumulatingReasoningBlock
 	reasoningOrder  []int // reasoning-block indices in first-seen order, within this choice
 	finishReason    string
+	// stopReason/stopSequence are the finish chunk's native values (item 11 S3).
+	stopReason   string
+	stopSequence string
 	// refusal concatenates streaming.MessageDelta.Refusal fragments the
 	// same way content does above -- OpenAI streams a refusal message
 	// incrementally just like ordinary content, per
@@ -113,6 +116,12 @@ func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 		}
 		if cc.FinishReason != nil && *cc.FinishReason != "" {
 			c.finishReason = *cc.FinishReason
+		}
+		if cc.StopReason != "" {
+			c.stopReason = cc.StopReason
+		}
+		if cc.StopSequence != "" {
+			c.stopSequence = cc.StopSequence
 		}
 
 		for _, tcd := range cc.Delta.ToolCalls {
@@ -286,10 +295,22 @@ func (acc *streamAccumulator) build(usage adapter.Usage) adapter.ChatResponse {
 		})
 	}
 
+	stopReason, stopSequence := "", ""
+	for _, idx := range acc.order {
+		c := acc.choices[idx]
+		if stopReason == "" {
+			stopReason = c.stopReason
+		}
+		if stopSequence == "" {
+			stopSequence = c.stopSequence
+		}
+	}
 	return adapter.ChatResponse{
-		ID:      acc.id,
-		Model:   acc.model,
-		Choices: choices,
-		Usage:   usage,
+		StopReason:   stopReason,
+		StopSequence: stopSequence,
+		ID:           acc.id,
+		Model:        acc.model,
+		Choices:      choices,
+		Usage:        usage,
 	}
 }

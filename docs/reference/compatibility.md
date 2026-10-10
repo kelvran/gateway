@@ -256,6 +256,7 @@ Set `stream: true`. Frames are `data: <json>\n\n`; the stream ends with `data: [
 | `choices[].delta.reasoning_blocks[]` | Extension: `{index, text, signature, redacted, data}`, keyed by `index` like `tool_calls` |
 | `choices[].delta.refusal` | Extension sibling, `openai`/`openaicompat` only |
 | `choices[].finish_reason` | `null` until the final delta |
+| `choices[].stop_reason`, `choices[].stop_sequence` | Extension, on the chunk that sets `finish_reason`, `anthropic`/`bedrock` only; `stop_sequence` Anthropic only when a stop sequence matched. Since gateway/v0.19.0 |
 | `usage` | Present only on the chunk (typically the last) where the provider supplied usage; otherwise absent on every chunk |
 
 ### Divergences from OpenAI streams
@@ -284,6 +285,7 @@ Pre-stream failures (auth, rate limit, routing) return a normal status and JSON 
 | `usage.cache_creation_tokens` | Extension, omitted when zero: prompt tokens spent writing a cache entry |
 | `usage.reasoning_tokens` | Extension, omitted when zero: completion tokens spent on reasoning; already inside `completion_tokens` |
 | `input_transformations[]` | Extension, Anthropic only: `{type, path, reason}` entries for thinking blocks dropped or let through by the prefix-integrity check. Absent otherwise |
+| `stop_reason`, `stop_sequence` | Extension, `anthropic` and `bedrock` only: the provider's native stop reason and, for Anthropic, the matched stop sequence when `stop_reason` is `stop_sequence`; `finish_reason` unchanged. Absent otherwise. Since gateway/v0.19.0 |
 
 OpenAI's `usage.prompt_tokens_details` and `usage.completion_tokens_details` objects are not emitted; the flat extension fields above carry the equivalent counts.
 

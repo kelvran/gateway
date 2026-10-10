@@ -1469,3 +1469,28 @@ func TestFromProviderMapsThinkingTokensToReasoningTokens(t *testing.T) {
 		t.Errorf("Usage.ReasoningTokens without output_tokens_details = %d, want 0", got.Usage.ReasoningTokens)
 	}
 }
+
+// TestFromProviderPopulatesStopReasonAndStopSequence: the canonical response
+// carries Anthropic's native stop_reason and the matched stop_sequence beside
+// the canonical finish_reason (item 11 S3), so an Anthropic-shaped encoder
+// never has to guess them back from "stop".
+func TestFromProviderPopulatesStopReasonAndStopSequence(t *testing.T) {
+	a := New()
+	got, err := a.FromProvider(&Response{ID: "msg_1", Model: "claude-sonnet-5-5", Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "a"}}, StopReason: "stop_sequence", StopSequence: "###", Usage: Usage{InputTokens: 1, OutputTokens: 1}})
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.StopReason != "stop_sequence" || got.StopSequence != "###" {
+		t.Errorf("StopReason/StopSequence = %q/%q, want stop_sequence/###", got.StopReason, got.StopSequence)
+	}
+	if got.Choices[0].FinishReason != "stop" {
+		t.Errorf("FinishReason = %q, want stop (the canonical vocabulary is unchanged)", got.Choices[0].FinishReason)
+	}
+	got, err = a.FromProvider(&Response{ID: "msg_2", Model: "m", Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "b"}}, StopReason: "end_turn", Usage: Usage{InputTokens: 1, OutputTokens: 1}})
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.StopReason != "end_turn" || got.StopSequence != "" {
+		t.Errorf("end_turn: StopReason/StopSequence = %q/%q, want end_turn/\"\"", got.StopReason, got.StopSequence)
+	}
+}

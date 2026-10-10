@@ -45,7 +45,7 @@ Every frame is one line, `data: <json>`, followed by a blank line, flushed immed
 Each JSON payload is a `chat.completion.chunk` with fields in this order: `id`, `object`, `created`, `model`, `choices`, `usage`.
 
 - `id`, `object` and `created` are the same on every frame of one stream. A provider id is kept when present; otherwise the gateway mints `chatcmpl-` followed by 32 lowercase hex characters. This per-frame envelope ships since gateway/v0.18.0; in gateway/v0.17.0 and earlier Bedrock and Gemini frames carried an empty `id` and an empty `model`, and no frame of any provider carried `object` or `created`.
-- `choices[].finish_reason` is always present and is `null` until the provider sets it.
+- `choices[].finish_reason` is always present and is `null` until the provider sets it. On `anthropic` and `bedrock` deployments the frame that sets it also carries `stop_reason` and, for Anthropic when a stop sequence matched, `stop_sequence` (since gateway/v0.19.0).
 - `choices[].delta` carries `role` (first frame only), `content`, `tool_calls`, `reasoning_blocks` and `refusal`. All are omitted when empty, so an empty delta is `{}`.
 - `usage` is omitted unless this frame carries it.
 
@@ -115,7 +115,7 @@ Reasoning content streams as `delta.reasoning_blocks[]` with `index`, `text`, `s
 
 ### Cache hit or `Idempotency-Key` replay
 
-When the request hits the response cache (L1, L2 or L3) or replays a completed `Idempotency-Key`, the gateway synthesizes the stream from the stored response: one frame per choice carrying the full `content`, `role`, `tool_calls`, `reasoning_blocks` and `finish_reason` together, then one usage-only frame with `"choices":null`, then `[DONE]`. The `id` and `created` are the stored ones. An entry cached by gateway/v0.17.0 or earlier has no stored `id` or `created`; each replay of it mints a fresh `chatcmpl-` id and uses the replay time, until the entry expires. See [caching](caching.md) and [the cache gate](../explanation/cache-gate.md).
+When the request hits the response cache (L1, L2 or L3) or replays a completed `Idempotency-Key`, the gateway synthesizes the stream from the stored response: one frame per choice carrying the full `content`, `role`, `tool_calls`, `reasoning_blocks` and `finish_reason` together, and `stop_reason`/`stop_sequence` when the stored response has them, then one usage-only frame with `"choices":null`, then `[DONE]`. The `id` and `created` are the stored ones. An entry cached by gateway/v0.17.0 or earlier has no stored `id` or `created`; each replay of it mints a fresh `chatcmpl-` id and uses the replay time, until the entry expires. See [caching](caching.md) and [the cache gate](../explanation/cache-gate.md).
 
 ### Long outputs: the runaway and top-up guards
 

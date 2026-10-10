@@ -348,7 +348,7 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 		}
 		d.reasoningTokens = reasoningTokensFromAdditionalFields(ev.AdditionalModelResponseFields)
 		chunk := streaming.ChatCompletionChunk{
-			Choices: []streaming.ChunkChoice{{Index: 0, FinishReason: &finishReason}},
+			Choices: []streaming.ChunkChoice{{Index: 0, FinishReason: &finishReason, StopReason: ev.StopReason}},
 		}
 		return []streaming.ChatCompletionChunk{chunk}, nil, nil
 

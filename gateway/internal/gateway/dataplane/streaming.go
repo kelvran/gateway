@@ -439,6 +439,8 @@ func writeFakeStream(sw *streaming.Writer, resp adapter.ChatResponse, now time.T
 					ReasoningBlocks: toChunkReasoningDeltas(c.Message.ReasoningBlocks),
 				},
 				FinishReason: &finishReason,
+				StopReason:   resp.StopReason,
+				StopSequence: resp.StopSequence,
 			}},
 		}
 		if err := sw.WriteChunk(chunk); err != nil {

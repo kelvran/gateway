@@ -16,5 +16,6 @@
     "completion_tokens": 0,
     "total_tokens": 5128,
     "cache_creation_tokens": 5120
-  }
+  },
+  "stop_reason": "end_turn"
 }

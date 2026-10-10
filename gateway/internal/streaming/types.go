@@ -49,6 +49,14 @@ type ChunkChoice struct {
 	Index        int          `json:"index"`
 	Delta        MessageDelta `json:"delta"`
 	FinishReason *string      `json:"finish_reason"`
+	// StopReason and StopSequence mirror adapter.ChatResponse's fields on
+	// the finish chunk only: the provider's native stop reason and matched
+	// stop sequence, set by the anthropic and bedrock decoders and by the
+	// cache replay, empty everywhere else (omitempty keeps the OpenAI wire
+	// bytes of every other provider unchanged). The accumulator folds them
+	// back into the canonical response.
+	StopReason   string `json:"stop_reason,omitempty"`
+	StopSequence string `json:"stop_sequence,omitempty"`
 }
 
 // MessageDelta is the incremental fragment of a message within one chunk.

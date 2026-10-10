@@ -171,6 +171,7 @@ The SDK parses what it knows and keeps the rest; read extras with `model_dump()`
 - `usage.cache_read_tokens`, `usage.cache_creation_tokens`, `usage.reasoning_tokens` (present only when non-zero).
 - `choices[].message.reasoning_blocks[]`: opaque extended-thinking blocks from Anthropic and Bedrock models. Echo them back unchanged, in order, on the assistant message of the next turn, or those providers return a hard `400`. Building the follow-up turn from `resp.choices[0].message.model_dump()` keeps them; a hand-written dict with only `role` and `content` drops them.
 - `input_transformations[]` on Anthropic responses, and `reasoning_blocks[]` on streaming deltas.
+- A top-level `stop_reason` and, when a stop sequence matched, `stop_sequence` on Anthropic and Bedrock responses, and, inside `choices[]`, on the streaming chunk that sets `finish_reason` (since gateway/v0.19.0); `finish_reason` is unchanged.
 - `/v1/models` entries also carry `kind` (`chat` or `embedding`), `display_name`, `description`, `type` and `created_at`.
 - Headers: `X-Kelvran-Overhead-Duration-Ms` on buffered responses, `Retry-After` on the statuses in the table above.
 

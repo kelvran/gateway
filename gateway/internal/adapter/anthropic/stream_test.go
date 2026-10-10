@@ -854,3 +854,27 @@ func TestStreamDecoder_UsageIncludesThinkingTokens(t *testing.T) {
 		t.Errorf("usage = %+v, want %+v", *usage, want)
 	}
 }
+
+// TestStreamDecoder_StopSequenceOnFinishChunk: the finish chunk carries the
+// native stop_reason and the matched stop_sequence from message_delta beside
+// the canonical finish_reason (item 11 S3).
+func TestStreamDecoder_StopSequenceOnFinishChunk(t *testing.T) {
+	chunks, done, _, _ := decodeFixture(t, "testdata/stream_stop_sequence.txt")
+	if !done {
+		t.Fatal("done = false, want true after message_stop")
+	}
+	var finish *streaming.ChunkChoice
+	for i := range chunks {
+		for j := range chunks[i].Choices {
+			if c := &chunks[i].Choices[j]; c.FinishReason != nil {
+				finish = c
+			}
+		}
+	}
+	if finish == nil {
+		t.Fatal("no chunk carried a FinishReason")
+	}
+	if *finish.FinishReason != "stop" || finish.StopReason != "stop_sequence" || finish.StopSequence != "###" {
+		t.Errorf("finish chunk = %q/%q/%q, want stop/stop_sequence/###", *finish.FinishReason, finish.StopReason, finish.StopSequence)
+	}
+}

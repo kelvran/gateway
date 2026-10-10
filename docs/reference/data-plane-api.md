@@ -228,6 +228,8 @@ Any other shape (Anthropic's `{"type":"auto"}`, OpenAI `allowed_tools`, a mix of
 | `choices[]` | array | `{"index", "message", "finish_reason"}`. `message` is a `Message` with `role`, `content`, and when present `tool_calls`, `refusal`, `reasoning_blocks`. `finish_reason` is a string; its vocabulary is not documented here. |
 | `usage` | object | See `Usage`. |
 | `input_transformations[]` | array | Anthropic only. Each entry is `{"type", "path", "reason"}`: `type` is `thinking_dropped` or `thinking_mismatch_allowed`; `path` is the affected block's location in the request, verbatim from Anthropic (for example `messages.3.content.0`); `reason` is `prefix_binding_mismatch` or `model_binding_mismatch`. Omitted when empty. |
+| `stop_reason` | string | Set on responses served by `anthropic` and `bedrock` deployments when the provider reported a stop reason (since gateway/v0.19.0): the native vocabulary (`end_turn`, `tool_use`, `stop_sequence`, `max_tokens`, …). `finish_reason` stays the canonical vocabulary. Absent for other providers, on a stream a guard cut short, and on cached entries written before gateway/v0.19.0. |
+| `stop_sequence` | string | Anthropic only: the matched stop sequence when `stop_reason` is `stop_sequence`; absent otherwise. No `/v1/chat/completions` request can set stop sequences today (`stop` is dropped), so it appears only once that field is honoured. |
 
 A cache hit or an `Idempotency-Key` replay returns the `id` and `created` the completion was stored with. The `id`, `object` and `created` envelope is present since gateway/v0.18.0; gateway/v0.17.0 and earlier return `"id": ""` for Bedrock and no `object` or `created` for any provider.
 
@@ -256,7 +258,7 @@ Chunk shape:
 | `object` | string | `chat.completion.chunk`. |
 | `created` | integer | Unix seconds, identical on every chunk of one stream. |
 | `model` | string | Canonical model name when the provider sent none; OpenAI chunks keep the provider's snapshot name, so buffered and streamed `model` can differ for that provider. |
-| `choices[]` | array | `{"index", "delta", "finish_reason"}`. `finish_reason` is `null` until the final chunk. |
+| `choices[]` | array | `{"index", "delta", "finish_reason"}`. `finish_reason` is `null` until the final chunk. The chunk that sets `finish_reason` also carries `stop_reason` and, for Anthropic when a stop sequence matched, `stop_sequence` on `anthropic` and `bedrock` deployments (since gateway/v0.19.0). |
 | `usage` | object | Present only on the chunk where the provider supplied usage, typically the last. A provider that never streams usage leaves it absent on every chunk. |
 
 `delta` fields, each omitted when empty:

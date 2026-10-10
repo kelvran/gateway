@@ -544,6 +544,23 @@ type ChatResponse struct {
 	// Refusal's own per-provider-availability convention. Non-empty only
 	// when at least one block was actually affected.
 	InputTransformations []InputTransformation `json:"input_transformations,omitempty"`
+	// StopReason and StopSequence are the provider's NATIVE stop reason and
+	// the matched stop sequence, where the provider has them as values
+	// distinct from the canonical finish_reason: Anthropic's stop_reason /
+	// stop_sequence (end_turn, tool_use, stop_sequence, max_tokens,
+	// pause_turn, refusal) and Bedrock Converse's stopReason (no matched
+	// sequence is returned there). FinishReason on each Choice stays the
+	// canonical, OpenAI-shaped vocabulary every client reads; these carry
+	// what the provider actually said so an Anthropic-shaped response
+	// (RFC-1's /v1/messages ingress) can be rendered without guessing it
+	// back from "stop". Empty for providers whose native value IS the
+	// canonical one (openai, openaicompat) or that have no separate notion
+	// (gemini). omitempty keeps every existing golden and the OpenAI wire
+	// bytes of those providers unchanged; the fields round-trip through the
+	// cache and the streaming replay (writeFakeStream) like every other
+	// member. Item 11 slice S3.
+	StopReason   string `json:"stop_reason,omitempty"`
+	StopSequence string `json:"stop_sequence,omitempty"`
 }
 
 // InputTransformation is one entry in Anthropic's own top-level

@@ -418,7 +418,10 @@ type Response struct {
 	Role       string         `json:"role"`
 	Content    []ContentBlock `json:"content"`
 	StopReason string         `json:"stop_reason"`
-	Usage      Usage          `json:"usage"`
+	// StopSequence is the matched custom stop sequence when StopReason is
+	// "stop_sequence"; null on the wire otherwise.
+	StopSequence string `json:"stop_sequence"`
+	Usage        Usage  `json:"usage"`
 	// InputTransformations is Anthropic's own top-level response array,
 	// present only when the request sent the thinkingBindingControlsBeta
 	// header -- lists each thinking/redacted_thinking block the
@@ -849,8 +852,10 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	}
 
 	return adapter.ChatResponse{
-		ID:    native.ID,
-		Model: native.Model,
+		ID:           native.ID,
+		Model:        native.Model,
+		StopReason:   native.StopReason,
+		StopSequence: native.StopSequence,
 		Choices: []adapter.Choice{
 			{Index: 0, Message: message, FinishReason: finishReason},
 		},

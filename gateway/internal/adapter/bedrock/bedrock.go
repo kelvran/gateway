@@ -1105,6 +1105,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	}
 
 	return adapter.ChatResponse{
+		StopReason: native.StopReason, // Converse's native vocabulary, beside the mapped finish_reason (item 11 S3)
 		Choices: []adapter.Choice{
 			{Index: 0, Message: message, FinishReason: finishReason},
 		},

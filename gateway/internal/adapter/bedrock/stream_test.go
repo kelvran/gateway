@@ -521,3 +521,19 @@ func TestDecodeMetadataWithoutThinkingFieldsHasNoReasoningTokens(t *testing.T) {
 		}
 	})
 }
+
+// TestDecodeMessageStopCarriesNativeStopReason: the finish chunk's choice
+// carries Converse's stopReason beside the mapped finish_reason (item 11 S3).
+func TestDecodeMessageStopCarriesNativeStopReason(t *testing.T) {
+	chunks, _, err := NewStreamDecoder().Decode(newEventMessage("messageStop", `{"stopReason":"tool_use"}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(chunks) != 1 || len(chunks[0].Choices) != 1 {
+		t.Fatalf("chunks = %+v, want one chunk with one choice", chunks)
+	}
+	c := chunks[0].Choices[0]
+	if c.FinishReason == nil || *c.FinishReason != "tool_calls" || c.StopReason != "tool_use" {
+		t.Errorf("finish chunk = %v/%q, want tool_calls/tool_use", c.FinishReason, c.StopReason)
+	}
+}

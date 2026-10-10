@@ -1647,3 +1647,20 @@ func TestToProviderAsksForOutputTokensDetailsOnAnthropicModelsOnly(t *testing.T)
 		})
 	}
 }
+
+// TestFromProviderPopulatesNativeStopReason: Converse's stopReason rides on
+// the canonical response beside the mapped finish_reason (item 11 S3); no
+// matched stop sequence exists on Converse, so StopSequence stays empty.
+func TestFromProviderPopulatesNativeStopReason(t *testing.T) {
+	native := &Response{Output: Output{Message: Message{Role: "assistant", Content: []ContentBlock{{Text: "ok"}}}}, StopReason: "max_tokens", Usage: Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}}
+	got, err := New().FromProvider(native)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if got.StopReason != "max_tokens" || got.StopSequence != "" {
+		t.Errorf("StopReason/StopSequence = %q/%q, want max_tokens/\"\"", got.StopReason, got.StopSequence)
+	}
+	if got.Choices[0].FinishReason == "" || got.Choices[0].FinishReason == "max_tokens" {
+		t.Errorf("FinishReason = %q, want the canonical mapping, not the native string", got.Choices[0].FinishReason)
+	}
+}
