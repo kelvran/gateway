@@ -652,7 +652,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 	upstreamReq.Stream = true
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled()
 
-	p.noteThinkingDropped(ctx, dep, upstreamReq)
+	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
 	providerReq, err := streamAdapter.ToProvider(upstreamReq)
 	if err != nil {
@@ -802,7 +802,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	upstreamReq.Stream = true
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled()
 
-	p.noteThinkingDropped(ctx, dep, upstreamReq)
+	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
 	providerReq, err := bedrockAdapter.ToProvider(upstreamReq)
 	if err != nil {

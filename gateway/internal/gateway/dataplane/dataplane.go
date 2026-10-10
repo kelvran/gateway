@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4050,7 +4051,7 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	// no-op field read only by the anthropic/bedrock adapters.
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled()
 
-	p.noteThinkingDropped(ctx, dep, upstreamReq)
+	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
 	providerReq, err := a.ToProvider(upstreamReq)
 	if err != nil {
@@ -5307,8 +5308,8 @@ func boundedModelForTelemetry(model string) string {
 
 // boundedForTelemetry truncates any caller-controlled string to
 // maxModelForTelemetry bytes before it becomes a span or log field -- the
-// model name (boundedModelForTelemetry) and the thinking type
-// (noteThinkingDropped) share the one bound.
+// model name (boundedModelForTelemetry) and the dropped-field values
+// (noteDroppedRequestField) share the one bound.
 func boundedForTelemetry(s string) string {
 	if len(s) <= maxModelForTelemetry {
 		return s
@@ -5561,39 +5562,73 @@ func thinkingFingerprint(req adapter.ChatRequest) string {
 	return string(b)
 }
 
-// noteThinkingDropped records, on a thinking_dropped log line naming the
-// deployment, the served model, the type and the reason, a canonical
-// ChatRequest.Thinking the adapter about to run is going to leave out:
-// the bedrock adapter omits a type the served model's Claude generation
-// rejects (adapter.BedrockForwardsThinking, item 11 slice S4 -- the same
-// predicate thinkingFieldFor consults, so this never disagrees with the
-// wire), and every provider other than anthropic and bedrock has no
-// thinking configuration at all and ignores the object. The request
-// proceeds without thinking either way; until slice S9b adds the
-// telemetry carrier this line is the only record, which is why it is a
-// Warn and why its fields are pinned by test. The type is bounded like the
-// model name: once the ingress exists it is a caller-controlled string.
-func (p *Pipeline) noteThinkingDropped(ctx context.Context, dep Deployment, upstreamReq adapter.ChatRequest) {
-	if upstreamReq.Thinking == nil {
-		return
+// noteDroppedRequestFields records, one request_field_dropped Warn line
+// per field, every canonical request field the adapter about to run will
+// leave out of the upstream request -- thinking (item 11 slice S4) and
+// top_k (slice S5) today: the bedrock adapter omits a value the served
+// model's Claude generation rejects (adapter.BedrockForwardsThinking /
+// BedrockForwardsTopK -- the same predicates the adapter consults, so this
+// never disagrees with the wire), and a provider with no such field at all
+// ignores the value. The request proceeds without the field either way;
+// until slice S9b adds the telemetry carrier these lines are the only
+// record, which is why they are Warn and why their fields -- deployment,
+// the upstream model, field, value (bounded like the model name: once the
+// ingress exists it is a caller-controlled string) and reason -- are pinned
+// by test.
+func (p *Pipeline) noteDroppedRequestFields(ctx context.Context, dep Deployment, upstreamReq adapter.ChatRequest) {
+	if upstreamReq.Thinking != nil {
+		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "thinking", upstreamReq.Thinking.Type, thinkingDropReason(dep, upstreamReq))
 	}
-	var reason string
+	if upstreamReq.TopK != nil {
+		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "top_k", strconv.Itoa(*upstreamReq.TopK), topKDropReason(dep, upstreamReq))
+	}
+}
+
+// thinkingDropReason is "" when dep's adapter forwards the canonical
+// thinking configuration, else why it will not.
+func thinkingDropReason(dep Deployment, upstreamReq adapter.ChatRequest) string {
 	switch dep.Provider {
 	case "anthropic":
-		return
+		return ""
 	case "bedrock":
 		forward, why := adapter.BedrockForwardsThinking(upstreamReq.Model, upstreamReq.Thinking.Type)
 		if forward {
-			return
+			return ""
 		}
-		reason = why
+		return why
 	default:
-		reason = "provider " + dep.Provider + " has no thinking configuration; the object is ignored"
+		return "provider " + dep.Provider + " has no thinking configuration; the object is ignored"
 	}
-	p.logger.Warn("thinking_dropped", append(traceLogFields(ctx),
+}
+
+// topKDropReason is "" when dep's adapter forwards the canonical top_k,
+// else why it will not.
+func topKDropReason(dep Deployment, upstreamReq adapter.ChatRequest) string {
+	switch dep.Provider {
+	case "anthropic", "gemini":
+		return ""
+	case "bedrock":
+		forward, why := adapter.BedrockForwardsTopK(upstreamReq.Model)
+		if forward {
+			return ""
+		}
+		return why
+	default:
+		return "provider " + dep.Provider + " has no top_k; the value is ignored"
+	}
+}
+
+// noteDroppedRequestField writes one request_field_dropped line; a ""
+// reason means the field is forwarded and nothing is written.
+func (p *Pipeline) noteDroppedRequestField(ctx context.Context, dep Deployment, model, field, value, reason string) {
+	if reason == "" {
+		return
+	}
+	p.logger.Warn("request_field_dropped", append(traceLogFields(ctx),
 		"deployment", dep.Name,
-		"model", upstreamReq.Model,
-		"thinking_type", boundedForTelemetry(upstreamReq.Thinking.Type),
+		"model", model,
+		"field", field,
+		"value", boundedForTelemetry(value),
 		"reason", reason,
 	)...)
 }

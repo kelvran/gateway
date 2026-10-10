@@ -324,3 +324,26 @@ func TestChatRequestTopPDecodesAndOmits(t *testing.T) {
 		t.Errorf("Marshal of a request without top_p emitted the key: %s", out)
 	}
 }
+
+// TestChatRequestTopKIsUnreachableFromJSON pins json:"-" on
+// ChatRequest.TopK (item 11 slice S5): top_k is an Anthropic-dialect
+// field the Messages ingress sets; OpenAI has no such field, so a
+// /v1/chat/completions body carrying one keeps getting today's silent
+// unknown-field drop, and the OpenAI wire never gains the key.
+func TestChatRequestTopKIsUnreachableFromJSON(t *testing.T) {
+	var req ChatRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","messages":[],"top_k":5}`), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if req.TopK != nil {
+		t.Errorf("TopK = %v after unmarshaling a body with top_k, want nil (json:\"-\")", *req.TopK)
+	}
+	five := 5
+	out, err := json.Marshal(ChatRequest{Model: "m", TopK: &five})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "top_k") {
+		t.Errorf("Marshal leaked top_k onto the wire: %s", out)
+	}
+}

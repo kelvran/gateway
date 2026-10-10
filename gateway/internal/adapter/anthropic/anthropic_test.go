@@ -1633,3 +1633,23 @@ func TestToProviderTopPForwarded(t *testing.T) {
 		t.Errorf("wire = %s, want top_p 0.9", wire)
 	}
 }
+
+// TestToProviderTopKForwarded (item 11 slice S5): canonical TopK becomes
+// Anthropic's top_k verbatim -- the direct API's own answer (deprecated
+// on Claude 5.x) is the honest one, so nothing is gated here.
+func TestToProviderTopKForwarded(t *testing.T) {
+	topK := 5
+	req := thinkingBindingChatRequest("claude-sonnet-4-6", "")
+	req.TopK = &topK
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"top_k":5`) {
+		t.Errorf("wire = %s, want top_k 5", wire)
+	}
+}

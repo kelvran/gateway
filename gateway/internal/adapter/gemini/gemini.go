@@ -167,7 +167,10 @@ type GenerationConfig struct {
 	StopSequences []string `json:"stopSequences,omitempty"`
 	// TopP is generationConfig.topP, the canonical ChatRequest.TopP
 	// forwarded verbatim (item 11 slice S5).
-	TopP             *float64       `json:"topP,omitempty"`
+	TopP *float64 `json:"topP,omitempty"`
+	// TopK is generationConfig.topK, the canonical ChatRequest.TopK
+	// forwarded verbatim (item 11 slice S5).
+	TopK             *int           `json:"topK,omitempty"`
 	ResponseMimeType string         `json:"responseMimeType,omitempty"`
 	ResponseSchema   map[string]any `json:"responseSchema,omitempty"`
 }
@@ -415,12 +418,13 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	var genConfig *GenerationConfig
-	if req.Temperature != nil || req.MaxTokens != nil || req.ResponseFormat != nil || len(req.StopSequences) > 0 || req.TopP != nil {
+	if req.Temperature != nil || req.MaxTokens != nil || req.ResponseFormat != nil || len(req.StopSequences) > 0 || req.TopP != nil || req.TopK != nil {
 		genConfig = &GenerationConfig{
 			Temperature:     req.Temperature,
 			MaxOutputTokens: req.MaxTokens,
 			StopSequences:   req.StopSequences,
 			TopP:            req.TopP,
+			TopK:            req.TopK,
 		}
 		if req.ResponseFormat != nil {
 			genConfig.ResponseMimeType = "application/json"

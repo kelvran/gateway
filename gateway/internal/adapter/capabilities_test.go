@@ -177,3 +177,39 @@ func TestBedrockThinkingCapabilityForCarriesEffortAndTopK(t *testing.T) {
 		}
 	}
 }
+
+// TestBedrockForwardsTopKIsPerFamily is the top_k half of the 2026-10-10
+// probes (item 11 slice S5): the Claude 5.x generation rejects top_k
+// ("deprecated for this model"), 4.6 and 4.5 accept it, and -- the same
+// asymmetry as BedrockForwardsThinking -- an unlisted family or a
+// non-Anthropic model forwards verbatim so the upstream's own answer is
+// what the caller sees.
+func TestBedrockForwardsTopKIsPerFamily(t *testing.T) {
+	tests := []struct {
+		model   string
+		forward bool
+	}{
+		{"global.anthropic.claude-sonnet-5", false},
+		{"global.anthropic.claude-fable-5-1", false},
+		{"global.anthropic.claude-haiku-5-5", false},
+		{"global.anthropic.claude-opus-5-5", false},
+		{"global.anthropic.claude-sonnet-4-6", true},
+		{"global.anthropic.claude-opus-4-6-v1", true},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", true},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", true},
+		{"anthropic.claude-3-5-sonnet-20241022-v2:0", true},
+		{"amazon.nova-pro-v1:0", true},
+	}
+	for _, tt := range tests {
+		forward, reason := BedrockForwardsTopK(tt.model)
+		if forward != tt.forward {
+			t.Errorf("BedrockForwardsTopK(%q) = %v (%q), want %v", tt.model, forward, reason, tt.forward)
+		}
+		if !forward && reason == "" {
+			t.Errorf("BedrockForwardsTopK(%q) dropped with an empty reason", tt.model)
+		}
+		if forward && reason != "" {
+			t.Errorf("BedrockForwardsTopK(%q) forwarded with a reason %q, want empty", tt.model, reason)
+		}
+	}
+}

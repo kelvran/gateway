@@ -253,8 +253,8 @@ func BedrockThinkingCapabilityFor(model string) (BedrockThinkingCapability, bool
 
 // BedrockForwardsThinking decides whether the bedrock adapter sends a
 // canonical ChatRequest.Thinking of thinkingType to model and, when it
-// does not, why (a short reason for the dataplane's thinking_dropped log
-// line). The asymmetry is deliberate: only a type the model's family is
+// does not, why (a short reason for the dataplane's request_field_dropped
+// log line). The asymmetry is deliberate: only a type the model's family is
 // proven (or, for an inferred family, placed by generation) to reject
 // with a 400 is dropped -- the request then succeeds without thinking,
 // which beats a 400 for a configuration the caller may not have chosen
@@ -282,4 +282,19 @@ func BedrockForwardsThinking(model, thinkingType string) (forward bool, reason s
 		}
 	}
 	return true, ""
+}
+
+// BedrockForwardsTopK decides whether the bedrock adapter sends a canonical
+// ChatRequest.TopK to model through additionalModelRequestFields and, when
+// it does not, why (item 11 slice S5). The same asymmetry as
+// BedrockForwardsThinking: only a family the table knows rejects top_k --
+// the Claude 5.x generation, a 400 "`top_k` is deprecated for this model"
+// in the 2026-10-10 probes -- is dropped; an accepting family (4.6, 4.5),
+// an unlisted family or a non-Anthropic model forwards verbatim.
+func BedrockForwardsTopK(model string) (forward bool, reason string) {
+	capability, known := BedrockThinkingCapabilityFor(model)
+	if !known || capability.TopK {
+		return true, ""
+	}
+	return false, "the model's Claude generation rejects top_k on Bedrock (deprecated for this model)"
 }

@@ -1116,3 +1116,21 @@ func TestToProviderTopPForwarded(t *testing.T) {
 		t.Errorf("wire = %s, want generationConfig.topP 0.9", wire)
 	}
 }
+
+// TestToProviderTopKForwarded (item 11 slice S5): canonical TopK becomes
+// generationConfig.topK, and it alone materialises generationConfig.
+func TestToProviderTopKForwarded(t *testing.T) {
+	topK := 5
+	req := adapter.ChatRequest{Model: "gemini-2.5-flash", Messages: []adapter.Message{{Role: "user", Content: "hi"}}, TopK: &topK}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"topK":5`) {
+		t.Errorf("wire = %s, want generationConfig.topK 5", wire)
+	}
+}

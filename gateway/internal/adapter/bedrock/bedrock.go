@@ -690,7 +690,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 	}
 
-	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, req.Model)
+	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, req.TopK, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -849,14 +849,14 @@ func outputConfigFormatFor(rf *adapter.ResponseFormat, model string) (map[string
 }
 
 // additionalModelRequestFieldsFor assembles Converse's
-// additionalModelRequestFields escape hatch from its two independent
-// halves -- structured output (outputConfigFormatFor, the output_config
-// key) and the caller's canonical thinking configuration
-// (thinkingFieldFor, the thinking key; item 11 slice S4) -- and returns
-// nil when neither contributes, so a request carrying neither stays
-// byte-identical to one built before either feature existed (every
-// request golden relies on omitempty seeing nil here).
-func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapter.ThinkingConfig, model string) (map[string]any, error) {
+// additionalModelRequestFields escape hatch from its independent parts --
+// structured output (outputConfigFormatFor, the output_config key), the
+// caller's canonical thinking configuration (thinkingFieldFor, the
+// thinking key; item 11 slice S4) and top_k (slice S5) -- and returns nil
+// when none contributes, so a request carrying none stays byte-identical
+// to one built before any of them existed (every request golden relies on
+// omitempty seeing nil here).
+func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapter.ThinkingConfig, topK *int, model string) (map[string]any, error) {
 	fields := map[string]any{}
 	format, err := outputConfigFormatFor(rf, model)
 	if err != nil {
@@ -867,6 +867,14 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapt
 	}
 	if field := thinkingFieldFor(thinking, model); field != nil {
 		fields["thinking"] = field
+	}
+	if topK != nil {
+		// top_k rides the same escape hatch, gated by the same per-
+		// generation table (adapter.BedrockForwardsTopK; item 11 slice S5);
+		// an omission is recorded by the dataplane like a thinking one.
+		if forward, _ := adapter.BedrockForwardsTopK(model); forward {
+			fields["top_k"] = *topK
+		}
 	}
 	if len(fields) == 0 {
 		return nil, nil
@@ -882,7 +890,7 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapt
 // asymmetry), nil otherwise. A nil return here is a quiet omission at
 // this layer by design -- ToProvider is a pure wire translation -- and
 // the dataplane, which has the logger and the deployment, records it
-// (noteThinkingDropped) by calling the same predicate.
+// (noteDroppedRequestFields) by calling the same predicate.
 func thinkingFieldFor(t *adapter.ThinkingConfig, model string) map[string]any {
 	if t == nil {
 		return nil

@@ -1732,7 +1732,7 @@ func TestToProviderThinkingForwardedOnAcceptingFamily(t *testing.T) {
 // thinking is not supported on this model") is omitted entirely, and
 // with nothing else to send additionalModelRequestFields stays nil, so
 // the request is byte-identical to one without thinking. The drop is a
-// capability decision the dataplane logs (thinking_dropped), not an
+// capability decision the dataplane logs (request_field_dropped), not an
 // error.
 func TestToProviderThinkingDroppedOnRejectingFamily(t *testing.T) {
 	tests := []struct {
@@ -1839,5 +1839,36 @@ func TestToProviderTopPForwarded(t *testing.T) {
 	}
 	if !strings.Contains(string(wire), `"topP":0.9`) {
 		t.Errorf("wire = %s, want inferenceConfig.topP 0.9", wire)
+	}
+}
+
+// TestToProviderTopKForwardedOrDroppedByFamily (item 11 slice S5): top_k
+// rides in additionalModelRequestFields when the served model's Claude
+// generation accepts it (4.6, 4.5, and any family outside the table), and
+// is omitted -- the map staying nil -- on the 5.x generation, which
+// rejects it with a 400 ("deprecated for this model").
+func TestToProviderTopKForwardedOrDroppedByFamily(t *testing.T) {
+	topK := 5
+	for _, model := range []string{"global.anthropic.claude-sonnet-4-6", "global.anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic.claude-3-5-sonnet-20241022-v2:0"} {
+		req := bedrockThinkingRequest(model, nil)
+		req.TopK = &topK
+		nativeAny, err := New().ToProvider(req)
+		if err != nil {
+			t.Fatalf("ToProvider(%s): %v", model, err)
+		}
+		if got := nativeAny.(*Request).AdditionalModelRequestFields["top_k"]; got != 5 {
+			t.Errorf("ToProvider(%s): additionalModelRequestFields.top_k = %v, want 5", model, got)
+		}
+	}
+	for _, model := range []string{"global.anthropic.claude-fable-5-1", "global.anthropic.claude-sonnet-5-5"} {
+		req := bedrockThinkingRequest(model, nil)
+		req.TopK = &topK
+		nativeAny, err := New().ToProvider(req)
+		if err != nil {
+			t.Fatalf("ToProvider(%s): %v", model, err)
+		}
+		if fields := nativeAny.(*Request).AdditionalModelRequestFields; fields != nil {
+			t.Errorf("ToProvider(%s): additionalModelRequestFields = %v, want nil (top_k is rejected by the 5.x generation)", model, fields)
+		}
 	}
 }

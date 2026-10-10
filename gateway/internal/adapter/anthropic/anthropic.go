@@ -89,9 +89,13 @@ type Request struct {
 	StopSequences []string `json:"stop_sequences,omitempty"`
 	// TopP is Anthropic's top_p, the canonical ChatRequest.TopP forwarded
 	// verbatim (item 11 slice S5).
-	TopP   *float64 `json:"top_p,omitempty"`
-	Tools  []Tool   `json:"tools,omitempty"`
-	Stream bool     `json:"stream,omitempty"`
+	TopP *float64 `json:"top_p,omitempty"`
+	// TopK is Anthropic's top_k, the canonical ChatRequest.TopK forwarded
+	// verbatim (item 11 slice S5) -- deprecated on Claude 5.x, and that 400
+	// is the direct API's own answer, never pre-empted here.
+	TopK   *int   `json:"top_k,omitempty"`
+	Tools  []Tool `json:"tools,omitempty"`
+	Stream bool   `json:"stream,omitempty"`
 	// OutputConfig is Anthropic's real structured-output request field --
 	// a top-level output_config object, sibling of model/messages/tools,
 	// live-verified against the current Messages API (no beta header
@@ -670,6 +674,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		Temperature:   req.Temperature,
 		StopSequences: req.StopSequences,
 		TopP:          req.TopP,
+		TopK:          req.TopK,
 		Tools:         tools,
 		Stream:        req.Stream,
 		OutputConfig:  outputConfig,

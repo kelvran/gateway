@@ -124,7 +124,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentThinkingFingerprint(t *testi
 // TestCallDeploymentLogsThinkingDroppedOnRejectingBedrockFamily: when
 // the Bedrock adapter drops a thinking type the served model's family
 // rejects (slice S4's capability table), the dataplane records the drop
-// on a thinking_dropped log line naming the deployment, the model, the
+// on a request_field_dropped log line naming the deployment, the model, the
 // type and the reason -- the request itself still succeeds. Until slice
 // S9b adds the telemetry carrier this line is the only record, so its
 // fields are pinned. The accepting-family control proves the line is
@@ -153,21 +153,21 @@ func TestCallDeploymentLogsThinkingDroppedOnRejectingBedrockFamily(t *testing.T)
 	dropped := run(t, "global.anthropic.claude-fable-5-1")
 	line := ""
 	for _, l := range strings.Split(dropped, "\n") {
-		if strings.Contains(l, `"msg":"thinking_dropped"`) {
+		if strings.Contains(l, `"msg":"request_field_dropped"`) {
 			line = l
 		}
 	}
 	if line == "" {
-		t.Fatalf("no thinking_dropped log line for enabled thinking on a Claude 5.x Bedrock model; logs:\n%s", dropped)
+		t.Fatalf("no request_field_dropped log line for enabled thinking on a Claude 5.x Bedrock model; logs:\n%s", dropped)
 	}
-	for _, want := range []string{`"deployment":"bedrock-1"`, `"model":"global.anthropic.claude-fable-5-1"`, `"thinking_type":"enabled"`, `"reason":"`} {
+	for _, want := range []string{`"deployment":"bedrock-1"`, `"model":"global.anthropic.claude-fable-5-1"`, `"field":"thinking"`, `"value":"enabled"`, `"reason":"`} {
 		if !strings.Contains(line, want) {
-			t.Errorf("thinking_dropped line lacks %s: %s", want, line)
+			t.Errorf("request_field_dropped line lacks %s: %s", want, line)
 		}
 	}
 
-	if kept := run(t, "global.anthropic.claude-sonnet-4-6"); strings.Contains(kept, "thinking_dropped") {
-		t.Errorf("thinking_dropped logged for a family that accepts enabled thinking:\n%s", kept)
+	if kept := run(t, "global.anthropic.claude-sonnet-4-6"); strings.Contains(kept, "request_field_dropped") {
+		t.Errorf("request_field_dropped logged for a family that accepts enabled thinking:\n%s", kept)
 	}
 }
 
@@ -175,7 +175,7 @@ func TestCallDeploymentLogsThinkingDroppedOnRejectingBedrockFamily(t *testing.T)
 // provider whose adapter has no thinking configuration at all (openai,
 // openaicompat, gemini) ignores the canonical object as a no-op, the
 // established "provider ignores, never errors" convention -- but the
-// loss is recorded on the same thinking_dropped line, with a reason
+// loss is recorded on the same request_field_dropped line, with a reason
 // naming the provider, so it is never silent.
 func TestCallDeploymentLogsThinkingDroppedOnProviderWithoutThinking(t *testing.T) {
 	var logBuf bytes.Buffer
@@ -193,8 +193,8 @@ func TestCallDeploymentLogsThinkingDroppedOnProviderWithoutThinking(t *testing.T
 		t.Fatalf("HandleChatCompletion: %v", err)
 	}
 	logs := logBuf.String()
-	if !strings.Contains(logs, `"msg":"thinking_dropped"`) || !strings.Contains(logs, `"deployment":"openai-1"`) || !strings.Contains(logs, `"thinking_type":"adaptive"`) || !strings.Contains(logs, "openai") {
-		t.Errorf("want a thinking_dropped line naming openai-1 / adaptive / the provider; logs:\n%s", logs)
+	if !strings.Contains(logs, `"msg":"request_field_dropped"`) || !strings.Contains(logs, `"deployment":"openai-1"`) || !strings.Contains(logs, `"field":"thinking"`) || !strings.Contains(logs, `"value":"adaptive"`) || !strings.Contains(logs, "openai") {
+		t.Errorf("want a request_field_dropped line naming openai-1 / adaptive / the provider; logs:\n%s", logs)
 	}
 }
 
@@ -279,17 +279,56 @@ func TestNoteThinkingDroppedBoundsThinkingType(t *testing.T) {
 	}
 	var line map[string]any
 	for _, l := range strings.Split(logBuf.String(), "\n") {
-		if strings.Contains(l, `"msg":"thinking_dropped"`) {
+		if strings.Contains(l, `"msg":"request_field_dropped"`) {
 			if err := json.Unmarshal([]byte(l), &line); err != nil {
-				t.Fatalf("thinking_dropped line is not JSON: %v", err)
+				t.Fatalf("request_field_dropped line is not JSON: %v", err)
 			}
 		}
 	}
 	if line == nil {
-		t.Fatalf("no thinking_dropped line; logs:\n%s", logBuf.String())
+		t.Fatalf("no request_field_dropped line; logs:\n%s", logBuf.String())
 	}
-	got, _ := line["thinking_type"].(string)
+	got, _ := line["value"].(string)
 	if len(got) != maxModelForTelemetry || !strings.HasPrefix(huge, got) {
-		t.Errorf("thinking_type logged with %d bytes, want the first %d bytes of the type", len(got), maxModelForTelemetry)
+		t.Errorf("value logged with %d bytes, want the first %d bytes of the type", len(got), maxModelForTelemetry)
+	}
+}
+
+// TestCallDeploymentLogsRequestFieldDroppedForTopK (item 11 slice S5): the
+// same request_field_dropped line that records a thinking omission records
+// top_k -- on a Claude 5.x Bedrock model (the generation rejects it) and on
+// a provider with no top_k at all (openai) -- with field "top_k" and the
+// value, and is silent on a family that accepts it.
+func TestCallDeploymentLogsRequestFieldDroppedForTopK(t *testing.T) {
+	run := func(t *testing.T, provider, upstreamModel string, upstream UpstreamCaller, register bool) string {
+		t.Helper()
+		var logBuf bytes.Buffer
+		p := newTestPipeline(t, upstream, []Deployment{{Name: "d-1", Model: "m", Provider: provider, UpstreamModel: upstreamModel, BaseURL: "http://unused"}})
+		p.logger = slog.New(slog.NewJSONHandler(&logBuf, nil))
+		if register {
+			p.adapters["bedrock"] = bedrock.New()
+		}
+		topK := 7
+		req := adapter.ChatRequest{Model: "m", Messages: []adapter.Message{{Role: "user", Content: "hi"}}, TopK: &topK}
+		if _, err := p.HandleChatCompletion(context.Background(), "Bearer test-key", "", "", req, ""); err != nil {
+			t.Fatalf("HandleChatCompletion(%s/%s): %v", provider, upstreamModel, err)
+		}
+		return logBuf.String()
+	}
+	bedrockUpstream := func(ctx context.Context, dep Deployment, req any) (any, error) { return fakeBedrockResponse("ok"), nil }
+	openaiUpstream := func(ctx context.Context, dep Deployment, req any) (any, error) {
+		return fakeOpenAIResponse("gpt-4o"), nil
+	}
+
+	dropped := run(t, "bedrock", "global.anthropic.claude-fable-5-1", bedrockUpstream, true)
+	if !strings.Contains(dropped, `"msg":"request_field_dropped"`) || !strings.Contains(dropped, `"field":"top_k"`) || !strings.Contains(dropped, `"value":"7"`) {
+		t.Errorf("want a request_field_dropped line with field top_k and value 7 for a 5.x Bedrock model; logs:\n%s", dropped)
+	}
+	if kept := run(t, "bedrock", "global.anthropic.claude-sonnet-4-6", bedrockUpstream, true); strings.Contains(kept, `"field":"top_k"`) {
+		t.Errorf("top_k drop logged for a family that accepts it:\n%s", kept)
+	}
+	noField := run(t, "openai", "gpt-4o", openaiUpstream, false)
+	if !strings.Contains(noField, `"field":"top_k"`) || !strings.Contains(noField, "openai") {
+		t.Errorf("want a request_field_dropped line naming top_k and the openai provider; logs:\n%s", noField)
 	}
 }

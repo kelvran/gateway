@@ -360,7 +360,21 @@ type ChatRequest struct {
 	// Nil is a silent no-op; before item 11 slice S5 `top_p` was an ignored
 	// unknown field on /v1/chat/completions. Folded into every cache key
 	// and the L3 gate (dataplane.samplingFingerprint).
-	TopP   *float64  `json:"top_p,omitempty"`
+	TopP *float64 `json:"top_p,omitempty"`
+	// TopK is the caller's top-k sampling parameter -- Anthropic's `top_k`,
+	// Gemini's `generationConfig.topK`, Converse's additionalModelRequestFields
+	// `top_k` -- set only by the Anthropic Messages ingress (item 11 slice
+	// S5). json:"-" because OpenAI has no such field: a /v1/chat/completions
+	// body carrying one keeps today's silent unknown-field drop, and the
+	// OpenAI wire never gains the key. The anthropic and gemini adapters
+	// forward it verbatim (Claude 5.x's "deprecated" 400 is the direct API's
+	// own answer); bedrock forwards it only where the served model's Claude
+	// generation accepts it (BedrockForwardsTopK, capabilities.go); openai
+	// and openaicompat have no field and ignore it. Every omission is a
+	// request_field_dropped log line (dataplane.noteDroppedRequestFields).
+	// Folded into every cache key, the L3 gate and the Idempotency-Key
+	// fingerprint (dataplane.samplingFingerprint).
+	TopK   *int      `json:"-"`
 	Tools  []ToolDef `json:"tools,omitempty"`
 	Stream bool      `json:"stream,omitempty"`
 	// ResponseFormat, when set, requests structured JSON output
@@ -483,8 +497,8 @@ type ChatRequest struct {
 	// the type and omits it when the family rejects it
 	// (BedrockForwardsThinking, capabilities.go); every other adapter has
 	// no thinking configuration and ignores it. The dataplane records
-	// both kinds of loss on a thinking_dropped log line
-	// (noteThinkingDropped). Never validated here: a budget Anthropic
+	// both kinds of loss on a request_field_dropped log line
+	// (noteDroppedRequestFields). Never validated here: a budget Anthropic
 	// finds too small, or a type a model does not take, is the upstream's
 	// own 400, relayed as-is. Folded into every cache key and the L3 gate
 	// (dataplane.thinkingFingerprint).
