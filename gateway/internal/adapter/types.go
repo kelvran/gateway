@@ -351,8 +351,18 @@ type ChatRequest struct {
 	// decoding. Folded into every cache key and the L3 gate
 	// (dataplane.samplingFingerprint).
 	StopSequences StopSequences `json:"stop,omitempty"`
-	Tools         []ToolDef     `json:"tools,omitempty"`
-	Stream        bool          `json:"stream,omitempty"`
+	// TopP is the caller's nucleus-sampling parameter -- OpenAI's `top_p`,
+	// Anthropic's `top_p`, Converse's `inferenceConfig.topP`, Gemini's
+	// `generationConfig.topP` -- forwarded verbatim by every adapter, a
+	// pointer (like Temperature) so an explicit 0 and an absent field stay
+	// distinct. Never validated here: Sonnet 4.5 and Haiku 4.5 reject
+	// temperature and top_p together, and that is the upstream's own 400.
+	// Nil is a silent no-op; before item 11 slice S5 `top_p` was an ignored
+	// unknown field on /v1/chat/completions. Folded into every cache key
+	// and the L3 gate (dataplane.samplingFingerprint).
+	TopP   *float64  `json:"top_p,omitempty"`
+	Tools  []ToolDef `json:"tools,omitempty"`
+	Stream bool      `json:"stream,omitempty"`
 	// ResponseFormat, when set, requests structured JSON output
 	// conforming to a caller-supplied schema. Nil (the default, and every
 	// ChatRequest built before this field existed) is a silent no-op --

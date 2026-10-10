@@ -110,3 +110,38 @@ func TestChatCompletionsRejectsNonStringStop(t *testing.T) {
 		t.Fatalf("status = %d, want 400; body %s", resp.StatusCode, b)
 	}
 }
+
+// TestChatCompletionsForwardsTopP is the handler-level proof for slice S5's
+// second field: `top_p` reaches the upstream as sent, and an absent field
+// sends no key.
+func TestChatCompletionsForwardsTopP(t *testing.T) {
+	upstream, lastBody := newCapturingMockUpstream(t)
+	gw := newIntegrationServer(t, upstream.URL, "sampling-key", "SAMPLING_TEST_UPSTREAM_KEY")
+
+	resp := postChatWithHeaders(t, gw, "sampling-key", `{"model":"gpt-4o","messages":[{"role":"user","content":"top-p please"}],"top_p":0.9}`, nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body %s", resp.StatusCode, b)
+	}
+	var forwarded map[string]any
+	if err := json.Unmarshal(lastBody(), &forwarded); err != nil {
+		t.Fatalf("upstream body: %v", err)
+	}
+	if got, ok := forwarded["top_p"].(float64); !ok || got != 0.9 {
+		t.Errorf("upstream top_p = %v, want 0.9", forwarded["top_p"])
+	}
+
+	resp2 := postChatWithHeaders(t, gw, "sampling-key", `{"model":"gpt-4o","messages":[{"role":"user","content":"no top-p"}]}`, nil)
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp2.StatusCode)
+	}
+	forwarded = nil
+	if err := json.Unmarshal(lastBody(), &forwarded); err != nil {
+		t.Fatalf("upstream body: %v", err)
+	}
+	if _, present := forwarded["top_p"]; present {
+		t.Errorf("upstream body carries top_p for a request without one: %s", lastBody())
+	}
+}

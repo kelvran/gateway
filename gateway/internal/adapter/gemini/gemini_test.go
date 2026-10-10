@@ -1098,3 +1098,21 @@ func TestToProviderStopSequencesForwarded(t *testing.T) {
 		t.Errorf("wire = %s, want generationConfig.stopSequences [END]", wire)
 	}
 }
+
+// TestToProviderTopPForwarded (item 11 slice S5): canonical TopP becomes
+// generationConfig.topP, and it alone materialises generationConfig.
+func TestToProviderTopPForwarded(t *testing.T) {
+	topP := 0.9
+	req := adapter.ChatRequest{Model: "gemini-2.5-flash", Messages: []adapter.Message{{Role: "user", Content: "hi"}}, TopP: &topP}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"topP":0.9`) {
+		t.Errorf("wire = %s, want generationConfig.topP 0.9", wire)
+	}
+}

@@ -164,7 +164,10 @@ type GenerationConfig struct {
 	// StopSequences is Gemini's generationConfig.stopSequences, the
 	// canonical ChatRequest.StopSequences forwarded verbatim (item 11
 	// slice S5).
-	StopSequences    []string       `json:"stopSequences,omitempty"`
+	StopSequences []string `json:"stopSequences,omitempty"`
+	// TopP is generationConfig.topP, the canonical ChatRequest.TopP
+	// forwarded verbatim (item 11 slice S5).
+	TopP             *float64       `json:"topP,omitempty"`
 	ResponseMimeType string         `json:"responseMimeType,omitempty"`
 	ResponseSchema   map[string]any `json:"responseSchema,omitempty"`
 }
@@ -412,11 +415,12 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	var genConfig *GenerationConfig
-	if req.Temperature != nil || req.MaxTokens != nil || req.ResponseFormat != nil || len(req.StopSequences) > 0 {
+	if req.Temperature != nil || req.MaxTokens != nil || req.ResponseFormat != nil || len(req.StopSequences) > 0 || req.TopP != nil {
 		genConfig = &GenerationConfig{
 			Temperature:     req.Temperature,
 			MaxOutputTokens: req.MaxTokens,
 			StopSequences:   req.StopSequences,
+			TopP:            req.TopP,
 		}
 		if req.ResponseFormat != nil {
 			genConfig.ResponseMimeType = "application/json"

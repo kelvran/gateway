@@ -461,6 +461,9 @@ type InferenceConfig struct {
 	// canonical ChatRequest.StopSequences forwarded verbatim (item 11
 	// slice S5).
 	StopSequences []string `json:"stopSequences,omitempty"`
+	// TopP is Converse's inferenceConfig.topP, the canonical
+	// ChatRequest.TopP forwarded verbatim (item 11 slice S5).
+	TopP *float64 `json:"topP,omitempty"`
 }
 
 // Request is Bedrock Converse's native request shape.
@@ -678,11 +681,12 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	var inferenceConfig *InferenceConfig
-	if req.Temperature != nil || req.MaxTokens != nil || len(req.StopSequences) > 0 {
+	if req.Temperature != nil || req.MaxTokens != nil || len(req.StopSequences) > 0 || req.TopP != nil {
 		inferenceConfig = &InferenceConfig{
 			Temperature:   req.Temperature,
 			MaxTokens:     req.MaxTokens,
 			StopSequences: req.StopSequences,
+			TopP:          req.TopP,
 		}
 	}
 

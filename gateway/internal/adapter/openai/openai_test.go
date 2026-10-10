@@ -813,3 +813,22 @@ func TestToProviderStopSequencesForwarded(t *testing.T) {
 		t.Errorf("wire = %s, want stop [END]", wire)
 	}
 }
+
+// TestToProviderTopPForwarded (item 11 slice S5): canonical TopP becomes
+// the provider's top_p -- a field a client sent on /v1/chat/completions
+// and the gateway dropped silently before this slice.
+func TestToProviderTopPForwarded(t *testing.T) {
+	topP := 0.9
+	req := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{Role: "user", Content: "hi"}}, TopP: &topP}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"top_p":0.9`) {
+		t.Errorf("wire = %s, want top_p 0.9", wire)
+	}
+}

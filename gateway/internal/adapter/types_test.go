@@ -296,3 +296,31 @@ func TestChatRequestStopDecodesStringOrArray(t *testing.T) {
 		t.Errorf("Marshal of a request without stop sequences emitted a stop key: %s", out)
 	}
 }
+
+// TestChatRequestTopPDecodesAndOmits pins the wire contract for the
+// canonical TopP field (item 11 slice S5): OpenAI's `top_p` decodes to a
+// pointer so 0 and absent stay distinct, and an unset field marshals no
+// key -- byte-identical to every request built before the field existed.
+func TestChatRequestTopPDecodesAndOmits(t *testing.T) {
+	var req ChatRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","messages":[],"top_p":0.9}`), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if req.TopP == nil || *req.TopP != 0.9 {
+		t.Fatalf("TopP = %v, want 0.9", req.TopP)
+	}
+	var zero ChatRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","messages":[],"top_p":0}`), &zero); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if zero.TopP == nil || *zero.TopP != 0 {
+		t.Errorf("TopP = %v for an explicit 0, want a pointer to 0 (distinct from absent)", zero.TopP)
+	}
+	out, err := json.Marshal(ChatRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "top_p") {
+		t.Errorf("Marshal of a request without top_p emitted the key: %s", out)
+	}
+}

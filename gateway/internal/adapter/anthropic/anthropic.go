@@ -87,8 +87,11 @@ type Request struct {
 	// StopSequences is Anthropic's stop_sequences array, the canonical
 	// ChatRequest.StopSequences forwarded verbatim (item 11 slice S5).
 	StopSequences []string `json:"stop_sequences,omitempty"`
-	Tools         []Tool   `json:"tools,omitempty"`
-	Stream        bool     `json:"stream,omitempty"`
+	// TopP is Anthropic's top_p, the canonical ChatRequest.TopP forwarded
+	// verbatim (item 11 slice S5).
+	TopP   *float64 `json:"top_p,omitempty"`
+	Tools  []Tool   `json:"tools,omitempty"`
+	Stream bool     `json:"stream,omitempty"`
 	// OutputConfig is Anthropic's real structured-output request field --
 	// a top-level output_config object, sibling of model/messages/tools,
 	// live-verified against the current Messages API (no beta header
@@ -666,6 +669,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		MaxTokens:     maxTokens,
 		Temperature:   req.Temperature,
 		StopSequences: req.StopSequences,
+		TopP:          req.TopP,
 		Tools:         tools,
 		Stream:        req.Stream,
 		OutputConfig:  outputConfig,

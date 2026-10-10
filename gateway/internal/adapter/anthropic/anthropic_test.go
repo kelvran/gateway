@@ -1613,3 +1613,23 @@ func TestToProviderStopSequencesForwarded(t *testing.T) {
 		t.Errorf("wire = %s, want stop_sequences [END, \\n\\n]", wire)
 	}
 }
+
+// TestToProviderTopPForwarded (item 11 slice S5): canonical TopP becomes
+// Anthropic's top_p verbatim. Sonnet 4.5 and Haiku 4.5 reject temperature
+// and top_p together; that is the upstream's own 400, never checked here.
+func TestToProviderTopPForwarded(t *testing.T) {
+	topP := 0.9
+	req := thinkingBindingChatRequest("claude-sonnet-4-6", "")
+	req.TopP = &topP
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"top_p":0.9`) {
+		t.Errorf("wire = %s, want top_p 0.9", wire)
+	}
+}

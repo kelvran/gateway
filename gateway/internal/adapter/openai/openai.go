@@ -21,7 +21,10 @@ type Request struct {
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
 	// Stop is OpenAI's stop array, the canonical ChatRequest.StopSequences
 	// forwarded verbatim (item 11 slice S5); always the array form.
-	Stop   []string `json:"stop,omitempty"`
+	Stop []string `json:"stop,omitempty"`
+	// TopP is top_p, the canonical ChatRequest.TopP forwarded verbatim
+	// (item 11 slice S5).
+	TopP   *float64 `json:"top_p,omitempty"`
 	Tools  []Tool   `json:"tools,omitempty"`
 	Stream bool     `json:"stream,omitempty"`
 	// StreamOptions is only ever sent when Stream is true. include_usage
@@ -349,6 +352,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		Temperature:    req.Temperature,
 		MaxTokens:      req.MaxTokens,
 		Stop:           req.StopSequences,
+		TopP:           req.TopP,
 		Tools:          tools,
 		Stream:         req.Stream,
 		StreamOptions:  streamOpts,

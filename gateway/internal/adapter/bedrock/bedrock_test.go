@@ -1817,3 +1817,27 @@ func TestToProviderStopSequencesForwarded(t *testing.T) {
 		t.Errorf("wire = %s, want inferenceConfig.stopSequences [END]", wire)
 	}
 }
+
+// TestToProviderTopPForwarded (item 11 slice S5): canonical TopP becomes
+// Converse's inferenceConfig.topP, and it alone materialises
+// inferenceConfig.
+func TestToProviderTopPForwarded(t *testing.T) {
+	topP := 0.9
+	req := bedrockThinkingRequest("global.anthropic.claude-sonnet-4-6", nil)
+	req.TopP = &topP
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.InferenceConfig == nil || native.InferenceConfig.TopP == nil || *native.InferenceConfig.TopP != 0.9 {
+		t.Fatalf("InferenceConfig = %+v, want TopP 0.9", native.InferenceConfig)
+	}
+	wire, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"topP":0.9`) {
+		t.Errorf("wire = %s, want inferenceConfig.topP 0.9", wire)
+	}
+}
