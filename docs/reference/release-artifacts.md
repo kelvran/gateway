@@ -188,17 +188,17 @@ Only the amd64 `.deb` is installed by the workflow. The `.rpm` and `.apk` come f
 
 ## Container image
 
-Published by the `publish-image` job of `.github/workflows/ci.yml`, which runs on `push` events only (every push to `main` and every `gateway/v*` tag), after the `gateway` CI job passes. Permissions: `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `security-events: write`.
+Published by the `publish-image` job of `.github/workflows/ci.yml`, which runs on `push` events (every push to `main` and every `gateway/v*` tag) and, since 2026-10-10, on a `workflow_dispatch` with the required input `release_tag` (an existing `gateway/vX.Y.Z` tag), which rebuilds, pushes, signs and attests that tag's commit from the dispatching branch's workflow definition; in both cases after the `gateway` CI job passes (on a dispatch, `gateway` runs against the dispatching branch, not the tag). Permissions: `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `security-events: write`.
 
 ### Tags
 
 | Tag | When | Build identity (`-version`) |
 |---|---|---|
-| `ghcr.io/kelvran/gateway:latest` | Every push to `main` and every `gateway/v*` tag; moves | `0.0.0-main.<sha12>` on a main push; `X.Y.Z` on a tag |
-| `ghcr.io/kelvran/gateway:sha-<40-hex commit>` | Every push; immutable per commit | Same as above |
-| `ghcr.io/kelvran/gateway:v<X.Y.Z>` | Only when the pushed ref is a tag matching `gateway/v*`; the tag step strips `gateway/` and keeps the `v` | `X.Y.Z` |
+| `ghcr.io/kelvran/gateway:latest` | Every push to `main`, every `gateway/v*` tag, and every `release_tag` dispatch; moves | `0.0.0-main.<sha12>` on a main push; `X.Y.Z` on a tag |
+| `ghcr.io/kelvran/gateway:sha-<40-hex commit>` | Every push and every dispatch; names the checked-out commit (the tag's commit on a dispatch); re-pointed if that commit is rebuilt | Same as above |
+| `ghcr.io/kelvran/gateway:v<X.Y.Z>` | Only when the pushed ref, or the dispatched `release_tag`, is a tag matching `gateway/v*`; the tag step strips `gateway/` and keeps the `v` | `X.Y.Z` |
 
-Build arguments passed to `gateway/Dockerfile`: `VERSION=<build identity>`, `COMMIT=<github.sha>`, `DATE=<UTC timestamp, %Y-%m-%dT%H:%M:%SZ>`.
+Build arguments passed to `gateway/Dockerfile`: `VERSION=<build identity>`, `COMMIT=<the checked-out commit: github.sha on a push, the tag's commit on a dispatch>`, `DATE=<UTC timestamp, %Y-%m-%dT%H:%M:%SZ>`.
 
 ### Platforms and index
 

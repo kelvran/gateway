@@ -6,6 +6,23 @@ on:
     tags: ["gateway/v*"]
   pull_request:
     branches: [main]
+  # Added 2026-10-10: re-publish the image for an existing release tag from
+  # THIS branch's workflow definition. The tag-push run for gateway/v0.18.0
+  # pushed and signed the image, then died in the SBOM step (see the
+  # publish-image job), so its SBOM and provenance attestations were never
+  # produced; re-running that run would replay the same broken definition.
+  # Only publish-image reacts to the input; every other job runs against
+  # the dispatching branch as usual (the evals coverage-comment step skips
+  # itself, see there). The SLSA provenance of a dispatched build names the
+  # dispatching ref and commit (it comes from the OIDC claims, which do not
+  # carry the input); the image's -version line, its COMMIT build-arg and
+  # its org.opencontainers.image.revision label name the tag's commit.
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing gateway/vX.Y.Z tag whose image to rebuild, push, sign and attest. Also moves :latest, so dispatch only for the newest release."
+        required: true
+        type: string
 
 # Top-level default, per a real open OpenSSF Scorecard Token-Permissions
 # finding (TokenPermissionsID): every job below already declares its own
@@ -287,6 +304,11 @@ jobs:
         # `evals` because `.coverage` lives at `evals/.coverage`, not the
         # repo root this action defaults to.
         id: coverage_comment
+        # The action has no code path for workflow_dispatch (it raises
+        # ActivityNotFound and exits 1), so a dispatch to re-publish an
+        # image skips it; the threshold step below already skips itself
+        # when this step produced no output.
+        if: github.event_name != 'workflow_dispatch'
         uses: py-cov-action/python-coverage-comment-action@a05be3d2e8a6272d3ef5fb2840ab20368bb2eb71 # v4.3
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -464,8 +486,10 @@ jobs:
   publish-image:
     name: publish gateway image to GHCR
     runs-on: ubuntu-latest
+    # On a workflow_dispatch this gates on the DISPATCHING branch (main)
+    # being green, not the tag; the tag's commit was gated by its own push run.
     needs: gateway
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       packages: write
@@ -477,6 +501,10 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On a dispatch, build the named release tag's commit, not the
+          # dispatching branch's; empty means the event's own ref.
+          ref: ${{ github.event.inputs.release_tag || '' }}
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -500,10 +528,22 @@ jobs:
           # would text-substitute it into the shell source before
           # parsing, a real GitHub Actions script-injection vector. An
           # env var reference is data, never re-parsed as shell syntax.
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.event.inputs.release_tag && 'tag' || github.ref_type }}
+          REF_NAME: ${{ github.event.inputs.release_tag || github.ref_name }}
+          DISPATCHED: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
+          # The commit that was checked out: github.sha on a push, the tag's
+          # commit on a dispatch (where github.sha would be the branch tip).
+          SHA=$(git rev-parse HEAD)
+          if [[ "${DISPATCHED}" == "true" ]]; then
+            if ! [[ "${REF_NAME}" =~ ^gateway/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::release_tag must be an existing gateway/vX.Y.Z tag"; exit 1
+            fi
+            TAG_SHA=$(git rev-parse -q --verify "refs/tags/${REF_NAME}^{commit}" || true)
+            if [[ -z "${TAG_SHA}" || "${TAG_SHA}" != "${SHA}" ]]; then
+              echo "::error::checked-out commit ${SHA} is not what ${REF_NAME} points to (${TAG_SHA:-unresolved})"; exit 1
+            fi
+          fi
           TAGS="ghcr.io/kelvran/gateway:latest
           ghcr.io/kelvran/gateway:sha-${SHA}"
           # Build identity for `gateway -version` / the build_info log line
@@ -523,6 +563,7 @@ jobs:
             echo "$TAGS"
             echo "TAGS_EOF"
             echo "version=${BUILD_VERSION}"
+            echo "sha=${SHA}"
             echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
       # Multi-platform build (added 2026-10-08, plan item 4e). No QEMU: the
@@ -547,13 +588,17 @@ jobs:
         with:
           images: ghcr.io/kelvran/gateway
           tags: |
-            type=raw,value=sha-${{ github.sha }}
+            type=raw,value=sha-${{ steps.tags.outputs.sha }}
+          # revision is set explicitly in both lists: the action's default is
+          # github.sha, which on a workflow_dispatch is the branch tip, not the
+          # checked-out tag commit.
           labels: |
             org.opencontainers.image.title=kelvran-gateway
             org.opencontainers.image.description=Self-hosted Go LLM gateway with a risk-gated response cache: an OpenAI-compatible API in front of Bedrock, Anthropic, OpenAI, Gemini and OpenAI-compatible providers.
             org.opencontainers.image.documentation=https://github.com/kelvran/gateway/blob/main/docs/operations/DEPLOY.md
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.tags.outputs.sha }}
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/container-image.md
             io.artifacthub.package.license=Apache-2.0
             io.artifacthub.package.category=ai-machine-learning
@@ -564,6 +609,7 @@ jobs:
             org.opencontainers.image.documentation=https://github.com/kelvran/gateway/blob/main/docs/operations/DEPLOY.md
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.tags.outputs.sha }}
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/container-image.md
             io.artifacthub.package.license=Apache-2.0
             io.artifacthub.package.category=ai-machine-learning
@@ -587,7 +633,7 @@ jobs:
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             VERSION=${{ steps.tags.outputs.version }}
-            COMMIT=${{ github.sha }}
+            COMMIT=${{ steps.tags.outputs.sha }}
             DATE=${{ steps.tags.outputs.date }}
       - name: The published image's companion CLI reports the build version
         # The only check that can pin the SECOND `go build`'s ldflags (the
@@ -669,6 +715,14 @@ jobs:
           image: "ghcr.io/kelvran/gateway@${{ steps.build.outputs.digest }}"
           format: cyclonedx-json
           output-file: sbom.cdx.json
+          # The action's default attaches the SBOM to the GitHub Release of the
+          # current tag when one exists. Since release.yml (2026-10-08) creates
+          # that Release before this job reaches this step, the default failed
+          # the gateway/v0.18.0 tag run with "Resource not accessible by
+          # integration" (this job holds contents: read, deliberately) and the
+          # two attest steps below never ran. The Release's own per-asset SBOMs
+          # come from release.yml; the image SBOM is attested to the registry.
+          upload-release-assets: false
       - name: Attest SBOM
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
