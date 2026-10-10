@@ -47,6 +47,13 @@ func parseMessages(raw json.RawMessage, rec *recorder) ([]adapter.Message, error
 				return nil, err
 			}
 			msg := adapter.Message{Role: role, Content: text}
+			if extra != "" && role == "system" {
+				// A system message carries Content, never Parts (see
+				// systemMessagesFromBlocks): the leftover text is its own
+				// system message, as in the top-level system array.
+				out = append(out, msg, adapter.Message{Role: "system", Content: extra})
+				continue
+			}
 			if extra != "" {
 				msg.Content = ""
 				msg.Parts = []adapter.ContentPart{{Type: "text", Text: text}, {Type: "text", Text: extra}}
@@ -57,6 +64,20 @@ func parseMessages(raw json.RawMessage, rec *recorder) ([]adapter.Message, error
 		blocks, err := array(content, ptr+"/content")
 		if err != nil {
 			return nil, err
+		}
+		if role == "system" {
+			// The same shape as the top-level system array, parsed the same
+			// way (systemMessagesFromBlocks); the entry's own leftover members
+			// follow as one more system message.
+			msgs, err := systemMessagesFromBlocks(blocks, ptr+"/content", rec)
+			if err != nil {
+				return nil, err
+			}
+			if extra != "" {
+				msgs = append(msgs, adapter.Message{Role: "system", Content: extra})
+			}
+			out = append(out, msgs...)
+			continue
 		}
 		msgs, err := parseContentBlocks(role, blocks, extra, ptr+"/content", rec)
 		if err != nil {

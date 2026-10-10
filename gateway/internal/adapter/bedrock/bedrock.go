@@ -224,6 +224,36 @@ func appendSystemCachePointIfNeeded(blocks []SystemContentBlock, cc *adapter.Cac
 	return append(blocks, SystemContentBlock{CachePoint: cachePointFor(cc, model)})
 }
 
+// systemBlocksFor hoists one canonical system message into Converse's
+// top-level system[] array: the plain Content first, then every text Part
+// (with a cachePoint after a part that carries cache_control), then the
+// message-level checkpoint (effectiveSystemCacheControl) after the last
+// block. A system message with no text at all contributes nothing -- an
+// empty {} element is what Bedrock rejects with "The system field can't be
+// null" (live 2026-10-11, from a Parts-only mid-conversation system message
+// before the ingress stopped producing them). A non-text part has no home
+// in a system prompt and is an error, never a silent drop.
+func systemBlocksFor(m adapter.Message, model string, autoDisabled bool) ([]SystemContentBlock, error) {
+	var blocks []SystemContentBlock
+	if m.Content != "" {
+		blocks = append(blocks, SystemContentBlock{Text: m.Content})
+	}
+	for _, part := range m.Parts {
+		if part.Type != "text" {
+			return nil, fmt.Errorf("%w: bedrock: system message carries a %s content part, which Converse's system prompt cannot hold", adapter.ErrSystemPartsUnsupported, part.Type)
+		}
+		if part.Text == "" {
+			continue
+		}
+		blocks = append(blocks, SystemContentBlock{Text: part.Text})
+		blocks = appendSystemCachePointIfNeeded(blocks, part.CacheControl, model)
+	}
+	if len(blocks) == 0 {
+		return nil, nil
+	}
+	return appendSystemCachePointIfNeeded(blocks, effectiveSystemCacheControl(m.CacheControl, autoDisabled), model), nil
+}
+
 // defaultSystemCacheControl is the marker Kelvran auto-populates on an
 // otherwise-unmarked system message, per
 // docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md. Its
@@ -573,8 +603,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "system":
-			systemBlocks = append(systemBlocks, SystemContentBlock{Text: m.Content})
-			systemBlocks = appendSystemCachePointIfNeeded(systemBlocks, effectiveSystemCacheControl(m.CacheControl, req.DisableCacheControlAutoPopulate), req.Model)
+			blocks, err := systemBlocksFor(m, req.Model, req.DisableCacheControlAutoPopulate)
+			if err != nil {
+				return nil, err
+			}
+			systemBlocks = append(systemBlocks, blocks...)
 			continue
 		case "tool":
 			toolResultContent, err := toolResultContentFor(m)

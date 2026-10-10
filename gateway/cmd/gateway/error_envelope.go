@@ -246,6 +246,10 @@ func errorTypeAndCode(err error, status int) (errType string, code *string) {
 		// Item 11 slice S6: a tool message carries parts no deployment in the
 		// pool can carry -- known from the request alone, so a 400.
 		return errTypeInvalidRequest, codePtr("tool_result_parts_unsupported")
+	case errors.Is(err, adapter.ErrSystemPartsUnsupported):
+		// Fix after item 11 slice S10b: a system message carries a non-text
+		// part no system prompt can hold -- a request-shape fault, so a 400.
+		return errTypeInvalidRequest, codePtr("system_parts_unsupported")
 	case errors.As(err, &lossyErr):
 		// Item 11 slice S9b: members no deployment in the pool can carry --
 		// known from the request alone, so a 400; param lists the pointers.
@@ -297,6 +301,8 @@ func errorParam(err error) *string {
 	case errors.Is(err, idempotency.ErrFingerprintMismatch):
 		return codePtr("Idempotency-Key")
 	case errors.Is(err, adapter.ErrToolResultPartsUnsupported):
+		return codePtr("messages")
+	case errors.Is(err, adapter.ErrSystemPartsUnsupported):
 		return codePtr("messages")
 	case errors.As(err, &lossyErr):
 		return codePtr(lossyErr.Param())

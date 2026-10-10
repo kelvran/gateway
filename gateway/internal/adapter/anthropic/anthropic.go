@@ -259,6 +259,37 @@ type SystemBlock struct {
 	CacheControl *CacheControlWire `json:"cache_control,omitempty"`
 }
 
+// systemBlocksFor hoists one canonical system message into Anthropic's
+// system[] array: the plain Content first, then every text Part with its own
+// cache_control, and the message-level marker (effectiveSystemCacheControl)
+// on the message's last block when that block has none -- a part's own
+// cache_control takes precedence over the message-level marker on its block. A system message
+// with no text contributes no block; a non-text part has no home in a system
+// prompt (Anthropic's own system array is text-only) and is an error, never a
+// silent drop. bedrock's systemBlocksFor is the same rule in Converse's shape.
+func systemBlocksFor(m adapter.Message, autoDisabled bool) ([]SystemBlock, error) {
+	var blocks []SystemBlock
+	if m.Content != "" {
+		blocks = append(blocks, SystemBlock{Type: "text", Text: m.Content})
+	}
+	for _, part := range m.Parts {
+		if part.Type != "text" {
+			return nil, fmt.Errorf("%w: anthropic: system message carries a %s content part, which the system prompt cannot hold", adapter.ErrSystemPartsUnsupported, part.Type)
+		}
+		if part.Text == "" {
+			continue
+		}
+		blocks = append(blocks, SystemBlock{Type: "text", Text: part.Text, CacheControl: cacheControlWire(part.CacheControl)})
+	}
+	if len(blocks) == 0 {
+		return nil, nil
+	}
+	if last := &blocks[len(blocks)-1]; last.CacheControl == nil {
+		last.CacheControl = cacheControlWire(effectiveSystemCacheControl(m.CacheControl, autoDisabled))
+	}
+	return blocks, nil
+}
+
 // CacheControlWire is Anthropic's real cache_control block shape —
 // {"type":"ephemeral","ttl":"5m"|"1h"} — confirmed against
 // docs/upgrade-research/gateway-provider-prompt-caching-2026-09-07.md's
@@ -636,11 +667,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "system":
-			systemBlocks = append(systemBlocks, SystemBlock{
-				Type:         "text",
-				Text:         m.Content,
-				CacheControl: cacheControlWire(effectiveSystemCacheControl(m.CacheControl, req.DisableCacheControlAutoPopulate)),
-			})
+			blocks, err := systemBlocksFor(m, req.DisableCacheControlAutoPopulate)
+			if err != nil {
+				return nil, err
+			}
+			systemBlocks = append(systemBlocks, blocks...)
 			continue
 		case "tool":
 			// Anthropic has no "tool" role: a tool result is sent as a

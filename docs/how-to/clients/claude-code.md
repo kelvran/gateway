@@ -61,6 +61,8 @@ or, on the deployment, `accept_lossy_anthropic_ingress: true`, which drops the m
 
 The attribution block Claude Code puts first in `system` (`x-anthropic-billing-header: …`, controlled by `CLAUDE_CODE_ATTRIBUTION_HEADER`) travels as its own system block, so the protocol page's remedy for gateways that merge the system array, `CLAUDE_CODE_ATTRIBUTION_HEADER=0`, is not needed here. On 2026-10-11 Bedrock's Anthropic backend accepted Claude Code's block and counted none of it as input tokens; an invented block with the same prefix was refused by the backend as a reserved keyword.
 
+A `role: system` entry inside `messages` — Claude Code's mid-conversation system message, sent with the betas on under the `mid-conversation-system-2026-04-07` beta value seen in the 2026-10-11 run — is parsed like the top-level `system` array (one system block per text block, `cache_control` kept). On a Bedrock, Gemini or (translate-hop) Anthropic deployment it is hoisted into the provider's system prompt after the other system blocks, since none of them has a mid-conversation slot; on an OpenAI or OpenAI-compatible deployment it stays in place as a `role: system` message. The protocol page asks gateways to keep block-form system content rather than flattening it to a string, and that is what happens here (2026-10-11).
+
 The message never names a deployment and never contains the strings Claude Code matches on for its own recovery (`thinking`, `cache_control`, `system`, `output_config.effort`, ...), so Claude Code surfaces it to you rather than silently disabling a capability.
 
 ### 4. Verify
@@ -70,7 +72,7 @@ kelvran connect claude --check --url "$ANTHROPIC_BASE_URL"   # POST /v1/messages
 claude -p "say ok"
 ```
 
-`--check` exits `0` on a `200`, a `400` `model_not_found` or a `403` `model_not_allowed` (the gateway authenticated the request before it routed or applied the allowlist); a `404` means a gateway older than `gateway/v0.19.0`; a `401` means the key is not a virtual key of this gateway. In Claude Code, `/status` shows the "Auth token or API key" line naming your variable. On the gateway side a turn is one `chat_completion` log line with `ingress_format: anthropic-messages`, and the request span carries `kelvran.ingress.format`. In a headless `claude -p` run on 2026-10-11 (Claude Code 2.1.296) with `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` the gateway saw exactly that one line and no discovery or `count_tokens` request; with the betas left on it saw one `GET /v1/models`, one `count_tokens` (answered `404`, after which the turn went on) and the turn.
+`--check` exits `0` on a `200`, a `400` `model_not_found` or a `403` `model_not_allowed` (the gateway authenticated the request before it routed or applied the allowlist); a `404` means a gateway older than `gateway/v0.19.0`; a `401` means the key is not a virtual key of this gateway. In Claude Code, `/status` shows the "Auth token or API key" line naming your variable. On the gateway side a turn is one `chat_completion` log line with `ingress_format: anthropic-messages`, and the request span carries `kelvran.ingress.format`. In a headless `claude -p` run on 2026-10-11 (Claude Code 2.1.296) with `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` the gateway saw exactly that one line and no discovery or `count_tokens` request; with the betas left on it saw one `GET /v1/models`, one `count_tokens` (answered `404`, after which the turn went on) and the turn, which answered `ok` once the same night's fix for mid-conversation system messages was in (see the change log).
 
 ## Variants
 
@@ -81,6 +83,10 @@ Claude Code reads every turn as a stream. The gateway emits the Anthropic event 
 ### Exact token counts
 
 Claude Code calls `POST /v1/messages/count_tokens` for `/context`. The gateway serves the route since `gateway/v0.19.0` and answers `404` `not_found_error` (`code` `count_tokens_unavailable`) for every deployment until the passthrough leg adds the `anthropic` branch; Claude Code then falls back to its character-based estimate, as the protocol page describes for an absent endpoint. The call still authenticates, applies the key's allowlists and consumes one RPM token; it touches no budget and no cache. In the 2026-10-11 run with the betas on, Claude Code called it once, received the `404` and continued the turn.
+
+### Auto mode behind a translate hop
+
+In auto mode Claude Code asks the server to run its permission classifier by adding a `safeguards` body member and a beta value to its turns. A translate hop cannot forward them — they are dropped under `accept_lossy_anthropic_ingress: true` (and, until S11, on an `anthropic` deployment too) and refused on any other deployment without the flag — so Claude Code prints the notice that the session "isn't eligible" for the no-charge classifier requests, names the gateway, holds the first checked action until you press Enter, and runs its own classifier requests, billed as token usage as before (auto-mode classifier page, 2026-10-11). Set `CLAUDE_CODE_AUTO_MODE_SERVER=0` to stop it asking; the raw-body relay to `anthropic` deployments (slice S11) is what will forward `safeguards` and return `safeguard_results` unchanged.
 
 ### Over-long prompts
 
@@ -113,7 +119,6 @@ Every error is Anthropic's envelope with Kelvran's `code` kept ([error-codes.md]
 
 - The raw-body relay to `anthropic` deployments (item 11 slice S11): every deployment, `anthropic` included, is a translate hop, so unknown members are dropped there too (reported in `dropped_fields`) and `kelvran.ingress.passthrough` stays `false`.
 - Exact token counts (`count_tokens` answers `404`; see above).
-- A `role: system` entry inside `messages` on a Bedrock deployment. Claude Code sends one under its `mid-conversation-system-2026-04-07` beta when the pre-release betas are on; the Bedrock adapter hoists it into Converse's top-level `system` array without its block content, Bedrock rejects the request (upstream message "The system field can't be null", surfaced as `502` `upstream_error` with `Retry-After`) and Claude Code retries until its own timeout — observed 2026-10-11 against a Bedrock pool with `accept_lossy_anthropic_ingress: true`. `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` avoids it because the message is sent only under that beta; the deployment flag does not, because the message itself is canonical.
 - The Amazon Bedrock and Google Vertex AI request formats (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`): Kelvran speaks the Anthropic Messages format only; point Claude Code at it with `ANTHROPIC_BASE_URL`.
 - Forwarding `anthropic-beta` values to Bedrock: `anthropic_beta_policy: forward_known` loads and validates today and is applied when the upstream leg lands; every hop strips the header until then.
 - `anthropic-ratelimit-unified-*` and `x-should-retry` response headers: the gateway synthesises none (they express Anthropic plan limits).

@@ -2163,6 +2163,11 @@ func errorStatus(err error) int {
 		// 400 (item 11 slice S6): a tool message carries parts no deployment
 		// in the pool can carry, decided before any upstream call.
 		status = http.StatusBadRequest
+	case errors.Is(err, adapter.ErrSystemPartsUnsupported):
+		// 400 (fix after item 11 slice S10b): a system message carries a
+		// non-text part no system prompt can hold, decided in the adapter
+		// before any upstream call.
+		status = http.StatusBadRequest
 	case errors.As(err, &lossyErr):
 		// 400 (item 11 slice S9b): an Anthropic Messages request carries
 		// members no deployment in the pool can carry, decided before any

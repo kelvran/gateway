@@ -332,9 +332,21 @@ func parseSystem(raw json.RawMessage, rec *recorder) ([]adapter.Message, error) 
 	if err != nil {
 		return nil, err
 	}
+	return systemMessagesFromBlocks(items, "/system", rec)
+}
+
+// systemMessagesFromBlocks is the array form shared by the top-level system
+// member and a role:"system" entry inside messages[] (Claude Code's
+// mid-conversation system message, sent under its mid-conversation-system
+// beta): one system message per text block, Content filled and cache_control
+// kept, never Parts -- every adapter's system hoist reads Content, and a
+// Parts-only system message reached Bedrock as an empty {} block ("The
+// system field can't be null", live 2026-10-11). base is the JSON pointer of
+// the array ("/system" or "/messages/N/content").
+func systemMessagesFromBlocks(items []json.RawMessage, base string, rec *recorder) ([]adapter.Message, error) {
 	out := make([]adapter.Message, 0, len(items))
 	for i, item := range items {
-		ptr := fmt.Sprintf("/system/%d", i)
+		ptr := fmt.Sprintf("%s/%d", base, i)
 		obj, err := object(item, ptr)
 		if err != nil {
 			return nil, err

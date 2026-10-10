@@ -81,7 +81,7 @@ msg = client.messages.create(
 
 ### Tools, thinking, system prompts
 
-`tools`, `tool_choice` (`auto`, `any`, `tool`, `none`), `system` (string or block array with `cache_control`), `thinking`, `output_config.effort`, `stop_sequences`, `temperature`, `top_p`, `top_k` and image/document blocks are canonical and translate. A member the gateway's schema cannot hold (a pre-release beta body field, `service_tier`, an unknown block type) is recorded by JSON pointer and the request is served only by an `anthropic` deployment or one whose config sets `accept_lossy_anthropic_ingress: true`; otherwise it is `400` `lossy_ingress_rejected` with the pointers in `param`. The `anthropic-beta` values the SDK sends are folded into the cache key (two calls differing only there never share an entry) and are stripped on the way to a Bedrock deployment until `anthropic_beta_policy: forward_known` is applied by the upstream leg.
+`tools`, `tool_choice` (`auto`, `any`, `tool`, `none`), `system` (string or block array with `cache_control`; a `role: system` entry inside `messages` is parsed the same way — on a `bedrock`, `anthropic` or `gemini` deployment it is hoisted into the provider's system prompt after the other system blocks, on an `openai` or `openaicompat` deployment it stays in place as a `role: system` message), `thinking`, `output_config.effort`, `stop_sequences`, `temperature`, `top_p`, `top_k` and image/document blocks are canonical and translate. A member the gateway's schema cannot hold (a pre-release beta body field, `service_tier`, an unknown block type) is recorded by JSON pointer and the request is served only by an `anthropic` deployment or one whose config sets `accept_lossy_anthropic_ingress: true`; otherwise it is `400` `lossy_ingress_rejected` with the pointers in `param`. The `anthropic-beta` values the SDK sends are folded into the cache key (two calls differing only there never share an entry) and are stripped on the way to a Bedrock deployment until `anthropic_beta_policy: forward_known` is applied by the upstream leg.
 
 ### Count tokens
 
@@ -124,7 +124,6 @@ Run step 2, then look at the gateway's log: one `chat_completion` line with `ing
 
 - The raw-body relay to `anthropic` deployments (item 11 slice S11): every deployment is a translate hop, so an `anthropic` deployment is re-encoded from the canonical request like any other and members the schema cannot hold are dropped there too (reported in `dropped_fields`).
 - Exact token counts (`count_tokens` answers `404`; see above).
-- A `role: system` entry inside `messages` on a Bedrock deployment: the adapter hoists it into Converse's top-level `system` array without its block content and Bedrock rejects the request (`502` `upstream_error`). Observed 2026-10-11 with Claude Code's mid-conversation-system beta; a system prompt belongs in `system`.
 - Forwarding `anthropic-beta` values to Bedrock (`anthropic_beta_policy: forward_known` is applied by the upstream leg).
 - The `anthropic-ratelimit-unified-*` and `x-should-retry` response headers: the gateway synthesises none.
 - The Batches, Files and Admin APIs: only `/v1/messages`, `/v1/messages/count_tokens` and `/v1/models` exist for this SDK; anything else is a plain 404.

@@ -89,6 +89,7 @@ func TestWriteErrorResponseEnvelopeTable(t *testing.T) {
 		{"idempotency key reused", idempotency.ErrFingerprintMismatch, http.StatusUnprocessableEntity, "invalid_request_error", strPtr("idempotency_key_reused"), idempotency.ErrFingerprintMismatch.Error()},
 		{"response_format unsupported", adapter.ErrStructuredOutputUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("response_format_unsupported"), adapter.ErrStructuredOutputUnsupported.Error()},
 		{"tool result parts unsupported", adapter.ErrToolResultPartsUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("tool_result_parts_unsupported"), adapter.ErrToolResultPartsUnsupported.Error()},
+		{"system parts unsupported", adapter.ErrSystemPartsUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("system_parts_unsupported"), adapter.ErrSystemPartsUnsupported.Error()},
 	}
 	for _, tc := range cases {
 		for _, wrapped := range []bool{false, true} {

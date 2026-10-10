@@ -317,7 +317,21 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "system":
-			systemParts = append(systemParts, m.Content)
+			// Content first, then every text Part; an empty text adds nothing
+			// (it would only add separators), and a non-text part has no home
+			// in systemInstruction, so it is an error rather than a silent
+			// drop -- the rule bedrock's and anthropic's systemBlocksFor share.
+			if m.Content != "" {
+				systemParts = append(systemParts, m.Content)
+			}
+			for _, part := range m.Parts {
+				if part.Type != "text" {
+					return nil, fmt.Errorf("%w: gemini: system message carries a %s content part, which systemInstruction cannot hold", adapter.ErrSystemPartsUnsupported, part.Type)
+				}
+				if part.Text != "" {
+					systemParts = append(systemParts, part.Text)
+				}
+			}
 			continue
 		case "tool":
 			name, ok := toolNameByID[m.ToolCallID]

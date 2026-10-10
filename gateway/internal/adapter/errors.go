@@ -152,3 +152,17 @@ func (e *UpstreamStreamError) ClientSafeMessage() string {
 // it to 400 tool_result_parts_unsupported. Adapters also return it as the
 // backstop when such a message reaches ToProvider anyway.
 var ErrToolResultPartsUnsupported = errors.New("adapter: a tool result carries content parts this provider cannot represent and no capable deployment is available")
+
+// ErrSystemPartsUnsupported is returned, wrapped, when a role:"system"
+// message carries a content part that is not text (fix after item 11 slice
+// S10b). A system prompt holds text on every provider -- Anthropic's own
+// system array is text-only, Converse's system[] and Gemini's
+// systemInstruction likewise -- so the bedrock, anthropic and gemini adapters
+// refuse the part instead of dropping it, and the handler maps the error to
+// 400 system_parts_unsupported with param "messages": a request-shape fault
+// decided before any upstream call. The Anthropic Messages ingress never
+// produces such a message (a non-text block in system, or in a role:"system"
+// entry, is recorded as untranslatable first); the OpenAI-shaped route can,
+// through a message's `parts` member. The openai and openaicompat adapters
+// render every part through contentToNative and never return it.
+var ErrSystemPartsUnsupported = errors.New("adapter: a system message carries a content part that is not text")
