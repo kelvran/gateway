@@ -15,6 +15,7 @@ Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several i
 | In-band `data: {"error":…}` frame for mid-stream failures | `gateway/cmd/gateway/error_envelope.go` | Stream ends without an error frame |
 | `claude-sonnet-5` on the Bedrock structured-output whitelist | `gateway/internal/adapter/capabilities.go` | `response_format` to a Sonnet 5 Bedrock deployment fails with `400` `response_format_unsupported` (`502` before gateway/v0.19.0) unless another capable deployment serves the same `model` |
 | `tools` and `tool_choice` folded into cache keys | `gateway/changelog/0.18.0.md` | Identical messages with different `tool_choice` can share a cached response |
+| Thinking configuration (`adapter.ChatRequest.Thinking`, a `/v1/messages` field) folded into cache keys | `gateway/changelog/unreleased.md` | Field absent; keys do not fold it. No `/v1/chat/completions` behaviour differs — every key changes once on upgrade |
 
 ## Routes
 
@@ -369,7 +370,7 @@ The full catalogue is in [error codes](error-codes.md).
 | Header | `Idempotency-Key` on `/v1/chat/completions`, buffered and streaming | Same header |
 | Scope | Per virtual key (the key's server-assigned id plus the header value) | Per API key |
 | Window | 10 minutes from the claim (`idempotencyKeyTTL`) | Not documented here |
-| Fingerprint | SHA-256 of the canonical JSON of the decoded request (`json.Marshal(req)`), so the three accepted `tool_choice` input forms of one choice fingerprint identically | Not documented here |
+| Fingerprint | SHA-256 of the canonical JSON of the decoded request (`json.Marshal(req)`), so the three accepted `tool_choice` input forms of one choice fingerprint identically; since gateway/v0.19.0 the thinking configuration (a `/v1/messages` field, never on this route) is folded in when one is set, and a request without one fingerprints exactly as before | Not documented here |
 | Replay | The stored response is returned verbatim, including its `id` and `created`, with no upstream call | Same |
 | Same key, different body | `422`, `type: invalid_request_error`, `code: idempotency_key_reused`, `param: Idempotency-Key`, no `Retry-After` (since gateway/v0.19.0; `502` plus `Retry-After` before) | `400` |
 | Same key while the first request is in flight | The second waits for the first to finish, then replays | Not documented here |

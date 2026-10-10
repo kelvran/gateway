@@ -1494,3 +1494,103 @@ func TestFromProviderPopulatesStopReasonAndStopSequence(t *testing.T) {
 		t.Errorf("end_turn: StopReason/StopSequence = %q/%q, want end_turn/\"\"", got.StopReason, got.StopSequence)
 	}
 }
+
+// TestToProviderCanonicalThinkingTakesPrecedenceOverBindingGate is the
+// precedence rule of docs/rfcs/2026-10-09-gateway-anthropic-messages-
+// ingress.md §3 (item 11 slice S4): when the caller supplied a canonical
+// ChatRequest.Thinking, its Type and BudgetTokens are what reaches the
+// wire -- the model-substring gate may no longer overwrite them with its
+// own "adaptive" -- while the gate still contributes Kelvran's non-strict
+// block_binding (and so the beta header) on a model it names.
+func TestToProviderCanonicalThinkingTakesPrecedenceOverBindingGate(t *testing.T) {
+	req := thinkingBindingChatRequest("claude-fable-5-1", "")
+	req.Thinking = &adapter.ThinkingConfig{Type: "enabled", BudgetTokens: 2048}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.Thinking == nil {
+		t.Fatal("Thinking = nil, want the caller's object")
+	}
+	if native.Thinking.Type != "enabled" || native.Thinking.BudgetTokens != 2048 {
+		t.Errorf("Thinking = %+v, want Type enabled / BudgetTokens 2048 (the caller's values, not the gate's adaptive)", native.Thinking)
+	}
+	if native.Thinking.BlockBinding == nil || native.Thinking.BlockBinding.PrefixMismatchBehavior != "drop_block" {
+		t.Errorf("BlockBinding = %+v, want Kelvran's non-strict drop_block on a gate model", native.Thinking.BlockBinding)
+	}
+	if _, needed := ThinkingBindingBetaHeaderValue(native); !needed {
+		t.Error("ThinkingBindingBetaHeaderValue = not needed, want needed while BlockBinding is set")
+	}
+}
+
+// TestToProviderCanonicalThinkingForwardedOnNonGateModel: on a model the
+// binding gate does not name, the caller's object is forwarded as-is --
+// no block_binding, no beta header -- byte-for-byte the shape Anthropic
+// documents for thinking: {"type":"enabled","budget_tokens":N}.
+func TestToProviderCanonicalThinkingForwardedOnNonGateModel(t *testing.T) {
+	req := thinkingBindingChatRequest("claude-sonnet-4-6", "")
+	req.Thinking = &adapter.ThinkingConfig{Type: "enabled", BudgetTokens: 1024}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.Thinking == nil || native.Thinking.Type != "enabled" || native.Thinking.BudgetTokens != 1024 || native.Thinking.BlockBinding != nil {
+		t.Fatalf("Thinking = %+v, want {enabled 1024 <nil>}", native.Thinking)
+	}
+	if _, needed := ThinkingBindingBetaHeaderValue(native); needed {
+		t.Error("ThinkingBindingBetaHeaderValue = needed, want not needed without a BlockBinding")
+	}
+	wire, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"thinking":{"type":"enabled","budget_tokens":1024}`) {
+		t.Errorf("wire = %s, want thinking {\"type\":\"enabled\",\"budget_tokens\":1024}", wire)
+	}
+}
+
+// TestToProviderCanonicalThinkingAdaptiveOmitsBudgetTokens: a zero
+// BudgetTokens never reaches the wire (omitempty), so an adaptive request
+// is exactly {"type":"adaptive"} -- Anthropic rejects budget_tokens on
+// adaptive, and 0 would be a real value, not an absence.
+func TestToProviderCanonicalThinkingAdaptiveOmitsBudgetTokens(t *testing.T) {
+	req := thinkingBindingChatRequest("claude-sonnet-4-6", "")
+	req.Thinking = &adapter.ThinkingConfig{Type: "adaptive"}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"thinking":{"type":"adaptive"}`) {
+		t.Errorf("wire = %s, want thinking {\"type\":\"adaptive\"} with no budget_tokens", wire)
+	}
+}
+
+// TestToProviderCanonicalThinkingDisabledOmitsBlockBinding: a caller that
+// turned thinking off gets no block_binding and no beta header even on a
+// gate model -- the prefix check only applies to replayed thinking, and
+// a block_binding beside "disabled" is not a shape Anthropic documents.
+func TestToProviderCanonicalThinkingDisabledOmitsBlockBinding(t *testing.T) {
+	req := thinkingBindingChatRequest("claude-fable-5-1", "strict")
+	req.Thinking = &adapter.ThinkingConfig{Type: "disabled"}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.Thinking == nil || native.Thinking.Type != "disabled" || native.Thinking.BlockBinding != nil {
+		t.Fatalf("Thinking = %+v, want {disabled 0 <nil>}", native.Thinking)
+	}
+	if _, needed := ThinkingBindingBetaHeaderValue(native); needed {
+		t.Error("ThinkingBindingBetaHeaderValue = needed, want not needed when thinking is disabled")
+	}
+}

@@ -277,3 +277,38 @@ func TestRegressionToProviderInboundToolChoiceStringReachesConverseWire(t *testi
 		t.Errorf("Converse toolChoice = %s, want {\"any\":{}}", wire.ToolConfig.ToolChoice)
 	}
 }
+
+// TestRegressionToProviderThinkingMatchesGoldenFixture is the wire-format
+// proof for item 11 slice S4: the canonical request fixture, re-pointed
+// at a Claude 4.6 model (the one family the 2026-10-10 probes proved
+// accepts BOTH thinking types, so the fixture can carry a budget) with
+// Thinking {enabled, 1024} set in code -- the field is json:"-", so no
+// JSON fixture can set it -- must match the checked-in golden, which
+// differs from request_bedrock_native.golden.json by exactly the
+// additionalModelRequestFields.thinking object (the reviewer diffs the
+// two files, per the generated-hunk rule).
+func TestRegressionToProviderThinkingMatchesGoldenFixture(t *testing.T) {
+	canonicalJSON := mustReadTestdata(t, "request_canonical.json")
+
+	var req adapter.ChatRequest
+	if err := json.Unmarshal(canonicalJSON, &req); err != nil {
+		t.Fatalf("unmarshaling request_canonical.json: %v", err)
+	}
+	if req.Thinking != nil {
+		t.Fatal("setup: request_canonical.json must not be able to set thinking (json:\"-\")")
+	}
+	req.Model = "global.anthropic.claude-sonnet-4-6"
+	req.Thinking = &adapter.ThinkingConfig{Type: "enabled", BudgetTokens: 1024}
+
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	gotJSON, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling ToProvider output: %v", err)
+	}
+
+	wantJSON := mustReadTestdata(t, "request_bedrock_native_thinking.golden.json")
+	assertJSONEqual(t, gotJSON, wantJSON)
+}

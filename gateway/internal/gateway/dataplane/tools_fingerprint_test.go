@@ -163,7 +163,7 @@ func TestCheckLexicalCacheNeverServesAcrossDifferentTools(t *testing.T) {
 	messages := []adapter.Message{{Role: "user", Content: "hi"}}
 	written := adapter.ChatRequest{Model: "gpt-4o", Messages: messages, Tools: []adapter.ToolDef{weatherTool()}, ToolChoice: &adapter.ToolChoice{Mode: "required"}}
 	writtenResp := []byte(`{"id":"cached-resp"}`)
-	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(messages), "", toolsFingerprint(written), time.Hour); err != nil {
+	if err := p.cacheL3.Put(ctx, vk.ID, fixedSignature, writtenResp, nil, "gpt-4o", p.guardrails.Version(), "", "", nil, reasoningBlocksFingerprint(messages), "", toolsFingerprint(written), "", time.Hour); err != nil {
 		t.Fatalf("cacheL3.Put: %v", err)
 	}
 

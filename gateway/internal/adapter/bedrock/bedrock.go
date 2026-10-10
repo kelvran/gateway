@@ -681,7 +681,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 	}
 
-	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Model)
+	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +744,7 @@ func reasoningTokensFromAdditionalFields(raw json.RawMessage) int {
 	return doc.Usage.OutputTokensDetails.ThinkingTokens
 }
 
-// additionalModelRequestFieldsFor builds Converse's real
+// outputConfigFormatFor builds Converse's real
 // additionalModelRequestFields escape-hatch value from rf, but ONLY when
 // model is on adapter.SupportsStructuredOutput's Bedrock whitelist --
 // calling output_config.format against an unsupported model is a real,
@@ -805,7 +805,7 @@ func reasoningTokensFromAdditionalFields(raw json.RawMessage) int {
 // the new field's own JSON-string-encoding requirement, for zero behavior
 // difference. Revisit only if AWS ever documents deprecating the escape-
 // hatch alias specifically.
-func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (map[string]any, error) {
+func outputConfigFormatFor(rf *adapter.ResponseFormat, model string) (map[string]any, error) {
 	if rf == nil {
 		return nil, nil
 	}
@@ -836,7 +836,60 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, model string) (
 		bedrockEnsureAdditionalPropertiesFalse(schema)
 		format["schema"] = schema
 	}
-	return map[string]any{"output_config": map[string]any{"format": format}}, nil
+	return format, nil
+}
+
+// additionalModelRequestFieldsFor assembles Converse's
+// additionalModelRequestFields escape hatch from its two independent
+// halves -- structured output (outputConfigFormatFor, the output_config
+// key) and the caller's canonical thinking configuration
+// (thinkingFieldFor, the thinking key; item 11 slice S4) -- and returns
+// nil when neither contributes, so a request carrying neither stays
+// byte-identical to one built before either feature existed (every
+// request golden relies on omitempty seeing nil here).
+func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapter.ThinkingConfig, model string) (map[string]any, error) {
+	fields := map[string]any{}
+	format, err := outputConfigFormatFor(rf, model)
+	if err != nil {
+		return nil, err
+	}
+	if format != nil {
+		fields["output_config"] = map[string]any{"format": format}
+	}
+	if field := thinkingFieldFor(thinking, model); field != nil {
+		fields["thinking"] = field
+	}
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	return fields, nil
+}
+
+// thinkingFieldFor is the thinking half of additionalModelRequestFieldsFor:
+// Anthropic's own wire object -- {"type": T} plus "budget_tokens" when one
+// was sent -- when adapter.BedrockForwardsThinking says the served
+// model's family takes that type (live-probed per generation on
+// 2026-10-10; see that function's doc comment for the forward-or-drop
+// asymmetry), nil otherwise. A nil return here is a quiet omission at
+// this layer by design -- ToProvider is a pure wire translation -- and
+// the dataplane, which has the logger and the deployment, records it
+// (noteThinkingDropped) by calling the same predicate.
+func thinkingFieldFor(t *adapter.ThinkingConfig, model string) map[string]any {
+	if t == nil {
+		return nil
+	}
+	if forward, _ := adapter.BedrockForwardsThinking(model, t.Type); !forward {
+		return nil
+	}
+	field := map[string]any{"type": t.Type}
+	if t.BudgetTokens != 0 {
+		// Non-zero means the caller sent a budget; it is forwarded as sent,
+		// never validated (a nonsensical value is the provider's own 400),
+		// exactly the anthropic adapter's omitempty semantics, so the two
+		// adapters never disagree about what a caller asked for.
+		field["budget_tokens"] = t.BudgetTokens
+	}
+	return field
 }
 
 // bedrockUnsupportedSchemaKeys are the real JSON Schema keywords Bedrock

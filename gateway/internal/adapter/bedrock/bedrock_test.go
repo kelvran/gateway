@@ -1664,3 +1664,132 @@ func TestFromProviderPopulatesNativeStopReason(t *testing.T) {
 		t.Errorf("FinishReason = %q, want the canonical mapping, not the native string", got.Choices[0].FinishReason)
 	}
 }
+
+// bedrockThinkingRequest is the one-user-message canonical request the
+// slice-S4 thinking tests below share.
+func bedrockThinkingRequest(model string, thinking *adapter.ThinkingConfig) adapter.ChatRequest {
+	return adapter.ChatRequest{
+		Model:    model,
+		Messages: []adapter.Message{{Role: "user", Content: "Reply with the single word ok."}},
+		Thinking: thinking,
+	}
+}
+
+// TestToProviderThinkingForwardedOnAcceptingFamily is the live-probed
+// positive half (2026-10-10, item 11 slices S2 and S4): a thinking type
+// the model's family accepts is carried through
+// additionalModelRequestFields.thinking in Anthropic's own wire shape --
+// {"type":"adaptive"} with no budget_tokens key, {"type":"enabled",
+// "budget_tokens":N} when a budget was given.
+func TestToProviderThinkingForwardedOnAcceptingFamily(t *testing.T) {
+	tests := []struct {
+		model    string
+		thinking adapter.ThinkingConfig
+		want     map[string]any
+	}{
+		{"global.anthropic.claude-fable-5-1", adapter.ThinkingConfig{Type: "adaptive"}, map[string]any{"type": "adaptive"}},
+		{"global.anthropic.claude-haiku-5-5", adapter.ThinkingConfig{Type: "adaptive"}, map[string]any{"type": "adaptive"}},
+		{"global.anthropic.claude-sonnet-4-6", adapter.ThinkingConfig{Type: "enabled", BudgetTokens: 1024}, map[string]any{"type": "enabled", "budget_tokens": 1024}},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", adapter.ThinkingConfig{Type: "enabled", BudgetTokens: 2048}, map[string]any{"type": "enabled", "budget_tokens": 2048}},
+		// An unlisted family forwards verbatim: the upstream's own answer
+		// is the honest one, and a silent drop would hide a new model's
+		// real support (capabilities.go's own "stale whitelist" lesson).
+		{"anthropic.claude-3-5-sonnet-20241022-v2:0", adapter.ThinkingConfig{Type: "adaptive"}, map[string]any{"type": "adaptive"}},
+		// A nonsensical budget is forwarded too, never validated here --
+		// the provider's own 400 is the honest answer, and the anthropic
+		// adapter (omitempty elides only 0) does the same, so the two
+		// adapters cannot disagree about what a caller sent.
+		{"global.anthropic.claude-sonnet-4-6", adapter.ThinkingConfig{Type: "enabled", BudgetTokens: -1}, map[string]any{"type": "enabled", "budget_tokens": -1}},
+	}
+	for _, tt := range tests {
+		thinking := tt.thinking
+		nativeAny, err := New().ToProvider(bedrockThinkingRequest(tt.model, &thinking))
+		if err != nil {
+			t.Fatalf("ToProvider(%s): %v", tt.model, err)
+		}
+		native := nativeAny.(*Request)
+		got, ok := native.AdditionalModelRequestFields["thinking"].(map[string]any)
+		if !ok {
+			t.Errorf("ToProvider(%s): additionalModelRequestFields = %v, want a thinking object", tt.model, native.AdditionalModelRequestFields)
+			continue
+		}
+		if len(got) != len(tt.want) || got["type"] != tt.want["type"] {
+			t.Errorf("ToProvider(%s): thinking = %v, want %v", tt.model, got, tt.want)
+		}
+		if wantBudget, has := tt.want["budget_tokens"]; has {
+			if got["budget_tokens"] != wantBudget {
+				t.Errorf("ToProvider(%s): thinking.budget_tokens = %v, want %v", tt.model, got["budget_tokens"], wantBudget)
+			}
+		} else if _, leaked := got["budget_tokens"]; leaked {
+			t.Errorf("ToProvider(%s): thinking carries budget_tokens %v, want none for %s", tt.model, got["budget_tokens"], tt.thinking.Type)
+		}
+	}
+}
+
+// TestToProviderThinkingDroppedOnRejectingFamily is the negative half: a
+// type the family rejects with a 400 (enabled on Claude 5.x -- "use
+// thinking.type.adaptive"; adaptive on 4.5 and older -- "adaptive
+// thinking is not supported on this model") is omitted entirely, and
+// with nothing else to send additionalModelRequestFields stays nil, so
+// the request is byte-identical to one without thinking. The drop is a
+// capability decision the dataplane logs (thinking_dropped), not an
+// error.
+func TestToProviderThinkingDroppedOnRejectingFamily(t *testing.T) {
+	tests := []struct {
+		model    string
+		thinking adapter.ThinkingConfig
+	}{
+		{"global.anthropic.claude-fable-5-1", adapter.ThinkingConfig{Type: "enabled", BudgetTokens: 1024}},
+		{"global.anthropic.claude-sonnet-5-5", adapter.ThinkingConfig{Type: "enabled", BudgetTokens: 1024}},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", adapter.ThinkingConfig{Type: "adaptive"}},
+	}
+	for _, tt := range tests {
+		thinking := tt.thinking
+		nativeAny, err := New().ToProvider(bedrockThinkingRequest(tt.model, &thinking))
+		if err != nil {
+			t.Fatalf("ToProvider(%s): %v", tt.model, err)
+		}
+		native := nativeAny.(*Request)
+		if native.AdditionalModelRequestFields != nil {
+			t.Errorf("ToProvider(%s, %s): additionalModelRequestFields = %v, want nil (the rejected thinking type must be dropped)", tt.model, tt.thinking.Type, native.AdditionalModelRequestFields)
+		}
+	}
+}
+
+// TestToProviderThinkingAndResponseFormatShareAdditionalModelRequestFields:
+// thinking and structured output are independent keys of the same map,
+// so a request carrying both sends both -- neither clobbers the other.
+func TestToProviderThinkingAndResponseFormatShareAdditionalModelRequestFields(t *testing.T) {
+	req := bedrockThinkingRequest("global.anthropic.claude-haiku-4-5-20251001-v1:0", &adapter.ThinkingConfig{Type: "enabled", BudgetTokens: 1024})
+	req.ResponseFormat = &adapter.ResponseFormat{
+		Type:       "json_schema",
+		JSONSchema: &adapter.JSONSchema{Name: "answer", Schema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)},
+	}
+
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if _, ok := native.AdditionalModelRequestFields["output_config"]; !ok {
+		t.Errorf("additionalModelRequestFields = %v, want an output_config key beside thinking", native.AdditionalModelRequestFields)
+	}
+	thinking, ok := native.AdditionalModelRequestFields["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "enabled" {
+		t.Errorf("additionalModelRequestFields = %v, want a thinking key beside output_config", native.AdditionalModelRequestFields)
+	}
+}
+
+// TestToProviderNilThinkingLeavesAdditionalModelRequestFieldsNil names
+// the backward-compatibility guarantee every existing golden relies on:
+// a nil Thinking (every request built before the field existed, and
+// every /v1/chat/completions request forever) adds nothing.
+func TestToProviderNilThinkingLeavesAdditionalModelRequestFieldsNil(t *testing.T) {
+	nativeAny, err := New().ToProvider(bedrockThinkingRequest("global.anthropic.claude-fable-5-1", nil))
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	if fields := nativeAny.(*Request).AdditionalModelRequestFields; fields != nil {
+		t.Errorf("additionalModelRequestFields = %v, want nil for a nil Thinking", fields)
+	}
+}

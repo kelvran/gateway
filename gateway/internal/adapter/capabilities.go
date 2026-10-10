@@ -179,3 +179,107 @@ func AnthropicModelRejectsForcedToolChoice(model string) bool {
 	}
 	return false
 }
+
+// BedrockThinkingCapability is one Claude generation's answer to the four
+// Anthropic request fields Bedrock Converse validates per model inside
+// additionalModelRequestFields, live-probed on 2026-10-10 (item 11 slices
+// S2 and S4; the full tables with AWS's own messages are in the gitignored
+// scratch-pad/research/round4-lanes/sources/converse-*-probe-2026-10-10.md).
+// Every rejection is a 400 ValidationException naming the field; nothing
+// is dropped upstream.
+type BedrockThinkingCapability struct {
+	// Enabled: thinking {"type":"enabled","budget_tokens":N}.
+	Enabled bool
+	// Adaptive: thinking {"type":"adaptive"}.
+	Adaptive bool
+	// Effort: output_config {"effort": ...} (consumed by slice S5).
+	Effort bool
+	// TopK: top_k (consumed by slice S5).
+	TopK bool
+}
+
+// bedrockThinkingGenerations lists the Claude families the table knows,
+// by generation, matched with bedrockModelFamilyMatches (so
+// "claude-sonnet-5" never admits "claude-sonnet-5-5"). PROVEN means the
+// 2026-10-10 probes ran against that exact family; INFERRED means the
+// family is placed by its generation only -- every Opus id was refused by
+// the probing account's identity policy (bedrock_opus_4.8_deny, an
+// explicit deny on bedrock:InvokeModel, hit on the baseline call too), and
+// sonnet-4-5 was not requested. Re-probe an inferred family before
+// relying on it, and never add a family on documentation alone
+// (bedrockStructuredOutputModelSubstrings' own rule).
+var bedrockThinkingGenerations = []struct {
+	families   []string
+	capability BedrockThinkingCapability
+}{
+	{
+		// Claude 5.x: adaptive and effort; enabled is a 400 ("use
+		// thinking.type.adaptive and output_config.effort"), top_k is a
+		// 400 ("deprecated for this model"). PROVEN: sonnet-5, sonnet-5-5,
+		// fable-5-1, haiku-5-5. INFERRED: opus-5, opus-5-5.
+		families:   []string{"claude-sonnet-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-5-5", "claude-opus-5", "claude-opus-5-5"},
+		capability: BedrockThinkingCapability{Adaptive: true, Effort: true},
+	},
+	{
+		// Claude 4.6: all four. PROVEN: sonnet-4-6. INFERRED: opus-4-6.
+		families:   []string{"claude-sonnet-4-6", "claude-opus-4-6"},
+		capability: BedrockThinkingCapability{Enabled: true, Adaptive: true, Effort: true, TopK: true},
+	},
+	{
+		// Claude 4.5: enabled and top_k; adaptive is a 400 ("adaptive
+		// thinking is not supported on this model"), effort is a 400
+		// ("does not support the effort parameter"). PROVEN: haiku-4-5.
+		// INFERRED: sonnet-4-5, opus-4-5.
+		families:   []string{"claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5"},
+		capability: BedrockThinkingCapability{Enabled: true, TopK: true},
+	},
+}
+
+// BedrockThinkingCapabilityFor returns the table row for model (a Bedrock
+// model ID with its region prefix and version suffix) and whether the
+// table lists its family at all. Exported for the same reason
+// BedrockModelSupportsForcedToolChoice is: adapter/bedrock consumes it,
+// and the dataplane reads it to record a drop.
+func BedrockThinkingCapabilityFor(model string) (BedrockThinkingCapability, bool) {
+	for _, gen := range bedrockThinkingGenerations {
+		for _, family := range gen.families {
+			if bedrockModelFamilyMatches(model, family) {
+				return gen.capability, true
+			}
+		}
+	}
+	return BedrockThinkingCapability{}, false
+}
+
+// BedrockForwardsThinking decides whether the bedrock adapter sends a
+// canonical ChatRequest.Thinking of thinkingType to model and, when it
+// does not, why (a short reason for the dataplane's thinking_dropped log
+// line). The asymmetry is deliberate: only a type the model's family is
+// proven (or, for an inferred family, placed by generation) to reject
+// with a 400 is dropped -- the request then succeeds without thinking,
+// which beats a 400 for a configuration the caller may not have chosen
+// (a fallback chain or an alias can land a request on a different
+// generation than the client assumed). Everything else forwards
+// verbatim -- an accepting family, an unlisted family or a non-Anthropic
+// model, and "disabled" (never probed) -- because for an unknown the
+// upstream's own answer is the honest one, and a silent drop would hide
+// a new model's real support exactly the way a stale whitelist hid
+// structured output on Sonnet 5 (bedrockStructuredOutputModelSubstrings'
+// doc comment).
+func BedrockForwardsThinking(model, thinkingType string) (forward bool, reason string) {
+	capability, known := BedrockThinkingCapabilityFor(model)
+	if !known {
+		return true, ""
+	}
+	switch thinkingType {
+	case "enabled":
+		if !capability.Enabled {
+			return false, "the model's Claude generation rejects thinking.type enabled on Bedrock (it takes adaptive)"
+		}
+	case "adaptive":
+		if !capability.Adaptive {
+			return false, "the model's Claude generation rejects thinking.type adaptive on Bedrock (it takes enabled with budget_tokens)"
+		}
+	}
+	return true, ""
+}

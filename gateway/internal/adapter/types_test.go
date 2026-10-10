@@ -220,3 +220,29 @@ func TestEmbeddingRequestUnmarshalJSONWithNoInputLeavesItNil(t *testing.T) {
 		t.Errorf("Input = %v, want nil", req.Input)
 	}
 }
+
+// TestChatRequestThinkingIsUnreachableFromJSON pins the json:"-" tag on
+// ChatRequest.Thinking: the field is set only by the Anthropic Messages
+// ingress (docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md §3),
+// never by a /v1/chat/completions body, which unmarshals straight into
+// this type -- so a client posting a "thinking" object there must get the
+// same silent unknown-field drop it gets today, and marshaling a request
+// that carries one must not leak it onto the OpenAI-shaped wire either.
+func TestChatRequestThinkingIsUnreachableFromJSON(t *testing.T) {
+	var req ChatRequest
+	body := `{"model":"m","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive","budget_tokens":1024}}`
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if req.Thinking != nil {
+		t.Errorf("Thinking = %+v after unmarshaling a body with a thinking object, want nil (json:\"-\")", req.Thinking)
+	}
+
+	out, err := json.Marshal(ChatRequest{Model: "m", Thinking: &ThinkingConfig{Type: "adaptive", BudgetTokens: 1024}})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "thinking") {
+		t.Errorf("Marshal leaked the thinking field onto the wire: %s", out)
+	}
+}

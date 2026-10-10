@@ -97,25 +97,28 @@ type Request struct {
 	// per docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md.
 	ToolChoice *ToolChoiceWire `json:"tool_choice,omitempty"`
 	// Thinking, when set, is Anthropic's native top-level
-	// thinking-configuration object. Kelvran doesn't otherwise configure
-	// Type ("adaptive"/"enabled"/"disabled") or a token budget anywhere
-	// today -- extended/adaptive thinking budget configuration is a
-	// separate, unbuilt feature. This field exists ONLY to carry
-	// BlockBinding, per the thinking-binding-controls-2026-08-01
-	// addendum to
-	// docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md
-	// -- ToProvider only ever populates it (with Type "adaptive") for
-	// the exact models thinkingBlockBindingModelSubstrings names; every
-	// other model gets a nil Thinking, byte-identical to today's
-	// existing behavior.
+	// thinking-configuration object, built by thinkingToProvider from two
+	// sources: the caller's own canonical adapter.ChatRequest.Thinking
+	// (Type and BudgetTokens, forwarded verbatim -- the Anthropic Messages
+	// ingress sets it, per docs/rfcs/2026-10-09-gateway-anthropic-
+	// messages-ingress.md §3, item 11 slice S4) and Kelvran's own
+	// BlockBinding, per the thinking-binding-controls-2026-08-01 addendum
+	// to docs/rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md,
+	// which ToProvider adds only for the exact models
+	// thinkingBlockBindingModelSubstrings names. With no canonical
+	// Thinking (every /v1/chat/completions request), the gate alone
+	// decides and populates Type "adaptive" on a gate model; every other
+	// model gets a nil Thinking, byte-identical to before the field.
 	Thinking *Thinking `json:"thinking,omitempty"`
 }
 
 // Thinking is Anthropic's native top-level thinking-configuration
-// object -- see Request.Thinking's own doc comment for why this adapter
-// only ever sets Type and BlockBinding, never a token budget.
+// object -- see Request.Thinking's own doc comment for where each field
+// comes from. BudgetTokens is omitempty because 0 means "none sent" and
+// Anthropic rejects a budget beside Type "adaptive".
 type Thinking struct {
 	Type         string        `json:"type,omitempty"`
+	BudgetTokens int           `json:"budget_tokens,omitempty"`
 	BlockBinding *BlockBinding `json:"block_binding,omitempty"`
 }
 
@@ -393,6 +396,35 @@ func thinkingBindingToProvider(mode, model string) (*Thinking, error) {
 	}, nil
 }
 
+// thinkingToProvider builds Request.Thinking from the caller's canonical
+// ChatRequest.Thinking and the model-substring binding gate
+// (thinkingBindingToProvider), per docs/rfcs/2026-10-09-gateway-anthropic-
+// messages-ingress.md §3's precedence rule (item 11 slice S4): with no
+// canonical Thinking the gate alone decides, byte-identical to before the
+// field existed -- it is the only way /v1/chat/completions, which has no
+// thinking field, gets Kelvran's non-strict drop_block default. With one,
+// the caller's Type and BudgetTokens are forwarded verbatim (never
+// validated: a budget Anthropic finds too small, or a type a model does
+// not take, is the upstream's own 400) and the gate's "adaptive" may no
+// longer overwrite them; the gate still contributes BlockBinding on a
+// model it names, unless the caller turned thinking off -- the prefix
+// check only applies to replayed thinking, and a block_binding beside
+// "disabled" is not a shape Anthropic documents.
+func thinkingToProvider(req adapter.ChatRequest) (*Thinking, error) {
+	gate, err := thinkingBindingToProvider(req.ThinkingBindingMode, req.Model)
+	if err != nil {
+		return nil, err
+	}
+	if req.Thinking == nil {
+		return gate, nil
+	}
+	thinking := &Thinking{Type: req.Thinking.Type, BudgetTokens: req.Thinking.BudgetTokens}
+	if gate != nil && thinking.Type != "disabled" {
+		thinking.BlockBinding = gate.BlockBinding
+	}
+	return thinking, nil
+}
+
 // ThinkingBindingBetaHeaderValue reports the anthropic-beta header value
 // needed to activate req's own Thinking.BlockBinding field, and whether
 // one is needed at all -- false whenever ToProvider left Thinking nil
@@ -619,7 +651,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		return nil, err
 	}
 
-	thinking, err := thinkingBindingToProvider(req.ThinkingBindingMode, req.Model)
+	thinking, err := thinkingToProvider(req)
 	if err != nil {
 		return nil, err
 	}

@@ -191,7 +191,20 @@ func formatOptionalInt(v *int) string {
 // still share keys with EACH OTHER -- but, as with every fold above, every
 // key differs from the previous scheme's (the field is hashed even when
 // empty), so entries written before this change become unreachable.
-func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string) string {
+//
+// thinkingFingerprint (dataplane.thinkingFingerprint: the canonical JSON
+// of ChatRequest.Thinking, "" when the request carries none) is folded
+// the same unconditional way, per
+// docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md §3 (item 11
+// slice S4): the thinking configuration changes what the model produces,
+// so a reply made without extended thinking must never be served to a
+// request that asked for it, or the reverse. As with every fold above,
+// every key differs from the previous scheme's, so entries written
+// before this change become unreachable -- one of the three folds the
+// item 11 plan schedules before the ingress ships (S4 thinking, S5
+// sampling, S9b passthrough); a release carrying all three still costs
+// one cold cache.
+func Key(tenantID string, model string, serializedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string) string {
 	h := sha256.New()
 	// The leading "layer"/"l1" field exists so Key and NormalizedKey can
 	// never collide even given byte-identical remaining inputs — cheap
@@ -211,6 +224,7 @@ func Key(tenantID string, model string, serializedMessages string, temperature *
 	writeField(h, "end_user", endUserID)
 	writeField(h, "thinking_binding_mode", thinkingBindingMode)
 	writeField(h, "tools", toolsFingerprint)
+	writeField(h, "thinking", thinkingFingerprint)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -246,9 +260,9 @@ func ScopeKey(tenantID, endUserID string) string {
 // opinion on normalization itself, matching Key's own "primitive/
 // serialized inputs only" contract so this package still never needs to
 // import internal/adapter. promptFingerprint, endUserID, and
-// thinkingBindingMode mirror Key's own identical parameters -- see its
-// doc comment above.
-func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string) string {
+// thinkingBindingMode, toolsFingerprint and thinkingFingerprint mirror
+// Key's own identical parameters -- see its doc comment above.
+func NormalizedKey(tenantID string, model string, normalizedMessages string, temperature *float64, maxTokens *int, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, endUserID string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string) string {
 	h := sha256.New()
 	writeField(h, "layer", "l2")
 	writeField(h, "tenant", tenantID)
@@ -262,5 +276,6 @@ func NormalizedKey(tenantID string, model string, normalizedMessages string, tem
 	writeField(h, "end_user", endUserID)
 	writeField(h, "thinking_binding_mode", thinkingBindingMode)
 	writeField(h, "tools", toolsFingerprint)
+	writeField(h, "thinking", thinkingFingerprint)
 	return hex.EncodeToString(h.Sum(nil))
 }

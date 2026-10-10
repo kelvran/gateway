@@ -91,3 +91,89 @@ func TestAnthropicModelRejectsForcedToolChoice(t *testing.T) {
 		}
 	}
 }
+
+// TestBedrockForwardsThinkingIsPerFamily is the live-probed decision table
+// behind BedrockForwardsThinking (item 11 slice S4; the S2 and S4 Converse
+// probes, 2026-10-10): the Claude 5.x generation accepts thinking.type
+// "adaptive" and rejects "enabled" with a 400 naming adaptive; 4.6 accepts
+// both; 4.5 and older accept "enabled" and reject "adaptive". A rejecting
+// family drops the object (the request still succeeds, without thinking);
+// every other case -- an accepting family, an unlisted family, a
+// non-Anthropic model, a type the probes never covered -- forwards
+// verbatim so the upstream's own answer is what the caller sees.
+func TestBedrockForwardsThinkingIsPerFamily(t *testing.T) {
+	tests := []struct {
+		model, thinkingType string
+		forward             bool
+	}{
+		// Claude 5.x -- proven: sonnet-5, sonnet-5-5, fable-5-1, haiku-5-5.
+		{"global.anthropic.claude-sonnet-5", "adaptive", true},
+		{"global.anthropic.claude-sonnet-5", "enabled", false},
+		{"global.anthropic.claude-sonnet-5-5", "adaptive", true},
+		{"global.anthropic.claude-sonnet-5-5", "enabled", false},
+		{"global.anthropic.claude-fable-5-1", "adaptive", true},
+		{"global.anthropic.claude-fable-5-1", "enabled", false},
+		{"global.anthropic.claude-haiku-5-5", "adaptive", true},
+		{"global.anthropic.claude-haiku-5-5", "enabled", false},
+		// Claude 5.x -- inferred from the generation (IAM-denied to the probe).
+		{"global.anthropic.claude-opus-5-5", "adaptive", true},
+		{"global.anthropic.claude-opus-5-5", "enabled", false},
+		{"global.anthropic.claude-opus-5", "enabled", false},
+		// Claude 4.6 -- proven: sonnet-4-6; inferred: opus-4-6.
+		{"global.anthropic.claude-sonnet-4-6", "adaptive", true},
+		{"global.anthropic.claude-sonnet-4-6", "enabled", true},
+		{"global.anthropic.claude-opus-4-6-v1", "adaptive", true},
+		{"global.anthropic.claude-opus-4-6-v1", "enabled", true},
+		// Claude 4.5 and older -- proven: haiku-4-5; inferred: sonnet-4-5, opus-4-5.
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", "enabled", true},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", "adaptive", false},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "adaptive", false},
+		{"global.anthropic.claude-opus-4-5-20251101-v1:0", "adaptive", false},
+		{"global.anthropic.claude-opus-4-5-20251101-v1:0", "enabled", true},
+		// Unlisted family, non-Anthropic model, unprobed type: forward.
+		{"anthropic.claude-3-5-sonnet-20241022-v2:0", "adaptive", true},
+		{"anthropic.claude-3-5-sonnet-20241022-v2:0", "enabled", true},
+		{"amazon.nova-pro-v1:0", "adaptive", true},
+		{"global.anthropic.claude-fable-5-1", "disabled", true},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", "disabled", true},
+	}
+	for _, tt := range tests {
+		forward, reason := BedrockForwardsThinking(tt.model, tt.thinkingType)
+		if forward != tt.forward {
+			t.Errorf("BedrockForwardsThinking(%q, %q) = %v (%q), want %v", tt.model, tt.thinkingType, forward, reason, tt.forward)
+		}
+		if !forward && reason == "" {
+			t.Errorf("BedrockForwardsThinking(%q, %q) dropped with an empty reason", tt.model, tt.thinkingType)
+		}
+		if forward && reason != "" {
+			t.Errorf("BedrockForwardsThinking(%q, %q) forwarded but returned reason %q, want empty", tt.model, tt.thinkingType, reason)
+		}
+	}
+}
+
+// TestBedrockThinkingCapabilityForCarriesEffortAndTopK pins the two
+// columns slice S5 consumes (output_config.effort and top_k), probed in
+// the same calls: 5.x accepts effort and rejects top_k ("deprecated for
+// this model"); 4.6 accepts both; 4.5 rejects effort ("does not support
+// the effort parameter") and accepts top_k. The second return is false
+// for a family the table does not list.
+func TestBedrockThinkingCapabilityForCarriesEffortAndTopK(t *testing.T) {
+	tests := []struct {
+		model string
+		want  BedrockThinkingCapability
+		known bool
+	}{
+		{"global.anthropic.claude-fable-5-1", BedrockThinkingCapability{Adaptive: true, Effort: true}, true},
+		{"global.anthropic.claude-haiku-5-5", BedrockThinkingCapability{Adaptive: true, Effort: true}, true},
+		{"global.anthropic.claude-sonnet-4-6", BedrockThinkingCapability{Enabled: true, Adaptive: true, Effort: true, TopK: true}, true},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", BedrockThinkingCapability{Enabled: true, TopK: true}, true},
+		{"anthropic.claude-3-5-sonnet-20241022-v2:0", BedrockThinkingCapability{}, false},
+		{"amazon.nova-pro-v1:0", BedrockThinkingCapability{}, false},
+	}
+	for _, tt := range tests {
+		got, known := BedrockThinkingCapabilityFor(tt.model)
+		if known != tt.known || got != tt.want {
+			t.Errorf("BedrockThinkingCapabilityFor(%q) = %+v, %v; want %+v, %v", tt.model, got, known, tt.want, tt.known)
+		}
+	}
+}

@@ -25,6 +25,7 @@ type lexicalEntry struct {
 	reasoningBlocksFingerprint string
 	thinkingBindingMode        string
 	toolsFingerprint           string
+	thinkingFingerprint        string
 	expiresAt                  time.Time
 }
 
@@ -165,6 +166,7 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 			ReasoningBlocksFingerprint: sc.entry.reasoningBlocksFingerprint,
 			ThinkingBindingMode:        sc.entry.thinkingBindingMode,
 			ToolsFingerprint:           sc.entry.toolsFingerprint,
+			ThinkingFingerprint:        sc.entry.thinkingFingerprint,
 		})
 	}
 	return result, nil
@@ -173,7 +175,7 @@ func (c *LexicalCache) Search(_ context.Context, tenantID string, signature []ui
 // Put implements cache.LexicalCache. Creates tenantID's bucket on first
 // write; inserting past maxEntries evicts that tenant's own
 // least-recently-used entry — never another tenant's.
-func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, toolsFingerprint string, ttl time.Duration) error {
+func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -211,6 +213,7 @@ func (c *LexicalCache) Put(_ context.Context, tenantID string, signature []uint6
 		reasoningBlocksFingerprint: reasoningBlocksFingerprint,
 		thinkingBindingMode:        thinkingBindingMode,
 		toolsFingerprint:           toolsFingerprint,
+		thinkingFingerprint:        thinkingFingerprint,
 		expiresAt:                  now.Add(ttl + jitter),
 	})
 	if bucket.entries.Len() > c.maxEntries {

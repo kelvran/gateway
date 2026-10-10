@@ -437,6 +437,47 @@ type ChatRequest struct {
 	// model except the two named in anthropic.go's own model gate, and
 	// every non-Anthropic provider.
 	ThinkingBindingMode string `json:"thinking_binding_mode,omitempty"`
+	// Thinking is the caller's own extended/adaptive-thinking
+	// configuration -- Anthropic's top-level thinking object, Type
+	// "enabled" (with BudgetTokens), "adaptive" or "disabled" -- per
+	// docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md §3 (item
+	// 11 slice S4). Set only by the Anthropic Messages ingress; json:"-"
+	// makes it structurally unreachable from a /v1/chat/completions body
+	// (which unmarshals straight into this type), the same reasoning as
+	// DisableCacheControlAutoPopulate above, so the OpenAI wire contract
+	// in docs/VERSIONING.md is unchanged. Nil (the default, and every
+	// ChatRequest built before this field existed) is a silent no-op for
+	// every adapter: the anthropic adapter's model-substring binding gate
+	// keeps deciding alone, byte-identical to before. When set, the
+	// anthropic adapter forwards Type and BudgetTokens verbatim (the gate
+	// still contributes block_binding on a model it names -- the caller's
+	// object takes precedence over the gate's own "adaptive", never the
+	// reverse); the bedrock adapter forwards it through
+	// additionalModelRequestFields when the served model's family accepts
+	// the type and omits it when the family rejects it
+	// (BedrockForwardsThinking, capabilities.go); every other adapter has
+	// no thinking configuration and ignores it. The dataplane records
+	// both kinds of loss on a thinking_dropped log line
+	// (noteThinkingDropped). Never validated here: a budget Anthropic
+	// finds too small, or a type a model does not take, is the upstream's
+	// own 400, relayed as-is. Folded into every cache key and the L3 gate
+	// (dataplane.thinkingFingerprint).
+	Thinking *ThinkingConfig `json:"-"`
+}
+
+// ThinkingConfig is the canonical form of Anthropic's thinking request
+// object, per ChatRequest.Thinking's own doc comment. The JSON tags are
+// its canonical serialization for cache fingerprinting (ChatRequest's own
+// json:"-" keeps it off the OpenAI wire regardless) and match Anthropic's
+// wire names so the ingress can decode it directly.
+type ThinkingConfig struct {
+	// Type is "enabled", "adaptive" or "disabled", forwarded as the caller
+	// sent it.
+	Type string `json:"type"`
+	// BudgetTokens is the "enabled" budget; 0 means the caller sent none,
+	// and omitempty keeps it off the wire -- Anthropic rejects a budget on
+	// "adaptive", and 0 would be a value, not an absence.
+	BudgetTokens int `json:"budget_tokens,omitempty"`
 }
 
 // ToolChoice requests forcing behavior for tool calling, per

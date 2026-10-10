@@ -2177,8 +2177,8 @@ func (p *Pipeline) EraseCacheEntry(ctx context.Context, virtualKeyID string, end
 
 	cacheScope := cache.ScopeKey(virtualKeyID, endUserID)
 	respFmtFP := responseFormatFingerprint(req.ResponseFormat)
-	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req))
-	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req))
+	l1Key := cache.Key(virtualKeyID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req))
+	l2Key := cache.NormalizedKey(virtualKeyID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), respFmtFP, promptFP, endUserID, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req))
 
 	var result EraseCacheEntryResult
 	if _, _, ok, _ := p.cache.Get(ctx, cacheScope, l1Key); ok {
@@ -2781,10 +2781,10 @@ func (p *Pipeline) logCacheCrossInstanceCheck(ctx context.Context, tenantID, key
 // best-effort, on a genuine miss — gateway/ARCHITECTURE.md's Request
 // Lifecycle says write-back covers "all layers." No lazy/async
 // population: the response is already in hand.
-func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, toolsFP string, encoded []byte) {
+func (p *Pipeline) writeCache(ctx context.Context, tenantID, l1Key, l2Key string, l3Signature []uint64, l3Fingerprint map[string]struct{}, modelID string, responseFormatFP string, promptFP string, l3NegationFingerprint map[string]struct{}, l3ReasoningBlocksFP string, thinkingBindingMode string, toolsFP string, thinkingFP string, encoded []byte) {
 	_ = p.cache.Put(ctx, tenantID, l1Key, encoded, p.cacheTTL)
 	_ = p.cacheL2.Put(ctx, tenantID, l2Key, encoded, p.cacheL2TTL)
-	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, toolsFP, p.cacheL3TTL)
+	_ = p.cacheL3.Put(ctx, tenantID, l3Signature, encoded, l3Fingerprint, modelID, p.guardrails.Version(), responseFormatFP, promptFP, l3NegationFingerprint, l3ReasoningBlocksFP, thinkingBindingMode, toolsFP, thinkingFP, p.cacheL3TTL)
 }
 
 // l3ShingleWords, l3SignatureSize, and l3SearchK are Cache L3-lite's own
@@ -2917,6 +2917,7 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 	responseFormatFP := responseFormatFingerprint(req.ResponseFormat)
 	queryReasoningFP := reasoningBlocksFingerprint(req.Messages)
 	queryToolsFP := toolsFingerprint(req)
+	queryThinkingFP := thinkingFingerprint(req)
 	for _, c := range candidates {
 		entityMismatch := !fingerprintsEqual(queryFingerprint, c.Fingerprint)
 		telemetry.RecordCacheL3GateOutcome(ctx, telemetry.CacheL3GateEntityMismatch, entityMismatch)
@@ -2999,6 +3000,18 @@ func (p *Pipeline) checkLexicalCache(ctx context.Context, vk *identity.VirtualKe
 		// every other gate above; not one of the three named gates
 		// telemetry.RecordCacheL3GateOutcome counts.
 		if c.ToolsFingerprint != queryToolsFP {
+			continue
+		}
+		// A gate for docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md
+		// §3 (item 11 slice S4) -- the identical L1/L2 fold key.go's
+		// Key/NormalizedKey apply, extended to L3's near-duplicate match: an
+		// entry written for a request made without extended thinking must
+		// never be served to a near-duplicate that asked for it, or with a
+		// different configuration, and vice versa. Exact string equality,
+		// both-empty counting as a match, same convention as every gate
+		// above -- not one of Finding 1's three named gates, so not counted
+		// via telemetry.RecordCacheL3GateOutcome.
+		if c.ThinkingFingerprint != queryThinkingFP {
 			continue
 		}
 		p.logCacheCrossInstanceCheck(ctx, vk.ID, l1Key, "L3", true, p.cacheL3TTL)
@@ -3206,11 +3219,10 @@ func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKe
 		return false, false, adapter.ChatResponse{}, 0, nil
 	}
 
-	body, marshalErr := json.Marshal(req)
-	if marshalErr != nil {
-		return false, false, adapter.ChatResponse{}, 0, fmt.Errorf("dataplane: idempotency: marshal request for fingerprint: %w", marshalErr)
+	fingerprint, fingerprintErr := idempotencyFingerprint(req)
+	if fingerprintErr != nil {
+		return false, false, adapter.ChatResponse{}, 0, fingerprintErr
 	}
-	fingerprint := sha256.Sum256(body)
 	storeKey := idempotencyStoreKey(tenantID, idempotencyKey)
 
 	for {
@@ -3236,6 +3248,38 @@ func (p *Pipeline) claimIdempotency(ctx context.Context, tenantID, idempotencyKe
 			}
 		}
 	}
+}
+
+// idempotencyFingerprint is the body fingerprint claimIdempotency stores
+// beside an Idempotency-Key: sha256 of the request's canonical JSON, plus
+// -- when the request carries one -- its thinking configuration, which
+// json:"-" keeps out of that JSON. Found by the slice-S4 security review:
+// ChatRequest.Thinking is the first CALLER-controlled field ever excluded
+// from the marshaled body (DisableCacheControlAutoPopulate, the other
+// json:"-" field, is operator-set), so without this fold two bodies
+// differing only in thinking would replay each other's response -- the
+// same cross-configuration serving thinkingFingerprint's cache fold
+// prevents, one layer over. A request WITHOUT a thinking configuration
+// fingerprints byte-for-byte as before (sha256.Sum256 of the body alone),
+// deliberately unlike the cache fold, which hashes the empty value too: a
+// key claimed by the previous build and reused across an upgrade inside
+// its window must not become a spurious ErrFingerprintMismatch.
+func idempotencyFingerprint(req adapter.ChatRequest) ([sha256.Size]byte, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return [sha256.Size]byte{}, fmt.Errorf("dataplane: idempotency: marshal request for fingerprint: %w", err)
+	}
+	thinkingFP := thinkingFingerprint(req)
+	if thinkingFP == "" {
+		return sha256.Sum256(body), nil
+	}
+	h := sha256.New()
+	h.Write(body)
+	h.Write([]byte("\x00thinking="))
+	h.Write([]byte(thinkingFP))
+	var sum [sha256.Size]byte
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
 }
 
 // completeIdempotency resolves idempotencyKey's claim once a call that
@@ -3713,8 +3757,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 
 	endUserScope := resolveCacheEndUserScope(ctx, vk, endUserIDHeader)
 	cacheScope := cache.ScopeKey(vk.ID, endUserScope)
-	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req))
-	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req))
+	l1Key := cache.Key(vk.ID, req.Model, serializeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req))
+	l2Key := cache.NormalizedKey(vk.ID, req.Model, normalizeMessages(req.Messages), req.Temperature, req.MaxTokens, p.guardrails.Version(), responseFormatFingerprint(req.ResponseFormat), promptFP, endUserScope, req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req))
 	l3Signature := cache.MinHashSignature(cache.Shingles(normalizeMessages(req.Messages), l3ShingleWords), l3SignatureSize)
 
 	cacheAttempted = true
@@ -3958,7 +4002,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 
 		if !responseWasTruncated(resp) {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
-				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), encoded)
+				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), encoded)
 			}
 		}
 
@@ -4005,6 +4049,8 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	// docs/rfcs/2026-09-07-gateway-cache-control-auto-populate.md — a
 	// no-op field read only by the anthropic/bedrock adapters.
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled()
+
+	p.noteThinkingDropped(ctx, dep, upstreamReq)
 
 	providerReq, err := a.ToProvider(upstreamReq)
 	if err != nil {
@@ -5256,10 +5302,18 @@ const maxModelForTelemetry = 256
 // for use in a span name or log field -- see that constant's own doc
 // comment.
 func boundedModelForTelemetry(model string) string {
-	if len(model) <= maxModelForTelemetry {
-		return model
+	return boundedForTelemetry(model)
+}
+
+// boundedForTelemetry truncates any caller-controlled string to
+// maxModelForTelemetry bytes before it becomes a span or log field -- the
+// model name (boundedModelForTelemetry) and the thinking type
+// (noteThinkingDropped) share the one bound.
+func boundedForTelemetry(s string) string {
+	if len(s) <= maxModelForTelemetry {
+		return s
 	}
-	return model[:maxModelForTelemetry]
+	return s[:maxModelForTelemetry]
 }
 
 // traceLogFields returns "trace_id"/"span_id" key-value pairs for ctx's
@@ -5484,6 +5538,64 @@ func toolsFingerprint(req adapter.ChatRequest) string {
 		panic(fmt.Sprintf("dataplane: marshaling tools for cache key: %v", err))
 	}
 	return string(b)
+}
+
+// thinkingFingerprint is the cache-key / L3 hard-gate input for a request's
+// canonical Thinking configuration (item 11 slice S4, per
+// docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md §3): "" when
+// the request carries none, so every request without one -- every
+// request built before the field existed, and every /v1/chat/completions
+// request -- keeps folding the empty string exactly like every other
+// empty-string input; otherwise the canonical JSON of ThinkingConfig,
+// distinct for every distinct type and budget. The configuration changes
+// what the model produces, so two requests differing only here must never
+// share an entry at any layer (the 2026-09-24 every-layer rule).
+func thinkingFingerprint(req adapter.ChatRequest) string {
+	if req.Thinking == nil {
+		return ""
+	}
+	b, err := json.Marshal(req.Thinking)
+	if err != nil {
+		panic(fmt.Sprintf("dataplane: marshaling thinking for cache key: %v", err))
+	}
+	return string(b)
+}
+
+// noteThinkingDropped records, on a thinking_dropped log line naming the
+// deployment, the served model, the type and the reason, a canonical
+// ChatRequest.Thinking the adapter about to run is going to leave out:
+// the bedrock adapter omits a type the served model's Claude generation
+// rejects (adapter.BedrockForwardsThinking, item 11 slice S4 -- the same
+// predicate thinkingFieldFor consults, so this never disagrees with the
+// wire), and every provider other than anthropic and bedrock has no
+// thinking configuration at all and ignores the object. The request
+// proceeds without thinking either way; until slice S9b adds the
+// telemetry carrier this line is the only record, which is why it is a
+// Warn and why its fields are pinned by test. The type is bounded like the
+// model name: once the ingress exists it is a caller-controlled string.
+func (p *Pipeline) noteThinkingDropped(ctx context.Context, dep Deployment, upstreamReq adapter.ChatRequest) {
+	if upstreamReq.Thinking == nil {
+		return
+	}
+	var reason string
+	switch dep.Provider {
+	case "anthropic":
+		return
+	case "bedrock":
+		forward, why := adapter.BedrockForwardsThinking(upstreamReq.Model, upstreamReq.Thinking.Type)
+		if forward {
+			return
+		}
+		reason = why
+	default:
+		reason = "provider " + dep.Provider + " has no thinking configuration; the object is ignored"
+	}
+	p.logger.Warn("thinking_dropped", append(traceLogFields(ctx),
+		"deployment", dep.Name,
+		"model", upstreamReq.Model,
+		"thinking_type", boundedForTelemetry(upstreamReq.Thinking.Type),
+		"reason", reason,
+	)...)
 }
 
 // serializeResponse extracts a response's text content for the

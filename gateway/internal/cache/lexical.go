@@ -195,6 +195,14 @@ type LexicalCandidate struct {
 	// counting as a match, mirroring every other fingerprint field
 	// above.
 	ThinkingBindingMode string
+	// ThinkingFingerprint is dataplane.thinkingFingerprint's value for the
+	// written request (canonical JSON of its ChatRequest.Thinking, "" when
+	// it carried none), gated by exact equality in checkLexicalCache per
+	// docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md §3 (item
+	// 11 slice S4) -- the same fold Key/NormalizedKey apply, extended to
+	// L3's near-duplicate match. Exact string-equality gate, both-empty
+	// counting as a match, mirroring every other fingerprint field above.
+	ThinkingFingerprint string
 }
 
 // LexicalCache is Cache L3-lite's own interface — deliberately not Cache,
@@ -207,5 +215,5 @@ type LexicalCandidate struct {
 // partition itself, not a post-hoc filter").
 type LexicalCache interface {
 	Search(ctx context.Context, tenantID string, signature []uint64, k int) ([]LexicalCandidate, error)
-	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, toolsFingerprint string, ttl time.Duration) error
+	Put(ctx context.Context, tenantID string, signature []uint64, resp []byte, fingerprint map[string]struct{}, modelID string, guardrailPolicyVersion string, responseFormatFingerprint string, promptFingerprint string, negationFingerprint map[string]struct{}, reasoningBlocksFingerprint string, thinkingBindingMode string, toolsFingerprint string, thinkingFingerprint string, ttl time.Duration) error
 }
