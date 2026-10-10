@@ -4,7 +4,7 @@
 
 ## 1. Before You Start
 
-The ten-minute path (one deployment, one virtual key, one request) is [`tutorials/quickstart.md`](../tutorials/quickstart.md). The deployment topologies (Docker Compose, deb/rpm/apk with systemd, Kubernetes, ECS/Fargate) are under [`how-to/deploy/`](../how-to/deploy/docker-compose.md) and in [`operations/DEPLOY.md`](../operations/DEPLOY.md). The companion CLI — `kelvran init` writes the first config and key, `kelvran doctor` reports what `-validate` cannot see (both on `main` since 2026-10-10, not in `gateway/v0.17.0`) — is [`reference/kelvran-cli.md`](../reference/kelvran-cli.md).
+The ten-minute path (one deployment, one virtual key, one request) is [`tutorials/quickstart.md`](../tutorials/quickstart.md). The deployment topologies (Docker Compose, deb/rpm/apk with systemd, Kubernetes, ECS/Fargate) are under [`how-to/deploy/`](../how-to/deploy/docker-compose.md) and in [`operations/DEPLOY.md`](../operations/DEPLOY.md). The companion CLI — `kelvran init` writes the first config and key, `kelvran doctor` reports what `-validate` cannot see, `kelvran keys` creates, lists, rotates and deletes virtual keys (all on `main` since 2026-10-10, not in `gateway/v0.17.0`) — is [`reference/kelvran-cli.md`](../reference/kelvran-cli.md).
 
 ## 2. Provider Credentials
 

@@ -55,7 +55,7 @@ Rules the agent must follow when it writes this file:
 - **Unknown keys are silently ignored** at every level, with two exceptions that are load errors: an unknown field under a `models:` entry, and an unknown error-class key under a deployment's `fallback_chains:` (only `generic`, `content_policy`, `context_window_exceeded` are accepted). A misspelled key loads fine and does nothing; `-validate` does not catch it. Have the agent diff its keys against `config.example.yaml` before trusting a green validate.
 - **`base_url` must be `https://`** unless the deployment sets `allow_insecure_http: true`.
 - **Secrets never go in the file.** Only env var names (`*_env`), file paths (`*_file`) and SHA-256 key hashes. `config.yaml` and `.env` are gitignored; `gateway/config.example.yaml` is the only committed config.
-- A real key hash comes from `printf '%s' "$KELVRAN_KEY" | shasum -a 256 | cut -d' ' -f1` (`sha256sum` on Linux). Clients send the raw secret as `Authorization: Bearer <secret>`, never the hash. See [Virtual keys and budgets](virtual-keys-and-budgets.md).
+- `kelvran keys create <name> --config config.yaml` (on `main` since 2026-10-10, with no admin token in the environment) generates a secret and writes its hash into the file; by hand, a real key hash comes from `printf '%s' "$KELVRAN_KEY" | shasum -a 256 | cut -d' ' -f1` (`sha256sum` on Linux). Clients send the raw secret as `Authorization: Bearer <secret>`, never the hash. See [Virtual keys and budgets](virtual-keys-and-budgets.md).
 
 ### 3. Run the fast validate loop
 
@@ -217,7 +217,7 @@ Read `/readyz` with care:
 
 - No JSON Schema or machine-generated reference for `config.yaml`; the annotated `gateway/config.example.yaml` is the reference.
 - No OpenAPI document for `/v1/*` or the admin API.
-- No `kelvran keys` or `connect` yet. `kelvran init` and `kelvran doctor` are on `main` since 2026-10-10, not in `gateway/v0.17.0` ([reference](../reference/kelvran-cli.md)).
+- No `kelvran connect` yet. `kelvran init`, `kelvran doctor` and `kelvran keys` are on `main` since 2026-10-10, not in `gateway/v0.17.0` ([reference](../reference/kelvran-cli.md)).
 - No Anthropic Messages API (`/v1/messages`); Claude Code's native Anthropic mode cannot target Kelvran. See [Compatibility](../reference/compatibility.md).
 - No `-validate` strict mode, unknown-key detection, JSON output, or env-var, file or Redis reachability checks (`kelvran doctor` covers the env-var and file checks, with `--json`).
 - No `${VAR}` interpolation inside `config.yaml`; the parser is a literal `key: value` subset.

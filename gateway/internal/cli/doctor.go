@@ -183,12 +183,17 @@ func sanitizeCell(s string) string {
 	return b.String()
 }
 
-// escapingWriter passes every write through sanitizeCell; it carries the
-// flag package's own error output, which echoes argv.
+// escapingWriter passes every write through sanitizeCell, keeping the line
+// breaks the writer itself emits; it carries the flag package's own error
+// output, which echoes argv.
 type escapingWriter struct{ w io.Writer }
 
 func (e escapingWriter) Write(p []byte) (int, error) {
-	if _, err := io.WriteString(e.w, sanitizeCell(string(p))); err != nil {
+	lines := strings.Split(string(p), "\n")
+	for i, l := range lines {
+		lines[i] = sanitizeCell(l)
+	}
+	if _, err := io.WriteString(e.w, strings.Join(lines, "\n")); err != nil {
 		return 0, err
 	}
 	return len(p), nil

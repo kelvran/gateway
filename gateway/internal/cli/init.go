@@ -215,16 +215,18 @@ func resolveInit(o initOptions, env IO) (*initPlan, error) {
 		}
 		p.opts.budget = d.String()
 	}
+	host, _, _ := net.SplitHostPort(o.listen)
+	if !isValidListenHost(host) {
+		// The host is pasted into shell lines unquoted; a hostname or an IP
+		// literal cannot carry shell syntax. ClientURLs applies the same rule
+		// (a served listen_addr goes through it too); this check runs first so
+		// the message names the flag.
+		return nil, usageErr("--listen host %q must be an IP address or a hostname", host)
+	}
 	if _, _, err := ClientURLs(o.listen); err != nil {
 		return nil, usageErr("--listen: %v", err)
 	}
 	p.anthropicBase, p.openaiBase, _ = ClientURLs(o.listen)
-	host, _, _ := net.SplitHostPort(o.listen)
-	if !isValidListenHost(host) {
-		// The host is pasted into shell lines unquoted; a hostname or an IP
-		// literal cannot carry shell syntax.
-		return nil, usageErr("--listen host %q must be an IP address or a hostname", host)
-	}
 	if strings.ContainsAny(o.out, "'\n\r") {
 		return nil, usageErr("--out must not contain a quote or a line break (it is pasted into shell lines)")
 	}

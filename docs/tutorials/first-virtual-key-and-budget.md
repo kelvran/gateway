@@ -23,7 +23,7 @@ Keep two terminals open: one where the gateway runs and prints its logs, one whe
 
 ## Step 1: generate the second secret and its hash
 
-A virtual key is a random secret that clients send as a bearer token. The gateway never stores the secret, only its SHA-256 digest, so the first thing you make is the pair.
+A virtual key is a random secret that clients send as a bearer token. The gateway never stores the secret, only its SHA-256 digest, so the first thing you make is the pair. (After Step 3, with `KELVRAN_ADMIN_TOKEN` exported, `kelvran keys create team-beta --budget 0.00001 --reset monthly --warn 0.8 --models gpt-4o` — on `main` since 2026-10-10, not in `gateway/v0.17.0` — does Steps 1 and 4 in one command and prints the secret once; it has no flag for Step 4's `rate_limit` block, whose `burst: 1` the Retry-After demonstration below relies on, so this tutorial keeps the manual path.)
 
 ```bash
 export TEAM_BETA_KEY=$(openssl rand -hex 32)

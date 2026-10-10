@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -83,13 +84,16 @@ func guardCredentialURL(flag, raw string, allowInsecure bool) error {
 		// Not echoed: an unparsable value may still carry a pasted secret.
 		return fmt.Errorf("%s is not an http(s) URL", flag)
 	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("%s %s must not carry credentials, a query or a fragment", flag, u.Redacted())
+	// Only scheme and host are ever echoed: Redacted() masks a password but
+	// would still print a bare username, a query or a fragment, each a place
+	// a token gets pasted by mistake.
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || strings.ContainsAny(raw, "?#") {
+		return fmt.Errorf("%s %s://%s must not carry credentials, a query or a fragment", flag, u.Scheme, u.Host)
 	}
 	if u.Scheme == "https" || allowInsecure || isLoopbackHost(u.Hostname()) {
 		return nil
 	}
-	return fmt.Errorf("%s %s is not https and not loopback; pass %s if this is a deliberate LAN/dev endpoint", flag, u.Redacted(), allowInsecureHTTPFlg)
+	return fmt.Errorf("%s %s://%s is not https and not loopback; pass %s if this is a deliberate LAN/dev endpoint", flag, u.Scheme, u.Host, allowInsecureHTTPFlg)
 }
 
 // adminClient issues bearer-authenticated GETs against one admin base URL.
@@ -107,23 +111,61 @@ type adminClient struct {
 // Authorization for the same host and its subdomains, scheme included).
 func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
+// adminTransport lets tests inject a RoundTripper — one that fails the test
+// when the URL guard should have prevented any request; nil is the default.
+var adminTransport http.RoundTripper
+
 func newAdminClient(base, token string, stderr io.Writer) *adminClient {
-	return &adminClient{base: base, token: token, secrets: tokenVariants(token), client: &http.Client{Timeout: adminRequestTimeout, CheckRedirect: noRedirects}, stderr: stderr}
+	return &adminClient{base: base, token: token, secrets: tokenVariants(token), client: &http.Client{Timeout: adminRequestTimeout, CheckRedirect: noRedirects, Transport: adminTransport}, stderr: stderr}
+}
+
+// adminHTTPError is a non-2xx answer: the status for the caller's mapping
+// (404, 409) and the sanitised body summary for the user.
+type adminHTTPError struct {
+	method, path string
+	status       int
+	summary      string
+}
+
+func (e *adminHTTPError) Error() string {
+	if e.method == http.MethodGet {
+		return fmt.Sprintf("%s: HTTP %d%s", e.path, e.status, e.summary)
+	}
+	return fmt.Sprintf("%s %s: HTTP %d%s", e.method, e.path, e.status, e.summary)
 }
 
 // getJSON fetches path and decodes a 200 body into out (out may be nil to
-// check the status only). Before the first authenticated request it prints
-// scheme://host:port to stderr, as decision 3 requires, never the token.
+// check the status only).
 func (c *adminClient) getJSON(ctx context.Context, path string, out any) (int, error) {
+	return c.doJSON(ctx, http.MethodGet, path, nil, out)
+}
+
+// doJSON sends one authenticated request — a JSON body when body is non-nil —
+// and decodes a 2xx answer into out when out is non-nil. Before the first
+// authenticated request it prints scheme://host to stderr, as decision 3
+// requires, never the token. A non-2xx answer is an *adminHTTPError whose
+// summary never carries the token (bodySummary).
+func (c *adminClient) doJSON(ctx context.Context, method, path string, body, out any) (int, error) {
 	if !c.noted {
 		if u, err := url.Parse(c.base); err == nil {
 			_, _ = fmt.Fprintf(c.stderr, "kelvran: sending the admin token to %s\n", sanitizeCell(u.Scheme+"://"+u.Host))
 		}
 		c.noted = true
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return 0, err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rdr)
 	if err != nil {
 		return 0, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.client.Do(req)
@@ -131,15 +173,15 @@ func (c *adminClient) getJSON(ctx context.Context, path string, out any) (int, e
 		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return resp.StatusCode, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return resp.StatusCode, fmt.Errorf("%s: HTTP %d%s", path, resp.StatusCode, bodySummary(resp.StatusCode, body, c.secrets))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return resp.StatusCode, &adminHTTPError{method: method, path: path, status: resp.StatusCode, summary: bodySummary(resp.StatusCode, b, c.secrets)}
 	}
-	if out != nil {
-		if err := json.Unmarshal(body, out); err != nil {
+	if out != nil && len(b) > 0 {
+		if err := json.Unmarshal(b, out); err != nil {
 			return resp.StatusCode, fmt.Errorf("%s: decoding the response: %w", path, err)
 		}
 	}

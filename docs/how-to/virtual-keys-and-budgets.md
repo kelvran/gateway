@@ -7,7 +7,7 @@ Use this when you need to hand a team or an application its own credential with 
 ## Prerequisites
 
 - A gateway binary or image and a `config.yaml` with at least one deployment. Start with the [quickstart](../tutorials/quickstart.md) if you have neither.
-- `openssl` and `sha256sum` (or `shasum -a 256` on older macOS) to generate a secret and its hash.
+- `openssl` and `sha256sum` (or `shasum -a 256` on older macOS) to generate a secret and its hash — or the `kelvran` CLI, whose `keys create` does both (on `main` since 2026-10-10, not in `gateway/v0.17.0`).
 - For the admin-API steps: `curl` and an environment variable holding the admin token, for example `KELVRAN_ADMIN_TOKEN`.
 - For the multi-replica variant: a reachable Redis.
 
@@ -17,7 +17,9 @@ Every field named below is described in the [config reference](../reference/conf
 
 ### 1. Generate the secret and its hash
 
-The gateway never generates or stores a raw secret. You generate it, hand the raw value to the client, and put only its SHA-256 hash in config:
+The gateway never generates or stores a raw secret. You generate it, hand the raw value to the client, and put only its SHA-256 hash in config.
+
+`kelvran keys create team-alpha --budget 100 --reset monthly --warn 0.8` (on `main` since 2026-10-10, not in `gateway/v0.17.0`) creates step 2's `team-alpha` live through the admin API when `KELVRAN_ADMIN_TOKEN` is exported; with `--config config.yaml` and no admin token in the environment it writes the same entry into the file for the next start instead ([reference](../reference/kelvran-cli.md#kelvran-keys)). The by-hand path below is the documented `key_hash` contract:
 
 ```bash
 export KELVRAN_KEY=$(openssl rand -hex 32)                 # the raw secret: clients send it as a bearer token

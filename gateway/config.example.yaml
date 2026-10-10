@@ -15,6 +15,8 @@ listen_addr: ":8080"
 # never the secret itself. Generate a real key with:
 #   openssl rand -hex 32                          # the secret you keep
 #   printf '%s' '<that secret>' | sha256sum        # key_hash goes below
+# or let the CLI do both and write the entry: kelvran keys create <name> --config config.yaml
+# (with no admin token in the environment; with one exported it creates the key live instead)
 # Clients send "Authorization: Bearer <the raw secret, never the hash>".
 # See docs/rfcs/2026-09-02-virtual-keys-budgets.md and
 # docs/users/USER_GUIDE.md for the full design. The two hashes below are

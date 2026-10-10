@@ -106,7 +106,7 @@ Admin tokens are stricter. If `admin.token_env` names a variable that resolves e
 
 A virtual key is a bearer secret the client holds; `config.yaml` stores only its SHA-256 hash in `key_hash`. Rotation issues a new hash and keeps the old secret valid for a grace period.
 
-1. Generate the new secret and hash it. Hash the raw secret with no trailing newline.
+1. Generate the new secret and hash it. Hash the raw secret with no trailing newline. (`kelvran keys rotate team-alpha --grace 10m`, on `main` since 2026-10-10, does steps 1 and 2 in one command and prints the new secret once — [reference](../reference/kelvran-cli.md#kelvran-keys).)
 
    ```bash
    NEW_KEY=$(openssl rand -hex 32)

@@ -20,7 +20,7 @@ default) and curl'd via `http://[::1]:PORT` / `http://127.0.0.1:PORT` / `curl -6
 
 Use a **scratch config**, not `gateway/config.yaml` (the real, gitignored pilot config) — copy its
 `deployments:`/AWS env-var names for real Bedrock calls, but write fresh `virtual_keys:` so you never
-touch the pilot's real budgets/keys. Generate a key hash: `printf '%s' '<secret>' | shasum -a 256`.
+touch the pilot's real budgets/keys. Generate a key hash: `printf '%s' '<secret>' | shasum -a 256` — or let `kelvran keys create <name> --config <file>` generate and write one.
 
 ## ⚠️ `allowed_source_cidrs` YAML shape gotcha (confirmed live, 2026-09-27; fixed same day, commit 351a4544)
 

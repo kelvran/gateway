@@ -28,6 +28,13 @@ func ClientURLs(listenAddr string) (anthropicBase, openaiBase string, err error)
 	case "", "0.0.0.0", "::":
 		host = "127.0.0.1"
 	}
+	// The URLs are printed into shell lines an operator pastes, and the
+	// listen_addr may come from a served config: only an IP address or a
+	// hostname-shaped host is accepted, never a byte that could start a
+	// second command.
+	if bare := strings.Trim(host, "[]"); !isValidListenHost(bare) {
+		return "", "", fmt.Errorf("listen_addr %q has a host that is neither an IP address nor a hostname", listenAddr)
+	}
 	if strings.Contains(host, ":") { // a literal IPv6 address keeps its brackets
 		host = "[" + strings.Trim(host, "[]") + "]"
 	}
