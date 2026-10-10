@@ -1,0 +1,22 @@
+{
+  "mode": "offline",
+  "source": "\u003csource\u003e",
+  "listen_addr": "127.0.0.1:8080",
+  "deployments": [
+    {
+      "name": "d1",
+      "model": "gpt-4o",
+      "upstream_model": "gpt-4o",
+      "provider": "openai",
+      "kind": "chat"
+    }
+  ],
+  "virtual_keys": {
+    "configured": 3
+  },
+  "admin_store": "none (single-user: no admin section)",
+  "notes": [
+    "from \u003cconfig\u003e; a running gateway reflects this file only after restart",
+    "live key/deployment state and spend need the admin API; this config has no `admin:` section (single-user mode) — re-run `init` without `--single-user`, or add a block-mapping `admin:` section with `token_env: KELVRAN_ADMIN_TOKEN` (the admin listener defaults to `127.0.0.1:8081`, so it stays loopback-only)"
+  ]
+}

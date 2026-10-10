@@ -12,12 +12,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Admin-API access shared by every verb that talks to a running gateway
-// (RFC-3 decision 3): doctor --admin-url today; keys, status and spend
+// (RFC-3 decision 3): doctor --admin-url, keys, status and spend; connect
 // later. The token is never a flag value; the URL is guarded before the
 // first request leaves.
 
@@ -191,16 +192,28 @@ func (c *adminClient) doJSON(ctx context.Context, method, path string, body, out
 // dataPlaneProbe answers doctor's --url checks without a credential: the
 // status of GET /readyz and of a bearer-less GET /v1/models (expected 401).
 func dataPlaneProbe(ctx context.Context, base, path string) (int, error) {
+	status, _, err := dataPlaneGet(ctx, base, path)
+	return status, err
+}
+
+// dataPlaneGet is one bearer-less GET against the data plane: the status and
+// up to 1 MiB of body (status reads the /readyz summary), redirects not
+// followed.
+func dataPlaneGet(ctx context.Context, base, path string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+path, nil)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	resp, err := (&http.Client{Timeout: adminRequestTimeout, CheckRedirect: noRedirects}).Do(req)
+	resp, err := (&http.Client{Timeout: adminRequestTimeout, CheckRedirect: noRedirects, Transport: adminTransport}).Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode, nil
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, body, nil
 }
 
 // bodySummary is what of a non-200 admin body may reach a finding: nothing
@@ -255,8 +268,10 @@ func tokenVariants(token string) []string {
 	for _, b := range []byte(token) {
 		_, _ = fmt.Fprintf(&pct, "%%%02X", b)
 	}
+	quoted := strconv.Quote(token)
 	candidates := []string{
 		token,
+		quoted[1 : len(quoted)-1], // the spelling %q gives a token with a quote or backslash in it
 		url.QueryEscape(token),
 		pct.String(),
 		hex.EncodeToString([]byte(token)),

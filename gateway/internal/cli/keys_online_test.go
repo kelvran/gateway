@@ -52,6 +52,7 @@ type fakeAdmin struct {
 	rotateStatus     int
 	deleteStatus     int
 	spendUnavailable bool
+	deployments      []adminapi.DeploymentEntry
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -140,12 +141,36 @@ func (f *fakeAdmin) handler() http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
+	mux.HandleFunc("GET /admin/deployments", auth(func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		deps := append([]adminapi.DeploymentEntry{}, f.deployments...)
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(deps)
+	}))
 	mux.HandleFunc("GET /admin/config", auth(func(w http.ResponseWriter, _ *http.Request) {
 		if f.configStatus != 0 && f.configStatus != http.StatusOK {
 			http.Error(w, "unauthorized", f.configStatus)
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"ListenAddr":%q,"Admin":{"PersistPath":%q,"RedisAddr":""}}`, f.listen, f.persistPath)
+		// PascalCase like the real route (controlplane.Config has no json tags); never a KeyHash.
+		type named struct{ Name string }
+		type dep struct{ Name, Model, UpstreamModel, Provider, Kind string }
+		f.mu.Lock()
+		var keys []named
+		for _, e := range f.entries {
+			keys = append(keys, named{e.ID})
+		}
+		var deps []dep
+		for _, d := range f.deployments {
+			deps = append(deps, dep{d.Name, d.Model, d.UpstreamModel, d.Provider, d.Kind})
+		}
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(struct {
+			ListenAddr  string
+			VirtualKeys []named
+			Deployments []dep
+			Admin       struct{ PersistPath, RedisAddr string }
+		}{ListenAddr: f.listen, VirtualKeys: keys, Deployments: deps, Admin: struct{ PersistPath, RedisAddr string }{f.persistPath, ""}})
 	}))
 	return mux
 }

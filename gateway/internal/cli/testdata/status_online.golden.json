@@ -1,0 +1,42 @@
+{
+  "mode": "online",
+  "source": "\u003csource\u003e",
+  "readyz": {
+    "url": "\u003creadyz\u003e",
+    "status": 503,
+    "ready": false,
+    "models_without_healthy_deployment": [
+      "embed"
+    ]
+  },
+  "listen_addr": "127.0.0.1:8080",
+  "deployments": [
+    {
+      "name": "d1",
+      "model": "gpt-4o",
+      "upstream_model": "gpt-4o",
+      "provider": "openai",
+      "kind": "chat",
+      "healthy": true,
+      "weight": 2,
+      "latency_factor_percent": 0,
+      "sticky": true
+    },
+    {
+      "name": "d2",
+      "model": "gpt-4o",
+      "upstream_model": "gpt-4o-mini",
+      "provider": "openai",
+      "kind": "chat",
+      "healthy": false,
+      "weight": 1,
+      "latency_factor_percent": 25,
+      "sticky": false
+    }
+  ],
+  "virtual_keys": {
+    "configured": 2,
+    "live": 2
+  },
+  "admin_store": "persist_path /var/lib/kelvran-gateway/identity.db"
+}

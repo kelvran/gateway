@@ -40,6 +40,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cli.Doctor(args[1:], cli.IO{Stdout: stdout, Stderr: stderr, Getenv: os.Getenv})
 	case "keys":
 		return cli.Keys(args[1:], cli.IO{Stdout: stdout, Stderr: stderr, Getenv: os.Getenv, Rand: rand.Reader})
+	case "status":
+		return cli.Status(args[1:], cli.IO{Stdout: stdout, Stderr: stderr, Getenv: os.Getenv})
+	case "spend":
+		return cli.Spend(args[1:], cli.IO{Stdout: stdout, Stderr: stderr, Getenv: os.Getenv})
 	default:
 		_, _ = fmt.Fprintf(stderr, "kelvran: unknown command %q\n", args[0])
 		usage(stderr)
@@ -53,8 +57,10 @@ func usage(w io.Writer) {
   init       write a minimal, priced config.yaml and the first virtual key (kelvran init -h)
   doctor     load, validate and check a config against the environment the gateway will run in (kelvran doctor -h)
   keys       create, list, rotate and delete virtual keys through the admin API, or offline in the config file (kelvran keys -h)
+  status     what the gateway serves: /readyz, listen_addr, deployments, keys, the admin store (kelvran status -h)
+  spend      spend per virtual key from the admin API (kelvran spend -h)
   -version   print the build identity
 
-connect, status and spend follow in later releases (docs/reference/kelvran-cli.md).
+connect follows in a later release (docs/reference/kelvran-cli.md).
 `)
 }

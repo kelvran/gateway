@@ -44,13 +44,19 @@ func adminErr(t *keysTarget, err error) error {
 	if errors.As(err, &urlErr) {
 		// A transport error can quote what the far end sent, bearer included
 		// (a malformed status line echoing the request): redact it like a body.
-		detail := urlErr.Err.Error()
-		for _, s := range t.client.secrets {
-			detail = strings.ReplaceAll(detail, s, "***")
-		}
-		return runtimeErr("admin API unreachable at %s; if this is a single-user config it has no admin listener (%s)", t.base, detail)
+		return runtimeErr("admin API unreachable at %s; if this is a single-user config it has no admin listener (%s)", t.base, redactSecrets(urlErr.Err.Error(), t.client.secrets))
 	}
-	return runtimeErr("%v", err)
+	// A body-read error (a chunked trailer that is the bearer with no colon)
+	// quotes the server's bytes too.
+	return runtimeErr("%s", redactSecrets(err.Error(), t.client.secrets))
+}
+
+// redactSecrets replaces every token variant in s.
+func redactSecrets(s string, secrets []string) string {
+	for _, v := range secrets {
+		s = strings.ReplaceAll(s, v, "***")
+	}
+	return s
 }
 
 func listKeysOnline(ctx context.Context, o keysOptions, t *keysTarget, env IO) error {

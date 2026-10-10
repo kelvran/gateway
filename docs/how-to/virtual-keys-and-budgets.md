@@ -208,7 +208,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
 
    Returns a JSON array with one entry per key. `id`, `budget_usd`, `budget_reset_interval_seconds` and `budget_warn_percent` are always present; `allowed_models`, `allowed_regions`, `allowed_source_cidrs`, `cache_scope_to_end_user`, `rate_limit_burst`, `rate_limit_refill_per_second`, `billing_subject_id`, `attribution_capture_ids_disabled` and `expires_at` appear only when set. Key hashes are never included.
 
-3. Spend is tracked (admin, viewer or cost_viewer token):
+3. Spend is tracked (admin, viewer or cost_viewer token). `kelvran spend` lists every key's spend as a table (on `main` since 2026-10-10, not in `gateway/v0.17.0`); the per-key route by hand:
 
    ```bash
    curl -sS http://127.0.0.1:8081/admin/virtual_keys/team-alpha/spend -H "Authorization: Bearer $KELVRAN_ADMIN_TOKEN"

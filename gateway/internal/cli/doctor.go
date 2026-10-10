@@ -169,8 +169,9 @@ func (r *doctorReport) print(w io.Writer, asJSON bool) error {
 // paths) and the admin client's stderr host note — so a deployment name,
 // a path or a host cannot steer the terminal. url.Parse already rejects C0
 // control bytes in a URL; this covers the separators it admits and the
-// paths that never pass through it. The JSON encoder escapes the same
-// runes itself.
+// paths that never pass through it. The JSON encoder escapes the C0 controls
+// and U+2028/U+2029 itself (DEL and the C1 range pass through, as machine
+// output).
 func sanitizeCell(s string) string {
 	var b strings.Builder
 	for _, r := range s {

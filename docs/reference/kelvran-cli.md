@@ -1,6 +1,6 @@
 # kelvran CLI
 
-`kelvran` is the gateway's companion binary (`gateway/cmd/kelvran`), shipped beside `kelvran-gateway` in every release archive and package and at `/kelvran` in the container image. It turns the by-hand first run — generate a secret, hash it, author `config.yaml` — into one command (`init`), checks a config against the environment the gateway will actually run in (`doctor`), and creates, lists, rotates and deletes virtual keys through the admin API or in the file (`keys`). On `main` since 2026-10-10, not in `gateway/v0.17.0`: the first `gateway/v*` tag pushed after that date is the first release that carries it. Design: [RFC: `kelvran` CLI and single-user mode](../rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md).
+`kelvran` is the gateway's companion binary (`gateway/cmd/kelvran`), shipped beside `kelvran-gateway` in every release archive and package and at `/kelvran` in the container image. It turns the by-hand first run — generate a secret, hash it, author `config.yaml` — into one command (`init`), checks a config against the environment the gateway will actually run in (`doctor`), creates, lists, rotates and deletes virtual keys through the admin API or in the file (`keys`), shows what the gateway serves (`status`) and reads spend per key (`spend`). On `main` since 2026-10-10, not in `gateway/v0.17.0`: the first `gateway/v*` tag pushed after that date is the first release that carries it. Design: [RFC: `kelvran` CLI and single-user mode](../rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md).
 
 This page is the public surface [`docs/VERSIONING.md`](../VERSIONING.md) binds to for the CLI: every verb, flag, exit code and output shape below is covered by the compatibility policy once it ships in a tagged release.
 
@@ -71,13 +71,13 @@ Bedrock is the one provider where the canonical `model` differs from `upstream_m
 |---|---|---|
 | `listen_addr` | `127.0.0.1:8080` (`--listen` to change; the host must be an IP address or a hostname; a non-loopback value such as `:8080` or `0.0.0.0:8080` is written with a warning) | same |
 | `virtual_keys` | one key named `default`, `key_hash` = SHA-256 of the generated secret, no `budget_usd` (unlimited) unless `--budget USD` | same |
-| `admin` | none (so `keys --config` and the coming `status --config` work offline against the file; `spend` and the live columns of `status` need the admin API) | `token_env: "KELVRAN_ADMIN_TOKEN"` and `persist_path`: `--persist-path` (must be absolute), or `<directory of --out>/kelvran-identity.db`, or `/var/lib/kelvran-gateway/identity.db` when `--out` resolves under `/etc/kelvran-gateway/` (the package layout's `StateDirectory`); `--no-persist` omits it with a warning that admin-created keys will not survive a restart. `--persist-path` and `--no-persist` are usage errors under `--single-user` |
+| `admin` | none (so `keys --config` and `status --config` work offline against the file; `spend` and the live columns of `status` need the admin API) | `token_env: "KELVRAN_ADMIN_TOKEN"` and `persist_path`: `--persist-path` (must be absolute), or `<directory of --out>/kelvran-identity.db`, or `/var/lib/kelvran-gateway/identity.db` when `--out` resolves under `/etc/kelvran-gateway/` (the package layout's `StateDirectory`); `--no-persist` omits it with a warning that admin-created keys will not survive a restart. `--persist-path` and `--no-persist` are usage errors under `--single-user` |
 | `telemetry` | `exporter: "none"`, preceded by a comment explaining that without it spans and a 60 s metrics dump would share stdout with the JSON logs | same |
 | Admin token | not generated | generated and printed once as `export KELVRAN_ADMIN_TOKEN=…` for the gateway's shell |
 
 ### Output
 
-Without `--dry-run`: `Wrote <absolute path> (mode 0644; it holds no secret).` followed by a **Next steps** block on stdout — `kelvran-gateway -config '<--out>' -validate` (the path is single-quoted; `--out` may not contain a quote or a line break, and the listen host must be an IP address or hostname, so no printed line carries shell syntax), the admin-token export in team mode, `kelvran-gateway -config …`, then the client exports: the generated secret exactly once as `export KELVRAN_KEY=<secret>`, and `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN="$KELVRAN_KEY"` and `OPENAI_BASE_URL`/`OPENAI_API_KEY="$KELVRAN_KEY"` referencing it. The base URLs come from `listen_addr` with an empty or wildcard host replaced by `127.0.0.1` (`http://127.0.0.1:8080` and `http://127.0.0.1:8080/v1`). The block also notes that the exports belong in the client's shell (an `OPENAI_API_KEY` export in the gateway's shell would replace the upstream credential an openai deployment reads), that `POST /v1/responses` is not served, that Claude Code's native mode needs `POST /v1/messages` which the gateway does not serve yet, that a pasted export persists in shell history (`read -rs` keeps it out), under `--single-user` that `spend` and `status`'s health columns will need an `admin` section, and, whenever exactly one deployment was written, `One model is configured (<model>); rerun with --models a,b to serve more.`
+Without `--dry-run`: `Wrote <absolute path> (mode 0644; it holds no secret).` followed by a **Next steps** block on stdout — `kelvran-gateway -config '<--out>' -validate` (the path is single-quoted; `--out` may not contain a quote or a line break, and the listen host must be an IP address or hostname, so no printed line carries shell syntax), the admin-token export in team mode, `kelvran-gateway -config …`, then the client exports: the generated secret exactly once as `export KELVRAN_KEY=<secret>`, and `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN="$KELVRAN_KEY"` and `OPENAI_BASE_URL`/`OPENAI_API_KEY="$KELVRAN_KEY"` referencing it. The base URLs come from `listen_addr` with an empty or wildcard host replaced by `127.0.0.1` (`http://127.0.0.1:8080` and `http://127.0.0.1:8080/v1`). The block also notes that the exports belong in the client's shell (an `OPENAI_API_KEY` export in the gateway's shell would replace the upstream credential an openai deployment reads), that `POST /v1/responses` is not served, that Claude Code's native mode needs `POST /v1/messages` which the gateway does not serve yet, that a pasted export persists in shell history (`read -rs` keeps it out), under `--single-user` that `spend` and the live columns of `status` need an `admin` section, and, whenever exactly one deployment was written, `One model is configured (<model>); rerun with --models a,b to serve more.`
 
 With `--dry-run`: the YAML is the only thing on stdout (so `kelvran init --dry-run --provider openai > config.yaml` and the release acceptance job's `kelvran-gateway -config <that file> -validate` both work); the dry-run notice and the Next steps block — including the generated secret's export line — go to stderr, and the notice says so; nothing is written. Redirect stderr away from a log you keep.
 
@@ -209,13 +209,52 @@ Text: a headline — `Created virtual key "team-beta" (online: POST /admin/virtu
 | `1` | A refusal (the name exists without `--replace`, dropped fields without `--force`, not found, the file's last key, a past `--expires`, an expired key rotated without `--expires`), an admin API error or an unreachable admin URL, a refused `--admin-url` or `KELVRAN_ADMIN_URL`, an empty or unreadable admin token file, an unloadable `--config` offline, a candidate that fails the semantic check, a write error, `list --spend` with an unavailable row, offline `list --spend` |
 | `2` | Unknown verb or flag; a missing or extra name; a malformed `--budget`, `--reset`, `--warn`, `--models`, `--expires` or `--grace`; `--grace` offline; a name or model the file subset cannot hold; neither a token nor `--config` |
 
+## `kelvran status`
+
+```
+kelvran status [--url http://127.0.0.1:8080] [--admin-url URL] [--admin-token-file PATH] [--config PATH]
+               [--allow-insecure-http] [--json]
+```
+
+What the gateway serves (RFC-3 decision 10; on `main` since 2026-10-10, not in `gateway/v0.17.0`). The mode follows the admin token exactly as `keys` does: **online** whenever a token resolves (`--admin-token-file`, `KELVRAN_ADMIN_TOKEN_FILE`, the variable the config's `admin.token_env` names, `KELVRAN_ADMIN_TOKEN`), through the same credential-URL guard; **offline** with `--config` and no token; neither is exit `2` naming both routes; a token whose URL refuses the connection is the `admin API unreachable at <url>` line, exit `1`.
+
+- `--url` (either mode) probes the data plane without a credential: `GET /readyz` is `200 ready`, `503 not ready` with the models that have no healthy deployment, `unreachable`, or `not ready` with the reason when the body is not the gateway's JSON (a proxy page answering 200 never reads as ready); the URL must be http(s) without credentials, a query or a fragment. A probed plane that is not ready or unreachable makes the exit code `1` after the view is printed. Without `--url` the line reads `not probed`.
+- **Online** the view comes from three reads: `GET /admin/config` (the served config as PascalCase JSON, from which `status` reads only `listen_addr`, the configured key count and the admin store — the body carries key hashes, which are never decoded or printed), `GET /admin/deployments` (the live table: `name | model | upstream_model | provider | kind | healthy | weight | latency_factor_percent | sticky`) and `GET /admin/virtual_keys` (the live key count, admin-API changes included).
+- **Offline** the view is the file's: `listen_addr`, the deployment table limited to its static columns (`name | model | upstream_model | provider | kind`) and the key count, headed `from <path>; a running gateway reflects this file only after restart`, plus one line saying how to get the live view — for a config without an `admin:` section (single-user mode): re-run `init` without `--single-user`, or add a block-mapping `admin:` section with `token_env: KELVRAN_ADMIN_TOKEN` (the admin listener defaults to `127.0.0.1:8081`, so it stays loopback-only); for a config with one: export the variable `admin.token_env` names, or pass `--admin-token-file`. Exit `0`, unless `--url` probed a plane that is not ready. The text view prints the restart caveat once, in its headline; `--json` keeps it in `notes`.
+- `admin store` names where admin-API key changes persist: `persist_path <p>`, `redis_addr <a>`, `none (keys changed through the admin API are in-memory only)` with an `admin:` section and no store, or `none (single-user: no admin section)`.
+
+`--json` prints one composite document — `{"mode","source","readyz"?,"listen_addr","deployments":[{"name","model","upstream_model","provider","kind","healthy"?,"weight"?,"latency_factor_percent"?,"sticky"?}],"virtual_keys":{"configured","live"?},"admin_store","notes"?}` — pinned by a golden file; `readyz` is `{"url","status"?,"ready","models_without_healthy_deployment"?,"error"?}` (`status` is absent when the plane was unreachable); the live deployment fields and `virtual_keys.live` are present online only. Fields may be added, never renamed or removed.
+
+| Code | When |
+|---|---|
+| `0` | The view printed and, when probed, the data plane is ready; `-h` |
+| `1` | A probed data plane not ready or unreachable; an admin API error or an unreachable admin URL; a refused `--admin-url`, `KELVRAN_ADMIN_URL` or `--url`; an unloadable `--config` offline; an empty or unreadable admin token file |
+| `2` | Unknown flag or a positional argument; neither a token nor `--config` |
+
+## `kelvran spend`
+
+```
+kelvran spend [--by key] [--admin-url URL] [--admin-token-file PATH] [--config PATH] [--allow-insecure-http] [--json]
+```
+
+Spend per virtual key (RFC-3 decisions 5 and 10; on `main` since 2026-10-10, not in `gateway/v0.17.0`): `GET /admin/virtual_keys?include=spend` rendered as `key | spent_usd | budget_usd | percent_used | expires_at`, the same cell spellings as `keys list --spend` (`unlimited`, `never`, `n/a`). A row whose spend could not be read shows `n/a`, the stderr line `kelvran spend: spend unavailable for N key(s): budget backend error` follows and the exit code is `1`. `--by` defaults to `key`; `model`, `tool` and `session` are refused with `needs the spend ledger (plan item 13d, RFC-2 …)` until that ledger lands; any other value is a usage error. `--json` prints the served entries as one document.
+
+Spend lives only in the gateway's budget store, which the admin API fronts, so there is no offline view: with `--config` and no token the command fails closed — the same line `status` prints offline goes to stderr, exit `1` — and with neither a token nor `--config` it is exit `2`. The token order, the URL guard and the unreachable line are `keys`'.
+
+| Code | When |
+|---|---|
+| `0` | The table printed with every row's spend; `-h` |
+| `1` | An unavailable row; no token in reach with `--config` given; an admin API error or an unreachable admin URL; a refused `--admin-url`; an unloadable `--config`; an empty or unreadable admin token file |
+| `2` | Unknown flag or a positional argument; `--by` outside key/model/tool/session; `--by model`, `tool` or `session` (the ledger); neither a token nor `--config` |
+
 ## In the container image
 
 `/kelvran` is a diagnostic and admin client, not the first-run tool: the image has no shell, `cwd` `/`, no `HOME`, UID 65532, and the documented config mount is a read-only single file. What works as shipped: `docker run --rm --entrypoint /kelvran ghcr.io/kelvran/gateway:<tag> -version`; `docker run --rm --entrypoint /kelvran ghcr.io/kelvran/gateway:<tag> init --dry-run --provider openai > config.yaml` on the host (stdout is the YAML); `docker exec <container> /kelvran doctor --config /config.yaml --strict-env`, which reads the `:ro` mount and the container's own environment — the environment the gateway actually sees, so a missing variable is an error there. `init` without `--dry-run` needs a writable mount and an explicit `--out` (`-u $(id -u) -v "$PWD:/out" … init --out /out/config.yaml`).
 
 ## Not available today
 
-- `connect`, `status` and `spend` — the remaining Stage 1 verbs of RFC-3, which follow in later commits.
+- `connect` — the remaining Stage 1 verb of RFC-3, which follows in a later commit (gate G32).
+- `spend --by model|tool|session`, and any aggregate spend view — wait for the spend ledger (plan item 13d, RFC-2).
 - Flags on `keys create` for a key's `rate_limit` block (`burst`, `refill_per_second`, `tpm_*`, `per_model`, `max_concurrent_requests`), `allowed_regions`, `allowed_source_cidrs`, `cache_scope_to_end_user` and `attribution_capture_ids`: set them in `config.yaml` or in the admin API body ([reference](admin-api.md)); a `create --replace` through the CLI drops them.
 - `--json` on `init` (it has nothing to report as data; `doctor` has it).
 - A refusal, rather than a warning, on an OAuth token offered as an upstream credential (gate G33).

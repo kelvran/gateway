@@ -40,6 +40,7 @@ const (
 )
 
 type keysOptions struct {
+	tool           string // the verb group for messages: keys, status, spend
 	verb, name     string
 	config         string
 	adminURL       string
@@ -84,7 +85,7 @@ func Keys(args []string, env IO) int {
 		_, _ = fmt.Fprint(env.Stderr, keysUsage)
 		return 2
 	}
-	o := keysOptions{verb: args[0]}
+	o := keysOptions{tool: "keys", verb: args[0]}
 	switch o.verb {
 	case "-h", "--help", "help":
 		_, _ = fmt.Fprint(env.Stderr, keysUsage)
@@ -300,6 +301,7 @@ func parseGrace(s string) (int, error) {
 }
 
 // keysTarget is where a verb acts: the admin API (online) or the file.
+// keys, status and spend share it (decision 3's rule, decision 10).
 type keysTarget struct {
 	cfgPath, cfgAbs string
 	cfg             *controlplane.Config
@@ -343,12 +345,12 @@ func resolveKeysTarget(o keysOptions, env IO) (*keysTarget, error) {
 		if t.loadErr != nil {
 			// The token decides the mode (decision 3), but a --config the user
 			// passed and that does not load must not vanish silently.
-			_, _ = fmt.Fprintf(env.Stderr, "kelvran keys: warning: --config %s does not load (%s); proceeding online with the resolved token\n", sanitizeCell(t.cfgAbs), sanitizeCell(redactConfigError(t.loadErr)))
+			_, _ = fmt.Fprintf(env.Stderr, "kelvran %s: warning: --config %s does not load (%s); proceeding online with the resolved token\n", o.tool, sanitizeCell(t.cfgAbs), sanitizeCell(redactConfigError(t.loadErr)))
 		}
 		return t, nil
 	}
 	if o.config == "" {
-		return nil, usageErr("no admin token resolved (--admin-token-file, KELVRAN_ADMIN_TOKEN_FILE, the variable the config's admin.token_env names, KELVRAN_ADMIN_TOKEN) and no --config to edit offline; supply one of the two")
+		return nil, usageErr("no admin token resolved (--admin-token-file, KELVRAN_ADMIN_TOKEN_FILE, the variable the config's admin.token_env names, KELVRAN_ADMIN_TOKEN) and no --config to fall back to; supply one of the two")
 	}
 	if t.loadErr != nil {
 		return nil, runtimeErr("%s does not load: %s", t.cfgAbs, redactConfigError(t.loadErr))
@@ -451,10 +453,6 @@ func (t keysTable) print(out *printer) {
 // listRow renders one admin list entry (the offline list is converted into
 // the same type so both modes share one renderer).
 func listRow(e adminapi.VirtualKeyListEntry, withSpend bool) []string {
-	budget := "unlimited"
-	if d, err := decimal.NewFromString(e.BudgetUSD); err == nil && d.IsPositive() {
-		budget = e.BudgetUSD
-	}
 	warn := "-"
 	if e.BudgetWarnPercent > 0 {
 		warn = strconv.FormatFloat(e.BudgetWarnPercent, 'f', -1, 64)
@@ -463,26 +461,45 @@ func listRow(e adminapi.VirtualKeyListEntry, withSpend bool) []string {
 	if len(e.AllowedModels) > 0 {
 		models = strings.Join(e.AllowedModels, ",")
 	}
-	expires := "never"
-	if e.ExpiresAt != "" {
-		expires = e.ExpiresAt
-	}
-	row := []string{e.ID, budget, resetName(e.BudgetResetIntervalSeconds), warn, models, expires}
+	row := []string{e.ID, budgetCell(e), resetName(e.BudgetResetIntervalSeconds), warn, models, expiresCell(e)}
 	if withSpend {
-		spent, pct := "n/a", "n/a"
-		if !e.SpendUnavailable {
-			spent = e.SpentUSD
-			if spent == "" {
-				spent = "0"
-			}
-			pct = "-"
-			if e.PercentUsed != nil {
-				pct = strconv.FormatFloat(*e.PercentUsed*100, 'f', 1, 64) + "%"
-			}
-		}
+		spent, pct := spendCells(e)
 		row = append(row, spent, pct)
 	}
 	return row
+}
+
+// The cell spellings `keys list` and `spend` share, named so neither verb
+// indexes into the other's row.
+func budgetCell(e adminapi.VirtualKeyListEntry) string {
+	if d, err := decimal.NewFromString(e.BudgetUSD); err == nil && d.IsPositive() {
+		return e.BudgetUSD
+	}
+	return "unlimited"
+}
+
+func expiresCell(e adminapi.VirtualKeyListEntry) string {
+	if e.ExpiresAt != "" {
+		return e.ExpiresAt
+	}
+	return "never"
+}
+
+// spendCells is spent_usd and percent_used: n/a when the budget backend could
+// not be read (decision 5), "-" for percent_used on an unlimited budget.
+func spendCells(e adminapi.VirtualKeyListEntry) (spent, pct string) {
+	if e.SpendUnavailable {
+		return "n/a", "n/a"
+	}
+	spent = e.SpentUSD
+	if spent == "" {
+		spent = "0"
+	}
+	pct = "-"
+	if e.PercentUsed != nil {
+		pct = strconv.FormatFloat(*e.PercentUsed*100, 'f', 1, 64) + "%"
+	}
+	return spent, pct
 }
 
 func listHeader(withSpend bool) []string {
