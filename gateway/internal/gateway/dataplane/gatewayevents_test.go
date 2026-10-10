@@ -28,6 +28,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/cache/inprocess"
 	"github.com/kelvran/gateway/gateway/internal/costaccounting"
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
+	"github.com/kelvran/gateway/gateway/internal/idempotency"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
@@ -53,6 +54,9 @@ func TestOutcomeForClassifiesEverySentinelError(t *testing.T) {
 		{"no deployment", ErrNoDeployment, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_NO_DEPLOYMENT},
 		{"empty messages", ErrEmptyMessages, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
 		{"guardrail blocked", ErrGuardrailBlocked, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED},
+		// G16: client faults known from the request alone, never upstream errors.
+		{"idempotency key reused", fmt.Errorf("dataplane: idempotency: %w", idempotency.ErrFingerprintMismatch), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
+		{"response_format unsupported", fmt.Errorf("%w: model m", adapter.ErrStructuredOutputUnsupported), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
 		{"generic upstream error", context.DeadlineExceeded, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR},
 		{"deployment capacity (concurrency)", &DeploymentCapacityError{Deployment: "d1", Reason: "concurrency"}, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},
 		{"deployment capacity (rate_limit)", &DeploymentCapacityError{Deployment: "d1", Reason: "rate_limit"}, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},

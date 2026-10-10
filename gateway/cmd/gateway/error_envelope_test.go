@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/openai"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
+	"github.com/kelvran/gateway/gateway/internal/idempotency"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 )
 
@@ -81,6 +83,11 @@ func TestWriteErrorResponseEnvelopeTable(t *testing.T) {
 		{"embeddings not configured", dataplane.ErrEmbeddingsNotConfigured, http.StatusNotImplemented, "server_error", strPtr("embeddings_not_configured"), dataplane.ErrEmbeddingsNotConfigured.Error()},
 		{"upstream http", &dataplane.UpstreamHTTPError{StatusCode: 503, Body: "x"}, http.StatusBadGateway, "server_error", strPtr("upstream_error"), "503"},
 		{"unknown", errors.New("something else"), http.StatusBadGateway, "server_error", strPtr("upstream_error"), "something else"},
+		// G16 (docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md): both are
+		// faults known from the request alone, so 4xx with their own codes, not
+		// the 502 default they fell to before.
+		{"idempotency key reused", idempotency.ErrFingerprintMismatch, http.StatusUnprocessableEntity, "invalid_request_error", strPtr("idempotency_key_reused"), idempotency.ErrFingerprintMismatch.Error()},
+		{"response_format unsupported", adapter.ErrStructuredOutputUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("response_format_unsupported"), adapter.ErrStructuredOutputUnsupported.Error()},
 	}
 	for _, tc := range cases {
 		for _, wrapped := range []bool{false, true} {
@@ -114,6 +121,32 @@ func TestWriteErrorResponseEnvelopeTable(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestWriteErrorResponseParamNamesTheOffendingField pins the envelope's
+// param for the three errors that have one: the request field or header the
+// client must change. Every other error keeps param null.
+func TestWriteErrorResponseParamNamesTheOffendingField(t *testing.T) {
+	for _, tc := range []struct {
+		err   error
+		param string
+	}{
+		{dataplane.ErrEmptyMessages, "messages"},
+		{adapter.ErrStructuredOutputUnsupported, "response_format"},
+		{fmt.Errorf("dataplane: idempotency: %w", idempotency.ErrFingerprintMismatch), "Idempotency-Key"},
+	} {
+		rec := httptest.NewRecorder()
+		writeErrorResponse(rec, tc.err)
+		body := decodeAPIError(t, rec)
+		if body.Error.Param == nil || *body.Error.Param != tc.param {
+			t.Errorf("%v: param = %v, want %q", tc.err, body.Error.Param, tc.param)
+		}
+	}
+	rec := httptest.NewRecorder()
+	writeErrorResponse(rec, dataplane.ErrRateLimited)
+	if body := decodeAPIError(t, rec); body.Error.Param != nil {
+		t.Errorf("rate limited: param = %q, want null", *body.Error.Param)
 	}
 }
 

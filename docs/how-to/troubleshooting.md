@@ -73,9 +73,10 @@ Look at the status, `Retry-After`, then `.error.type` and `.error.code`. `Retry-
 | 429, no `Retry-After` | `insufficient_quota` / `insufficient_quota` | Budget cap reached; SDKs treat it as permanent | `GET /admin/virtual_keys/{name}/spend`. If `spent_usd` equals `budget_usd` with no traffic, see the R7 variant below |
 | 400 | `invalid_request_error` / `model_not_found` | No deployment for this model (400, not 404) | Fix the client's model name or add a deployment (row U4) |
 | 400 | `invalid_request_error` / `content_policy_violation` | A guardrail block, or a block-tier detector error, which the client cannot tell apart | Look for `guardrail_detector_error` in the log (Step 6) |
-| 400 | `invalid_request_error` / `empty_messages` (`param: "messages"`), `invalid_prompt_reference`, `streaming_not_supported`, `not_an_embedding_model`, `invalid_json`, `invalid_body`, `invalid_request`, `invalid_tool_choice` (`param: "tool_choice"`), `missing_required_parameter` (`param: "model"` or `"input"`, `/v1/embeddings` only) | Request shape | Fix the request |
+| 400 | `invalid_request_error` / `empty_messages` (`param: "messages"`), `invalid_prompt_reference`, `streaming_not_supported`, `not_an_embedding_model`, `invalid_json`, `invalid_body`, `invalid_request`, `invalid_tool_choice` (`param: "tool_choice"`), `response_format_unsupported` (`param: "response_format"`, since gateway/v0.19.0), `missing_required_parameter` (`param: "model"` or `"input"`, `/v1/embeddings` only) | Request shape | Fix the request |
 | 405 with `Allow` | `invalid_request_error` / `method_not_allowed` | Wrong HTTP method | Use the method named in `Allow` |
 | 413 | `invalid_request_error` / `request_too_large` | Body larger than 32 MiB | Shrink the request |
+| 422 | `invalid_request_error` / `idempotency_key_reused` (`param: "Idempotency-Key"`) | The same `Idempotency-Key` reused within 10 minutes with a different body (since gateway/v0.19.0; `502` before) | Use a distinct key per distinct request; see the `Idempotency-Key` reuse section below |
 | 501 | `server_error` / `streaming_not_configured`, `embeddings_not_configured` | No deployment of the needed kind is configured | Add one |
 | 503 with `Retry-After` | `server_error` / `deployment_capacity_exceeded` | A deployment's own RPM, TPM or concurrency ceiling; ceilings are per replica (row U6) | Raise the ceiling or add replicas; see [Configure routing and failover](routing-and-failover.md) |
 | 502 with `Retry-After` | `server_error` / `upstream_error` | Every upstream attempt failed, fallbacks included (row U1) | Step 6. The provider's own text is only in the server log |
@@ -147,9 +148,9 @@ A failure after the first SSE chunk cannot change the committed 200. The stream 
 
 Admin errors are not the envelope. `401 missing or malformed Authorization header` and `401 invalid admin token` mean the bearer does not match a tier the route accepts. `POST /admin/backup` answers `501 admin.backup_dir is not configured` until that key is set. Virtual-key upserts, deletes and rotations, `POST /admin/deployments/{name}/weight`, `DELETE /admin/prompts/{id}` and `DELETE /admin/prompts/{id}/labels/{label}` answer `204` with no body; `POST /admin/prompts/{id}`, `PUT /admin/prompts/{id}/labels/{label}`, `POST /admin/backup` and `POST /admin/cache/erase` answer `200` with a JSON body. A `400` from `POST /admin/prompts/{id}` whose body starts `prompt: Upsert: persisting`, or a `500` from `DELETE /admin/prompts/{id}` starting `prompt: Delete: persisting removal`, is a disk fault, not a client error (row P6): fix the disk, then re-POST once, or re-POST and DELETE again.
 
-### `Idempotency-Key` reuse returns 502
+### `Idempotency-Key` reuse returns 422
 
-The same `Idempotency-Key` with a different body is reported as 502 `upstream_error` with `Retry-After` (row I2). Claims expire after 10 minutes; after a crash a retry re-executes.
+The same `Idempotency-Key` with a different body is reported as 422 `idempotency_key_reused` with `param` `Idempotency-Key` and no `Retry-After` (row I2; since gateway/v0.19.0 — gateway/v0.18.0 and earlier answer 502 `upstream_error` with `Retry-After`). Claims expire after 10 minutes; after a crash a retry re-executes.
 
 ## Verify it worked
 

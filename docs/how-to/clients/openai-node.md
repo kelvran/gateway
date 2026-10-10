@@ -80,11 +80,13 @@ Every error from `/v1/*` is the OpenAI envelope `{"error":{"message","type","par
 | 401 | `authentication_error` | `invalid_api_key`, or null when the header is missing | Wrong or missing virtual key secret | `AuthenticationError` |
 | 403 | `permission_error` | `model_not_allowed`, `source_ip_not_allowed` | This key may not use the model or call from this IP | `PermissionDeniedError` |
 | 400 | `invalid_request_error` | `model_not_found`, `invalid_json`, `invalid_tool_choice`, `empty_messages`, `content_policy_violation`, `invalid_prompt_reference`, `invalid_request` | Request-shape problem. An unknown model is 400, not OpenAI's 404 | `BadRequestError` |
+| 400 | `invalid_request_error` | `response_format_unsupported` | `response_format` on a model pool with no capable deployment (`param` `response_format`; since gateway/v0.19.0, `502` before) | `BadRequestError` |
 | 413 | `invalid_request_error` | `request_too_large` | Body over 32 MiB | generic `APIError` |
+| 422 | `invalid_request_error` | `idempotency_key_reused` | `Idempotency-Key` reused with a different body (`param` `Idempotency-Key`; since gateway/v0.19.0, `502` before) | `UnprocessableEntityError` |
 | 429 | `rate_limit_error` | `rate_limit_exceeded`, `concurrency_limit_exceeded` | The key's rate limit or concurrency cap. `Retry-After` is set | `RateLimitError` |
 | 429 | `insufficient_quota` | `insufficient_quota` | The key's `budget_usd` is spent. No `Retry-After` | `RateLimitError` |
 | 501 | `server_error` | `streaming_not_configured`, `embeddings_not_configured` | Pipeline built without a stream or embedding upstream; not reachable from the `gateway` binary, which always wires both | `InternalServerError` |
-| 502 | `server_error` | `upstream_error` | Provider error, transport failure, `Idempotency-Key` reused with a different body, or `response_format` on a model pool with no capable deployment. `Retry-After` is set | `InternalServerError` |
+| 502 | `server_error` | `upstream_error` | Provider error or transport failure. `Retry-After` is set | `InternalServerError` |
 | 503 | `server_error` | `deployment_capacity_exceeded` | Deployment at capacity. `Retry-After` is set | `InternalServerError` |
 
 Full table: [Error codes](../../reference/error-codes.md). A 502 message is redacted to `upstream provider returned status N` or `upstream call failed for model "<model>"`; the provider's own text is only in the gateway's log line.
@@ -129,7 +131,7 @@ By default this client retries 429 and 5xx responses on its own and honours `Ret
 - Extra `usage` fields, present only when non-zero: `cache_read_tokens`, `cache_creation_tokens`, `reasoning_tokens`. They are subsets of `prompt_tokens` and `completion_tokens`, never additions.
 - `choices[].message.reasoning_blocks[]` (and `delta.reasoning_blocks[]` on chunks): opaque reasoning content, emitted by Anthropic, Bedrock, Gemini and openaicompat deployments when the model produces it. When you continue the conversation, echo that array back unchanged on the same assistant message; Anthropic and Bedrock reject the turn with 400 if it is dropped. Also `input_transformations[]` on Anthropic responses and `choices[].message.refusal` from openai and openaicompat deployments.
 - Request extensions the gateway reads when you add them to the params object: `prompt_id`, `prompt_version`, `prompt_label`, `prompt_variables` ([Prompt management](../prompt-management.md)); `messages[].parts` and `messages[].cache_control`; `thinking_binding_mode`; the canonical `tool_choice` object `{ mode, tool_name, disable_parallel_tool_use }`. TypeScript rejects unknown keys at compile time, so cast the params or use `@ts-expect-error` (check your client version).
-- Request headers the gateway reads, sent through the constructor's `defaultHeaders` or a per-call `{ headers }` option (check your client version): `Idempotency-Key` (10-minute window; the same key with a different body returns 502 `upstream_error`), `X-Kelvran-End-User-Id` (cache partitioning for keys with `cache_scope_to_end_user: true`), and W3C `traceparent` and `baggage`.
+- Request headers the gateway reads, sent through the constructor's `defaultHeaders` or a per-call `{ headers }` option (check your client version): `Idempotency-Key` (10-minute window; the same key with a different body returns 422 `idempotency_key_reused` since gateway/v0.19.0, 502 `upstream_error` before), `X-Kelvran-End-User-Id` (cache partitioning for keys with `cache_scope_to_end_user: true`), and W3C `traceparent` and `baggage`.
 
 ## Verify it worked
 

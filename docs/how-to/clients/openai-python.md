@@ -103,7 +103,7 @@ resp = client.chat.completions.create(
 )
 ```
 
-`Idempotency-Key` is honoured on both chat paths: scoped to the virtual key, fingerprinted on the decoded request (sha256 of the re-serialised honoured fields, so whitespace, key order and any dropped field such as `n` or `seed` do not count), kept for 10 minutes; a concurrent duplicate waits and receives the stored response. Reusing a key with a different body fails with `502` `server_error` / `upstream_error`, not OpenAI's `400`. The store is in-process, so it only deduplicates within one gateway instance.
+`Idempotency-Key` is honoured on both chat paths: scoped to the virtual key, fingerprinted on the decoded request (sha256 of the re-serialised honoured fields, so whitespace, key order and any dropped field such as `n` or `seed` do not count), kept for 10 minutes; a concurrent duplicate waits and receives the stored response. Reusing a key with a different body fails with `422` `invalid_request_error` / `idempotency_key_reused` since gateway/v0.19.0 (`502` `upstream_error` before), not OpenAI's `400`. The store is in-process, so it only deduplicates within one gateway instance.
 
 `X-Kelvran-End-User-Id` only matters for a virtual key with `cache_scope_to_end_user: true`, where it partitions the response cache per end user; see [Caching](../caching.md).
 
@@ -132,14 +132,16 @@ Every data-plane error body is `{"error":{"message","type","param","code"}}`, al
 | 403 | `permission_error` | `source_ip_not_allowed` | Client IP outside `allowed_source_cidrs` | yes (recorded gap: this local rejection falls into the upstream-error outcome) |
 | 400 | `invalid_request_error` | `model_not_found` | Unknown `model`; Kelvran uses 400, not OpenAI's 404 | no |
 | 400 | `invalid_request_error` | `invalid_json`, `invalid_request`, `invalid_tool_choice`, `empty_messages`, `content_policy_violation`, `invalid_prompt_reference` | Request-shape problems and guardrail blocks | no, except `invalid_prompt_reference`, which carries one (recorded gap: the prompt-reference errors fall into the upstream-error outcome) |
+| 400 | `invalid_request_error` | `response_format_unsupported` | `response_format` with no capable deployment (`param` `response_format`; since gateway/v0.19.0, `502` before) | no |
 | 413 | `invalid_request_error` | `request_too_large` | Body over 32 MiB | no |
+| 422 | `invalid_request_error` | `idempotency_key_reused` | `Idempotency-Key` reused with a different body (`param` `Idempotency-Key`; since gateway/v0.19.0, `502` before) | no |
 | 429 | `rate_limit_error` | `rate_limit_exceeded`, `concurrency_limit_exceeded` | Key throttled; transient | yes |
 | 429 | `insufficient_quota` | `insufficient_quota` | Key's `budget_usd` exhausted; permanent | no |
 | 501 | `server_error` | `streaming_not_configured`, `embeddings_not_configured` | Feature not configured on this gateway | `streaming_not_configured`: yes (recorded gap; unreachable in a `cmd/gateway` build, where the stream caller is always wired); `embeddings_not_configured`: no |
-| 502 | `server_error` | `upstream_error` | Provider answered non-2xx, a transport failure, an `Idempotency-Key` body mismatch, or `response_format` with no capable deployment | yes |
+| 502 | `server_error` | `upstream_error` | Provider answered non-2xx or a transport failure | yes |
 | 503 | `server_error` | `deployment_capacity_exceeded` | Deployment at capacity | yes |
 
-An upstream `502` message is redacted: `upstream provider returned status N` when the provider answered (`N=401` almost always means the gateway's own upstream credential is wrong or unset), or `upstream call failed for model "<model>"` for a transport or decode failure (that redaction first shipped in gateway/v0.18.0). The two local `502` causes (an `Idempotency-Key` body mismatch, `response_format` with no capable deployment) keep their own Kelvran-authored text. The provider's full error text is only in the gateway log. Non-streaming upstream calls are cut off after 60 s and surface as this `502`. The full table is in [Error codes](../../reference/error-codes.md).
+An upstream `502` message is redacted: `upstream provider returned status N` when the provider answered (`N=401` almost always means the gateway's own upstream credential is wrong or unset), or `upstream call failed for model "<model>"` for a transport or decode failure (that redaction first shipped in gateway/v0.18.0). The `400` `response_format_unsupported` and `422` `idempotency_key_reused` bodies (local rejections, `502` before gateway/v0.19.0) keep their own Kelvran-authored text. The provider's full error text is only in the gateway log. Non-streaming upstream calls are cut off after 60 s and surface as this `502`. The full table is in [Error codes](../../reference/error-codes.md).
 
 ### 429: rate_limit_error versus insufficient_quota
 
@@ -203,7 +205,6 @@ Expected: `401 invalid_api_key dataplane: auth: identity: invalid virtual key` (
 - The Responses API, the legacy Completions API, and the images, audio, files, batches and fine-tuning routes: only `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz` and `GET /readyz` exist. Anything else is a `404`.
 - `tool_choice` types `allowed_tools` and `custom`.
 - OpenAI's `404` for an unknown model; Kelvran returns `400` `model_not_found` by recorded decision.
-- A distinct status or code for an `Idempotency-Key` reused with a different body, or for `response_format` on a model pool with no capable deployment; both are `502` `upstream_error`.
 - A Redis-backed `Idempotency-Key` store; deduplication is per gateway instance.
 - `x-api-key` authentication and the Anthropic Messages API, so the Anthropic SDK and Claude Code cannot use the gateway as a base URL.
 - A first-party Kelvran SDK and an OpenAPI document for `/v1/*`; the `base_url` override described here is the integration path ([Why no SDK](../../explanation/why-no-sdk.md)).

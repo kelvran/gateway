@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
+	"github.com/kelvran/gateway/gateway/internal/idempotency"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 )
 
@@ -232,6 +234,13 @@ func errorTypeAndCode(err error, status int) (errType string, code *string) {
 		return errTypeInvalidRequest, codePtr("not_an_embedding_model")
 	case errors.Is(err, dataplane.ErrEmptyMessages):
 		return errTypeInvalidRequest, codePtr("empty_messages")
+	case errors.Is(err, adapter.ErrStructuredOutputUnsupported):
+		// G16 (2026-10-10): a request-shape fault, so a 400 with its own code
+		// instead of the 502 upstream_error default it used to fall to.
+		return errTypeInvalidRequest, codePtr("response_format_unsupported")
+	case errors.Is(err, idempotency.ErrFingerprintMismatch):
+		// G16: 422 -- the key says "same request", the body says otherwise.
+		return errTypeInvalidRequest, codePtr("idempotency_key_reused")
 	case errors.Is(err, dataplane.ErrPromptAndMessagesBothSet),
 		errors.Is(err, dataplane.ErrPromptResolutionFailed),
 		errors.Is(err, dataplane.ErrPromptLabelAndVersionBothSet),

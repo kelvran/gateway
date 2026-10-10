@@ -5137,6 +5137,14 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST
 	case errors.Is(err, ErrGuardrailBlocked):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED
+	case errors.Is(err, adapter.ErrStructuredOutputUnsupported), errors.Is(err, idempotency.ErrFingerprintMismatch):
+		// G16 (2026-10-10): both are decided from the request alone before
+		// any upstream call -- an unenforceable response_format, a reused
+		// Idempotency-Key with a different body -- so they classify as the
+		// client's invalid request, and (through isRetryStormEligible) carry
+		// no Retry-After and bump no backoff. Before this they fell to
+		// OUTCOME_UPSTREAM_ERROR and the 502 default.
+		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST
 	default:
 		var capErr *DeploymentCapacityError
 		if errors.As(err, &capErr) {

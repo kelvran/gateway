@@ -7,6 +7,7 @@ Versioning: [SemVer](https://semver.org/) — load-bearing for the Go module pat
 ## Added
 
 ## Changed
+- Two error statuses that were the `502` `upstream_error` default now say what happened (plan gate G16, decided 2026-10-10 together with RFC-1; a MINOR change under `docs/VERSIONING.md` §3: statuses are public surface, and nothing a documented client does stops working — the SDKs still raise an exception, the only `Retry-After` promise in §2 is on 429, and `type`/`code` gain values without losing any): `response_format` on a model pool with no deployment able to enforce it is `400` `invalid_request_error` / `response_format_unsupported` with `param` `response_format`; an `Idempotency-Key` reused within its window with a different body is `422` `invalid_request_error` / `idempotency_key_reused` with `param` `Idempotency-Key`. Neither carries `Retry-After` or bumps the key's retry backoff any more, and the decision event records `OUTCOME_INVALID_REQUEST` instead of `OUTCOME_UPSTREAM_ERROR`. Both are decided before any upstream call, as before.
 
 ## Deprecated
 

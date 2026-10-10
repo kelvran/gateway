@@ -84,7 +84,7 @@ What you should see: one document with one entry per canonical `model` name the 
 
 ### Replay-safe retries with `Idempotency-Key`
 
-Add `-H "Idempotency-Key: <your unique token>"` to a chat request (buffered or streamed). A second request with the same key and the same body within 10 minutes replays the stored response; the same key with a different body fails with `502` `upstream_error`, not `400`. Details are in the [data-plane API reference](../../reference/data-plane-api.md).
+Add `-H "Idempotency-Key: <your unique token>"` to a chat request (buffered or streamed). A second request with the same key and the same body within 10 minutes replays the stored response; the same key with a different body fails with `422` `idempotency_key_reused` (since gateway/v0.19.0; `502` `upstream_error` before). Details are in the [data-plane API reference](../../reference/data-plane-api.md).
 
 ### Per-end-user cache scope
 
@@ -213,7 +213,6 @@ What it returns on gateway/v0.18.0 and later: `HTTP/1.1 401 Unauthorized`, `Cont
 - No `X-Kelvran-Overhead-Duration-Ms` on streaming responses.
 - No OpenAI Responses, Completions, images, audio or files routes.
 - No OpenAPI document to generate requests from.
-- No distinct code for an `Idempotency-Key` reused with a different body; it is a `502 upstream_error`.
 - No 404 for an unknown model; it is `400 model_not_found` by design.
 
 ## Related

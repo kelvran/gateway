@@ -287,7 +287,7 @@ The in-band error frame is present since gateway/v0.18.0. Billing of a truncated
 | Fingerprint | SHA-256 of the canonical re-encoding of the request body (`json.Marshal` of the decoded request). |
 | Claim lifetime | 10 minutes from the claim (`idempotencyKeyTTL`). Expired claims are swept when a later claim runs. |
 | Concurrent duplicate | Waits for the owning request to finish, then receives the stored response verbatim (same `id`, same `created`). |
-| Same key, different body | `502`, `type` `server_error`, `code` `upstream_error`, with `Retry-After`. The fingerprint-mismatch error has no dedicated status and falls to the default. |
+| Same key, different body | `422`, `type` `invalid_request_error`, `code` `idempotency_key_reused`, `param` `Idempotency-Key`, no `Retry-After` (since gateway/v0.19.0; `502` `upstream_error` with `Retry-After` before). |
 | Store | In-process only. Not shared between replicas; a second instance does not see the first instance's claims. |
 
 ### `X-Kelvran-End-User-Id`
@@ -485,6 +485,7 @@ Upstream failures are redacted. A provider HTTP status reads `upstream provider 
 | `400` | `invalid_request_error` | `invalid_prompt_reference` | `prompt_id` and `messages` both set; `prompt_label` and `prompt_version` both set; unknown prompt id, version or label; resolved prompt content fails the content-part check | yes |
 | `400` | `invalid_request_error` | `streaming_not_supported` | the resolved provider has no streaming implementation | yes |
 | `400` | `invalid_request_error` | `not_an_embedding_model` | `/v1/embeddings` routed to a chat deployment | no |
+| `400` | `invalid_request_error` | `response_format_unsupported` | `response_format` set and no deployment in the pool can enforce it (`param` `response_format`); since gateway/v0.19.0, previously `502` | no |
 | `401` | `authentication_error` | `null` | `Authorization` missing or not `Bearer ` | no |
 | `401` | `authentication_error` | `invalid_api_key` | token matches no key, or a rotated-out key past its grace period | no |
 | `401` | `authentication_error` | `key_expired` | token matches a key whose `expires_at` has passed (since gateway/v0.18.0) | no |
@@ -492,12 +493,13 @@ Upstream failures are redacted. A provider HTTP status reads `upstream provider 
 | `403` | `permission_error` | `source_ip_not_allowed` | key's `allowed_source_cidrs` excludes the TCP peer | yes |
 | `405` | `invalid_request_error` | `method_not_allowed` | wrong method on a `/v1/*` route; `Allow` header set | no |
 | `413` | `invalid_request_error` | `request_too_large` | body over 32 MiB | no |
+| `422` | `invalid_request_error` | `idempotency_key_reused` | `Idempotency-Key` reused within its window with a different body (`param` `Idempotency-Key`); since gateway/v0.19.0, previously `502` | no |
 | `429` | `rate_limit_error` | `rate_limit_exceeded` | per-key rate limit | yes |
 | `429` | `rate_limit_error` | `concurrency_limit_exceeded` | per-key in-flight cap | yes |
 | `429` | `insufficient_quota` | `insufficient_quota` | per-key budget exhausted | no |
 | `501` | `server_error` | `streaming_not_configured` | the pipeline has no streaming upstream caller | yes |
 | `501` | `server_error` | `embeddings_not_configured` | the pipeline or provider has no embedding upstream | no |
-| `502` | `server_error` | `upstream_error` | default for every unrecognised error: every upstream failure after fallback (an upstream `429` is reported as `502`), an `Idempotency-Key` reused with a different body, `response_format` with no capable deployment | yes |
+| `502` | `server_error` | `upstream_error` | default for every unrecognised error: every upstream failure after fallback (an upstream `429` is reported as `502`) | yes |
 | `503` | `server_error` | `deployment_capacity_exceeded` | a deployment-scoped capacity ceiling rejected the request | yes |
 
 The status is decided by one switch in `gateway/cmd/gateway/main.go` (`errorStatus`); `type` and `code` are added by `gateway/cmd/gateway/error_envelope.go`. Client-side handling per code is in [error-codes.md](error-codes.md) and [troubleshooting.md](../how-to/troubleshooting.md).

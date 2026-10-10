@@ -124,6 +124,13 @@ func newIntegrationServer(t *testing.T, upstreamURL, gatewayKey, upstreamKeyEnvV
 		},
 	}
 
+	return newIntegrationServerFromConfig(t, cfg)
+}
+
+// newIntegrationServerFromConfig serves any config through the real pipeline
+// and handlers; newIntegrationServer is the one-openai-deployment case.
+func newIntegrationServerFromConfig(t *testing.T, cfg *controlplane.Config) *httptest.Server {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pipeline, err := buildPipeline(cfg, logger)
 	if err != nil {

@@ -54,7 +54,7 @@ If marshalling the envelope ever fails, this fixed body is written instead, with
 
 | `type` | Meaning | Statuses it appears with |
 |---|---|---|
-| `invalid_request_error` | The request itself is the problem: shape, size, an unknown model, a blocked prompt, a bad prompt reference | 400, 405, 413 |
+| `invalid_request_error` | The request itself is the problem: shape, size, an unknown model, a blocked prompt, a bad prompt reference, an unenforceable `response_format`, a reused `Idempotency-Key` | 400, 405, 413, 422 |
 | `authentication_error` | No usable virtual key in `Authorization: Bearer` | 401 |
 | `permission_error` | The key is valid but not allowed to do this | 403 |
 | `rate_limit_error` | A transient per-key throttle. Clients may retry after `Retry-After` | 429 |
@@ -65,7 +65,7 @@ If marshalling the envelope ever fails, this fixed body is written instead, with
 
 These are produced after the request body is accepted, by the shared error writer for all three routes. `Retry-After` is as described under [`Retry-After`](#retry-after); the column states the outcome for `/v1/chat/completions`. `/v1/embeddings` and `/v1/models` never set it.
 
-`/v1/models` can produce only the three 401 codes and 403 `source_ip_not_allowed`. `/v1/embeddings` never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded`, `empty_messages`, `invalid_prompt_reference`, `streaming_not_supported` or `streaming_not_configured`; `/v1/chat/completions` never produces `not_an_embedding_model` or `embeddings_not_configured`; every other row applies to both POST routes.
+`/v1/models` can produce only the three 401 codes and 403 `source_ip_not_allowed`. `/v1/embeddings` never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded`, `empty_messages`, `invalid_prompt_reference`, `streaming_not_supported`, `streaming_not_configured`, `response_format_unsupported` or `idempotency_key_reused`; `/v1/chat/completions` never produces `not_an_embedding_model` or `embeddings_not_configured`; every other row applies to both POST routes.
 
 | Status | `type` | `code` | `param` | `Retry-After` (chat) | Raised when | Message begins with (not a contract) |
 |---|---|---|---|---|---|---|
@@ -83,6 +83,8 @@ These are produced after the request body is accepted, by the shared error write
 | 400 | `invalid_request_error` | `invalid_prompt_reference` | `null` | yes | `prompt_id` and `messages` both set; `prompt_label` and `prompt_version` both set; unknown `prompt_id`, `prompt_version` or `prompt_label`; or the resolved prompt's own content fails the content-part check | `dataplane: request sets both prompt_id and messages`, `dataplane: request sets both prompt_label and prompt_version`, `dataplane: failed to resolve prompt_id`, or `dataplane: resolved prompt content failed validation` |
 | 400 | `invalid_request_error` | `streaming_not_supported` | `null` | yes | `stream: true` to a provider adapter with no streaming implementation | `dataplane: streaming not supported for this provider` |
 | 400 | `invalid_request_error` | `not_an_embedding_model` | `null` | no (embeddings route) | `/v1/embeddings` names a model whose deployment is `kind: chat` | `dataplane: requested model is not an embedding deployment` |
+| 400 | `invalid_request_error` | `response_format_unsupported` | `"response_format"` | no | `response_format` is set and no deployment in the model's pool can enforce it (Bedrock models outside the structured-output whitelist). No upstream call is made. Since `gateway/v0.19.0`; before, 502 `upstream_error` with `Retry-After` | `adapter: response_format is not supported by this model and no capable deployment was found` |
+| 422 | `invalid_request_error` | `idempotency_key_reused` | `"Idempotency-Key"` | no | The `Idempotency-Key` was used within its 10-minute window with a request body that hashes differently. No upstream call is made. Since `gateway/v0.19.0`; before, 502 `upstream_error` with `Retry-After` | `dataplane: idempotency: idempotency: key already claimed with a different request body` |
 | 501 | `server_error` | `streaming_not_configured` | `null` | yes | The pipeline has no streaming upstream configured and the request is a streaming cache miss | `dataplane: streaming is not configured for this pipeline` |
 | 501 | `server_error` | `embeddings_not_configured` | `null` | no (embeddings route) | The deployment's provider has no embedding adapter, or no embedding upstream is configured | `dataplane: embeddings are not configured for this deployment` |
 | 503 | `server_error` | `deployment_capacity_exceeded` | `null` | yes | The deployment's own aggregate RPM, TPM or concurrency ceiling rejected the call and fallback did not succeed. The caller may be nowhere near its own limits | `deployment at capacity (<reason>)` |
@@ -130,11 +132,13 @@ These are produced before the pipeline runs, while the handler reads and validat
 | `code` | `param` | Route |
 |---|---|---|
 | `empty_messages` | `"messages"` | chat |
+| `response_format_unsupported` | `"response_format"` | chat |
+| `idempotency_key_reused` | `"Idempotency-Key"` (a request header, not a body field) | chat |
 | `invalid_tool_choice` | `"tool_choice"` | chat |
 | `invalid_request` | `"limit"`, `"after_id"` or `"before_id"` | models |
 | `missing_required_parameter` | `"model"` or `"input"` | embeddings |
 
-In a mid-stream error frame `param` is always `null`; `empty_messages`, the only pipeline code that sets it, always fails before the first chunk and so never appears in a frame.
+In a mid-stream error frame `param` is always `null`; the three pipeline codes that set it (`empty_messages`, `response_format_unsupported`, `idempotency_key_reused`) all fail before the first chunk and so never appear in a frame.
 
 ## `Retry-After`
 
@@ -157,6 +161,8 @@ In a mid-stream error frame `param` is always `null`; `empty_messages`, the only
 | 400 `invalid_prompt_reference` | 400 `empty_messages` |
 | 400 `streaming_not_supported` | every handler-level code (400, 405, 413) |
 | 501 `streaming_not_configured` | everything on `/v1/embeddings` and `/v1/models` |
+| | 400 `response_format_unsupported` (since gateway/v0.19.0; its 502 before carried one) |
+| | 422 `idempotency_key_reused` (since gateway/v0.19.0; its 502 before carried one) |
 
 The 403, 400 and 501 entries in the left column are local errors that carry the header because they have no dedicated outcome; they also count as `error.type=upstream_error` in telemetry. [`docs/operations/FAILURE-MODES.md`](../operations/FAILURE-MODES.md) records this as a known gap. The design is [`docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md`](../rfcs/2026-09-07-gateway-retry-storm-mitigation.md).
 
@@ -199,8 +205,6 @@ Every error with no dedicated case takes the 502 default, `type: server_error`, 
 | Provider answered with a non-2xx status after fallback was exhausted (a provider 429 is surfaced this way, never as 429) | yes | `upstream provider returned status <N>` |
 | Transport failure before any response: refused connection, dial failure, timeout waiting for the response | no | `upstream call failed for model "<model>"` |
 | Read timeout or decode error after the provider started answering | yes | `upstream call failed for model "<model>"` |
-| `Idempotency-Key` reused with a request body that hashes differently | no | the error's own text |
-| `response_format` set, and no deployment in the model's pool can enforce it | no | the error's own text |
 | URL-based image or document content part sent to a Bedrock deployment (Bedrock accepts inline base64 only) | no | `upstream call failed for model "<model>"` (the adapter's own text reaches only the server log) |
 | Provider-side content-policy or safety block that the fallback chain did not absorb | yes | `upstream provider returned status <N>` for a non-2xx rejection; `upstream call failed for model "<model>"` for a 2xx body that the adapter classified as a safety block (today Gemini's `promptFeedback.blockReason`) |
 | Bedrock event stream ended before a `messageStop` event | yes | `upstream call failed for model "<model>"`, as a mid-stream frame when a chunk had already been sent |
@@ -215,8 +219,6 @@ Every error with no dedicated case takes the 502 default, `type: server_error`, 
 
 ## Not available today
 
-- A distinct status or code for an `Idempotency-Key` reused with a different body. It is 502 `upstream_error`.
-- A dedicated code for `response_format` on a model pool with no capable deployment. It is 502 `upstream_error`.
 - OpenAI's 404 for an unknown model. An unknown model is deliberately 400 `model_not_found`: it is treated as a request-shape mistake, not a missing resource.
 - A way for the client to tell a Block-tier guardrail detector error from a real guardrail finding. Both are 400 `content_policy_violation`.
 - `Retry-After` on `/v1/embeddings` or `/v1/models`, for any error.

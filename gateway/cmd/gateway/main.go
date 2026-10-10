@@ -67,6 +67,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/guardrail/bedrockguard"
 	"github.com/kelvran/gateway/gateway/internal/guardrail/embedsim"
+	"github.com/kelvran/gateway/gateway/internal/idempotency"
 	idempotencyinprocess "github.com/kelvran/gateway/gateway/internal/idempotency/inprocess"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
@@ -2131,6 +2132,16 @@ func errorStatus(err error) int {
 		status = http.StatusBadRequest
 	case errors.Is(err, dataplane.ErrStreamingNotConfigured), errors.Is(err, dataplane.ErrEmbeddingsNotConfigured):
 		status = http.StatusNotImplemented
+	case errors.Is(err, adapter.ErrStructuredOutputUnsupported):
+		// 400, not the 502 default (plan gate G16, decided 2026-10-10 with
+		// RFC-1: docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md): no
+		// deployment in the pool can enforce response_format, which is known
+		// from the request alone before any upstream call.
+		status = http.StatusBadRequest
+	case errors.Is(err, idempotency.ErrFingerprintMismatch):
+		// 422 (same gate): the Idempotency-Key was reused with a different
+		// body -- the request contradicts itself, nothing upstream failed.
+		status = http.StatusUnprocessableEntity
 	case errors.Is(err, dataplane.ErrNotAnEmbeddingDeployment):
 		// 400, not the 502 default -- naming a model that resolves to a
 		// chat (not embedding) deployment on the embeddings route is a
@@ -2282,8 +2293,13 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 	// error_envelope.go). Retry-After and the redaction above are untouched.
 	errType, code := errorTypeAndCode(err, status)
 	var param *string
-	if errors.Is(err, dataplane.ErrEmptyMessages) {
+	switch {
+	case errors.Is(err, dataplane.ErrEmptyMessages):
 		param = codePtr("messages")
+	case errors.Is(err, adapter.ErrStructuredOutputUnsupported):
+		param = codePtr("response_format")
+	case errors.Is(err, idempotency.ErrFingerprintMismatch):
+		param = codePtr("Idempotency-Key")
 	}
 	writeAPIError(w, status, errType, code, param, message)
 }

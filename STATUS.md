@@ -5,7 +5,7 @@
 **Latest releases: `gateway/v0.18.0` (2026-10-10) and `evals/v0.10.1` (2026-09-22)**, each with its own GitHub Release at `github.com/kelvran/gateway`; CI is green on `main`. The two deployables version independently and have shipped 21 gateway releases (18 minor versions, `v0.1.0` through `v0.18.0`, plus the `v0.10.1`, `v0.14.1` and `v0.14.2` patches) and 11 evals releases (`v0.1.0` through `v0.10.1`) since the first cut on 2026-09-03.
 
 - Authoritative per-release record: `gateway/changelog/` and `evals/changelog/`, one dated file per version in Keep a Changelog categories.
-- Fixed on `main` but not yet in any release: `gateway/changelog/unreleased.md` (empty at the `gateway/v0.18.0` cut; the entries it held, including Bedrock `response_format` on Claude Sonnet 5 no longer rejected with 502 and a local admin mutation no longer silently dropped as stale, moved to `gateway/changelog/0.18.0.md`). `evals/changelog/unreleased.md` is empty.
+- Fixed on `main` but not yet in any release: `gateway/changelog/unreleased.md` (empty at the `gateway/v0.18.0` cut; the entries it held, including Bedrock `response_format` on Claude Sonnet 5 no longer rejected with 502 and a local admin mutation no longer silently dropped as stale, moved to `gateway/changelog/0.18.0.md`; since the cut it holds the G16 status corrections: `400` `response_format_unsupported` and `422` `idempotency_key_reused`). `evals/changelog/unreleased.md` is empty.
 - Current feature surface and the open defects from the 2026-10-07/08 live verification: `README.md`.
 - The narrative sections below ("Current Phase" onward) stop at the `v0.9.0` / `v0.8.0` cut of 2026-09-11 and are kept as history, not rewritten; `docs/agents/LOGS.md` and `DECISIONS.md` carry everything since.
 

@@ -13,7 +13,7 @@ Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several i
 | OpenAI-shaped JSON error envelope | `gateway/cmd/gateway/error_envelope.go` | `text/plain` body, same status codes |
 | `id`, `object`, `created` on every completion and chunk | `gateway/internal/gateway/dataplane/completion_envelope.go` | Bedrock responses carry `"id": ""`; no response carries `object` or `created` |
 | In-band `data: {"error":…}` frame for mid-stream failures | `gateway/cmd/gateway/error_envelope.go` | Stream ends without an error frame |
-| `claude-sonnet-5` on the Bedrock structured-output whitelist | `gateway/internal/adapter/capabilities.go` | `response_format` to a Sonnet 5 Bedrock deployment fails with `502` unless another capable deployment serves the same `model` |
+| `claude-sonnet-5` on the Bedrock structured-output whitelist | `gateway/internal/adapter/capabilities.go` | `response_format` to a Sonnet 5 Bedrock deployment fails with `400` `response_format_unsupported` (`502` before gateway/v0.19.0) unless another capable deployment serves the same `model` |
 | `tools` and `tool_choice` folded into cache keys | `gateway/changelog/0.18.0.md` | Identical messages with different `tool_choice` can share a cached response |
 
 ## Routes
@@ -223,7 +223,7 @@ Not available today: a client-side validation fallback. A provider with no nativ
 | `openaicompat` | Same wire shape as `openai`; enforcement quality is the backend's (vLLM, Ollama, TGI, llama.cpp, LocalAI) | `type` string forwarded natively |
 | `anthropic` | `output_config.format.{type, schema}`; `name` dropped | `type` copied verbatim into `output_config.format.type`. Anthropic's shape documents only `json_schema`; the upstream answer for `json_object` is not documented here |
 | `gemini` | `generationConfig.responseSchema` from `json_schema.schema`, `responseMimeType: application/json` | `responseMimeType: application/json` with no `responseSchema` |
-| `bedrock` | `additionalModelRequestFields.output_config.format.{type, schema}`, only for whitelisted Claude families (below). The gateway rejects a schema using `$ref`, `minimum`, `maximum`, `multipleOf`, `minLength` or `maxLength` at the top level or inside any nested `properties`, `items` or `$defs` schema (`502`, `code: upstream_error`, message `upstream call failed for model "<model>"`) and sets `additionalProperties: false` on every `type: object` node that leaves it unset | Whitelisted Claude families (below) only: accepted and forwarded with no format field, not enforced. Any other `bedrock` model: the same `502` gate as `json_schema`; the enforcement gate (`checkResponseFormatEnforceable`) does not look at `type` |
+| `bedrock` | `additionalModelRequestFields.output_config.format.{type, schema}`, only for whitelisted Claude families (below). The gateway rejects a schema using `$ref`, `minimum`, `maximum`, `multipleOf`, `minLength` or `maxLength` at the top level or inside any nested `properties`, `items` or `$defs` schema (`502`, `code: upstream_error`, message `upstream call failed for model "<model>"`) and sets `additionalProperties: false` on every `type: object` node that leaves it unset | Whitelisted Claude families (below) only: accepted and forwarded with no format field, not enforced. Any other `bedrock` model: the same enforcement gate as `json_schema` (`400` `response_format_unsupported`; `502` before gateway/v0.19.0); the gate (`checkResponseFormatEnforceable`) does not look at `type` |
 
 Bedrock whitelist (family-boundary match in `gateway/internal/adapter/capabilities.go`): `claude-sonnet-5` (since `gateway/v0.18.0`), `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-opus-4-5`, `claude-haiku-4-5`. Matching is by family boundary, so `claude-sonnet-5` does not admit `claude-sonnet-5-5`; the code comment records Bedrock rejecting `output_config.format` for Sonnet 5.5 on 2026-10-08. All other `bedrock` models are unsupported.
 
@@ -231,7 +231,7 @@ Bedrock whitelist (family-boundary match in `gateway/internal/adapter/capabiliti
 
 | Condition | Result |
 |---|---|
-| `response_format` set and no deployment in the model's pool can enforce it | `502`, `code: upstream_error`, message `adapter: response_format is not supported by this model and no capable deployment was found: model <canonical model>` (`adapter.ErrStructuredOutputUnsupported`, wrapped by `checkResponseFormatEnforceable` in `gateway/internal/gateway/dataplane/dataplane.go`); `Retry-After` set |
+| `response_format` set and no deployment in the model's pool can enforce it | `400`, `code: response_format_unsupported`, `param` `response_format` (since gateway/v0.19.0; `502` `upstream_error` before), message `adapter: response_format is not supported by this model and no capable deployment was found: model <canonical model>` (`adapter.ErrStructuredOutputUnsupported`, wrapped by `checkResponseFormatEnforceable` in `gateway/internal/gateway/dataplane/dataplane.go`); no `Retry-After` (the `502` before carried one) |
 | `response_format` set and the serving deployment could not enforce it | Span attribute `kelvran.response_format.requested_not_enforced=true` (`gateway/internal/telemetry/result.go`); see [metrics and logs](metrics-and-logs.md) (the attribute has no row in `docs/operations/TELEMETRY.md` as of 2026-10-08) |
 | Fallback hop to a deployment that cannot enforce it | Skipped by the fallback chain's capability gate |
 
@@ -346,15 +346,16 @@ All four keys are always present (`null` when unknown). The OpenAI SDKs choose t
 
 | Status | `type` | `code` values | Notes |
 |---|---|---|---|
-| `400` | `invalid_request_error` | `invalid_body`, `invalid_json`, `invalid_request`, `invalid_tool_choice`, `missing_required_parameter`, `model_not_found`, `content_policy_violation`, `streaming_not_supported`, `not_an_embedding_model`, `empty_messages`, `invalid_prompt_reference` | `model_not_found` is `400`, not OpenAI's `404` (recorded decision) |
+| `400` | `invalid_request_error` | `invalid_body`, `invalid_json`, `invalid_request`, `invalid_tool_choice`, `missing_required_parameter`, `model_not_found`, `content_policy_violation`, `streaming_not_supported`, `not_an_embedding_model`, `empty_messages`, `invalid_prompt_reference`, `response_format_unsupported` (since gateway/v0.19.0) | `model_not_found` is `400`, not OpenAI's `404` (recorded decision) |
 | `401` | `authentication_error` | `invalid_api_key`, `key_expired`, or `null` for a missing header | |
 | `403` | `permission_error` | `model_not_allowed`, `source_ip_not_allowed` | |
 | `405` | `invalid_request_error` | `method_not_allowed` | `Allow` header set |
 | `413` | `invalid_request_error` | `request_too_large` | |
+| `422` | `invalid_request_error` | `idempotency_key_reused` | `Idempotency-Key` reused with a different body (`param` `Idempotency-Key`); since gateway/v0.19.0 |
 | `429` | `rate_limit_error` | `rate_limit_exceeded`, `concurrency_limit_exceeded` | `Retry-After` set on `/v1/chat/completions` only |
 | `429` | `insufficient_quota` | `insufficient_quota` | Budget exhausted; no `Retry-After` |
 | `501` | `server_error` | `streaming_not_configured`, `embeddings_not_configured` | |
-| `502` | `server_error` | `upstream_error` | Default for every unclassified failure, including adapter rejections, `Idempotency-Key` body mismatch and `ErrStructuredOutputUnsupported`; `Retry-After` set on `/v1/chat/completions` only. Upstream bodies are redacted to `upstream provider returned status N` |
+| `502` | `server_error` | `upstream_error` | Default for every unclassified failure, including adapter rejections; `Retry-After` set on `/v1/chat/completions` only. Upstream bodies are redacted to `upstream provider returned status N` |
 | `503` | `server_error` | `deployment_capacity_exceeded` | `Retry-After` set on `/v1/chat/completions` |
 
 The full catalogue is in [error codes](error-codes.md).
@@ -368,7 +369,7 @@ The full catalogue is in [error codes](error-codes.md).
 | Window | 10 minutes from the claim (`idempotencyKeyTTL`) | Not documented here |
 | Fingerprint | SHA-256 of the canonical JSON of the decoded request (`json.Marshal(req)`), so the three accepted `tool_choice` input forms of one choice fingerprint identically | Not documented here |
 | Replay | The stored response is returned verbatim, including its `id` and `created`, with no upstream call | Same |
-| Same key, different body | `502`, `type: server_error`, `code: upstream_error`, plus `Retry-After` | `400` |
+| Same key, different body | `422`, `type: invalid_request_error`, `code: idempotency_key_reused`, `param: Idempotency-Key`, no `Retry-After` (since gateway/v0.19.0; `502` plus `Retry-After` before) | `400` |
 | Same key while the first request is in flight | The second waits for the first to finish, then replays | Not documented here |
 | Storage | In-process only; a restart or a crash lets a retry re-execute | n/a |
 
@@ -390,7 +391,7 @@ The adapter registry is `newAdapterRegistry` in `gateway/cmd/gateway/main.go`. O
 
 | Client | Works today | Limits | Evidence in the repository |
 |---|---|---|---|
-| `openai-python`, `openai-node` (`base_url` override) | Text chat (`content` as a string), tools with any accepted `tool_choice` form, `json_schema` and `json_object` output, buffered and streaming text, embeddings, `GET /v1/models` (since `gateway/v0.18.0`) | Content-array multimodal messages fail with `400 invalid_json`; streaming tool-call accumulators do not find `function.arguments`; `Idempotency-Key` body mismatch is `502`, not `400`; `max_completion_tokens` and the other dropped fields have no effect | No SDK client code or automated SDK test exists under `gateway/` or `scripts/`. OpenAI-shaped clients were exercised live during the 2026-10-07/08 verification that found defects F4 (`tool_choice` forms) and F7 (empty Bedrock `id`), and an unmodified OpenAI-compatible client (the Deep-Research planner, `response_format: json_object`) was routed through the gateway; see `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md` |
+| `openai-python`, `openai-node` (`base_url` override) | Text chat (`content` as a string), tools with any accepted `tool_choice` form, `json_schema` and `json_object` output, buffered and streaming text, embeddings, `GET /v1/models` (since `gateway/v0.18.0`) | Content-array multimodal messages fail with `400 invalid_json`; streaming tool-call accumulators do not find `function.arguments`; `Idempotency-Key` body mismatch is `422` `idempotency_key_reused` since gateway/v0.19.0 (`502` before), not `400`; `max_completion_tokens` and the other dropped fields have no effect | No SDK client code or automated SDK test exists under `gateway/` or `scripts/`. OpenAI-shaped clients were exercised live during the 2026-10-07/08 verification that found defects F4 (`tool_choice` forms) and F7 (empty Bedrock `id`), and an unmodified OpenAI-compatible client (the Deep-Research planner, `response_format: json_object`) was routed through the gateway; see `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md` |
 | LangChain, LiteLLM and other OpenAI-compatible frameworks | Same as the OpenAI SDKs | Same | `type: insufficient_quota` is emitted so their retry logic treats a budget rejection as permanent |
 | `anthropic` SDK | No | No `/v1/messages` route; `x-api-key` not read. `GET /v1/models` alone answers in the SDK's list shape | The only `anthropic` import in the repository is the evals LLM judge (`evals/evals/judge/providers.py`), which calls the provider directly, not the gateway |
 | Claude Code | No | Requires `POST /v1/messages`; discovery runs only in Anthropic-Messages mode | Same |

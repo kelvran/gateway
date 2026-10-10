@@ -115,10 +115,10 @@ The `response_format` value is part of the L1 and L2 cache keys and is an L3 gat
 | Status | `type` / `code` | When | Message |
 |---|---|---|---|
 | 400 | `invalid_request_error` / `invalid_request` | `schema` deeper than 32 levels, over 10,000 tokens, or not valid JSON | Names `response_format.json_schema.schema` and the bound exceeded |
-| 502 | `server_error` / `upstream_error` | No deployment in the pool can enforce `response_format`; no upstream call was made | `adapter: response_format is not supported by this model and no capable deployment was found: model <model>` |
+| 400 | `invalid_request_error` / `response_format_unsupported` (`param` `response_format`) | No deployment in the pool can enforce `response_format`; no upstream call was made. Since gateway/v0.19.0; `502` `upstream_error` before | `adapter: response_format is not supported by this model and no capable deployment was found: model <model>` |
 | 502 | `server_error` / `upstream_error` | Bedrock schema-dialect rejection (`$ref`, `minimum`, ...) raised while building the upstream request, and no other eligible deployment served the model. If one does (a mixed pool, or a `generic` fallback chain), the request falls back to it and returns 200 from that provider, with `fallbackHappened: true` in the `chat_completion` log line's `gatewayevents_v1` field | `upstream call failed for model "<model>"`; the specific reason, for example `uses a numeric "minimum" constraint`, is only in the gateway's `chat_completion` log line, field `error` |
 
-The 502 for "no capable deployment" has no dedicated code; it takes the default mapping. `type` and `code` are public surface under [docs/VERSIONING.md](../VERSIONING.md); message text is not. The JSON envelope itself ships since gateway/v0.18.0; in gateway/v0.17.0 and earlier the same statuses apply and the body is `text/plain` carrying the message. The `upstream call failed for model "<model>"` redaction in the third row also dates from gateway/v0.18.0: gateway/v0.17.0 and earlier return the same 502 with the full error text in the `text/plain` body, including `adapter "bedrock" ToProvider: bedrock: response_format.json_schema.schema uses a numeric "minimum" constraint, which Bedrock's structured-output schema dialect does not support ...`. The full vocabulary is in [error codes](../reference/error-codes.md).
+The "no capable deployment" case has its own code since gateway/v0.19.0 (plan gate G16); before, it took the default 502 mapping. `type` and `code` are public surface under [docs/VERSIONING.md](../VERSIONING.md); message text is not. The JSON envelope itself ships since gateway/v0.18.0; in gateway/v0.17.0 and earlier the same statuses apply and the body is `text/plain` carrying the message. The `upstream call failed for model "<model>"` redaction in the third row also dates from gateway/v0.18.0: gateway/v0.17.0 and earlier return the same 502 with the full error text in the `text/plain` body, including `adapter "bedrock" ToProvider: bedrock: response_format.json_schema.schema uses a numeric "minimum" constraint, which Bedrock's structured-output schema dialect does not support ...`. The full vocabulary is in [error codes](../reference/error-codes.md).
 
 ## Verify it worked
 
@@ -133,9 +133,9 @@ The first `jq` prints a JSON string; the second parses it. You get an object wit
 Negative check against the gateway's own gate. Send the same body with `"model": "claude-bedrock"` to a gateway running the unmodified example config, using a virtual key with no `allowed_models` restriction: in that file this is `team-beta`, whose public example secret `example-team-beta-secret-do-not-use` is in the file's header comment. `team-alpha` only allows `gpt-4o` and `claude-opus-4` and returns `403` `permission_error` / `model_not_allowed` before the capability gate runs. The config's only `claude-bedrock` deployment uses `anthropic.claude-3-5-sonnet-20241022-v2:0`:
 
 ```text
-HTTP/1.1 502 Bad Gateway
+HTTP/1.1 400 Bad Request
 
-{"error":{"message":"adapter: response_format is not supported by this model and no capable deployment was found: model claude-bedrock","type":"server_error","param":null,"code":"upstream_error"}}
+{"error":{"message":"adapter: response_format is not supported by this model and no capable deployment was found: model claude-bedrock","type":"invalid_request_error","param":"response_format","code":"response_format_unsupported"}}
 ```
 
 No upstream call is made and the `chat_completion` log line carries the same text. Replacing `upstream_model` with a whitelisted family turns this into a 200.
@@ -146,7 +146,6 @@ Observability. A request that set `response_format` and was still served by an i
 
 - No gateway-side validation of the model's output against your schema. If a provider returns non-conforming JSON, the gateway passes it through.
 - No validation of `response_format.type`; unknown values are forwarded as-is on `openai`, `openaicompat` and `anthropic` and fail, or not, there; `bedrock` sends no format field for them and `gemini` ignores `type` entirely.
-- No dedicated error code for "no capable deployment"; it is the generic 502 `server_error` / `upstream_error`.
 - No `name` or `strict` on the Anthropic wire, and no `strict` on Bedrock.
 - No `json_schema.description`; the field is accepted and silently dropped, never forwarded to any provider.
 - No schema-graph cycle detector on Bedrock, so even an internal-only `$ref` is rejected; `json_object` is never enforced on Bedrock.
