@@ -14,7 +14,7 @@ Use this when you have a running gateway and a virtual key, and you want an exis
 
 ### 1. Point the client at the gateway
 
-The base URL is the gateway's `listen_addr` plus `/v1`. The client sends `api_key` as `Authorization: Bearer <secret>`, the authentication every `/v1` route accepts (`GET /v1/models` also takes `x-api-key` as the bearer's alias).
+The base URL is the gateway's `listen_addr` plus `/v1`. The client sends `api_key` as `Authorization: Bearer <secret>`, the authentication every `/v1` route accepts (`GET /v1/models` and `POST /v1/messages` also take `x-api-key` as the bearer's alias).
 
 ```python
 import os
@@ -116,7 +116,7 @@ Run step 2. Expected: one line with the model's greeting, then a `usage_metadata
 
 - `POST /v1/responses`. Only `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz`, `GET /readyz` and `HEAD /api/hello` exist; a client mode that targets the Responses API gets a `404` (check your client version for when yours does).
 - `POST /v1/completions`, so any completion-style (non-chat) LangChain model class is a `404` (check your client version).
-- The Anthropic Messages API (`x-api-key` is read on `GET /v1/models` only). LangChain's Anthropic integration cannot use Kelvran as a base URL yet; use `ChatOpenAI` for Anthropic and Bedrock deployments too.
+- `POST /v1/messages/count_tokens` and the raw-body passthrough to `anthropic` deployments. `POST /v1/messages` itself is served since gateway/v0.19.0 (`x-api-key` read on it and on `GET /v1/models`), so LangChain's Anthropic integration can use Kelvran as a base URL; `ChatOpenAI` remains the documented path for every provider on this page.
 - Embeddings and model listing through LangChain: not exercised. `POST /v1/embeddings` exists for `openai` and `bedrock` deployments and its response omits OpenAI's `object` fields ([data-plane API](../../reference/data-plane-api.md)).
 - OpenAI's `404` for an unknown model; Kelvran returns `400` `model_not_found`.
 - A first-party Kelvran SDK or LangChain integration package; `ChatOpenAI` with `base_url` is the integration path ([Why no SDK](../../explanation/why-no-sdk.md)).

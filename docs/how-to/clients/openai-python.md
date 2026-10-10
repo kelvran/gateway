@@ -204,11 +204,11 @@ Expected: `401 invalid_api_key dataplane: auth: identity: invalid virtual key` (
 - OpenAI's array-of-parts `content` on inbound messages. `content` is a string; multimodal input goes in Kelvran's `parts`. An SDK multimodal request fails with `400` `invalid_json`.
 - The dropped request fields listed in step 2 (`n`, `seed`, `user`, `logprobs`, penalties, `logit_bias`, `max_completion_tokens`, `parallel_tool_calls`, `stream_options`, `store`, `metadata`, `reasoning_effort`). They do not error; they do nothing.
 - OpenAI-shaped streaming tool-call deltas (`delta.tool_calls[].function.{name,arguments}`).
-- The Responses API, the legacy Completions API, and the images, audio, files, batches and fine-tuning routes: only `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz` and `GET /readyz` exist. Anything else is a `404`.
+- The Responses API, the legacy Completions API, and the images, audio, files, batches and fine-tuning routes: only `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (the Anthropic Messages shape, for the Anthropic SDK and Claude Code), `GET /healthz` and `GET /readyz` exist. Anything else is a `404`.
 - `tool_choice` types `allowed_tools` and `custom`.
 - OpenAI's `404` for an unknown model; Kelvran returns `400` `model_not_found` by recorded decision.
 - A Redis-backed `Idempotency-Key` store; deduplication is per gateway instance.
-- The Anthropic Messages API (`x-api-key` is read on `GET /v1/models` only), so the Anthropic SDK and Claude Code cannot use the gateway as a base URL yet.
+- `POST /v1/messages/count_tokens` and the raw-body passthrough to `anthropic` deployments (item 11 slices S10b/S11). `POST /v1/messages` itself is served since gateway/v0.19.0, so the Anthropic SDK and Claude Code can use the gateway as a base URL (`x-api-key` is read on it and on `GET /v1/models`).
 - A first-party Kelvran SDK and an OpenAPI document for `/v1/*`; the `base_url` override described here is the integration path ([Why no SDK](../../explanation/why-no-sdk.md)).
 - A CI compatibility matrix that runs the official `openai` package against the gateway.
 

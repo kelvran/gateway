@@ -12,7 +12,7 @@ Use this when you already call OpenAI from Node.js with the official `openai` np
 
 ### 1. Point the client at the gateway
 
-Set `baseURL` to the gateway address plus `/v1` and `apiKey` to the virtual key secret. The SDK sends it as `Authorization: Bearer <secret>`, the authentication every `/v1` route accepts (`GET /v1/models` also takes `x-api-key` as the bearer's alias).
+Set `baseURL` to the gateway address plus `/v1` and `apiKey` to the virtual key secret. The SDK sends it as `Authorization: Bearer <secret>`, the authentication every `/v1` route accepts (`GET /v1/models` and `POST /v1/messages` also take `x-api-key` as the bearer's alias).
 
 ```js
 import OpenAI from "openai";
@@ -23,7 +23,7 @@ const client = new OpenAI({
 });
 ```
 
-Under `/v1` the gateway serves exactly three routes: `POST /v1/chat/completions`, `POST /v1/embeddings` and `GET /v1/models`. Any other SDK method (`client.responses`, `client.completions`, `client.images`, `client.files` and so on) hits an unregistered path and gets a 404. Route details: [Data-plane API](../../reference/data-plane-api.md).
+Under `/v1` the gateway serves exactly four routes: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` and `POST /v1/messages` (the Anthropic Messages shape, not an OpenAI SDK method). Any other SDK method (`client.responses`, `client.completions`, `client.images`, `client.files` and so on) hits an unregistered path and gets a 404. Route details: [Data-plane API](../../reference/data-plane-api.md).
 
 ### 2. Make a buffered chat completion
 
@@ -166,8 +166,8 @@ These behaviours first shipped in gateway/v0.18.0; gateway/v0.17.0 and earlier l
 
 ## Not available today
 
-- Anthropic Messages ingress (`/v1/messages`; `x-api-key` is read on `GET /v1/models` only). The Anthropic SDK cannot use Kelvran as a base URL yet.
-- The Responses API, the Completions API, images, audio, files and fine-tuning routes. Only chat completions, embeddings and models exist under `/v1`.
+- `POST /v1/messages/count_tokens` and the raw-body passthrough to `anthropic` deployments. `POST /v1/messages` itself is served since gateway/v0.19.0 (`x-api-key` read on it and on `GET /v1/models`), so the Anthropic SDK can use Kelvran as a base URL.
+- The Responses API, the Completions API, images, audio, files and fine-tuning routes. Only chat completions, embeddings, models and the Anthropic `messages` route exist under `/v1`.
 - OpenAI content-array `content` on inbound messages (400 `invalid_json`).
 - OpenAI-shaped streaming tool-call deltas. The gateway streams flat `{ index, id, name, arguments_json }` elements with no `type` and no `function` nesting, so this client's tool-call stream accumulators do not reassemble arguments (check your client version). Buffered tool calls use the OpenAI nesting.
 - Client-side `stream_options`, `n`, `seed`, `user`, `logprobs`, `max_completion_tokens` and the other dropped fields listed in step 2.

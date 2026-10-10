@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -198,8 +199,13 @@ func sortedPointers(unknown map[string]json.RawMessage) []string {
 // with the indexes of the role:"tool" messages flagged is_error
 // (adapter.Message.ToolResultIsError is json:"-", so serializeMessages and
 // normalizeMessages never see it, and a failed tool result is a different
-// prompt from a successful one). "" when neither is present, so a request
-// from the OpenAI route and an Anthropic request with nothing unknown
+// prompt from a successful one), and with the normalised anthropic-beta
+// values of Passthrough.ForwardHeaders (anthropicBetas; slice S10a fills the
+// headers, S11 forwards them -- a beta such as interleaved thinking changes
+// what the model does, so two requests differing only there never share an
+// entry; anthropic-version, sent on every request, is deliberately not
+// folded). "" when none of the three is present, so a request from the
+// OpenAI route and an Anthropic request with nothing unknown and no beta
 // fingerprint alike and cross-format hits still happen -- the same
 // empty-string convention as samplingFingerprint. A hash rather than the
 // JSON itself because unknown members are unbounded client input and the L3
@@ -207,8 +213,10 @@ func sortedPointers(unknown map[string]json.RawMessage) []string {
 // compacts each RawMessage, so equal inputs give equal hashes.
 func passthroughFingerprint(req adapter.ChatRequest) string {
 	var unknown map[string]json.RawMessage
+	var betas []string
 	if req.Passthrough != nil {
 		unknown = req.Passthrough.UnknownFields
+		betas = anthropicBetas(req.Passthrough.ForwardHeaders)
 	}
 	var erroredToolResults []int
 	for i, m := range req.Messages {
@@ -216,18 +224,40 @@ func passthroughFingerprint(req adapter.ChatRequest) string {
 			erroredToolResults = append(erroredToolResults, i)
 		}
 	}
-	if len(unknown) == 0 && len(erroredToolResults) == 0 {
+	if len(unknown) == 0 && len(erroredToolResults) == 0 && len(betas) == 0 {
 		return ""
 	}
 	b, err := json.Marshal(struct {
 		Unknown            map[string]json.RawMessage `json:"unknown,omitempty"`
 		ErroredToolResults []int                      `json:"tool_result_errors,omitempty"`
-	}{Unknown: unknown, ErroredToolResults: erroredToolResults})
+		Betas              []string                   `json:"anthropic_beta,omitempty"`
+	}{Unknown: unknown, ErroredToolResults: erroredToolResults, Betas: betas})
 	if err != nil {
 		panic(fmt.Sprintf("dataplane: marshaling passthrough state for cache key: %v", err))
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// anthropicBetas is the normalised anthropic-beta value set of the ingress's
+// forwarded headers: every header value split on commas, trimmed, empties
+// dropped, sorted and deduplicated, so token order and whitespace never
+// make two equal sets fingerprint apart. nil when the request carries none.
+func anthropicBetas(h http.Header) []string {
+	seen := map[string]bool{}
+	var betas []string
+	for _, value := range h.Values("Anthropic-Beta") {
+		for _, beta := range strings.Split(value, ",") {
+			beta = strings.TrimSpace(beta)
+			if beta == "" || seen[beta] {
+				continue
+			}
+			seen[beta] = true
+			betas = append(betas, beta)
+		}
+	}
+	sort.Strings(betas)
+	return betas
 }
 
 // maxDroppedFieldsBytes bounds the dropped_fields telemetry summary (RFC-1

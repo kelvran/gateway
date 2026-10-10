@@ -116,7 +116,7 @@ func TestConnectClaudePrintsTheBlockWithTheSecretOnce(t *testing.T) {
 	if doc.Env[envAnthropicBaseURL] != "https://gw.example.invalid" || doc.Env[envAnthropicBearer] != connectKey() || doc.Env[envHintHeaders] != "1" || doc.Env[envModelDiscovery] != "1" || len(doc.Env) != 4 {
 		t.Errorf("env block = %v", doc.Env)
 	}
-	for _, want := range []string{`"claudeCode.environmentVariables": [`, `{"name": "ANTHROPIC_BASE_URL", "value": "https://gw.example.invalid"},`, `{"name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "value": "1"}` + "\n]", "export ANTHROPIC_BASE_URL=https://gw.example.invalid\n", "export CLAUDE_CODE_GATEWAY_HINT_HEADERS=1\n", "does not serve POST /v1/messages yet"} {
+	for _, want := range []string{`"claudeCode.environmentVariables": [`, `{"name": "ANTHROPIC_BASE_URL", "value": "https://gw.example.invalid"},`, `{"name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "value": "1"}` + "\n]", "export ANTHROPIC_BASE_URL=https://gw.example.invalid\n", "export CLAUDE_CODE_GATEWAY_HINT_HEADERS=1\n", "serves since gateway/v0.19.0"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("missing %q in\n%s", want, stdout)
 		}
@@ -567,7 +567,7 @@ func TestConnectClaudeCheckReadsTheProbeHonestly(t *testing.T) {
 		wantExit int
 		msg      string
 	}{
-		{http.StatusNotFound, "404 page not found\n", 1, "does not serve the Anthropic Messages API yet (plan item 11, gate G8)"},
+		{http.StatusNotFound, "404 page not found\n", 1, "predates the Anthropic Messages route"},
 		{http.StatusUnauthorized, `{"error":{"type":"authentication_error","code":"invalid_api_key","message":"invalid key"}}`, 1, "the key is not a virtual key for this gateway"},
 		{http.StatusBadRequest, `{"error":{"type":"invalid_request_error","code":"model_not_found","message":"no deployment serves model"}}`, 0, "URL and credential are good"},
 		{http.StatusOK, `{"id":"msg_1","content":[]}`, 0, "URL and credential are good"},

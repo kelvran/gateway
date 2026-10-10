@@ -10,14 +10,14 @@ import (
 // registration order; attribution_test probes every one of them, so a route
 // added here is probed automatically (run() registers nothing outside the
 // builder).
-var dataPlaneRoutes = []string{"/v1/chat/completions", "/v1/embeddings", "/v1/models", "/healthz", "/readyz", "/api/hello"}
+var dataPlaneRoutes = []string{"/v1/chat/completions", "/v1/embeddings", "/v1/models", "/healthz", "/readyz", "/api/hello", "/v1/messages"}
 
 // newDataPlaneMux is the one place the data-plane routes are registered:
 // run(), the shared integration helpers and every single-purpose test that
 // registers only data-plane routes build their server from it, so a test is
 // "wired the same way main.go wires it" by construction and a later slice
-// adds a route without a main.go edit (item 11 slice S9a; the
-// /v1/messages routes land here in S10a). Every pattern is an exact path --
+// adds a route without a main.go edit (item 11 slice S9a; /v1/messages
+// landed here in S10a, /v1/messages/count_tokens lands in S10b). Every pattern is an exact path --
 // no subtree, so a trailing-slash variant is Go's plain 404 -- and the
 // server wraps the mux in dataPlaneHandler for attribution and in-flight
 // tracking.
@@ -37,6 +37,8 @@ func newDataPlaneMux(p *dataplane.Pipeline) *http.ServeMux {
 			mux.HandleFunc(route, readyzHandler(p))
 		case "/api/hello":
 			mux.HandleFunc(route, helloHandler)
+		case "/v1/messages":
+			mux.HandleFunc(route, messagesHandler(p))
 		}
 	}
 	return mux
@@ -64,7 +66,7 @@ func helloHandler(w http.ResponseWriter, r *http.Request) {
 // -- as a bearer, else "". A non-empty Authorization wins (an empty one
 // is absent) so exactly one credential is ever verified: a wrong ANTHROPIC_AUTH_TOKEN beside a valid
 // ANTHROPIC_API_KEY is a 401 with no fallback (RFC-1 §4, owner decision Q2).
-// Read on /v1/models today; the /v1/messages routes read it from S10a.
+// Read on /v1/models (S9a) and /v1/messages (S10a).
 // Never log either value.
 func bearerFromRequest(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); auth != "" {

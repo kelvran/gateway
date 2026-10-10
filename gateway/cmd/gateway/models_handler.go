@@ -28,7 +28,7 @@ import (
 // this repository drives the real openai/anthropic SDKs or Claude Code at
 // this route, and models_integration_test.go checks the document only by
 // decoding it into two hand-written structs that mirror the shapes above.
-// Claude Code in particular is not made usable by this route today: with
+// Claude Code reads this route at startup: with
 // `ANTHROPIC_BASE_URL` pointed here and gateway model discovery enabled
 // its `GET /v1/models?limit=1000` would be answered (on the
 // `ANTHROPIC_AUTH_TOKEN` path its credential is a bearer, and since item 11
@@ -36,11 +36,10 @@ import (
 // (bearerFromRequest; Authorization wins) -- Anthropic's Claude Code
 // gateway-protocol page, recorded in
 // docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md),
-// but every chat turn is a `POST /v1/messages` Kelvran does not serve (see
-// docs/explanation/mcp-a2a-status.md and docs/reference/compatibility.md),
-// and its picker then keeps only ids containing `claude` or `anthropic`.
-// The Claude Code fields are carried now so the document does not change
-// shape when that ingress (round4 plan item 11) lands.
+// and since item 11 slice S10a every chat turn, `POST /v1/messages`, is
+// served too (messages_handler.go); its picker keeps only ids containing
+// `claude` or `anthropic`. The Claude Code fields were carried ahead of that
+// route so the document did not change shape when it landed.
 //
 // The pattern is registered as the EXACT path "/v1/models" (no trailing
 // slash), so "/v1/models/" is a 404, never a ServeMux 301: Claude Code

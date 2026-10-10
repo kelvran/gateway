@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -506,4 +507,61 @@ func newMixedProviderTestPipeline(t *testing.T, upstream UpstreamCaller, deploym
 		t.Fatalf("NewPipeline: %v", err)
 	}
 	return p
+}
+
+// TestPassthroughFingerprintFoldsAnthropicBetaHeader: anthropic-beta changes
+// what the model does (interleaved thinking, 1M context) once the upstream
+// sees it, so two requests differing only there never share an entry;
+// token order and whitespace are normalised, anthropic-version alone (sent
+// on every request) folds nothing so cross-format hits survive.
+func TestPassthroughFingerprintFoldsAnthropicBetaHeader(t *testing.T) {
+	with := func(betas ...string) adapter.ChatRequest {
+		h := http.Header{}
+		h.Set("Anthropic-Version", "2023-06-01")
+		for _, b := range betas {
+			h.Add("Anthropic-Beta", b)
+		}
+		return adapter.ChatRequest{Passthrough: &adapter.Passthrough{Format: "anthropic-messages", ForwardHeaders: h}}
+	}
+	if fp := passthroughFingerprint(with()); fp != "" {
+		t.Errorf("anthropic-version alone: fingerprint %q, want empty", fp)
+	}
+	a := passthroughFingerprint(with("interleaved-thinking-2025-05-14, context-1m-2025-08-07"))
+	b := passthroughFingerprint(with("context-1m-2025-08-07", "interleaved-thinking-2025-05-14"))
+	c := passthroughFingerprint(with("interleaved-thinking-2025-05-14"))
+	if a == "" || a != b {
+		t.Errorf("normalised beta sets must match: %q vs %q", a, b)
+	}
+	if a == c {
+		t.Errorf("different beta sets must differ: %q", a)
+	}
+}
+
+// TestIdempotencyFingerprintFoldsAnthropicBeta: a reused Idempotency-Key
+// with the same body but different betas is a different request.
+func TestIdempotencyFingerprintFoldsAnthropicBeta(t *testing.T) {
+	mk := func(beta string) adapter.ChatRequest {
+		h := http.Header{}
+		if beta != "" {
+			h.Set("Anthropic-Beta", beta)
+		}
+		return adapter.ChatRequest{Model: "m", Passthrough: &adapter.Passthrough{Format: "anthropic-messages", RawBody: json.RawMessage(`{"model":"m"}`), ForwardHeaders: h}}
+	}
+	plain, _ := idempotencyFingerprint(mk(""))
+	withBeta, _ := idempotencyFingerprint(mk("interleaved-thinking-2025-05-14"))
+	same, _ := idempotencyFingerprint(mk("interleaved-thinking-2025-05-14"))
+	if plain == withBeta || withBeta != same {
+		t.Errorf("fingerprints: plain=%x beta=%x same=%x", plain[:4], withBeta[:4], same[:4])
+	}
+}
+
+// TestIsContextWindowExceeded: the exported predicate the Anthropic
+// envelope uses for the capability_rejected: prompt_too_long token.
+func TestIsContextWindowExceeded(t *testing.T) {
+	if !IsContextWindowExceeded(&UpstreamHTTPError{StatusCode: 400, Body: "Input is too long for requested model."}) {
+		t.Error("Bedrock's over-long ValidationException wording must classify as a context-window rejection")
+	}
+	if IsContextWindowExceeded(&UpstreamHTTPError{StatusCode: 500, Body: "boom"}) || IsContextWindowExceeded(errors.New("plain")) {
+		t.Error("anything else must not")
+	}
 }

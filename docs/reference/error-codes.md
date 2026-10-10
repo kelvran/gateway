@@ -6,7 +6,7 @@ This page lists every error the gateway's data plane can return: the JSON envelo
 
 | Item | Value |
 |---|---|
-| Routes covered | `POST /v1/chat/completions` (buffered and SSE), `POST /v1/embeddings`, `GET /v1/models` |
+| Routes covered | `POST /v1/chat/completions` (buffered and SSE), `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (buffered and SSE; the Anthropic envelope below, since gateway/v0.19.0) |
 | Routes not covered | `GET /healthz`, `GET /readyz`, every `/admin/*` route, unknown paths (see [Routes outside the envelope](#routes-outside-the-envelope)) |
 | JSON error envelope | since `gateway/v0.18.0`. `gateway/v0.17.0` returns a `text/plain` body with no `type` or `code`, with the same status codes and the same message text except for the `tool_choice` statuses and the message changes listed two rows below |
 | `GET /v1/models` | since `gateway/v0.18.0` |
@@ -29,6 +29,16 @@ Every data-plane error body has this shape. All four keys are always present; `p
 | `error.type` | string | yes | One of the six values in [Error types](#error-types) |
 | `error.param` | string or `null` | yes | The offending request field, when one is known (see [`param`](#param)) |
 | `error.code` | string or `null` | yes | Machine-readable code (see the code tables below). `null` for a missing or malformed `Authorization` header and for the encoding fallback |
+
+### Anthropic envelope
+
+`/v1/messages` (since gateway/v0.19.0) wraps the same status, `code`, `param` and redacted `message` in Anthropic's shape, `code` and `param` omitted when empty:
+
+```json
+{"type":"error","error":{"type":"invalid_request_error","message":"dataplane: no deployment configured for requested model","code":"model_not_found"}}
+```
+
+The `type` is Anthropic's vocabulary, derived from the status: `400`/`405`/`422` `invalid_request_error`, `401` `authentication_error`, `403` `permission_error`, `404` `not_found_error`, `413` `request_too_large`, `429` `rate_limit_error` (a budget 429 as well; its `code` stays `insufficient_quota`), every 5xx `api_error`. Every `code` in the tables below means the same thing on both envelopes. One addition: when an upstream rejected the prompt as too long, the `message` starts with `capability_rejected: prompt_too_long` (the marker Claude Code's recovery matches on), then the redacted text.
 
 ### Response headers on every error
 
@@ -63,11 +73,11 @@ If marshalling the envelope ever fails, this fixed body is written instead, with
 
 ## Pipeline codes
 
-These are produced after the request body is accepted, by the shared error writer for all three routes. `Retry-After` is as described under [`Retry-After`](#retry-after); the column states the outcome for `/v1/chat/completions`. `/v1/embeddings` and `/v1/models` never set it.
+These are produced after the request body is accepted, by the shared error writers for all four routes (the OpenAI envelope on three, the Anthropic envelope on `/v1/messages`). `Retry-After` is as described under [`Retry-After`](#retry-after); the column states the outcome for `/v1/chat/completions` and `/v1/messages`, which follow one rule. `/v1/embeddings` and `/v1/models` never set it.
 
-`/v1/models` can produce only the three 401 codes and 403 `source_ip_not_allowed`. `/v1/embeddings` never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded`, `empty_messages`, `invalid_prompt_reference`, `streaming_not_supported`, `streaming_not_configured`, `response_format_unsupported`, `idempotency_key_reused` or `tool_result_parts_unsupported`; `/v1/chat/completions` never produces `not_an_embedding_model` or `embeddings_not_configured`; every other row applies to both POST routes.
+`/v1/models` can produce only the three 401 codes and 403 `source_ip_not_allowed`. `/v1/messages` produces every `/v1/chat/completions` row plus `lossy_ingress_rejected`, under the Anthropic envelope (see [Envelope](#envelope)); its decoder never produces `invalid_tool_choice` (it takes the Anthropic `tool_choice` forms), but a forced tool that `tools[]` does not define still does; a missing `model`, `max_tokens` or `messages` is `missing_required_parameter` naming it. `/v1/embeddings` never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded`, `empty_messages`, `invalid_prompt_reference`, `streaming_not_supported`, `streaming_not_configured`, `response_format_unsupported`, `idempotency_key_reused` or `tool_result_parts_unsupported`; `/v1/chat/completions` never produces `not_an_embedding_model` or `embeddings_not_configured`; every other row applies to both POST routes.
 
-| Status | `type` | `code` | `param` | `Retry-After` (chat) | Raised when | Message begins with (not a contract) |
+| Status | `type` | `code` | `param` | `Retry-After` (chat, messages) | Raised when | Message begins with (not a contract) |
 |---|---|---|---|---|---|---|
 | 401 | `authentication_error` | `null` | `null` | no | `Authorization: Bearer` header missing or malformed | `dataplane: auth: identity: missing or malformed Authorization header` |
 | 401 | `authentication_error` | `invalid_api_key` | `null` | no | The bearer token hashes to no configured virtual key | `dataplane: auth: identity: invalid virtual key` |
@@ -84,6 +94,7 @@ These are produced after the request body is accepted, by the shared error write
 | 400 | `invalid_request_error` | `streaming_not_supported` | `null` | yes | `stream: true` to a provider adapter with no streaming implementation | `dataplane: streaming not supported for this provider` |
 | 400 | `invalid_request_error` | `not_an_embedding_model` | `null` | no (embeddings route) | `/v1/embeddings` names a model whose deployment is `kind: chat` | `dataplane: requested model is not an embedding deployment` |
 | 400 | `invalid_request_error` | `response_format_unsupported` | `"response_format"` | no | `response_format` is set and no deployment in the model's pool can enforce it (Bedrock models outside the structured-output whitelist). No upstream call is made. Since `gateway/v0.19.0`; before, 502 `upstream_error` with `Retry-After` | `adapter: response_format is not supported by this model and no capable deployment was found` |
+| 400 | `invalid_request_error` | `lossy_ingress_rejected` | the members' JSON pointers, sorted and comma-joined (cut on a pointer boundary at 512 bytes) | no | `/v1/messages` only: the body carries members the canonical schema cannot hold and no deployment in the model's pool may serve it — an `anthropic` one, or one with `accept_lossy_anthropic_ingress: true`. No upstream call is made. The message names the config key, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` and only top-level members with plain-identifier names; the rest are counted. Since `gateway/v0.19.0` | `dataplane: request carries 1 member this gateway cannot translate for the deployment that would serve it (service_tier) and 1 nested member (listed in param); set accept_lossy_anthropic_ingress: true on that deployment to drop them, or start Claude Code with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` |
 | 400 | `invalid_request_error` | `tool_result_parts_unsupported` | `"messages"` | no | A `role: tool` message carries `parts` the model's pool cannot carry — image or document parts on `openai`/`openaicompat`, any parts on `gemini` — and no deployment in the model's pool can carry them. No upstream call is made. Since `gateway/v0.19.0`; before, `anthropic`/`bedrock`/`gemini` answered 502 `upstream_error`, and `openai`/`openaicompat` forwarded an image part as `image_url` for the provider's own 400 and answered 502 `upstream_error` for a document part | `adapter: a tool result carries content parts this provider cannot represent and no capable deployment is available` |
 | 422 | `invalid_request_error` | `idempotency_key_reused` | `"Idempotency-Key"` | no | The `Idempotency-Key` was used within its 10-minute window with a request body that hashes differently. No upstream call is made. Since `gateway/v0.19.0`; before, 502 `upstream_error` with `Retry-After` | `dataplane: idempotency: idempotency: key already claimed with a different request body` |
 | 501 | `server_error` | `streaming_not_configured` | `null` | yes | The pipeline has no streaming upstream configured and the request is a streaming cache miss | `dataplane: streaming is not configured for this pipeline` |
@@ -114,17 +125,19 @@ These are produced before the pipeline runs, while the handler reads and validat
 
 | Status | `code` | `param` | Routes | Raised when | Message (not a contract) |
 |---|---|---|---|---|---|
-| 405 | `method_not_allowed` | `null` | all three | Wrong HTTP method. The `Allow` header lists the permitted method | `method not allowed` |
-| 413 | `request_too_large` | `null` | chat, embeddings | Request body exceeds 32 MiB | `request body too large` |
-| 400 | `invalid_body` | `null` | chat, embeddings | The body could not be read for a reason other than size | `reading request body` |
-| 400 | `invalid_json` | `null` | chat, embeddings | The body is not valid JSON for the request type | `invalid request body: <decoder error>` |
-| 400 | `invalid_tool_choice` | `"tool_choice"` | chat | `tool_choice` is not `"auto"`, `"required"`, `"none"`, `{"type":"function","function":{"name":...}}` or the canonical `{"mode":...}` object; `type` is `allowed_tools` or `custom`; `mode` and `type` both set; `{"type":"function"}` without a `function.name`; `mode: "tool"` without `tool_name`; or the forced tool is not defined in `tools[]` | `adapter: invalid tool_choice: <detail>` |
+| 405 | `method_not_allowed` | `null` | all four `/v1` routes and `HEAD /api/hello` (`Allow: HEAD`) | Wrong HTTP method. The `Allow` header lists the permitted method | `method not allowed` |
+| 413 | `request_too_large` | `null` | chat, embeddings, messages | Request body exceeds 32 MiB (on `/v1/messages` the Anthropic `type` is `request_too_large` as well) | `request body too large` |
+| 400 | `invalid_body` | `null` | chat, embeddings, messages | The body could not be read for a reason other than size | `reading request body` |
+| 400 | `invalid_json` | `null` | chat, embeddings, messages | The body is not valid JSON for the request type (on `/v1/messages`: not a JSON object) | `invalid request body: <decoder error>`; messages: `anthropicmsgs: request body is not a JSON object` |
+| 400 | `invalid_tool_choice` | `"tool_choice"` | chat, messages | `tool_choice` is not `"auto"`, `"required"`, `"none"`, `{"type":"function","function":{"name":...}}` or the canonical `{"mode":...}` object; `type` is `allowed_tools` or `custom`; `mode` and `type` both set; `{"type":"function"}` without a `function.name`; `mode: "tool"` without `tool_name`; or the forced tool is not defined in `tools[]` | `adapter: invalid tool_choice: <detail>` |
 | 400 | `invalid_request` | `null` | chat | More than 2000 messages; more than 256 tool definitions; one message `content`, content-part `text` or content-part `data` field over 8 MiB; a content part whose base64 does not decode; a content part whose declared `media_type` category differs from the sniffed type; or a `response_format.json_schema.schema` or `tools[].parameters` schema that is not valid JSON or exceeds 32 levels of nesting or 10000 JSON tokens | names the bound or check that failed, for example `adapter: messages exceeds this gateway's per-request message-count bound: 2001 messages, max 2000` |
 | 400 | `invalid_request` | `"limit"` | models | `limit` is not a positive integer | `limit must be a positive integer` |
 | 400 | `invalid_request` | `"after_id"` | models | `after_id` and `before_id` are both set | `after_id and before_id cannot be combined` |
 | 400 | `invalid_request` | `"after_id"` or `"before_id"` | models | The cursor names a model this key cannot see | `<param> does not name a model this key can see` |
 | 400 | `missing_required_parameter` | `"model"` | embeddings | `model` is empty | `model is required` |
 | 400 | `missing_required_parameter` | `"input"` | embeddings | `input` is missing or empty | `input is required and must be non-empty` |
+| 400 | `missing_required_parameter` | `"model"`, `"max_tokens"` or `"messages"` | messages | The Anthropic Messages body lacks the member named | `anthropicmsgs: <member> is required` |
+| 400 | `invalid_request` | `null` | messages | The same bounds as the chat row above, or a member the Anthropic parser refused (a `tool_choice` form it does not know, a wrong JSON type, duplicate members, nesting deeper than 64) | `anthropicmsgs: invalid field: ...` |
 
 ## `param`
 
@@ -136,11 +149,13 @@ These are produced before the pipeline runs, while the handler reads and validat
 | `response_format_unsupported` | `"response_format"` | chat |
 | `idempotency_key_reused` | `"Idempotency-Key"` (a request header, not a body field) | chat |
 | `tool_result_parts_unsupported` | `"messages"` | chat |
-| `invalid_tool_choice` | `"tool_choice"` | chat |
+| `lossy_ingress_rejected` | the sorted JSON pointers of the members, comma-joined, cut on a pointer boundary at 512 bytes | messages |
+| `missing_required_parameter` | `"model"`, `"max_tokens"` or `"messages"` | messages |
+| `invalid_tool_choice` | `"tool_choice"` | chat, messages |
 | `invalid_request` | `"limit"`, `"after_id"` or `"before_id"` | models |
 | `missing_required_parameter` | `"model"` or `"input"` | embeddings |
 
-In a mid-stream error frame `param` is always `null`; the four pipeline codes that set it (`empty_messages`, `response_format_unsupported`, `idempotency_key_reused`, `tool_result_parts_unsupported`) all fail before the first chunk and so never appear in a frame.
+In a mid-stream error frame `param` is always `null`; the five pipeline codes that set it (`empty_messages`, `response_format_unsupported`, `idempotency_key_reused`, `tool_result_parts_unsupported`, `lossy_ingress_rejected`) all fail before the first chunk and so never appear in a frame.
 
 ## `Retry-After`
 
@@ -196,7 +211,7 @@ data: {"error":{"message":"upstream call failed for model \"gpt-4o\"","type":"se
 
 ```
 
-The frame's `type`, `code` and redacted `message` are those the same error would carry in a buffered response. `param` is always `null` in a frame. There is no fallback to another deployment once the first chunk has gone out. The OpenAI SDKs' stream parsers surface this frame as an `APIError`. See [`../how-to/streaming.md`](../how-to/streaming.md).
+On `/v1/messages` the in-band frame is Anthropic's `event: error` carrying the error's Anthropic `type` and redacted `message` only (`{"type":"error","error":{"type":"api_error","message":"..."}}` — no `code` or `param` in a mid-stream event), and no `message_stop` follows, so a clean end never masquerades as a complete message. The OpenAI frame's `type`, `code` and redacted `message` are those the same error would carry in a buffered response. `param` is always `null` in a frame. There is no fallback to another deployment once the first chunk has gone out. The OpenAI SDKs' stream parsers surface this frame as an `APIError`. See [`../how-to/streaming.md`](../how-to/streaming.md).
 
 ## Errors that share `502 upstream_error`
 
@@ -232,7 +247,7 @@ The envelope follows OpenAI's shape so that the official OpenAI SDKs choose thei
 
 ## Related pages
 
-- [`data-plane-api.md`](data-plane-api.md): the three routes, their request and response shapes.
+- [`data-plane-api.md`](data-plane-api.md): the four routes, their request and response shapes.
 - [`metrics-and-logs.md`](metrics-and-logs.md): the `error.type` attribute and the `chat_completion` / `embeddings` log lines that carry the unredacted text.
 - [`../how-to/troubleshooting.md`](../how-to/troubleshooting.md): what to do about each error.
 - [`../how-to/virtual-keys-and-budgets.md`](../how-to/virtual-keys-and-budgets.md): the limits behind 429, 403 and `insufficient_quota`.

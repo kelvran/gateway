@@ -15,10 +15,10 @@ import (
 // TestNewDataPlaneMuxRegistersExactlyTheDataPlaneRoutes: every data-plane
 // route is registered by one builder, so integration tests and main.go are
 // wired the same way and a later slice adds a route in one place; nothing
-// else (a trailing-slash variant, /v1/messages before S10a) resolves.
+// else (a trailing-slash variant, /v1/messages/count_tokens before S10b) resolves.
 func TestNewDataPlaneMuxRegistersExactlyTheDataPlaneRoutes(t *testing.T) {
 	mux := newDataPlaneMux(nil)
-	want := map[string]bool{"/v1/chat/completions": true, "/v1/embeddings": true, "/v1/models": true, "/healthz": true, "/readyz": true, "/api/hello": true}
+	want := map[string]bool{"/v1/chat/completions": true, "/v1/embeddings": true, "/v1/models": true, "/healthz": true, "/readyz": true, "/api/hello": true, "/v1/messages": true}
 	for _, path := range dataPlaneRoutes {
 		if !want[path] {
 			t.Errorf("unexpected route %q in dataPlaneRoutes", path)
@@ -31,7 +31,7 @@ func TestNewDataPlaneMuxRegistersExactlyTheDataPlaneRoutes(t *testing.T) {
 	for path := range want {
 		t.Errorf("route %q missing from dataPlaneRoutes", path)
 	}
-	for _, path := range []string{"/v1/messages", "/v1/models/", "/api/hello/"} {
+	for _, path := range []string{"/v1/messages/", "/v1/messages/count_tokens", "/v1/models/", "/api/hello/"} {
 		if _, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern != "" {
 			t.Errorf("%s resolved to pattern %q, want not found", path, pattern)
 		}

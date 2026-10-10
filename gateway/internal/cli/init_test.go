@@ -120,6 +120,12 @@ func TestInitWritesALoadableValidatedConfigPerProvider(t *testing.T) {
 			if !strings.Contains(stdout, "export KELVRAN_KEY="+keyHex) {
 				t.Errorf("stdout must print the secret once as an export: %s", stdout)
 			}
+			// The Claude Code comment names the route as served (item 11 slice
+			// S10a); the previous wording survived two slices because nothing
+			// pinned it.
+			if !strings.Contains(stdout, "posts to /v1/messages, served since gateway/v0.19.0") {
+				t.Errorf("stdout must say the Anthropic Messages route is served: %s", stdout)
+			}
 		})
 	}
 }

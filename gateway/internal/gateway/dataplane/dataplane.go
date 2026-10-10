@@ -3228,7 +3228,9 @@ const EndUserIDHeader = "X-Kelvran-End-User-Id"
 // resolveCacheEndUserScope implements CacheScopeToEndUser's fail-closed
 // contract: "" (a silent no-op, byte-for-byte unchanged cache behavior)
 // when the flag is off; the header's own value when the flag is on and
-// the header is present; otherwise a fresh, request-unique value derived
+// the header is present (on /v1/messages the handler passes
+// metadata.user_id as this argument when the header is absent -- header
+// first, slice S10a); otherwise a fresh, request-unique value derived
 // from this request's own OTel span ID -- guaranteeing this cache entry
 // can never be shared with ANY other request, past or future, rather
 // than silently falling back to tenant-only scoping (which would defeat
@@ -3349,9 +3351,23 @@ func idempotencyFingerprint(req adapter.ChatRequest) ([sha256.Size]byte, error) 
 	// is sha256 of the body as received, which covers every member -- the
 	// unknown ones at any depth, is_error, whatever the shadow drops --
 	// without enumerating them; the shadow's own marshal below would let
-	// two bodies differing only there replay each other's response.
+	// two bodies differing only there replay each other's response. The
+	// forwarded anthropic-beta set is folded beside it (S10a).
 	if req.Passthrough != nil && len(req.Passthrough.RawBody) > 0 {
-		return sha256.Sum256(req.Passthrough.RawBody), nil
+		betas := anthropicBetas(req.Passthrough.ForwardHeaders)
+		if len(betas) == 0 {
+			return sha256.Sum256(req.Passthrough.RawBody), nil
+		}
+		// The beta set rides beside the body (slice S10a): a key reused with
+		// the same bytes under different betas is a different request to the
+		// model. The NUL separator is one the body, valid JSON, never carries.
+		h := sha256.New()
+		h.Write(req.Passthrough.RawBody)
+		h.Write([]byte("\x00anthropic-beta="))
+		h.Write([]byte(strings.Join(betas, ",")))
+		var sum [sha256.Size]byte
+		copy(sum[:], h.Sum(nil))
+		return sum, nil
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

@@ -812,7 +812,7 @@ func TestDoctorLossyIngressWarningPerNonAnthropicDeployment(t *testing.T) {
 		if got != tc.warn {
 			t.Errorf("%s: warning present = %v, want %v\n%s", name, got, tc.warn, stdout)
 		}
-		if tc.warn && (!strings.Contains(stdout, "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1") || !strings.Contains(stdout, "400")) {
+		if tc.warn && (!strings.Contains(stdout, "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1") || !strings.Contains(stdout, "400") || !strings.Contains(stdout, "when no deployment in the model's pool may serve them")) {
 			t.Errorf("%s: the warning must name the 400 and the client-side remedy\n%s", name, stdout)
 		}
 	}

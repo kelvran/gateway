@@ -9,6 +9,7 @@ Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several i
 | Item | Source | Behaviour in `gateway/v0.17.0` |
 |---|---|---|
 | `GET /v1/models` | `gateway/cmd/gateway/models_handler.go` | Route absent |
+| `POST /v1/messages` (the Anthropic Messages ingress, buffered and SSE, Anthropic error envelope, `x-api-key` alias) | `gateway/cmd/gateway/messages_handler.go` | Route absent (404) |
 | OpenAI `tool_choice` string and function-object forms | `gateway/internal/adapter/tool_choice_wire.go` | String form: `400 invalid request body`; object form: `502 unknown tool_choice mode ""` |
 | OpenAI-shaped JSON error envelope | `gateway/cmd/gateway/error_envelope.go` | `text/plain` body, same status codes |
 | `id`, `object`, `created` on every completion and chunk | `gateway/internal/gateway/dataplane/completion_envelope.go` | Bedrock responses carry `"id": ""`; no response carries `object` or `created` |
@@ -29,13 +30,14 @@ Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several i
 | `POST` | `/v1/chat/completions` | `Authorization: Bearer <virtual key secret>` | In `gateway/v0.17.0` |
 | `POST` | `/v1/embeddings` | `Authorization: Bearer <virtual key secret>` | In `gateway/v0.17.0` |
 | `GET` | `/v1/models` | `Authorization: Bearer <virtual key secret>`; `401` envelope without it | Since `gateway/v0.18.0` |
+| `POST` | `/v1/messages` | `Authorization: Bearer <virtual key secret>` or `x-api-key: <virtual key secret>` | Since `gateway/v0.19.0` (item 11 slice S10a): the Anthropic Messages shape, buffered and streaming, with the Anthropic error envelope |
 | `GET` | `/healthz`, `/readyz` | Not covered here | Operational routes, not OpenAI-shaped |
 
 `/v1/models` is registered on the exact path. `/v1/models/` (trailing slash) is a `404`, never a `301`.
 
 Not available today:
 
-- `POST /v1/messages` (Anthropic Messages API) and `/v1/messages/count_tokens`.
+- `POST /v1/messages/count_tokens` (item 11 slice S10b) and the raw-body passthrough to `anthropic` deployments (slice S11): every deployment is a translate hop today.
 - OpenAI Responses API, legacy Completions API, images, audio and files routes. `gateway/cmd/gateway/main.go` registers no such routes.
 - An OpenAPI document for `/v1/*`. It is planned as a condition for `gateway/v1.0.0` in [docs/VERSIONING.md](../VERSIONING.md).
 
@@ -43,7 +45,7 @@ Not available today:
 
 | Item | Behaviour |
 |---|---|
-| Header | `Authorization: Bearer <secret>` only (`gateway/internal/identity/identity.go`) |
+| Header | `Authorization: Bearer <secret>` (`gateway/internal/identity/identity.go`); on `GET /v1/models` and `POST /v1/messages`, `x-api-key: <secret>` is the bearer's alias and a non-empty `Authorization` wins |
 | Lookup | SHA-256 of the presented secret, matched against configured `key_hash` values |
 | Missing or malformed header | `401`, `type: authentication_error`, `code: null` |
 | Unknown key | `401`, `type: authentication_error`, `code: invalid_api_key` |
@@ -342,7 +344,7 @@ First shipped in `gateway/v0.18.0`. Lists the canonical models the calling virtu
 | `after_id` | Page after this id (id-sorted). Unknown id: `400`, `param: after_id` |
 | `before_id` | Page before this id. Unknown id: `400`, `param: before_id`. Combining with `after_id`: `400`, `param: after_id` |
 
-`created`/`created_at` differ between replicas restarted at different times. Claude Code's picker keeps only ids containing `claude` or `anthropic`, and it runs model discovery only in Anthropic-Messages mode, which Kelvran does not serve; the route therefore does not make Claude Code usable on its own.
+`created`/`created_at` differ between replicas restarted at different times. Claude Code's picker keeps only ids containing `claude` or `anthropic`, and it runs model discovery only in Anthropic-Messages mode, which Kelvran serves since `gateway/v0.19.0` (`POST /v1/messages`).
 
 ## Error envelope
 
@@ -403,8 +405,8 @@ The adapter registry is `newAdapterRegistry` in `gateway/cmd/gateway/main.go`. O
 |---|---|---|---|
 | `openai-python`, `openai-node` (`base_url` override) | Text chat (`content` as a string), tools with any accepted `tool_choice` form, `json_schema` and `json_object` output, buffered and streaming text, embeddings, `GET /v1/models` (since `gateway/v0.18.0`) | Content-array multimodal messages fail with `400 invalid_json`; streaming tool-call accumulators do not find `function.arguments`; `Idempotency-Key` body mismatch is `422` `idempotency_key_reused` since gateway/v0.19.0 (`502` before), not `400`; `max_completion_tokens` and the other dropped fields have no effect | No SDK client code or automated SDK test exists under `gateway/` or `scripts/`. OpenAI-shaped clients were exercised live during the 2026-10-07/08 verification that found defects F4 (`tool_choice` forms) and F7 (empty Bedrock `id`), and an unmodified OpenAI-compatible client (the Deep-Research planner, `response_format: json_object`) was routed through the gateway; see `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md` |
 | LangChain, LiteLLM and other OpenAI-compatible frameworks | Same as the OpenAI SDKs | Same | `type: insufficient_quota` is emitted so their retry logic treats a budget rejection as permanent |
-| `anthropic` SDK | No | No `/v1/messages` route yet (item 11, in progress). `GET /v1/models` alone answers in the SDK's list shape and reads its `x-api-key` | The only `anthropic` import in the repository is the evals LLM judge (`evals/evals/judge/providers.py`), which calls the provider directly, not the gateway |
-| Claude Code | No | Requires `POST /v1/messages`; discovery runs only in Anthropic-Messages mode | Same |
+| `anthropic` SDK | Yes, since `gateway/v0.19.0` | `POST /v1/messages` buffered and streaming (item 11 slice S10a), through a translate hop — an `anthropic` deployment is shadow-encoded until the passthrough leg (S11) lands; `count_tokens` not yet (S10b). `GET /v1/models` answers in the SDK's list shape; both routes read its `x-api-key` | The only `anthropic` import in the repository is the evals LLM judge (`evals/evals/judge/providers.py`), which calls the provider directly, not the gateway |
+| Claude Code | Yes, since `gateway/v0.19.0` | `POST /v1/messages` (buffered and streaming, through a translate hop) plus `GET /v1/models` discovery; `count_tokens` not yet (S10b), so `/context` shows an estimate; a body carrying members the schema cannot hold needs `accept_lossy_anthropic_ingress` on the deployment or `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` on the client | Same |
 | First-party Kelvran SDK | None | The OpenAI SDK `base_url` drop-in is the integration path | Recorded decision; see [why there is no SDK](../explanation/why-no-sdk.md) |
 
 Per-client how-tos: [OpenAI Python](../how-to/clients/openai-python.md), [OpenAI Node](../how-to/clients/openai-node.md), [curl](../how-to/clients/curl.md).

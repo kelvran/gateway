@@ -23,7 +23,7 @@ const openai = createOpenAI({
 });
 ```
 
-Always build models with `openai.chat("<model>")`. The provider's default factory, `openai("<model>")`, targets the OpenAI Responses API: the request goes to `<baseURL>/responses`, which the gateway does not serve, and the SDK throws `APICallError` with `statusCode` 404 and `url` ending in `/v1/responses`. Under `/v1` the gateway serves exactly `POST /v1/chat/completions`, `POST /v1/embeddings` and `GET /v1/models`; any other path is a plain-text 404 with no envelope, and a wrong method on one of those three paths is a 405 envelope with `code: method_not_allowed`. Route details: [Data-plane API](../../reference/data-plane-api.md).
+Always build models with `openai.chat("<model>")`. The provider's default factory, `openai("<model>")`, targets the OpenAI Responses API: the request goes to `<baseURL>/responses`, which the gateway does not serve, and the SDK throws `APICallError` with `statusCode` 404 and `url` ending in `/v1/responses`. Under `/v1` the gateway serves exactly `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` and `POST /v1/messages` (the Anthropic Messages shape); any other path is a plain-text 404 with no envelope, and a wrong method on one of those four paths is a 405 envelope with `code: method_not_allowed`. Route details: [Data-plane API](../../reference/data-plane-api.md).
 
 The alternative provider works the same way; the recording passed the key as an explicit header (its `apiKey` option sends the identical `Authorization: Bearer` header; check your client version):
 
@@ -92,7 +92,7 @@ The recording does not exercise model listing through this SDK, and the SDK has 
 
 ## How errors surface
 
-Every error the three served routes return (`POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`) is the OpenAI envelope `{"error":{"message","type","param","code"}}` with all four keys present. A request to a path the gateway does not serve, such as the `/v1/responses` call made by `openai("<model>")`, `/v1/completions`, or `/v1/models/` with a trailing slash, is Go's plain-text `404 page not found` with no envelope, so never assume `responseBody` is JSON; the sample below parses it defensively. This SDK does not pick an exception class per status: it throws one `APICallError` whose `statusCode` is the HTTP status and whose `responseBody` is the envelope as text. Only `type` and `code` are a stable contract; message text can change between releases.
+Every error the three OpenAI-shaped routes return (`POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`) is the OpenAI envelope (`POST /v1/messages` answers in Anthropic's) `{"error":{"message","type","param","code"}}` with all four keys present. A request to a path the gateway does not serve, such as the `/v1/responses` call made by `openai("<model>")`, `/v1/completions`, or `/v1/models/` with a trailing slash, is Go's plain-text `404 page not found` with no envelope, so never assume `responseBody` is JSON; the sample below parses it defensively. This SDK does not pick an exception class per status: it throws one `APICallError` whose `statusCode` is the HTTP status and whose `responseBody` is the envelope as text. Only `type` and `code` are a stable contract; message text can change between releases.
 
 | Status | `type` | `code` | Meaning | What this SDK throws |
 |---|---|---|---|---|
@@ -111,7 +111,7 @@ try {
 } catch (err) {
   if (!(err instanceof APICallError)) throw err;
   // The envelope is JSON only on gateway/v0.18.0 or later and only from
-  // the three served routes; gateway/v0.17.0 bodies and an unregistered
+  // the three OpenAI-shaped routes; gateway/v0.17.0 bodies and an unregistered
   // path's 404 are plain text, so never let the parse mask the real error.
   let envelope: { type?: string; code?: string } = {};
   try {

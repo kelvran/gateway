@@ -336,7 +336,7 @@ func printNextSteps(w *printer, p *initPlan) {
 	w.println("  # In the CLIENT's shell (not the gateway's: exporting OPENAI_API_KEY there would replace the upstream credential an openai deployment reads):")
 	w.printf("  export %s=%s\n", "KELVRAN_KEY", p.secret)
 	w.printf("  export %s=%s\n", "ANTHROPIC_BASE_URL", p.anthropicBase)
-	w.printf("  export %s=\"$%s\"   # Claude Code; its native Anthropic Messages mode needs POST /v1/messages, which this gateway does not serve yet (plan item 11)\n", "ANTHROPIC_AUTH_TOKEN", "KELVRAN_KEY")
+	w.printf("  export %s=\"$%s\"   # Claude Code; its native Anthropic Messages mode posts to /v1/messages, served since gateway/v0.19.0\n", "ANTHROPIC_AUTH_TOKEN", "KELVRAN_KEY")
 	w.printf("  export %s=%s\n", "OPENAI_BASE_URL", p.openaiBase)
 	w.printf("  export %s=\"$%s\"   # OpenAI SDKs and tools; POST /v1/responses (the Responses API) is not served, use Chat Completions\n", "OPENAI_API_KEY", "KELVRAN_KEY")
 	w.println()

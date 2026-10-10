@@ -156,7 +156,11 @@ type VirtualKey struct {
 	// entry gets its own request-unique scope (never shared with any
 	// other request, past or future) rather than silently falling back
 	// to tenant-only scoping, which would defeat the whole point of
-	// enabling this flag.
+	// enabling this flag. On POST /v1/messages (item 11 slice S10a) the
+	// body's metadata.user_id fills the same scope when the header is
+	// absent -- the same unauthenticated trust class, an owner decision --
+	// and the header wins when both are present, so there the fail-closed
+	// case is a request carrying neither.
 	CacheScopeToEndUser bool
 	// AttributionIDsDisabled, when true, keeps this key's requests from
 	// carrying the Claude Code identifiers (session, agent, parent-agent and

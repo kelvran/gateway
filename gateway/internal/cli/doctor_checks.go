@@ -194,7 +194,7 @@ func checkOAuthPrefix(cfg *controlplane.Config, src envSource, r *doctorReport) 
 // chat deployment that is not anthropic and leaves
 // accept_lossy_anthropic_ingress unset will answer a Claude Code request
 // carrying fields the canonical schema cannot hold with a 400 naming them
-// once the /v1/messages route is served (RFC-1 §6, decision Q5); the operator
+// when no deployment in the model's pool may serve them (RFC-1 §6, decision Q5) (RFC-1 §6, decision Q5); the operator
 // either accepts the lossy translation or has the client drop the fields.
 // One warning per such deployment, none for anthropic or flagged ones.
 func checkLossyIngress(cfg *controlplane.Config, r *doctorReport) {
@@ -202,7 +202,7 @@ func checkLossyIngress(cfg *controlplane.Config, r *doctorReport) {
 		if d.Provider == "anthropic" || d.AcceptLossyAnthropicIngress || d.Kind == "embedding" {
 			continue
 		}
-		r.add("warning", "deployments."+d.Name+".accept_lossy_anthropic_ingress", "Claude Code requests carrying fields the canonical schema cannot hold will be rejected 400 on this "+d.Provider+" deployment once /v1/messages is served; set accept_lossy_anthropic_ingress: true to translate them with those fields dropped, or set CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 on the client")
+		r.add("warning", "deployments."+d.Name+".accept_lossy_anthropic_ingress", "Claude Code requests carrying fields the canonical schema cannot hold are rejected 400 on this "+d.Provider+" deployment when no deployment in the model's pool may serve them; set accept_lossy_anthropic_ingress: true to translate them with those fields dropped, or set CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 on the client")
 	}
 }
 

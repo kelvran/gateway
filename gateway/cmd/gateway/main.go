@@ -2088,6 +2088,23 @@ func handleStreamingChatCompletion(p *dataplane.Pipeline, w http.ResponseWriter,
 	}
 }
 
+// setRetryAfterHeader sets Retry-After when the pipeline attached one
+// (dataplane.RetryAfterError), per
+// docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's design (a) —
+// called BEFORE the status is written, since net/http requires response
+// headers to be set before WriteHeader. A plain delay-seconds integer, per
+// RFC 9110 §10.2.3's two allowed forms — the form every real client
+// library, including the OpenAI SDK's own retry logic and Claude Code
+// (its protocol page: integer seconds, never an HTTP date), expects.
+// Shared by the OpenAI envelope (writeErrorResponse) and the Anthropic one
+// (writeAnthropicError), so the two routes can never disagree on the rule.
+func setRetryAfterHeader(w http.ResponseWriter, err error) {
+	var retryErr *dataplane.RetryAfterError
+	if errors.As(err, &retryErr) {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryErr.RetryAfter)))
+	}
+}
+
 // writeErrorResponse maps a HandleChatCompletion error to the appropriate
 // HTTP status code.
 // errorStatus maps a HandleChatCompletion/HandleEmbeddings error to the HTTP
@@ -2256,16 +2273,7 @@ func clientSafeMessage(err error) string {
 func writeErrorResponse(w http.ResponseWriter, err error) {
 	status := errorStatus(err)
 
-	// Retry-After, per docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md's
-	// design (a) — set BEFORE http.Error below, since net/http requires
-	// response headers to be set before WriteHeader (which http.Error
-	// calls internally). A plain delay-seconds integer, per RFC 9110
-	// §10.2.3's two allowed forms — the form every real client library,
-	// including the OpenAI SDK's own retry logic, expects.
-	var retryErr *dataplane.RetryAfterError
-	if errors.As(err, &retryErr) {
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryErr.RetryAfter)))
-	}
+	setRetryAfterHeader(w, err)
 
 	// message defaults to err.Error() -- correct and non-leaking for
 	// every case above (all of them are Kelvran's own sentinel/typed

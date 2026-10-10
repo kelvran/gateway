@@ -225,6 +225,15 @@ func classifyFallbackError(err error) string {
 	return FallbackClassGeneric
 }
 
+// IsContextWindowExceeded reports whether err is an upstream rejection of an
+// over-long input -- classifyFallbackError's context-window class, the same
+// keyword heuristic the fallback chains route on. cmd/gateway's Anthropic
+// envelope prefixes such a message with Claude Code's
+// capability_rejected: prompt_too_long marker (item 11 slice S10a).
+func IsContextWindowExceeded(err error) bool {
+	return classifyFallbackError(err) == FallbackClassContextWindowExceeded
+}
+
 // isCandidateHealthFailure reports whether err is even ELIGIBLE to count
 // as a real-request backend-health signal, per docs/upgrade-research/
 // gateway-router-health-real-traffic-2026-09-09.md's Finding 2/3 and

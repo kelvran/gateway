@@ -309,15 +309,15 @@ func printClaudeBlock(env IO, o connectOptions, base, secret, source string) {
 		}
 		out.printf("export %s=%s\n", name, sanitizeCell(value))
 	}
-	out.println("# This gateway does not serve POST /v1/messages yet (plan item 11): Claude Code's native Anthropic mode cannot reach it until it does — `kelvran connect claude --check` reports the live state. A pasted export persists in shell history; `read -rs` keeps it out.")
+	out.println("# Claude Code's native Anthropic mode needs POST /v1/messages, which this gateway serves since gateway/v0.19.0 — `kelvran connect claude --check` confirms the live state. A pasted export persists in shell history; `read -rs` keeps it out.")
 	if err := firstErr(out); err != nil {
 		_, _ = fmt.Fprintln(env.Stderr, "kelvran connect claude:", sanitizeCell(err.Error()))
 	}
 }
 
 // warnShellAPIKey: ANTHROPIC_API_KEY set in this shell also reaches Claude
-// Code (in x-api-key, which this gateway reads only on GET /v1/models, and
-// only when Authorization is absent) — and init's own
+// Code (in x-api-key, which this gateway reads on /v1/models and
+// /v1/messages when Authorization is absent) — and init's own
 // single-user flow exports it as the gateway's upstream credential.
 func warnShellAPIKey(pr *printer, env IO) {
 	if env.Getenv(envAnthropicAPIVar) == "" {
@@ -327,8 +327,8 @@ func warnShellAPIKey(pr *printer, env IO) {
 }
 
 // checkClaude is the connect page's own probe: POST /v1/messages with
-// max_tokens: 1 and a bearer, read honestly — today this gateway answers
-// 404 (plan item 11, gate G8).
+// max_tokens: 1 and a bearer, read honestly — a 404 means a build older
+// than gateway/v0.19.0, which did not serve the route.
 func checkClaude(ctx context.Context, env IO, base, secret string) error {
 	body, _ := json.Marshal(map[string]any{"model": checkProbeModel, "max_tokens": 1, "messages": []map[string]string{{"role": "user", "content": "ping"}}})
 	status, resp, err := dataPlanePost(ctx, base, "/v1/messages", body, secret)
@@ -340,8 +340,8 @@ func checkClaude(ctx context.Context, env IO, base, secret string) error {
 		out.printf("probe: POST %s/v1/messages failed: %s\n", sanitizeCell(base), sanitizeCell(redactSecrets(err.Error(), secrets)))
 		verdict = runtimeErr("the gateway at %s could not be reached", base)
 	case status == http.StatusNotFound:
-		out.printf("probe: POST %s/v1/messages answered 404 — this gateway does not serve the Anthropic Messages API yet (plan item 11, gate G8); Claude Code's native mode will not work until it does\n", sanitizeCell(base))
-		verdict = runtimeErr("the Anthropic Messages API is not served at %s yet", base)
+		out.printf("probe: POST %s/v1/messages answered 404 — this gateway build predates the Anthropic Messages route (served since gateway/v0.19.0); upgrade it, Claude Code's native mode needs the route\n", sanitizeCell(base))
+		verdict = runtimeErr("the gateway at %s predates the Anthropic Messages route", base)
 	case status == http.StatusUnauthorized:
 		out.printf("probe: POST %s/v1/messages answered 401 — the key is not a virtual key for this gateway (the probe sends Authorization: Bearer itself, so your variable choice is not in play); check it with `kelvran keys list`\n", sanitizeCell(base))
 		verdict = runtimeErr("the key was rejected by %s", base)
@@ -565,7 +565,7 @@ func writeClaudeSettings(env IO, o connectOptions, base, secret string) error {
 	for _, c := range scanClaudeSettings(env, target.path) {
 		pr.println("kelvran connect claude: warning: " + sanitizeCell(c))
 	}
-	out.println("This gateway does not serve POST /v1/messages yet (plan item 11); `kelvran connect claude --check` reports the live state.")
+	out.println("POST /v1/messages is served since gateway/v0.19.0; `kelvran connect claude --check` confirms the live state.")
 	return firstErr(out, pr)
 }
 
