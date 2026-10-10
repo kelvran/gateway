@@ -143,7 +143,7 @@ func (p *Pipeline) callDeploymentWithTPM(ctx context.Context, dep Deployment, re
 // matching how the per-key TPM dimension treats a non-billable outcome,
 // and erring towards admitting the next caller rather than charging the
 // deployment for output that may never have been produced.
-func (p *Pipeline) streamDeploymentWithTPM(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
+func (p *Pipeline) streamDeploymentWithTPM(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw streaming.ChunkSink, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
 	r, ok := p.reserveDeploymentTPM(ctx, dep)
 	if !ok {
 		return adapter.ChatResponse{}, false, &DeploymentCapacityError{Deployment: dep.Name, Reason: "tpm"}

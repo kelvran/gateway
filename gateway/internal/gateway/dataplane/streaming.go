@@ -125,14 +125,41 @@ func (p *Pipeline) streamingInFlightRelease(l1Key string) {
 // The caller is responsible for closing the returned io.ReadCloser.
 type UpstreamStreamCaller func(ctx context.Context, dep Deployment, providerReq any) (io.ReadCloser, error)
 
-// HandleChatCompletionStream runs the streaming request pipeline, writing
-// canonical chunks directly to w as they become available (or, on a cache
-// hit, synthesized from the cached complete response) and returning once
-// the stream is fully written. Cost accounting and structured logging
+// HandleChatCompletionStream serves the OpenAI-format streaming route: the
+// stream pipeline with a streaming.Writer over w as the sink (item 11 slice
+// S8). The writer is constructed inside the pipeline, after auth and inside
+// the deferred finalize's scope -- exactly where the previous build built
+// it -- so a ResponseWriter that cannot flush (a programming error no real
+// server produces) is still finalized, audited and counted like every other
+// early return. streaming.NewWriter has no side effects of its own: no
+// bytes and no status code are committed until something calls WriteChunk.
+func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, remoteAddr string, endUserIDHeader string, req adapter.ChatRequest, w http.ResponseWriter, idempotencyKey string) error {
+	return p.handleChatCompletionStream(ctx, authorizationHeader, remoteAddr, endUserIDHeader, req, func() (streaming.ChunkSink, error) {
+		return streaming.NewWriter(w)
+	}, idempotencyKey)
+}
+
+// HandleChatCompletionStreamSink serves the stream pipeline into a sink the
+// caller already built -- RFC-1 §9's /v1/messages route with the Anthropic
+// encoder. The sink owns the wire format and, when it is a
+// streaming.Finisher, renders the end of the message from the final usage
+// and the truncation fact.
+func (p *Pipeline) HandleChatCompletionStreamSink(ctx context.Context, authorizationHeader string, remoteAddr string, endUserIDHeader string, req adapter.ChatRequest, sink streaming.ChunkSink, idempotencyKey string) error {
+	return p.handleChatCompletionStream(ctx, authorizationHeader, remoteAddr, endUserIDHeader, req, func() (streaming.ChunkSink, error) {
+		return sink, nil
+	}, idempotencyKey)
+}
+
+// handleChatCompletionStream runs the streaming request pipeline, writing
+// canonical chunks to the sink newSink returns as they become available
+// (or, on a cache hit, synthesized from the cached complete response) and
+// returning once the stream is fully written. newSink runs after auth, in
+// the deferred finalize's scope, so a sink that cannot be built is an early
+// return like any other. Cost accounting and structured logging
 // still happen exactly once per request, via the same deferred logRequest
 // pattern HandleChatCompletion uses, since a streamed generation is just
 // as billable as a buffered one.
-func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorizationHeader string, remoteAddr string, endUserIDHeader string, req adapter.ChatRequest, w http.ResponseWriter, idempotencyKey string) (err error) {
+func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorizationHeader string, remoteAddr string, endUserIDHeader string, req adapter.ChatRequest, newSink func() (streaming.ChunkSink, error), idempotencyKey string) (err error) {
 	var (
 		cacheInfo             cacheProvenance
 		resp                  adapter.ChatResponse
@@ -192,18 +219,19 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 		return
 	}
 
-	// Claimed here, before resolvePromptIfSet/rate-limit/budget — see
-	// HandleChatCompletion's identical comment for the full ordering
-	// rationale. streaming.NewWriter has no side effects of its own (only
-	// WriteChunk ever writes to w), so constructing sw this early to
-	// support a replay's own writeFakeStream call below is safe: no
-	// bytes reach the client, and no status code is committed, until
-	// something actually calls WriteChunk.
-	sw, swErr := streaming.NewWriter(w)
+	// The sink is built here, after auth and inside the deferred finalize,
+	// so a constructor failure is finalized like every other early return.
+	// Nothing has been written to it yet: no bytes reach the client, and no
+	// status code is committed, until something calls WriteChunk (a
+	// replay's own writeFakeStream call below, at the earliest).
+	sw, swErr := newSink()
 	if swErr != nil {
 		err = fmt.Errorf("dataplane: stream: %w", swErr)
 		return
 	}
+	// Claimed here, before resolvePromptIfSet/rate-limit/budget — see
+	// HandleChatCompletion's identical comment for the full ordering
+	// rationale.
 	var idempotencyReplay bool
 	var idempotencyCachedResp adapter.ChatResponse
 	idempotencyOwned, idempotencyReplay, idempotencyCachedResp, idempotencyToken, err = p.claimIdempotency(ctx, vk.ID, idempotencyKey, req)
@@ -424,7 +452,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 // cached before the envelope existed (2026-10-08) has none: it is stamped
 // ONCE here, from the pipeline clock passed in as now, so all of its
 // frames share one minted id rather than each carrying "id":"".
-func writeFakeStream(sw *streaming.Writer, resp adapter.ChatResponse, now time.Time) error {
+func writeFakeStream(sw streaming.ChunkSink, resp adapter.ChatResponse, now time.Time) error {
 	stampCompletionEnvelope(&resp, now)
 	for _, c := range resp.Choices {
 		finishReason := c.FinishReason
@@ -532,7 +560,7 @@ func toChunkReasoningDeltas(reasoningBlocks []adapter.ReasoningBlock) []streamin
 // reservation made against the client's originally-requested model stays
 // that same reservation regardless of which deployment ultimately serves
 // the response.
-func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, bool, bool, bool, error) {
+func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw streaming.ChunkSink, keyID string, msr midStreamReservation) (adapter.ChatResponse, Deployment, fallbackInfo, bool, bool, bool, error) {
 	// firstChunkSent, in addition to gating fallback attempts below, is
 	// also returned to the caller — HandleChatCompletionStream uses it to
 	// decide whether an err != nil return is still billable (real content
@@ -612,7 +640,7 @@ func (p *Pipeline) streamDeploymentWithFallback(ctx context.Context, dep Deploym
 // dep's checkDeploymentCapacity gate and guaranteed release — the
 // streaming sibling of callDeploymentWithCapacityCheck (dataplane.go),
 // used for EVERY call to a deployment, hop 1 included.
-func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
+func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw streaming.ChunkSink, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
 	if !p.checkDeploymentRateLimit(ctx, dep.Name) {
 		return adapter.ChatResponse{}, false, &DeploymentCapacityError{Deployment: dep.Name, Reason: "rate_limit"}
 	}
@@ -636,7 +664,7 @@ func (p *Pipeline) streamDeploymentWithCapacityCheck(ctx context.Context, dep De
 // see streamrunaway.go. msr is that same guard's sibling: this request's
 // own outstanding budget/TPM reservations, topped up in place as real
 // accumulated output grows past them — see checkMidStreamReservationTopup.
-func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
+func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw streaming.ChunkSink, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
 	if dep.Provider == "bedrock" {
 		return p.streamDeploymentBedrock(ctx, dep, req, sw, firstChunkSent, keyID, msr, blocked)
 	}
@@ -674,6 +702,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 	// reading from upstreamCtx's request by then.
 	upstreamCtx, cancelUpstream := context.WithCancel(ctx)
 	defer cancelUpstream()
+	truncated := false // set when a guard cuts the upstream off; the sink's finisher reads it
 
 	body, err := p.upstreamStream(upstreamCtx, dep, providerReq)
 	if err != nil {
@@ -749,6 +778,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 				"accumulated_chars", accumulatedChars,
 				"ceiling_chars", runawayCeiling,
 			)...)
+			truncated = !acc.hasFinishReason() // the event that crossed the line may also have carried the finish chunk: then the stream is complete
 			cancelUpstream()
 			break
 		}
@@ -769,6 +799,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 				"model", req.Model,
 				"accumulated_chars", accumulatedChars,
 			)...)
+			truncated = !acc.hasFinishReason() // the event that crossed the line may also have carried the finish chunk: then the stream is complete
 			cancelUpstream()
 			break
 		}
@@ -777,7 +808,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		}
 	}
 
-	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked, env)
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked, env, truncated)
 }
 
 // streamDeploymentBedrock is streamDeployment's Bedrock-specific sibling:
@@ -790,7 +821,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 // binary-framed implementor. Everything after decoding (accumulation,
 // client tee, final-response assembly) is identical, via the shared
 // finishStreamedResponse.
-func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
+func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw streaming.ChunkSink, firstChunkSent *bool, keyID string, msr midStreamReservation, blocked *bool) (adapter.ChatResponse, bool, error) {
 	a, ok := p.adapters[dep.Provider]
 	if !ok {
 		return adapter.ChatResponse{}, false, fmt.Errorf("no adapter registered for provider %q", dep.Provider)
@@ -817,6 +848,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	// without ever touching ctx itself.
 	upstreamCtx, cancelUpstream := context.WithCancel(ctx)
 	defer cancelUpstream()
+	truncated := false // set when a guard cuts the upstream off; the sink's finisher reads it
 
 	body, err := p.upstreamStream(upstreamCtx, dep, providerReq)
 	if err != nil {
@@ -921,6 +953,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 				"accumulated_chars", accumulatedChars,
 				"ceiling_chars", runawayCeiling,
 			)...)
+			truncated = !acc.hasFinishReason() // the event that crossed the line may also have carried the finish chunk: then the stream is complete
 			cancelUpstream()
 			break
 		}
@@ -934,12 +967,13 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 				"model", req.Model,
 				"accumulated_chars", accumulatedChars,
 			)...)
+			truncated = !acc.hasFinishReason() // the event that crossed the line may also have carried the finish chunk: then the stream is complete
 			cancelUpstream()
 			break
 		}
 	}
 
-	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked, env)
+	return p.finishStreamedResponse(ctx, dep, req, sw, acc, finalUsage, keyID, blocked, env, truncated)
 }
 
 // estimateOrRealUsage returns finalUsage verbatim (estimated=false) when
@@ -979,8 +1013,8 @@ func estimateOrRealUsage(req adapter.ChatRequest, acc *streamAccumulator, finalU
 // accumulator and finalUsage (estimating usage via estimateOrRealUsage
 // when the provider never sent its own terminal usage frame — see that
 // function's own doc comment), runs the audit-only post-call guardrail
-// check, and writes the client-facing done sentinel — the provider-
-// agnostic tail shared by streamDeployment (SSE-framed providers) and
+// check, and ends the client stream through the sink (finishSink) — the
+// provider-agnostic tail shared by streamDeployment (SSE-framed providers) and
 // streamDeploymentBedrock (binary-framed) per
 // docs/rfcs/2026-09-04-bedrock-converse-stream.md: none of this logic
 // depends on how chunks actually arrived. The returned bool reports
@@ -988,7 +1022,7 @@ func estimateOrRealUsage(req adapter.ChatRequest, acc *streamAccumulator, finalU
 // (false) — callers thread this through to finalize purely for
 // telemetry/audit disclosure, per estimateOrRealUsage's own doc comment;
 // it does not change the billing decision itself.
-func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw *streaming.Writer, acc *streamAccumulator, finalUsage *adapter.Usage, keyID string, blocked *bool, env streamEnvelope) (adapter.ChatResponse, bool, error) {
+func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, req adapter.ChatRequest, sw streaming.ChunkSink, acc *streamAccumulator, finalUsage *adapter.Usage, keyID string, blocked *bool, env streamEnvelope, truncated bool) (adapter.ChatResponse, bool, error) {
 	usage, estimated := estimateOrRealUsage(req, acc, finalUsage)
 	if estimated {
 		// Per the RFC's Cost Accounting section: a provider stream that
@@ -1019,6 +1053,20 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	}
 
 	resp := acc.build(usage)
+	if truncated {
+		// The gateway cut the upstream off, so no finish chunk arrived and
+		// the accumulated choices carry no finish reason. Record the
+		// truncation on the canonical response: responseWasTruncated then
+		// keeps it out of every cache layer (a replay would otherwise claim
+		// a complete answer), telemetry's finish_reason is truthful, and an
+		// idempotency replay reports the truncation. StopReason stays the
+		// provider's (empty): the Anthropic encoder derives max_tokens from
+		// "length". No chunk is written here, so the live bytes of either
+		// route are untouched.
+		for i := range resp.Choices {
+			resp.Choices[i].FinishReason = "length"
+		}
+	}
 	// Report the canonical model of the deployment that GENUINELY served
 	// this response, matching callDeployment's convention for the
 	// buffered path -- dep is always the real, successfully-serving
@@ -1071,9 +1119,26 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	// response was delivered in full.
 	p.noteGuardrailFailOpen(ctx, keyID, telemetry.GuardrailStagePostcall, postVerdict)
 
-	if err := sw.WriteDone(); err != nil {
-		return adapter.ChatResponse{}, estimated, fmt.Errorf("writing done sentinel for deployment %q: %w", dep.Name, err)
+	if err := finishSink(sw, streaming.StreamEnd{Usage: usage, Truncated: truncated}); err != nil {
+		return adapter.ChatResponse{}, estimated, fmt.Errorf("ending stream for deployment %q: %w", dep.Name, err)
 	}
 
 	return resp, estimated, nil
+}
+
+// finishSink ends the client stream. A streaming.Finisher (the Anthropic
+// encoder) takes the final usage and whether a guard cut the upstream off,
+// and renders message_delta{stop_reason, usage} and message_stop itself --
+// stop_reason max_tokens when truncated, so a guard trip never ends an
+// Anthropic stream with a clean close before message_delta (RFC-1 §7; the
+// abort paths return before this function and are the route's WriteError,
+// S10a). Any other sink (the OpenAI
+// writer) gets WriteDone, the [DONE] sentinel alone, exactly as before: on
+// the OpenAI route a guard trip still ends the stream without a finish
+// chunk.
+func finishSink(sink streaming.ChunkSink, end streaming.StreamEnd) error {
+	if f, ok := sink.(streaming.Finisher); ok {
+		return f.WriteFinish(end)
+	}
+	return sink.WriteDone()
 }

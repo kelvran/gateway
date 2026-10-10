@@ -119,12 +119,12 @@ When the request hits the response cache (L1, L2 or L3) or replays a completed `
 
 ### Long outputs: the runaway and top-up guards
 
-Two guards can end a live stream early. Both end it as a normal truncated stream with `[DONE]`, never with an error frame, and no frame sets `finish_reason` (`null` on every live frame; a cached replay of the truncated response carries `""`).
+Two guards can end a live stream early. Both end it as a normal truncated stream with `[DONE]`, never with an error frame, and no live frame sets `finish_reason` (`null` on every one).
 
 - Runaway guard: output is cut once accumulated characters exceed `max_tokens * 4 * 10`, or 750,000 characters when `max_tokens` is unset. Log event: `streaming_runaway_guard_triggered`.
 - Reservation top-up: on every decoded batch the gateway raises this request's TPM and budget reservations to match the estimated output. When the key has no headroom left the stream is cut. Log event: `streaming_midstream_reservation_topup_exhausted`.
 
-A stream cut by either guard is still written to the response cache (only `finish_reason: "length"` blocks the write) and is replayed, truncated, to later cache hits for the entry's TTL; treat an empty `finish_reason` on a replay as a possible guard truncation. The U5 known-gaps note in [FAILURE-MODES](../operations/FAILURE-MODES.md) records this.
+A stream cut by either guard is recorded as `finish_reason: "length"` on the canonical response, so it is never written to the response cache (gateway/v0.18.0 and earlier cached it with an empty `finish_reason` and replayed it, truncated, for the entry's TTL; since gateway/v0.19.0 it is never cached); an `Idempotency-Key` replay of it carries `finish_reason: "length"`. The U5 note in [FAILURE-MODES](../operations/FAILURE-MODES.md) keeps the remaining classification gap.
 
 If the Redis-backed limiter or budget tracker errors during a top-up, the stream keeps its prior reservation and continues. Since gateway/v0.18.0, this is logged (`ratelimit_tpm_backend_unavailable` / `budget_backend_unavailable` with `op=mid_stream_topup`) and counted (`kelvran.ratelimit.fail_open` / `kelvran.budget.fail_open`) once per stream. Row R4 of [FAILURE-MODES](../operations/FAILURE-MODES.md) covers this. Key limits are configured per [virtual keys and budgets](virtual-keys-and-budgets.md).
 

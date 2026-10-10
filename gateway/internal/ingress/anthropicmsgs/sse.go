@@ -1,10 +1,15 @@
 package anthropicmsgs
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/streaming"
@@ -24,16 +29,22 @@ import (
 // block carrying the original id and name (no provider interleaves blocks
 // today, so both are defensive paths).
 // message_start's usage is the only shape it can be before the provider
-// reports anything (zeros); message_delta carries the totals. Ping emits a
-// ping event (the caller owns the timer: S8 wires it); WriteError emits an
-// error event, the clean-end rule for a stream that must abort after a block
-// started. Not safe for concurrent use.
+// reports anything (zeros); message_delta carries the totals. KeepAlive and
+// StartKeepAlive emit pings during silence; WriteError emits an error event,
+// the clean-end rule for a stream that must abort after a block started, and
+// is terminal like message_stop. Every write holds one mutex, so KeepAlive's goroutine can emit a
+// ping between the caller's writes without ever splitting an event.
 type SSEEncoder struct {
+	mu       sync.Mutex
+	writes   uint64 // events written, read by KeepAlive to detect silence
+	ticks    uint64 // KeepAlive ticks handled (tests synchronise on it)
 	w        io.Writer
-	started  bool
-	next     int    // the next Anthropic block index
-	open     *block // the block currently open, if any
-	textOpen bool   // whether open is the text block
+	flusher  http.Flusher // w's Flush, when it has one: every event is flushed
+	started  bool         // message_start reached the writer
+	finished bool         // message_stop or an error event was written; nothing follows
+	next     int          // the next Anthropic block index
+	open     *block       // the block currently open, if any
+	textOpen bool         // whether open is the text block
 	tools    map[int]*block
 	toolMeta map[int]toolIdentity // id and name per canonical tool index, for a continuation block
 	thinking map[int]*block
@@ -137,28 +148,68 @@ type typeOnlyEvent struct {
 // (identity kept) -- a shape only a misbehaving upstream can produce.
 const maxPendingTextBytes = 1 << 20
 
-// NewSSEEncoder writes Anthropic events to w.
+// SSEEncoder satisfies streaming.ChunkSink and streaming.Finisher: the
+// dataplane writes chunks through WriteChunk and ends the message with
+// WriteFinish (final usage, truncation) or, on a cache replay whose chunks
+// already carried both, WriteDone.
+var (
+	_ streaming.ChunkSink = (*SSEEncoder)(nil)
+	_ streaming.Finisher  = (*SSEEncoder)(nil)
+)
+
+// NewSSEEncoder writes Anthropic events to w, flushing after every event
+// when w is an http.Flusher (net/http buffers 2 KiB before the chunked
+// writer, so an unflushed ping or delta sits unsent and defeats a client's
+// stall detection). The route hands it the response writer directly.
 func NewSSEEncoder(w io.Writer) *SSEEncoder {
-	return &SSEEncoder{w: w, tools: map[int]*block{}, toolMeta: map[int]toolIdentity{}, thinking: map[int]*block{}}
+	e := &SSEEncoder{w: w, tools: map[int]*block{}, toolMeta: map[int]toolIdentity{}, thinking: map[int]*block{}}
+	if f, ok := w.(http.Flusher); ok {
+		e.flusher = f
+	}
+	return e
 }
 
+// event writes one frame under the mutex.
 func (e *SSEEncoder) event(name string, payload any) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.eventLocked(name, payload)
+}
+
+// eventLocked writes one frame and flushes it; the caller holds e.mu.
+func (e *SSEEncoder) eventLocked(name string, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("anthropicmsgs: encoding %s: %w", name, err)
 	}
-	_, err = fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", name, data)
-	return err
+	if _, err := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", name, data); err != nil {
+		return err
+	}
+	e.writes++ // only a frame that reached the writer counts as activity for KeepAlive
+	if e.flusher != nil {
+		e.flusher.Flush()
+	}
+	return nil
 }
 
+// start writes message_start once. The check and the write share one
+// critical section, and started flips only after the write succeeded, so a
+// keepalive tick can never ping ahead of message_start and a failed first
+// write is retried by the next chunk (a fallback retry streams through the
+// same encoder).
 func (e *SSEEncoder) start(c streaming.ChatCompletionChunk) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.started {
 		return nil
 	}
-	e.started = true
-	return e.event("message_start", messageStartEvent{Type: "message_start", Message: messageStartWire{
+	if err := e.eventLocked("message_start", messageStartEvent{Type: "message_start", Message: messageStartWire{
 		ID: c.ID, Type: "message", Role: "assistant", Model: c.Model, Content: []blockWire{},
-	}})
+	}}); err != nil {
+		return err
+	}
+	e.started = true
+	return nil
 }
 
 func (e *SSEEncoder) closeOpen() error {
@@ -222,8 +273,16 @@ func emptyString() *string {
 	return &s
 }
 
-// WriteChunk renders one canonical chunk's deltas.
+// errStreamFinished is returned for a chunk written after the message ended.
+var errStreamFinished = errors.New("anthropicmsgs: write after the message ended")
+
+// WriteChunk renders one canonical chunk's deltas. A chunk after message_stop
+// or an error event is a caller bug and fails loudly (a repeated finish, by
+// contrast, is a harmless no-op).
 func (e *SSEEncoder) WriteChunk(c streaming.ChatCompletionChunk) error {
+	if e.isFinished() {
+		return errStreamFinished
+	}
 	if err := e.start(c); err != nil {
 		return err
 	}
@@ -349,9 +408,48 @@ func (e *SSEEncoder) writeToolCalls(deltas []streaming.ToolCallDelta) error {
 }
 
 // WriteDone closes the open block and ends the message: message_delta with
-// the stop reason (end_turn when no finish chunk arrived) and the usage
-// totals, then message_stop.
+// the stop reason (end_turn when no finish chunk arrived) and the usage the
+// chunks carried, then message_stop. The dataplane's live paths call
+// WriteFinish instead, which also knows the final usage and whether the
+// upstream was cut off; WriteDone is the streaming.ChunkSink form, right for
+// a cache replay whose chunks carry both.
 func (e *SSEEncoder) WriteDone() error {
+	stop := "end_turn"
+	if e.stop != nil {
+		stop = *e.stop
+	}
+	return e.finish(stop)
+}
+
+// WriteFinish ends the message with what the dataplane knows at the end of
+// a live stream (streaming.Finisher): end.Usage replaces whatever the chunks
+// carried (it is the provider's final figure, or the estimate the gateway
+// bills by), and end.Truncated -- the runaway ceiling or a reservation
+// top-up cut the upstream off, so no finish chunk arrived -- ends the
+// message with stop_reason max_tokens, so a guard trip never ends the stream
+// with a clean close before message_delta (RFC-1 §7).
+func (e *SSEEncoder) WriteFinish(end streaming.StreamEnd) error {
+	u := end.Usage
+	e.usage = &u
+	stop := "end_turn"
+	switch {
+	case end.Truncated:
+		stop = "max_tokens"
+	case e.stop != nil:
+		stop = *e.stop
+	}
+	return e.finish(stop)
+}
+
+// finish closes the open block, emits any deferred text, then message_delta
+// and message_stop. It is terminal: once the message ended (or an error
+// event aborted it) a later finish is a no-op, so a second WriteDone or a
+// WriteFinish after WriteError never writes a second ending; a later
+// WriteChunk fails with errStreamFinished.
+func (e *SSEEncoder) finish(stop string) error {
+	if e.isFinished() {
+		return nil
+	}
 	if err := e.start(streaming.ChatCompletionChunk{}); err != nil {
 		return err
 	}
@@ -360,10 +458,6 @@ func (e *SSEEncoder) WriteDone() error {
 	}
 	if err := e.flushPendingText(); err != nil {
 		return err
-	}
-	stop := "end_turn"
-	if e.stop != nil {
-		stop = *e.stop
 	}
 	var stopSeq *string
 	if e.stopSeq != "" {
@@ -381,18 +475,106 @@ func (e *SSEEncoder) WriteDone() error {
 	}); err != nil {
 		return err
 	}
-	return e.event("message_stop", typeOnlyEvent{Type: "message_stop"})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.eventLocked("message_stop", typeOnlyEvent{Type: "message_stop"}); err != nil {
+		return err
+	}
+	e.finished = true
+	return nil
 }
 
-// Ping emits Anthropic's keepalive event; the caller decides when (RFC-1 §7:
-// 15 s of silence, a timer slice S8 wires).
+func (e *SSEEncoder) isFinished() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.finished
+}
+
+// Ping emits Anthropic's keepalive event, unless the message already ended.
+// KeepAlive decides when; a caller may also ping directly.
 func (e *SSEEncoder) Ping() error {
-	return e.event("ping", typeOnlyEvent{Type: "ping"})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.finished {
+		return nil
+	}
+	return e.eventLocked("ping", typeOnlyEvent{Type: "ping"})
+}
+
+// KeepAlive emits a ping on every tick that follows a tick with no event
+// written in between -- so with a 15 s ticker the client hears from the
+// gateway after at most 30 s and at least 15 s of silence (RFC-1 §7: Bedrock
+// streams carry no pings of their own, and Claude Code's stall detection
+// needs them). Nothing is pinged before message_start. The ticker is the
+// caller's (time.NewTicker(15 * time.Second).C in the handler, a manual
+// channel in tests), so the idle threshold is the tick period and no clock
+// is needed. Returns when ctx is done or ticks is closed; run it in its own
+// goroutine beside the writes -- the check and the ping share one critical
+// section with every other event write. StartKeepAlive is the packaged
+// form with a ticker and a stop that waits for the goroutine.
+func (e *SSEEncoder) KeepAlive(ctx context.Context, ticks <-chan time.Time) {
+	var seen uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-ticks:
+			if !ok {
+				return
+			}
+			e.mu.Lock()
+			if e.started && !e.finished && e.writes == seen {
+				_ = e.eventLocked("ping", typeOnlyEvent{Type: "ping"}) // a write error surfaces on the caller's next write
+			}
+			seen = e.writes
+			e.ticks++
+			e.mu.Unlock()
+		}
+	}
+}
+
+// StartKeepAlive runs KeepAlive on its own goroutine with a ticker of the
+// given period and returns the function that ends it: cancel, stop the
+// ticker, and wait for the goroutine to exit. The route must call stop
+// before its handler returns -- net/http forbids touching the ResponseWriter
+// after ServeHTTP returns, and a keepalive mid-write would do exactly that.
+func (e *SSEEncoder) StartKeepAlive(ctx context.Context, period time.Duration) (stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	ticker := time.NewTicker(period)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.KeepAlive(ctx, ticker.C)
+	}()
+	return func() {
+		cancel()
+		ticker.Stop()
+		<-done
+	}
+}
+
+// ticksSeen reports how many ticks KeepAlive has handled (tests synchronise
+// on it).
+func (e *SSEEncoder) ticksSeen() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.ticks
+}
+
+// writesSeen reports how many events have been written (tests).
+func (e *SSEEncoder) writesSeen() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.writes
 }
 
 // WriteError emits an Anthropic error event so a stream that must abort
 // after a block started never ends cleanly (the protocol reads a clean end
-// before message_delta as a dropped connection).
+// before message_delta as a dropped connection). It is terminal: no
+// message_delta, message_stop or ping follows it.
 func (e *SSEEncoder) WriteError(errType, message string) error {
-	return e.event("error", errorWire{Type: "error", Error: errorBodyWire{Type: errType, Message: message}})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.finished = true
+	return e.eventLocked("error", errorWire{Type: "error", Error: errorBodyWire{Type: errType, Message: message}})
 }
