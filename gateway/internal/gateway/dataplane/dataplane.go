@@ -5018,12 +5018,14 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		PromptVersion:                      req.PromptVersion,
 		ResponseFormatRequestedNotEnforced: responseFormatRequestedNotEnforced,
 		// The Anthropic Messages ingress carrier (item 11 slice S9b, RFC-1
-		// §8), "" / "" for the OpenAI route. Passthrough is left false:
-		// every hop translates until slice S11 relays the raw body on an
-		// anthropic deployment, so reporting true here would describe the
-		// RFC, not the code. The same helpers feed logRequest's keys.
+		// §8), "" / false / "" for the OpenAI route. Passthrough is true when
+		// an anthropic deployment served the request from the body as
+		// received (slice S11a) and false on a translate hop, whose
+		// DroppedFields says what it could not carry. The same helpers feed
+		// logRequest's keys.
 		IngressFormat: ingressFormat(req),
-		DroppedFields: droppedFields(req, err),
+		Passthrough:   ingressPassthrough(req, dep, err),
+		DroppedFields: droppedFields(req, dep, err),
 	}
 	telemetry.RecordChatCompletionResult(span, result)
 	// kelvran.streaming.cost_estimated, per
@@ -5129,7 +5131,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	span.End()
 
 	p.observeAnomalySignals(ctx, event)
-	p.logRequest(ctx, vk, req, resp, cacheInfo, cost, err, event)
+	p.logRequest(ctx, vk, dep, req, resp, cacheInfo, cost, err, event)
 }
 
 // observeAnomalySignals feeds event's own already-computed FinishReason
@@ -5468,7 +5470,7 @@ func traceLogFields(ctx context.Context) []any {
 // logRequest emits the structured JSON log line for one request. cost is
 // precomputed by finalize (decimal.Zero when err != nil) so it's never
 // calculated twice.
-func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
+func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, cost decimal.Decimal, err error, event *gatewayeventsv1.GatewayDecisionEvent) {
 	fields := append(traceLogFields(ctx), "model", boundedModelForTelemetry(req.Model), "cache_hit", cacheInfo.Hit())
 	if cacheInfo.Hit() {
 		fields = append(fields, "cache_layer", cacheInfo.Layer, "cache_age_ms", cacheInfo.AgeMs)
@@ -5485,7 +5487,7 @@ func (p *Pipeline) logRequest(ctx context.Context, vk *identity.VirtualKey, req 
 		fields = append(fields, "virtual_key_id", expired.ID, "key_expired_at", expired.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	fields = append(fields, attributionLogFields(ctx)...)
-	fields = append(fields, ingressLogFields(req, err)...)
+	fields = append(fields, ingressLogFields(req, dep, err)...)
 	// gatewayevents_v1 is added on BOTH the error and success paths below
 	// — Outcome is exactly as meaningful for a rejection as for a
 	// success, per docs/rfcs/2026-09-03-api-gatewayevents-contract.md. A
@@ -5970,9 +5972,26 @@ func clientForDeployment(dep Deployment, defaultClient *http.Client, perDeployme
 // is fully testable without a real network call. perDeployment is
 // consulted via clientForDeployment -- see its own doc comment; pass nil
 // when no deployment needs a dedicated TLS-configured client.
+// rawBodyProvider is implemented by a provider request that already holds
+// the exact bytes to send -- today anthropic.PassthroughRequest on the
+// Anthropic Messages passthrough path (RFC-1 §5, slice S11a): the client's
+// body with model and stream rewritten, relayed without re-encoding so
+// unknown members, member order and whitespace survive. Every other
+// provider request is marshalled as before.
+type rawBodyProvider interface{ Body() []byte }
+
+// upstreamRequestBody is the one place a chat provider request becomes the
+// bytes of an upstream call.
+func upstreamRequestBody(providerReq any) ([]byte, error) {
+	if raw, ok := providerReq.(rawBodyProvider); ok {
+		return raw.Body(), nil
+	}
+	return json.Marshal(providerReq)
+}
+
 func NewHTTPUpstreamCaller(defaultClient *http.Client, perDeployment map[string]*http.Client) UpstreamCaller {
 	return func(ctx context.Context, dep Deployment, providerReq any) (any, error) {
-		body, err := json.Marshal(providerReq)
+		body, err := upstreamRequestBody(providerReq)
 		if err != nil {
 			return nil, fmt.Errorf("marshaling provider request: %w", err)
 		}
@@ -6171,7 +6190,7 @@ func streamUpstreamURL(dep Deployment) (string, error) {
 // streaming-only classification path.
 func NewHTTPUpstreamStreamCaller(defaultClient *http.Client, perDeployment map[string]*http.Client, idleTimeout time.Duration) UpstreamStreamCaller {
 	return func(ctx context.Context, dep Deployment, providerReq any) (io.ReadCloser, error) {
-		body, err := json.Marshal(providerReq)
+		body, err := upstreamRequestBody(providerReq)
 		if err != nil {
 			return nil, fmt.Errorf("marshaling provider stream request: %w", err)
 		}
@@ -6353,13 +6372,25 @@ func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Depl
 		// whenever ToProvider left Request.Thinking nil (every model
 		// its own gate doesn't name), so this is a no-op for every
 		// deployment/model this feature doesn't apply to. Only one beta
-		// value is ever set here today, so no comma-joining with any
+		// value is ever ADDED here today, so no comma-joining with any
 		// other anthropic-beta value is needed yet — see that function's
-		// own doc comment if a second one is ever added.
+		// own doc comment if a second one is ever added. A passthrough
+		// request (below) carries the client's own anthropic-beta instead,
+		// possibly multi-valued, and never reaches this branch.
 		if nativeReq, ok := providerReq.(*anthropic.Request); ok {
 			if beta, needed := anthropic.ThinkingBindingBetaHeaderValue(nativeReq); needed {
 				httpReq.Header.Set("anthropic-beta", beta)
 			}
+		}
+		// Passthrough path (RFC-1 §5, slice S11a): the client's anthropic-*
+		// headers travel as an open list by prefix -- the protocol page forbids
+		// allow-listing the values -- and the client's anthropic-version
+		// replaces the default set above. The carrier only ever holds
+		// anthropic-* names (the handler's forwardHeadersFrom) and the prefix
+		// check in forwardAnthropicHeaders keeps it so; x-api-key stays the
+		// deployment's own credential.
+		if pr, ok := providerReq.(*anthropic.PassthroughRequest); ok {
+			forwardAnthropicHeaders(httpReq.Header, pr.Headers)
 		}
 	case "gemini":
 		httpReq.Header.Set("x-goog-api-key", creds.APIKey)
@@ -6378,4 +6409,20 @@ func setUpstreamAuthHeaders(ctx context.Context, httpReq *http.Request, dep Depl
 		httpReq.Header.Set("Authorization", "Bearer "+creds.APIKey)
 	}
 	return nil
+}
+
+// forwardAnthropicHeaders copies every anthropic-* header from src onto dst,
+// replacing any value dst already had for that name; names outside the
+// prefix are ignored whatever the carrier holds, so a client can never add
+// a credential, an Idempotency-Key or a custom header to the upstream call.
+func forwardAnthropicHeaders(dst, src http.Header) {
+	for name, values := range src {
+		if !strings.HasPrefix(strings.ToLower(name), "anthropic-") {
+			continue
+		}
+		dst.Del(name)
+		for _, v := range values {
+			dst.Add(name, v)
+		}
+	}
 }

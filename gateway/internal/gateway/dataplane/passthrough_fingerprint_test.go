@@ -345,7 +345,8 @@ func TestHandleChatCompletionStreamLossyIngressRejectedWithoutAnthropic(t *testi
 
 // TestHandleChatCompletionLossyIngressSpanCarriesIngressAttributes: the span
 // built by finalize carries the ingress carrier -- format, passthrough=false
-// (every hop translates until S11), dropped_fields on an accepted translate
+// (a translate hop; passthrough_span_test.go covers the anthropic hop),
+// dropped_fields on an accepted translate
 // -- and a rejected request's span carries the format but no dropped_fields
 // (nothing was dropped; the error names the pointers).
 func TestHandleChatCompletionLossyIngressSpanCarriesIngressAttributes(t *testing.T) {

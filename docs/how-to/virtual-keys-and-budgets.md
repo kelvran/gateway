@@ -103,6 +103,10 @@ Per request, after authentication, the gateway checks in this order: source-IP a
 
 ## Variants
 
+### Know what a budget cannot see on an `anthropic` passthrough hop
+
+A budget prices every request at the deployment's configured rates from the token counts the provider reports. On an `anthropic` deployment serving `POST /v1/messages` (the request reaches Anthropic as sent since item 11 slice S11a), a client can enable betas, members or server tools that change Anthropic's own pricing — a 1-hour cache TTL, US-only inference (`inference_geo`), Haiku 5.5's long-prompt tier, web search, code execution — and those surcharges and per-call fees are not in the token counts the gateway prices, so the key's spend under-counts them. Until pricing-aware accounting or a per-deployment policy for those members lands (an open owner decision), size such a key's budget with that in mind, or keep Anthropic-bound traffic on a Bedrock deployment, whose `anthropic_beta_policy` strips the betas. Details: `THREAT_MODEL.md`, Tampering row.
+
 ### Keep spend across restarts on one host
 
 Without persistence, spend resets on every restart. For a single process, point the budget tracker at a bbolt file:

@@ -300,31 +300,40 @@ func ingressFormat(req adapter.ChatRequest) string {
 	return req.Passthrough.Format
 }
 
+// ingressPassthrough reports whether the serving hop relayed the body as
+// received: an anthropic deployment on the Anthropic Messages ingress (item
+// 11 slice S11a), for a request that was served. Every other provider is a
+// translate hop, and a rejected request reached no hop.
+func ingressPassthrough(req adapter.ChatRequest, dep Deployment, err error) bool {
+	return err == nil && req.Passthrough != nil && dep.Provider == "anthropic"
+}
+
 // droppedFields is the dropped_fields summary for a SERVED ingress request
-// whose shadow had unknown members: every hop translates today (slice S11
-// adds the raw-body relay on an anthropic hop, and then reports nothing
-// dropped there), so it is the pointers of req.Passthrough.UnknownFields.
-// "" for the OpenAI route, for a request with nothing unknown, and for a
-// rejected request (err != nil), whose error already carries the pointers.
-func droppedFields(req adapter.ChatRequest, err error) string {
-	if err != nil || req.Passthrough == nil || len(req.Passthrough.UnknownFields) == 0 {
+// whose shadow had unknown members and whose hop translated: the pointers of
+// req.Passthrough.UnknownFields. "" for the OpenAI route, for a request with
+// nothing unknown, for a passthrough hop (slice S11a: an anthropic deployment
+// received every member as sent) and for a rejected request (err != nil),
+// whose error already carries the pointers.
+func droppedFields(req adapter.ChatRequest, dep Deployment, err error) string {
+	if err != nil || req.Passthrough == nil || len(req.Passthrough.UnknownFields) == 0 || ingressPassthrough(req, dep, err) {
 		return ""
 	}
 	return droppedFieldsSummary(sortedPointers(req.Passthrough.UnknownFields))
 }
 
 // ingressLogFields are the chat_completion log line's ingress keys: nothing
-// for the OpenAI route; ingress_format and passthrough (false on every hop
-// until S11 relays) for an ingress request, plus dropped_fields when the
+// for the OpenAI route; ingress_format and passthrough (true when an
+// anthropic deployment relayed the body as received, slice S11a) for an
+// ingress request, plus dropped_fields when the
 // served translate dropped members -- the same values finalize puts on
 // the span, derived through the same two helpers.
-func ingressLogFields(req adapter.ChatRequest, err error) []any {
+func ingressLogFields(req adapter.ChatRequest, dep Deployment, err error) []any {
 	format := ingressFormat(req)
 	if format == "" {
 		return nil
 	}
-	fields := []any{"ingress_format", format, "passthrough", false}
-	if dropped := droppedFields(req, err); dropped != "" {
+	fields := []any{"ingress_format", format, "passthrough", ingressPassthrough(req, dep, err)}
+	if dropped := droppedFields(req, dep, err); dropped != "" {
 		fields = append(fields, "dropped_fields", dropped)
 	}
 	return fields

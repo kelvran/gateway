@@ -118,11 +118,11 @@ A budget 429 is `rate_limit_error` because Anthropic's vocabulary has no quota t
 
 ## Verify it worked
 
-Run step 2, then look at the gateway's log: one `chat_completion` line with `ingress_format: anthropic-messages`, `passthrough: false`, the model, tokens and cost.
+Run step 2, then look at the gateway's log: one `chat_completion` line with `ingress_format: anthropic-messages`, `passthrough: true` when an `anthropic` deployment served it (`false` on a translate hop), the model, tokens and cost.
 
 ## Not available today
 
-- The raw-body relay to `anthropic` deployments (item 11 slice S11): every deployment is a translate hop, so an `anthropic` deployment is re-encoded from the canonical request like any other and members the schema cannot hold are dropped there too (reported in `dropped_fields`).
+- The response relay for `anthropic` deployments (item 11 slice S11b): the request body already reaches an `anthropic` deployment as received, but the response is re-encoded from the canonical shadow and an upstream error body is redacted. Every other deployment is a translate hop and drops the members the schema cannot hold (reported in `dropped_fields`).
 - Exact token counts (`count_tokens` answers `404`; see above).
 - Forwarding `anthropic-beta` values to Bedrock (`anthropic_beta_policy: forward_known` is applied by the upstream leg).
 - The `anthropic-ratelimit-unified-*` and `x-should-retry` response headers: the gateway synthesises none.

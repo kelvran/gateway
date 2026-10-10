@@ -23,8 +23,8 @@ import (
 // POST /v1/messages (item 11 slice S10a): every test here drives the real
 // mux, the real pipeline and a mock upstream speaking the provider's wire
 // format, so the Anthropic Messages ingress is proven end to end through
-// a translate hop -- the only hop that exists until S11 relays the raw body
-// to an anthropic deployment.
+// a translate hop (an anthropic deployment relays the raw body instead since
+// slice S11a; passthrough_request_integration_test.go covers that hop).
 
 // newMessagesIntegrationServer serves one openai deployment (gpt-4o, the
 // mock upstream) with the lossy flag as given, and five keys: all-secret,

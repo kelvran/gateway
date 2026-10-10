@@ -661,6 +661,17 @@ func (a *Adapter) Name() string {
 // docs/rfcs/2026-09-07-gateway-provider-prompt-caching.md), and converts
 // every other message into Anthropic's block-based content shape.
 func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
+	// Passthrough path (RFC-1 §5, item 11 slice S11a): an Anthropic Messages
+	// body bound for an anthropic deployment is relayed as received, with
+	// model and stream rewritten -- never re-encoded from the shadow.
+	pr, isPassthrough, err := passthroughRequestFor(req)
+	if err != nil {
+		return nil, err
+	}
+	if isPassthrough {
+		return pr, nil
+	}
+
 	var systemBlocks []SystemBlock
 	messages := make([]Message, 0, len(req.Messages))
 

@@ -551,6 +551,11 @@ type ThinkingConfig struct {
 	BudgetTokens int `json:"budget_tokens,omitempty"`
 }
 
+// IngressFormatAnthropicMessages is Passthrough.Format for the Anthropic
+// Messages ingress (internal/ingress/anthropicmsgs sets it; the anthropic
+// adapter decides the passthrough path on it).
+const IngressFormatAnthropicMessages = "anthropic-messages"
+
 // Passthrough is what the Anthropic Messages ingress keeps beside the
 // canonical shadow of a request (ChatRequest.Passthrough): the body
 // byte-for-byte, every member the parser did not consume -- keyed by RFC

@@ -1,6 +1,6 @@
 # Use Claude Code with Kelvran
 
-This page shows a developer who runs Claude Code how to point its native Anthropic Messages mode at a Kelvran gateway, so every turn goes through the gateway's virtual keys, budgets, rate limits, guardrails, cache and routing instead of straight to a provider. Claude Code speaks the Anthropic Messages API; Kelvran serves it on `POST /v1/messages` since `gateway/v0.19.0` (item 11 of the round-4 plan, [RFC-1](../../rfcs/2026-10-09-gateway-anthropic-messages-ingress.md)) and translates each turn to whichever provider the model's deployment names — every deployment through a translate hop, `anthropic` included, with the raw-body relay to `anthropic` deployments still to come.
+This page shows a developer who runs Claude Code how to point its native Anthropic Messages mode at a Kelvran gateway, so every turn goes through the gateway's virtual keys, budgets, rate limits, guardrails, cache and routing instead of straight to a provider. Claude Code speaks the Anthropic Messages API; Kelvran serves it on `POST /v1/messages` since `gateway/v0.19.0` (item 11 of the round-4 plan, [RFC-1](../../rfcs/2026-10-09-gateway-anthropic-messages-ingress.md)) and translates each turn to whichever provider the model's deployment names — a translate hop for Bedrock, OpenAI, Gemini and OpenAI-compatible deployments; an `anthropic` deployment receives the request body as received (the response is still re-encoded until the response relay lands).
 
 Use this when you have a running gateway and a virtual key and you want Claude Code's requests to go through Kelvran. For an application that uses the Anthropic SDK directly, see [Use the Anthropic Python SDK with Kelvran](anthropic-python.md).
 
@@ -84,9 +84,9 @@ Claude Code reads every turn as a stream. The gateway emits the Anthropic event 
 
 Claude Code calls `POST /v1/messages/count_tokens` for `/context`. The gateway serves the route since `gateway/v0.19.0` and answers `404` `not_found_error` (`code` `count_tokens_unavailable`) for every deployment until the passthrough leg adds the `anthropic` branch; Claude Code then falls back to its character-based estimate, as the protocol page describes for an absent endpoint. The call still authenticates, applies the key's allowlists and consumes one RPM token; it touches no budget and no cache. In the 2026-10-11 run with the betas on, Claude Code called it once, received the `404` and continued the turn.
 
-### Auto mode behind a translate hop
+### Auto mode
 
-In auto mode Claude Code asks the server to run its permission classifier by adding a `safeguards` body member and a beta value to its turns. A translate hop cannot forward them — they are dropped under `accept_lossy_anthropic_ingress: true` (and, until S11, on an `anthropic` deployment too) and refused on any other deployment without the flag — so Claude Code prints the notice that the session "isn't eligible" for the no-charge classifier requests, names the gateway, holds the first checked action until you press Enter, and runs its own classifier requests, billed as token usage as before (auto-mode classifier page, 2026-10-11). Set `CLAUDE_CODE_AUTO_MODE_SERVER=0` to stop it asking; the raw-body relay to `anthropic` deployments (slice S11) is what will forward `safeguards` and return `safeguard_results` unchanged.
+In auto mode Claude Code asks the server to run its permission classifier by adding a `safeguards` body member and a beta value to its turns. A translate hop cannot forward them — they are dropped under `accept_lossy_anthropic_ingress: true` and refused without the flag; an `anthropic` deployment forwards them with the rest of the body, but the `safeguard_results` the server returns are re-encoded away until the response relay lands — so Claude Code prints the notice that the session "isn't eligible" for the no-charge classifier requests, names the gateway, holds the first checked action until you press Enter, and runs its own classifier requests, billed as token usage as before (auto-mode classifier page, 2026-10-11). Set `CLAUDE_CODE_AUTO_MODE_SERVER=0` to stop it asking; the response relay to `anthropic` deployments (slice S11b) is what will return `safeguard_results` unchanged — the request leg already forwards `safeguards`.
 
 ### Over-long prompts
 
@@ -117,10 +117,10 @@ Every error is Anthropic's envelope with Kelvran's `code` kept ([error-codes.md]
 
 ## Not available today
 
-- The raw-body relay to `anthropic` deployments (item 11 slice S11): every deployment, `anthropic` included, is a translate hop, so unknown members are dropped there too (reported in `dropped_fields`) and `kelvran.ingress.passthrough` stays `false`.
+- The response relay for `anthropic` deployments (item 11 slice S11b): the request body already reaches an `anthropic` deployment as received (`kelvran.ingress.passthrough: true`, nothing dropped), but the response is re-encoded from the canonical shadow and an upstream error body is redacted, so Claude Code's recovery cannot yet match Anthropic's own 400 wording through this gateway. Every other deployment is a translate hop: unknown members are dropped there (reported in `dropped_fields`) and `kelvran.ingress.passthrough` is `false`.
 - Exact token counts (`count_tokens` answers `404`; see above).
 - The Amazon Bedrock and Google Vertex AI request formats (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`): Kelvran speaks the Anthropic Messages format only; point Claude Code at it with `ANTHROPIC_BASE_URL`.
-- Forwarding `anthropic-beta` values to Bedrock: `anthropic_beta_policy: forward_known` loads and validates today and is applied when the upstream leg lands; every hop strips the header until then.
+- Forwarding `anthropic-beta` values to Bedrock: `anthropic_beta_policy: forward_known` loads and validates today and is applied when the upstream leg lands; a Bedrock hop strips the header until then; an `anthropic` deployment forwards it as sent.
 - `anthropic-ratelimit-unified-*` and `x-should-retry` response headers: the gateway synthesises none (they express Anthropic plan limits).
 
 ## Related pages

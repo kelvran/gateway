@@ -140,7 +140,7 @@ These are produced before the pipeline runs, while the handler reads and validat
 | 400 | `missing_required_parameter` | `"input"` | embeddings | `input` is missing or empty | `input is required and must be non-empty` |
 | 400 | `missing_required_parameter` | `"model"`, `"max_tokens"` or `"messages"` | messages | The Anthropic Messages body lacks the member named | `anthropicmsgs: <member> is required` |
 | 400 | `missing_required_parameter` | `"model"` | count_tokens | `model` is empty or absent | `model is required` |
-| 400 | `invalid_request` | `null` | messages | The same bounds as the chat row above, or a member the Anthropic parser refused (a `tool_choice` form it does not know, a wrong JSON type, duplicate members, nesting deeper than 64) | `anthropicmsgs: invalid field: ...` |
+| 400 | `invalid_request` | `null` | messages | The same bounds as the chat row above, or a member the Anthropic parser refused (a `tool_choice` form it does not know, a wrong JSON type, duplicate members, nesting deeper than 64), or the `anthropic-*` request headers exceed 16 KiB in total (slice S11a) | `anthropicmsgs: invalid field: ...` or `anthropic-* request headers total N bytes; this gateway forwards at most 16384` |
 
 ## `param`
 

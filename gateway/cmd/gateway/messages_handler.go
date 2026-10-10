@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -54,6 +55,14 @@ func messagesHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 
+		// The anthropic-* header set is bounded before the body is read: the
+		// headers are already parsed, and an oversized set on a 32 MiB body is
+		// exactly the request the bound exists to refuse cheaply (slice S11a).
+		forward := forwardHeadersFrom(r.Header)
+		if n := headerBytes(forward); n > maxForwardedAnthropicHeaderBytes {
+			writeAnthropicStatus(w, http.StatusBadRequest, "invalid_request", "", fmt.Sprintf("anthropic-* request headers total %d bytes; this gateway forwards at most %d", n, maxForwardedAnthropicHeaderBytes))
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -76,7 +85,7 @@ func messagesHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			writeAnthropicStatus(w, http.StatusBadRequest, code, param, message)
 			return
 		}
-		pt.ForwardHeaders = forwardHeadersFrom(r.Header)
+		pt.ForwardHeaders = forward
 
 		ctx := telemetry.ExtractContext(r.Context(), r)
 		bearer := bearerFromRequest(r)
@@ -181,11 +190,33 @@ func validateMessagesRequest(req adapter.ChatRequest) (code, param, message stri
 	return "", "", ""
 }
 
+// maxForwardedAnthropicHeaderBytes bounds the anthropic-* request headers
+// an anthropic deployment receives on the passthrough path (RFC-1 §5, slice
+// S11a): names plus values, summed. The names are an open list (the
+// protocol page forbids allow-listing the values), so the size is the one
+// thing the gateway can bound -- the same rule every other client-supplied
+// list that leaves the process follows. Claude Code's whole set is a few
+// hundred bytes; the server's own 1 MiB header cap is the only other limit.
+const maxForwardedAnthropicHeaderBytes = 16 << 10
+
+// headerBytes is the wire size of h: every name and value, summed.
+func headerBytes(h http.Header) int {
+	n := 0
+	for name, values := range h {
+		for _, v := range values {
+			n += len(name) + len(v)
+		}
+	}
+	return n
+}
+
 // forwardHeadersFrom collects every anthropic-* request header -- an open
 // list, never an allow-list of the values seen today (the protocol page) --
-// for the passthrough hop slice S11 adds; today the dataplane folds the
+// for the passthrough hop to an anthropic deployment (slice S11a: the
+// dataplane's forwardAnthropicHeaders copies them, the set bounded by
+// maxForwardedAnthropicHeaderBytes above); the dataplane also folds the
 // normalised anthropic-beta values into the cache and idempotency
-// fingerprints. nil when the request carries none.
+// fingerprints on every hop. nil when the request carries none.
 func forwardHeadersFrom(h http.Header) http.Header {
 	var out http.Header
 	for name, values := range h {
