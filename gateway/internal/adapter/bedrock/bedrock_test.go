@@ -117,10 +117,11 @@ func TestRoundTrip(t *testing.T) {
 // TestFromProviderIncludesCacheTokensInPromptAndTotal proves the
 // cache-token cost-accounting fix: Bedrock's real cacheReadInputTokens/
 // cacheWriteInputTokens response fields are read (not silently dropped)
-// and folded into PromptTokens/TotalTokens -- Converse's own totalTokens
-// is documented as inputTokens+outputTokens ONLY, so cache tokens must be
-// added on top here, unlike Anthropic's native totalTokens which already
-// includes them.
+// and folded into PromptTokens; TotalTokens is PromptTokens +
+// CompletionTokens. Corrected 2026-10-11: this fixture's native totalTokens
+// excludes the cache tokens, so it could not tell the old "native total +
+// cache" formula from the derived one -- a live Converse total already
+// includes them (TestFromProviderTotalTokensIsPromptPlusCompletionNotNativeTotalPlusCache).
 func TestFromProviderIncludesCacheTokensInPromptAndTotal(t *testing.T) {
 	a := New()
 	nativeResp := &Response{
@@ -146,7 +147,7 @@ func TestFromProviderIncludesCacheTokensInPromptAndTotal(t *testing.T) {
 	}
 
 	wantPrompt := 8 + 5120
-	wantTotal := 18 + 5120
+	wantTotal := wantPrompt + 10
 	if got.Usage.PromptTokens != wantPrompt {
 		t.Errorf("Usage.PromptTokens = %d, want %d (cache-inclusive)", got.Usage.PromptTokens, wantPrompt)
 	}

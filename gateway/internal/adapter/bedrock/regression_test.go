@@ -218,8 +218,9 @@ func TestRegressionFromProviderMatchesCanonicalWireFormat(t *testing.T) {
 // TestRegressionFromProviderMatchesCanonicalWireFormatWithCacheTokens is
 // the cache-token-cost-accounting counterpart to the test above: a real
 // Bedrock-native response fixture carrying cacheReadInputTokens/
-// cacheWriteInputTokens must fold them into prompt_tokens/total_tokens
-// (Converse's own totalTokens is inputTokens+outputTokens ONLY) and
+// cacheWriteInputTokens must fold them into prompt_tokens, with
+// total_tokens = prompt_tokens + completion_tokens (derived, never read from
+// Converse's totalTokens -- corrected 2026-10-11) and
 // surface them as cache_creation_tokens on the canonical side.
 func TestRegressionFromProviderMatchesCanonicalWireFormatWithCacheTokens(t *testing.T) {
 	nativeJSON := mustReadTestdata(t, "response_bedrock_native_cached.json")

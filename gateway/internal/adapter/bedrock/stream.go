@@ -364,7 +364,7 @@ func (d *StreamDecoder) Decode(msg eventstream.Message) ([]streaming.ChatComplet
 		usage := &adapter.Usage{
 			PromptTokens:        ev.Usage.InputTokens + ev.Usage.CacheReadInputTokens + ev.Usage.CacheWriteInputTokens,
 			CompletionTokens:    ev.Usage.OutputTokens,
-			TotalTokens:         ev.Usage.TotalTokens + ev.Usage.CacheReadInputTokens + ev.Usage.CacheWriteInputTokens,
+			TotalTokens:         ev.Usage.InputTokens + ev.Usage.CacheReadInputTokens + ev.Usage.CacheWriteInputTokens + ev.Usage.OutputTokens,
 			CacheReadTokens:     ev.Usage.CacheReadInputTokens,
 			CacheCreationTokens: ev.Usage.CacheWriteInputTokens,
 			ReasoningTokens:     d.reasoningTokens,

@@ -264,8 +264,10 @@ func TestDecodeMetadataProducesUsage(t *testing.T) {
 // cost-accounting fix on the streaming path: cacheReadInputTokens/
 // cacheWriteInputTokens arrive in the same single metadata event as
 // inputTokens/outputTokens/totalTokens, and must be folded into
-// PromptTokens/TotalTokens -- Converse's totalTokens is documented as
-// inputTokens+outputTokens ONLY, so cache tokens are added on top here.
+// PromptTokens; TotalTokens is PromptTokens + CompletionTokens, derived
+// rather than read from totalTokens (corrected 2026-10-11: a live Converse
+// total already includes the cache tokens -- see
+// TestDecodeMetadataTotalTokensIsPromptPlusCompletion).
 func TestDecodeMetadataUsageIncludesCacheTokens(t *testing.T) {
 	msg := newEventMessage("metadata", `{"usage":{"inputTokens":8,"outputTokens":0,"totalTokens":8,"cacheReadInputTokens":0,"cacheWriteInputTokens":5120}}`)
 
