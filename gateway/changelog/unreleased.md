@@ -13,6 +13,6 @@ Versioning: [SemVer](https://semver.org/) — load-bearing for the Go module pat
 ## Removed
 
 ## Fixed
-- The `publish-image` job no longer tries to attach the image SBOM to the GitHub Release (`release.yml` creates that Release first, and the job deliberately holds `contents: read`); the CycloneDX SBOM and SLSA provenance are attested to the registry only. The job can also be dispatched for an existing `gateway/v*` tag (`workflow_dispatch`, input `release_tag`) to rebuild, push, sign and attest that tag's image from the current workflow definition.
+- The `publish-image` job no longer tries to attach the image SBOM to the GitHub Release (`release.yml` creates that Release first, and the job deliberately holds `contents: read`); the CycloneDX SBOM and SLSA provenance are attested to the registry only. The job can also be dispatched for an existing `gateway/v*` tag (`workflow_dispatch`, input `release_tag`) to rebuild, push, sign and attest that tag's image from the current workflow definition. The `gateway/v0.18.0` image was re-published this way (index `sha256:acf52ab117fb…`, signed, SBOM and provenance attested; the tag run's first index, `sha256:a68f3eaf…`, stays in GHCR untagged).
 
 ## Security

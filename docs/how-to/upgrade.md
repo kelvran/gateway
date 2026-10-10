@@ -103,7 +103,7 @@ The unit itself is [`deploy/systemd/kelvran-gateway.service`](../../deploy/syste
 
 #### Kubernetes (Kustomize base)
 
-`deploy/k8s/base/deployment.yaml` runs `replicas: 2` with `terminationGracePeriodSeconds: 60` (above the 50 s budget plus the native 5 s `preStop` sleep), no explicit `strategy` (the Kubernetes default rolling update), and a PodDisruptionBudget with `minAvailable: 1`. Both probes point at `/healthz`. The image is pinned as `ghcr.io/kelvran/gateway:v0.17.0@sha256:...` and goes stale with each release; edit that `image:` value to the new tag plus its index digest, apply, and watch the rollout:
+`deploy/k8s/base/deployment.yaml` runs `replicas: 2` with `terminationGracePeriodSeconds: 60` (above the 50 s budget plus the native 5 s `preStop` sleep), no explicit `strategy` (the Kubernetes default rolling update), and a PodDisruptionBudget with `minAvailable: 1`. Both probes point at `/healthz`. The image is pinned as `ghcr.io/kelvran/gateway:v0.18.0@sha256:...` and goes stale with each release; edit that `image:` value to the new tag plus its index digest, apply, and watch the rollout:
 
 ```bash
 kubectl apply -k deploy/k8s/base
