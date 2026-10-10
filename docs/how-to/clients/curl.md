@@ -41,7 +41,7 @@ What you should see: `HTTP/1.1 200 OK`, `Content-Type: application/json`, an `X-
 {"id":"chatcmpl-…","object":"chat.completion","created":1760000000,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Hello there, nice to meet you."},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":8,"total_tokens":21}}
 ```
 
-The gateway reads these request fields: `model`, `messages[].role`, `messages[].content` (a string), `messages[].tool_calls`, `messages[].tool_call_id`, `temperature`, `max_tokens`, `tools`, `tool_choice`, `stream`, `response_format`. Any other OpenAI field (`n`, `top_p`, `stop`, `seed`, `user`, `max_completion_tokens`, `stream_options`, `messages[].name`, …) is dropped silently; the request still succeeds. The full field table is in [compatibility](../../reference/compatibility.md). `object` and `created`, and a gateway-minted `id` for providers that return none, are on main since 2026-10-08, not in gateway/v0.17.0.
+The gateway reads these request fields: `model`, `messages[].role`, `messages[].content` (a string), `messages[].tool_calls`, `messages[].tool_call_id`, `temperature`, `max_tokens`, `tools`, `tool_choice`, `stream`, `response_format`. Any other OpenAI field (`n`, `top_p`, `stop`, `seed`, `user`, `max_completion_tokens`, `stream_options`, `messages[].name`, …) is dropped silently; the request still succeeds. The full field table is in [compatibility](../../reference/compatibility.md). `object` and `created`, and a gateway-minted `id` for providers that return none, first shipped in gateway/v0.18.0.
 
 ### 3. Stream a completion
 
@@ -78,7 +78,7 @@ What you should see: one document with one entry per canonical `model` name the 
 {"object":"list","data":[{"id":"gpt-4o","object":"model","created":1760000000,"owned_by":"openai","type":"model","created_at":"2026-10-08T12:00:00Z","display_name":"gpt-4o","description":"","kind":"chat"}],"first_id":"gpt-4o","last_id":"gpt-4o","has_more":false}
 ```
 
-`limit` defaults to every model and is clamped to 1000; `after_id` and `before_id` page through the list and cannot be combined. The path is exact: `$KELVRAN_BASE_URL/models/` with a trailing slash is a 404. `GET /v1/models` is on main since 2026-10-08, not in gateway/v0.17.0.
+`limit` defaults to every model and is clamped to 1000; `after_id` and `before_id` page through the list and cannot be combined. The path is exact: `$KELVRAN_BASE_URL/models/` with a trailing slash is a 404. `GET /v1/models` first shipped in gateway/v0.18.0.
 
 ## Variants
 
@@ -107,7 +107,7 @@ Retry-After: 1
 {"error":{"message":"dataplane: rate limit exceeded","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}
 ```
 
-All four keys are always present (`null` when unknown). Only `type` and `code` are a stable contract; the `message` text is not, so grep on `"code":"…"` rather than on message words. The JSON envelope is on main since 2026-10-08, not in gateway/v0.17.0, where the same statuses carry a `text/plain` body. Statuses you will meet from a shell:
+All four keys are always present (`null` when unknown). Only `type` and `code` are a stable contract; the `message` text is not, so grep on `"code":"…"` rather than on message words. The JSON envelope ships since gateway/v0.18.0; in gateway/v0.17.0 and earlier the same statuses carried a `text/plain` body. Statuses you will meet from a shell:
 
 | Status | `type` | `code` | Meaning | `Retry-After` |
 |---|---|---|---|---|
@@ -126,7 +126,7 @@ All four keys are always present (`null` when unknown). Only `type` and `code` a
 
 The full table, including the 501 and prompt-reference codes, is in [error codes](../../reference/error-codes.md).
 
-On a stream, a failure before the first chunk is an ordinary status plus the envelope. A failure after the first chunk arrives as one in-band frame and the stream ends without `[DONE]`; the HTTP status stays 200. The in-band frame is on main since 2026-10-08, not in gateway/v0.17.0, where a mid-stream failure appends the plain-text error message to the open SSE body with no `data:` prefix (and still no `[DONE]`):
+On a stream, a failure before the first chunk is an ordinary status plus the envelope. A failure after the first chunk arrives as one in-band frame and the stream ends without `[DONE]`; the HTTP status stays 200. The in-band frame ships since gateway/v0.18.0; in gateway/v0.17.0 and earlier a mid-stream failure appended the plain-text error message to the open SSE body with no `data:` prefix (and still no `[DONE]`):
 
 ```text
 data: {"error":{"message":"upstream provider returned status 503","type":"server_error","param":null,"code":"upstream_error"}}
@@ -182,7 +182,7 @@ The gateway sets the same `Retry-After` on `502 upstream_error` and `503 deploym
 
 ## Verify it worked
 
-Confirm the key, the base URL and the route in one call. On main (since 2026-10-08) use the models route:
+Confirm the key, the base URL and the route in one call. On gateway/v0.18.0 and later use the models route:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' "$KELVRAN_BASE_URL/models" -H "Authorization: Bearer $KELVRAN_KEY"
@@ -203,7 +203,7 @@ curl -s -i "$KELVRAN_BASE_URL/chat/completions" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-What it returns on main (since 2026-10-08): `HTTP/1.1 401 Unauthorized`, `Content-Type: application/json; charset=utf-8`, and the body `{"error":{"message":"dataplane: auth: identity: invalid virtual key","type":"authentication_error","param":null,"code":"invalid_api_key"}}`. On gateway/v0.17.0 the status is the same but the body is `text/plain; charset=utf-8` with the single line `dataplane: auth: identity: invalid virtual key` and no JSON.
+What it returns on gateway/v0.18.0 and later: `HTTP/1.1 401 Unauthorized`, `Content-Type: application/json; charset=utf-8`, and the body `{"error":{"message":"dataplane: auth: identity: invalid virtual key","type":"authentication_error","param":null,"code":"invalid_api_key"}}`. On gateway/v0.17.0 the status is the same but the body is `text/plain; charset=utf-8` with the single line `dataplane: auth: identity: invalid virtual key` and no JSON.
 
 ## Not available today
 

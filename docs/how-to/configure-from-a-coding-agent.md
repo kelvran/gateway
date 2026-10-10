@@ -8,7 +8,7 @@ This page is for a developer who drives a coding agent (Claude Code, Codex, Curs
 
 - A gateway binary (`go install`, a source build or the image `ghcr.io/kelvran/gateway`). See the [quickstart](../tutorials/quickstart.md).
 - One provider credential, exported in the shell or written to a file. The config never holds it. See [Provider credentials](provider-credentials.md).
-- `curl` on the machine the agent runs on; `openssl` (or any SHA-256 tool) only for the by-hand key recipe below — `kelvran init` (on `main` since 2026-10-10, not in `gateway/v0.17.0`) needs neither.
+- `curl` on the machine the agent runs on; `openssl` (or any SHA-256 tool) only for the by-hand key recipe below — `kelvran init` (since `gateway/v0.18.0`) needs neither.
 
 ## Steps
 
@@ -55,7 +55,7 @@ Rules the agent must follow when it writes this file:
 - **Unknown keys are silently ignored** at every level, with two exceptions that are load errors: an unknown field under a `models:` entry, and an unknown error-class key under a deployment's `fallback_chains:` (only `generic`, `content_policy`, `context_window_exceeded` are accepted). A misspelled key loads fine and does nothing; `-validate` does not catch it. Have the agent diff its keys against `config.example.yaml` before trusting a green validate.
 - **`base_url` must be `https://`** unless the deployment sets `allow_insecure_http: true`.
 - **Secrets never go in the file.** Only env var names (`*_env`), file paths (`*_file`) and SHA-256 key hashes. `config.yaml` and `.env` are gitignored; `gateway/config.example.yaml` is the only committed config.
-- `kelvran keys create <name> --config config.yaml` (on `main` since 2026-10-10, with no admin token in the environment) generates a secret and writes its hash into the file; by hand, a real key hash comes from `printf '%s' "$KELVRAN_KEY" | shasum -a 256 | cut -d' ' -f1` (`sha256sum` on Linux). Clients send the raw secret as `Authorization: Bearer <secret>`, never the hash. See [Virtual keys and budgets](virtual-keys-and-budgets.md).
+- `kelvran keys create <name> --config config.yaml` (since `gateway/v0.18.0`, with no admin token in the environment) generates a secret and writes its hash into the file; by hand, a real key hash comes from `printf '%s' "$KELVRAN_KEY" | shasum -a 256 | cut -d' ' -f1` (`sha256sum` on Linux). Clients send the raw secret as `Authorization: Bearer <secret>`, never the hash. See [Virtual keys and budgets](virtual-keys-and-budgets.md).
 
 ### 3. Run the fast validate loop
 
@@ -103,7 +103,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}'
 ```
 
-Every error is `{"error":{"message","type","param","code"}}` with `Content-Type: application/json`, so an agent can branch on `type` and `code`. On main since 2026-10-08, not in gateway/v0.17.0: that release returns the same status codes and the same message text for every row below (the full exception list is in [Error codes](../reference/error-codes.md)) as a `text/plain` body with no `type` or `code`, so against the `v0.17.0` image branch on the status and the message text only:
+Every error is `{"error":{"message","type","param","code"}}` with `Content-Type: application/json`, so an agent can branch on `type` and `code`. The envelope ships since gateway/v0.18.0; gateway/v0.17.0 and earlier return the same status codes and the same message text for every row below (the full exception list is in [Error codes](../reference/error-codes.md)) as a `text/plain` body with no `type` or `code`, so against the `v0.17.0` image branch on the status and the message text only:
 
 | Status | `type` / `code` | Meaning for the agent |
 |---|---|---|
@@ -113,11 +113,11 @@ Every error is `{"error":{"message","type","param","code"}}` with `Content-Type:
 | 429 | `rate_limit_error` / `rate_limit_exceeded` or `concurrency_limit_exceeded` (`Retry-After` set) | the key's limits; see [Virtual keys and budgets](virtual-keys-and-budgets.md) |
 | 429 | `insufficient_quota` (no `Retry-After`) | `budget_usd` spent |
 | 502 | `server_error` / `upstream_error`, message `upstream provider returned status N` | the request reached the provider; `N=401` is almost always an unset or wrong provider key |
-| 502 | `server_error` / `upstream_error`, message `upstream call failed for model "<model>"` | the request never reached the provider: wrong `base_url` host, refused connection or timeout; the dial error is in the `chat_completion` log line. Message text on main since 2026-10-08; gateway/v0.17.0 returns the raw transport error |
+| 502 | `server_error` / `upstream_error`, message `upstream call failed for model "<model>"` | the request never reached the provider: wrong `base_url` host, refused connection or timeout; the dial error is in the `chat_completion` log line. Message text since gateway/v0.18.0; gateway/v0.17.0 and earlier return the raw transport error |
 
 The full list is in [Error codes](../reference/error-codes.md). The provider's own error text is only in the `chat_completion` log line, never in the response.
 
-`GET /v1/models` with the same bearer lists the canonical models the key may use, each with `kind` (`chat` or `embedding`); it is a cheap way for an agent to confirm the deployments it wrote. On main since 2026-10-08, not in gateway/v0.17.0.
+`GET /v1/models` with the same bearer lists the canonical models the key may use, each with `kind` (`chat` or `embedding`); it is a cheap way for an agent to confirm the deployments it wrote. First shipped in gateway/v0.18.0.
 
 ## Variants
 
@@ -126,8 +126,8 @@ The full list is in [Error codes](../reference/error-codes.md). The provider's o
 The image is `FROM scratch` (no shell), `ENTRYPOINT ["/gateway"]`, `CMD ["-config", "/config.yaml"]`, runs as `65532:65532` and listens on 8080. Extra arguments replace `CMD`, so validation needs no port and no secret:
 
 ```bash
-docker run --rm -v "$PWD/config.yaml:/config.yaml:ro" ghcr.io/kelvran/gateway:v0.17.0 -validate -config /config.yaml
-docker run --rm ghcr.io/kelvran/gateway:v0.17.0 -version
+docker run --rm -v "$PWD/config.yaml:/config.yaml:ro" ghcr.io/kelvran/gateway:v0.18.0 -validate -config /config.yaml
+docker run --rm ghcr.io/kelvran/gateway:v0.18.0 -version
 ```
 
 Create `config.yaml` before the first run: Docker bind-mounts a missing host path as an empty directory and the gateway exits with `read /config.yaml: is a directory`.
@@ -200,13 +200,13 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/readyz
 Read `/readyz` with care:
 
 - With `health_probe.interval_seconds` unset or 0, nothing is probed, every deployment counts as healthy, and `/readyz` is `200` for any config. A `200` here says nothing about provider reachability unless probing is on.
-- In gateway/v0.17.0 with probing on, a `kind: embedding` deployment is probed with a chat request and reads unhealthy, so `/readyz` is `503` for a working embedding deployment. Embedding-shaped probes are on main since 2026-10-08, not in gateway/v0.17.0.
+- In gateway/v0.17.0 with probing on, a `kind: embedding` deployment is probed with a chat request and reads unhealthy, so `/readyz` is `503` for a working embedding deployment. Embedding-shaped probes first shipped in gateway/v0.18.0.
 - A `503` does not stop traffic: the router fails open to the last candidate.
 - Keep Kubernetes liveness and readiness probes on `/healthz`; point external monitors at `/readyz` ([`docs/operations/DEPLOY.md`](../operations/DEPLOY.md) explains why).
 
 ## Pitfalls agents fall into
 
-- **Image tag prefix.** The git tag is `gateway/v0.17.0`; the image tag is `v0.17.0`. `:latest` and `:sha-<40-hex>` track main and move; pin an index digest for anything deployed. Images at v0.17.0 and earlier are `linux/amd64` only; builds on main since 2026-10-08 are amd64 and arm64 indexes.
+- **Image tag prefix.** The git tag is `gateway/v0.18.0`; the image tag is `v0.18.0`. `:latest` and `:sha-<40-hex>` track main and move; pin an index digest for anything deployed. Images at v0.17.0 and earlier are `linux/amd64` only; images from v0.18.0 on are amd64 and arm64 indexes.
 - **Vacuous `/readyz`.** See above. An agent that reports "ready: true" as proof of a working provider key is wrong unless probing is on.
 - **Silently ignored keys.** A green `-validate` plus a typo gives a gateway that behaves as if the key were absent. Compare every key against `config.example.yaml`.
 - **`-validate` is not a reachability check.** It will not notice an unset env var, an unreadable `*_file`, an unreachable Redis or a wrong Gemini/Bedrock suffix.
@@ -217,7 +217,7 @@ Read `/readyz` with care:
 
 - No JSON Schema or machine-generated reference for `config.yaml`; the annotated `gateway/config.example.yaml` is the reference.
 - No OpenAPI document for `/v1/*` or the admin API.
-- No `connect --write` for `codex`, `aider` or `continue` (print-only until their documentation is archived); the `kelvran` CLI itself (`init`, `doctor`, `keys`, `status`, `spend`, `connect`) is on `main` since 2026-10-10, not in `gateway/v0.17.0` ([reference](../reference/kelvran-cli.md)).
+- No `connect --write` for `codex`, `aider` or `continue` (print-only until their documentation is archived); the `kelvran` CLI itself (`init`, `doctor`, `keys`, `status`, `spend`, `connect`) first shipped in `gateway/v0.18.0` ([reference](../reference/kelvran-cli.md)).
 - No Anthropic Messages API (`/v1/messages`); Claude Code's native Anthropic mode cannot target Kelvran, which `kelvran connect claude --check` reports as a 404. See [Compatibility](../reference/compatibility.md).
 - No `-validate` strict mode, unknown-key detection, JSON output, or env-var, file or Redis reachability checks (`kelvran doctor` covers the env-var and file checks, with `--json`).
 - No `${VAR}` interpolation inside `config.yaml`; the parser is a literal `key: value` subset.

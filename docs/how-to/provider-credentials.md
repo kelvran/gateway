@@ -14,7 +14,7 @@ Use this when you are adding a deployment for a new provider, moving a credentia
 
 - `*_env` keys name an environment variable. The gateway reads it once at startup with `os.Getenv`. If it is unset or empty, startup continues and the log carries a `WARN` such as `deployment's upstream API key env var is not set; calls to this deployment will fail`. The value cannot change without a restart. The one exception is `session_token_env`: an unset session-token variable is not warned about at all; the gateway signs without a token, and an STS key pair is then rejected upstream with 401 or 403 (row C3). Check that variable yourself before starting.
 - `*_file` keys name a file path. The gateway reads the file at startup, trims leading and trailing whitespace, and re-reads it on a timer for the life of the process (default every 60 s, set by `credential_reload.interval_seconds`; a value of 0 or less also means 60, not disabled). A changed value is swapped in atomically and logged as `credential_reload_rotated` with the deployment and field name only. A read error keeps the last-known-good value and logs `credential_reload_read_failed`.
-- An empty or whitespace-only file counts as a read failure, never as the credential `""`. This rule is on main since 2026-10-08, not in gateway/v0.17.0.
+- An empty or whitespace-only file counts as a read failure, never as the credential `""`. This rule first shipped in gateway/v0.18.0.
 - When a deployment sets both a `*_file` key and its `*_env` counterpart, the file wins and the environment variable is never consulted for that credential.
 
 ## Steps
@@ -181,7 +181,7 @@ The optional `guardrails.bedrock_guardrails` and `guardrails.embed_sim` sections
    ```
 
    Expected: HTTP 200 with an OpenAI-shaped body (`id`, `model`, `choices[0].message.content`, `usage`). A `502` whose `error.message` is `upstream provider returned status 401` (or `403`) means the virtual key was accepted and the request reached the provider, which rejected the credential; the provider's own error text is only in the gateway's `chat_completion` log line. Row C3 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md) and the [error codes reference](../reference/error-codes.md) cover the full mapping.
-4. For a `*_file` deployment, rewrite the file with a new value and wait one `credential_reload.interval_seconds`. Expected: an `INFO` line `credential_reload_rotated` with `deployment` and `field` (never the value). A `WARN` `credential_reload_read_failed` means the file was missing or unreadable (or, on main since 2026-10-08, empty) and the previous value is still in use.
+4. For a `*_file` deployment, rewrite the file with a new value and wait one `credential_reload.interval_seconds`. Expected: an `INFO` line `credential_reload_rotated` with `deployment` and `field` (never the value). A `WARN` `credential_reload_read_failed` means the file was missing or unreadable (or, since gateway/v0.18.0, empty) and the previous value is still in use.
 
 ## Not available today
 

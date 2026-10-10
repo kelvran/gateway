@@ -4,7 +4,7 @@ This page explains the status of Model Context Protocol (MCP) and Agent-to-Agent
 
 ## The short version
 
-Kelvran ships no MCP server, no MCP client, no A2A agent registry and no tool execution of any kind, as of gateway/v0.17.0 and `main` on 2026-10-08. The package that [gateway/ARCHITECTURE.md](../../gateway/ARCHITECTURE.md) lists as `/internal/mcp` does not exist on disk. The only occurrences of `mcp` in any case in Go source are three comments: the package comment of `gateway/internal/gateway/dataplane/dataplane.go` and the file comment of `gateway/cmd/gateway/main.go` say it is not built, and a comment in `gateway/cmd/gateway/models_handler.go` names this page. [gateway/config.example.yaml](../../gateway/config.example.yaml) has no `mcp` section, and the data-plane mux in `gateway/cmd/gateway/main.go` registers no `/mcp` route.
+Kelvran ships no MCP server, no MCP client, no A2A agent registry and no tool execution of any kind, as of gateway/v0.18.0 (2026-10-10). The package that [gateway/ARCHITECTURE.md](../../gateway/ARCHITECTURE.md) lists as `/internal/mcp` does not exist on disk. The only occurrences of `mcp` in any case in Go source are three comments: the package comment of `gateway/internal/gateway/dataplane/dataplane.go` and the file comment of `gateway/cmd/gateway/main.go` say it is not built, and a comment in `gateway/cmd/gateway/models_handler.go` names this page. [gateway/config.example.yaml](../../gateway/config.example.yaml) has no `mcp` section, and the data-plane mux in `gateway/cmd/gateway/main.go` registers no `/mcp` route.
 
 Not available today:
 

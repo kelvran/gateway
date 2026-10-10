@@ -2,7 +2,7 @@
 
 This page lists every key the gateway's configuration parser reads from `config.yaml`: its type, default, validation rule, and the subsystem that consumes it, grouped by top-level section, followed by the parser's own constraints, the CLI flags that act on the file, and what refuses to start. It is for operators writing or reviewing a gateway configuration and for anyone checking what a key does before relying on it. The authoritative key list is the parser in `gateway/internal/gateway/controlplane/config.go`; the annotated example is [`gateway/config.example.yaml`](../../gateway/config.example.yaml), which omits several keys listed here.
 
-The page describes the parser on `main` as of 2026-10-08. The latest release is gateway/v0.17.0 (2026-10-07). Four items on this page are on `main` since 2026-10-08 and not in gateway/v0.17.0; each is marked where it appears. Everything else is in gateway/v0.17.0.
+The page describes the parser as of gateway/v0.18.0. The latest release is gateway/v0.18.0 (2026-10-10). The items that first shipped in gateway/v0.18.0 are marked where they appear. Everything else is also in gateway/v0.17.0.
 
 ## Type vocabulary
 
@@ -61,9 +61,9 @@ The gateway parses `config.yaml` with a hand-rolled YAML subset, not a YAML libr
 | `virtual_keys` | `mapping` | required | Tenant credentials, one entry per key name. See [virtual_keys](#virtual_keysname) | identity, rate limit, budget |
 | `deployments` | `mapping` | required | Upstream routes, one entry per deployment name. See [deployments](#deploymentsname) | router, dataplane |
 | `price_table` | `mapping` | empty | Per-model USD prices. See [price_table](#price_tablemodel) | cost accounting |
-| `models` | `mapping` | absent | Display metadata for `GET /v1/models`. See [models](#modelsmodel). On `main` since 2026-10-08, not in gateway/v0.17.0 | `GET /v1/models` |
+| `models` | `mapping` | absent | Display metadata for `GET /v1/models`. See [models](#modelsmodel). Since `gateway/v0.18.0` | `GET /v1/models` |
 | `telemetry` | `mapping` | stdout exporter | See [telemetry](#telemetry) | telemetry |
-| `attribution` | `mapping` | identifier capture on | See [attribution](#attribution). On `main` since 2026-10-09 | attribution middleware, dataplane |
+| `attribution` | `mapping` | identifier capture on | See [attribution](#attribution). Since `gateway/v0.18.0` | attribution middleware, dataplane |
 | `budget` | `mapping` | in-memory | See [budget](#budget) | budget tracker |
 | `prompt` | `mapping` | in-memory | See [prompt](#prompt) | prompt store |
 | `rate_limit` | `mapping` | in-memory | See [rate_limit](#rate_limit) | per-key limiter |
@@ -91,8 +91,8 @@ Each entry is a tenant credential issued by Kelvran. The entry name is the key's
 | `allowed_source_cidrs` | `name → bool` | empty (no constraint) | CIDR blocks the client source IP must fall within (`"10.0.0.0/8"`, `"203.0.113.4/32"`). Each `true` entry must parse with `net.ParseCIDR` at load time; a `false` entry is not syntax-checked |
 | `billing_subject_id` | `string` | empty | Opaque external billing identifier. Never read by an enforcement path |
 | `cache_scope_to_end_user` | `bool` | `false` | Folds the caller's `X-Kelvran-End-User-Id` header into this key's L1/L2 cache partition |
-| `attribution_capture_ids` | `bool` | `true` | `false` keeps this key's requests from carrying the Claude Code identifiers (session, agent, parent-agent, prompt ids, agent type) onto the request span; the bounded attribution fields (client tool, request class) are always captured. Identifiers are only ever recorded for authenticated requests. A non-boolean value fails startup. On `main` since 2026-10-09 |
-| `expires_at` | `string` | absent (never expires) | RFC 3339 instant (for example `"2099-01-01T00:00:00Z"`, quoted or bare) from which the gateway rejects this key with 401 `key_expired`, inclusive. A value that is not RFC 3339 (a date alone, an epoch integer, an empty string) is a load error `-validate` detects; a past instant loads, so an already-expired key never stops the gateway. On `main` since 2026-10-10 |
+| `attribution_capture_ids` | `bool` | `true` | `false` keeps this key's requests from carrying the Claude Code identifiers (session, agent, parent-agent, prompt ids, agent type) onto the request span; the bounded attribution fields (client tool, request class) are always captured. Identifiers are only ever recorded for authenticated requests. A non-boolean value fails startup. Since `gateway/v0.18.0` |
+| `expires_at` | `string` | absent (never expires) | RFC 3339 instant (for example `"2099-01-01T00:00:00Z"`, quoted or bare) from which the gateway rejects this key with 401 `key_expired`, inclusive. A value that is not RFC 3339 (a date alone, an epoch integer, an empty string) is a load error `-validate` detects; a past instant loads, so an already-expired key never stops the gateway. Since `gateway/v0.18.0` |
 
 ### `virtual_keys.<name>.rate_limit`
 
@@ -157,7 +157,7 @@ The file never holds a secret value. Each credential key names either an environ
 
 Validation: a `bedrock` deployment needs an access key ID source, a secret access key source, and `region`, else load error (the error text names only the `*_env` spellings; the check accepts either). Any other provider needs `api_key_env` or `api_key_file`, else load error.
 
-Resolution: an environment variable that resolves empty at startup logs a warning; calls to that deployment fail until the process is restarted with the variable set. A `*_file` path that cannot be read at startup logs `credential file could not be read or is empty; calls will fail` (`credential file could not be read; calls will fail` in gateway/v0.17.0), the deployment starts with an empty credential, and the reload loop retries every interval. A `*_file` that is empty or whitespace-only is treated the same as unreadable; this rule is on `main` since 2026-10-08, not in gateway/v0.17.0. On a reload tick that fails, the last-known-good value is kept. `-validate` never opens credential files or reads environment variables.
+Resolution: an environment variable that resolves empty at startup logs a warning; calls to that deployment fail until the process is restarted with the variable set. A `*_file` path that cannot be read at startup logs `credential file could not be read or is empty; calls will fail` (`credential file could not be read; calls will fail` in gateway/v0.17.0), the deployment starts with an empty credential, and the reload loop retries every interval. A `*_file` that is empty or whitespace-only is treated the same as unreadable; this rule applies since `gateway/v0.18.0`. On a reload tick that fails, the last-known-good value is kept. `-validate` never opens credential files or reads environment variables.
 
 ### `deployments.<name>.tls`
 
@@ -220,7 +220,7 @@ An entry that is not a mapping is a load error. A model with no entry is not a l
 
 ## `models.<model>`
 
-On `main` since 2026-10-08, not in gateway/v0.17.0. Display metadata for `GET /v1/models`, keyed by canonical model name.
+First shipped in `gateway/v0.18.0`. Display metadata for `GET /v1/models`, keyed by canonical model name.
 
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
@@ -240,7 +240,7 @@ Exporter construction never dials, so an unreachable collector does not stop sta
 
 ## `attribution`
 
-On `main` since 2026-10-09, not in gateway/v0.17.0. The whole section is optional; when present it must be a mapping: `attribution: false`, `attribution: {}` and `attribution: null` all fail startup (the configuration's YAML subset has no flow style and no null, so each is read as a scalar), while a bare `attribution:` line with no keys means the defaults.
+First shipped in `gateway/v0.18.0`. The whole section is optional; when present it must be a mapping: `attribution: false`, `attribution: {}` and `attribution: null` all fail startup (the configuration's YAML subset has no flow style and no null, so each is read as a scalar), while a bare `attribution:` line with no keys means the defaults.
 
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
@@ -443,7 +443,7 @@ Not available today: a custom CA bundle or a client certificate for Redis TLS.
 | File exists and opens | Hydrated at startup. A hydration error is a startup failure |
 | File exists and fails to open under `fail` | Startup failure |
 | File exists and fails to open as corrupt under `reset` | The open failure is logged at Error (`persist_store_open_failed`), the file is renamed to `<path>.corrupt-<unix-seconds>-<nanoseconds>` (`persist_store_reset`, Warn; a failed rename is `persist_store_corrupt_backup_failed` and the original open error is fatal), and a fresh file is created at the path |
-| Another process holds the lock | Fails within one second with `another process holds the file lock`; never treated as corruption, so `reset` never renames a locked file. On `main` since 2026-10-08, not in gateway/v0.17.0 |
+| Another process holds the lock | Fails within one second with `another process holds the file lock`; never treated as corruption, so `reset` never renames a locked file. Since `gateway/v0.18.0` |
 
 Backup and offline restore are in [backup-and-restore](../how-to/backup-and-restore.md).
 
@@ -453,7 +453,7 @@ Backup and offline restore are in [backup-and-restore](../how-to/backup-and-rest
 |---|---|---|
 | `-config <path>` | `config.yaml` | Path of the configuration file |
 | `-validate` | off | Loads the file, runs the provider-name and `fallback_chains` checks, prints `config is valid` and exits 0, or prints `config error: …` and exits 1. Never dials Redis, opens a store or credential file, or reads an environment variable |
-| `-version` | off | Prints the build identity on one line and exits 0. On `main` since 2026-10-08, not in gateway/v0.17.0 |
+| `-version` | off | Prints the build identity on one line and exits 0. Since `gateway/v0.18.0` |
 | `-restore-store identity\|budget\|prompt` | off | Offline restore into that store's configured `persist_path`; exits without starting a server. The gateway must be stopped. Requires `-restore-from` |
 | `-restore-from <file>` | | Backup file to restore from, for example one written by `POST /admin/backup` |
 | `-restore-force` | off | Overwrite an existing destination file; refused by default |
@@ -623,7 +623,7 @@ models:
     description: "General-purpose chat, routed to OpenAI."
 ```
 
-The `models` section is on `main` since 2026-10-08, not in gateway/v0.17.0.
+The `models` section first shipped in `gateway/v0.18.0`.
 
 ### Validate without starting
 

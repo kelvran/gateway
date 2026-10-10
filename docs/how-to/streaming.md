@@ -44,7 +44,7 @@ Every frame is one line, `data: <json>`, followed by a blank line, flushed immed
 
 Each JSON payload is a `chat.completion.chunk` with fields in this order: `id`, `object`, `created`, `model`, `choices`, `usage`.
 
-- `id`, `object` and `created` are the same on every frame of one stream. A provider id is kept when present; otherwise the gateway mints `chatcmpl-` followed by 32 lowercase hex characters. This per-frame envelope is on main since 2026-10-08, not in gateway/v0.17.0, where Bedrock and Gemini frames carry an empty `id` and an empty `model`, and no frame of any provider carries `object` or `created`.
+- `id`, `object` and `created` are the same on every frame of one stream. A provider id is kept when present; otherwise the gateway mints `chatcmpl-` followed by 32 lowercase hex characters. This per-frame envelope ships since gateway/v0.18.0; in gateway/v0.17.0 and earlier Bedrock and Gemini frames carried an empty `id` and an empty `model`, and no frame of any provider carried `object` or `created`.
 - `choices[].finish_reason` is always present and is `null` until the provider sets it.
 - `choices[].delta` carries `role` (first frame only), `content`, `tool_calls`, `reasoning_blocks` and `refusal`. All are omitted when empty, so an empty delta is `{}`.
 - `usage` is omitted unless this frame carries it.
@@ -67,7 +67,7 @@ Whether a live stream carries `usage` depends on the provider behind the deploym
 
 | Provider | `usage` on a live stream |
 |---|---|
-| `openai`, `openaicompat` | On the provider's final frame, with `"choices":[]` (the gateway always asks these upstreams for usage). On main since 2026-10-09; `gateway/v0.17.0` sends `"choices":null` there, which LlamaIndex's `stream_chat` and the Vercel AI SDK reject |
+| `openai`, `openaicompat` | On the provider's final frame, with `"choices":[]` (the gateway always asks these upstreams for usage). Since `gateway/v0.18.0`; `gateway/v0.17.0` sends `"choices":null` there, which LlamaIndex's `stream_chat` and the Vercel AI SDK reject |
 | `gemini` | On every content frame whose Gemini `usageMetadata` carries a non-zero count; the gateway does not restrict it to the last frame, so use the last `usage` seen |
 | `anthropic`, `bedrock` | Never in any frame; usage is used for billing only |
 
@@ -79,7 +79,7 @@ A successful stream ends with exactly one `data: [DONE]` frame after the last ch
 
 ### 6. Handle errors in both phases
 
-**Before the first chunk.** Any rejection (missing or invalid key, model not allowed, rate limit, budget, concurrency, no deployment for the model, an upstream that never sent a byte) is an ordinary HTTP error. The status comes from the same mapping as buffered requests, for example `400`, `401`, `403`, `429`, `502`, `503`; `400` `model_not_found` is the routing miss, and `503` is a deployment at its own capacity (an all-unhealthy pool fails open rather than rejecting, row U3 of [FAILURE-MODES](../operations/FAILURE-MODES.md)). On main, not in gateway/v0.17.0, the body is the OpenAI-shaped envelope with `Content-Type: application/json; charset=utf-8` and `X-Content-Type-Options: nosniff`, replacing the `text/event-stream` header set in step 2:
+**Before the first chunk.** Any rejection (missing or invalid key, model not allowed, rate limit, budget, concurrency, no deployment for the model, an upstream that never sent a byte) is an ordinary HTTP error. The status comes from the same mapping as buffered requests, for example `400`, `401`, `403`, `429`, `502`, `503`; `400` `model_not_found` is the routing miss, and `503` is a deployment at its own capacity (an all-unhealthy pool fails open rather than rejecting, row U3 of [FAILURE-MODES](../operations/FAILURE-MODES.md)). Since gateway/v0.18.0, the body is the OpenAI-shaped envelope with `Content-Type: application/json; charset=utf-8` and `X-Content-Type-Options: nosniff`, replacing the `text/event-stream` header set in step 2:
 
 ```text
 HTTP/1.1 429 Too Many Requests
@@ -91,7 +91,7 @@ X-Content-Type-Options: nosniff
 
 In gateway/v0.17.0 the same statuses apply and the body is `text/plain`. `Retry-After` (whole seconds, minimum 1) is present when the error is classified rate-limited, deployment-capacity or upstream-error: `429` `rate_limit_exceeded` and `concurrency_limit_exceeded`, `502` and `503` carry it (on `502` the upstream's own `Retry-After`, capped at 60 s, floors the value); `429` `insufficient_quota` (the example above) does not. Only the `429` case is part of the stable surface in [docs/VERSIONING.md](../VERSIONING.md); the per-code column and the `type`/`code` vocabulary are in [error codes](../reference/error-codes.md). Message text is not a stable contract.
 
-**After the first chunk.** The `200` is already committed. On main since 2026-10-08, not in gateway/v0.17.0, the gateway writes exactly one in-band frame and ends the stream without `[DONE]`:
+**After the first chunk.** The `200` is already committed. Since gateway/v0.18.0, the gateway writes exactly one in-band frame and ends the stream without `[DONE]`:
 
 ```text
 data: {"error":{"message":"upstream call failed for model \"gpt-4o\"","type":"server_error","param":null,"code":"upstream_error"}}
@@ -126,7 +126,7 @@ Two guards can end a live stream early. Both end it as a normal truncated stream
 
 A stream cut by either guard is still written to the response cache (only `finish_reason: "length"` blocks the write) and is replayed, truncated, to later cache hits for the entry's TTL; treat an empty `finish_reason` on a replay as a possible guard truncation. The U5 known-gaps note in [FAILURE-MODES](../operations/FAILURE-MODES.md) records this.
 
-If the Redis-backed limiter or budget tracker errors during a top-up, the stream keeps its prior reservation and continues. On main since 2026-10-08, not in gateway/v0.17.0, this is logged (`ratelimit_tpm_backend_unavailable` / `budget_backend_unavailable` with `op=mid_stream_topup`) and counted (`kelvran.ratelimit.fail_open` / `kelvran.budget.fail_open`) once per stream. Row R4 of [FAILURE-MODES](../operations/FAILURE-MODES.md) covers this. Key limits are configured per [virtual keys and budgets](virtual-keys-and-budgets.md).
+If the Redis-backed limiter or budget tracker errors during a top-up, the stream keeps its prior reservation and continues. Since gateway/v0.18.0, this is logged (`ratelimit_tpm_backend_unavailable` / `budget_backend_unavailable` with `op=mid_stream_topup`) and counted (`kelvran.ratelimit.fail_open` / `kelvran.budget.fail_open`) once per stream. Row R4 of [FAILURE-MODES](../operations/FAILURE-MODES.md) covers this. Key limits are configured per [virtual keys and budgets](virtual-keys-and-budgets.md).
 
 ### Idle timeout and fallback
 
@@ -174,7 +174,7 @@ Expected: `data: [DONE]`. A last line starting with `data: {"error":` means the 
 
 ## Stability
 
-The `data: {...}` framing, the in-band `data: {"error":...}` frame, the `data: [DONE]` sentinel and the `type`/`code` vocabulary are part of the public surface in [docs/VERSIONING.md](../VERSIONING.md). Error message text is not. SSE streaming shipped in gateway/v0.1.0 (2026-09-03). The latest tagged release is gateway/v0.17.0 (2026-10-07); everything marked "on main" above is unreleased at the time of writing. See [versioning](../explanation/versioning.md) and [compatibility](../reference/compatibility.md).
+The `data: {...}` framing, the in-band `data: {"error":...}` frame, the `data: [DONE]` sentinel and the `type`/`code` vocabulary are part of the public surface in [docs/VERSIONING.md](../VERSIONING.md). Error message text is not. SSE streaming shipped in gateway/v0.1.0 (2026-09-03). The latest tagged release is gateway/v0.18.0 (2026-10-10), which carries every behaviour marked "since gateway/v0.18.0" above. See [versioning](../explanation/versioning.md) and [compatibility](../reference/compatibility.md).
 
 ## Related pages
 

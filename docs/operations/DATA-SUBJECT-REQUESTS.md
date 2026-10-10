@@ -31,9 +31,9 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   the L1/L2 keys are rebuilt from every key-bearing field (`Pipeline.EraseCacheEntry`,
   `gateway/internal/gateway/dataplane/dataplane.go`), so the erase call must re-supply whatever the
   original request set from: `model`, `messages`, `temperature`, `max_tokens`, `response_format`,
-  `prompt_id`/`prompt_version`/`prompt_label`, `thinking_binding_mode`, and — on `main` since
-  2026-10-08, not in `gateway/v0.17.0` — `tools` and `tool_choice` (`toolsFingerprint`, folded into
-  `cache.Key`/`cache.NormalizedKey`; `gateway/changelog/unreleased.md`). A request that carried tools
+  `prompt_id`/`prompt_version`/`prompt_label`, `thinking_binding_mode`, and — since
+  `gateway/v0.18.0` — `tools` and `tool_choice` (`toolsFingerprint`, folded into
+  `cache.Key`/`cache.NormalizedKey`; `gateway/changelog/0.18.0.md`). A request that carried tools
   but is erased without them targets a different key and returns `l1_found: false, l2_found: false`.
   Separately, `end_user_id` (present since before `v0.17.0`) must be set to the original end-user
   value when the virtual key has `cache_scope_to_end_user` enabled; empty targets the tenant-scoped
@@ -111,8 +111,8 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   (`gateway/internal/gateway/dataplane/dataplane.go`) — so one call removes the key and its budget
   record on every replica; with `budget.redis_addr` the budget record is a single shared store anyway.
   Delivery is pub/sub with no replay, so if the publish failed (`configpropagation_publish_failed`
-  log line; the matching `kelvran.configpropagation.publish_failed` counter is on `main` since
-  2026-10-08, not in `gateway/v0.17.0`) the operator still re-applies per instance exactly as before.
+  log line; the matching `kelvran.configpropagation.publish_failed` counter is present since
+  `gateway/v0.18.0`) the operator still re-applies per instance exactly as before.
 
 - **Identifiers on exported spans have no erasure path in Kelvran.** Since 2026-10-09 every request span can carry Claude Code's session, agent, parent-agent and prompt ids (and the client tool) beside the `agent_run_id` that was already there; they are exported through `telemetry.exporter` and retained by the tracing backend for as long as it keeps spans. Kelvran cannot delete a span it has exported. The levers are preventive: `attribution.capture_ids: false` (gateway-wide) or `attribution_capture_ids: false` on a key stops the Claude Code identifiers from being recorded (a request that fails authentication never carries them); `agent_run_id` has no switch. Erasure of an exported span is the backend operator's procedure. See `SECURITY.md`'s retention table.
 

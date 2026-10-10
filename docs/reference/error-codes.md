@@ -8,9 +8,9 @@ This page lists every error the gateway's data plane can return: the JSON envelo
 |---|---|
 | Routes covered | `POST /v1/chat/completions` (buffered and SSE), `POST /v1/embeddings`, `GET /v1/models` |
 | Routes not covered | `GET /healthz`, `GET /readyz`, every `/admin/*` route, unknown paths (see [Routes outside the envelope](#routes-outside-the-envelope)) |
-| JSON error envelope | on `main` since 2026-10-08, not in `gateway/v0.17.0`. `gateway/v0.17.0` returns a `text/plain` body with no `type` or `code`, with the same status codes and the same message text except for the `tool_choice` statuses and the message changes listed two rows below |
-| `GET /v1/models` | on `main` since 2026-10-08, not in `gateway/v0.17.0` |
-| `invalid_tool_choice` code (in `gateway/v0.17.0` OpenAI's `{"type":"function",…}` `tool_choice` was a 502 and its string form a 400 `invalid request body`); the `upstream call failed for model "<model>"` redaction (`gateway/v0.17.0` returned transport failures verbatim); the `deployment at capacity (<reason>)` message (`gateway/v0.17.0` said `deployment "<name>" at capacity (<reason>)`); the `not_an_embedding_model` message ending `: model "<model>"` (`gateway/v0.17.0` ended `: deployment "<name>"`) | on `main` since 2026-10-08, not in `gateway/v0.17.0` |
+| JSON error envelope | since `gateway/v0.18.0`. `gateway/v0.17.0` returns a `text/plain` body with no `type` or `code`, with the same status codes and the same message text except for the `tool_choice` statuses and the message changes listed two rows below |
+| `GET /v1/models` | since `gateway/v0.18.0` |
+| `invalid_tool_choice` code (in `gateway/v0.17.0` OpenAI's `{"type":"function",…}` `tool_choice` was a 502 and its string form a 400 `invalid request body`); the `upstream call failed for model "<model>"` redaction (`gateway/v0.17.0` returned transport failures verbatim); the `deployment at capacity (<reason>)` message (`gateway/v0.17.0` said `deployment "<name>" at capacity (<reason>)`); the `not_an_embedding_model` message ending `: model "<model>"` (`gateway/v0.17.0` ended `: deployment "<name>"`) | since `gateway/v0.18.0` |
 | Stable contract | `type` and `code` ([`docs/VERSIONING.md`](../VERSIONING.md)) |
 | Not a contract | `message` text. It may change in any release. Match on `type` and `code`, never on `message` |
 | Source of truth | `gateway/cmd/gateway/error_envelope.go` (envelope, `type`, `code`) and `errorStatus` in `gateway/cmd/gateway/main.go` (status) |
@@ -71,7 +71,7 @@ These are produced after the request body is accepted, by the shared error write
 |---|---|---|---|---|---|---|
 | 401 | `authentication_error` | `null` | `null` | no | `Authorization: Bearer` header missing or malformed | `dataplane: auth: identity: missing or malformed Authorization header` |
 | 401 | `authentication_error` | `invalid_api_key` | `null` | no | The bearer token hashes to no configured virtual key | `dataplane: auth: identity: invalid virtual key` |
-| 401 | `authentication_error` | `key_expired` | `null` | no | The bearer token matches a configured virtual key whose `expires_at` has passed (RFC 3339 instant, inclusive). The message never names the key; on `/v1/chat/completions` and `/v1/embeddings` the gateway's log line carries `virtual_key_id` and `key_expired_at` (`/v1/models` writes no request log line). On `main` since 2026-10-10 | `dataplane: auth: identity: virtual key expired` |
+| 401 | `authentication_error` | `key_expired` | `null` | no | The bearer token matches a configured virtual key whose `expires_at` has passed (RFC 3339 instant, inclusive). The message never names the key; on `/v1/chat/completions` and `/v1/embeddings` the gateway's log line carries `virtual_key_id` and `key_expired_at` (`/v1/models` writes no request log line). Since `gateway/v0.18.0` | `dataplane: auth: identity: virtual key expired` |
 | 429 | `rate_limit_error` | `rate_limit_exceeded` | `null` | yes | The key's RPM or TPM bucket is empty | `dataplane: rate limit exceeded` |
 | 429 | `rate_limit_error` | `concurrency_limit_exceeded` | `null` | yes | The key already has its `rate_limit.max_concurrent_requests` requests outstanding | `dataplane: concurrency limit exceeded` |
 | 429 | `insufficient_quota` | `insufficient_quota` | `null` | no | The key has spent its `budget_usd` | `dataplane: budget exceeded` |

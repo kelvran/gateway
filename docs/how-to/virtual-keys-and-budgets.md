@@ -7,7 +7,7 @@ Use this when you need to hand a team or an application its own credential with 
 ## Prerequisites
 
 - A gateway binary or image and a `config.yaml` with at least one deployment. Start with the [quickstart](../tutorials/quickstart.md) if you have neither.
-- `openssl` and `sha256sum` (or `shasum -a 256` on older macOS) to generate a secret and its hash — or the `kelvran` CLI, whose `keys create` does both (on `main` since 2026-10-10, not in `gateway/v0.17.0`).
+- `openssl` and `sha256sum` (or `shasum -a 256` on older macOS) to generate a secret and its hash — or the `kelvran` CLI, whose `keys create` does both (since `gateway/v0.18.0`).
 - For the admin-API steps: `curl` and an environment variable holding the admin token, for example `KELVRAN_ADMIN_TOKEN`.
 - For the multi-replica variant: a reachable Redis.
 
@@ -19,7 +19,7 @@ Every field named below is described in the [config reference](../reference/conf
 
 The gateway never generates or stores a raw secret. You generate it, hand the raw value to the client, and put only its SHA-256 hash in config.
 
-`kelvran keys create team-alpha --budget 100 --reset monthly --warn 0.8` (on `main` since 2026-10-10, not in `gateway/v0.17.0`) creates step 2's `team-alpha` live through the admin API when `KELVRAN_ADMIN_TOKEN` is exported; with `--config config.yaml` and no admin token in the environment it writes the same entry into the file for the next start instead ([reference](../reference/kelvran-cli.md#kelvran-keys)). The by-hand path below is the documented `key_hash` contract:
+`kelvran keys create team-alpha --budget 100 --reset monthly --warn 0.8` (since `gateway/v0.18.0`) creates step 2's `team-alpha` live through the admin API when `KELVRAN_ADMIN_TOKEN` is exported; with `--config config.yaml` and no admin token in the environment it writes the same entry into the file for the next start instead ([reference](../reference/kelvran-cli.md#kelvran-keys)). The by-hand path below is the documented `key_hash` contract:
 
 ```bash
 export KELVRAN_KEY=$(openssl rand -hex 32)                 # the raw secret: clients send it as a bearer token
@@ -112,7 +112,7 @@ budget:
   persist_path: "/var/lib/kelvran-gateway/budget.db"
 ```
 
-A bbolt store takes an exclusive file lock. On builds after gateway/v0.17.0 the open fails within one second with `another process holds the file lock` and the process exits 1; on v0.17.0 and earlier it blocks startup forever with no log line. Either way each `persist_path` must be a distinct file owned by one process. Two replicas sharing a file never see each other's spend. Backups and offline restore are in [Back up and restore](backup-and-restore.md).
+A bbolt store takes an exclusive file lock. Since `gateway/v0.18.0` the open fails within one second with `another process holds the file lock` and the process exits 1; on v0.17.0 and earlier it blocks startup forever with no log line. Either way each `persist_path` must be a distinct file owned by one process. Two replicas sharing a file never see each other's spend. Backups and offline restore are in [Back up and restore](backup-and-restore.md).
 
 ### Run more than one replica
 
@@ -148,7 +148,7 @@ admin:
   persist_path: "/var/lib/kelvran-gateway/identity.db"   # or redis_addr, see above
 ```
 
-Create or replace a key. The body mirrors the YAML names with three exceptions: allow-lists are JSON arrays; `max_concurrent_requests` is not accepted (an unknown field is silently ignored, so the key gets no concurrency cap; `billing_subject_id` and `expires_at` are accepted since 2026-10-10); and an upsert is a full replace, never a merge:
+Create or replace a key. The body mirrors the YAML names with three exceptions: allow-lists are JSON arrays; `max_concurrent_requests` is not accepted (an unknown field is silently ignored, so the key gets no concurrency cap; `billing_subject_id` and `expires_at` are accepted since `gateway/v0.18.0`); and an upsert is a full replace, never a merge:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8081/admin/virtual_keys/team-gamma \
@@ -184,7 +184,7 @@ Every admin mutation is audit-logged unless `admin.enable_audit_log: false`. Wit
 
 ### Keep Claude Code identifiers off a key's spans
 
-Every request is attributed by the client tool normalised from `User-Agent` and by the `x-claude-code-*` headers Claude Code sends (on `main` since 2026-10-09). The bounded values (client tool, request class) are always recorded; the identifiers (session, agent, parent-agent and prompt ids, agent type) land on the request span by default. `attribution_capture_ids: false` on a key keeps them off that key's spans; the top-level `attribution.capture_ids: false` does it for every key. A request that fails authentication never carries identifiers. See [the configuration reference](../reference/config.md) and [metrics and logs](../reference/metrics-and-logs.md).
+Every request is attributed by the client tool normalised from `User-Agent` and by the `x-claude-code-*` headers Claude Code sends (since `gateway/v0.18.0`). The bounded values (client tool, request class) are always recorded; the identifiers (session, agent, parent-agent and prompt ids, agent type) land on the request span by default. `attribution_capture_ids: false` on a key keeps them off that key's spans; the top-level `attribution.capture_ids: false` does it for every key. A request that fails authentication never carries identifiers. See [the configuration reference](../reference/config.md) and [metrics and logs](../reference/metrics-and-logs.md).
 
 ### Scope the response cache to end users
 
@@ -208,7 +208,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
 
    Returns a JSON array with one entry per key. `id`, `budget_usd`, `budget_reset_interval_seconds` and `budget_warn_percent` are always present; `allowed_models`, `allowed_regions`, `allowed_source_cidrs`, `cache_scope_to_end_user`, `rate_limit_burst`, `rate_limit_refill_per_second`, `billing_subject_id`, `attribution_capture_ids_disabled` and `expires_at` appear only when set. Key hashes are never included.
 
-3. Spend is tracked (admin, viewer or cost_viewer token). `kelvran spend` lists every key's spend as a table (on `main` since 2026-10-10, not in `gateway/v0.17.0`); the per-key route by hand:
+3. Spend is tracked (admin, viewer or cost_viewer token). `kelvran spend` lists every key's spend as a table (since `gateway/v0.18.0`); the per-key route by hand:
 
    ```bash
    curl -sS http://127.0.0.1:8081/admin/virtual_keys/team-alpha/spend -H "Authorization: Bearer $KELVRAN_ADMIN_TOKEN"
@@ -236,7 +236,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
 - A distributed per-key concurrency limiter. `max_concurrent_requests` is counted per gateway instance even with Redis configured.
 - An admin route that resets a key's spend without deleting the key. The levers are `DELETE` then re-create (which also zeroes legitimate spend) or, in Redis budget mode only, `DEL budget:<url.QueryEscape(key id)>` directly in Redis; see row R7 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md).
 - Persistence of `per_model` and TPM overrides across restarts for any key ever upserted or rotated through the admin API (config-declared keys included).
-- Setting `max_concurrent_requests` through the admin API. It is config.yaml-only (`billing_subject_id` and `expires_at` are body fields since 2026-10-10). An admin upsert of a config-declared key records `max_concurrent_requests` as 0; with `admin.persist_path` or `admin.redis_addr` set, that key's cap is unlimited after the next restart.
+- Setting `max_concurrent_requests` through the admin API. It is config.yaml-only (`billing_subject_id` and `expires_at` are body fields since `gateway/v0.18.0`). An admin upsert of a config-declared key records `max_concurrent_requests` as 0; with `admin.persist_path` or `admin.redis_addr` set, that key's cap is unlimited after the next restart.
 - Server-side generation of virtual-key secrets. You generate the secret and supply the hash.
 - Propagation of prompt mutations across replicas; only virtual-key and deployment-weight mutations propagate.
 - A custom CA or client certificate for Redis connections. `redis_tls` uses the system CA only.

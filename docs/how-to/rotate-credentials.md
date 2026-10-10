@@ -6,7 +6,7 @@ Use this when a credential has expired, was exposed, or is due for scheduled rep
 
 ## Prerequisites
 
-- gateway/v0.16.0 or later. The file-based hot-reload path for deployments and for `guardrails.bedrock_guardrails` / `guardrails.embed_sim` shipped in that release ([gateway/changelog/0.16.0.md](../../gateway/changelog/0.16.0.md)). Two behaviours on this page are on main only and in no tagged release yet: the empty-file handling noted under step 3, and the `GET /v1/models` check under Verify it worked; each is marked where it appears.
+- gateway/v0.16.0 or later. The file-based hot-reload path for deployments and for `guardrails.bedrock_guardrails` / `guardrails.embed_sim` shipped in that release ([gateway/changelog/0.16.0.md](../../gateway/changelog/0.16.0.md)). Two behaviours on this page first shipped in `gateway/v0.18.0`: the empty-file handling noted under step 3, and the `GET /v1/models` check under Verify it worked; each is marked where it appears.
 - Access to wherever the process gets its secrets: the host shell, the Kubernetes namespace, the Compose `.env`, or the ECS task definition.
 - For a virtual-key rotation: the admin listener address and a token for the Admin or Operator tier. See [Admin API and RBAC](admin-api-rbac.md).
 - Know how each credential reaches the gateway today, `*_env` or `*_file`. The config file tells you; the table below tells you what that means.
@@ -74,9 +74,9 @@ This path needs the deployment to use `*_file` keys already. Moving a deployment
 
 If a tick cannot read a file (missing, permission denied, volume mid-update), the log shows `WARN credential_reload_read_failed` with `deployment`, `field`, `path` and `error`, and the deployment keeps its last-known-good value; the next tick retries. Fix the file and no restart is needed.
 
-On main since 2026-10-08, not in gateway/v0.17.0: an empty or whitespace-only file is also a read failure, so the last-known-good value is kept. In gateway/v0.16.0 and v0.17.0 an empty file is stored as an empty credential and logged as `credential_reload_rotated`, and every request to that deployment then goes upstream with no credential until the next tick reads a value. The atomic write in step 2 is what prevents this.
+Since `gateway/v0.18.0`: an empty or whitespace-only file is also a read failure, so the last-known-good value is kept. In gateway/v0.16.0 and v0.17.0 an empty file is stored as an empty credential and logged as `credential_reload_rotated`, and every request to that deployment then goes upstream with no credential until the next tick reads a value. The atomic write in step 2 is what prevents this.
 
-Do not use an empty file to drop a session token: on main it is a read failure and the old token is kept; in gateway/v0.16.0 and v0.17.0 it only works because of the bug above. On either, to stop sending one, remove `session_token_file` from the config and restart.
+Do not use an empty file to drop a session token: since `gateway/v0.18.0` it is a read failure and the old token is kept; in gateway/v0.16.0 and v0.17.0 it only works because of the bug above. On either, to stop sending one, remove `session_token_file` from the config and restart.
 
 A rotation reaches the gateway within one interval after the file changes. For an STS triple, write the new triple at least one interval before the old session expires; the gateway places no bound of its own on the relationship between the interval and the session lifetime.
 
@@ -106,7 +106,7 @@ Admin tokens are stricter. If `admin.token_env` names a variable that resolves e
 
 A virtual key is a bearer secret the client holds; `config.yaml` stores only its SHA-256 hash in `key_hash`. Rotation issues a new hash and keeps the old secret valid for a grace period.
 
-1. Generate the new secret and hash it. Hash the raw secret with no trailing newline. (`kelvran keys rotate team-alpha --grace 10m`, on `main` since 2026-10-10, does steps 1 and 2 in one command and prints the new secret once — [reference](../reference/kelvran-cli.md#kelvran-keys).)
+1. Generate the new secret and hash it. Hash the raw secret with no trailing newline. (`kelvran keys rotate team-alpha --grace 10m`, since `gateway/v0.18.0`, does steps 1 and 2 in one command and prints the new secret once — [reference](../reference/kelvran-cli.md#kelvran-keys).)
 
    ```bash
    NEW_KEY=$(openssl rand -hex 32)
@@ -145,7 +145,7 @@ kubectl logs deployment/gateway -n kelvran | grep credential_reload_rotated | ta
 
 Expect one line per rotated field within one interval, and no `credential_reload_read_failed` after it. Then send a request to a model served by that deployment. A wrong or expired upstream credential comes back as `502` with the message `upstream provider returned status 401` (or `403`) and `upstream_status` in the `chat_completion` log line; a configured `generic` fallback chain can absorb it silently, so check the deployment's own log line, not only the client status.
 
-Virtual key. On main (not in gateway/v0.17.0) `GET /v1/models` lists the models the key may use and is the cheapest check:
+Virtual key. Since `gateway/v0.18.0`, `GET /v1/models` lists the models the key may use and is the cheapest check:
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $NEW_KEY" http://127.0.0.1:8080/v1/models

@@ -46,7 +46,7 @@ The gateway reads these request fields: `model`, `messages`, `temperature`, `max
 
 `messages[].content` must be a string. OpenAI's array-of-parts `content` is rejected with `400` `invalid_json` (see "Not available today").
 
-The response is `200` with `id`, `object` (`chat.completion`), `created`, `model`, `choices[]` and `usage`. `id`, `object` and `created` on every response are on main since 2026-10-08, not in gateway/v0.17.0. There, no completion from any provider carries `object` or `created` (the fields did not exist), and a Bedrock-served completion additionally arrives with an empty `id`; OpenAI, Anthropic and Gemini ids pass through unchanged in both versions.
+The response is `200` with `id`, `object` (`chat.completion`), `created`, `model`, `choices[]` and `usage`. `id`, `object` and `created` on every response are present since gateway/v0.18.0. In gateway/v0.17.0 and earlier, no completion from any provider carries `object` or `created` (the fields did not exist), and a Bedrock-served completion additionally arrives with an empty `id`; OpenAI, Anthropic and Gemini ids pass through unchanged in both versions.
 
 ### 3. Make one streaming call
 
@@ -65,7 +65,7 @@ for chunk in stream:
 
 On the wire this is `Content-Type: text/event-stream`, one `data: {...}` frame per chunk (`object` `chat.completion.chunk`, one `id` and `created` for the whole stream), ending with `data: [DONE]`. Do not pass `stream_options`; the gateway ignores it and always asks OpenAI and OpenAI-compatible upstreams for usage, which then appears on that provider's final frame (`choices` null). Whether `chunk.usage` is ever set depends on the deployment's provider: `openai`/`openaicompat` on the final frame, `gemini` on any frame whose usage metadata is non-zero (use the last `usage` seen), `anthropic`/`bedrock` never on a live stream (the gateway reads their usage for billing but does not forward it); a cache-hit replay always ends with one usage frame. Do not assume the last chunk carries it.
 
-A failure after the first chunk arrives as one in-band `data: {"error":{...}}` frame and the stream ends without `[DONE]`; the HTTP status stays `200`. The gateway's own design note expects the SDK's stream parser to raise its API error class for that frame rather than fail to parse (check your client version). The in-band frame is on main since 2026-10-08, not in gateway/v0.17.0, where a failure after the first chunk wrote a plain-text error line into the open stream, also without `[DONE]`. More on the SSE contract: [Streaming](../streaming.md).
+A failure after the first chunk arrives as one in-band `data: {"error":{...}}` frame and the stream ends without `[DONE]`; the HTTP status stays `200`. The gateway's own design note expects the SDK's stream parser to raise its API error class for that frame rather than fail to parse (check your client version). The in-band frame ships since gateway/v0.18.0; in gateway/v0.17.0 and earlier a failure after the first chunk wrote a plain-text error line into the open stream, also without `[DONE]`. More on the SSE contract: [Streaming](../streaming.md).
 
 ### 4. List the models the key may call
 
@@ -74,7 +74,7 @@ for m in client.models.list():
     print(m.id, m.owned_by)
 ```
 
-`GET /v1/models` returns one entry per canonical `model:` name the calling key is allowed to use (its `allowed_models` filter applies), sorted by `id`, with no upstream call. It is on main since 2026-10-08, not in gateway/v0.17.0, where the path is a `404`.
+`GET /v1/models` returns one entry per canonical `model:` name the calling key is allowed to use (its `allowed_models` filter applies), sorted by `id`, with no upstream call. It exists since gateway/v0.18.0; in gateway/v0.17.0 and earlier the path is a `404`.
 
 ## Variants
 
@@ -109,7 +109,7 @@ resp = client.chat.completions.create(
 
 ### Tools and tool_choice
 
-Buffered `tool_calls` use OpenAI's native nesting, so `resp.choices[0].message.tool_calls[0].function.arguments` works as usual. The SDK's default `tool_choice` strings `"auto"`, `"required"`, `"none"` and the object `{"type":"function","function":{"name":...}}` are accepted on main since 2026-10-08, not in gateway/v0.17.0, where the string form is `400` and the object form `502`. Any other shape is `400` with `code` `invalid_tool_choice` and `param` `tool_choice`, as is a forced tool that `tools[]` does not define.
+Buffered `tool_calls` use OpenAI's native nesting, so `resp.choices[0].message.tool_calls[0].function.arguments` works as usual. The SDK's default `tool_choice` strings `"auto"`, `"required"`, `"none"` and the object `{"type":"function","function":{"name":...}}` are accepted since gateway/v0.18.0; in gateway/v0.17.0 and earlier the string form was `400` and the object form `502`. Any other shape is `400` with `code` `invalid_tool_choice` and `param` `tool_choice`, as is a forced tool that `tools[]` does not define.
 
 Streaming tool-call deltas are not OpenAI-shaped: each element is flat `{index, id, name, arguments_json}` with no `function` nesting, so the SDK's `delta.tool_calls[].function` is not populated. Read the fragments from the raw chunk (`chunk.model_dump()`) and concatenate `arguments_json` per `index` (check your client version).
 
@@ -123,7 +123,7 @@ Pass fields the SDK does not know through `extra_body`, for example `{"prompt_id
 
 ## How errors surface in this client
 
-Every data-plane error body is `{"error":{"message","type","param","code"}}`, all four keys always present. The SDK picks its exception class from the HTTP status; `.status_code` is the status, `.code`, `.type` and `.param` are copied from the envelope's `error` object, `.body` is that `error` object itself (so the gateway's text is `.body["message"]`), and `.message` is the SDK's own `Error code: <status> - <body>` string rather than the envelope's `message`; response headers are on `.response.headers` (check your client version). Only `type` and `code` are stable; `message` text is not. The JSON envelope is on main since 2026-10-08, not in gateway/v0.17.0, where the same statuses carry a `text/plain` body and `.code` is empty.
+Every data-plane error body is `{"error":{"message","type","param","code"}}`, all four keys always present. The SDK picks its exception class from the HTTP status; `.status_code` is the status, `.code`, `.type` and `.param` are copied from the envelope's `error` object, `.body` is that `error` object itself (so the gateway's text is `.body["message"]`), and `.message` is the SDK's own `Error code: <status> - <body>` string rather than the envelope's `message`; response headers are on `.response.headers` (check your client version). Only `type` and `code` are stable; `message` text is not. The JSON envelope ships since gateway/v0.18.0; in gateway/v0.17.0 and earlier the same statuses carry a `text/plain` body and `.code` is empty.
 
 | Status | `type` | `code` | Meaning | `Retry-After` |
 |---|---|---|---|---|
@@ -139,7 +139,7 @@ Every data-plane error body is `{"error":{"message","type","param","code"}}`, al
 | 502 | `server_error` | `upstream_error` | Provider answered non-2xx, a transport failure, an `Idempotency-Key` body mismatch, or `response_format` with no capable deployment | yes |
 | 503 | `server_error` | `deployment_capacity_exceeded` | Deployment at capacity | yes |
 
-An upstream `502` message is redacted: `upstream provider returned status N` when the provider answered (`N=401` almost always means the gateway's own upstream credential is wrong or unset), or `upstream call failed for model "<model>"` for a transport or decode failure (that redaction is on main since 2026-10-08, not in gateway/v0.17.0). The two local `502` causes (an `Idempotency-Key` body mismatch, `response_format` with no capable deployment) keep their own Kelvran-authored text. The provider's full error text is only in the gateway log. Non-streaming upstream calls are cut off after 60 s and surface as this `502`. The full table is in [Error codes](../../reference/error-codes.md).
+An upstream `502` message is redacted: `upstream provider returned status N` when the provider answered (`N=401` almost always means the gateway's own upstream credential is wrong or unset), or `upstream call failed for model "<model>"` for a transport or decode failure (that redaction first shipped in gateway/v0.18.0). The two local `502` causes (an `Idempotency-Key` body mismatch, `response_format` with no capable deployment) keep their own Kelvran-authored text. The provider's full error text is only in the gateway log. Non-streaming upstream calls are cut off after 60 s and surface as this `502`. The full table is in [Error codes](../../reference/error-codes.md).
 
 ### 429: rate_limit_error versus insufficient_quota
 

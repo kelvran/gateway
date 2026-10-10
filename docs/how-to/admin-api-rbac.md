@@ -22,7 +22,7 @@ Admin is a superset of every other tier. Operator authenticates no read route. C
 | `GET /admin/virtual_keys` | yes | yes | - | - |
 | `GET /admin/virtual_keys/{name}/spend` | yes | yes | yes | - |
 | `GET /admin/virtual_keys/{name}/inflight` | yes | yes | - | - |
-| `GET /admin/deployments` (on `main` since 2026-10-10) | yes | yes | - | - |
+| `GET /admin/deployments` (since `gateway/v0.18.0`) | yes | yes | - | - |
 | `GET /admin/prompts`, `GET /admin/prompts/{id}`, `GET /admin/prompts/{id}/versions/{version}` | yes | yes | - | - |
 | `POST /admin/virtual_keys/{name}/rotate` | yes | - | - | yes |
 | `POST /admin/deployments/{name}/weight` | yes | - | - | yes |
@@ -112,7 +112,7 @@ curl -X POST -H "Authorization: Bearer $KELVRAN_ADMIN_TOKEN" -H "Content-Type: a
   -d '{"key_hash":"b58fb5ccf291f4f4c149a9d22ced4a497aabf51c7fb6578a429b9d751b1c82b7","budget_usd":50,"rate_limit":{"burst":20,"refill_per_second":10}}'
 ```
 
-The `new_key_hash` above is the SHA-256 of `do-not-use-team-alpha-rotated-secret` and the `key_hash` is the SHA-256 of `do-not-use-team-beta-secret`. Make a real one with `printf '%s' '<secret>' | sha256sum | cut -d' ' -f1` (`shasum -a 256` on macOS), or let the CLI generate, hash and send it: `kelvran keys create team-beta --budget 50` and `kelvran keys rotate team-alpha --grace 10m` (on `main` since 2026-10-10, [reference](../reference/kelvran-cli.md#kelvran-keys)). `key_hash` and `new_key_hash` are required; `grace_period_seconds` of `0` or less rotates with no grace period. `GET /admin/config` returns the whole loaded config as JSON with Go field names (PascalCase); it holds environment-variable names and key hashes, never secret values. Request and response bodies for every route are in [Admin API reference](../reference/admin-api.md).
+The `new_key_hash` above is the SHA-256 of `do-not-use-team-alpha-rotated-secret` and the `key_hash` is the SHA-256 of `do-not-use-team-beta-secret`. Make a real one with `printf '%s' '<secret>' | sha256sum | cut -d' ' -f1` (`shasum -a 256` on macOS), or let the CLI generate, hash and send it: `kelvran keys create team-beta --budget 50` and `kelvran keys rotate team-alpha --grace 10m` (since `gateway/v0.18.0`, [reference](../reference/kelvran-cli.md#kelvran-keys)). `key_hash` and `new_key_hash` are required; `grace_period_seconds` of `0` or less rotates with no grace period. `GET /admin/config` returns the whole loaded config as JSON with Go field names (PascalCase); it holds environment-variable names and key hashes, never secret values. Request and response bodies for every route are in [Admin API reference](../reference/admin-api.md).
 
 ### 4. Read the audit trail
 

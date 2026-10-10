@@ -107,7 +107,7 @@ The gateway as shipped never exercises that policy. Today the gateway signs Bedr
 
 ### Graviton (ARM64)
 
-`deploy/ecs/main.tf` sets no `runtime_platform`, so the task definition is X86_64/LINUX. A multi-platform image index (`linux/amd64` and `linux/arm64`) is on main since 2026-10-08, not in gateway/v0.17.0. To run on Graviton you add a `runtime_platform` block with `operating_system_family = "LINUX"` and `cpu_architecture = "ARM64"` yourself and pin an index digest from an image built on or after that date.
+`deploy/ecs/main.tf` sets no `runtime_platform`, so the task definition is X86_64/LINUX. A multi-platform image index (`linux/amd64` and `linux/arm64`) is published since gateway/v0.18.0 (and for `latest` and `sha-<commit>` images built on or after 2026-10-08); gateway/v0.17.0 and earlier images are linux/amd64 only. To run on Graviton you add a `runtime_platform` block with `operating_system_family = "LINUX"` and `cpu_architecture = "ARM64"` yourself and pin an index digest from one of those images.
 
 ### Admin API
 

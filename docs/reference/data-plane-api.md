@@ -1,6 +1,6 @@
 # Data-plane API reference
 
-This page lists every client-facing HTTP route of the Kelvran gateway: method, path, authentication, request and response JSON shapes, request and response headers, SSE framing and status codes. It is for developers who call the gateway from an application, an SDK or `curl`, and for operators who wire health probes. It describes `main` as of 2026-10-08. The latest tagged release is `gateway/v0.17.0` (2026-10-07); behaviour marked "on main since 2026-10-08, not in gateway/v0.17.0" is absent from that tag. The admin surface is a separate server and is documented in [admin-api.md](admin-api.md).
+This page lists every client-facing HTTP route of the Kelvran gateway: method, path, authentication, request and response JSON shapes, request and response headers, SSE framing and status codes. It is for developers who call the gateway from an application, an SDK or `curl`, and for operators who wire health probes. It describes `gateway/v0.18.0` (2026-10-10), the latest tagged release; behaviour marked "since gateway/v0.18.0" is absent from `gateway/v0.17.0` and earlier. The admin surface is a separate server and is documented in [admin-api.md](admin-api.md).
 
 ## Routes
 
@@ -26,7 +26,7 @@ Not available today: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POS
 | Lookup | The gateway computes SHA-256 of the presented token and looks the hex digest up against the configured `key_hash` values. The raw secret is never stored. |
 | Missing or malformed header | `401`, `type` `authentication_error`, `code` `null`. |
 | Unknown token | `401`, `type` `authentication_error`, `code` `invalid_api_key`. |
-| Expired key | `401`, `type` `authentication_error`, `code` `key_expired`: the token matches a key whose `expires_at` (RFC 3339, inclusive) has passed. The message never names the key. On `main` since 2026-10-10. |
+| Expired key | `401`, `type` `authentication_error`, `code` `key_expired`: the token matches a key whose `expires_at` (RFC 3339, inclusive) has passed. The message never names the key. Since gateway/v0.18.0. |
 | Rotation grace | After a rotation with a grace period, the previous secret authenticates only until its expiry instant; afterwards it is rejected as `invalid_api_key`. |
 | Source-IP allowlist | A key with `allowed_source_cidrs` accepts only requests whose TCP peer address (`RemoteAddr`) falls inside one of the CIDRs. Other sources get `403`, `type` `permission_error`, `code` `source_ip_not_allowed`. The check runs once per request, immediately after bearer verification, on all four `/v1/*` handlers (buffered chat, streaming chat, embeddings, models). |
 | `X-Forwarded-For` | Ignored. The allowlist reads the TCP peer only; there is no configuration knob to trust a proxy header. |
@@ -183,7 +183,7 @@ Three inbound forms decode into the same canonical value:
 | OpenAI function object | `{"type":"function","function":{"name":"get_weather"}}` | Must call the named tool. |
 | Kelvran canonical object | `{"mode":"tool","tool_name":"get_weather","disable_parallel_tool_use":true}` | `mode` is `auto`, `required`, `none` or `tool`; `tool_name` is read only when `mode` is `tool`; `disable_parallel_tool_use` is honoured by direct Anthropic only. |
 
-Any other shape (Anthropic's `{"type":"auto"}`, OpenAI `allowed_tools`, a mix of `mode` and `type`) is `400`, `code` `invalid_tool_choice`, `param` `tool_choice`. A forced tool that `tools[]` does not define is rejected the same way. The OpenAI string and function-object forms are on main since 2026-10-08, not in gateway/v0.17.0; that tag rejects them. Re-encoding always produces the canonical object, which is what the `Idempotency-Key` fingerprint hashes.
+Any other shape (Anthropic's `{"type":"auto"}`, OpenAI `allowed_tools`, a mix of `mode` and `type`) is `400`, `code` `invalid_tool_choice`, `param` `tool_choice`. A forced tool that `tools[]` does not define is rejected the same way. The OpenAI string and function-object forms are accepted since gateway/v0.18.0; gateway/v0.17.0 and earlier reject them. Re-encoding always produces the canonical object, which is what the `Idempotency-Key` fingerprint hashes.
 
 ### `response_format`
 
@@ -229,7 +229,7 @@ Any other shape (Anthropic's `{"type":"auto"}`, OpenAI `allowed_tools`, a mix of
 | `usage` | object | See `Usage`. |
 | `input_transformations[]` | array | Anthropic only. Each entry is `{"type", "path", "reason"}`: `type` is `thinking_dropped` or `thinking_mismatch_allowed`; `path` is the affected block's location in the request, verbatim from Anthropic (for example `messages.3.content.0`); `reason` is `prefix_binding_mismatch` or `model_binding_mismatch`. Omitted when empty. |
 
-A cache hit or an `Idempotency-Key` replay returns the `id` and `created` the completion was stored with. The `id`, `object` and `created` envelope is on main since 2026-10-08, not in gateway/v0.17.0; that tag returns `"id": ""` for Bedrock and no `object` or `created` for any provider.
+A cache hit or an `Idempotency-Key` replay returns the `id` and `created` the completion was stored with. The `id`, `object` and `created` envelope is present since gateway/v0.18.0; gateway/v0.17.0 and earlier return `"id": ""` for Bedrock and no `object` or `created` for any provider.
 
 ### `Usage`
 
@@ -276,7 +276,7 @@ Failure handling:
 | Before the first chunk is flushed (auth, rate limit, routing, an upstream that never sent a byte) | The normal status code and JSON error envelope. `Retry-After` when eligible. |
 | After the first chunk is flushed | Exactly one in-band frame `data: {"error":{"message","type","param","code"}}\n\n` with the same `type` and `code` a buffered error would carry, then the stream ends without `data: [DONE]`. The HTTP status stays `200`. No fallback to another deployment is attempted at this point. |
 
-The in-band error frame is on main since 2026-10-08, not in gateway/v0.17.0. Billing of a truncated stream is described in [FAILURE-MODES.md](../operations/FAILURE-MODES.md), row U5. Client guidance is in [streaming.md](../how-to/streaming.md).
+The in-band error frame is present since gateway/v0.18.0. Billing of a truncated stream is described in [FAILURE-MODES.md](../operations/FAILURE-MODES.md), row U5. Client guidance is in [streaming.md](../how-to/streaming.md).
 
 ### `Idempotency-Key`
 
@@ -377,7 +377,7 @@ curl -s http://127.0.0.1:8080/v1/embeddings \
 
 ## GET /v1/models
 
-Lists the canonical models the calling virtual key may use. On main since 2026-10-08, not in gateway/v0.17.0. Only `GET` is accepted. Bearer and source-IP checks are identical to the other `/v1/*` routes. No rate limit, budget or guardrail runs; the route is an in-memory read with no upstream call.
+Lists the canonical models the calling virtual key may use. Present since gateway/v0.18.0; in gateway/v0.17.0 and earlier the path is a 404. Only `GET` is accepted. Bearer and source-IP checks are identical to the other `/v1/*` routes. No rate limit, budget or guardrail runs; the route is an in-memory read with no upstream call.
 
 ### Query parameters
 
@@ -466,9 +466,9 @@ Every error on `/v1/chat/completions`, `/v1/embeddings` and `/v1/models` is one 
 | `message` | Human-readable. Not a stable contract; only `type` and `code` are covered by [VERSIONING.md](../VERSIONING.md). |
 | Fallback | If an error matches no known sentinel, `type` is derived from the status (`401` authentication, `403` permission, `429` rate limit, other 4xx invalid request, `502` server with `code` `upstream_error`, otherwise server with `code` `null`). |
 
-The JSON envelope is on main since 2026-10-08, not in gateway/v0.17.0. That tag returns the same status codes and the same message text as a `text/plain` body. `/healthz` and `/readyz` are unchanged: their success bodies were already JSON, and their `405` stays plain text.
+The JSON envelope is present since gateway/v0.18.0. In gateway/v0.17.0 and earlier the same status codes and the same message text come as a `text/plain` body. `/healthz` and `/readyz` are unchanged: their success bodies were already JSON, and their `405` stays plain text.
 
-Upstream failures are redacted. A provider HTTP status reads `upstream provider returned status N`. A transport or decode failure reads `upstream call failed for model "<model>"` (on main since 2026-10-08, not in gateway/v0.17.0, which returned the dial or timeout text verbatim). The full provider text reaches only the gateway's own log line.
+Upstream failures are redacted. A provider HTTP status reads `upstream provider returned status N`. A transport or decode failure reads `upstream call failed for model "<model>"` (since gateway/v0.18.0; gateway/v0.17.0 and earlier returned the dial or timeout text verbatim). The full provider text reaches only the gateway's own log line.
 
 ### Status codes
 
@@ -487,7 +487,7 @@ Upstream failures are redacted. A provider HTTP status reads `upstream provider 
 | `400` | `invalid_request_error` | `not_an_embedding_model` | `/v1/embeddings` routed to a chat deployment | no |
 | `401` | `authentication_error` | `null` | `Authorization` missing or not `Bearer ` | no |
 | `401` | `authentication_error` | `invalid_api_key` | token matches no key, or a rotated-out key past its grace period | no |
-| `401` | `authentication_error` | `key_expired` | token matches a key whose `expires_at` has passed (on `main` since 2026-10-10) | no |
+| `401` | `authentication_error` | `key_expired` | token matches a key whose `expires_at` has passed (since gateway/v0.18.0) | no |
 | `403` | `permission_error` | `model_not_allowed` | key's `allowed_models` excludes `model` | no |
 | `403` | `permission_error` | `source_ip_not_allowed` | key's `allowed_source_cidrs` excludes the TCP peer | yes |
 | `405` | `invalid_request_error` | `method_not_allowed` | wrong method on a `/v1/*` route; `Allow` header set | no |

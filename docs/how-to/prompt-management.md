@@ -112,7 +112,7 @@ curl http://127.0.0.1:8081/admin/prompts/greeting/versions/1 \
 
 2. Send the step 5 request. The upstream model receives `You are a pirate.` and `Say hi to Ada.`; the completion reads accordingly.
 
-3. Send the step 5 request with `"prompt_label":"does-not-exist"`. You get `400`. On main since 2026-10-08 the body is a JSON envelope whose `error.type` is `invalid_request_error` and `error.code` is `invalid_prompt_reference`; gateway/v0.17.0 returns the same `400` with a `text/plain` body `dataplane: failed to resolve prompt_id: ...` and no `error` object.
+3. Send the step 5 request with `"prompt_label":"does-not-exist"`. You get `400`. Since gateway/v0.18.0 the body is a JSON envelope whose `error.type` is `invalid_request_error` and `error.code` is `invalid_prompt_reference`; gateway/v0.17.0 returns the same `400` with a `text/plain` body `dataplane: failed to resolve prompt_id: ...` and no `error` object.
 
 4. If the admin audit log is on (`admin.enable_audit_log`, default true when the `admin` section is present), the log holds `admin_prompt_upserted` lines with `id` and `version`, and an `admin_prompt_label_set` line with `id`, `label` and `version`. Template content is never logged. Reads appear as `admin_prompts_read` with `authorized_by` set to `admin` or `viewer`. See [Metrics and logs](../reference/metrics-and-logs.md).
 
@@ -122,7 +122,7 @@ curl http://127.0.0.1:8081/admin/prompts/greeting/versions/1 \
 
 ## Errors on the data plane
 
-All of these are `400`. On main since 2026-10-08 the body is a JSON envelope with `error.type` `invalid_request_error` and the `error.code` below; gateway/v0.17.0 returns the same `400` with a `text/plain` body and no `error` object.
+All of these are `400`. Since gateway/v0.18.0 the body is a JSON envelope with `error.type` `invalid_request_error` and the `error.code` below; gateway/v0.17.0 returns the same `400` with a `text/plain` body and no `error` object.
 
 | Condition | `error.code` |
 |---|---|
@@ -143,7 +143,7 @@ Every resolved request folds a fingerprint `<id>:v<N>:<sha256 of the stored mess
 - Labels are held in memory only. Even with `prompt.persist_path` set, a restart loses every label assignment while version history survives. Re-run step 4 after every restart, or pin versions with `prompt_version` where a restart gap is unacceptable.
 - Backup: `POST /admin/backup` writes a `prompt-<UTC timestamp>.bbolt` file to `admin.backup_dir` when `prompt.persist_path` is set. Restore is offline: stop the gateway, then run the binary with `-restore-store prompt -restore-from <backup-file>` against the same config file. See [Backup and restore](backup-and-restore.md) and [DEPLOY.md](../operations/DEPLOY.md).
 - A write to the persist file can fail after the in-memory change applied. `POST` then answers `400` and `DELETE` answers `500`, each with a body starting `prompt: Upsert: persisting` or `prompt: Delete: persisting removal`. Treat that body as a store fault, not a client error; there is no log line or metric for it. Row P6 in [FAILURE-MODES.md](../operations/FAILURE-MODES.md) has the recovery steps.
-- A second process opening the same `prompt.persist_path` fails within one second with `another process holds the file lock`. This is on main since 2026-10-08, not in gateway/v0.17.0; gateway/v0.17.0 waits indefinitely.
+- A second process opening the same `prompt.persist_path` fails within one second with `another process holds the file lock`. This first shipped in gateway/v0.18.0; gateway/v0.17.0 waits indefinitely.
 
 ## Not available today
 

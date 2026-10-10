@@ -63,7 +63,7 @@ Run these from the repository root.
 
    `budget.persist_path`, `prompt.persist_path`, `admin.persist_path` and `admin.backup_dir` are single-process file paths. The base mounts no writable volume and sets `readOnlyRootFilesystem: true`, so leave them unset unless you add a volume and drop to one replica.
 
-3. **Re-pin the image.** `deploy/k8s/base/deployment.yaml` pins `ghcr.io/kelvran/gateway:v0.17.0@sha256:f649d74d13bb17ebc132af6c5a21be936528955ac7ee14152421f3267ff03b3a`. That digest is a single-platform (`linux/amd64`) manifest digest and goes stale with the next release. Multi-platform images (`linux/amd64` and `linux/arm64` as one index) are on main since 2026-10-08, not in gateway/v0.17.0; for any later tag pin the index digest:
+3. **Re-pin the image.** `deploy/k8s/base/deployment.yaml` pins `ghcr.io/kelvran/gateway:v0.17.0@sha256:f649d74d13bb17ebc132af6c5a21be936528955ac7ee14152421f3267ff03b3a`. That digest is a single-platform (`linux/amd64`) manifest digest and is stale from `gateway/v0.18.0` on. Multi-platform images (`linux/amd64` and `linux/arm64` as one index) ship since gateway/v0.18.0; gateway/v0.17.0 is amd64-only. For gateway/v0.18.0 and any later tag pin the index digest:
 
    ```bash
    docker buildx imagetools inspect ghcr.io/kelvran/gateway:v<X.Y.Z>   # copy the top-level Digest: line
@@ -172,7 +172,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 # (repeat steps 5 and 6)
 ```
 
-To see which build each replica runs, read the `build_info` log record (the image has no shell, so `kubectl exec` is not an option). `build_info` and `-version` are on main since 2026-10-08, not in gateway/v0.17.0; a gateway/v0.17.0 pod logs no such record.
+To see which build each replica runs, read the `build_info` log record (the image has no shell, so `kubectl exec` is not an option). `build_info` and `-version` first shipped in gateway/v0.18.0; a gateway/v0.17.0 pod logs no such record.
 
 ```bash
 kubectl -n kelvran logs deploy/gateway | grep build_info
@@ -181,7 +181,7 @@ kubectl -n kelvran logs deploy/gateway | grep build_info
 
 ## Probes and external monitors
 
-Keep both kubelet probes on `/healthz`. It checks only local process state, so a provider or Redis outage never restarts or de-registers every replica at once. `/readyz` reports per-model health and returns `503` when any configured model has no healthy deployment; point an external monitor at it, but never make it the pod `readinessProbe`, because one model losing all of its deployments would then empty the Service endpoints for every other model. In gateway/v0.17.0 and earlier, `/readyz` reports an embedding deployment unhealthy when `health_probe` is on; the kind-aware probe fix is on main since 2026-10-08, not in gateway/v0.17.0. Details are in [`docs/operations/DEPLOY.md`](../../operations/DEPLOY.md).
+Keep both kubelet probes on `/healthz`. It checks only local process state, so a provider or Redis outage never restarts or de-registers every replica at once. `/readyz` reports per-model health and returns `503` when any configured model has no healthy deployment; point an external monitor at it, but never make it the pod `readinessProbe`, because one model losing all of its deployments would then empty the Service endpoints for every other model. In gateway/v0.17.0 and earlier, `/readyz` reports an embedding deployment unhealthy when `health_probe` is on; the kind-aware probe fix ships in gateway/v0.18.0. Details are in [`docs/operations/DEPLOY.md`](../../operations/DEPLOY.md).
 
 CI runs `kubeconform` over six of the seven raw files in `deploy/k8s/base/` (every file except `networkpolicy.yaml`) plus the two `overlays/eks-irsa/` files, and Checkov over the `deploy/k8s/base/` directory, never over a rendered `kustomize build`, so edits to `config.yaml` are never checked by CI. Validate your config before you apply. Using the image you pinned in step 3 (arguments replace the image's `CMD`, so pass `-config` again):
 

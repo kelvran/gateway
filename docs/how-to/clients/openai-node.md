@@ -58,7 +58,7 @@ for await (const chunk of stream) {
 }
 ```
 
-The gateway answers with `Content-Type: text/event-stream`, one `data: {...}` frame per chunk and a final `data: [DONE]`, which the SDK's stream iterator consumes. Every chunk has `object: "chat.completion.chunk"` and all chunks of one stream share one `id` and `created`. `usage` appears on the final chunk when the provider supplies it: the gateway always requests it from OpenAI and OpenAI-compatible upstreams and ignores any `stream_options` you send. On main, a failure after the first chunk arrives as one in-band `data: {"error":{...}}` frame with no `[DONE]`; the SDK's stream parser surfaces it as an `APIError` instead of a truncated completion (check your client version; see Version notes). More in [Streaming](../streaming.md).
+The gateway answers with `Content-Type: text/event-stream`, one `data: {...}` frame per chunk and a final `data: [DONE]`, which the SDK's stream iterator consumes. Every chunk has `object: "chat.completion.chunk"` and all chunks of one stream share one `id` and `created`. `usage` appears on the final chunk when the provider supplies it: the gateway always requests it from OpenAI and OpenAI-compatible upstreams and ignores any `stream_options` you send. Since gateway/v0.18.0, a failure after the first chunk arrives as one in-band `data: {"error":{...}}` frame with no `[DONE]`; the SDK's stream parser surfaces it as an `APIError` instead of a truncated completion (check your client version; see Version notes). More in [Streaming](../streaming.md).
 
 ### 4. List models
 
@@ -69,7 +69,7 @@ for (const m of page.data) {
 }
 ```
 
-`GET /v1/models` requires the same bearer token and returns only the canonical model names this key may call (the key's `allowed_models` filter applies), one entry per model, sorted by `id`. The document is `{ object: "list", data: [...], first_id, last_id, has_more }`. Each entry carries the OpenAI fields (`id`, `object: "model"`, `created`, `owned_by`) plus fields this client ignores (`type`, `created_at`, `display_name`, `description`, `kind`). `page.data` is the SDK's view of that document (check your client version). `GET /v1/models` is on main since 2026-10-08, not in gateway/v0.17.0.
+`GET /v1/models` requires the same bearer token and returns only the canonical model names this key may call (the key's `allowed_models` filter applies), one entry per model, sorted by `id`. The document is `{ object: "list", data: [...], first_id, last_id, has_more }`. Each entry carries the OpenAI fields (`id`, `object: "model"`, `created`, `owned_by`) plus fields this client ignores (`type`, `created_at`, `display_name`, `description`, `kind`). `page.data` is the SDK's view of that document (check your client version). `GET /v1/models` first shipped in gateway/v0.18.0.
 
 ## How errors surface in this client
 
@@ -151,7 +151,7 @@ The headers include `HTTP/1.1 200 OK`, `Content-Type: application/json` and `X-K
 
 ## Version notes
 
-These behaviours are on main since 2026-10-08, not in gateway/v0.17.0:
+These behaviours first shipped in gateway/v0.18.0; gateway/v0.17.0 and earlier lack them:
 
 - The JSON error envelope. gateway/v0.17.0 returns `text/plain` error bodies with the same status codes, so this client raises the same classes but `err.code` and `err.type` are empty.
 - `GET /v1/models`, so `client.models.list()`.

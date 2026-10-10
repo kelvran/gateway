@@ -55,7 +55,7 @@ L1 and L2 get most of these checks for free: every request-semantic field is has
 - 2026-09-12: the negation-particle gate, and the reasoning-blocks gate from the [reasoning-content RFC](../rfcs/2026-09-12-gateway-reasoning-content-canonical-schema.md), because replayed reasoning is causally read by the model and changes output.
 - 2026-09-24: the thinking-binding-mode gate, the same RFC's addendum, so a caller who asked for strict reasoning continuity is never served an entry written under a looser mode.
 - 2026-09-25: a read/write asymmetry fix. `checkLexicalCache` had searched L3 by bare virtual-key ID while `writeCache` wrote by the end-user-scoped partition key, so entries scoped to an end user were unreachable, or legacy unscoped entries were reachable across end users. Both paths now use the same scope key.
-- The tools/tool_choice gate from the [cache-key tools RFC](../rfcs/2026-10-08-gateway-cache-key-tools-fingerprint.md): on main since 2026-10-08, not in gateway/v0.17.0. Identical messages with `tool_choice: "required"` and `tool_choice: "none"` had collided at every layer.
+- The tools/tool_choice gate from the [cache-key tools RFC](../rfcs/2026-10-08-gateway-cache-key-tools-fingerprint.md): first shipped in `gateway/v0.18.0`. Identical messages with `tool_choice: "required"` and `tool_choice: "none"` had collided at every layer.
 
 The rule that emerged, stated in the tools RFC: every new request-semantic field folds into L1, L2 *and* L3, never into a subset. The reasoning-content work learned this the hard way twice: `ReasoningBlocks` reached L1/L2 only by accident of message serialisation while L3 had no gate, and the first `ThinkingBindingMode` pass folded the field into no layer at all.
 

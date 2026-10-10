@@ -11,14 +11,14 @@ Use this when you want the gateway managed by systemd on a host you control, wit
 - `cosign` and the `gh` CLI if you want to verify the download in step 1. Neither is needed for the install itself.
 - Upstream provider credentials, for example the value you will store under `OPENAI_API_KEY`. See [Provider credentials](../provider-credentials.md).
 
-Which releases have packages: the release pipeline (`.github/workflows/release.yml` and `gateway/.goreleaser.yaml`) is on main since 2026-10-08, not in `gateway/v0.17.0`. The `gateway/v0.17.0` Release carries no assets, and tags at or before it cannot be rebuilt by the pipeline. Packages exist from the first `gateway/v*` tag after that. Do not look for a `.deb` on `gateway/v0.17.0`. Asset names and the verification identities are listed in [Release artifacts](../../reference/release-artifacts.md).
+Which releases have packages: the release pipeline (`.github/workflows/release.yml` and `gateway/.goreleaser.yaml`) is in place since `gateway/v0.18.0`. The `gateway/v0.17.0` Release carries no assets, and tags at or before it cannot be rebuilt by the pipeline. Packages exist from `gateway/v0.18.0` on. Do not look for a `.deb` on `gateway/v0.17.0`. Asset names and the verification identities are listed in [Release artifacts](../../reference/release-artifacts.md).
 
 ## What the package installs
 
 | Path | What it is |
 |---|---|
 | `/usr/bin/kelvran-gateway` | Static binary (`CGO_ENABLED=0`) built from `gateway/cmd/gateway` |
-| `/usr/bin/kelvran` | The companion CLI (`kelvran init` and `kelvran doctor`; since 2026-10-10), built from `gateway/cmd/kelvran` — see [the CLI reference](../../reference/kelvran-cli.md) |
+| `/usr/bin/kelvran` | The companion CLI (`kelvran init` and `kelvran doctor`; since `gateway/v0.18.0`), built from `gateway/cmd/kelvran` — see [the CLI reference](../../reference/kelvran-cli.md) |
 | `/usr/lib/systemd/system/kelvran-gateway.service` | The unit; source is [`deploy/systemd/kelvran-gateway.service`](../../../deploy/systemd/kelvran-gateway.service) |
 | `/etc/kelvran-gateway/config.example.yaml` | The example config, marked `config|noreplace`; source is [`gateway/config.example.yaml`](../../../gateway/config.example.yaml) |
 | `/usr/share/doc/kelvran-gateway/LICENSE`, `/usr/share/doc/kelvran-gateway/NOTICE` | License files |
@@ -103,7 +103,7 @@ kelvran-gateway -config /etc/kelvran-gateway/config.yaml -validate
 
 Prints `config is valid` and exits 0. On a problem it prints `config error: ...` and exits 1. No `sudo` is needed: `-validate` reads the config file, checks that every deployment names a registered provider and that every fallback chain targets an existing deployment, and starts nothing. It reads no environment variables, so it passes before the `env` file exists. The unit's `ExecStartPre` runs this same command before every start.
 
-`kelvran doctor` (on `main` since 2026-10-10, not in `gateway/v0.17.0`) goes further than `-validate`: `sudo kelvran doctor --config /etc/kelvran-gateway/config.yaml` also reads `/etc/kelvran-gateway/env` (the file the unit loads with `EnvironmentFile=`) and reports every credential variable the config names that is unset there, a credential file the unit's `DynamicUser` could not read (not world-readable), a persist path outside `/var/lib/kelvran-gateway/` or under `/home`/`/tmp` (which the unit hides), a config that is not world-readable (`0644` is the expected mode), an unpriced model and an invalid telemetry exporter — the things `-validate` deliberately cannot see. Without `sudo` the env file is unreadable and `doctor` says so; pass `--env-file` instead. See [the CLI reference](../../reference/kelvran-cli.md#kelvran-doctor).
+`kelvran doctor` (since `gateway/v0.18.0`) goes further than `-validate`: `sudo kelvran doctor --config /etc/kelvran-gateway/config.yaml` also reads `/etc/kelvran-gateway/env` (the file the unit loads with `EnvironmentFile=`) and reports every credential variable the config names that is unset there, a credential file the unit's `DynamicUser` could not read (not world-readable), a persist path outside `/var/lib/kelvran-gateway/` or under `/home`/`/tmp` (which the unit hides), a config that is not world-readable (`0644` is the expected mode), an unpriced model and an invalid telemetry exporter — the things `-validate` deliberately cannot see. Without `sudo` the env file is unreadable and `doctor` says so; pass `--env-file` instead. See [the CLI reference](../../reference/kelvran-cli.md#kelvran-doctor).
 
 ### 6. Enable and start
 
@@ -165,7 +165,7 @@ The archive holds `kelvran-gateway`, `LICENSE`, `NOTICE` and `config.example.yam
 go install github.com/kelvran/gateway/gateway/cmd/gateway@latest
 ```
 
-The binary lands at `$(go env GOPATH)/bin/gateway`, named `gateway` rather than `kelvran-gateway`. Until the first `gateway/v*` release after `gateway/v0.17.0` is tagged, `@latest` resolves to v0.17.0, which predates the `-version` flag (added 2026-10-08): `gateway -version` there exits 2 with `flag provided but not defined: -version`. From that next release on (or with `@main`), `-version` reports `dev` because no release ldflags are applied. See [README.md](../../../README.md).
+The binary lands at `$(go env GOPATH)/bin/gateway`, named `gateway` rather than `kelvran-gateway`. `@latest` resolves to `gateway/v0.18.0` or later, which has the `-version` flag (added 2026-10-08); there, as with `@main`, `-version` reports `dev` because no release ldflags are applied. `gateway/v0.17.0` predates the flag: `gateway -version` on it exits 2 with `flag provided but not defined: -version`. See [README.md](../../../README.md).
 
 ## Upgrade
 
@@ -185,7 +185,7 @@ To roll back, install the previous Release's package the same way. Assets are ne
 
 The unit runs the gateway as `DynamicUser=yes` with `StateDirectory=kelvran-gateway` and `ConfigurationDirectory=kelvran-gateway`, `Restart=on-failure`, `RestartSec=2s` and `KillSignal=SIGTERM`. Hardening on top of that: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`, `RestrictSUIDSGID`, `RestrictRealtime`, `RestrictNamespaces`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service` followed by `SystemCallFilter=~@privileged` (`@resources` stays allowed because the Go runtime raises its own `RLIMIT_NOFILE` at startup), empty `CapabilityBoundingSet=` and `AmbientCapabilities=`, and `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`.
 
-Per [docs/VERSIONING.md](../../VERSIONING.md), the package layout (`/usr/bin/kelvran-gateway`, `/usr/bin/kelvran` since 2026-10-10, `/usr/lib/systemd/system/kelvran-gateway.service`, `/etc/kelvran-gateway/`), the release-asset names and verification identities, and the CLI flags are part of the gateway's SemVer-covered surface. The unit's hardening directives are not; they only tighten between releases.
+Per [docs/VERSIONING.md](../../VERSIONING.md), the package layout (`/usr/bin/kelvran-gateway`, `/usr/bin/kelvran` since `gateway/v0.18.0`, `/usr/lib/systemd/system/kelvran-gateway.service`, `/etc/kelvran-gateway/`), the release-asset names and verification identities, and the CLI flags are part of the gateway's SemVer-covered surface. The unit's hardening directives are not; they only tighten between releases.
 
 ## Not available today
 

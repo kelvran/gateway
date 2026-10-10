@@ -2,9 +2,9 @@
 
 This page states, field by field, how an OpenAI-shaped client behaves against the Kelvran gateway: which request fields the gateway reads, ignores or rejects; the accepted `tool_choice` forms; `response_format` behaviour per provider; the Kelvran extension fields; the streaming wire shape; `GET /v1/models` semantics; the error envelope; and which client SDKs can and cannot use the gateway today. It is for developers pointing an existing OpenAI SDK, framework or coding agent at Kelvran, and for operators deciding whether a given client will work. Every statement here is taken from the gateway source; where behaviour differs from OpenAI's own API, the difference is named.
 
-Versions: the latest tagged release is `gateway/v0.17.0` (2026-10-07). Several items on this page are on `main` since 2026-10-08, not in `gateway/v0.17.0`; each is marked. The release-to-release promise for these surfaces is in [docs/VERSIONING.md](../VERSIONING.md).
+Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several items on this page first shipped in `gateway/v0.18.0` and are absent from `gateway/v0.17.0`; each is marked. The release-to-release promise for these surfaces is in [docs/VERSIONING.md](../VERSIONING.md).
 
-## Items on main since 2026-10-08, not in gateway/v0.17.0
+## Items since gateway/v0.18.0, not in gateway/v0.17.0
 
 | Item | Source | Behaviour in `gateway/v0.17.0` |
 |---|---|---|
@@ -14,7 +14,7 @@ Versions: the latest tagged release is `gateway/v0.17.0` (2026-10-07). Several i
 | `id`, `object`, `created` on every completion and chunk | `gateway/internal/gateway/dataplane/completion_envelope.go` | Bedrock responses carry `"id": ""`; no response carries `object` or `created` |
 | In-band `data: {"error":…}` frame for mid-stream failures | `gateway/cmd/gateway/error_envelope.go` | Stream ends without an error frame |
 | `claude-sonnet-5` on the Bedrock structured-output whitelist | `gateway/internal/adapter/capabilities.go` | `response_format` to a Sonnet 5 Bedrock deployment fails with `502` unless another capable deployment serves the same `model` |
-| `tools` and `tool_choice` folded into cache keys | `gateway/changelog/unreleased.md` | Identical messages with different `tool_choice` can share a cached response |
+| `tools` and `tool_choice` folded into cache keys | `gateway/changelog/0.18.0.md` | Identical messages with different `tool_choice` can share a cached response |
 
 ## Routes
 
@@ -22,7 +22,7 @@ Versions: the latest tagged release is `gateway/v0.17.0` (2026-10-07). Several i
 |---|---|---|---|
 | `POST` | `/v1/chat/completions` | `Authorization: Bearer <virtual key secret>` | In `gateway/v0.17.0` |
 | `POST` | `/v1/embeddings` | `Authorization: Bearer <virtual key secret>` | In `gateway/v0.17.0` |
-| `GET` | `/v1/models` | `Authorization: Bearer <virtual key secret>`; `401` envelope without it | On `main` since 2026-10-08, not in `gateway/v0.17.0` |
+| `GET` | `/v1/models` | `Authorization: Bearer <virtual key secret>`; `401` envelope without it | Since `gateway/v0.18.0` |
 | `GET` | `/healthz`, `/readyz` | Not covered here | Operational routes, not OpenAI-shaped |
 
 `/v1/models` is registered on the exact path. `/v1/models/` (trailing slash) is a `404`, never a `301`.
@@ -41,7 +41,7 @@ Not available today:
 | Lookup | SHA-256 of the presented secret, matched against configured `key_hash` values |
 | Missing or malformed header | `401`, `type: authentication_error`, `code: null` |
 | Unknown key | `401`, `type: authentication_error`, `code: invalid_api_key` |
-| Expired key | `401`, `type: authentication_error`, `code: key_expired` — the key's `expires_at` has passed (on `main` since 2026-10-10) |
+| Expired key | `401`, `type: authentication_error`, `code: key_expired` — the key's `expires_at` has passed (since `gateway/v0.18.0`) |
 | `x-api-key` header | Not read. It appears only on the outgoing upstream request the gateway builds for `anthropic` deployments (`gateway/internal/gateway/dataplane/dataplane.go`, `setUpstreamAuthHeaders`) |
 
 The OpenAI SDKs send the `api_key` constructor argument as `Authorization: Bearer`, so `OpenAI(base_url=…, api_key=os.environ["KELVRAN_KEY"])` authenticates with the raw virtual-key secret. The Anthropic SDK's default `x-api-key` path does not authenticate. Example secrets in [gateway/config.example.yaml](../../gateway/config.example.yaml) are `example-team-alpha-secret-do-not-use` and `example-team-beta-secret-do-not-use`.
@@ -159,7 +159,7 @@ A client that continues a conversation with Anthropic or Bedrock must echo the e
 
 ## tool_choice
 
-Parsed by `ToolChoice.UnmarshalJSON` in `gateway/internal/adapter/tool_choice_wire.go`. OpenAI string and object forms are on `main` since 2026-10-08, not in `gateway/v0.17.0`.
+Parsed by `ToolChoice.UnmarshalJSON` in `gateway/internal/adapter/tool_choice_wire.go`. OpenAI string and object forms are accepted since `gateway/v0.18.0`.
 
 ### Accepted forms
 
@@ -225,7 +225,7 @@ Not available today: a client-side validation fallback. A provider with no nativ
 | `gemini` | `generationConfig.responseSchema` from `json_schema.schema`, `responseMimeType: application/json` | `responseMimeType: application/json` with no `responseSchema` |
 | `bedrock` | `additionalModelRequestFields.output_config.format.{type, schema}`, only for whitelisted Claude families (below). The gateway rejects a schema using `$ref`, `minimum`, `maximum`, `multipleOf`, `minLength` or `maxLength` at the top level or inside any nested `properties`, `items` or `$defs` schema (`502`, `code: upstream_error`, message `upstream call failed for model "<model>"`) and sets `additionalProperties: false` on every `type: object` node that leaves it unset | Whitelisted Claude families (below) only: accepted and forwarded with no format field, not enforced. Any other `bedrock` model: the same `502` gate as `json_schema`; the enforcement gate (`checkResponseFormatEnforceable`) does not look at `type` |
 
-Bedrock whitelist (family-boundary match in `gateway/internal/adapter/capabilities.go`): `claude-sonnet-5` (on `main` since 2026-10-08, not in `gateway/v0.17.0`), `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-opus-4-5`, `claude-haiku-4-5`. Matching is by family boundary, so `claude-sonnet-5` does not admit `claude-sonnet-5-5`; the code comment records Bedrock rejecting `output_config.format` for Sonnet 5.5 on 2026-10-08. All other `bedrock` models are unsupported.
+Bedrock whitelist (family-boundary match in `gateway/internal/adapter/capabilities.go`): `claude-sonnet-5` (since `gateway/v0.18.0`), `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-opus-4-5`, `claude-haiku-4-5`. Matching is by family boundary, so `claude-sonnet-5` does not admit `claude-sonnet-5-5`; the code comment records Bedrock rejecting `output_config.format` for Sonnet 5.5 on 2026-10-08. All other `bedrock` models are unsupported.
 
 ### Enforcement gate
 
@@ -245,7 +245,7 @@ Set `stream: true`. Frames are `data: <json>\n\n`; the stream ends with `data: [
 
 | Field | Value |
 |---|---|
-| `id` | One id for the whole stream, stamped once (provider id when sent; otherwise `chatcmpl-` + 32 lowercase hex). On `main` since 2026-10-08, not in `gateway/v0.17.0` |
+| `id` | One id for the whole stream, stamped once (provider id when sent; otherwise `chatcmpl-` + 32 lowercase hex). Since `gateway/v0.18.0` |
 | `object` | `chat.completion.chunk`. Same release note |
 | `created` | Unix seconds, identical on every chunk of the stream. Same release note |
 | `model` | Upstream model name when the provider's chunks carry one (`openai`, `openaicompat`, `anthropic`); the canonical model when they do not (`gemini`, `bedrock`) |
@@ -265,7 +265,7 @@ Set `stream: true`. Frames are `data: <json>\n\n`; the stream ends with `data: [
 | Tool-call delta | `delta.tool_calls[].{index, id, type, function: {name, arguments}}` | `delta.tool_calls[].{index, id, name, arguments_json}`, flat, no `type`, no `function` nesting (`gateway/internal/streaming/types.go`). An OpenAI SDK stream accumulator that reads `function.arguments` finds nothing |
 | `stream_options.include_usage` | Client opt-in | Client value ignored. The gateway always sends `stream_options.include_usage: true` to `openai` and `openaicompat` upstreams |
 | `model` on chunks vs buffered response | Same | For `openai`, `openaicompat` and `anthropic`, chunks keep the upstream model name while the buffered response reports the canonical name, so the two can differ (recorded follow-up) |
-| Mid-stream failure | `data: {"error":…}` frame | Same convention: one `data: {"error":{"message","type","param":null,"code"}}` frame with the buffered envelope's type and code (`param` is always `null` in a stream frame), then the stream ends without `[DONE]`. On `main` since 2026-10-08, not in `gateway/v0.17.0` |
+| Mid-stream failure | `data: {"error":…}` frame | Same convention: one `data: {"error":{"message","type","param":null,"code"}}` frame with the buffered envelope's type and code (`param` is always `null` in a stream frame), then the stream ends without `[DONE]`. Since `gateway/v0.18.0` |
 | `X-Kelvran-Overhead-Duration-Ms` | n/a | Not set on streams |
 
 Pre-stream failures (auth, rate limit, routing) return a normal status and JSON envelope before any frame. Buffered tool calls (non-streaming `message.tool_calls[]`) use OpenAI's nesting; only the streaming delta diverges. How-to: [streaming](../how-to/streaming.md). Design: [docs/rfcs/2026-09-02-streaming-support.md](../rfcs/2026-09-02-streaming-support.md).
@@ -274,7 +274,7 @@ Pre-stream failures (auth, rate limit, routing) return a normal status and JSON 
 
 | Field | Value |
 |---|---|
-| `id` | Provider id when the provider sent one (OpenAI, Anthropic, Gemini); otherwise gateway-issued `chatcmpl-` + 32 lowercase hex (Bedrock). A cache or `Idempotency-Key` replay returns the stored id. On `main` since 2026-10-08, not in `gateway/v0.17.0` |
+| `id` | Provider id when the provider sent one (OpenAI, Anthropic, Gemini); otherwise gateway-issued `chatcmpl-` + 32 lowercase hex (Bedrock). A cache or `Idempotency-Key` replay returns the stored id. Since `gateway/v0.18.0` |
 | `object` | `chat.completion`. Same release note |
 | `created` | Unix seconds at completion time; a replay returns the stored value. Same release note |
 | `model` | Canonical model name |
@@ -309,7 +309,7 @@ Providers with an embedding adapter: `openai` and `bedrock` only. A `kind: embed
 
 ## GET /v1/models
 
-On `main` since 2026-10-08, not in `gateway/v0.17.0`. Lists the canonical models the calling virtual key may use (one entry per `model:` name, filtered by the key's `allowed_models`), after the Bearer and source-IP checks (a request from a source IP outside the key's allowlist is `403`, `code: source_ip_not_allowed`, not a shorter list), with no upstream call. One document serves three readers.
+First shipped in `gateway/v0.18.0`. Lists the canonical models the calling virtual key may use (one entry per `model:` name, filtered by the key's `allowed_models`), after the Bearer and source-IP checks (a request from a source IP outside the key's allowlist is `403`, `code: source_ip_not_allowed`, not a shorter list), with no upstream call. One document serves three readers.
 
 | Field | Dialect | Value |
 |---|---|---|
@@ -336,7 +336,7 @@ On `main` since 2026-10-08, not in `gateway/v0.17.0`. Lists the canonical models
 
 ## Error envelope
 
-On `main` since 2026-10-08, not in `gateway/v0.17.0` (which returned the same message text as `text/plain` with the same status codes).
+Since `gateway/v0.18.0`; `gateway/v0.17.0` and earlier returned the same message text as `text/plain` with the same status codes.
 
 ```json
 {"error":{"message":"...","type":"...","param":null,"code":"..."}}
@@ -390,7 +390,7 @@ The adapter registry is `newAdapterRegistry` in `gateway/cmd/gateway/main.go`. O
 
 | Client | Works today | Limits | Evidence in the repository |
 |---|---|---|---|
-| `openai-python`, `openai-node` (`base_url` override) | Text chat (`content` as a string), tools with any accepted `tool_choice` form, `json_schema` and `json_object` output, buffered and streaming text, embeddings, `GET /v1/models` (`main`) | Content-array multimodal messages fail with `400 invalid_json`; streaming tool-call accumulators do not find `function.arguments`; `Idempotency-Key` body mismatch is `502`, not `400`; `max_completion_tokens` and the other dropped fields have no effect | No SDK client code or automated SDK test exists under `gateway/` or `scripts/`. OpenAI-shaped clients were exercised live during the 2026-10-07/08 verification that found defects F4 (`tool_choice` forms) and F7 (empty Bedrock `id`), and an unmodified OpenAI-compatible client (the Deep-Research planner, `response_format: json_object`) was routed through the gateway; see `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md` |
+| `openai-python`, `openai-node` (`base_url` override) | Text chat (`content` as a string), tools with any accepted `tool_choice` form, `json_schema` and `json_object` output, buffered and streaming text, embeddings, `GET /v1/models` (since `gateway/v0.18.0`) | Content-array multimodal messages fail with `400 invalid_json`; streaming tool-call accumulators do not find `function.arguments`; `Idempotency-Key` body mismatch is `502`, not `400`; `max_completion_tokens` and the other dropped fields have no effect | No SDK client code or automated SDK test exists under `gateway/` or `scripts/`. OpenAI-shaped clients were exercised live during the 2026-10-07/08 verification that found defects F4 (`tool_choice` forms) and F7 (empty Bedrock `id`), and an unmodified OpenAI-compatible client (the Deep-Research planner, `response_format: json_object`) was routed through the gateway; see `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md` |
 | LangChain, LiteLLM and other OpenAI-compatible frameworks | Same as the OpenAI SDKs | Same | `type: insufficient_quota` is emitted so their retry logic treats a budget rejection as permanent |
 | `anthropic` SDK | No | No `/v1/messages` route; `x-api-key` not read. `GET /v1/models` alone answers in the SDK's list shape | The only `anthropic` import in the repository is the evals LLM judge (`evals/evals/judge/providers.py`), which calls the provider directly, not the gateway |
 | Claude Code | No | Requires `POST /v1/messages`; discovery runs only in Anthropic-Messages mode | Same |

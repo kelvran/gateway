@@ -6,7 +6,7 @@ Use this when you want to change how long or how much the gateway caches, stop t
 
 ## Before you start
 
-- A running gateway built from `main` or `gateway/v0.17.0`. Behaviour that differs between the two is marked.
+- A running gateway built from `gateway/v0.18.0` or `gateway/v0.17.0`. Behaviour that differs between the two is marked.
 - Write access to the gateway's `config.yaml` and a way to restart the process. The cache section is read at startup only.
 - For the erasure step: the admin listener enabled (`admin.listen_addr`, default `127.0.0.1:8081`) and an Admin or Operator bearer token (`admin.token_env` or `admin.operator_token_env`). See [Admin API and RBAC](admin-api-rbac.md).
 - Model and key names below come from [`gateway/config.example.yaml`](../../gateway/config.example.yaml): virtual key `team-alpha` (secret `example-team-alpha-secret-do-not-use`) and model `gpt-4o`.
@@ -148,7 +148,7 @@ The L3 layer additionally refuses a candidate unless the entity/number/date fing
 
 ## Upgrade note: tools and tool_choice in the key
 
-Folding `tools` and `tool_choice` into the L1 and L2 keys and the L3 gate is on `main` since 2026-10-08, not in `gateway/v0.17.0`. The RFC is [2026-10-08-gateway-cache-key-tools-fingerprint.md](../rfcs/2026-10-08-gateway-cache-key-tools-fingerprint.md). On `gateway/v0.17.0`, two requests with identical messages but different `tool_choice` can share a cached response.
+Folding `tools` and `tool_choice` into the L1 and L2 keys and the L3 gate first shipped in `gateway/v0.18.0`. The RFC is [2026-10-08-gateway-cache-key-tools-fingerprint.md](../rfcs/2026-10-08-gateway-cache-key-tools-fingerprint.md). On `gateway/v0.17.0`, two requests with identical messages but different `tool_choice` can share a cached response.
 
 Because the field is hashed even when empty, every L1 and L2 key differs from an earlier build's. The in-process cache is empty after the restart an upgrade requires, so there is nothing to flush. See [Upgrade](upgrade.md).
 

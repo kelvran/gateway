@@ -46,7 +46,7 @@ prompt:
 
 - `admin.backup_dir` enables `POST /admin/backup`. When it is unset the route is still registered and answers `501 Not Implemented` with the body `admin.backup_dir is not configured`.
 - `admin.on_corrupt_store` accepts `fail` (default) or `reset`. Any other value fails config load. Its behaviour is described in [Recover from a corrupt file](#recover-from-a-corrupt-file).
-- Under the systemd package, `/var/lib/kelvran-gateway` is the only writable path (`StateDirectory=kelvran-gateway` plus `ProtectSystem=strict` in [deploy/systemd/kelvran-gateway.service](../../deploy/systemd/kelvran-gateway.service)). Both the `persist_path` files and `backup_dir` must live under it. The systemd package (the unit, `/usr/bin/kelvran-gateway`, `/etc/kelvran-gateway/`) is on main since 2026-10-08, not in gateway/v0.17.0; see [Deploy as a systemd package](deploy/systemd-package.md).
+- Under the systemd package, `/var/lib/kelvran-gateway` is the only writable path (`StateDirectory=kelvran-gateway` plus `ProtectSystem=strict` in [deploy/systemd/kelvran-gateway.service](../../deploy/systemd/kelvran-gateway.service)). Both the `persist_path` files and `backup_dir` must live under it. The systemd package (the unit, `/usr/bin/kelvran-gateway`, `/etc/kelvran-gateway/`) ships since gateway/v0.18.0; see [Deploy as a systemd package](deploy/systemd-package.md).
 
 ### 2. Create the backup directory
 
@@ -95,7 +95,7 @@ gateway -config <config.yaml> -restore-store <identity|budget|prompt> -restore-f
 - The copy is atomic: the bytes go to a temp file named `<dest>.restoring-*` in the destination directory, are fsynced, set to mode `0600`, then renamed into place. The temp file is removed on every error path.
 - The flag is evaluated before `-validate` and never starts a listener. On success it prints `restored <kind> store from "<path>"` and exits `0`; on failure it prints `restore error: ...` to stderr and exits `1`.
 
-On a systemd install (package on main since 2026-10-08, not in gateway/v0.17.0; on a v0.17.0 host run the same flags against your own `gateway` binary and config path, with the process stopped):
+On a systemd install (package since gateway/v0.18.0; on a v0.17.0 host run the same flags against your own `gateway` binary and config path, with the process stopped):
 
 ```sh
 sudo systemctl stop kelvran-gateway
@@ -164,7 +164,7 @@ The destination and the backup have the same byte size, and no `identity.db.rest
 - `restore error: -restore-from is required when -restore-store is set`: pass both flags.
 - `restore error: unknown -restore-store "..." (must be one of: identity, budget, prompt)`: fix the store name.
 - `restore error: restoring <kind> store: backup: <file> is not a valid, openable bbolt database, refusing to restore from it: <bbolt error>` (for example `: timeout` when another process still holds the file): the source is not a bbolt file, or another process still holds it open (the validation open waits 2 s, then fails).
-- Gateway fails to start with `boltstore: opening <path>: another process holds the file lock (waited 1s): timeout`: a second process has the file. Stop it, then start again. This one-second failure is on main since 2026-10-08, not in gateway/v0.17.0; in gateway/v0.17.0 the open blocks with no log line (row P2 in [Failure modes](../operations/FAILURE-MODES.md)).
+- Gateway fails to start with `boltstore: opening <path>: another process holds the file lock (waited 1s): timeout`: a second process has the file. Stop it, then start again. This one-second failure is in place since gateway/v0.18.0; in gateway/v0.17.0 and earlier the open blocks with no log line (row P2 in [Failure modes](../operations/FAILURE-MODES.md)).
 - `POST /admin/backup` answers `500` with `already exists, refusing to overwrite`: two requests in one second; retry after a second.
 
 ## Not available today

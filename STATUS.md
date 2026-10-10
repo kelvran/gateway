@@ -2,25 +2,25 @@
 
 ## Status
 
-**Latest releases: `gateway/v0.17.0` (2026-10-07) and `evals/v0.10.1` (2026-09-22)**, each with its own GitHub Release at `github.com/kelvran/gateway`; CI is green on `main`. The two deployables version independently and have shipped 20 gateway releases (17 minor versions, `v0.1.0` through `v0.17.0`, plus the `v0.10.1`, `v0.14.1` and `v0.14.2` patches) and 11 evals releases (`v0.1.0` through `v0.10.1`) since the first cut on 2026-09-03.
+**Latest releases: `gateway/v0.18.0` (2026-10-10) and `evals/v0.10.1` (2026-09-22)**, each with its own GitHub Release at `github.com/kelvran/gateway`; CI is green on `main`. The two deployables version independently and have shipped 21 gateway releases (18 minor versions, `v0.1.0` through `v0.18.0`, plus the `v0.10.1`, `v0.14.1` and `v0.14.2` patches) and 11 evals releases (`v0.1.0` through `v0.10.1`) since the first cut on 2026-09-03.
 
 - Authoritative per-release record: `gateway/changelog/` and `evals/changelog/`, one dated file per version in Keep a Changelog categories.
-- Fixed on `main` but not yet in any release: `gateway/changelog/unreleased.md` (today: Bedrock `response_format` on Claude Sonnet 5 no longer rejected with 502; a local admin mutation can no longer be silently dropped as stale). `evals/changelog/unreleased.md` is empty.
+- Fixed on `main` but not yet in any release: `gateway/changelog/unreleased.md` (empty at the `gateway/v0.18.0` cut; the entries it held, including Bedrock `response_format` on Claude Sonnet 5 no longer rejected with 502 and a local admin mutation no longer silently dropped as stale, moved to `gateway/changelog/0.18.0.md`). `evals/changelog/unreleased.md` is empty.
 - Current feature surface and the open defects from the 2026-10-07/08 live verification: `README.md`.
 - The narrative sections below ("Current Phase" onward) stop at the `v0.9.0` / `v0.8.0` cut of 2026-09-11 and are kept as history, not rewritten; `docs/agents/LOGS.md` and `DECISIONS.md` carry everything since.
 
 ## IMPORTANT
 
-Real source code exists in `gateway/` and `evals/` — 20 gateway and 11 evals releases since the **deliberately narrow skeleton** of 2026-09-02. `docs/rfcs/2026-09-02-initial-code-scaffolding.md` was the authoritative list of what was real vs. intentionally stubbed vs. not built at that cut and is kept as history; what is real today is `README.md`'s "Status and known limitations" section (from the 2026-10-07/08 live verification) plus the per-release record in `gateway/changelog/` and `evals/changelog/`. Still read the code before assuming any capability works — doc-vs-code staleness is this repository's recorded number-one failure mode (`AGENTS.md`, Gotchas). `docs/users/USER_GUIDE.md` is, since 2026-10-08, an eleven-heading stub of pointers into the documentation set at `docs/README.md`; `docs/operations/DEPLOY.md` remains the operator deployment guide.
+Real source code exists in `gateway/` and `evals/` — 21 gateway and 11 evals releases since the **deliberately narrow skeleton** of 2026-09-02. `docs/rfcs/2026-09-02-initial-code-scaffolding.md` was the authoritative list of what was real vs. intentionally stubbed vs. not built at that cut and is kept as history; what is real today is `README.md`'s "Status and known limitations" section (from the 2026-10-07/08 live verification) plus the per-release record in `gateway/changelog/` and `evals/changelog/`. Still read the code before assuming any capability works — doc-vs-code staleness is this repository's recorded number-one failure mode (`AGENTS.md`, Gotchas). `docs/users/USER_GUIDE.md` is, since 2026-10-08, an eleven-heading stub of pointers into the documentation set at `docs/README.md`; `docs/operations/DEPLOY.md` remains the operator deployment guide.
 
 ## Current Version
 
-`gateway/v0.17.0` (tagged and released 2026-10-07) + `evals/v0.10.1` (tagged and released 2026-09-22). Full version list: `git tag -l 'gateway/*' 'evals/*'`, or the dated files in `gateway/changelog/` (20) and `evals/changelog/` (11).
+`gateway/v0.18.0` (tagged and released 2026-10-10) + `evals/v0.10.1` (tagged and released 2026-09-22). Full version list: `git tag -l 'gateway/*' 'evals/*'`, or the dated files in `gateway/changelog/` (21) and `evals/changelog/` (11).
 
-- `gateway/go.mod`'s module path is `github.com/kelvran/gateway/gateway` (not the bare `github.com/kelvran/gateway`; see `DECISIONS.md`'s module-path-fix entry); `go install github.com/kelvran/gateway/gateway/cmd/gateway@latest` resolves to `v0.17.0` on the public module proxy.
-- Container image `ghcr.io/kelvran/gateway`: tags `latest`, `sha-<commit>` and `v0.17.0`; the `v0.17.0` tag is linux/amd64 only, while `latest` and every `sha-<commit>` built from `main` at or after commit `7686a0c8` (2026-10-08) are one linux/amd64 + linux/arm64 multi-platform index — every `sha-<commit>` image published before that commit is linux/amd64 only (`platforms: linux/amd64,linux/arm64` in the `publish-image` job of `.github/workflows/ci.yml` — on `main` since 2026-10-08, not in `gateway/v0.17.0`); cosign keyless-signed with CycloneDX SBOM and SLSA provenance attestations (verification commands in `RELEASE.md`).
+- `gateway/go.mod`'s module path is `github.com/kelvran/gateway/gateway` (not the bare `github.com/kelvran/gateway`; see `DECISIONS.md`'s module-path-fix entry); `go install github.com/kelvran/gateway/gateway/cmd/gateway@latest` resolves to `v0.18.0` on the public module proxy.
+- Container image `ghcr.io/kelvran/gateway`: tags `latest`, `sha-<commit>` and the release tags (`v0.18.0`, `v0.17.0`, …); the `v0.17.0` tag is linux/amd64 only, while `v0.18.0`, `latest` and every `sha-<commit>` built from `main` at or after commit `7686a0c8` (2026-10-08) are one linux/amd64 + linux/arm64 multi-platform index — every `sha-<commit>` image published before that commit is linux/amd64 only (`platforms: linux/amd64,linux/arm64` in the `publish-image` job of `.github/workflows/ci.yml`, since `gateway/v0.18.0`); cosign keyless-signed with CycloneDX SBOM and SLSA provenance attestations (verification commands in `RELEASE.md`).
 - `kelvran-evals` is not published on PyPI; `evals/pyproject.toml` tracks the release tag (0.10.1) and `scripts/check_versions.py` enforces that in CI.
-- New work accumulates in each folder's `unreleased.md` until the next cut; a `v0.17.1` is not cut without the owner's go-ahead.
+- New work accumulates in each folder's `unreleased.md` until the next cut; a `v0.18.1` is not cut without the owner's go-ahead.
 
 ## Current Phase
 

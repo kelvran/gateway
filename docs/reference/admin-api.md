@@ -2,7 +2,7 @@
 
 This page lists every route on the gateway's admin HTTP surface: the credential tier each route accepts, the request and response JSON, the status codes, the side effects (persistence, cross-replica propagation, audit log), and the configuration keys that enable and secure the listener. It is for operators who run the gateway and for anyone writing automation against the admin port. For a guided setup, read [Configure the Admin API and its credential tiers](../how-to/admin-api-rbac.md); this page is the lookup table behind it.
 
-The route set and bodies below are those of `gateway/v0.17.0` (2026-10-07) and of `main` as of 2026-10-08. The handler is `gateway/internal/admin/admin.go`; the listener is started by `gateway/cmd/gateway/main.go`.
+The route set and bodies below are those of `gateway/v0.18.0` (2026-10-10); where `gateway/v0.17.0` (2026-10-07) differs, the entry says so. The handler is `gateway/internal/admin/admin.go`; the listener is started by `gateway/cmd/gateway/main.go`.
 
 ## Conventions
 
@@ -114,7 +114,7 @@ Every route also answers 401 as described above. `GET /admin/audit` exists only 
 
 ## GET /admin/config
 
-Returns the loaded static configuration as JSON, unredacted. The config struct has no JSON tags, so keys are Go field names in PascalCase: `ListenAddr`, `VirtualKeys`, `Deployments`, `PriceTable`, `Models` (on `main` since 2026-10-08; absent in `gateway/v0.17.0`), `Telemetry`, `Budget`, `Prompt`, `RateLimit`, `ConfigPropagation`, `Cache`, `Guardrails`, `Admin`, `HealthProbe`, `Alerting`, `CredentialReload`. Nested structs follow the same rule.
+Returns the loaded static configuration as JSON, unredacted. The config struct has no JSON tags, so keys are Go field names in PascalCase: `ListenAddr`, `VirtualKeys`, `Deployments`, `PriceTable`, `Models` (since `gateway/v0.18.0`; absent in `gateway/v0.17.0`), `Telemetry`, `Budget`, `Prompt`, `RateLimit`, `ConfigPropagation`, `Cache`, `Guardrails`, `Admin`, `HealthProbe`, `Alerting`, `CredentialReload`. Nested structs follow the same rule.
 
 The document contains environment-variable names and key hashes, never secret values. It is a read of the whole deployment topology and every key's budget and model shape, which is why the read is audit-logged.
 
@@ -150,7 +150,7 @@ This read is not itself audit-logged.
 
 Returns every virtual key the gateway currently accepts, sorted by `id`. `key_hash` is never included.
 
-`?include=spend` (on `main` since 2026-10-10; `kelvran spend` and `kelvran keys list --spend` render it) adds `spent_usd`, `percent_used` and, on failure, `spend_unavailable` to every entry — the same read `GET /admin/virtual_keys/{name}/spend` performs, one per key inside one request instead of N requests. The cost is O(N) over configured keys: in Redis budget mode one backend read per key, and in bbolt/in-memory mode a read that may durably persist a just-elapsed window reset when `budget.persist_path` is set (the per-key route behaves the same). Every per-key read shares one 2 s deadline. A key whose read errors carries `spend_unavailable: true` and no `spent_usd`/`percent_used` while the other entries are unaffected; once the shared deadline elapses, that key and every key after it (in `id` order) are reported unavailable. Every entry is still returned and the status stays `200`, so an outage is never reported as `"0"`; the request also writes one Warn line `admin_spend_read_failed` with `count` and the first `error`, never a spend figure. The tier is unchanged (Admin or Viewer; CostViewer still has the per-key route only). Any other `include` value is `400` `include must be "spend"`. The audit entry gains `include=spend`.
+`?include=spend` (since `gateway/v0.18.0`; `kelvran spend` and `kelvran keys list --spend` render it) adds `spent_usd`, `percent_used` and, on failure, `spend_unavailable` to every entry — the same read `GET /admin/virtual_keys/{name}/spend` performs, one per key inside one request instead of N requests. The cost is O(N) over configured keys: in Redis budget mode one backend read per key, and in bbolt/in-memory mode a read that may durably persist a just-elapsed window reset when `budget.persist_path` is set (the per-key route behaves the same). Every per-key read shares one 2 s deadline. A key whose read errors carries `spend_unavailable: true` and no `spent_usd`/`percent_used` while the other entries are unaffected; once the shared deadline elapses, that key and every key after it (in `id` order) are reported unavailable. Every entry is still returned and the status stays `200`, so an outage is never reported as `"0"`; the request also writes one Warn line `admin_spend_read_failed` with `count` and the first `error`, never a spend figure. The tier is unchanged (Admin or Viewer; CostViewer still has the per-key route only). Any other `include` value is `400` `include must be "spend"`. The audit entry gains `include=spend`.
 
 Each element:
 
@@ -164,13 +164,13 @@ Each element:
 | `allowed_regions` | string[] | when non-empty | Sorted. |
 | `allowed_source_cidrs` | string[] | when non-empty | Sorted CIDR strings. |
 | `cache_scope_to_end_user` | bool | when `true` | |
-| `attribution_capture_ids_disabled` | bool | when `true` | The key's Claude Code identifier capture is off (`attribution_capture_ids: false`). On `main` since 2026-10-09. |
+| `attribution_capture_ids_disabled` | bool | when `true` | The key's Claude Code identifier capture is off (`attribution_capture_ids: false`). Since `gateway/v0.18.0`. |
 | `rate_limit_burst` | number | when non-zero | Key-level RPM bucket capacity. |
 | `rate_limit_refill_per_second` | number | when non-zero | Key-level RPM refill. |
-| `billing_subject_id` | string | when non-empty | Settable through this API since 2026-10-10 or through `virtual_keys.<name>.billing_subject_id` in `config.yaml`. |
-| `expires_at` | string | when set | RFC 3339 (UTC) instant from which the key is rejected with 401 `key_expired`; an expired key stays listed with a past value. On `main` since 2026-10-10. |
-| `previous_key_hash_expires_at` | string | while a previous hash is recorded | End of the rotation grace period (RFC 3339, UTC). Rotation always records it, so it stays listed with a past value after the grace ends (immediately, for a zero grace) until the next upsert replaces the key. The previous hash itself is never listed. On `main` since 2026-10-10. |
-| `max_concurrent_requests` | int | when non-zero | The key's concurrency cap, settable only in `config.yaml`. On `main` since 2026-10-10. |
+| `billing_subject_id` | string | when non-empty | Settable through this API since `gateway/v0.18.0` or through `virtual_keys.<name>.billing_subject_id` in `config.yaml`. |
+| `expires_at` | string | when set | RFC 3339 (UTC) instant from which the key is rejected with 401 `key_expired`; an expired key stays listed with a past value. Since `gateway/v0.18.0`. |
+| `previous_key_hash_expires_at` | string | while a previous hash is recorded | End of the rotation grace period (RFC 3339, UTC). Rotation always records it, so it stays listed with a past value after the grace ends (immediately, for a zero grace) until the next upsert replaces the key. The previous hash itself is never listed. Since `gateway/v0.18.0`. |
+| `max_concurrent_requests` | int | when non-zero | The key's concurrency cap, settable only in `config.yaml`. Since `gateway/v0.18.0`. |
 | `spent_usd` | string | with `?include=spend`, unless unavailable | Decimal spend within the current window, as the per-key spend route reports it. |
 | `percent_used` | number | with `?include=spend`, unless unavailable | `spent_usd / budget_usd` as a fraction; `0` when `budget_usd` is not positive. |
 | `spend_unavailable` | bool | with `?include=spend`, when `true` | The budget backend could not be read for this key within the shared 2 s deadline; `spent_usd` and `percent_used` are omitted. |
@@ -193,9 +193,9 @@ Request body:
 | `allowed_regions` | string[] | no | | Deployment regions this key may route to. Omitted or empty: no region allow-list. |
 | `allowed_source_cidrs` | string[] | no | each entry parses as a CIDR | Client source networks this key may call from. Omitted or empty: no source allow-list. |
 | `cache_scope_to_end_user` | bool | no | | Scope this key's cache entries by the request's end-user identifier. See [caching.md](../how-to/caching.md). |
-| `attribution_capture_ids_disabled` | bool | no | | `true` keeps this key's requests from carrying the Claude Code identifiers onto the request span (the YAML key is the positive-sense `attribution_capture_ids`; the wire field is negative so an omitted field means capture on). On `main` since 2026-10-09. |
-| `expires_at` | string | no | RFC 3339, strictly in the future | Instant from which the key is rejected with 401 `key_expired` (inclusive). Omitted, `""` or `null`: the key never expires — and, because an upsert is a full replace, re-upserting without it clears an existing expiry. On `main` since 2026-10-10. |
-| `billing_subject_id` | string | no | | Opaque external billing identifier, metadata only. Settable here since 2026-10-10; before, only in `config.yaml`. |
+| `attribution_capture_ids_disabled` | bool | no | | `true` keeps this key's requests from carrying the Claude Code identifiers onto the request span (the YAML key is the positive-sense `attribution_capture_ids`; the wire field is negative so an omitted field means capture on). Since `gateway/v0.18.0`. |
+| `expires_at` | string | no | RFC 3339, strictly in the future | Instant from which the key is rejected with 401 `key_expired` (inclusive). Omitted, `""` or `null`: the key never expires — and, because an upsert is a full replace, re-upserting without it clears an existing expiry. Since `gateway/v0.18.0`. |
+| `billing_subject_id` | string | no | | Opaque external billing identifier, metadata only. Settable here since `gateway/v0.18.0`; before, only in `config.yaml`. |
 | `rate_limit` | object | no | | See below. Omitted: `burst` and `refill_per_second` resolve to the defaults. |
 
 `rate_limit` object:
@@ -246,7 +246,7 @@ Side effects:
 
 - The rate limiter entry is registered before the new key becomes resolvable, never after.
 - A name that did not exist before also clears any leftover budget-spend state recorded under that id. An update of an existing name keeps its accumulated spend.
-- `expires_at` and `billing_subject_id` are fields of this body since 2026-10-10; an upsert that omits them leaves the key with no expiry and no billing subject (full replace).
+- `expires_at` and `billing_subject_id` are fields of this body since `gateway/v0.18.0`; an upsert that omits them leaves the key with no expiry and no billing subject (full replace).
 - The key is written to the identity store when `admin.persist_path` or `admin.redis_addr` is set. Without either, the key is lost at restart.
 - A `virtual_key_upsert` event is published when `config_propagation` is configured.
 - Audit entry `admin_virtual_key_upserted` with `name` and `authorized_by=admin`. The hash is never logged.
@@ -275,7 +275,7 @@ Request body:
 |---|---|---|---|
 | `new_key_hash` | string | yes | Hex SHA-256 of the new secret: 64 hex characters, any case, stored lowercased; must not equal another key's current or grace-period hash. A malformed hash is a 400 with `dataplane: RotateVirtualKey: identity: NewVerifier: ...` as raw text; a hash equal to another key's current or grace-period hash is a 400 with `dataplane: RotateVirtualKey: identity: duplicate virtual key hash in config: virtual key "<id>"` (with a ` (previous_key_hash)` suffix when the collision is with a grace-period hash). |
 | `grace_period_seconds` | int | no | How long the previous secret keeps working. `<= 0`: the old secret stops immediately. |
-| `expires_at` | string | no (yes for an expired key) | RFC 3339, in the future; replaces the key's expiry in the same rotation. Required when the key's current `expires_at` has passed — a fresh secret on an expired key would still be rejected with `key_expired` — answered 409 otherwise. On `main` since 2026-10-10. |
+| `expires_at` | string | no (yes for an expired key) | RFC 3339, in the future; replaces the key's expiry in the same rotation. Required when the key's current `expires_at` has passed — a fresh secret on an expired key would still be rejected with `key_expired` — answered 409 otherwise. Since `gateway/v0.18.0`. |
 
 | Status | Body |
 |---|---|
@@ -309,7 +309,7 @@ Response:
 | `budget_usd` | string | Decimal cap. `"0"` means unlimited. |
 | `budget_reset_interval_seconds` | int | The key's window. |
 | `percent_used` | number | `spent_usd / budget_usd` as a fraction (`0.5` means 50 %). `0` when `budget_usd` is not positive. Omitted when `spend_unavailable` is `true`. |
-| `spend_unavailable` | bool | `true` (and otherwise absent) when the Redis budget backend could not be read within 2 s; the response is still `200` with the budget fields, and a Warn line `admin_spend_read_failed` with `name` and `error` is written. On `main` since 2026-10-10 — before, a backend error read as `"0"`. |
+| `spend_unavailable` | bool | `true` (and otherwise absent) when the Redis budget backend could not be read within 2 s; the response is still `200` with the budget fields, and a Warn line `admin_spend_read_failed` with `name` and `error` is written. Since `gateway/v0.18.0`; in `gateway/v0.17.0` and earlier a backend error read as `"0"`. |
 
 | Status | Body |
 |---|---|
@@ -479,7 +479,7 @@ The audit JSONL file at `admin.audit_log_path` is not a bbolt store and is not i
 
 ## GET /admin/deployments
 
-On `main` since 2026-10-10. Returns every configured deployment, sorted by `name`, with the router's live view of it. Read-only and in-memory, the mirror image of `POST /admin/deployments/{name}/weight`; it never contacts a provider.
+Since `gateway/v0.18.0`. Returns every configured deployment, sorted by `name`, with the router's live view of it. Read-only and in-memory, the mirror image of `POST /admin/deployments/{name}/weight`; it never contacts a provider.
 
 Each element:
 
@@ -534,7 +534,7 @@ Request body: one flat JSON object.
 | `end_user_id` | string | no | The end-user identifier the original request carried, for keys with `cache_scope_to_end_user`. Omitted: the tenant-scoped entry. |
 | the data-plane chat request fields, flattened | | | `model`, `messages`, `temperature`, `max_tokens`, `tools`, `tool_choice`, `stream`, `response_format`, `prompt_id`, `prompt_version`, `prompt_label`, `prompt_variables`, `thinking_binding_mode`. Send exactly the ones the original request set. |
 
-Which of those fields take part in the cache key is described in [caching.md](../how-to/caching.md). `tools` and `tool_choice` are part of the L1 and L2 key on `main` since 2026-10-08, not in `gateway/v0.17.0`.
+Which of those fields take part in the cache key is described in [caching.md](../how-to/caching.md). `tools` and `tool_choice` are part of the L1 and L2 key since `gateway/v0.18.0`.
 
 Response:
 
@@ -633,7 +633,7 @@ With `config_propagation.redis_addr` and `config_propagation.signing_secret_env`
 | `DELETE /admin/virtual_keys/{name}` | `virtual_key_delete` |
 | `POST /admin/deployments/{name}/weight` | `deployment_weight` |
 
-A replica ignores its own events and applies the others with last-writer-wins ordering. A publish failure leaves the local mutation applied and the other replicas stale; it is logged as `configpropagation_publish_failed` and, on `main` since 2026-10-08 and not in `gateway/v0.17.0`, counted by `kelvran.configpropagation.publish_failed`. Rows R13 and R14 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md) cover publish and subscribe outages.
+A replica ignores its own events and applies the others with last-writer-wins ordering. A publish failure leaves the local mutation applied and the other replicas stale; it is logged as `configpropagation_publish_failed` and, since `gateway/v0.18.0`, counted by `kelvran.configpropagation.publish_failed`. Rows R13 and R14 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md) cover publish and subscribe outages.
 
 ## Not available today
 
@@ -643,7 +643,7 @@ A replica ignores its own events and applies the others with last-writer-wins or
 - A JSON error envelope on admin routes. Every error is plain text.
 - An admin web UI, by recorded decision.
 - Per-entry deletion from the audit log. Only `admin.enable_audit_log: false` exists, and it stops new entries only.
-- Setting `rate_limit.max_concurrent_requests` (the key's concurrency cap) through this API. It is not a field of the upsert body (an unknown body field is ignored); the configured value is reported by `GET /admin/virtual_keys` as `max_concurrent_requests` since 2026-10-10, and `billing_subject_id` became a body field the same day. An upsert stores the key with no concurrency cap: the live limiter on this replica keeps the cap registered at startup until the next restart, after which a persisted key is reloaded with none.
+- Setting `rate_limit.max_concurrent_requests` (the key's concurrency cap) through this API. It is not a field of the upsert body (an unknown body field is ignored); the configured value is reported by `GET /admin/virtual_keys` as `max_concurrent_requests` since `gateway/v0.18.0`, and `billing_subject_id` became a body field the same day. An upsert stores the key with no concurrency cap: the live limiter on this replica keeps the cap registered at startup until the next restart, after which a persisted key is reloaded with none.
 
 ## Examples
 

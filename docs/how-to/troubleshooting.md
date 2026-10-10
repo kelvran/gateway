@@ -4,7 +4,7 @@ This page takes an operator or integrator from a symptom to a check and a fix: a
 
 Use this when something is failing now and you need to know which signal to read and which lever to pull.
 
-This page describes `main` as of 2026-10-08. `gateway/v0.17.0` (2026-10-07) lacks: the JSON error envelope, the `Allow` header on a 405 and the in-band SSE error frame (Step 3 and its streaming variant), `-version` and the `build_info` record (Step 1), the deb/rpm/apk packages and the systemd unit (its GitHub Release carries no assets), the one-second bbolt lock timeout (Step 4; v0.17.0 blocks forever with no log line), the `upstream call failed for model` redaction, the `invalid_tool_choice` and `missing_required_parameter` codes, the `kelvran.configpropagation.publish_failed` counter and the `kelvran.persistence.failed` increment on a failed budget settlement (Step 5). Where a step depends on one of these, it says so.
+This page describes `gateway/v0.18.0` (2026-10-10). `gateway/v0.17.0` (2026-10-07) lacks: the JSON error envelope, the `Allow` header on a 405 and the in-band SSE error frame (Step 3 and its streaming variant), `-version` and the `build_info` record (Step 1), the deb/rpm/apk packages and the systemd unit (its GitHub Release carries no assets), the one-second bbolt lock timeout (Step 4; v0.17.0 blocks forever with no log line), the `upstream call failed for model` redaction, the `invalid_tool_choice` and `missing_required_parameter` codes, the `kelvran.configpropagation.publish_failed` counter and the `kelvran.persistence.failed` increment on a failed budget settlement (Step 5). Where a step depends on one of these, it says so.
 
 ## Prerequisites
 
@@ -16,7 +16,7 @@ This page describes `main` as of 2026-10-08. `gateway/v0.17.0` (2026-10-07) lack
 
 ## Step 1: Confirm which build and which config you are looking at
 
-1. Print the build. Every start also logs the same fields once as a `build_info` record. Both are on `main` since 2026-10-08: a `gateway/v0.17.0` binary rejects `-version` (`flag provided but not defined: -version`, exit 2) and logs no `build_info`; on 0.17.0 identify the build by the image tag or Go module version you installed. After a rollout, replicas reporting different versions is the first thing to check.
+1. Print the build. Every start also logs the same fields once as a `build_info` record. Both first shipped in `gateway/v0.18.0`: a `gateway/v0.17.0` binary rejects `-version` (`flag provided but not defined: -version`, exit 2) and logs no `build_info`; on 0.17.0 identify the build by the image tag or Go module version you installed. After a rollout, replicas reporting different versions is the first thing to check.
 
    ```bash
    kelvran-gateway -version
@@ -54,7 +54,7 @@ On macOS, Windows or any host without cgroups, the two lines after `build_info`,
 
 ## Step 3: Read the error envelope from a failing request
 
-Every error on `/v1/chat/completions` and `/v1/embeddings` is `{"error":{"message":...,"type":...,"param":null|"<field>","code":null|"<code>"}}` with `Content-Type: application/json; charset=utf-8`. Only `type` and `code` are stable; the `message` text is not a contract (see [`docs/VERSIONING.md`](../VERSIONING.md)). The JSON envelope is on `main` since 2026-10-08, not in `gateway/v0.17.0`, which returns `text/plain` bodies with the same status codes.
+Every error on `/v1/chat/completions` and `/v1/embeddings` is `{"error":{"message":...,"type":...,"param":null|"<field>","code":null|"<code>"}}` with `Content-Type: application/json; charset=utf-8`. Only `type` and `code` are stable; the `message` text is not a contract (see [`docs/VERSIONING.md`](../VERSIONING.md)). The JSON envelope first shipped in `gateway/v0.18.0`; `gateway/v0.17.0` and earlier return `text/plain` bodies with the same status codes.
 
 ```bash
 curl -s -D - http://127.0.0.1:8080/v1/chat/completions \
@@ -107,10 +107,10 @@ With Redis down the process stays up (row R10 is the exception) and the controls
 |---|---|---|---|
 | `kelvran.ratelimit.fail_open` rising; log `ratelimit_backend_unavailable`, `ratelimit_tpm_backend_unavailable` or `embeddings_ratelimit_backend_unavailable` | R1 to R3 | Requests are admitted with no limit | Alert on the counter; limits are unenforced until Redis returns |
 | `kelvran.budget.fail_open` rising; log `budget_backend_unavailable` | R6 | Requests are admitted with no reservation; their cost is never written to Redis, even after recovery | Reconcile billing from the `chat_completion` log lines of the outage window |
-| `kelvran.persistence.failed{kelvran.persistence.store_kind=budget}` (on `main` since 2026-10-08; `gateway/v0.17.0` has only the log line); log `budget_redis_backend_unavailable` with `op=reconcile` | R7 | A settlement failed and the key is left at its cap | See the R7 variant below |
-| Log `budget_redis_backend_unavailable` with `op=spent_usd`, `check_alert_bucket` or `check_warn_alerted`, or `admin_spend_read_failed` on the admin listener | R8 | Request-path spend reads as $0 and threshold alerts are suppressed; `GET /admin/virtual_keys/{name}/spend` and `GET /admin/virtual_keys?include=spend` answer `200` with `spend_unavailable: true` and no `spent_usd` (on `main` since 2026-10-10); `kelvran spend` and `kelvran keys list --spend` show those rows as `n/a` and exit 1 | Expect missing alerts; do not run the R7 check until Redis is back |
+| `kelvran.persistence.failed{kelvran.persistence.store_kind=budget}` (since `gateway/v0.18.0`; `gateway/v0.17.0` has only the log line); log `budget_redis_backend_unavailable` with `op=reconcile` | R7 | A settlement failed and the key is left at its cap | See the R7 variant below |
+| Log `budget_redis_backend_unavailable` with `op=spent_usd`, `check_alert_bucket` or `check_warn_alerted`, or `admin_spend_read_failed` on the admin listener | R8 | Request-path spend reads as $0 and threshold alerts are suppressed; `GET /admin/virtual_keys/{name}/spend` and `GET /admin/virtual_keys?include=spend` answer `200` with `spend_unavailable: true` and no `spent_usd` (since `gateway/v0.18.0`); `kelvran spend` and `kelvran keys list --spend` show those rows as `n/a` and exit 1 | Expect missing alerts; do not run the R7 check until Redis is back |
 | `kelvran.persistence.failed` with `store_kind` `identity` or `budget`; log `identity_persist_failed` or `budget_persist_failed` right after an admin call answered 204 | R12 | The mutation is live in memory only. A DELETE or rotate whose write failed resurrects the old credential on restart | Fix the store, then re-drive the mutation before any restart (for a delete: re-POST the key, then DELETE it again) |
-| `kelvran.configpropagation.publish_failed` (on `main` since 2026-10-08; absent in `gateway/v0.17.0`); log `configpropagation_publish_failed` | R13 | Other replicas never received the mutation | Once Redis is back, re-apply every admin mutation made during the outage against one replica; verify by reading it from another replica |
+| `kelvran.configpropagation.publish_failed` (since `gateway/v0.18.0`; absent in `gateway/v0.17.0`); log `configpropagation_publish_failed` | R13 | Other replicas never received the mutation | Once Redis is back, re-apply every admin mutation made during the outage against one replica; verify by reading it from another replica |
 | `kelvran.configpropagation.subscribe_stopped` above zero | R14 | That replica's subscriber loop has stopped for good | Restart that replica |
 
 Do not rely on a restart to recover mutations: deployment weights are never persisted. The ordered sequence is the Redis outage runbook in [`docs/operations/DEPLOY.md`](../operations/DEPLOY.md).
@@ -153,7 +153,7 @@ The same `Idempotency-Key` with a different body is reported as 502 `upstream_er
 
 ## Verify it worked
 
-1. Build and config: `kelvran-gateway -validate -config <file>` prints `config is valid` and exits 0, and `kelvran-gateway -version` prints the same build on every replica (`main` only; on `gateway/v0.17.0` compare image tags or Go module versions instead).
+1. Build and config: `kelvran-gateway -validate -config <file>` prints `config is valid` and exits 0, and `kelvran-gateway -version` prints the same build on every replica (`gateway/v0.18.0` and later; on `gateway/v0.17.0` compare image tags or Go module versions instead).
 2. Process: `curl -s -w '\n%{http_code}\n' http://127.0.0.1:8080/readyz` prints a body whose `ready` is `true`, then `200`.
 3. Envelope: a request with a wrong key returns `401`, and the body's `.error.type` is `authentication_error` with `.error.code` `invalid_api_key`:
 
@@ -171,11 +171,11 @@ The same `Idempotency-Key` with a different body is reported as 502 `upstream_er
 
 - No admin route resets a key's spend without deleting the key.
 - No metric for health-probe transitions, fallback hops, OTLP export failures, audit-append failures or credential reload failures; these are log-only.
-- `-validate` cannot detect an unreachable Redis, an unreadable or empty credential file, an unopenable audit log path, a missing environment variable, or a wrong Gemini `:generateContent` or Bedrock `/converse` `base_url` suffix. `kelvran doctor` (on `main` since 2026-10-10, not in `gateway/v0.17.0`) reports the missing variables, unreadable credential files, the packaged layout's permissions and paths, unpriced models and an invalid telemetry exporter; Redis reachability, whether the audit log and persist paths can be opened, and the `base_url` suffixes are still unchecked.
+- `-validate` cannot detect an unreachable Redis, an unreadable or empty credential file, an unopenable audit log path, a missing environment variable, or a wrong Gemini `:generateContent` or Bedrock `/converse` `base_url` suffix. `kelvran doctor` (since `gateway/v0.18.0`) reports the missing variables, unreadable credential files, the packaged layout's permissions and paths, unpriced models and an invalid telemetry exporter; Redis reachability, whether the audit log and persist paths can be opened, and the `base_url` suffixes are still unchecked.
 - No Redis logger: go-redis dial failures are plain text on stderr.
 - No request log store and no `GET /admin/requests`.
 - Prompt-store write failures (row P6) have no log line and no metric.
-- No HTTP endpoint reports the running version; use `-version` or the `build_info` log record (both on `main` since 2026-10-08, not in `gateway/v0.17.0`).
+- No HTTP endpoint reports the running version; use `-version` or the `build_info` log record (both since `gateway/v0.18.0`).
 
 ## Related
 

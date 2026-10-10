@@ -1,8 +1,8 @@
 # kelvran CLI
 
-`kelvran` is the gateway's companion binary (`gateway/cmd/kelvran`), shipped beside `kelvran-gateway` in every release archive and package and at `/kelvran` in the container image. It turns the by-hand first run — generate a secret, hash it, author `config.yaml` — into one command (`init`), checks a config against the environment the gateway will actually run in (`doctor`), creates, lists, rotates and deletes virtual keys through the admin API or in the file (`keys`), shows what the gateway serves (`status`), reads spend per key (`spend`), and prints or writes a coding tool's client configuration (`connect`). On `main` since 2026-10-10, not in `gateway/v0.17.0`: the first `gateway/v*` tag pushed after that date is the first release that carries it. Design: [RFC: `kelvran` CLI and single-user mode](../rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md).
+`kelvran` is the gateway's companion binary (`gateway/cmd/kelvran`), shipped beside `kelvran-gateway` in every release archive and package and at `/kelvran` in the container image. It turns the by-hand first run — generate a secret, hash it, author `config.yaml` — into one command (`init`), checks a config against the environment the gateway will actually run in (`doctor`), creates, lists, rotates and deletes virtual keys through the admin API or in the file (`keys`), shows what the gateway serves (`status`), reads spend per key (`spend`), and prints or writes a coding tool's client configuration (`connect`). First shipped in `gateway/v0.18.0`. Design: [RFC: `kelvran` CLI and single-user mode](../rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md).
 
-This page is the public surface [`docs/VERSIONING.md`](../VERSIONING.md) binds to for the CLI: every verb, flag, exit code and output shape below is covered by the compatibility policy once it ships in a tagged release.
+This page is the public surface [`docs/VERSIONING.md`](../VERSIONING.md) binds to for the CLI: every verb, flag, exit code and output shape below is covered by the compatibility policy from `gateway/v0.18.0` on.
 
 ## Getting the binary
 
@@ -168,7 +168,7 @@ kelvran keys delete <name> [--json]
   every verb: [--config PATH] [--admin-url URL] [--admin-token-file PATH] [--allow-insecure-http]
 ```
 
-Create, list, rotate and delete virtual keys (RFC-3 decision 3; on `main` since 2026-10-10, not in `gateway/v0.17.0`). The CLI generates the secret (32 random bytes as 64 hex characters, the shape `openssl rand -hex 32` produces) and prints it exactly once, in the client-shell export block `init` prints; only its SHA-256 hash is sent to the admin API or written to the file.
+Create, list, rotate and delete virtual keys (RFC-3 decision 3; since `gateway/v0.18.0`). The CLI generates the secret (32 random bytes as 64 hex characters, the shape `openssl rand -hex 32` produces) and prints it exactly once, in the client-shell export block `init` prints; only its SHA-256 hash is sent to the admin API or written to the file.
 
 ### Online or offline
 
@@ -216,7 +216,7 @@ kelvran status [--url http://127.0.0.1:8080] [--admin-url URL] [--admin-token-fi
                [--allow-insecure-http] [--json]
 ```
 
-What the gateway serves (RFC-3 decision 10; on `main` since 2026-10-10, not in `gateway/v0.17.0`). The mode follows the admin token exactly as `keys` does: **online** whenever a token resolves (`--admin-token-file`, `KELVRAN_ADMIN_TOKEN_FILE`, the variable the config's `admin.token_env` names, `KELVRAN_ADMIN_TOKEN`), through the same credential-URL guard; **offline** with `--config` and no token; neither is exit `2` naming both routes; a token whose URL refuses the connection is the `admin API unreachable at <url>` line, exit `1`.
+What the gateway serves (RFC-3 decision 10; since `gateway/v0.18.0`). The mode follows the admin token exactly as `keys` does: **online** whenever a token resolves (`--admin-token-file`, `KELVRAN_ADMIN_TOKEN_FILE`, the variable the config's `admin.token_env` names, `KELVRAN_ADMIN_TOKEN`), through the same credential-URL guard; **offline** with `--config` and no token; neither is exit `2` naming both routes; a token whose URL refuses the connection is the `admin API unreachable at <url>` line, exit `1`.
 
 - `--url` (either mode) probes the data plane without a credential: `GET /readyz` is `200 ready`, `503 not ready` with the models that have no healthy deployment, `unreachable`, or `not ready` with the reason when the body is not the gateway's JSON (a proxy page answering 200 never reads as ready); the URL must be http(s) without credentials, a query or a fragment. A probed plane that is not ready or unreachable makes the exit code `1` after the view is printed. Without `--url` the line reads `not probed`.
 - **Online** the view comes from three reads: `GET /admin/config` (the served config as PascalCase JSON, from which `status` reads only `listen_addr`, the configured key count and the admin store — the body carries key hashes, which are never decoded or printed), `GET /admin/deployments` (the live table: `name | model | upstream_model | provider | kind | healthy | weight | latency_factor_percent | sticky`) and `GET /admin/virtual_keys` (the live key count, admin-API changes included).
@@ -237,7 +237,7 @@ What the gateway serves (RFC-3 decision 10; on `main` since 2026-10-10, not in `
 kelvran spend [--by key] [--admin-url URL] [--admin-token-file PATH] [--config PATH] [--allow-insecure-http] [--json]
 ```
 
-Spend per virtual key (RFC-3 decisions 5 and 10; on `main` since 2026-10-10, not in `gateway/v0.17.0`): `GET /admin/virtual_keys?include=spend` rendered as `key | spent_usd | budget_usd | percent_used | expires_at`, the same cell spellings as `keys list --spend` (`unlimited`, `never`, `n/a`). A row whose spend could not be read shows `n/a`, the stderr line `kelvran spend: spend unavailable for N key(s): budget backend error` follows and the exit code is `1`. `--by` defaults to `key`; `model`, `tool` and `session` are refused with `needs the spend ledger (plan item 13d, RFC-2 …)` until that ledger lands; any other value is a usage error. `--json` prints the served entries as one document.
+Spend per virtual key (RFC-3 decisions 5 and 10; since `gateway/v0.18.0`): `GET /admin/virtual_keys?include=spend` rendered as `key | spent_usd | budget_usd | percent_used | expires_at`, the same cell spellings as `keys list --spend` (`unlimited`, `never`, `n/a`). A row whose spend could not be read shows `n/a`, the stderr line `kelvran spend: spend unavailable for N key(s): budget backend error` follows and the exit code is `1`. `--by` defaults to `key`; `model`, `tool` and `session` are refused with `needs the spend ledger (plan item 13d, RFC-2 …)` until that ledger lands; any other value is a usage error. `--json` prints the served entries as one document.
 
 Spend lives only in the gateway's budget store, which the admin API fronts, so there is no offline view: with `--config` and no token the command fails closed — the same line `status` prints offline goes to stderr, exit `1` — and with neither a token nor `--config` it is exit `2`. The token order, the URL guard and the unreachable line are `keys`'.
 
@@ -255,7 +255,7 @@ kelvran connect claude [--url http://127.0.0.1:8080] [--key-file PATH] [--write]
 kelvran connect codex|aider|continue [--url http://127.0.0.1:8080] [--key-file PATH]
 ```
 
-The client configuration that points a coding tool at this gateway (RFC-3 decision 8, gate G32's defaults; on `main` since 2026-10-10, not in `gateway/v0.17.0`). The virtual key comes from `--key-file`, else the file `KELVRAN_KEY_FILE` names, else `ANTHROPIC_AUTH_TOKEN` in this shell — the export `init` printed, so after pasting it `connect` needs no file; never `OPENAI_API_KEY`, which in the same shell is the upstream credential an `openai` deployment reads. None of the three → exit `1` naming them. `--url` is the gateway's base URL without a path (Claude Code appends `/v1/messages`, the OpenAI SDKs `/v1/…`); its host must be an IP address or a hostname, since it is pasted into shell lines. The key must be a bearer token: a value carrying whitespace, a control character or a byte outside `A-Z a-z 0-9 - . _ ~ + / =` could never authenticate and is exit `1` naming its source (the file or the variable), never its value; `--key-file` must be a regular file.
+The client configuration that points a coding tool at this gateway (RFC-3 decision 8, gate G32's defaults; since `gateway/v0.18.0`). The virtual key comes from `--key-file`, else the file `KELVRAN_KEY_FILE` names, else `ANTHROPIC_AUTH_TOKEN` in this shell — the export `init` printed, so after pasting it `connect` needs no file; never `OPENAI_API_KEY`, which in the same shell is the upstream credential an `openai` deployment reads. None of the three → exit `1` naming them. `--url` is the gateway's base URL without a path (Claude Code appends `/v1/messages`, the OpenAI SDKs `/v1/…`); its host must be an IP address or a hostname, since it is pasted into shell lines. The key must be a bearer token: a value carrying whitespace, a control character or a byte outside `A-Z a-z 0-9 - . _ ~ + / =` could never authenticate and is exit `1` naming its source (the file or the variable), never its value; `--key-file` must be a regular file.
 
 ### `connect claude`
 

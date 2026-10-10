@@ -61,7 +61,7 @@ Container state and logs: `docker compose ps` lists the running services; the ga
 - `OTEL_EXPORTER_OTLP_INSECURE=true` in the environment. A no-op under the default `telemetry.exporter: "stdout"`; required once you point `exporter: "otlp"` at the plain-HTTP `observability` receiver.
 - `./gateway/config.yaml` mounted read-only at `/config.yaml`. This is the service's only volume, and the scratch image has no directory UID 65532 can write (it copies in only the CA bundle and `/gateway`, both root-owned), so a `budget.persist_path`, `admin.persist_path` or `prompt.persist_path` pointing inside the container fails at startup (`opening … store at …: … permission denied` or `… no such file or directory`) rather than silently losing data. Mount a volume UID 65532 can write (on Linux, a bind-mounted host directory you `chown 65532`) and point `persist_path` into it, or use Redis for state that must survive.
 - No `depends_on`: a `config.yaml` without any `redis_addr` runs fully in memory.
-- The image is `FROM scratch`: `/gateway`, `/kelvran` (the companion CLI, since 2026-10-10), the CA bundle, no shell. It runs as UID/GID `65532:65532`, `ENTRYPOINT ["/gateway"]`, `CMD ["-config", "/config.yaml"]`.
+- The image is `FROM scratch`: `/gateway`, `/kelvran` (the companion CLI, since `gateway/v0.18.0`), the CA bundle, no shell. It runs as UID/GID `65532:65532`, `ENTRYPOINT ["/gateway"]`, `CMD ["-config", "/config.yaml"]`.
 - Inside a cgroup memory limit the process sets `GOMEMLIMIT` to 90% of it; `AUTOMEMLIMIT=off` skips the probe.
 
 ## Variants

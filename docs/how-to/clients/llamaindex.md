@@ -53,7 +53,7 @@ print(last.message.content)
 
 `stream_chat()` yields one `ChatResponse` per delta (four for a three-line answer in the recording). Each carries the text accumulated so far in `.message.content`, so the last one holds the whole answer; the per-delta increment is on `.delta` (check your client version).
 
-On the wire this is `Content-Type: text/event-stream`, one `data: {...}` frame per chunk, ending with `data: [DONE]`. Whether a usage-only frame precedes `[DONE]` depends on the deployment's provider and on cache replays ([Streaming](../streaming.md)). That frame carries `"choices": []` on main since 2026-10-09, not in gateway/v0.17.0, which sends `"choices": null` there and breaks this call; see Gotchas.
+On the wire this is `Content-Type: text/event-stream`, one `data: {...}` frame per chunk, ending with `data: [DONE]`. Whether a usage-only frame precedes `[DONE]` depends on the deployment's provider and on cache replays ([Streaming](../streaming.md)). That frame carries `"choices": []` since gateway/v0.18.0; gateway/v0.17.0 and earlier send `"choices": null` there and break this call; see Gotchas.
 
 ### 4. List the models the key may call
 
@@ -63,11 +63,11 @@ The LlamaIndex LLM classes expose no model-listing call in the recording. Read `
 curl -s http://localhost:8080/v1/models -H "Authorization: Bearer $KELVRAN_KEY"
 ```
 
-It returns one entry per canonical `model:` name the calling key may use (its `allowed_models` filter applies), sorted by `id`, with no upstream call. The route is on main since 2026-10-08, not in gateway/v0.17.0, where the path is a 404. Same call in other clients: [curl](curl.md), [openai-python](openai-python.md).
+It returns one entry per canonical `model:` name the calling key may use (its `allowed_models` filter applies), sorted by `id`, with no upstream call. The route is present since gateway/v0.18.0; in gateway/v0.17.0 and earlier the path is a 404. Same call in other clients: [curl](curl.md), [openai-python](openai-python.md).
 
 ## How errors surface in this client
 
-Every data-plane error body is `{"error":{"message","type","param","code"}}`, all four keys always present; only `type` and `code` are a stable contract. `OpenAILike` calls through the `openai` Python package, which picks its exception class from the HTTP status and copies the envelope's `code` onto the exception. The JSON envelope is on main since 2026-10-08, not in gateway/v0.17.0, where the same statuses carry a `text/plain` body and `.code` is empty.
+Every data-plane error body is `{"error":{"message","type","param","code"}}`, all four keys always present; only `type` and `code` are a stable contract. `OpenAILike` calls through the `openai` Python package, which picks its exception class from the HTTP status and copies the envelope's `code` onto the exception. The JSON envelope is present since gateway/v0.18.0; in gateway/v0.17.0 and earlier the same statuses carry a `text/plain` body and `.code` is empty.
 
 | Status | `type` | `code` | Meaning | This client |
 |---|---|---|---|---|
@@ -97,7 +97,7 @@ except AuthenticationError as e:
 
 1. **`llama_index.llms.openai.OpenAI` rejects Kelvran model names.** `OpenAI(model="extractor", api_base=..., api_key=...)` raises `ValueError: Unknown model 'extractor'. Please provide a valid OpenAI model name in: o1, ...` before any request leaves the process: the class validates the name against OpenAI's own catalogue. Kelvran's canonical names are whatever `config.yaml` says, so use `OpenAILike` for every deployment, whether or not a name happens to match an OpenAI model.
 2. **`is_chat_model=True` is mandatory.** Without it LlamaIndex treats the model as a completion model and sends `POST /v1/completions`, a route the gateway does not register. The call fails with a 404 (`openai.NotFoundError`, check your client version) and nothing reaches a provider.
-3. **`stream_chat()` fails on gateway/v0.17.0.** The usage-only final frame of a stream has no choices. On main since 2026-10-09 the gateway writes it as `"choices": []`, OpenAI's shape, and `stream_chat()` completes. gateway/v0.17.0 writes `"choices": null` there, and `stream_chat()` raises `TypeError` inside `llama_index/llms/openai/base.py` when it reaches that frame, after the content deltas have arrived. The frame appears on `openai` and `openaicompat` deployments and on every cache or `Idempotency-Key` replay; live `anthropic` and `bedrock` streams send no usage frame ([Streaming](../streaming.md)). On gateway/v0.17.0, use `chat()` instead of `stream_chat()`, or catch the exception knowing the preceding delta already holds the full text.
+3. **`stream_chat()` fails on gateway/v0.17.0.** The usage-only final frame of a stream has no choices. Since gateway/v0.18.0 the gateway writes it as `"choices": []`, OpenAI's shape, and `stream_chat()` completes. gateway/v0.17.0 writes `"choices": null` there, and `stream_chat()` raises `TypeError` inside `llama_index/llms/openai/base.py` when it reaches that frame, after the content deltas have arrived. The frame appears on `openai` and `openaicompat` deployments and on every cache or `Idempotency-Key` replay; live `anthropic` and `bedrock` streams send no usage frame ([Streaming](../streaming.md)). On gateway/v0.17.0, use `chat()` instead of `stream_chat()`, or catch the exception knowing the preceding delta already holds the full text.
 4. **Only `type` and `code` are stable in errors.** The `message` text, such as `dataplane: auth: identity: invalid virtual key`, can change between releases; match on `e.code`, not on `str(e)`.
 
 ## What Kelvran adds that this client ignores

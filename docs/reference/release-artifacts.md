@@ -2,16 +2,16 @@
 
 This page lists exactly what a Kelvran release consists of: the archives, packages, SBOMs, checksums, Sigstore bundle, provenance attestation and container image tags that a `gateway/vX.Y.Z` or `evals/vX.Y.Z` tag produces, the pipeline stages that produce them, and the commands that verify each artifact. It is for operators who install or pin a release and for maintainers who cut one. The procedure for cutting a release is in [RELEASE.md](../../RELEASE.md); the version policy is in [docs/VERSIONING.md](../VERSIONING.md); the image's own reference card is [container-image.md](./container-image.md).
 
-## Status as of 2026-10-08
+## Status as of 2026-10-10
 
 | Item | State |
 |---|---|
-| Newest gateway tag | `gateway/v0.17.0` (2026-10-07) |
+| Newest gateway tag | `gateway/v0.18.0` (2026-10-10) |
 | Newest evals tag | `evals/v0.10.1` (2026-09-22) |
-| Gateway release pipeline (`.github/workflows/release.yml`, `gateway/.goreleaser.yaml`, `deploy/nfpm/postinstall.sh`, `scripts/release-preflight.sh`) | On main since 2026-10-08, not in `gateway/v0.17.0` |
+| Gateway release pipeline (`.github/workflows/release.yml`, `gateway/.goreleaser.yaml`, `deploy/nfpm/postinstall.sh`, `scripts/release-preflight.sh`) | Since `gateway/v0.18.0` |
 | Evals release pipeline (`.github/workflows/release-evals.yml`) | On main since 2026-10-08, not in `evals/v0.10.1` |
-| Release assets on any existing Release | None. Every Release at or before `gateway/v0.17.0` and `evals/v0.10.1` carries zero assets. Tags that predate the pipeline have no `.goreleaser.yaml` or preflight script in their tree and cannot be rebuilt by it (`release.yml` header). The first `gateway/v*` and `evals/v*` tags pushed after 2026-10-08 are the first Releases that carry assets |
-| Container image `ghcr.io/kelvran/gateway` | Published on every push to main since 2026-09-13. Multi-platform (`linux/amd64` + `linux/arm64`) for every image built on or after 2026-10-08 (on main since 2026-10-08, not in `gateway/v0.17.0`); the `:v0.17.0` image and earlier are `linux/amd64` only |
+| Release assets on any existing Release | `gateway/v0.18.0` is the first gateway Release that carries assets. Every Release at or before `gateway/v0.17.0` and `evals/v0.10.1` carries zero assets. Tags that predate the pipeline have no `.goreleaser.yaml` or preflight script in their tree and cannot be rebuilt by it (`release.yml` header). The first `evals/v*` tag pushed after 2026-10-08 is the first evals Release that carries assets |
+| Container image `ghcr.io/kelvran/gateway` | Published on every push to main since 2026-09-13. Multi-platform (`linux/amd64` + `linux/arm64`) for every image built on or after 2026-10-08 (since `gateway/v0.18.0`); the `:v0.17.0` image and earlier are `linux/amd64` only |
 
 ## Naming
 
@@ -48,13 +48,13 @@ One `gateway/vX.Y.Z` tag produces the following set. Every file except `checksum
 | `checksums.txt` | 1 | | `sha256sum` lines for every `kelvran-gateway_*` file, SBOMs included |
 | `checksums.txt.sigstore.json` | 1 | | Sigstore bundle from `cosign sign-blob` (keyless, GitHub OIDC) |
 
-`windows/arm64` is excluded (`ignore` in `gateway/.goreleaser.yaml`). Two binaries are built — `./cmd/gateway` and, on `main` since 2026-10-10 (first shipped by the next `gateway/v*` tag), the companion CLI `./cmd/kelvran` — and both land in every archive and package; `kelvran-bench` is not a release asset. The SLSA Build Level 2 provenance attestation produced by `actions/attest-build-provenance` is not a Release asset: GitHub stores it against the repository, keyed by each subject's digest, and `gh attestation verify <asset> -R kelvran/gateway` retrieves it.
+`windows/arm64` is excluded (`ignore` in `gateway/.goreleaser.yaml`). Two binaries are built — `./cmd/gateway` and, since `gateway/v0.18.0`, the companion CLI `./cmd/kelvran` — and both land in every archive and package; `kelvran-bench` is not a release asset. The SLSA Build Level 2 provenance attestation produced by `actions/attest-build-provenance` is not a Release asset: GitHub stores it against the repository, keyed by each subject's digest, and `gh attestation verify <asset> -R kelvran/gateway` retrieves it.
 
 ### Binary build parameters
 
 | Parameter | Value |
 |---|---|
-| Binary names | `kelvran-gateway` (GoReleaser build id `gateway`) and, since 2026-10-10, `kelvran` (build id `cli`); archives and packages carry no `ids:` filter (the `builds:` key is deprecated since GoReleaser 2.18), so both land in every one |
+| Binary names | `kelvran-gateway` (GoReleaser build id `gateway`) and, since `gateway/v0.18.0`, `kelvran` (build id `cli`); archives and packages carry no `ids:` filter (the `builds:` key is deprecated since GoReleaser 2.18), so both land in every one |
 | Main packages | `./cmd/gateway` and `./cmd/kelvran` (within `gateway/`) |
 | `CGO_ENABLED` | `0` |
 | Flags | `-trimpath` |
@@ -71,7 +71,7 @@ The three ldflags variable names (`main.version`, `main.commit`, `main.date`) ar
 | Path | Type | Source |
 |---|---|---|
 | `/usr/bin/kelvran-gateway` | binary | `bindir: /usr/bin` |
-| `/usr/bin/kelvran` | binary | `bindir: /usr/bin` (the `cli` build; since 2026-10-10) |
+| `/usr/bin/kelvran` | binary | `bindir: /usr/bin` (the `cli` build; since `gateway/v0.18.0`) |
 | `/usr/lib/systemd/system/kelvran-gateway.service` | file | [deploy/systemd/kelvran-gateway.service](../../deploy/systemd/kelvran-gateway.service) |
 | `/etc/kelvran-gateway/config.example.yaml` | `config\|noreplace` (a package upgrade never overwrites a modified copy) | [gateway/config.example.yaml](../../gateway/config.example.yaml) |
 | `/usr/share/doc/kelvran-gateway/LICENSE` | file | repository `LICENSE` (Apache-2.0) |
@@ -204,7 +204,7 @@ Build arguments passed to `gateway/Dockerfile`: `VERSION=<build identity>`, `COM
 
 | Property | Value |
 |---|---|
-| Platforms | `linux/amd64`, `linux/arm64` as one multi-platform index (on main since 2026-10-08, not in `gateway/v0.17.0`; `:v0.17.0` and earlier are `linux/amd64` only) |
+| Platforms | `linux/amd64`, `linux/arm64` as one multi-platform index (since `gateway/v0.18.0`; `:v0.17.0` and earlier are `linux/amd64` only) |
 | Index contents | Exactly the two platform manifests: buildx `provenance: false` and `sbom: false`, so no BuildKit `unknown/unknown` attestation manifests are added |
 | Build method | The builder stage runs on the build platform and cross-compiles with `GOOS=$TARGETOS GOARCH=$TARGETARCH`; no QEMU |
 | Digest to pin | The index digest, printed by `docker buildx imagetools inspect ghcr.io/kelvran/gateway:v<X.Y.Z>` |
@@ -214,7 +214,7 @@ Build arguments passed to `gateway/Dockerfile`: `VERSION=<build identity>`, `COM
 | Property | Value |
 |---|---|
 | Base | `FROM scratch` |
-| Files | `/gateway` (static binary, `CGO_ENABLED=0 -trimpath -ldflags "-s -w -X main.version -X main.commit -X main.date"`), `/kelvran` (the companion CLI, same flags and ldflags from a second `go build`; since 2026-10-10) and `/etc/ssl/certs/ca-certificates.crt` |
+| Files | `/gateway` (static binary, `CGO_ENABLED=0 -trimpath -ldflags "-s -w -X main.version -X main.commit -X main.date"`), `/kelvran` (the companion CLI, same flags and ldflags from a second `go build`; since `gateway/v0.18.0`) and `/etc/ssl/certs/ca-certificates.crt` |
 | `EXPOSE` | `8080` |
 | `USER` | `65532:65532` |
 | `ENTRYPOINT` | `["/gateway"]` |
@@ -369,8 +369,9 @@ scripts/release-preflight.sh evals <version>
 | `gateway/v0.15.0` | 2026-09-23 |
 | `gateway/v0.16.0` | 2026-09-28 |
 | `gateway/v0.17.0` | 2026-10-07 |
+| `gateway/v0.18.0` | 2026-10-10 |
 
-Dates are the first line of each `gateway/changelog/<version>.md`. None of these Releases carries the assets described on this page.
+Dates are the first line of each `gateway/changelog/<version>.md`. None of the Releases up to `gateway/v0.17.0` carries the assets described on this page; `gateway/v0.18.0` is the first that does.
 
 ### Support window (docs/VERSIONING.md section 6)
 
@@ -382,7 +383,7 @@ Dates are the first line of each `gateway/changelog/<version>.md`. None of these
 
 | Deployable | Latest minor | Previous minor | Security fixes for the previous minor until |
 |---|---|---|---|
-| `gateway` | `gateway/v0.17.0` (2026-10-07) | `gateway/v0.16.0` (2026-09-28) | 2027-01-05 |
+| `gateway` | `gateway/v0.18.0` (2026-10-10) | `gateway/v0.17.0` (2026-10-07) | 2027-01-08 |
 | `evals` | `evals/v0.10.1` (2026-09-22) | `evals/v0.10.0` (2026-09-21) | 2026-12-21 |
 
 A pre-release (`-rc.N` or similar) has no support window and may change or disappear without an [UPGRADE.md](../../UPGRADE.md) row. Upgrade steps are in [docs/how-to/upgrade.md](../how-to/upgrade.md); the policy behind the numbers is in the [versioning explanation](../explanation/versioning.md) and the compatibility matrix in [compatibility.md](./compatibility.md).
@@ -394,7 +395,7 @@ A pre-release (`-rc.N` or similar) has no support window and may change or disap
 - `kelvran-bench` as a release asset. Only `./cmd/gateway` and `./cmd/kelvran` are built.
 - PyPI publication of `kelvran-evals`. Blocked on trademark clearance.
 - An Artifact Hub listing for the image. The `io.artifacthub.package.*` labels are in place; registering the repository on artifacthub.io is a one-time owner action that has not been taken.
-- Any gateway or evals Release that carries signed assets, as of 2026-10-08. The newest tags (`gateway/v0.17.0`, `evals/v0.10.1`) predate both pipelines and cannot be rebuilt by them.
+- Signed assets on any gateway Release before `gateway/v0.18.0`, or on any evals Release as of 2026-10-10. `gateway/v0.17.0`, `evals/v0.10.1` and every earlier tag predate both pipelines and cannot be rebuilt by them.
 - Per-platform SBOM attestations for the image. One SBOM, generated against the index digest, is attested; the `ci.yml` comment records per-platform SBOMs as a follow-up.
 - Embedded GPG signatures on the deb, rpm or apk packages.
 - CI installation of the `.rpm` or `.apk`. Only the amd64 `.deb` is installed and started by the acceptance job.

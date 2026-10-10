@@ -73,7 +73,7 @@ Set `sticky: true` on the canary side only; if every member is sticky there is n
 
 ### 5. Turn on health probing
 
-Probing is off until the top-level `health_probe.interval_seconds` is above 0. Each tick sends one synthetic request per deployment, concurrently, with a 5 s timeout: a 1-token chat completion whose user text is `ping`, or for a `kind: embedding` deployment a one-string embedding (on main since 2026-10-08, not in gateway/v0.17.0). The first pass runs after the first interval, not at startup, and a never-probed deployment counts as healthy. Probes bypass auth, cache, guardrails, budgets and rate limits. Each probe is a real upstream call that the provider can charge for; Kelvran attributes it to no virtual key and does not count it in its own cost accounting.
+Probing is off until the top-level `health_probe.interval_seconds` is above 0. Each tick sends one synthetic request per deployment, concurrently, with a 5 s timeout: a 1-token chat completion whose user text is `ping`, or for a `kind: embedding` deployment a one-string embedding (since gateway/v0.18.0). The first pass runs after the first interval, not at startup, and a never-probed deployment counts as healthy. Probes bypass auth, cache, guardrails, budgets and rate limits. Each probe is a real upstream call that the provider can charge for; Kelvran attributes it to no virtual key and does not count it in its own cost accounting.
 
 ```yaml
 health_probe:
@@ -134,7 +134,7 @@ How a failed call resolves its chain:
 - `tpm_capacity` and `tpm_refill_per_second` are its tokens-per-minute ceiling, reserved before and reconciled after every call to it. Enforced since gateway/v0.17.0 (2026-10-07); a config that set them earlier starts limiting at that version.
 - `tpm_accounting` requires the TPM pair, else config load fails. `output_token_multiplier` (at least 1; unset means 1) weights completion tokens the way a provider quota does. `exclude_cache_read_tokens: true` drops cache-read tokens. The weighted count is prompt tokens, minus cache reads when excluded, plus completion tokens times the multiplier.
 - `max_concurrent_requests` bounds in-flight calls to this deployment, checked per hop.
-- A rejection is HTTP 503 with a `Retry-After` header, never the per-key 429. The JSON envelope that carries `code: deployment_capacity_exceeded` is on main since 2026-10-08, not in gateway/v0.17.0. Inside a chain the rejection is a `generic` failure and the walk moves to the next hop. Health probes are never gated by these ceilings. See [error-codes.md](../reference/error-codes.md).
+- A rejection is HTTP 503 with a `Retry-After` header, never the per-key 429. The JSON envelope that carries `code: deployment_capacity_exceeded` is present since gateway/v0.18.0. Inside a chain the rejection is a `generic` failure and the walk moves to the next hop. Health probes are never gated by these ceilings. See [error-codes.md](../reference/error-codes.md).
 - All three ceilings are in-memory per gateway instance, even when the per-key limiter is backed by Redis.
 
 ### 8. Validate, then start or restart
@@ -165,7 +165,7 @@ Without `fallback_chains`, an upstream error gets exactly one re-pick in the sam
 
 ### Streaming requests
 
-Fallback, by chain or by single re-pick, happens only before the first chunk reaches the client. After the first chunk no hop is attempted and the stream ends with the error (delivered as an in-band SSE error frame on main since 2026-10-08, not in gateway/v0.17.0). See [streaming.md](streaming.md).
+Fallback, by chain or by single re-pick, happens only before the first chunk reaches the client. After the first chunk no hop is attempted and the stream ends with the error (delivered as an in-band SSE error frame since gateway/v0.18.0). See [streaming.md](streaming.md).
 
 ## Verify it worked
 
