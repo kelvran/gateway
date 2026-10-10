@@ -122,8 +122,8 @@ func TestBodySummaryKeepsOnlyTheFirstLineAndRedactsBeforeTheCut(t *testing.T) {
 	if strings.Contains(got, "ss") || !strings.Contains(got, "***") {
 		t.Errorf("the secret must be redacted before truncation: %q", got)
 	}
-	if v := tokenVariants("tok+en"); len(v) != 6 || v[0] != "tok+en" || v[1] != "tok%2Ben" || v[2] != "%74%6F%6B%2B%65%6E" || v[3] != "746f6b2b656e" || v[4] != "746F6B2B656E" {
-		t.Errorf("tokenVariants = %q (the six-byte token needs no base64 padding, so the Raw and padded alphabets deduplicate to two)", v)
+	if v := tokenVariants("tok+en"); len(v) != 7 || v[0] != "tok+en" || v[1] != "tok%2Ben" || v[2] != "%74%6F%6B%2B%65%6E" || v[3] != "746f6b2b656e" || v[4] != "746F6B2B656E" || v[6] != "TOK+EN" {
+		t.Errorf("tokenVariants = %q (the six-byte token needs no base64 padding, so the Raw and padded alphabets deduplicate to two; the upper-cased spelling is last, the lower-cased one deduplicates with the raw token)", v)
 	}
 	if v := tokenVariants(`to"ken`); !strings.Contains(strings.Join(v, "|"), `to\"ken`) {
 		t.Errorf("the Go-quoted spelling %%q produces must be a variant: %q", v)

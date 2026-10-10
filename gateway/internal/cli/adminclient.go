@@ -280,6 +280,8 @@ func tokenVariants(token string) []string {
 		base64.RawStdEncoding.EncodeToString([]byte(token)),
 		base64.URLEncoding.EncodeToString([]byte(token)),
 		base64.RawURLEncoding.EncodeToString([]byte(token)),
+		strings.ToUpper(token), // a server that case-folds what it echoes
+		strings.ToLower(token),
 	}
 	seen := map[string]bool{}
 	var out []string

@@ -217,8 +217,8 @@ Read `/readyz` with care:
 
 - No JSON Schema or machine-generated reference for `config.yaml`; the annotated `gateway/config.example.yaml` is the reference.
 - No OpenAPI document for `/v1/*` or the admin API.
-- No `kelvran connect` yet. `kelvran init`, `kelvran doctor`, `kelvran keys`, `kelvran status` and `kelvran spend` are on `main` since 2026-10-10, not in `gateway/v0.17.0` ([reference](../reference/kelvran-cli.md)).
-- No Anthropic Messages API (`/v1/messages`); Claude Code's native Anthropic mode cannot target Kelvran. See [Compatibility](../reference/compatibility.md).
+- No `connect --write` for `codex`, `aider` or `continue` (print-only until their documentation is archived); the `kelvran` CLI itself (`init`, `doctor`, `keys`, `status`, `spend`, `connect`) is on `main` since 2026-10-10, not in `gateway/v0.17.0` ([reference](../reference/kelvran-cli.md)).
+- No Anthropic Messages API (`/v1/messages`); Claude Code's native Anthropic mode cannot target Kelvran, which `kelvran connect claude --check` reports as a 404. See [Compatibility](../reference/compatibility.md).
 - No `-validate` strict mode, unknown-key detection, JSON output, or env-var, file or Redis reachability checks (`kelvran doctor` covers the env-var and file checks, with `--json`).
 - No `${VAR}` interpolation inside `config.yaml`; the parser is a literal `key: value` subset.
 - No `schema_version` key in `config.yaml`.
