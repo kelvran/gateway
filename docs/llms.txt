@@ -28,6 +28,8 @@ Versions follow docs/VERSIONING.md (gateway/vX.Y.Z and evals/vX.Y.Z; a PATCH nev
 - [curl](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/curl.md): exact requests for every data-plane route
 - [LangChain](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/langchain.md): ChatOpenAI pointed at the gateway, errors as LangChain raises them
 - [LlamaIndex](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/llamaindex.md): OpenAILike with is_chat_model, why the plain OpenAI class does not work
+- [Claude Code](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/claude-code.md): ANTHROPIC_BASE_URL plus one credential variable, discovery and hint headers, the Bedrock recipe (betas off, attribution header off, or accept_lossy_anthropic_ingress), connect --check, the 404 count_tokens fallback
+- [Anthropic Python SDK](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/anthropic-python.md): Anthropic(base_url=...) with api_key as x-api-key, buffered and streamed messages, models.list, count_tokens 404, the Anthropic envelope with Kelvran's code
 - [Vercel AI SDK](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/vercel-ai-sdk.md): openai.chat() or the openai-compatible provider, never the Responses API default
 
 ## Reference

@@ -348,10 +348,13 @@ func checkClaude(ctx context.Context, env IO, base, secret string) error {
 	case status >= 300 && status < 400:
 		out.printf("probe: POST %s/v1/messages answered %d — a redirect, not followed (the probe never carries the key to a second host); point --url at the gateway itself, not at a proxy or portal in front of it\n", sanitizeCell(base), status)
 		verdict = runtimeErr("%s redirected the probe (%d)", base, status)
-	case status == http.StatusOK || (status == http.StatusBadRequest && isModelNotFound(resp)):
+	case status == http.StatusOK || (status == http.StatusBadRequest && isModelNotFound(resp)) || (status == http.StatusForbidden && isModelNotAllowed(resp)):
 		why := ""
 		if status == http.StatusBadRequest {
 			why = " and rejected the probe's unknown model, as expected"
+		}
+		if status == http.StatusForbidden {
+			why = "; its allowed_models excludes the probe's placeholder model, as expected"
 		}
 		out.printf("probe: POST %s/v1/messages answered %d — URL and credential are good (the gateway authenticated the request%s)\n", sanitizeCell(base), status, why)
 	default:
@@ -375,13 +378,26 @@ func checkClaude(ctx context.Context, env IO, base, secret string) error {
 // error envelope has no `code` member: the /v1/messages ingress (RFC-1, plan
 // item 11) must keep Kelvran's `code` on its 400s for this branch to fire —
 // recorded as a cross-reference in that RFC.
-func isModelNotFound(body []byte) bool {
+func isModelNotFound(body []byte) bool { return probeCode(body) == "model_not_found" }
+
+// isModelNotAllowed: the key has allowed_models and the probe's placeholder
+// model is outside it. The gateway authenticates and checks the allowlist
+// before it routes, so this answer proves URL and credential exactly as
+// model_not_found does (item 11 slice S10b; every pilot key is allowlisted).
+func isModelNotAllowed(body []byte) bool { return probeCode(body) == "model_not_allowed" }
+
+// probeCode is error.code from either envelope the gateway writes -- the
+// OpenAI shape and the Anthropic shape both carry it at error.code.
+func probeCode(body []byte) string {
 	var env struct {
 		Error struct {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	return json.Unmarshal(body, &env) == nil && env.Error.Code == "model_not_found"
+	if json.Unmarshal(body, &env) != nil {
+		return ""
+	}
+	return env.Error.Code
 }
 
 // dataPlanePost is one bearer POST against the data plane: status and up to

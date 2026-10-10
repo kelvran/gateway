@@ -77,7 +77,7 @@ The gateway parses `config.yaml` with a hand-rolled YAML subset, not a YAML libr
 
 ## `virtual_keys.<name>`
 
-Each entry is a tenant credential issued by Kelvran. The entry name is the key's ID. Clients send the raw secret as `Authorization: Bearer <secret>` (or, on `GET /v1/models`, as `x-api-key: <secret>`); the file holds only the SHA-256 hash of that secret.
+Each entry is a tenant credential issued by Kelvran. The entry name is the key's ID. Clients send the raw secret as `Authorization: Bearer <secret>` (or, on `GET /v1/models`, `POST /v1/messages` and `POST /v1/messages/count_tokens`, as `x-api-key: <secret>`); the file holds only the SHA-256 hash of that secret.
 
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|

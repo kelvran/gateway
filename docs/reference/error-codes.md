@@ -6,7 +6,7 @@ This page lists every error the gateway's data plane can return: the JSON envelo
 
 | Item | Value |
 |---|---|
-| Routes covered | `POST /v1/chat/completions` (buffered and SSE), `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (buffered and SSE; the Anthropic envelope below, since gateway/v0.19.0) |
+| Routes covered | `POST /v1/chat/completions` (buffered and SSE), `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (buffered and SSE; the Anthropic envelope below, since gateway/v0.19.0), `POST /v1/messages/count_tokens` (the Anthropic envelope; `404` `count_tokens_unavailable` for every deployment until slice S11) |
 | Routes not covered | `GET /healthz`, `GET /readyz`, every `/admin/*` route, unknown paths (see [Routes outside the envelope](#routes-outside-the-envelope)) |
 | JSON error envelope | since `gateway/v0.18.0`. `gateway/v0.17.0` returns a `text/plain` body with no `type` or `code`, with the same status codes and the same message text except for the `tool_choice` statuses and the message changes listed two rows below |
 | `GET /v1/models` | since `gateway/v0.18.0` |
@@ -38,7 +38,7 @@ Every data-plane error body has this shape. All four keys are always present; `p
 {"type":"error","error":{"type":"invalid_request_error","message":"dataplane: no deployment configured for requested model","code":"model_not_found"}}
 ```
 
-The `type` is Anthropic's vocabulary, derived from the status: `400`/`405`/`422` `invalid_request_error`, `401` `authentication_error`, `403` `permission_error`, `404` `not_found_error`, `413` `request_too_large`, `429` `rate_limit_error` (a budget 429 as well; its `code` stays `insufficient_quota`), every 5xx `api_error`. Every `code` in the tables below means the same thing on both envelopes. One addition: when an upstream rejected the prompt as too long, the `message` starts with `capability_rejected: prompt_too_long` (the marker Claude Code's recovery matches on), then the redacted text.
+The `type` is Anthropic's vocabulary, derived from the status: `400`/`405`/`422` `invalid_request_error`, `401` `authentication_error`, `403` `permission_error`, `404` `not_found_error`, `413` `request_too_large`, `429` `rate_limit_error` (a budget 429 as well; its `code` stays `insufficient_quota`), every 5xx `api_error` (`404` `not_found_error` appears only on `/v1/messages/count_tokens`). Every `code` in the tables below means the same thing on both envelopes. One addition: when an upstream rejected the prompt as too long, the `message` starts with `capability_rejected: prompt_too_long` (the marker Claude Code's recovery matches on), then the redacted text.
 
 ### Response headers on every error
 
@@ -73,11 +73,11 @@ If marshalling the envelope ever fails, this fixed body is written instead, with
 
 ## Pipeline codes
 
-These are produced after the request body is accepted, by the shared error writers for all four routes (the OpenAI envelope on three, the Anthropic envelope on `/v1/messages`). `Retry-After` is as described under [`Retry-After`](#retry-after); the column states the outcome for `/v1/chat/completions` and `/v1/messages`, which follow one rule. `/v1/embeddings` and `/v1/models` never set it.
+These are produced after the request body is accepted, by the shared error writers for all five routes (the OpenAI envelope on three, the Anthropic envelope on `/v1/messages` and `/v1/messages/count_tokens`). `Retry-After` is as described under [`Retry-After`](#retry-after); the column states the outcome for `/v1/chat/completions`, `/v1/messages` and `/v1/messages/count_tokens` (its rate-limit 429 carries it), which follow one rule. `/v1/embeddings` and `/v1/models` never set it.
 
-`/v1/models` can produce only the three 401 codes and 403 `source_ip_not_allowed`. `/v1/messages` produces every `/v1/chat/completions` row plus `lossy_ingress_rejected`, under the Anthropic envelope (see [Envelope](#envelope)); its decoder never produces `invalid_tool_choice` (it takes the Anthropic `tool_choice` forms), but a forced tool that `tools[]` does not define still does; a missing `model`, `max_tokens` or `messages` is `missing_required_parameter` naming it. `/v1/embeddings` never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded`, `empty_messages`, `invalid_prompt_reference`, `streaming_not_supported`, `streaming_not_configured`, `response_format_unsupported`, `idempotency_key_reused` or `tool_result_parts_unsupported`; `/v1/chat/completions` never produces `not_an_embedding_model` or `embeddings_not_configured`; every other row applies to both POST routes.
+`/v1/models` can produce only the three 401 codes and 403 `source_ip_not_allowed`. `/v1/messages` produces every `/v1/chat/completions` row plus `lossy_ingress_rejected`, under the Anthropic envelope (see [Envelope](#envelope)); its decoder never produces `invalid_tool_choice` (it takes the Anthropic `tool_choice` forms), but a forced tool that `tools[]` does not define still does; a missing `model`, `max_tokens` or `messages` is `missing_required_parameter` naming it. `/v1/messages/count_tokens` produces the three 401 codes, both 403 codes, `rate_limit_exceeded`, `model_not_found`, `missing_required_parameter` (`param` `model`) and its own `404` `count_tokens_unavailable`, never a budget, cache or upstream row. `/v1/embeddings` never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded`, `empty_messages`, `invalid_prompt_reference`, `streaming_not_supported`, `streaming_not_configured`, `response_format_unsupported`, `idempotency_key_reused` or `tool_result_parts_unsupported`; `/v1/chat/completions` never produces `not_an_embedding_model` or `embeddings_not_configured`; every other row applies to both POST routes.
 
-| Status | `type` | `code` | `param` | `Retry-After` (chat, messages) | Raised when | Message begins with (not a contract) |
+| Status | `type` | `code` | `param` | `Retry-After` (chat, messages, count_tokens) | Raised when | Message begins with (not a contract) |
 |---|---|---|---|---|---|---|
 | 401 | `authentication_error` | `null` | `null` | no | `Authorization: Bearer` header missing or malformed | `dataplane: auth: identity: missing or malformed Authorization header` |
 | 401 | `authentication_error` | `invalid_api_key` | `null` | no | The bearer token hashes to no configured virtual key | `dataplane: auth: identity: invalid virtual key` |
@@ -87,6 +87,7 @@ These are produced after the request body is accepted, by the shared error write
 | 429 | `insufficient_quota` | `insufficient_quota` | `null` | no | The key has spent its `budget_usd` | `dataplane: budget exceeded` |
 | 403 | `permission_error` | `model_not_allowed` | `null` | no | The key has an `allowed_models` list that excludes the requested model | `dataplane: model not allowed for this virtual key` |
 | 403 | `permission_error` | `source_ip_not_allowed` | `null` | yes | The key has an `allowed_source_cidrs` list that excludes the client IP | `dataplane: source IP not allowed for this virtual key` |
+| 404 | `not_found_error` (Anthropic envelope) | `count_tokens_unavailable` | `null` | no | `/v1/messages/count_tokens` only: the model's deployment cannot count tokens — every deployment until slice S11 adds the `anthropic` branch. One RPM token consumed; no budget, cache or upstream touched. Since `gateway/v0.19.0` | `dataplane: token counting is not available for this model's deployment` |
 | 400 | `invalid_request_error` | `model_not_found` | `null` | no | No deployment serves the requested model. No upstream call is made | `dataplane: no deployment configured for requested model` |
 | 400 | `invalid_request_error` | `content_policy_violation` | `null` | no | A Block-tier guardrail verdict rejected the request (pre-call or post-call), or a Block-tier detector errored | `dataplane: request blocked by guardrail policy` |
 | 400 | `invalid_request_error` | `empty_messages` | `"messages"` | no | The request resolves to zero messages (sent `messages: []` with no `prompt_id`, or the prompt resolved to an empty list) | `dataplane: request resolved to zero messages` |
@@ -125,10 +126,10 @@ These are produced before the pipeline runs, while the handler reads and validat
 
 | Status | `code` | `param` | Routes | Raised when | Message (not a contract) |
 |---|---|---|---|---|---|
-| 405 | `method_not_allowed` | `null` | all four `/v1` routes and `HEAD /api/hello` (`Allow: HEAD`) | Wrong HTTP method. The `Allow` header lists the permitted method | `method not allowed` |
-| 413 | `request_too_large` | `null` | chat, embeddings, messages | Request body exceeds 32 MiB (on `/v1/messages` the Anthropic `type` is `request_too_large` as well) | `request body too large` |
-| 400 | `invalid_body` | `null` | chat, embeddings, messages | The body could not be read for a reason other than size | `reading request body` |
-| 400 | `invalid_json` | `null` | chat, embeddings, messages | The body is not valid JSON for the request type (on `/v1/messages`: not a JSON object) | `invalid request body: <decoder error>`; messages: `anthropicmsgs: request body is not a JSON object` |
+| 405 | `method_not_allowed` | `null` | all five `/v1` routes and `HEAD /api/hello` (`Allow: HEAD`) | Wrong HTTP method. The `Allow` header lists the permitted method | `method not allowed` |
+| 413 | `request_too_large` | `null` | chat, embeddings, messages, count_tokens | Request body exceeds 32 MiB (on `/v1/messages` the Anthropic `type` is `request_too_large` as well) | `request body too large` |
+| 400 | `invalid_body` | `null` | chat, embeddings, messages, count_tokens | The body could not be read for a reason other than size | `reading request body` |
+| 400 | `invalid_json` | `null` | chat, embeddings, messages, count_tokens | The body is not valid JSON for the request type (on `/v1/messages`: not a JSON object) | `invalid request body: <decoder error>`; messages: `anthropicmsgs: request body is not a JSON object` |
 | 400 | `invalid_tool_choice` | `"tool_choice"` | chat, messages | `tool_choice` is not `"auto"`, `"required"`, `"none"`, `{"type":"function","function":{"name":...}}` or the canonical `{"mode":...}` object; `type` is `allowed_tools` or `custom`; `mode` and `type` both set; `{"type":"function"}` without a `function.name`; `mode: "tool"` without `tool_name`; or the forced tool is not defined in `tools[]` | `adapter: invalid tool_choice: <detail>` |
 | 400 | `invalid_request` | `null` | chat | More than 2000 messages; more than 256 tool definitions; one message `content`, content-part `text` or content-part `data` field over 8 MiB; a content part whose base64 does not decode; a content part whose declared `media_type` category differs from the sniffed type; or a `response_format.json_schema.schema` or `tools[].parameters` schema that is not valid JSON or exceeds 32 levels of nesting or 10000 JSON tokens | names the bound or check that failed, for example `adapter: messages exceeds this gateway's per-request message-count bound: 2001 messages, max 2000` |
 | 400 | `invalid_request` | `"limit"` | models | `limit` is not a positive integer | `limit must be a positive integer` |
@@ -137,6 +138,7 @@ These are produced before the pipeline runs, while the handler reads and validat
 | 400 | `missing_required_parameter` | `"model"` | embeddings | `model` is empty | `model is required` |
 | 400 | `missing_required_parameter` | `"input"` | embeddings | `input` is missing or empty | `input is required and must be non-empty` |
 | 400 | `missing_required_parameter` | `"model"`, `"max_tokens"` or `"messages"` | messages | The Anthropic Messages body lacks the member named | `anthropicmsgs: <member> is required` |
+| 400 | `missing_required_parameter` | `"model"` | count_tokens | `model` is empty or absent | `model is required` |
 | 400 | `invalid_request` | `null` | messages | The same bounds as the chat row above, or a member the Anthropic parser refused (a `tool_choice` form it does not know, a wrong JSON type, duplicate members, nesting deeper than 64) | `anthropicmsgs: invalid field: ...` |
 
 ## `param`
@@ -247,7 +249,7 @@ The envelope follows OpenAI's shape so that the official OpenAI SDKs choose thei
 
 ## Related pages
 
-- [`data-plane-api.md`](data-plane-api.md): the four routes, their request and response shapes.
+- [`data-plane-api.md`](data-plane-api.md): the five routes, their request and response shapes.
 - [`metrics-and-logs.md`](metrics-and-logs.md): the `error.type` attribute and the `chat_completion` / `embeddings` log lines that carry the unredacted text.
 - [`../how-to/troubleshooting.md`](../how-to/troubleshooting.md): what to do about each error.
 - [`../how-to/virtual-keys-and-budgets.md`](../how-to/virtual-keys-and-budgets.md): the limits behind 429, 403 and `insufficient_quota`.

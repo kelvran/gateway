@@ -15,7 +15,7 @@ This page shows how to drive the gateway's data plane from a shell with `curl`: 
 
 ### 1. Point curl at the gateway
 
-The base URL ends in `/v1`. Every `/v1` route sits under it and every one of them requires `Authorization: Bearer <raw virtual-key secret>`; `x-api-key` is accepted on `GET /v1/models` and `POST /v1/messages`, as the bearer's alias. `GET /healthz`, `GET /readyz` and `HEAD /api/hello` sit outside `/v1` and take no credentials.
+The base URL ends in `/v1`. Every `/v1` route sits under it and every one of them requires `Authorization: Bearer <raw virtual-key secret>`; `x-api-key` is accepted on `GET /v1/models`, `POST /v1/messages` and `POST /v1/messages/count_tokens`, as the bearer's alias. `GET /healthz`, `GET /readyz` and `HEAD /api/hello` sit outside `/v1` and take no credentials.
 
 ```bash
 export KELVRAN_BASE_URL="http://localhost:8080/v1"
@@ -208,7 +208,7 @@ What it returns on gateway/v0.18.0 and later: `HTTP/1.1 401 Unauthorized`, `Cont
 
 ## Not available today
 
-- No `POST /v1/messages/count_tokens` yet (Claude Code falls back to a character-based estimate). Seven routes exist: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (the Anthropic Messages shape; `x-api-key` read on it and on `GET /v1/models`), `GET /healthz`, `GET /readyz`, `HEAD /api/hello`.
+- No exact token counts yet: `POST /v1/messages/count_tokens` answers `404` `count_tokens_unavailable` until the passthrough leg adds the `anthropic` branch (Claude Code falls back to a character-based estimate). Eight routes exist: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (the Anthropic Messages shape), `POST /v1/messages/count_tokens`, `GET /healthz`, `GET /readyz`, `HEAD /api/hello`.
 - No OpenAI content-array messages (`"content":[{"type":"text",…}]`); `content` must be a string. Images and documents go in Kelvran's own `parts` array; sending the OpenAI array form is a `400 invalid_json`.
 - No OpenAI-shaped streaming tool-call deltas; the flat shape above is what you get.
 - No `X-Kelvran-Overhead-Duration-Ms` on streaming responses.

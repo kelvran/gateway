@@ -10,6 +10,7 @@ Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several i
 |---|---|---|
 | `GET /v1/models` | `gateway/cmd/gateway/models_handler.go` | Route absent |
 | `POST /v1/messages` (the Anthropic Messages ingress, buffered and SSE, Anthropic error envelope, `x-api-key` alias) | `gateway/cmd/gateway/messages_handler.go` | Route absent (404) |
+| `POST /v1/messages/count_tokens` (authenticated, allowlisted, one RPM token; `404` `count_tokens_unavailable` until the `anthropic` branch) and `connect claude --check` reading `403` `model_not_allowed` as a proven credential | `gateway/cmd/gateway/count_tokens_handler.go`, `gateway/internal/cli/connect.go` | Route absent (plain 404); `--check` exits 1 on every key, allowlisted or not, because `/v1/messages` is absent too |
 | OpenAI `tool_choice` string and function-object forms | `gateway/internal/adapter/tool_choice_wire.go` | String form: `400 invalid request body`; object form: `502 unknown tool_choice mode ""` |
 | OpenAI-shaped JSON error envelope | `gateway/cmd/gateway/error_envelope.go` | `text/plain` body, same status codes |
 | `id`, `object`, `created` on every completion and chunk | `gateway/internal/gateway/dataplane/completion_envelope.go` | Bedrock responses carry `"id": ""`; no response carries `object` or `created` |
@@ -31,13 +32,14 @@ Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several i
 | `POST` | `/v1/embeddings` | `Authorization: Bearer <virtual key secret>` | In `gateway/v0.17.0` |
 | `GET` | `/v1/models` | `Authorization: Bearer <virtual key secret>`; `401` envelope without it | Since `gateway/v0.18.0` |
 | `POST` | `/v1/messages` | `Authorization: Bearer <virtual key secret>` or `x-api-key: <virtual key secret>` | Since `gateway/v0.19.0` (item 11 slice S10a): the Anthropic Messages shape, buffered and streaming, with the Anthropic error envelope |
+| `POST` | `/v1/messages/count_tokens` | `Authorization: Bearer <virtual key secret>` or `x-api-key: <virtual key secret>` | Since `gateway/v0.19.0` (slice S10b): `404` `count_tokens_unavailable` for every deployment until the passthrough leg adds the `anthropic` branch |
 | `GET` | `/healthz`, `/readyz` | Not covered here | Operational routes, not OpenAI-shaped |
 
 `/v1/models` is registered on the exact path. `/v1/models/` (trailing slash) is a `404`, never a `301`.
 
 Not available today:
 
-- `POST /v1/messages/count_tokens` (item 11 slice S10b) and the raw-body passthrough to `anthropic` deployments (slice S11): every deployment is a translate hop today.
+- The raw-body passthrough to `anthropic` deployments (item 11 slice S11): every deployment is a translate hop today, and `POST /v1/messages/count_tokens` answers `404` until that slice adds the `anthropic` branch.
 - OpenAI Responses API, legacy Completions API, images, audio and files routes. `gateway/cmd/gateway/main.go` registers no such routes.
 - An OpenAPI document for `/v1/*`. It is planned as a condition for `gateway/v1.0.0` in [docs/VERSIONING.md](../VERSIONING.md).
 
@@ -45,14 +47,14 @@ Not available today:
 
 | Item | Behaviour |
 |---|---|
-| Header | `Authorization: Bearer <secret>` (`gateway/internal/identity/identity.go`); on `GET /v1/models` and `POST /v1/messages`, `x-api-key: <secret>` is the bearer's alias and a non-empty `Authorization` wins |
+| Header | `Authorization: Bearer <secret>` (`gateway/internal/identity/identity.go`); on `GET /v1/models`, `POST /v1/messages` and `POST /v1/messages/count_tokens`, `x-api-key: <secret>` is the bearer's alias and a non-empty `Authorization` wins |
 | Lookup | SHA-256 of the presented secret, matched against configured `key_hash` values |
 | Missing or malformed header | `401`, `type: authentication_error`, `code: null` |
 | Unknown key | `401`, `type: authentication_error`, `code: invalid_api_key` |
 | Expired key | `401`, `type: authentication_error`, `code: key_expired` — the key's `expires_at` has passed (since `gateway/v0.18.0`) |
-| `x-api-key` header | Read on `GET /v1/models` as the bearer's alias (`bearerFromRequest`, `gateway/cmd/gateway/mux.go`; a non-empty `Authorization` wins), not on the chat or embeddings routes. It also appears on the outgoing upstream request the gateway builds for `anthropic` deployments (`gateway/internal/gateway/dataplane/dataplane.go`, `setUpstreamAuthHeaders`) |
+| `x-api-key` header | Read on `GET /v1/models`, `POST /v1/messages` and `POST /v1/messages/count_tokens` as the bearer's alias (`bearerFromRequest`, `gateway/cmd/gateway/mux.go`; a non-empty `Authorization` wins), not on the chat or embeddings routes. It also appears on the outgoing upstream request the gateway builds for `anthropic` deployments (`gateway/internal/gateway/dataplane/dataplane.go`, `setUpstreamAuthHeaders`) |
 
-The OpenAI SDKs send the `api_key` constructor argument as `Authorization: Bearer`, so `OpenAI(base_url=…, api_key=os.environ["KELVRAN_KEY"])` authenticates with the raw virtual-key secret. The Anthropic SDK's default `x-api-key` path authenticates on `GET /v1/models` only (since item 11 slice S9a); on the chat and embeddings routes it is a `401`. Example secrets in [gateway/config.example.yaml](../../gateway/config.example.yaml) are `example-team-alpha-secret-do-not-use` and `example-team-beta-secret-do-not-use`.
+The OpenAI SDKs send the `api_key` constructor argument as `Authorization: Bearer`, so `OpenAI(base_url=…, api_key=os.environ["KELVRAN_KEY"])` authenticates with the raw virtual-key secret. The Anthropic SDK's default `x-api-key` path authenticates on `GET /v1/models` (since item 11 slice S9a), `POST /v1/messages` (S10a) and `POST /v1/messages/count_tokens` (S10b); on the chat and embeddings routes it is a `401`. Example secrets in [gateway/config.example.yaml](../../gateway/config.example.yaml) are `example-team-alpha-secret-do-not-use` and `example-team-beta-secret-do-not-use`.
 
 ## Request headers the gateway reads
 
@@ -405,18 +407,18 @@ The adapter registry is `newAdapterRegistry` in `gateway/cmd/gateway/main.go`. O
 |---|---|---|---|
 | `openai-python`, `openai-node` (`base_url` override) | Text chat (`content` as a string), tools with any accepted `tool_choice` form, `json_schema` and `json_object` output, buffered and streaming text, embeddings, `GET /v1/models` (since `gateway/v0.18.0`) | Content-array multimodal messages fail with `400 invalid_json`; streaming tool-call accumulators do not find `function.arguments`; `Idempotency-Key` body mismatch is `422` `idempotency_key_reused` since gateway/v0.19.0 (`502` before), not `400`; `max_completion_tokens` and the other dropped fields have no effect | No SDK client code or automated SDK test exists under `gateway/` or `scripts/`. OpenAI-shaped clients were exercised live during the 2026-10-07/08 verification that found defects F4 (`tool_choice` forms) and F7 (empty Bedrock `id`), and an unmodified OpenAI-compatible client (the Deep-Research planner, `response_format: json_object`) was routed through the gateway; see `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md` |
 | LangChain, LiteLLM and other OpenAI-compatible frameworks | Same as the OpenAI SDKs | Same | `type: insufficient_quota` is emitted so their retry logic treats a budget rejection as permanent |
-| `anthropic` SDK | Yes, since `gateway/v0.19.0` | `POST /v1/messages` buffered and streaming (item 11 slice S10a), through a translate hop — an `anthropic` deployment is shadow-encoded until the passthrough leg (S11) lands; `count_tokens` not yet (S10b). `GET /v1/models` answers in the SDK's list shape; both routes read its `x-api-key` | The only `anthropic` import in the repository is the evals LLM judge (`evals/evals/judge/providers.py`), which calls the provider directly, not the gateway |
-| Claude Code | Yes, since `gateway/v0.19.0` | `POST /v1/messages` (buffered and streaming, through a translate hop) plus `GET /v1/models` discovery; `count_tokens` not yet (S10b), so `/context` shows an estimate; a body carrying members the schema cannot hold needs `accept_lossy_anthropic_ingress` on the deployment or `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` on the client | Same |
+| `anthropic` SDK | Yes, since `gateway/v0.19.0` | `POST /v1/messages` buffered and streaming (item 11 slice S10a), through a translate hop — an `anthropic` deployment is shadow-encoded until the passthrough leg (S11) lands; `count_tokens` answers `404` until S11 (the SDK raises `NotFoundError`). `GET /v1/models` answers in the SDK's list shape; all three routes read its `x-api-key`. How-to: [anthropic-python.md](../how-to/clients/anthropic-python.md) | The only `anthropic` import in the repository is the evals LLM judge (`evals/evals/judge/providers.py`), which calls the provider directly, not the gateway |
+| Claude Code | Yes, since `gateway/v0.19.0` | `POST /v1/messages` (buffered and streaming, through a translate hop) plus `GET /v1/models` discovery; `count_tokens` answers `404` until S11, so `/context` shows an estimate; a body carrying members the schema cannot hold needs `accept_lossy_anthropic_ingress` on the deployment or `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` on the client | Same. How-to: [claude-code.md](../how-to/clients/claude-code.md) |
 | First-party Kelvran SDK | None | The OpenAI SDK `base_url` drop-in is the integration path | Recorded decision; see [why there is no SDK](../explanation/why-no-sdk.md) |
 
-Per-client how-tos: [OpenAI Python](../how-to/clients/openai-python.md), [OpenAI Node](../how-to/clients/openai-node.md), [curl](../how-to/clients/curl.md).
+Per-client how-tos: [OpenAI Python](../how-to/clients/openai-python.md), [OpenAI Node](../how-to/clients/openai-node.md), [curl](../how-to/clients/curl.md), [Anthropic Python](../how-to/clients/anthropic-python.md), [Claude Code](../how-to/clients/claude-code.md).
 
 ## Not available today
 
 - OpenAI `content` arrays on inbound messages (`[{type: text | image_url …}]`); multimodal content uses `parts`.
 - OpenAI request fields `n`, `seed`, `user`, `logprobs`, `top_logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `max_completion_tokens`, `parallel_tool_calls`, client-side `stream_options`, `store`, `metadata`, `service_tier`, `reasoning_effort`, `modalities`, `audio`, `prediction`, `web_search_options`; all dropped silently.
 - `tool_choice` types `allowed_tools` and `custom`; explicitly rejected with `400 invalid_tool_choice`.
-- Anthropic Messages ingress (`POST /v1/messages`) and `x-api-key` authentication. Designed, not built: `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md` (status proposed, awaiting the owner's decision).
+- The raw-body relay to `anthropic` deployments and the `count_tokens` `anthropic` branch (item 11 slice S11): `POST /v1/messages` is served since `gateway/v0.19.0` through a translate hop for every deployment, and `POST /v1/messages/count_tokens` answers `404` `count_tokens_unavailable` until then ([RFC-1](../rfcs/2026-10-09-gateway-anthropic-messages-ingress.md)).
 - OpenAI Responses API, Completions API, images, audio and files routes.
 - OpenAI-shaped streaming tool-call deltas (`delta.tool_calls[].function.arguments`).
 - `object` fields on the embeddings response.

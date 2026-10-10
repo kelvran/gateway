@@ -574,6 +574,12 @@ func TestConnectClaudeCheckReadsTheProbeHonestly(t *testing.T) {
 		{http.StatusBadGateway, "upstream down " + connectKey(), 1, "answered 502"},
 		{http.StatusBadRequest, `{"error":{"type":"invalid_request_error","code":"invalid_request","message":"remodel the body"}}`, 1, "answered 400"},
 		{http.StatusFound, "", 1, "point --url at the gateway itself"},
+		// An allowlisted key (every pilot key has allowed_models) answers the
+		// probe's placeholder model with 403 model_not_allowed: the gateway
+		// authenticated and checked the allowlist before routing, so URL and
+		// credential are proven (item 11 slice S10b).
+		{http.StatusForbidden, `{"type":"error","error":{"type":"permission_error","code":"model_not_allowed","message":"dataplane: model not allowed for this virtual key"}}`, 0, "URL and credential are good"},
+		{http.StatusForbidden, `{"type":"error","error":{"type":"permission_error","code":"source_ip_not_allowed","message":"dataplane: source IP not allowed"}}`, 1, "answered 403"},
 	} {
 		p = probe{status: tc.status, body: tc.body}
 		code, stdout, stderr := runConnectCmd(t, env, "claude", "--check", "--url", srv.URL)

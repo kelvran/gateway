@@ -30,7 +30,8 @@ import (
 // mock upstream) with the lossy flag as given, and five keys: all-secret,
 // mini-secret (allowed_models gpt-4o-mini only), burst-secret (one request
 // then a 429), tiny-budget-secret (one request then insufficient_quota),
-// scoped-secret (cache_scope_to_end_user).
+// scoped-secret (cache_scope_to_end_user), elsewhere-secret (allowed_source_cidrs
+// that exclude the loopback peer every test request comes from).
 func newMessagesIntegrationServer(t *testing.T, upstreamURL string, acceptLossy bool, logger *slog.Logger) *httptest.Server {
 	t.Helper()
 	t.Setenv("KELVRAN_MESSAGES_INTEGRATION_TEST_KEY", "fake-upstream-key-not-a-real-secret")
@@ -42,6 +43,7 @@ func newMessagesIntegrationServer(t *testing.T, upstreamURL string, acceptLossy 
 			{Name: "burst-one", KeyHash: testKeyHash("burst-secret"), RateLimitBurst: 1, RateLimitRefill: 0.001},
 			{Name: "tiny-budget", KeyHash: testKeyHash("tiny-budget-secret"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("0.00001")},
 			{Name: "scoped", KeyHash: testKeyHash("scoped-secret"), RateLimitBurst: 100, RateLimitRefill: 100, CacheScopeToEndUser: true},
+			{Name: "elsewhere-only", KeyHash: testKeyHash("elsewhere-secret"), RateLimitBurst: 100, RateLimitRefill: 100, AllowedSourceCIDRs: []string{"10.0.0.0/8"}},
 		},
 		Deployments: []controlplane.DeploymentConfig{
 			{Name: "gpt4o-primary", Model: "gpt-4o", Provider: "openai", UpstreamModel: "gpt-4o", BaseURL: upstreamURL, APIKeyEnv: "KELVRAN_MESSAGES_INTEGRATION_TEST_KEY", AcceptLossyAnthropicIngress: acceptLossy},

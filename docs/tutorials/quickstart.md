@@ -213,7 +213,7 @@ The full catalogue is in [the troubleshooting how-to](../how-to/troubleshooting.
 - No `make run` or `make dev` target; `make setup` only downloads dependencies.
 - No first-party client SDK. The OpenAI SDK with `base_url` is the integration path, as in Step 9.
 - No OpenAPI document for the public routes.
-- No `POST /v1/messages/count_tokens` yet (Claude Code falls back to a character-based estimate). The gateway serves seven routes: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (the Anthropic Messages shape), `GET /healthz`, `GET /readyz`, `HEAD /api/hello`.
+- No exact token counts yet: `POST /v1/messages/count_tokens` answers `404` until the passthrough leg adds the `anthropic` branch (Claude Code falls back to a character-based estimate). The gateway serves eight routes: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (the Anthropic Messages shape), `POST /v1/messages/count_tokens`, `GET /healthz`, `GET /readyz`, `HEAD /api/hello`.
 
 ## Where next
 

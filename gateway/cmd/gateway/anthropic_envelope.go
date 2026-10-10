@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
@@ -28,7 +29,7 @@ const promptTooLongMarker = "capability_rejected: prompt_too_long"
 // anthropicErrorType maps a status the pipeline or the handler decided to
 // Anthropic's error type vocabulary. 400, 405 and 422 are
 // invalid_request_error; 401 authentication_error; 403 permission_error;
-// 404 not_found_error (count_tokens on a non-anthropic model, slice S10b);
+// 404 not_found_error (count_tokens on a deployment that cannot count, slice S10b);
 // 413 request_too_large; 429 rate_limit_error -- a budget 429 too, Anthropic
 // having no quota type, so the code (insufficient_quota) tells them apart;
 // every 5xx api_error (Kelvran never emits 529, so overloaded_error is
@@ -72,6 +73,15 @@ func writeAnthropicStatus(w http.ResponseWriter, status int, code, param, messag
 // names. Callers must not have written headers already; the streaming
 // handler uses the encoder's own error event once the stream has started.
 func writeAnthropicError(w http.ResponseWriter, err error) {
+	// count_tokens on a deployment that cannot count (every deployment until
+	// slice S11) is Anthropic's 404 not_found_error -- the status Claude Code
+	// reads as "estimate locally". HandleCountTokens has one caller, this
+	// route, so the sentinel never reaches errorStatus's table and the OpenAI
+	// envelope stays untouched (item 11 slice S10b).
+	if errors.Is(err, dataplane.ErrCountTokensUnavailable) {
+		writeAnthropicStatus(w, http.StatusNotFound, "count_tokens_unavailable", "", anthropicClientMessage(err))
+		return
+	}
 	status := errorStatus(err)
 	setRetryAfterHeader(w, err)
 	_, code := errorTypeAndCode(err, status)

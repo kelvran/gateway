@@ -26,7 +26,7 @@ llm = OpenAILike(
 )
 ```
 
-Under `/v1` the gateway serves exactly four routes: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` and `POST /v1/messages` (the Anthropic Messages shape). Any other path is a 404. Route details: [Data-plane API](../../reference/data-plane-api.md).
+Under `/v1` the gateway serves exactly five routes: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` and `POST /v1/messages/count_tokens` (the Anthropic Messages shapes). Any other path is a 404. Route details: [Data-plane API](../../reference/data-plane-api.md).
 
 ### 2. Make one buffered chat call
 
@@ -116,7 +116,7 @@ Run step 2. Expected: one line with the model's greeting, then a `CompletionUsag
 
 - `POST /v1/completions`, the legacy Completions API. This is why `is_chat_model=True` is mandatory.
 - `POST /v1/responses`, the OpenAI Responses API.
-- `POST /v1/messages/count_tokens` and the raw-body passthrough to `anthropic` deployments. `POST /v1/messages` itself is served since gateway/v0.19.0, so a client speaking the Anthropic wire format can use the gateway as a base URL (`x-api-key` is read on it and on `GET /v1/models`).
+- Exact token counts (`POST /v1/messages/count_tokens` answers `404` until the passthrough leg adds the `anthropic` branch) and the raw-body passthrough to `anthropic` deployments. `POST /v1/messages` itself is served since gateway/v0.19.0, so a client speaking the Anthropic wire format can use the gateway as a base URL (`x-api-key` is read on it and on `GET /v1/models`).
 - A first-party Kelvran SDK or a Kelvran-specific LlamaIndex integration package. `OpenAILike` with `api_base` is the integration path by recorded decision ([Why no SDK](../../explanation/why-no-sdk.md)).
 - OpenAI's array-of-parts `content` on inbound messages (400 `invalid_json`); multimodal input uses Kelvran's `parts` extension.
 - OpenAI-shaped streaming tool-call deltas. The gateway streams flat `{index, id, name, arguments_json}` elements with no `function` nesting; buffered tool calls use OpenAI's nesting.

@@ -12,7 +12,7 @@ Use this when you already write TypeScript or Node.js against the Vercel AI SDK 
 
 ### 1. Point the provider at the gateway
 
-Set `baseURL` to the gateway address plus `/v1` and `apiKey` to the virtual key secret. The provider sends it as `Authorization: Bearer <secret>`, the authentication every `/v1` route accepts (`GET /v1/models` also takes `x-api-key` as the bearer's alias; the other routes answer it with 401).
+Set `baseURL` to the gateway address plus `/v1` and `apiKey` to the virtual key secret. The provider sends it as `Authorization: Bearer <secret>`, the authentication every `/v1` route accepts (`GET /v1/models`, `POST /v1/messages` and `POST /v1/messages/count_tokens` also take `x-api-key` as the bearer's alias; the chat and embeddings routes answer it with 401).
 
 ```ts
 import { createOpenAI } from "@ai-sdk/openai";
@@ -23,7 +23,7 @@ const openai = createOpenAI({
 });
 ```
 
-Always build models with `openai.chat("<model>")`. The provider's default factory, `openai("<model>")`, targets the OpenAI Responses API: the request goes to `<baseURL>/responses`, which the gateway does not serve, and the SDK throws `APICallError` with `statusCode` 404 and `url` ending in `/v1/responses`. Under `/v1` the gateway serves exactly `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` and `POST /v1/messages` (the Anthropic Messages shape); any other path is a plain-text 404 with no envelope, and a wrong method on one of those four paths is a 405 envelope with `code: method_not_allowed`. Route details: [Data-plane API](../../reference/data-plane-api.md).
+Always build models with `openai.chat("<model>")`. The provider's default factory, `openai("<model>")`, targets the OpenAI Responses API: the request goes to `<baseURL>/responses`, which the gateway does not serve, and the SDK throws `APICallError` with `statusCode` 404 and `url` ending in `/v1/responses`. Under `/v1` the gateway serves exactly `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` and `POST /v1/messages/count_tokens` (the Anthropic Messages shapes); any other path is a plain-text 404 with no envelope, and a wrong method on one of those five paths is a 405 envelope with `code: method_not_allowed`. Route details: [Data-plane API](../../reference/data-plane-api.md).
 
 The alternative provider works the same way; the recording passed the key as an explicit header (its `apiKey` option sends the identical `Authorization: Bearer` header; check your client version):
 
@@ -152,7 +152,7 @@ try {
 
 - `POST /v1/responses`: the Responses API, which is where `openai("<model>")` sends requests.
 - `POST /v1/completions`: the legacy Completions API. Only chat completions, embeddings and models exist under `/v1`.
-- The Anthropic Messages API (`/v1/messages`; `x-api-key` is read on `GET /v1/models` only), so an Anthropic-shaped provider has nothing to call on this gateway yet.
+- The SDK's Anthropic provider (`@ai-sdk/anthropic`) against this gateway: `POST /v1/messages` and `POST /v1/messages/count_tokens` are served since `gateway/v0.19.0` with `x-api-key` read, so it has routes to call, but this page covers the OpenAI provider only and that path is untested here; the Anthropic shape is documented in [Use the Anthropic Python SDK with Kelvran](anthropic-python.md).
 - A first-party Kelvran SDK or provider package. The OpenAI-shaped providers above are the integration path.
 - OpenAI-shaped streaming tool-call deltas: the gateway streams flat `{ index, id, name, arguments_json }` elements with no `function` nesting. Tool calling through this SDK is not exercised in the recording.
 - OpenAI content arrays on inbound messages (400 `invalid_json`); multimodal input uses Kelvran's own `parts` field. Image or file parts through this SDK are not exercised in the recording.
