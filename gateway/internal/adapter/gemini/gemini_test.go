@@ -193,8 +193,14 @@ func TestToProviderToolResultWithPartsFailsLoudly(t *testing.T) {
 		},
 	}
 
-	if _, err := New().ToProvider(req); err == nil {
+	_, err := New().ToProvider(req)
+	if err == nil {
 		t.Fatal("ToProvider with a tool-result message carrying non-empty Parts returned nil error, want an error")
+	}
+	// Item 11 slice S6: the rejection is the typed sentinel the handler maps
+	// to 400 tool_result_parts_unsupported (and capability routing avoids).
+	if !errors.Is(err, adapter.ErrToolResultPartsUnsupported) {
+		t.Errorf("err = %v, want errors.Is(adapter.ErrToolResultPartsUnsupported)", err)
 	}
 }
 

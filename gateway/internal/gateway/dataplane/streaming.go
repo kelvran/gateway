@@ -349,6 +349,9 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	if err = checkResponseFormatEnforceable(dep, req); err != nil {
 		return
 	}
+	if err = checkToolResultPartsCarriable(dep, req); err != nil {
+		return
+	}
 
 	// A request whose pre-call check already failed open is already counted
 	// under the {request}-unit fail-open counters; seeding the once-per-stream
@@ -401,7 +404,7 @@ func (p *Pipeline) HandleChatCompletionStream(ctx context.Context, authorization
 	// secret) could be replayed to this same tenant on any future
 	// identical-or-near-duplicate request without the guardrail engine
 	// ever running again, for the life of the cache TTL.
-	if !blocked && !responseWasTruncated(resp) {
+	if !blocked && !responseWasTruncated(resp) && !resp.Unrepresentable {
 		if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
 			p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), encoded)
 		}

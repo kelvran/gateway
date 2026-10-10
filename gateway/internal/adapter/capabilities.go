@@ -314,3 +314,22 @@ func BedrockForwardsEffort(model string) (forward bool, reason string) {
 	}
 	return false, "the model's Claude generation rejects output_config.effort on Bedrock (does not support the effort parameter)"
 }
+
+// SupportsToolResultParts reports whether provider can carry a role:"tool"
+// message's Parts (item 11 slice S6): anthropic (tool_result content as a
+// block array) and bedrock (toolResult.content blocks) take text, image and
+// document parts; openai and openaicompat take text parts only (a Chat
+// Completions tool message is a string or an array of text parts); gemini
+// takes none (FunctionResponse.Response is a JSON object). media is true
+// when at least one part is not text. A routing property for the dataplane
+// (capabilityOKForRequest), like SupportsStructuredOutput.
+func SupportsToolResultParts(provider string, media bool) bool {
+	switch provider {
+	case "anthropic", "bedrock":
+		return true
+	case "openai", "openaicompat":
+		return !media
+	default:
+		return false
+	}
+}

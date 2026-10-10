@@ -205,25 +205,44 @@ func TestToProviderToolResultMessageNeedsNoNameLookup(t *testing.T) {
 	}
 }
 
-// TestToProviderToolResultWithPartsFailsLoudly proves a role:"tool"
-// message carrying non-empty Parts (e.g. a screenshot/OCR tool
-// returning an image, with Content left empty) returns a real, typed
-// error instead of silently succeeding with an empty toolResult content
-// -- ToolResultContent is text only, this pass, and cannot represent it.
-func TestToProviderToolResultWithPartsFailsLoudly(t *testing.T) {
+// TestToProviderToolResultWithPartsEncodesImageContent (item 11 slice S6):
+// a role:"tool" message carrying Parts becomes toolResult.content blocks --
+// the text Content first, then each part (Converse's ToolResultContentBlock
+// takes text, image and document) -- where before this slice the adapter
+// rejected the message outright (ToolResultContent was text only).
+func TestToProviderToolResultWithPartsEncodesImageContent(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
 		Messages: []adapter.Message{
 			{
 				Role:       "tool",
 				ToolCallID: "tooluse_1",
+				Content:    "screenshot attached",
 				Parts:      []adapter.ContentPart{{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="}},
 			},
 		},
 	}
-
-	if _, err := New().ToProvider(req); err == nil {
-		t.Fatal("ToProvider with a tool-result message carrying non-empty Parts returned nil error, want an error")
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	tr := native.Messages[0].Content[0].ToolResult
+	if tr == nil || len(tr.Content) != 2 {
+		t.Fatalf("toolResult = %+v, want two content blocks", tr)
+	}
+	if tr.Content[0].Text != "screenshot attached" {
+		t.Errorf("content[0] = %+v, want the text", tr.Content[0])
+	}
+	if tr.Content[1].Image == nil || tr.Content[1].Image.Format != "png" || tr.Content[1].Image.Source.Bytes != "aW1hZ2ViYXNlNjQ=" {
+		t.Errorf("content[1] = %+v, want an image block (png, the base64 bytes)", tr.Content[1])
+	}
+	wire, err := json.Marshal(native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"content":[{"text":"screenshot attached"},{"image":{"format":"png","source":{"bytes":"aW1hZ2ViYXNlNjQ="}}}]`) {
+		t.Errorf("wire = %s", wire)
 	}
 }
 

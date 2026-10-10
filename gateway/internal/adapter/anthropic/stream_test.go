@@ -878,3 +878,60 @@ func TestStreamDecoder_StopSequenceOnFinishChunk(t *testing.T) {
 		t.Errorf("finish chunk = %q/%q/%q, want stop/stop_sequence/###", *finish.FinishReason, finish.StopReason, finish.StopSequence)
 	}
 }
+
+// TestStreamDecoder_UnknownBlockTypeMarksChunkUnrepresentable (item 11 slice
+// S6): a content_block_start whose type this decoder does not know (a
+// server tool use here) is still treated as a text block for its later
+// deltas -- the forward-compatible default -- but the chunk emitted for it
+// carries Unrepresentable, so the dataplane's accumulator can keep the
+// assembled response out of the cache; a stream of known blocks only sets
+// the flag on no chunk.
+func TestStreamDecoder_UnknownBlockTypeMarksChunkUnrepresentable(t *testing.T) {
+	chunks, done, _, _ := decodeFixture(t, "testdata/stream_unknown_block.txt")
+	if !done {
+		t.Fatal("done = false, want true after message_stop")
+	}
+	flagged := 0
+	for _, c := range chunks {
+		if c.Unrepresentable {
+			flagged++
+		}
+	}
+	if flagged == 0 {
+		t.Error("no chunk carried Unrepresentable after a server_tool_use content_block_start")
+	}
+
+	known, _, _, _ := decodeFixture(t, "testdata/stream_stop_sequence.txt")
+	for _, c := range known {
+		if c.Unrepresentable {
+			t.Fatal("a chunk of a known-blocks-only stream carried Unrepresentable")
+		}
+	}
+}
+
+// TestStreamDecoder_UnknownDeltaTypeMarksChunkUnrepresentable (item 11 slice
+// S6, from review): a content_block_delta whose delta type this decoder does
+// not know on a KNOWN block -- Anthropic's citations_delta on a text block
+// here -- carries content the canonical schema cannot represent, so that
+// chunk is flagged too; the text deltas around it are not.
+func TestStreamDecoder_UnknownDeltaTypeMarksChunkUnrepresentable(t *testing.T) {
+	chunks, done, _, _ := decodeFixture(t, "testdata/stream_unknown_delta.txt")
+	if !done {
+		t.Fatal("done = false, want true after message_stop")
+	}
+	flagged, text := 0, ""
+	for _, c := range chunks {
+		if c.Unrepresentable {
+			flagged++
+		}
+		for _, ch := range c.Choices {
+			text += ch.Delta.Content
+		}
+	}
+	if flagged != 1 {
+		t.Errorf("flagged chunks = %d, want exactly 1 (the citations_delta)", flagged)
+	}
+	if text != "The sky is blue" {
+		t.Errorf("accumulated text = %q, want the text deltas untouched", text)
+	}
+}

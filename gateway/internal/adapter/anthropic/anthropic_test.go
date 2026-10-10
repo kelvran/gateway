@@ -286,30 +286,154 @@ func TestToProviderToolResultMessage(t *testing.T) {
 	}
 }
 
-// TestToProviderToolResultWithPartsFailsLoudly proves a role:"tool"
-// message carrying non-empty Parts (e.g. a screenshot/OCR tool
-// returning an image, with Content left empty) returns a real, typed
-// error instead of silently succeeding with an empty tool_result block
-// -- ContentBlock.Content is a plain Go string, structurally unable to
-// represent Anthropic's real tool_result array-of-blocks wire shape.
-func TestToProviderToolResultWithPartsFailsLoudly(t *testing.T) {
+// TestToProviderToolResultWithPartsEncodesContentArray (item 11 slice S6):
+// a role:"tool" message carrying Parts becomes a tool_result block whose
+// content is Anthropic's block ARRAY -- the text Content first, then each
+// part via contentPartToBlock -- where before this slice the adapter
+// rejected the message outright (ContentBlock.Content was a plain string).
+func TestToProviderToolResultWithPartsEncodesContentArray(t *testing.T) {
 	req := adapter.ChatRequest{
 		Model: "claude-opus-4",
 		Messages: []adapter.Message{
 			{Role: "user", Content: "call the tool"},
-			{Role: "assistant", ToolCalls: []adapter.ToolCall{
-				{ID: "toolu_1", Name: "take_screenshot"},
-			}},
+			{Role: "assistant", ToolCalls: []adapter.ToolCall{{ID: "toolu_1", Name: "take_screenshot"}}},
 			{
 				Role:       "tool",
 				ToolCallID: "toolu_1",
+				Content:    "screenshot attached",
 				Parts:      []adapter.ContentPart{{Type: "image", MediaType: "image/png", Data: "aW1hZ2ViYXNlNjQ="}},
 			},
 		},
 	}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	want := `{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"screenshot attached"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1hZ2ViYXNlNjQ="}}]}`
+	if !strings.Contains(string(wire), want) {
+		t.Errorf("wire = %s\nwant it to contain %s", wire, want)
+	}
+}
 
-	if _, err := New().ToProvider(req); err == nil {
-		t.Fatal("ToProvider with a tool-result message carrying non-empty Parts returned nil error, want an error")
+// TestToolResultContentMarshalsStringOrArray pins the union: the string
+// form marshals as a bare JSON string (every existing golden relies on
+// it), the array form as the block array, the zero value is omitted, and
+// both forms (and null) decode -- the shape slice S7's parser reads.
+func TestToolResultContentMarshalsStringOrArray(t *testing.T) {
+	str, err := json.Marshal(ContentBlock{Type: "tool_result", ToolUseID: "t", Content: ToolResultContent{Text: "ok"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(str) != `{"type":"tool_result","tool_use_id":"t","content":"ok"}` {
+		t.Errorf("string form = %s", str)
+	}
+	arr, err := json.Marshal(ContentBlock{Type: "tool_result", ToolUseID: "t", Content: ToolResultContent{Blocks: []ToolResultBlock{{Type: "text", Text: "a"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(arr) != `{"type":"tool_result","tool_use_id":"t","content":[{"type":"text","text":"a"}]}` {
+		t.Errorf("array form = %s", arr)
+	}
+	zero, err := json.Marshal(ContentBlock{Type: "tool_result", ToolUseID: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(zero), "content") {
+		t.Errorf("zero value emitted a content key: %s", zero)
+	}
+	var fromStr, fromArr, fromNull ContentBlock
+	if err := json.Unmarshal([]byte(`{"type":"tool_result","content":"plain"}`), &fromStr); err != nil || fromStr.Content.Text != "plain" || len(fromStr.Content.Blocks) != 0 {
+		t.Errorf("decode string: %+v, %v", fromStr.Content, err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"tool_result","content":[{"type":"text","text":"x"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}]}`), &fromArr); err != nil || len(fromArr.Content.Blocks) != 2 || fromArr.Content.Blocks[1].Source == nil || fromArr.Content.Blocks[1].Source.Data != "QUJD" {
+		t.Errorf("decode array: %+v, %v", fromArr.Content, err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"tool_result","content":null}`), &fromNull); err != nil || !fromNull.Content.IsZero() {
+		t.Errorf("decode null: %+v, %v", fromNull.Content, err)
+	}
+	var bad ContentBlock
+	if err := json.Unmarshal([]byte(`{"type":"tool_result","content":5}`), &bad); err == nil {
+		t.Error("decode number: want an error")
+	}
+	// The array's block type cannot recurse (security review, slice S6): a
+	// tool_result nested inside the array decodes as a flat ToolResultBlock
+	// whose inner content is dropped as an unknown field, never re-scanned.
+	var nested ContentBlock
+	if err := json.Unmarshal([]byte(`{"type":"tool_result","content":[{"type":"tool_result","tool_use_id":"x","content":[{"type":"text","text":"deep"}]}]}`), &nested); err != nil {
+		t.Fatalf("decode nested: %v", err)
+	}
+	if len(nested.Content.Blocks) != 1 || nested.Content.Blocks[0].Type != "tool_result" || nested.Content.Blocks[0].Text != "" {
+		t.Errorf("decode nested = %+v, want one flat tool_result block with no inner content", nested.Content.Blocks)
+	}
+	if got := nested.Content.Blocks[0].ContentBlock().Type; got != "tool_result" {
+		t.Errorf("ContentBlock() = %q", got)
+	}
+}
+
+// TestFromProviderUnknownBlockMarksUnrepresentable (item 11 slice S6): a
+// response block type the canonical schema cannot carry (a server tool use,
+// a web search result, anything newer than this adapter) is skipped as
+// before, but the response now says so -- ChatResponse.Unrepresentable --
+// so the dataplane never caches a reply the live client saw in full but a
+// cache hit would re-encode without that block. Known blocks alone leave
+// the flag false.
+func TestFromProviderUnknownBlockMarksUnrepresentable(t *testing.T) {
+	unknown := &Response{
+		ID: "msg_1", Model: "claude-sonnet-4-6", Role: "assistant", StopReason: "end_turn",
+		Content: []ContentBlock{{Type: "server_tool_use", ID: "srvtoolu_1", Name: "web_search"}, {Type: "text", Text: "found it"}},
+	}
+	resp, err := New().FromProvider(unknown)
+	if err != nil {
+		t.Fatalf("FromProvider: %v", err)
+	}
+	if !resp.Unrepresentable {
+		t.Error("Unrepresentable = false after skipping a server_tool_use block, want true")
+	}
+	if resp.Choices[0].Message.Content != "found it" {
+		t.Errorf("known text block still carried: got %q", resp.Choices[0].Message.Content)
+	}
+	known := &Response{ID: "msg_2", Model: "claude-sonnet-4-6", Role: "assistant", StopReason: "end_turn", Content: []ContentBlock{{Type: "text", Text: "ok"}}}
+	resp, err = New().FromProvider(known)
+	if err != nil {
+		t.Fatalf("FromProvider(known): %v", err)
+	}
+	if resp.Unrepresentable {
+		t.Error("Unrepresentable = true for a response of known blocks only, want false")
+	}
+}
+
+// TestBlockToContentPart is the inverse of contentPartToBlock (item 11 slice
+// S6; the ingress parser of slice S7 reads Anthropic tool_result arrays
+// with it): text, base64 and url images, documents; an unsupported block
+// type, or an image without a source, is a real error.
+func TestBlockToContentPart(t *testing.T) {
+	cases := []struct {
+		block ContentBlock
+		want  adapter.ContentPart
+	}{
+		{ContentBlock{Type: "text", Text: "hi"}, adapter.ContentPart{Type: "text", Text: "hi"}},
+		{ContentBlock{Type: "image", Source: &ContentSource{Type: "base64", MediaType: "image/png", Data: "QUJD"}}, adapter.ContentPart{Type: "image", MediaType: "image/png", Data: "QUJD"}},
+		{ContentBlock{Type: "image", Source: &ContentSource{Type: "url", URL: "https://x/y.png"}}, adapter.ContentPart{Type: "image", URL: "https://x/y.png"}},
+		{ContentBlock{Type: "document", Source: &ContentSource{Type: "base64", MediaType: "application/pdf", Data: "UERG"}}, adapter.ContentPart{Type: "document", MediaType: "application/pdf", Data: "UERG"}},
+	}
+	for _, tc := range cases {
+		got, err := BlockToContentPart(tc.block)
+		if err != nil {
+			t.Fatalf("BlockToContentPart(%+v): %v", tc.block, err)
+		}
+		if got != tc.want {
+			t.Errorf("BlockToContentPart(%s) = %+v, want %+v", tc.block.Type, got, tc.want)
+		}
+	}
+	if _, err := BlockToContentPart(ContentBlock{Type: "server_tool_use"}); err == nil {
+		t.Error("BlockToContentPart(server_tool_use) = nil error, want an error")
+	}
+	if _, err := BlockToContentPart(ContentBlock{Type: "image"}); err == nil {
+		t.Error("BlockToContentPart(image without source) = nil error, want an error")
 	}
 }
 

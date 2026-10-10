@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -830,5 +831,34 @@ func TestToProviderTopPForwarded(t *testing.T) {
 	}
 	if !strings.Contains(string(wire), `"top_p":0.9`) {
 		t.Errorf("wire = %s, want top_p 0.9", wire)
+	}
+}
+
+// TestToProviderToolResultMediaPartsAreTheTypedSentinel (item 11 slice S6):
+// Chat Completions tool messages take a string or text parts only, so an
+// image or document part on a role:"tool" message is
+// adapter.ErrToolResultPartsUnsupported before any upstream call -- the
+// backstop behind the dataplane's capability routing -- while text parts
+// still encode as the content array.
+func TestToProviderToolResultMediaPartsAreTheTypedSentinel(t *testing.T) {
+	media := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{
+		Role: "tool", ToolCallID: "call_1", Parts: []adapter.ContentPart{{Type: "image", MediaType: "image/png", Data: "QUJD"}},
+	}}}
+	if _, err := New().ToProvider(media); !errors.Is(err, adapter.ErrToolResultPartsUnsupported) {
+		t.Errorf("image part on a tool message: err = %v, want errors.Is(adapter.ErrToolResultPartsUnsupported)", err)
+	}
+	text := adapter.ChatRequest{Model: "gpt-4o", Messages: []adapter.Message{{
+		Role: "tool", ToolCallID: "call_1", Parts: []adapter.ContentPart{{Type: "text", Text: "ok"}},
+	}}}
+	nativeAny, err := New().ToProvider(text)
+	if err != nil {
+		t.Fatalf("text part on a tool message: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"content":[{"type":"text","text":"ok"}]`) {
+		t.Errorf("wire = %s, want the text part as a content array", wire)
 	}
 }

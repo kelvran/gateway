@@ -24,6 +24,11 @@ type streamAccumulator struct {
 	// index's own finishReason had already been set — see add's own doc
 	// comment for why this is detected and recorded, not hard-failed.
 	duplicateAfterFinishIndices []int
+	// unrepresentable is true once any chunk carried
+	// streaming.ChatCompletionChunk.Unrepresentable; build sets
+	// adapter.ChatResponse.Unrepresentable from it so the dataplane never
+	// caches the assembled response (item 11 slice S6).
+	unrepresentable bool
 }
 
 type accumulatingChoice struct {
@@ -91,6 +96,9 @@ func (acc *streamAccumulator) add(chunk streaming.ChatCompletionChunk) {
 	}
 	if chunk.Model != "" {
 		acc.model = chunk.Model
+	}
+	if chunk.Unrepresentable {
+		acc.unrepresentable = true
 	}
 
 	for _, cc := range chunk.Choices {
@@ -306,11 +314,12 @@ func (acc *streamAccumulator) build(usage adapter.Usage) adapter.ChatResponse {
 		}
 	}
 	return adapter.ChatResponse{
-		StopReason:   stopReason,
-		StopSequence: stopSequence,
-		ID:           acc.id,
-		Model:        acc.model,
-		Choices:      choices,
-		Usage:        usage,
+		StopReason:      stopReason,
+		StopSequence:    stopSequence,
+		Unrepresentable: acc.unrepresentable,
+		ID:              acc.id,
+		Model:           acc.model,
+		Choices:         choices,
+		Usage:           usage,
 	}
 }

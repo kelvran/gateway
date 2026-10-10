@@ -145,3 +145,32 @@ func TestChatCompletionsForwardsTopP(t *testing.T) {
 		t.Errorf("upstream body carries top_p for a request without one: %s", lastBody())
 	}
 }
+
+// TestChatCompletionsToolResultMediaPartsOnAnOpenAIOnlyPoolIs400 (item 11
+// slice S6): a tool message carrying an image part, on a model whose only
+// deployment is openai, is 400 tool_result_parts_unsupported with param
+// messages, decided before any upstream call. The image is a real 1x1 PNG:
+// the handler sniffs inline content and rejects a declared media type the
+// bytes contradict before routing ever runs.
+func TestChatCompletionsToolResultMediaPartsOnAnOpenAIOnlyPoolIs400(t *testing.T) {
+	upstream, lastBody := newCapturingMockUpstream(t)
+	gw := newIntegrationServer(t, upstream.URL, "sampling-key", "SAMPLING_TEST_UPSTREAM_KEY")
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"call the tool"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"shot","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"attached","parts":[{"type":"image","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="}]}]}`
+	resp := postChatWithHeaders(t, gw, "sampling-key", body, nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400; body %s", resp.StatusCode, b)
+	}
+	var envelope map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	e, _ := envelope["error"].(map[string]any)
+	if e["code"] != "tool_result_parts_unsupported" || e["param"] != "messages" || e["type"] != "invalid_request_error" {
+		t.Errorf("error = %v, want code tool_result_parts_unsupported, param messages, type invalid_request_error", e)
+	}
+	if lastBody() != nil {
+		t.Errorf("upstream was called with %s, want no upstream call", lastBody())
+	}
+}

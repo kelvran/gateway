@@ -56,6 +56,7 @@ func TestOutcomeForClassifiesEverySentinelError(t *testing.T) {
 		{"guardrail blocked", ErrGuardrailBlocked, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED},
 		// G16: client faults known from the request alone, never upstream errors.
 		{"idempotency key reused", fmt.Errorf("dataplane: idempotency: %w", idempotency.ErrFingerprintMismatch), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
+		{"tool result parts unsupported", fmt.Errorf("dataplane: %w: model m", adapter.ErrToolResultPartsUnsupported), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
 		{"response_format unsupported", fmt.Errorf("%w: model m", adapter.ErrStructuredOutputUnsupported), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
 		{"generic upstream error", context.DeadlineExceeded, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR},
 		{"deployment capacity (concurrency)", &DeploymentCapacityError{Deployment: "d1", Reason: "concurrency"}, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},

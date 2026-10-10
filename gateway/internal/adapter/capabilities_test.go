@@ -244,3 +244,29 @@ func TestBedrockForwardsEffortIsPerFamily(t *testing.T) {
 		}
 	}
 }
+
+// TestSupportsToolResultParts is the per-provider table for a role:"tool"
+// message that carries Parts (item 11 slice S6): anthropic (tool_result
+// content as a block array) and bedrock (toolResult.content blocks) carry
+// text, image and document parts; openai and openaicompat carry text parts
+// only (Chat Completions tool messages take a string or text parts); gemini
+// carries none (FunctionResponse.Response is a JSON object).
+func TestSupportsToolResultParts(t *testing.T) {
+	tests := []struct {
+		provider  string
+		media     bool
+		supported bool
+	}{
+		{"anthropic", false, true}, {"anthropic", true, true},
+		{"bedrock", false, true}, {"bedrock", true, true},
+		{"openai", false, true}, {"openai", true, false},
+		{"openaicompat", false, true}, {"openaicompat", true, false},
+		{"gemini", false, false}, {"gemini", true, false},
+		{"some-future-provider", false, false},
+	}
+	for _, tt := range tests {
+		if got := SupportsToolResultParts(tt.provider, tt.media); got != tt.supported {
+			t.Errorf("SupportsToolResultParts(%q, media=%v) = %v, want %v", tt.provider, tt.media, got, tt.supported)
+		}
+	}
+}

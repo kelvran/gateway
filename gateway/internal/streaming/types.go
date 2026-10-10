@@ -42,6 +42,13 @@ type ChatCompletionChunk struct {
 	// never sends usage during streaming leaves every chunk's Usage nil —
 	// callers must not assume the last chunk always carries it.
 	Usage *adapter.Usage `json:"usage,omitempty"`
+	// Unrepresentable is set by a StreamDecoder on the chunk it emits for a
+	// provider block the canonical schema cannot represent (an Anthropic
+	// content-block or delta type newer than the decoder); the dataplane's
+	// accumulator folds it into ChatResponse.Unrepresentable so the
+	// assembled response is never cached (item 11 slice S6). json:"-": a
+	// gateway-internal signal, never on the SSE wire.
+	Unrepresentable bool `json:"-"`
 }
 
 // ChunkChoice is a single candidate's incremental delta within one chunk.

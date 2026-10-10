@@ -133,6 +133,7 @@ Every data-plane error body is `{"error":{"message","type","param","code"}}`, al
 | 400 | `invalid_request_error` | `model_not_found` | Unknown `model`; Kelvran uses 400, not OpenAI's 404 | no |
 | 400 | `invalid_request_error` | `invalid_json`, `invalid_request`, `invalid_tool_choice`, `empty_messages`, `content_policy_violation`, `invalid_prompt_reference` | Request-shape problems and guardrail blocks | no, except `invalid_prompt_reference`, which carries one (recorded gap: the prompt-reference errors fall into the upstream-error outcome) |
 | 400 | `invalid_request_error` | `response_format_unsupported` | `response_format` with no capable deployment (`param` `response_format`; since gateway/v0.19.0, `502` before) | no |
+| 400 | `invalid_request_error` | `tool_result_parts_unsupported` | A `role: tool` message carries image or document `parts` and no deployment in the pool can carry them (`param` `messages`; since gateway/v0.19.0, `502` before) | no |
 | 413 | `invalid_request_error` | `request_too_large` | Body over 32 MiB | no |
 | 422 | `invalid_request_error` | `idempotency_key_reused` | `Idempotency-Key` reused with a different body (`param` `Idempotency-Key`; since gateway/v0.19.0, `502` before) | no |
 | 429 | `rate_limit_error` | `rate_limit_exceeded`, `concurrency_limit_exceeded` | Key throttled; transient | yes |

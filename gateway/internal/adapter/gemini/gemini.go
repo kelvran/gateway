@@ -334,7 +334,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			// convention as contentPartToPart's own unsupported-part-
 			// type error below.
 			if len(m.Parts) > 0 {
-				return nil, fmt.Errorf("gemini: tool result message (tool_call_id %q) has non-empty Parts, which FunctionResponse.Response (a JSON object) cannot represent", m.ToolCallID)
+				return nil, fmt.Errorf("%w: gemini: tool result message (tool_call_id %q) has non-empty Parts, which FunctionResponse.Response (a JSON object) cannot represent", adapter.ErrToolResultPartsUnsupported, m.ToolCallID)
 			}
 			contents = append(contents, Content{
 				Role: "user",

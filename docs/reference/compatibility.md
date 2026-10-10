@@ -18,6 +18,8 @@ Versions: the latest tagged release is `gateway/v0.18.0` (2026-10-10). Several i
 | Thinking configuration (`adapter.ChatRequest.Thinking`, a `/v1/messages` field) folded into cache keys | `gateway/changelog/unreleased.md` | Field absent; keys do not fold it. No `/v1/chat/completions` behaviour differs — every key changes once on upgrade |
 | `stop` (string or array) and `top_p` forwarded to every provider | `gateway/changelog/unreleased.md` | Both accepted and dropped silently; the provider never saw them |
 | `top_k` and `effort` (`/v1/messages` fields) canonical, by provider capability; the sampling fields folded into cache keys and the `Idempotency-Key` fingerprint | `gateway/changelog/unreleased.md` | Fields absent; keys do not fold them. A `/v1/chat/completions` body carrying `top_k` or `effort` is ignored as before |
+| Tool-result `parts` (image, document) on a `role: tool` message carried to `anthropic` (a `tool_result` block array) and `bedrock` (`toolResult.content` blocks); `openai`/`openaicompat` text parts only, `gemini` none — such a request is routed to a capable deployment in the pool, else `400` `tool_result_parts_unsupported` | `gateway/changelog/unreleased.md` | `anthropic`, `bedrock` and `gemini` rejected the message before any upstream call (`502` `upstream_error`); `openai`/`openaicompat` forwarded an `image_url` part the provider rejects (a document part was already the adapter's own `502`) |
+| A response carrying a provider block the canonical schema cannot represent (an Anthropic block or delta type newer than the adapter) is never cached | `gateway/changelog/unreleased.md` | Cached and replayed without the block |
 
 ## Routes
 
@@ -386,10 +388,10 @@ Operational detail is row I2 of [docs/operations/FAILURE-MODES.md](../operations
 
 | Provider name | Upstream | Chat | Embeddings | Compatibility notes |
 |---|---|---|---|---|
-| `openai` | OpenAI Chat Completions | Yes | Yes | Native field mapping; `stream_options.include_usage` forced on; `prompt_cache_key` from `cache_control.key` |
-| `anthropic` | Anthropic Messages | Yes | No | `output_config.format` for `response_format`; `disable_parallel_tool_use` honoured here only; forced tool choice rejected for three model families (above) |
-| `gemini` | Generative Language API | Yes | No | `responseSchema` only from `json_schema`; `tools[].strict` ignored |
-| `bedrock` | Converse / ConverseStream, Titan embeddings | Yes | Yes | Whitelisted Claude families for `response_format`; `claude-3`/`nova` only for forced tool choice; `tool_choice: "none"` rejected; single-input embeddings only; URL image parts rejected; gateway-issued `id` |
+| `openai` | OpenAI Chat Completions | Yes | Yes | Native field mapping; `stream_options.include_usage` forced on; `prompt_cache_key` from `cache_control.key`; tool-result `parts`: text only (image/document → rerouted or `400 tool_result_parts_unsupported`) |
+| `anthropic` | Anthropic Messages | Yes | No | `output_config.format` for `response_format`; `disable_parallel_tool_use` honoured here only; forced tool choice rejected for three model families (above); tool-result `parts` (text, image, document) as a `tool_result` block array |
+| `gemini` | Generative Language API | Yes | No | `responseSchema` only from `json_schema`; `tools[].strict` ignored; tool-result `parts` not carried (rerouted or `400 tool_result_parts_unsupported`) |
+| `bedrock` | Converse / ConverseStream, Titan embeddings | Yes | Yes | Whitelisted Claude families for `response_format`; `claude-3`/`nova` only for forced tool choice; `tool_choice: "none"` rejected; single-input embeddings only; URL image parts rejected; gateway-issued `id`; tool-result `parts` (text, image, document) as `toolResult.content` blocks |
 | `openaicompat` | vLLM, Ollama, TGI, llama.cpp, LocalAI | Yes | No | Wire shape forwarded verbatim; schema and tool-choice enforcement are the backend's responsibility |
 
 The adapter registry is `newAdapterRegistry` in `gateway/cmd/gateway/main.go`. Operator-facing provider setup is in [docs/operations/PROVIDERS.md](../operations/PROVIDERS.md).

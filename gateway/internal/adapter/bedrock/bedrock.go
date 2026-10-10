@@ -299,11 +299,14 @@ type ToolResult struct {
 	Status    string              `json:"status,omitempty"`
 }
 
-// ToolResultContent is one block of a tool result's own content — text
-// only, this pass (Converse also allows json/image content here, out of
-// scope).
+// ToolResultContent is one block of a tool result's own content: text, or
+// -- since item 11 slice S6 -- an image or document block built from a
+// canonical ContentPart by contentPartToBlock (Converse's
+// ToolResultContentBlock also allows json and video, not mapped).
 type ToolResultContent struct {
-	Text string `json:"text,omitempty"`
+	Text     string         `json:"text,omitempty"`
+	Image    *ImageBlock    `json:"image,omitempty"`
+	Document *DocumentBlock `json:"document,omitempty"`
 }
 
 // SystemContentBlock is one block of Converse's top-level system[]
@@ -574,20 +577,15 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			systemBlocks = appendSystemCachePointIfNeeded(systemBlocks, effectiveSystemCacheControl(m.CacheControl, req.DisableCacheControlAutoPopulate), req.Model)
 			continue
 		case "tool":
-			// ToolResultContent is text only, this pass (see its own doc
-			// comment) -- it cannot represent m.Parts (e.g. a tool
-			// returning an image), so a non-empty Parts here must fail
-			// loudly rather than silently drop the part, same convention
-			// as contentPartToBlock's own unsupported-part-type error
-			// below.
-			if len(m.Parts) > 0 {
-				return nil, fmt.Errorf("bedrock: tool result message (tool_call_id %q) has non-empty Parts, which ToolResultContent (text only, this pass) cannot represent", m.ToolCallID)
+			toolResultContent, err := toolResultContentFor(m)
+			if err != nil {
+				return nil, err
 			}
 			blocks := []ContentBlock{
 				{
 					ToolResult: &ToolResult{
 						ToolUseID: m.ToolCallID,
-						Content:   []ToolResultContent{{Text: m.Content}},
+						Content:   toolResultContent,
 						Status:    "success",
 					},
 				},
@@ -1069,6 +1067,29 @@ func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
 	default:
 		return ContentBlock{}, fmt.Errorf("bedrock: unsupported content part type %q", p.Type)
 	}
+}
+
+// toolResultContentFor builds a tool result's content blocks from the
+// canonical message (item 11 slice S6): the text Content alone when there
+// are no Parts (byte-identical to before), else the text first and then
+// each part via contentPartToBlock -- text, image, document; a URL-based
+// part is contentPartToBlock's own typed error.
+func toolResultContentFor(m adapter.Message) ([]ToolResultContent, error) {
+	if len(m.Parts) == 0 {
+		return []ToolResultContent{{Text: m.Content}}, nil
+	}
+	out := make([]ToolResultContent, 0, len(m.Parts)+1)
+	if m.Content != "" {
+		out = append(out, ToolResultContent{Text: m.Content})
+	}
+	for _, p := range m.Parts {
+		b, err := contentPartToBlock(p)
+		if err != nil {
+			return nil, fmt.Errorf("bedrock: tool result message (tool_call_id %q): %w", m.ToolCallID, err)
+		}
+		out = append(out, ToolResultContent{Text: b.Text, Image: b.Image, Document: b.Document})
+	}
+	return out, nil
 }
 
 // mediaTypeToFormat derives Converse's required file-format string

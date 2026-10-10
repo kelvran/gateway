@@ -134,7 +134,7 @@ Prompt fields are covered in [prompt-management.md](../how-to/prompt-management.
 |---|---|---|---|
 | `role` | string | both | `system`, `user`, `assistant` or `tool`. |
 | `content` | string | both | Text. Must be a JSON string; an OpenAI-style content array is `400`, `code` `invalid_json`. Multi-modal content goes in `parts`. |
-| `parts` | `ContentPart[]` | request | Multi-modal parts alongside or instead of `content`. |
+| `parts` | `ContentPart[]` | request | Multi-modal parts alongside or instead of `content`. On `role: tool` messages (since gateway/v0.19.0): carried to `anthropic` (a `tool_result` block array) and `bedrock` (`toolResult.content` blocks); text parts only on `openai`/`openaicompat`, none on `gemini`. The request is routed to a deployment in the pool that can carry them; when none can it is `400`, `code` `tool_result_parts_unsupported`, `param` `messages`. |
 | `tool_calls` | `ToolCall[]` | both | Tool calls the assistant requested. OpenAI nested shape; see below. |
 | `tool_call_id` | string | request | On `role: tool` messages, the id of the tool call this message answers. |
 | `cache_control` | `CacheControl` | request | Opts this message into provider-side prompt caching. |

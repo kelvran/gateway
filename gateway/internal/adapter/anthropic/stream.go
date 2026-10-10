@@ -284,6 +284,7 @@ func (d *streamDecoder) decodeContentBlockStart(data string) ([]streaming.ChatCo
 	}
 
 	var delta streaming.MessageDelta
+	unknown := false
 	if !d.sentRole {
 		delta.Role = "assistant"
 		d.sentRole = true
@@ -319,11 +320,17 @@ func (d *streamDecoder) decodeContentBlockStart(data string) ([]streaming.ChatCo
 	default:
 		// An unrecognized content-block type: remember it as a plain text
 		// block (the safest default for later deltas) but otherwise stay
-		// forward-compatible rather than erroring the whole stream.
+		// forward-compatible rather than erroring the whole stream. The
+		// chunk says so (item 11 slice S6): the dataplane's accumulator
+		// marks the assembled response unrepresentable and never caches
+		// it, since a cache hit would be re-encoded without this block.
 		d.blockKinds[b.Index] = blockKindText
+		unknown = true
 	}
 
-	return []streaming.ChatCompletionChunk{d.chunk(delta, nil)}, false, nil, nil
+	out := d.chunk(delta, nil)
+	out.Unrepresentable = unknown
+	return []streaming.ChatCompletionChunk{out}, false, nil, nil
 }
 
 func (d *streamDecoder) decodeContentBlockDelta(data string) ([]streaming.ChatCompletionChunk, bool, *adapter.Usage, error) {
@@ -333,8 +340,14 @@ func (d *streamDecoder) decodeContentBlockDelta(data string) ([]streaming.ChatCo
 	}
 
 	var delta streaming.MessageDelta
+	// A delta type this decoder does not know on a KNOWN block (Anthropic's
+	// citations_delta on a text block, anything newer) carries content the
+	// canonical schema cannot represent: the chunk says so, the same way an
+	// unknown content_block_start does (item 11 slice S6).
+	unknown := false
 	switch d.blockKinds[b.Index] {
 	case blockKindToolUse:
+		unknown = b.Delta.Type != "input_json_delta"
 		// The fragment accumulates against this specific block's index —
 		// this is the crux of the statefulness this decoder exists for:
 		// with two tool_use blocks open at different indices, each
@@ -351,14 +364,17 @@ func (d *streamDecoder) decodeContentBlockDelta(data string) ([]streaming.ChatCo
 		// must also switch on the delta's own type string to tell them
 		// apart, per platform.claude.com/docs/en/build-with-claude/
 		// streaming's "Thinking delta" section.
-		if b.Delta.Type == "signature_delta" {
+		switch b.Delta.Type {
+		case "signature_delta":
 			delta.ReasoningBlocks = []streaming.ReasoningDelta{
 				{Index: b.Index, Signature: b.Delta.Signature},
 			}
-		} else {
+		case "thinking_delta":
 			delta.ReasoningBlocks = []streaming.ReasoningDelta{
 				{Index: b.Index, Text: b.Delta.Thinking},
 			}
+		default:
+			unknown = true
 		}
 	case blockKindRedactedThinking:
 		// No-op by design: a redacted_thinking block's entire payload was
@@ -369,9 +385,12 @@ func (d *streamDecoder) decodeContentBlockDelta(data string) ([]streaming.ChatCo
 		// index is never misrepresented as plaintext content.
 	default: // blockKindText, or an unknown index defaulting to it
 		delta.Content = b.Delta.Text
+		unknown = b.Delta.Type != "text_delta"
 	}
 
-	return []streaming.ChatCompletionChunk{d.chunk(delta, nil)}, false, nil, nil
+	out := d.chunk(delta, nil)
+	out.Unrepresentable = unknown
+	return []streaming.ChatCompletionChunk{out}, false, nil, nil
 }
 
 func (d *streamDecoder) decodeContentBlockStop(data string) ([]streaming.ChatCompletionChunk, bool, *adapter.Usage, error) {

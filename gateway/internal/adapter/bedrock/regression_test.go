@@ -345,3 +345,29 @@ func TestRegressionToProviderSamplingMatchesGoldenFixture(t *testing.T) {
 	wantJSON := mustReadTestdata(t, "request_bedrock_native_sampling.golden.json")
 	assertJSONEqual(t, gotJSON, wantJSON)
 }
+
+// TestRegressionToProviderToolResultPartsMatchesGoldenFixture is item 11
+// slice S6's wire-format proof: the canonical fixture with its tool message
+// carrying text Content plus an image Part must match the checked-in golden,
+// which differs from this adapter's base golden by exactly the tool-result
+// content -- a block array instead of the plain string (the reviewer diffs
+// the two files, per the generated-hunk rule).
+func TestRegressionToProviderToolResultPartsMatchesGoldenFixture(t *testing.T) {
+	canonicalJSON := mustReadTestdata(t, "request_canonical_tool_result_parts.json")
+
+	var req adapter.ChatRequest
+	if err := json.Unmarshal(canonicalJSON, &req); err != nil {
+		t.Fatalf("unmarshaling request_canonical_tool_result_parts.json: %v", err)
+	}
+	native, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	gotJSON, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshaling ToProvider output: %v", err)
+	}
+
+	wantJSON := mustReadTestdata(t, "request_bedrock_native_tool_result_parts.golden.json")
+	assertJSONEqual(t, gotJSON, wantJSON)
+}

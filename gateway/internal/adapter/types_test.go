@@ -370,3 +370,18 @@ func TestChatRequestEffortIsUnreachableFromJSON(t *testing.T) {
 		t.Errorf("Marshal leaked effort onto the wire: %s", out)
 	}
 }
+
+// TestChatResponseUnrepresentableIsNotOnTheWire pins json:"-" on
+// ChatResponse.Unrepresentable (item 11 slice S6): the flag tells the
+// dataplane that an adapter's FromProvider had to skip a provider block the
+// canonical schema cannot carry, so the response must never be cached; it
+// is a gateway-internal signal and never a response field.
+func TestChatResponseUnrepresentableIsNotOnTheWire(t *testing.T) {
+	out, err := json.Marshal(ChatResponse{ID: "r", Unrepresentable: true})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(strings.ToLower(string(out)), "unrepresentable") {
+		t.Errorf("Marshal leaked the Unrepresentable flag onto the wire: %s", out)
+	}
+}

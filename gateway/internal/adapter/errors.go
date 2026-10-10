@@ -142,3 +142,13 @@ func (e *UpstreamStreamError) Unwrap() error {
 func (e *UpstreamStreamError) ClientSafeMessage() string {
 	return fmt.Sprintf("%s: upstream provider returned a mid-stream error", e.Provider)
 }
+
+// ErrToolResultPartsUnsupported is returned, wrapped, when a role:"tool"
+// message carries Parts the serving provider cannot represent and no
+// deployment in the model's pool can (item 11 slice S6): openai and
+// openaicompat take text parts only, gemini none (SupportsToolResultParts).
+// The dataplane decides this from the request alone, before any upstream
+// call, after trying to reroute to a capable deployment; the handler maps
+// it to 400 tool_result_parts_unsupported. Adapters also return it as the
+// backstop when such a message reaches ToProvider anyway.
+var ErrToolResultPartsUnsupported = errors.New("adapter: a tool result carries content parts this provider cannot represent and no capable deployment is available")

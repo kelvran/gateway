@@ -241,6 +241,10 @@ func errorTypeAndCode(err error, status int) (errType string, code *string) {
 	case errors.Is(err, idempotency.ErrFingerprintMismatch):
 		// G16: 422 -- the key says "same request", the body says otherwise.
 		return errTypeInvalidRequest, codePtr("idempotency_key_reused")
+	case errors.Is(err, adapter.ErrToolResultPartsUnsupported):
+		// Item 11 slice S6: a tool message carries parts no deployment in the
+		// pool can carry -- known from the request alone, so a 400.
+		return errTypeInvalidRequest, codePtr("tool_result_parts_unsupported")
 	case errors.Is(err, dataplane.ErrPromptAndMessagesBothSet),
 		errors.Is(err, dataplane.ErrPromptResolutionFailed),
 		errors.Is(err, dataplane.ErrPromptLabelAndVersionBothSet),

@@ -108,7 +108,7 @@ How a failed call resolves its chain:
 
 - The class is a lowercase keyword heuristic over the upstream error body: context-window keywords are checked first, then content-policy keywords, else `generic`. Gemini's 200-OK safety block is `content_policy`. Capacity, network and adapter errors are `generic`.
 - The chain for that class is used. If none is configured, the `generic` chain is used. If neither exists, that deployment gets no fallback for the request. Opting into chains never reverts to the single re-pick described under Variants.
-- Each hop is skipped when the target is unhealthy, the key's RPM for the target's model is exhausted, the target is at its own capacity (step 7), it cannot honor `response_format`, it is outside the key's `allowed_regions`, or its model is outside the key's `allowed_models`.
+- Each hop is skipped when the target is unhealthy, the key's RPM for the target's model is exhausted, the target is at its own capacity (step 7), it cannot honor `response_format` or carry a `role: tool` message's `parts`, it is outside the key's `allowed_regions`, or its model is outside the key's `allowed_models`.
 - A short jittered pause (25 ms base, 400 ms cap) precedes each hop after the first. Three consecutive real failures stop the walk for that request.
 
 ### 7. Cap a shared deployment's own load
@@ -161,7 +161,7 @@ Prints `204`. The admin or operator tier may call it; a negative weight is `400`
 
 ### Fail over without chains
 
-Without `fallback_chains`, an upstream error gets exactly one re-pick in the same pool, excluding the failed deployment and filtered to members that can honor `response_format` and sit inside the key's `allowed_regions`. If no member is eligible, the original error is returned. The same deployment is never retried.
+Without `fallback_chains`, an upstream error gets exactly one re-pick in the same pool, excluding the failed deployment and filtered to members that can honor `response_format`, carry any tool-result `parts`, and sit inside the key's `allowed_regions`. If no member is eligible, the original error is returned. The same deployment is never retried.
 
 ### Streaming requests
 

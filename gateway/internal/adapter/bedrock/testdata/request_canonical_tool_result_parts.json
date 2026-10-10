@@ -1,0 +1,71 @@
+{
+  "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant that can check the weather."
+    },
+    {
+      "role": "user",
+      "content": "What's the weather in Boston?"
+    },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "id": "tooluse_01A1B2C3",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Boston\",\"unit\":\"fahrenheit\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "screenshot attached",
+      "tool_call_id": "tooluse_01A1B2C3",
+      "parts": [
+        {
+          "type": "image",
+          "media_type": "image/png",
+          "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "It's 72\u00b0F and sunny in Boston."
+    }
+  ],
+  "temperature": 0.4,
+  "max_tokens": 1024,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a given city",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "celsius",
+                "fahrenheit"
+              ]
+            }
+          },
+          "required": [
+            "city"
+          ]
+        }
+      }
+    }
+  ]
+}

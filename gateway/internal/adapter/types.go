@@ -690,6 +690,19 @@ type ChatResponse struct {
 	// member. Item 11 slice S3.
 	StopReason   string `json:"stop_reason,omitempty"`
 	StopSequence string `json:"stop_sequence,omitempty"`
+	// Unrepresentable is set by an adapter's FromProvider -- and, on a
+	// stream, by the accumulator from a decoder-flagged chunk -- when the
+	// provider's response carried a content block the canonical schema
+	// cannot represent (an Anthropic block or delta type newer than the
+	// adapter, such as a server tool use or a citations_delta), so the live
+	// client's response is complete
+	// but THIS canonical form is not. The dataplane never writes such a
+	// response to any cache layer: a cache hit would be re-encoded from the
+	// canonical form and silently lose the block (item 11 slice S6, per
+	// docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md §3).
+	// json:"-": a gateway-internal signal, never a response field. False
+	// (the default) for every adapter without such a gap.
+	Unrepresentable bool `json:"-"`
 }
 
 // InputTransformation is one entry in Anthropic's own top-level

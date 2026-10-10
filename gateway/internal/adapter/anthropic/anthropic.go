@@ -17,6 +17,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -130,6 +131,85 @@ type Thinking struct {
 	Type         string        `json:"type,omitempty"`
 	BudgetTokens int           `json:"budget_tokens,omitempty"`
 	BlockBinding *BlockBinding `json:"block_binding,omitempty"`
+}
+
+// ToolResultContent is a tool_result block's content: Anthropic accepts a
+// plain string or an array of blocks (text, image, document). Text is the
+// string form; Blocks, when non-empty, is the array form and wins. The zero
+// value marshals to nothing (ContentBlock's omitzero), the string form to a
+// bare JSON string -- byte-identical to the plain-string field this type
+// replaced (item 11 slice S6), which every request golden relies on -- and
+// the array form to the block array; UnmarshalJSON accepts both forms and
+// null, the shape the Anthropic Messages ingress (slice S7) decodes. Blocks
+// is the non-recursive ToolResultBlock, see there.
+type ToolResultContent struct {
+	Text   string
+	Blocks []ToolResultBlock
+}
+
+// ToolResultBlock is one block of a tool_result's array content: text, or
+// an image/document with a source -- Anthropic's own schema for the array,
+// which cannot nest a tool_result (or any other block kind). Deliberately
+// NOT ContentBlock (security review, item 11 slice S6): a recursive type
+// would make ToolResultContent.UnmarshalJSON re-scan its whole subtree at
+// every nesting level -- quadratic in depth once client bytes reach it in
+// the Messages ingress (slice S7) -- and would admit shapes the API does
+// not have. ContentBlock() lifts one into the general block type for the
+// converters that take it (BlockToContentPart).
+type ToolResultBlock struct {
+	Type         string            `json:"type"`
+	Text         string            `json:"text,omitempty"`
+	Source       *ContentSource    `json:"source,omitempty"`
+	CacheControl *CacheControlWire `json:"cache_control,omitempty"`
+}
+
+// ContentBlock lifts the tool_result block into the general ContentBlock
+// shape (same wire members).
+func (b ToolResultBlock) ContentBlock() ContentBlock {
+	return ContentBlock{Type: b.Type, Text: b.Text, Source: b.Source, CacheControl: b.CacheControl}
+}
+
+// toolResultBlockOf narrows a text/image/document ContentBlock (what
+// contentPartToBlock returns) to the tool_result array's block type.
+func toolResultBlockOf(b ContentBlock) ToolResultBlock {
+	return ToolResultBlock{Type: b.Type, Text: b.Text, Source: b.Source, CacheControl: b.CacheControl}
+}
+
+// IsZero implements encoding/json's omitzero contract.
+func (c ToolResultContent) IsZero() bool { return c.Text == "" && len(c.Blocks) == 0 }
+
+// MarshalJSON implements json.Marshaler; see ToolResultContent.
+func (c ToolResultContent) MarshalJSON() ([]byte, error) {
+	if len(c.Blocks) > 0 {
+		return json.Marshal(c.Blocks)
+	}
+	return json.Marshal(c.Text)
+}
+
+// UnmarshalJSON implements json.Unmarshaler; see ToolResultContent.
+func (c *ToolResultContent) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	switch {
+	case trimmed == "null":
+		*c = ToolResultContent{}
+		return nil
+	case strings.HasPrefix(trimmed, "\""):
+		var text string
+		if err := json.Unmarshal(data, &text); err != nil {
+			return fmt.Errorf("anthropic: decoding tool_result content string: %w", err)
+		}
+		*c = ToolResultContent{Text: text}
+		return nil
+	case strings.HasPrefix(trimmed, "["):
+		var blocks []ToolResultBlock
+		if err := json.Unmarshal(data, &blocks); err != nil {
+			return fmt.Errorf("anthropic: decoding tool_result content blocks: %w", err)
+		}
+		*c = ToolResultContent{Blocks: blocks}
+		return nil
+	default:
+		return errors.New("anthropic: tool_result content must be a string or an array of content blocks")
+	}
 }
 
 // BlockBinding is Anthropic's native thinking.block_binding object.
@@ -256,9 +336,12 @@ type ContentBlock struct {
 	Name  string         `json:"name,omitempty"`
 	Input map[string]any `json:"input,omitempty"`
 
-	// "tool_result" block
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
+	// "tool_result" block. Content is a string or a block array
+	// (ToolResultContent, item 11 slice S6); omitzero keeps the key off
+	// the wire when neither form is set, as omitempty did for the plain
+	// string this field used to be.
+	ToolUseID string            `json:"tool_use_id,omitempty"`
+	Content   ToolResultContent `json:"content,omitzero"`
 
 	// "image"/"document" block, per
 	// docs/rfcs/2026-09-06-gateway-multimodal-content.md.
@@ -558,21 +641,29 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 			continue
 		case "tool":
 			// Anthropic has no "tool" role: a tool result is sent as a
-			// "user" message carrying a tool_result content block.
-			//
-			// ContentBlock.Content (this block's own field, above) is a
-			// plain Go string -- structurally unable to hold Anthropic's
-			// real tool_result array-of-blocks wire shape, so a non-empty
-			// m.Parts here (e.g. a tool returning an image) cannot be
-			// represented and must fail loudly rather than silently drop
-			// the part, same convention as contentPartToBlock's own
-			// unsupported-part-type error below. Widening
-			// ContentBlock.Content to a real block array is a bigger
-			// wire-format change, out of scope for this fix.
-			if len(m.Parts) > 0 {
-				return nil, fmt.Errorf("anthropic: tool result message (tool_call_id %q) has non-empty Parts, which this adapter's plain-string tool_result content cannot represent", m.ToolCallID)
+			// "user" message carrying a tool_result content block. Without
+			// Parts the content is the plain string, byte-identical to
+			// before; with Parts (item 11 slice S6) it is Anthropic's block
+			// array -- the text Content first, then each part via
+			// contentPartToBlock (text, image, document; which kinds a
+			// tool_result may carry is Anthropic's own validation).
+			block := ContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID}
+			if len(m.Parts) == 0 {
+				block.Content = ToolResultContent{Text: m.Content}
+			} else {
+				blocks := make([]ToolResultBlock, 0, len(m.Parts)+1)
+				if m.Content != "" {
+					blocks = append(blocks, ToolResultBlock{Type: "text", Text: m.Content})
+				}
+				for _, p := range m.Parts {
+					pb, err := contentPartToBlock(p)
+					if err != nil {
+						return nil, fmt.Errorf("anthropic: tool result message (tool_call_id %q): %w", m.ToolCallID, err)
+					}
+					blocks = append(blocks, toolResultBlockOf(pb))
+				}
+				block.Content = ToolResultContent{Blocks: blocks}
 			}
-			block := ContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content}
 			if m.CacheControl != nil {
 				block.CacheControl = cacheControlWire(m.CacheControl)
 			}
@@ -778,6 +869,45 @@ func contentPartToBlock(p adapter.ContentPart) (ContentBlock, error) {
 	}
 }
 
+// BlockToContentPart is contentPartToBlock's inverse: one Anthropic
+// content block -- text, or an image/document with a base64 or url source
+// -- into the canonical adapter.ContentPart (item 11 slice S6). Exported
+// for the Anthropic Messages ingress (slice S7), which decodes tool_result
+// block arrays with it. A block type with no canonical part, or an
+// image/document without a source, is a real error, never a silently
+// empty part. A block-level cache_control carries its ttl across.
+func BlockToContentPart(b ContentBlock) (adapter.ContentPart, error) {
+	switch b.Type {
+	case "text":
+		return adapter.ContentPart{Type: "text", Text: b.Text, CacheControl: cacheControlCanonical(b.CacheControl)}, nil
+	case "image", "document":
+		if b.Source == nil {
+			return adapter.ContentPart{}, fmt.Errorf("anthropic: %s block has no source", b.Type)
+		}
+		part := adapter.ContentPart{Type: b.Type, MediaType: b.Source.MediaType, CacheControl: cacheControlCanonical(b.CacheControl)}
+		switch b.Source.Type {
+		case "base64":
+			part.Data = b.Source.Data
+		case "url":
+			part.URL = b.Source.URL
+		default:
+			return adapter.ContentPart{}, fmt.Errorf("anthropic: %s block has unsupported source type %q", b.Type, b.Source.Type)
+		}
+		return part, nil
+	default:
+		return adapter.ContentPart{}, fmt.Errorf("anthropic: content block type %q has no canonical content part", b.Type)
+	}
+}
+
+// cacheControlCanonical is cacheControlWire's inverse for the ttl member;
+// nil in, nil out.
+func cacheControlCanonical(cc *CacheControlWire) *adapter.CacheControl {
+	if cc == nil {
+		return nil
+	}
+	return &adapter.CacheControl{TTL: cc.TTL}
+}
+
 // reasoningBlocksToProvider returns the ContentBlocks for every canonical
 // ReasoningBlock in rbs whose Sequence matches seq exactly (or, when
 // trailing is true, every remaining block with Sequence >= seq) --
@@ -819,6 +949,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 	var textParts []string
 	var toolCalls []adapter.ToolCall
 	var reasoningBlocks []adapter.ReasoningBlock
+	unrepresentable := false
 	for _, block := range native.Content {
 		switch block.Type {
 		case "text":
@@ -861,6 +992,13 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 				Redacted: true,
 				Data:     block.Data,
 			})
+		default:
+			// A block type the canonical schema cannot carry (server_tool_use,
+			// web_search_tool_result, anything newer than this adapter) is
+			// skipped as before, and the response says so: the dataplane never
+			// caches it, since a cache hit would be re-encoded from this
+			// canonical form and silently lose the block (item 11 slice S6).
+			unrepresentable = true
 		}
 	}
 
@@ -923,5 +1061,6 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			ReasoningTokens:     thinkingTokensOf(native.Usage.OutputTokensDetails),
 		},
 		InputTransformations: inputTransformations,
+		Unrepresentable:      unrepresentable,
 	}, nil
 }

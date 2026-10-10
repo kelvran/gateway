@@ -2142,6 +2142,10 @@ func errorStatus(err error) int {
 		// 422 (same gate): the Idempotency-Key was reused with a different
 		// body -- the request contradicts itself, nothing upstream failed.
 		status = http.StatusUnprocessableEntity
+	case errors.Is(err, adapter.ErrToolResultPartsUnsupported):
+		// 400 (item 11 slice S6): a tool message carries parts no deployment
+		// in the pool can carry, decided before any upstream call.
+		status = http.StatusBadRequest
 	case errors.Is(err, dataplane.ErrNotAnEmbeddingDeployment):
 		// 400, not the 502 default -- naming a model that resolves to a
 		// chat (not embedding) deployment on the embeddings route is a
@@ -2300,6 +2304,8 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		param = codePtr("response_format")
 	case errors.Is(err, idempotency.ErrFingerprintMismatch):
 		param = codePtr("Idempotency-Key")
+	case errors.Is(err, adapter.ErrToolResultPartsUnsupported):
+		param = codePtr("messages")
 	}
 	writeAPIError(w, status, errType, code, param, message)
 }

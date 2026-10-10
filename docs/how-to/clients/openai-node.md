@@ -81,6 +81,7 @@ Every error from `/v1/*` is the OpenAI envelope `{"error":{"message","type","par
 | 403 | `permission_error` | `model_not_allowed`, `source_ip_not_allowed` | This key may not use the model or call from this IP | `PermissionDeniedError` |
 | 400 | `invalid_request_error` | `model_not_found`, `invalid_json`, `invalid_tool_choice`, `empty_messages`, `content_policy_violation`, `invalid_prompt_reference`, `invalid_request` | Request-shape problem. An unknown model is 400, not OpenAI's 404 | `BadRequestError` |
 | 400 | `invalid_request_error` | `response_format_unsupported` | `response_format` on a model pool with no capable deployment (`param` `response_format`; since gateway/v0.19.0, `502` before) | `BadRequestError` |
+| 400 | `invalid_request_error` | `tool_result_parts_unsupported` | A `role: tool` message carries image or document `parts` and no deployment in the pool can carry them (`param` `messages`; since gateway/v0.19.0, `502` before) | `BadRequestError` |
 | 413 | `invalid_request_error` | `request_too_large` | Body over 32 MiB | generic `APIError` |
 | 422 | `invalid_request_error` | `idempotency_key_reused` | `Idempotency-Key` reused with a different body (`param` `Idempotency-Key`; since gateway/v0.19.0, `502` before) | `UnprocessableEntityError` |
 | 429 | `rate_limit_error` | `rate_limit_exceeded`, `concurrency_limit_exceeded` | The key's rate limit or concurrency cap. `Retry-After` is set | `RateLimitError` |

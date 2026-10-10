@@ -320,6 +320,12 @@ func (d Deployment) effectiveCacheControlAutoDisabled() bool {
 // call sites (runMissPath here; streamDeploymentWithFallback in
 // streaming.go).
 func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
+	// A role:"tool" message carrying Parts is the second routing property
+	// (item 11 slice S6): openai/openaicompat carry text parts only, gemini
+	// none, anthropic/bedrock all (adapter.SupportsToolResultParts).
+	if media, any := toolResultPartsIn(req); any && !adapter.SupportsToolResultParts(dep.Provider, media) {
+		return false
+	}
 	if req.ResponseFormat == nil {
 		return true
 	}
@@ -361,10 +367,44 @@ func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
 // fallback hop by skipping an incapable target outright, before ever
 // calling it.
 func checkResponseFormatEnforceable(dep Deployment, req adapter.ChatRequest) error {
-	if req.ResponseFormat == nil || capabilityOKForRequest(dep, req) {
+	if req.ResponseFormat == nil || adapter.SupportsStructuredOutput(dep.Provider, dep.UpstreamModel) {
 		return nil
 	}
 	return fmt.Errorf("%w: model %s", adapter.ErrStructuredOutputUnsupported, dep.Model)
+}
+
+// toolResultPartsIn reports whether any role:"tool" message in req carries
+// Parts (any) and whether any of those parts is not text (media) -- the
+// two inputs adapter.SupportsToolResultParts needs (item 11 slice S6).
+func toolResultPartsIn(req adapter.ChatRequest) (media bool, any bool) {
+	for _, m := range req.Messages {
+		if m.Role != "tool" || len(m.Parts) == 0 {
+			continue
+		}
+		any = true
+		for _, p := range m.Parts {
+			if p.Type != "text" {
+				media = true
+			}
+		}
+	}
+	return media, any
+}
+
+// checkToolResultPartsCarriable is checkResponseFormatEnforceable's twin for
+// tool-result Parts (item 11 slice S6): adapter.ErrToolResultPartsUnsupported
+// (wrapped with the model) when a role:"tool" message carries Parts the
+// deployment rerouteToCapableDeploymentIfNeeded settled on still cannot
+// carry -- i.e. no deployment in the pool can -- decided from the request
+// alone before any upstream call, so the handler answers 400 rather than
+// the adapter's own error surfacing as a 502. Called beside its twin at
+// both first-pick sites.
+func checkToolResultPartsCarriable(dep Deployment, req adapter.ChatRequest) error {
+	media, any := toolResultPartsIn(req)
+	if !any || adapter.SupportsToolResultParts(dep.Provider, media) {
+		return nil
+	}
+	return fmt.Errorf("%w: model %s", adapter.ErrToolResultPartsUnsupported, dep.Model)
 }
 
 // Closes the "first attempt" half of two real, deliberately-accepted v1
@@ -3915,6 +3955,9 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		if err := checkResponseFormatEnforceable(dep, req); err != nil {
 			return nil, err
 		}
+		if err := checkToolResultPartsCarriable(dep, req); err != nil {
+			return nil, err
+		}
 
 		resp, err := p.callDeploymentWithCapacityCheck(ctx, dep, req)
 		if err != nil {
@@ -4013,7 +4056,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		}
 		p.noteGuardrailFailOpen(ctx, vk.ID, telemetry.GuardrailStagePostcall, postVerdict)
 
-		if !responseWasTruncated(resp) {
+		if !responseWasTruncated(resp) && !resp.Unrepresentable {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
 				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), encoded)
 			}
@@ -4830,13 +4873,15 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// capability check below: on any path where no deployment was ever
 	// resolved at all (a guardrail block, auth failure, no deployment
 	// configured for req.Model), dep is Deployment{}'s zero value, and
-	// capabilityOKForRequest(dep, req) would report false for THAT
-	// reason alone — a real deployment never got a chance to either
+	// the capability check would report false for THAT reason alone
+	// (it asks adapter.SupportsStructuredOutput directly, not
+	// capabilityOKForRequest, which since item 11 slice S6 also says no
+	// for a tool message's parts -- a different thing than this label) — a real deployment never got a chance to either
 	// honor or silently skip anything, so reporting this attribute here
 	// would be a false, misleading signal, not the real "silent
 	// degradation" case this exists to surface.
 	responseFormatRequestedNotEnforced := dep.Name != "" &&
-		req.ResponseFormat != nil && !capabilityOKForRequest(dep, req)
+		req.ResponseFormat != nil && !adapter.SupportsStructuredOutput(dep.Provider, dep.UpstreamModel)
 	// Computed here, before result, so both the span attribute
 	// (ChatCompletionResult.SavingsUSD below) and the durable
 	// GatewayDecisionEvent.SavingsUsd proto field (further down) share
@@ -5196,7 +5241,7 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST
 	case errors.Is(err, ErrGuardrailBlocked):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED
-	case errors.Is(err, adapter.ErrStructuredOutputUnsupported), errors.Is(err, idempotency.ErrFingerprintMismatch):
+	case errors.Is(err, adapter.ErrStructuredOutputUnsupported), errors.Is(err, idempotency.ErrFingerprintMismatch), errors.Is(err, adapter.ErrToolResultPartsUnsupported):
 		// G16 (2026-10-10): both are decided from the request alone before
 		// any upstream call -- an unenforceable response_format, a reused
 		// Idempotency-Key with a different body -- so they classify as the

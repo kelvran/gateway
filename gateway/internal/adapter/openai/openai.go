@@ -301,6 +301,18 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("openai: converting message tool calls: %w", err)
 		}
+		if m.Role == "tool" {
+			// Chat Completions tool messages take a string or text parts
+			// only; an image or document part is the typed sentinel the
+			// handler maps to 400 (item 11 slice S6) -- the backstop behind
+			// the dataplane's capability routing, which normally sends such
+			// a request to an anthropic or bedrock deployment first.
+			for _, p := range m.Parts {
+				if p.Type != "text" {
+					return nil, fmt.Errorf("%w: openai: tool message (tool_call_id %q) carries a %s part", adapter.ErrToolResultPartsUnsupported, m.ToolCallID, p.Type)
+				}
+			}
+		}
 		content, err := contentToNative(m.Content, m.Parts)
 		if err != nil {
 			return nil, fmt.Errorf("openai: converting message content: %w", err)
