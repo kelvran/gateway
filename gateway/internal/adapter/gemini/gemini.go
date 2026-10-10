@@ -159,8 +159,12 @@ type FunctionDeclaration struct {
 // forward here, same reasoning as Anthropic's and Bedrock's response-
 // format paths.
 type GenerationConfig struct {
-	Temperature      *float64       `json:"temperature,omitempty"`
-	MaxOutputTokens  *int           `json:"maxOutputTokens,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	MaxOutputTokens *int     `json:"maxOutputTokens,omitempty"`
+	// StopSequences is Gemini's generationConfig.stopSequences, the
+	// canonical ChatRequest.StopSequences forwarded verbatim (item 11
+	// slice S5).
+	StopSequences    []string       `json:"stopSequences,omitempty"`
 	ResponseMimeType string         `json:"responseMimeType,omitempty"`
 	ResponseSchema   map[string]any `json:"responseSchema,omitempty"`
 }
@@ -408,10 +412,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	var genConfig *GenerationConfig
-	if req.Temperature != nil || req.MaxTokens != nil || req.ResponseFormat != nil {
+	if req.Temperature != nil || req.MaxTokens != nil || req.ResponseFormat != nil || len(req.StopSequences) > 0 {
 		genConfig = &GenerationConfig{
 			Temperature:     req.Temperature,
 			MaxOutputTokens: req.MaxTokens,
+			StopSequences:   req.StopSequences,
 		}
 		if req.ResponseFormat != nil {
 			genConfig.ResponseMimeType = "application/json"

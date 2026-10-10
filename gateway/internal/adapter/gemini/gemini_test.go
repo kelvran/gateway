@@ -1080,3 +1080,21 @@ func TestToProviderToolChoiceRejectsUnknownMode(t *testing.T) {
 		t.Fatal("ToProvider: want an error for an unknown tool_choice mode, got nil")
 	}
 }
+
+// TestToProviderStopSequencesForwarded (item 11 slice S5): canonical
+// StopSequences become generationConfig.stopSequences, and they alone
+// materialise generationConfig.
+func TestToProviderStopSequencesForwarded(t *testing.T) {
+	req := adapter.ChatRequest{Model: "gemini-2.5-flash", Messages: []adapter.Message{{Role: "user", Content: "hi"}}, StopSequences: adapter.StopSequences{"END"}}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"stopSequences":["END"]`) {
+		t.Errorf("wire = %s, want generationConfig.stopSequences [END]", wire)
+	}
+}

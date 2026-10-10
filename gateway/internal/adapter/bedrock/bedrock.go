@@ -457,6 +457,10 @@ func toolChoiceToProvider(tc *adapter.ToolChoice, model string) (*ToolChoiceWire
 type InferenceConfig struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	MaxTokens   *int     `json:"maxTokens,omitempty"`
+	// StopSequences is Converse's inferenceConfig.stopSequences, the
+	// canonical ChatRequest.StopSequences forwarded verbatim (item 11
+	// slice S5).
+	StopSequences []string `json:"stopSequences,omitempty"`
 }
 
 // Request is Bedrock Converse's native request shape.
@@ -674,10 +678,11 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	var inferenceConfig *InferenceConfig
-	if req.Temperature != nil || req.MaxTokens != nil {
+	if req.Temperature != nil || req.MaxTokens != nil || len(req.StopSequences) > 0 {
 		inferenceConfig = &InferenceConfig{
-			Temperature: req.Temperature,
-			MaxTokens:   req.MaxTokens,
+			Temperature:   req.Temperature,
+			MaxTokens:     req.MaxTokens,
+			StopSequences: req.StopSequences,
 		}
 	}
 

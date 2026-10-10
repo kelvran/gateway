@@ -12,7 +12,9 @@ package adapter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 // Message is one turn in a canonical chat conversation. Its JSON shape is
@@ -335,8 +337,22 @@ type ChatRequest struct {
 	Messages    []Message `json:"messages"`
 	Temperature *float64  `json:"temperature,omitempty"`
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
-	Tools       []ToolDef `json:"tools,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
+	// StopSequences are the caller's stop sequences -- OpenAI's `stop`
+	// (a string or an array of strings, both decoded by
+	// StopSequences.UnmarshalJSON), Anthropic's `stop_sequences`,
+	// Converse's `inferenceConfig.stopSequences`, Gemini's
+	// `generationConfig.stopSequences` -- forwarded verbatim by every
+	// adapter; per-provider limits (OpenAI accepts at most four) are the
+	// upstream's own 400, never checked here. Nil (the default, and every
+	// ChatRequest built before this field existed) is a silent no-op;
+	// before item 11 slice S5 (docs/rfcs/2026-10-09-gateway-anthropic-
+	// messages-ingress.md §3) `stop` was an ignored unknown field on
+	// /v1/chat/completions, which is why the string form must keep
+	// decoding. Folded into every cache key and the L3 gate
+	// (dataplane.samplingFingerprint).
+	StopSequences StopSequences `json:"stop,omitempty"`
+	Tools         []ToolDef     `json:"tools,omitempty"`
+	Stream        bool          `json:"stream,omitempty"`
 	// ResponseFormat, when set, requests structured JSON output
 	// conforming to a caller-supplied schema. Nil (the default, and every
 	// ChatRequest built before this field existed) is a silent no-op --
@@ -478,6 +494,36 @@ type ThinkingConfig struct {
 	// and omitempty keeps it off the wire -- Anthropic rejects a budget on
 	// "adaptive", and 0 would be a value, not an absence.
 	BudgetTokens int `json:"budget_tokens,omitempty"`
+}
+
+// StopSequences is ChatRequest.StopSequences' wire type: it decodes
+// OpenAI's `stop` in both documented forms -- a bare string or an array
+// of strings -- and always marshals as the array, the canonical form the
+// adapters and the idempotency fingerprint read. JSON null and absence
+// both leave it nil.
+type StopSequences []string
+
+// UnmarshalJSON implements json.Unmarshaler; see StopSequences.
+func (s *StopSequences) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "null" {
+		*s = nil
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "\"") {
+		var one string
+		if err := json.Unmarshal(data, &one); err != nil {
+			return fmt.Errorf("stop must be a string or an array of strings: %w", err)
+		}
+		*s = StopSequences{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return errors.New("stop must be a string or an array of strings")
+	}
+	*s = StopSequences(many)
+	return nil
 }
 
 // ToolChoice requests forcing behavior for tool calling, per

@@ -719,3 +719,20 @@ func TestFromProviderExtractsReasoningTokens(t *testing.T) {
 		t.Errorf("Usage.ReasoningTokens without completion_tokens_details = %d, want 0", got.Usage.ReasoningTokens)
 	}
 }
+
+// TestToProviderStopSequencesForwarded (item 11 slice S5): mirrors the
+// openai adapter -- canonical StopSequences become the `stop` array.
+func TestToProviderStopSequencesForwarded(t *testing.T) {
+	req := adapter.ChatRequest{Model: "local-model", Messages: []adapter.Message{{Role: "user", Content: "hi"}}, StopSequences: adapter.StopSequences{"END"}}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"stop":["END"]`) {
+		t.Errorf("wire = %s, want stop [END]", wire)
+	}
+}

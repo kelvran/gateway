@@ -246,3 +246,53 @@ func TestChatRequestThinkingIsUnreachableFromJSON(t *testing.T) {
 		t.Errorf("Marshal leaked the thinking field onto the wire: %s", out)
 	}
 }
+
+// TestChatRequestStopDecodesStringOrArray pins the wire contract for the
+// canonical StopSequences field (item 11 slice S5): OpenAI's `stop` is a
+// string or an array of strings, both must decode (a bare string was an
+// IGNORED unknown field before this slice, so a 400 on it now would be a
+// regression), null and absence mean none, a non-string value is a real
+// decode error, and the field always marshals as an array -- the
+// canonical form every provider adapter and the idempotency fingerprint
+// read.
+func TestChatRequestStopDecodesStringOrArray(t *testing.T) {
+	decode := func(t *testing.T, body string) ChatRequest {
+		t.Helper()
+		var req ChatRequest
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", body, err)
+		}
+		return req
+	}
+	if got := decode(t, `{"model":"m","messages":[],"stop":"END"}`).StopSequences; len(got) != 1 || got[0] != "END" {
+		t.Errorf("stop string: got %#v, want [END]", got)
+	}
+	if got := decode(t, `{"model":"m","messages":[],"stop":["a","b"]}`).StopSequences; len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("stop array: got %#v, want [a b]", got)
+	}
+	if got := decode(t, `{"model":"m","messages":[],"stop":null}`).StopSequences; got != nil {
+		t.Errorf("stop null: got %#v, want nil", got)
+	}
+	if got := decode(t, `{"model":"m","messages":[]}`).StopSequences; got != nil {
+		t.Errorf("stop absent: got %#v, want nil", got)
+	}
+	var bad ChatRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","messages":[],"stop":5}`), &bad); err == nil {
+		t.Error("stop number: Unmarshal succeeded, want a decode error")
+	}
+
+	out, err := json.Marshal(ChatRequest{Model: "m", StopSequences: StopSequences{"END"}})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"stop":["END"]`) {
+		t.Errorf("Marshal = %s, want the array form \"stop\":[\"END\"]", out)
+	}
+	out, err = json.Marshal(ChatRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "stop") {
+		t.Errorf("Marshal of a request without stop sequences emitted a stop key: %s", out)
+	}
+}

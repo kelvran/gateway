@@ -1793,3 +1793,27 @@ func TestToProviderNilThinkingLeavesAdditionalModelRequestFieldsNil(t *testing.T
 		t.Errorf("additionalModelRequestFields = %v, want nil for a nil Thinking", fields)
 	}
 }
+
+// TestToProviderStopSequencesForwarded (item 11 slice S5): canonical
+// StopSequences become Converse's inferenceConfig.stopSequences, and
+// they alone are enough to materialise inferenceConfig (today it is nil
+// unless temperature or max_tokens is set).
+func TestToProviderStopSequencesForwarded(t *testing.T) {
+	req := bedrockThinkingRequest("global.anthropic.claude-sonnet-4-6", nil)
+	req.StopSequences = adapter.StopSequences{"END"}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	native := nativeAny.(*Request)
+	if native.InferenceConfig == nil || len(native.InferenceConfig.StopSequences) != 1 || native.InferenceConfig.StopSequences[0] != "END" {
+		t.Fatalf("InferenceConfig = %+v, want StopSequences [END]", native.InferenceConfig)
+	}
+	wire, err := json.Marshal(native)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"stopSequences":["END"]`) {
+		t.Errorf("wire = %s, want inferenceConfig.stopSequences [END]", wire)
+	}
+}

@@ -51,8 +51,11 @@ type Request struct {
 	Messages    []Message `json:"messages"`
 	Temperature *float64  `json:"temperature,omitempty"`
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
+	// Stop is OpenAI's stop array, the canonical ChatRequest.StopSequences
+	// forwarded verbatim (item 11 slice S5); always the array form.
+	Stop   []string `json:"stop,omitempty"`
+	Tools  []Tool   `json:"tools,omitempty"`
+	Stream bool     `json:"stream,omitempty"`
 	// StreamOptions is only ever sent when Stream is true. include_usage is
 	// required to get cost-accounting data on a streamed response at all —
 	// confirmed during this adapter's own grounding research that every
@@ -389,6 +392,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		Messages:       messages,
 		Temperature:    req.Temperature,
 		MaxTokens:      req.MaxTokens,
+		Stop:           req.StopSequences,
 		Tools:          tools,
 		Stream:         req.Stream,
 		StreamOptions:  streamOpts,

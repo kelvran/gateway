@@ -1594,3 +1594,22 @@ func TestToProviderCanonicalThinkingDisabledOmitsBlockBinding(t *testing.T) {
 		t.Error("ThinkingBindingBetaHeaderValue = needed, want not needed when thinking is disabled")
 	}
 }
+
+// TestToProviderStopSequencesForwarded (item 11 slice S5): canonical
+// StopSequences become Anthropic's stop_sequences array verbatim; none
+// means the key is absent (every existing golden relies on that).
+func TestToProviderStopSequencesForwarded(t *testing.T) {
+	req := thinkingBindingChatRequest("claude-sonnet-4-6", "")
+	req.StopSequences = adapter.StopSequences{"END", "\n\n"}
+	nativeAny, err := New().ToProvider(req)
+	if err != nil {
+		t.Fatalf("ToProvider: %v", err)
+	}
+	wire, err := json.Marshal(nativeAny)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"stop_sequences":["END","\n\n"]`) {
+		t.Errorf("wire = %s, want stop_sequences [END, \\n\\n]", wire)
+	}
+}

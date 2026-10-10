@@ -84,8 +84,11 @@ type Request struct {
 	Messages    []Message     `json:"messages"`
 	MaxTokens   int           `json:"max_tokens"`
 	Temperature *float64      `json:"temperature,omitempty"`
-	Tools       []Tool        `json:"tools,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
+	// StopSequences is Anthropic's stop_sequences array, the canonical
+	// ChatRequest.StopSequences forwarded verbatim (item 11 slice S5).
+	StopSequences []string `json:"stop_sequences,omitempty"`
+	Tools         []Tool   `json:"tools,omitempty"`
+	Stream        bool     `json:"stream,omitempty"`
 	// OutputConfig is Anthropic's real structured-output request field --
 	// a top-level output_config object, sibling of model/messages/tools,
 	// live-verified against the current Messages API (no beta header
@@ -657,16 +660,17 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 	}
 
 	return &Request{
-		Model:        req.Model,
-		System:       systemBlocks,
-		Messages:     messages,
-		MaxTokens:    maxTokens,
-		Temperature:  req.Temperature,
-		Tools:        tools,
-		Stream:       req.Stream,
-		OutputConfig: outputConfig,
-		ToolChoice:   toolChoice,
-		Thinking:     thinking,
+		Model:         req.Model,
+		System:        systemBlocks,
+		Messages:      messages,
+		MaxTokens:     maxTokens,
+		Temperature:   req.Temperature,
+		StopSequences: req.StopSequences,
+		Tools:         tools,
+		Stream:        req.Stream,
+		OutputConfig:  outputConfig,
+		ToolChoice:    toolChoice,
+		Thinking:      thinking,
 	}, nil
 }
 
