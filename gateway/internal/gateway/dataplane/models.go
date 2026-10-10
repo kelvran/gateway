@@ -70,15 +70,29 @@ func (p *Pipeline) CatalogLoadedAt() time.Time { return p.catalogLoadedAt }
 // same way), then returns the canonical models the key may call, sorted
 // by id.
 func (p *Pipeline) HandleListModels(ctx context.Context, authorizationHeader, remoteAddr string) ([]ModelInfo, error) {
-	_ = ctx // reserved for the request-scoped span this read-only route does not open yet
+	// The same trace fields logRequest carries (the handler's otelhttp span
+	// is on ctx), so a 401 here correlates like a chat 401 does.
+	fields := traceLogFields(ctx)
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
 	if verifyErr != nil {
+		// The error names the failure class only (identity's sentinels); the
+		// presented credential never reaches a log field. An expired key is
+		// named, as logRequest names it: the operator needs to know which key
+		// is failing (RFC-3 decision 4).
+		fields = append(fields, "error", verifyErr.Error())
+		if expired := expiredKeyFromErr(verifyErr); expired != nil {
+			fields = append(fields, "virtual_key_id", expired.ID, "key_expired_at", expired.ExpiresAt.UTC().Format(time.RFC3339))
+		}
+		p.logger.Warn("list_models_auth_failed", fields...)
 		return nil, fmt.Errorf("dataplane: auth: %w", verifyErr)
 	}
 	if !isSourceIPAllowed(vk, resolveClientIP(remoteAddr)) {
+		p.logger.Warn("list_models_source_ip_not_allowed", append(fields, "virtual_key_id", vk.ID)...)
 		return nil, fmt.Errorf("%w: %q", ErrSourceIPNotAllowed, remoteAddr)
 	}
-	return p.listModelsFor(vk), nil
+	models := p.listModelsFor(vk)
+	p.logger.Info("list_models", append(fields, "virtual_key_id", vk.ID, "models", len(models))...)
+	return models, nil
 }
 
 // listModelsFor groups the configured deployments by canonical model,

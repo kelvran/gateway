@@ -49,8 +49,7 @@ func newIntegrationServerWithBudgetPersistence(t *testing.T, upstreamURL, upstre
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	// Deliberately NOT registering t.Cleanup(srv.Close) for the pipeline

@@ -333,3 +333,31 @@ func SupportsToolResultParts(provider string, media bool) bool {
 		return false
 	}
 }
+
+// BedrockForwardKnownAnthropicBetas is the anthropic-beta allow-list a
+// bedrock deployment with anthropic_beta_policy forward_known maps into
+// Converse's additionalModelRequestFields.anthropic_beta (RFC-1 §5). Converse
+// validates every value and 400s an unaccepted one with Anthropic's own
+// "Unexpected value(s) … for the anthropic-beta header", so only values with
+// a live 200 belong here, each dated. Probed 2026-10-10 (item 11 slice S2) on
+// claude-sonnet-5-5, claude-sonnet-5, claude-sonnet-4-6 and
+// claude-haiku-4-5-20251001-v1:0, all four accepting all four values below;
+// rejected on all four, and so NOT listed: prompt-caching-scope-2026-01-05
+// (a value Claude Code sends on every turn) and an unknown value.
+var BedrockForwardKnownAnthropicBetas = []string{
+	"claude-code-20250219",            // 2026-10-10: 200 on all four probed models
+	"thinking-token-count-2026-05-13", // 2026-10-10: 200 on all four probed models
+	"context-management-2025-06-27",   // 2026-10-10: 200 on all four probed models
+	"interleaved-thinking-2025-05-14", // 2026-10-10: 200 on all four probed models
+}
+
+// BedrockForwardsAnthropicBeta reports whether value is in
+// BedrockForwardKnownAnthropicBetas.
+func BedrockForwardsAnthropicBeta(value string) bool {
+	for _, v := range BedrockForwardKnownAnthropicBetas {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}

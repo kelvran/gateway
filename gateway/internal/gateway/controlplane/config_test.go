@@ -187,6 +187,28 @@ func TestLoadExampleConfig(t *testing.T) {
 	if cfg.Telemetry.Exporter != "stdout" {
 		t.Errorf("Telemetry.Exporter = %q, want %q", cfg.Telemetry.Exporter, "stdout")
 	}
+	// Item 11 slice S9a: the example's bedrock deployment carries the
+	// lossy-ingress flag (so the worked example is doctor-clean for it) and
+	// the default beta policy; the anthropic deployment carries neither.
+	for _, want := range []struct {
+		name   string
+		lossy  bool
+		policy string
+	}{{"claude-bedrock-primary", true, AnthropicBetaPolicyStrip}, {"claude-opus-primary", false, AnthropicBetaPolicyStrip}} {
+		found := false
+		for _, d := range cfg.Deployments {
+			if d.Name != want.name {
+				continue
+			}
+			found = true
+			if d.AcceptLossyAnthropicIngress != want.lossy || d.AnthropicBetaPolicy != want.policy {
+				t.Errorf("%s: accept_lossy_anthropic_ingress=%v anthropic_beta_policy=%q, want %v/%q", want.name, d.AcceptLossyAnthropicIngress, d.AnthropicBetaPolicy, want.lossy, want.policy)
+			}
+		}
+		if !found {
+			t.Errorf("example config has no deployment %q", want.name)
+		}
+	}
 }
 
 // TestLoadWithoutTelemetrySectionDefaultsToZeroValue proves the
@@ -3721,5 +3743,85 @@ func TestVirtualKeyExpiresAtParsesRFC3339AndRejectsOtherShapes(t *testing.T) {
 				t.Errorf("error = %v, want it to name the key and the field", err)
 			}
 		})
+	}
+}
+
+// --- item 11 slice S9a: anthropic_beta_policy and accept_lossy_anthropic_ingress ---
+
+func TestLoadDeploymentAnthropicIngressKeysDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := cfg.Deployments[0]
+	if d.AnthropicBetaPolicy != AnthropicBetaPolicyStrip || d.AcceptLossyAnthropicIngress {
+		t.Errorf("defaults = %q / %v, want strip / false", d.AnthropicBetaPolicy, d.AcceptLossyAnthropicIngress)
+	}
+}
+
+func TestLoadDeploymentAnthropicBetaPolicyForwardKnownParsesForBedrock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := minimalBedrockDeploymentConfig("    anthropic_beta_policy: \"forward_known\"\n    accept_lossy_anthropic_ingress: true\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := cfg.Deployments[0]
+	if d.AnthropicBetaPolicy != AnthropicBetaPolicyForwardKnown || !d.AcceptLossyAnthropicIngress {
+		t.Errorf("got %q / %v, want forward_known / true", d.AnthropicBetaPolicy, d.AcceptLossyAnthropicIngress)
+	}
+}
+
+func TestLoadDeploymentAnthropicBetaPolicyRefusesUnknownValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    anthropic_beta_policy: \"forward_all\"\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "anthropic_beta_policy") || !strings.Contains(err.Error(), "forward_all") {
+		t.Fatalf("Load err = %v, want a refusal naming anthropic_beta_policy and the bad value", err)
+	}
+}
+
+func TestLoadDeploymentAnthropicBetaPolicyForwardKnownRefusedOffBedrock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    anthropic_beta_policy: \"forward_known\"\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "forward_known") || !strings.Contains(err.Error(), "bedrock") {
+		t.Fatalf("Load err = %v, want a refusal: forward_known is a Bedrock-only policy", err)
+	}
+}
+
+func TestLoadDeploymentAcceptLossyAnthropicIngressRefusesNonBool(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(minimalDeploymentConfig("    accept_lossy_anthropic_ingress: \"yes\"\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "accept_lossy_anthropic_ingress") {
+		t.Fatalf("Load err = %v, want the loud non-bool refusal", err)
+	}
+}
+
+func TestLoadDeploymentAnthropicBetaPolicyRefusesNonString(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	for _, raw := range []string{"    anthropic_beta_policy: [forward_known]\n", "    anthropic_beta_policy: 1\n", "    anthropic_beta_policy: true\n"} {
+		if err := os.WriteFile(path, []byte(minimalDeploymentConfig(raw)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// The YAML reader yields "[forward_known]" and "1" as strings, which the
+		// enum check refuses; "true" arrives as a bool, which the type check
+		// refuses. Either way: a refusal naming the key, never a quiet strip.
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "anthropic_beta_policy") {
+			t.Errorf("%q: Load err = %v, want a refusal (a non-string must not coerce to strip)", strings.TrimSpace(raw), err)
+		}
 	}
 }

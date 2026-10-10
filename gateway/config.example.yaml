@@ -290,6 +290,19 @@ deployments:
     secret_access_key_env: "AWS_SECRET_ACCESS_KEY"
     # session_token_env: "AWS_SESSION_TOKEN"   # optional; only for temporary/STS credentials
     region: "us-east-1"
+    # Anthropic Messages ingress knobs (item 11; the /v1/messages route lands
+    # in a later slice, the keys load and validate today, and kelvran doctor
+    # reads the first). accept_lossy_anthropic_ingress lets this non-anthropic
+    # deployment serve a Claude Code request whose body carries members the
+    # canonical schema cannot hold, dropping them, instead of answering 400
+    # once the route is served; while it is false, kelvran doctor warns.
+    accept_lossy_anthropic_ingress: true
+    # anthropic_beta_policy: strip (the default, accepted on every provider)
+    # drops the anthropic-beta values a /v1/messages request carries on a
+    # bedrock deployment; forward_known forwards only the live-proven
+    # allow-list (adapter.BedrockForwardKnownAnthropicBetas) and is
+    # Bedrock-only, a load error on any other provider.
+    # anthropic_beta_policy: forward_known
     # Deployment-scoped tokens-per-minute ceiling, counted the way
     # Bedrock's OWN quota counts tokens (AWS docs, 2026-10-07): the quota
     # charges input + cache-WRITE tokens at 1x, does not count cache READS

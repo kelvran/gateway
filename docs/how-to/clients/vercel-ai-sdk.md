@@ -12,7 +12,7 @@ Use this when you already write TypeScript or Node.js against the Vercel AI SDK 
 
 ### 1. Point the provider at the gateway
 
-Set `baseURL` to the gateway address plus `/v1` and `apiKey` to the virtual key secret. The provider sends it as `Authorization: Bearer <secret>`, the only authentication the gateway accepts (`x-api-key` is rejected with 401).
+Set `baseURL` to the gateway address plus `/v1` and `apiKey` to the virtual key secret. The provider sends it as `Authorization: Bearer <secret>`, the authentication every `/v1` route accepts (`GET /v1/models` also takes `x-api-key` as the bearer's alias; the other routes answer it with 401).
 
 ```ts
 import { createOpenAI } from "@ai-sdk/openai";
@@ -152,7 +152,7 @@ try {
 
 - `POST /v1/responses`: the Responses API, which is where `openai("<model>")` sends requests.
 - `POST /v1/completions`: the legacy Completions API. Only chat completions, embeddings and models exist under `/v1`.
-- The Anthropic Messages API (`/v1/messages`) and `x-api-key` authentication, so an Anthropic-shaped provider has nothing to call on this gateway.
+- The Anthropic Messages API (`/v1/messages`; `x-api-key` is read on `GET /v1/models` only), so an Anthropic-shaped provider has nothing to call on this gateway yet.
 - A first-party Kelvran SDK or provider package. The OpenAI-shaped providers above are the integration path.
 - OpenAI-shaped streaming tool-call deltas: the gateway streams flat `{ index, id, name, arguments_json }` elements with no `function` nesting. Tool calling through this SDK is not exercised in the recording.
 - OpenAI content arrays on inbound messages (400 `invalid_json`); multimodal input uses Kelvran's own `parts` field. Image or file parts through this SDK are not exercised in the recording.

@@ -196,8 +196,7 @@ func newIntegrationServerWithOtelHTTP(t *testing.T, upstreamURL, gatewayKey, ups
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	var inFlight sync.WaitGroup
 	srv := httptest.NewServer(dataPlaneHandler(mux, &inFlight, true))

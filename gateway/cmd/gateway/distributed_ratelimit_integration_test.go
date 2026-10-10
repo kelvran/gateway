@@ -50,8 +50,7 @@ func newIntegrationServerWithRedisRateLimit(t *testing.T, upstreamURL, upstreamK
 	}
 	t.Cleanup(func() { _ = pipeline.Close() })
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

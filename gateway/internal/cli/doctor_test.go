@@ -33,6 +33,8 @@ type cfgOpts struct {
 	propagationRedis string // config_propagation.redis_addr, deliberately without signing_secret_env
 	telemetry        string // "" = section absent; "-" = present but invalid name
 	noPrice          bool
+	provider         string // "" = openai; "anthropic" switches provider and base_url
+	acceptLossy      bool   // accept_lossy_anthropic_ingress: true on the deployment
 }
 
 func kv(indent int, key, value string) string {
@@ -48,8 +50,12 @@ func cfgYAML(o cfgOpts) string {
 	if dep == "" {
 		dep = "d1"
 	}
+	provider := o.provider
+	if provider == "" {
+		provider = "openai"
+	}
 	lines := []string{kv(0, "listen_addr", listen), "virtual_keys:", "  k:", kv(2, "key_hash", strings.Repeat("ab", 32)), "deployments:", "  " + dep + ":",
-		kv(2, "model", "gpt-4o"), kv(2, "provider", "openai"), kv(2, "upstream_model", "gpt-4o")}
+		kv(2, "model", "gpt-4o"), kv(2, "provider", provider), kv(2, "upstream_model", "gpt-4o")}
 	switch {
 	case o.rawBaseURL != "":
 		lines = append(lines, kv(2, "base_url", o.rawBaseURL))
@@ -59,8 +65,13 @@ func cfgYAML(o cfgOpts) string {
 			u = "http://127.0.0.1:9/v1/chat/completions"
 		}
 		lines = append(lines, kv(2, "base_url", u), "    allow_insecure_http: true")
+	case provider == "anthropic":
+		lines = append(lines, kv(2, "base_url", "https://api.anthropic.com/v1/messages"))
 	default:
 		lines = append(lines, kv(2, "base_url", "https://api.openai.com/v1/chat/completions"))
+	}
+	if o.acceptLossy {
+		lines = append(lines, "    accept_lossy_anthropic_ingress: true")
 	}
 	if o.keyFile != "" {
 		lines = append(lines, kv(2, "api_key_file", o.keyFile))
@@ -116,7 +127,7 @@ func runDoctorCmd(t *testing.T, env map[string]string, args ...string) (code int
 }
 
 func TestDoctorCleanConfigHasNoFindings(t *testing.T) {
-	cfg := writeCfg(t, t.TempDir(), cfgOpts{telemetry: "none"})
+	cfg := writeCfg(t, t.TempDir(), cfgOpts{acceptLossy: true, telemetry: "none"})
 	code, stdout, stderr := runDoctorCmd(t, envWith("DOCTOR_TEST_UPSTREAM"), "--config", cfg)
 	if code != 0 || !strings.Contains(stdout, "no findings") || stderr != "" {
 		t.Errorf("clean config: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
@@ -125,7 +136,7 @@ func TestDoctorCleanConfigHasNoFindings(t *testing.T) {
 
 func TestDoctorUnsetVariableSeveritiesFollowTheGatewaysStartup(t *testing.T) {
 	dir := t.TempDir()
-	cfg := writeCfg(t, dir, cfgOpts{telemetry: "none", adminTokenEnv: "DOCTOR_TEST_ADMIN", adminPersist: filepath.Join(dir, "id.db")})
+	cfg := writeCfg(t, dir, cfgOpts{acceptLossy: true, telemetry: "none", adminTokenEnv: "DOCTOR_TEST_ADMIN", adminPersist: filepath.Join(dir, "id.db")})
 	// No env source: every miss is a warning that names the EnvironmentFile= fallback.
 	code, stdout, _ := runDoctorCmd(t, nil, "--config", cfg)
 	if code != 0 || strings.Count(stdout, "warning") < 2 || !strings.Contains(stdout, "EnvironmentFile=") || strings.Contains(stdout, "error ") {
@@ -163,7 +174,7 @@ func TestDoctorUnsetVariableSeveritiesFollowTheGatewaysStartup(t *testing.T) {
 }
 
 func TestDoctorOAuthWarningNamesTheVariableNeverTheValue(t *testing.T) {
-	cfg := writeCfg(t, t.TempDir(), cfgOpts{telemetry: "none", keyEnvName: "ANTHROPIC_API_KEY"})
+	cfg := writeCfg(t, t.TempDir(), cfgOpts{acceptLossy: true, telemetry: "none", keyEnvName: "ANTHROPIC_API_KEY"})
 	env := map[string]string{"ANTHROPIC_API_KEY": oauthTokenPrefix + "-" + sentinel("oauth")}
 	for _, args := range [][]string{{"--config", cfg}, {"--config", cfg, "--json"}} {
 		code, stdout, stderr := runDoctorCmd(t, env, args...)
@@ -360,7 +371,7 @@ func TestDoctorProbesTheAdminAPIWithAResolvedToken(t *testing.T) {
 }
 
 func TestDoctorJSONOutputIsOneDocument(t *testing.T) {
-	cfg := writeCfg(t, t.TempDir(), cfgOpts{noPrice: true})
+	cfg := writeCfg(t, t.TempDir(), cfgOpts{acceptLossy: true, noPrice: true})
 	code, stdout, _ := runDoctorCmd(t, nil, "--config", cfg, "--json")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stdout)
@@ -609,7 +620,7 @@ func TestDoctorReportsAMissingPropagationSigningSecretKey(t *testing.T) {
 }
 
 func TestDoctorJSONFindingsIsAnArrayWhenEmpty(t *testing.T) {
-	cfg := writeCfg(t, t.TempDir(), cfgOpts{telemetry: "none"})
+	cfg := writeCfg(t, t.TempDir(), cfgOpts{acceptLossy: true, telemetry: "none"})
 	code, stdout, _ := runDoctorCmd(t, envWith("DOCTOR_TEST_UPSTREAM"), "--config", cfg, "--json")
 	if code != 0 || !strings.Contains(stdout, `"findings":[]`) {
 		t.Errorf("a clean config must emit an empty array, never null: exit %d\n%s", code, stdout)
@@ -774,5 +785,35 @@ func TestDoctorEscapesControlCharactersOnStderrToo(t *testing.T) {
 	_, stdout, stderr = runDoctorCmd(t, map[string]string{"DOCTOR_TEST_UPSTREAM": "x", "KELVRAN_ADMIN_TOKEN": "t"}, "--config", cfg, "--admin-url", "https://x\u2028y.invalid:9")
 	if strings.Contains(stdout+stderr, "\u2028") || !strings.Contains(stderr, `\u2028`) {
 		t.Errorf("admin host: stdout %q stderr %q", stdout, stderr)
+	}
+}
+
+// TestDoctorLossyIngressWarningPerNonAnthropicDeployment: a deployment that
+// is not anthropic and has accept_lossy_anthropic_ingress unset draws one
+// warning naming the key and the client-side remedy; anthropic deployments
+// and flagged ones draw none (item 11 slice S9a; the deferral RFC-3
+// recorded).
+func TestDoctorLossyIngressWarningPerNonAnthropicDeployment(t *testing.T) {
+	env := map[string]string{"DOCTOR_TEST_UPSTREAM": "k"}
+	for name, tc := range map[string]struct {
+		opts cfgOpts
+		warn bool
+	}{
+		"openai unflagged":    {cfgOpts{telemetry: "none"}, true},
+		"openai flagged":      {cfgOpts{telemetry: "none", acceptLossy: true}, false},
+		"anthropic unflagged": {cfgOpts{telemetry: "none", provider: "anthropic"}, false},
+	} {
+		cfg := writeCfg(t, t.TempDir(), tc.opts)
+		code, stdout, _ := runDoctorCmd(t, env, "--config", cfg)
+		if code != 0 {
+			t.Errorf("%s: exit %d\n%s", name, code, stdout)
+		}
+		got := strings.Contains(stdout, "deployments.d1.accept_lossy_anthropic_ingress")
+		if got != tc.warn {
+			t.Errorf("%s: warning present = %v, want %v\n%s", name, got, tc.warn, stdout)
+		}
+		if tc.warn && (!strings.Contains(stdout, "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1") || !strings.Contains(stdout, "400")) {
+			t.Errorf("%s: the warning must name the 400 and the client-side remedy\n%s", name, stdout)
+		}
 	}
 }

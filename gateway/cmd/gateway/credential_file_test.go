@@ -137,8 +137,7 @@ func TestBuildPipelineResolvesAPIKeyFromFileNotEnv(t *testing.T) {
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 	gw := httptest.NewServer(mux)
 	t.Cleanup(gw.Close)
 
@@ -192,8 +191,7 @@ func TestBuildPipelineFileBackedDeploymentHotReloadsWithoutRestart(t *testing.T)
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 	gw := httptest.NewServer(mux)
 	t.Cleanup(gw.Close)
 
@@ -283,8 +281,7 @@ func TestBuildPipelineBedrockDeploymentResolvesAccessKeyIDFromFile(t *testing.T)
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 	gw := httptest.NewServer(mux)
 	t.Cleanup(gw.Close)
 

@@ -31,8 +31,9 @@ import (
 // Claude Code in particular is not made usable by this route today: with
 // `ANTHROPIC_BASE_URL` pointed here and gateway model discovery enabled
 // its `GET /v1/models?limit=1000` would be answered (on the
-// `ANTHROPIC_AUTH_TOKEN` path its credential is a bearer, so auth already
-// fits; Kelvran never reads `x-api-key` -- Anthropic's Claude Code
+// `ANTHROPIC_AUTH_TOKEN` path its credential is a bearer, and since item 11
+// slice S9a this route also reads `x-api-key` as the bearer's alias
+// (bearerFromRequest; Authorization wins) -- Anthropic's Claude Code
 // gateway-protocol page, recorded in
 // docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md),
 // but every chat turn is a `POST /v1/messages` Kelvran does not serve (see
@@ -93,7 +94,7 @@ func modelsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 
-		models, err := p.HandleListModels(r.Context(), r.Header.Get("Authorization"), r.RemoteAddr)
+		models, err := p.HandleListModels(r.Context(), bearerFromRequest(r), r.RemoteAddr)
 		if err != nil {
 			writeErrorResponse(w, err)
 			return

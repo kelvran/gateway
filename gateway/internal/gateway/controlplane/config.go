@@ -34,6 +34,12 @@ import (
 
 // DeploymentConfig is one upstream deployment: a canonical (client-facing)
 // model routed to a specific provider/upstream-model/endpoint.
+// AnthropicBetaPolicy values (DeploymentConfig.AnthropicBetaPolicy).
+const (
+	AnthropicBetaPolicyStrip        = "strip"
+	AnthropicBetaPolicyForwardKnown = "forward_known"
+)
+
 type DeploymentConfig struct {
 	// Name uniquely identifies this deployment within the config file.
 	// Multiple deployments may share the same Model, in which case the
@@ -172,6 +178,22 @@ type DeploymentConfig struct {
 	// dataplane.Deployment.effectiveCacheControlAutoDisabled for the
 	// composition. False (the default) means not declared shared.
 	SharedAcrossTenants bool
+	// AnthropicBetaPolicy is what a bedrock deployment does with the
+	// anthropic-beta values a /v1/messages request carries (RFC-1 §5, item 11
+	// slice S9a): AnthropicBetaPolicyStrip (the default) drops them,
+	// AnthropicBetaPolicyForwardKnown forwards only the values in
+	// adapter.BedrockForwardKnownAnthropicBetas, each live-proven on
+	// Converse. Load refuses any other value, and forward_known on a
+	// non-bedrock deployment (anthropic forwards every anthropic-* header
+	// verbatim; the other providers have no beta transport).
+	AnthropicBetaPolicy string
+	// AcceptLossyAnthropicIngress lets a non-anthropic deployment serve a
+	// /v1/messages request whose body carries members the canonical schema
+	// cannot hold, dropping them (RFC-1 §6, decision Q5); false (the
+	// default) makes such a request a 400 naming the fields once the route
+	// exists. `kelvran doctor` warns about every non-anthropic deployment
+	// that leaves it false.
+	AcceptLossyAnthropicIngress bool
 	// MaxConcurrentRequests bounds how many requests may be simultaneously
 	// in flight against THIS deployment, aggregated across every virtual
 	// key that routes to it -- including via a fallback_chains hop, or
@@ -1261,6 +1283,24 @@ func Parse(data []byte, source string) (*Config, error) {
 		}
 		if err := assignBool(&dep.Sticky, depMap, "sticky", fmt.Sprintf("controlplane: deployment %q sticky", name)); err != nil {
 			return nil, err
+		}
+		if err := assignBool(&dep.AcceptLossyAnthropicIngress, depMap, "accept_lossy_anthropic_ingress", fmt.Sprintf("controlplane: deployment %q accept_lossy_anthropic_ingress", name)); err != nil {
+			return nil, err
+		}
+		policy, isString := getString(depMap, "anthropic_beta_policy")
+		if _, present := depMap["anthropic_beta_policy"]; present && !isString {
+			return nil, fmt.Errorf("controlplane: deployment %q anthropic_beta_policy must be a string (%q or %q), not %T", name, AnthropicBetaPolicyStrip, AnthropicBetaPolicyForwardKnown, depMap["anthropic_beta_policy"])
+		}
+		switch policy {
+		case "", AnthropicBetaPolicyStrip:
+			dep.AnthropicBetaPolicy = AnthropicBetaPolicyStrip
+		case AnthropicBetaPolicyForwardKnown:
+			if dep.Provider != "bedrock" {
+				return nil, fmt.Errorf("controlplane: deployment %q anthropic_beta_policy %q requires provider \"bedrock\" (this deployment's provider is %q): anthropic deployments forward every anthropic-* header verbatim and the other providers have no beta transport", name, policy, dep.Provider)
+			}
+			dep.AnthropicBetaPolicy = policy
+		default:
+			return nil, fmt.Errorf("controlplane: deployment %q anthropic_beta_policy %q is not one of %q, %q", name, policy, AnthropicBetaPolicyStrip, AnthropicBetaPolicyForwardKnown)
 		}
 		dep.Kind, _ = getString(depMap, "kind")
 		switch dep.Kind {

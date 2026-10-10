@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,6 +22,20 @@ import (
 // the given keys. No upstream is ever reached: listing models is a local read.
 func newModelsIntegrationServer(t *testing.T, keys []controlplane.VirtualKeyConfig, models map[string]controlplane.ModelMetadataConfig) *httptest.Server {
 	t.Helper()
+	return newModelsIntegrationServerWithLogger(t, keys, models, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// newModelsIntegrationServerCapturingLogs is newModelsIntegrationServer with
+// the gateway's JSON log captured, for tests that assert on (or on the
+// absence of) log content.
+func newModelsIntegrationServerCapturingLogs(t *testing.T, keys []controlplane.VirtualKeyConfig, models map[string]controlplane.ModelMetadataConfig) (*httptest.Server, *bytes.Buffer) {
+	t.Helper()
+	var logs bytes.Buffer
+	return newModelsIntegrationServerWithLogger(t, keys, models, slog.New(slog.NewJSONHandler(&logs, nil))), &logs
+}
+
+func newModelsIntegrationServerWithLogger(t *testing.T, keys []controlplane.VirtualKeyConfig, models map[string]controlplane.ModelMetadataConfig, logger *slog.Logger) *httptest.Server {
+	t.Helper()
 	t.Setenv("KELVRAN_MODELS_INTEGRATION_TEST_KEY", "fake-upstream-key-not-a-real-secret")
 	cfg := &controlplane.Config{
 		ListenAddr:  ":0",
@@ -38,14 +53,11 @@ func newModelsIntegrationServer(t *testing.T, keys []controlplane.VirtualKeyConf
 		},
 		Models: models,
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pipeline, err := buildPipeline(cfg, logger)
 	if err != nil {
 		t.Fatalf("buildPipeline: %v", err)
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
-	mux.HandleFunc("/v1/models", modelsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv

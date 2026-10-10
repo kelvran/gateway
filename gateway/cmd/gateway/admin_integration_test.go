@@ -63,8 +63,7 @@ func newAdminIntegrationServers(t *testing.T, upstreamURL, upstreamKeyEnvVar str
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	clientMux := http.NewServeMux()
-	clientMux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	clientMux := newDataPlaneMux(pipeline)
 	clientSrv = httptest.NewServer(clientMux)
 	t.Cleanup(clientSrv.Close)
 

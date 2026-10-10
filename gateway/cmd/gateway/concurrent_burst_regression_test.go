@@ -171,8 +171,7 @@ func TestIntegrationConcurrentBurstAgainstFailingDeploymentNeverExceedsCircuitBr
 	}
 	t.Cleanup(func() { _ = pipeline.Close() })
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 	gw := httptest.NewServer(mux)
 	t.Cleanup(gw.Close)
 

@@ -10,7 +10,7 @@ The same decision classified three zero-code items as `build_now`: a drop-in gui
 
 ## Why the wire format makes a client redundant
 
-Kelvran's canonical request and response schema is OpenAI Chat-Completions-shaped. [gateway/ARCHITECTURE.md](../../gateway/ARCHITECTURE.md) describes it as the dialect that vLLM, TGI, Ollama, DeepSeek, Together and Groq already speak natively. The `gateway/internal/adapter/openai/` and `gateway/internal/adapter/openaicompat/` packages implement that format on the provider side; the public routes in `gateway/cmd/gateway/main.go` expose it on the client side as `POST /v1/chat/completions`, `POST /v1/embeddings` and `GET /v1/models`.
+Kelvran's canonical request and response schema is OpenAI Chat-Completions-shaped. [gateway/ARCHITECTURE.md](../../gateway/ARCHITECTURE.md) describes it as the dialect that vLLM, TGI, Ollama, DeepSeek, Together and Groq already speak natively. The `gateway/internal/adapter/openai/` and `gateway/internal/adapter/openaicompat/` packages implement that format on the provider side; the public routes in `gateway/cmd/gateway/mux.go` expose it on the client side as `POST /v1/chat/completions`, `POST /v1/embeddings` and `GET /v1/models`.
 
 An SDK exists to hide a wire protocol behind typed calls. When the wire protocol is one that the official OpenAI libraries already speak, the typed calls already exist and are maintained by someone else. The whole integration collapses to one constructor argument:
 

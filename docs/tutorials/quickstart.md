@@ -213,7 +213,7 @@ The full catalogue is in [the troubleshooting how-to](../how-to/troubleshooting.
 - No `make run` or `make dev` target; `make setup` only downloads dependencies.
 - No first-party client SDK. The OpenAI SDK with `base_url` is the integration path, as in Step 9.
 - No OpenAPI document for the public routes.
-- No Anthropic Messages API. The gateway serves five routes only: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz`, `GET /readyz`.
+- No Anthropic Messages API yet. The gateway serves six routes only: `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz`, `GET /readyz`, `HEAD /api/hello`.
 
 ## Where next
 

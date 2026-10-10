@@ -96,8 +96,7 @@ func newStreamingIdleTimeoutTestServer(t *testing.T, upstreamURL string) *httpte
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

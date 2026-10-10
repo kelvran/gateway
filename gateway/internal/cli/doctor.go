@@ -233,6 +233,7 @@ func runDoctor(o doctorOptions, env IO) (*doctorReport, error) {
 	}
 	checkEnvVariables(cfg, src, o.strictEnv, report)
 	checkOAuthPrefix(cfg, src, report)
+	checkLossyIngress(cfg, report)
 	checkFiles(cfg, cfgAbs, packaged, report)
 	checkPricesAndTelemetry(cfg, report)
 	checkAdminAndListen(cfg, report)

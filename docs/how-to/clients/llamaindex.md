@@ -116,7 +116,7 @@ Run step 2. Expected: one line with the model's greeting, then a `CompletionUsag
 
 - `POST /v1/completions`, the legacy Completions API. This is why `is_chat_model=True` is mandatory.
 - `POST /v1/responses`, the OpenAI Responses API.
-- The Anthropic Messages API (`/v1/messages`) and `x-api-key` authentication; a client speaking the Anthropic wire format cannot use the gateway as a base URL.
+- The Anthropic Messages API (`/v1/messages`); a client speaking the Anthropic wire format cannot use the gateway as a base URL yet (`x-api-key` is read on `GET /v1/models` only).
 - A first-party Kelvran SDK or a Kelvran-specific LlamaIndex integration package. `OpenAILike` with `api_base` is the integration path by recorded decision ([Why no SDK](../../explanation/why-no-sdk.md)).
 - OpenAI's array-of-parts `content` on inbound messages (400 `invalid_json`); multimodal input uses Kelvran's `parts` extension.
 - OpenAI-shaped streaming tool-call deltas. The gateway streams flat `{index, id, name, arguments_json}` elements with no `function` nesting; buffered tool calls use OpenAI's nesting.

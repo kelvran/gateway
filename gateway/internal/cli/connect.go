@@ -316,13 +316,14 @@ func printClaudeBlock(env IO, o connectOptions, base, secret, source string) {
 }
 
 // warnShellAPIKey: ANTHROPIC_API_KEY set in this shell also reaches Claude
-// Code (in x-api-key, which this gateway does not read) — and init's own
+// Code (in x-api-key, which this gateway reads only on GET /v1/models, and
+// only when Authorization is absent) — and init's own
 // single-user flow exports it as the gateway's upstream credential.
 func warnShellAPIKey(pr *printer, env IO) {
 	if env.Getenv(envAnthropicAPIVar) == "" {
 		return
 	}
-	pr.printf("kelvran connect claude: warning: %s is set in this shell too; Claude Code also sends it (in x-api-key, which this gateway does not read) — start claude from a shell without it (`env -u %s claude`) or the gateway from a separate shell (init's single-user flow exports it as the upstream credential)\n", envAnthropicAPIVar, envAnthropicAPIVar)
+	pr.printf("kelvran connect claude: warning: %s is set in this shell too; Claude Code also sends it (in x-api-key; Authorization wins, so set exactly one credential variable — a wrong ANTHROPIC_AUTH_TOKEN is a 401 with no fallback) — start claude from a shell without it (`env -u %s claude`) or the gateway from a separate shell (init's single-user flow exports it as the upstream credential)\n", envAnthropicAPIVar, envAnthropicAPIVar)
 }
 
 // checkClaude is the connect page's own probe: POST /v1/messages with
@@ -450,8 +451,9 @@ func readSettings(path string) (map[string]any, bool, error) {
 
 // credentialSources reports the conflicting credential sources a settings
 // object carries: env.ANTHROPIC_API_KEY and a top-level apiKeyHelper (the
-// gateway never reads x-api-key, so leaving either yields a 401 the probe
-// cannot explain). Values are never returned.
+// bearer in Authorization wins over x-api-key, so leaving either beside a
+// wrong ANTHROPIC_AUTH_TOKEN yields a 401 the probe cannot explain). Values
+// are never returned.
 func credentialSources(m map[string]any) []string {
 	var found []string
 	if envm, ok := m["env"].(map[string]any); ok {
@@ -480,7 +482,7 @@ func scanClaudeSettings(env IO, skip string) []string {
 			continue
 		}
 		for _, k := range credentialSources(m) {
-			notes = append(notes, f.path+" also sets "+k+" (Claude Code sends it in x-api-key, which this gateway does not read)")
+			notes = append(notes, f.path+" also sets "+k+" (Claude Code sends it in x-api-key; Authorization wins, so set exactly one credential variable)")
 		}
 	}
 	return notes
@@ -508,7 +510,7 @@ func writeClaudeSettings(env IO, o connectOptions, base, secret string) error {
 	}
 	if conflicts := credentialSources(m); len(conflicts) > 0 {
 		if !o.replaceCredential {
-			return runtimeErr("%s sets %s, which Claude Code would also send (in x-api-key, which this gateway does not read) and which would yield a 401 the probe cannot explain; pass --replace-credential to delete it in the same write", writePath, strings.Join(conflicts, " and "))
+			return runtimeErr("%s sets %s, which Claude Code would also send (in x-api-key; Authorization wins, so a wrong ANTHROPIC_AUTH_TOKEN is a 401 with no fallback) and which would yield a 401 the probe cannot explain; pass --replace-credential to delete it in the same write", writePath, strings.Join(conflicts, " and "))
 		}
 		if envm, ok := m["env"].(map[string]any); ok {
 			delete(envm, envAnthropicAPIVar)

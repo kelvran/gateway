@@ -77,7 +77,7 @@ The gateway parses `config.yaml` with a hand-rolled YAML subset, not a YAML libr
 
 ## `virtual_keys.<name>`
 
-Each entry is a tenant credential issued by Kelvran. The entry name is the key's ID. Clients send the raw secret as `Authorization: Bearer <secret>`; the file holds only the SHA-256 hash of that secret.
+Each entry is a tenant credential issued by Kelvran. The entry name is the key's ID. Clients send the raw secret as `Authorization: Bearer <secret>` (or, on `GET /v1/models`, as `x-api-key: <secret>`); the file holds only the SHA-256 hash of that secret.
 
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
@@ -136,6 +136,8 @@ Each entry routes one canonical, client-facing `model` to one provider endpoint.
 | `kind` | `string` | `"chat"` | `""` or `chat` for `/v1/chat/completions`; `embedding` for `/v1/embeddings`. `embedding` is allowed only with `provider` `openai` or `bedrock`. Any other value is a load error. Two `embedding` deployments sharing one `model` must have the same `provider` and `upstream_model` |
 | `disable_cache_control_auto_populate` | `bool` | `false` | Opts this deployment out of adding a cache-control marker to an unmarked system message. Only the `anthropic` and `bedrock` adapters read the result |
 | `shared_across_tenants` | `bool` | `false` | Declares the upstream credential is shared by more than one tenant. When `true`, cache-control auto-populate is forced off regardless of the key above |
+| `anthropic_beta_policy` | `string` | `"strip"` | What a `bedrock` deployment does with the `anthropic-beta` values a `/v1/messages` request carries once that route is served (RFC-1 §5): `strip` drops them; `forward_known` forwards only the live-proven allow-list (`adapter.BedrockForwardKnownAnthropicBetas`: `claude-code-20250219`, `thinking-token-count-2026-05-13`, `context-management-2025-06-27`, `interleaved-thinking-2025-05-14`, each a Converse `200` on 2026-10-10; `prompt-caching-scope-2026-01-05` is rejected by Converse and never forwarded). Any other value is a load error; `forward_known` on a non-`bedrock` deployment is a load error (`anthropic` forwards every `anthropic-*` header verbatim, the other providers have no beta transport) |
+| `accept_lossy_anthropic_ingress` | `bool` | `false` | Lets a non-`anthropic` deployment serve a `/v1/messages` request whose body carries members the canonical schema cannot hold, dropping them (RFC-1 §6, decision Q5). `false` makes such a request a `400` naming the fields once the route is served. `kelvran doctor` warns about every non-`anthropic` chat deployment that leaves it `false` |
 | `fallback_chains` | `mapping` | absent (router single fallback) | See [fallback_chains](#deploymentsnamefallback_chains) |
 | `tls` | `mapping` | absent (shared transport) | See [tls](#deploymentsnametls) |
 | `rate_limit` | `mapping` | absent (no ceiling) | See [deployment rate_limit](#deploymentsnamerate_limit) |
@@ -469,6 +471,7 @@ The process exits 1 before binding a listener when any of the following holds. T
 | yes | Any load error in this page's tables (missing required key, pair rule, negative value, bad boolean, duplicate key, tab indentation, unknown `kind`, unknown `fallback_chains` class, bad CIDR, non-RFC-3339 `expires_at`, non-`https` `base_url` without `allow_insecure_http`, `tls`/`mtls` block rules, `tpm_accounting` without `tpm_capacity`, `models` entry for an unserved model) |
 | yes | A `provider` that is not one of the five adapter names |
 | yes | A `fallback_chains` target that is not a configured deployment |
+| yes | `deployments.<name>.anthropic_beta_policy` set to a value other than `strip` or `forward_known`, or `forward_known` on a deployment whose `provider` is not `bedrock` |
 | no | `admin.token_env`, `viewer_token_env`, `cost_viewer_token_env` or `operator_token_env` set but resolving to an empty variable |
 | no | `config_propagation.redis_addr` set without `signing_secret_env`, or the secret resolving empty |
 | no | `admin.redis_addr` set and Redis unreachable or the key hydration failing |

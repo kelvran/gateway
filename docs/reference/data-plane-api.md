@@ -4,15 +4,16 @@ This page lists every client-facing HTTP route of the Kelvran gateway: method, p
 
 ## Routes
 
-The gateway registers exactly five routes on one `http.ServeMux`. Every pattern is an exact path. Any other path, including a trailing-slash variant such as `/v1/models/`, is Go's default plain-text 404, never a 301.
+The gateway registers exactly six routes on one `http.ServeMux` (`newDataPlaneMux`, `gateway/cmd/gateway/mux.go`). Every pattern is an exact path. Any other path, including a trailing-slash variant such as `/v1/models/`, is Go's default plain-text 404, never a 301.
 
 | Method | Path | Auth | Success | Wrong method |
 |---|---|---|---|---|
 | `POST` | `/v1/chat/completions` | `Authorization: Bearer` | `200`, `application/json`; or `200`, `text/event-stream` when `stream` is `true` | `405`, `Allow: POST`, JSON error envelope |
 | `POST` | `/v1/embeddings` | `Authorization: Bearer` | `200`, `application/json` | `405`, `Allow: POST`, JSON error envelope |
-| `GET` | `/v1/models` | `Authorization: Bearer` | `200`, `application/json` | `405`, `Allow: GET`, JSON error envelope |
+| `GET` | `/v1/models` | `Authorization: Bearer` or `x-api-key` | `200`, `application/json` | `405`, `Allow: GET`, JSON error envelope |
 | `GET` | `/healthz` | none | `200`, `application/json` | `405`, plain text, no `Allow` header |
 | `GET` | `/readyz` | none | `200` or `503`, `application/json` | `405`, plain text, no `Allow` header |
+| `HEAD` | `/api/hello` | none | `204`, no body — Claude Code's gateway probe (a `2xx` tells it the base URL is a gateway that understands the hint headers) | `405`, `Allow: HEAD`, JSON error envelope |
 
 Not available today: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/completions`, `POST /v1/responses`, and a `/metrics` route. None is registered. The Anthropic Messages ingress is in progress as item 11 under `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md` (decided 2026-10-10): its parser exists, no route yet; see [mcp-a2a-status.md](../explanation/mcp-a2a-status.md) for the status of other planned surfaces.
 
@@ -30,7 +31,7 @@ Not available today: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POS
 | Rotation grace | After a rotation with a grace period, the previous secret authenticates only until its expiry instant; afterwards it is rejected as `invalid_api_key`. |
 | Source-IP allowlist | A key with `allowed_source_cidrs` accepts only requests whose TCP peer address (`RemoteAddr`) falls inside one of the CIDRs. Other sources get `403`, `type` `permission_error`, `code` `source_ip_not_allowed`. The check runs once per request, immediately after bearer verification, on all four `/v1/*` handlers (buffered chat, streaming chat, embeddings, models). |
 | `X-Forwarded-For` | Ignored. The allowlist reads the TCP peer only; there is no configuration knob to trust a proxy header. |
-| `x-api-key` | Not accepted. Only the `Bearer ` prefix is recognised. |
+| `x-api-key` | Read as the bearer's alias on `GET /v1/models` since item 11 slice S9a (the Anthropic SDK's and Claude Code's credential header): `x-api-key: <secret>` is verified exactly like `Authorization: Bearer <secret>`. A non-empty `Authorization` wins, so exactly one credential is verified and a wrong bearer beside a valid `x-api-key` is `401`. Not read on `/v1/chat/completions` or `/v1/embeddings` yet; the `/v1/messages` routes read it when they land. |
 | Model allowlist | A key with `allowed_models` may call only those canonical names; any other model is `403`, `code` `model_not_allowed`. `GET /v1/models` lists only the allowed names. |
 
 Handler-level validation (method, body size, JSON shape; see each route) runs before authentication. An oversized body therefore gets `413` even without a valid key. Authentication is the first pipeline step after that.
@@ -45,7 +46,7 @@ Key configuration is covered in [virtual-keys-and-budgets.md](../how-to/virtual-
 | `Content-Type` | none | Not inspected. The body is decoded as JSON regardless of the declared type. |
 | `Idempotency-Key` | `/v1/chat/completions` (buffered and streaming) | Opaque client-chosen key. See Idempotency-Key below. Not read by `/v1/embeddings` or `/v1/models`. |
 | `X-Kelvran-End-User-Id` | `/v1/chat/completions` (buffered and streaming) | Caller-supplied, unauthenticated end-user identifier. Affects response-cache partitioning only for keys with `cache_scope_to_end_user: true`. See below. Not read by `/v1/embeddings` or `/v1/models`. |
-| `traceparent`, `tracestate` | all five routes (otelhttp middleware) | W3C Trace Context. The caller's span becomes the parent of the `gateway.http` server span on every route, and of the dataplane span on `/v1/chat/completions`. |
+| `traceparent`, `tracestate` | all six routes (otelhttp middleware) | W3C Trace Context. The caller's span becomes the parent of the `gateway.http` server span on every route, and of the dataplane span on `/v1/chat/completions`. |
 | `baggage` | `/v1/chat/completions`, `/v1/embeddings` | W3C Baggage. The member `agent_run_id` is read and recorded on the request's telemetry and in the per-agent-run in-flight breakdown. Never fabricated when absent. |
 | `X-Forwarded-For` | none | Ignored for source-IP allowlists. |
 
@@ -59,7 +60,7 @@ Every route, `GET /v1/models`, `/healthz` and `/readyz` included, is wrapped by 
 | `X-Content-Type-Options` | every JSON error envelope; `GET /v1/models` success; the plain-text `405` from `/healthz` and `/readyz` and the `/readyz` `500` (set by `http.Error`) | `nosniff` |
 | `X-Kelvran-Overhead-Duration-Ms` | buffered `POST /v1/chat/completions` `200` only | Decimal integer string: total handler wall time minus the measured upstream round-trip, in milliseconds. Not set on streaming responses (the stream's headers are committed before the pipeline runs; a proposal is [2026-10-08-gateway-streaming-overhead-measurement.md](../rfcs/2026-10-08-gateway-streaming-overhead-measurement.md)). Not set on errors. Design: [2026-09-14-gateway-overhead-duration-header.md](../rfcs/2026-09-14-gateway-overhead-duration-header.md). |
 | `Retry-After` | `POST /v1/chat/completions` errors whose outcome is rate-limited, upstream-error or deployment-capacity | Integer seconds. See Retry-After below. Never set by `/v1/embeddings` or `/v1/models`. |
-| `Allow` | `405` from the three `/v1/*` routes | `POST` or `GET`. `/healthz` and `/readyz` send no `Allow` header. |
+| `Allow` | `405` from the three `/v1/*` routes and `HEAD /api/hello` | `POST`, `GET` or `HEAD`. `/healthz` and `/readyz` send no `Allow` header. |
 | `Cache-Control`, `Connection` | streaming `POST /v1/chat/completions` | `no-cache` and `keep-alive`. |
 
 JSON success bodies on `/v1/chat/completions` (buffered), `/v1/embeddings` and `/v1/models` are written with `json.Encoder` and end with one newline; `/healthz` and `/readyz` write their JSON with a single `Write` and no trailing newline. Error envelopes are written with a single `Write` and no trailing newline.
@@ -381,7 +382,7 @@ curl -s http://127.0.0.1:8080/v1/embeddings \
 
 ## GET /v1/models
 
-Lists the canonical models the calling virtual key may use. Present since gateway/v0.18.0; in gateway/v0.17.0 and earlier the path is a 404. Only `GET` is accepted. Bearer and source-IP checks are identical to the other `/v1/*` routes. No rate limit, budget or guardrail runs; the route is an in-memory read with no upstream call.
+Lists the canonical models the calling virtual key may use. Present since gateway/v0.18.0; in gateway/v0.17.0 and earlier the path is a 404. Only `GET` is accepted. Bearer and source-IP checks are identical to the other `/v1/*` routes, except that the credential may also arrive as `x-api-key` (the bearer's alias; a non-empty `Authorization` wins). No rate limit, budget or guardrail runs; the route is an in-memory read with no upstream call.
 
 ### Query parameters
 
@@ -452,6 +453,17 @@ A deployment that has never been probed reads healthy. Health probing is off unl
 curl -s http://127.0.0.1:8080/healthz   # 200 {"status":"ok"}
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/readyz   # 200, or 503 when a model has no healthy deployment
 ```
+
+## HEAD /api/hello
+
+Claude Code's gateway probe (Anthropic's gateway-protocol page: a `2xx` tells the client its base URL is a gateway that understands the hint headers, so it sends them). No authentication. Present since item 11 slice S9a; earlier builds answer the path with a plain-text 404.
+
+| Method | Status | Body |
+|---|---|---|
+| `HEAD` | `204` | none |
+| other | `405`, `Allow: HEAD` | JSON error envelope, `code` `method_not_allowed` |
+
+`/api/hello/` and any other variant is a 404. The route is wrapped by the same in-flight tracking, attribution and span middleware as every other data-plane route (`dataPlaneHandler`).
 
 ## Error envelope
 
@@ -526,7 +538,7 @@ Design: [2026-09-07-gateway-retry-storm-mitigation.md](../rfcs/2026-09-07-gatewa
 | Capability | Status |
 |---|---|
 | Anthropic Messages ingress (`POST /v1/messages`, `/v1/messages/count_tokens`) | Not registered. In progress as item 11 (RFC-1, `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md`, decided 2026-10-10): the parser exists, no route yet. |
-| `x-api-key` authentication | Not accepted; only `Authorization: Bearer`. |
+| `x-api-key` authentication | Accepted on `GET /v1/models` only (the bearer's alias; `Authorization` wins); the chat and embeddings routes take `Authorization: Bearer` alone. |
 | Trusting `X-Forwarded-For` for source-IP allowlists | Not implemented; no configuration knob exists. |
 | OpenAI-shaped streaming `tool_calls` deltas (`function.{name,arguments}`) | Not implemented. Streaming deltas are flat `{index, id, name, arguments_json}`; buffered `tool_calls` are OpenAI-nested. |
 | Streaming on `/v1/embeddings` | No streaming concept. |

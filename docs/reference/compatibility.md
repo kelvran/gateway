@@ -47,9 +47,9 @@ Not available today:
 | Missing or malformed header | `401`, `type: authentication_error`, `code: null` |
 | Unknown key | `401`, `type: authentication_error`, `code: invalid_api_key` |
 | Expired key | `401`, `type: authentication_error`, `code: key_expired` — the key's `expires_at` has passed (since `gateway/v0.18.0`) |
-| `x-api-key` header | Not read. It appears only on the outgoing upstream request the gateway builds for `anthropic` deployments (`gateway/internal/gateway/dataplane/dataplane.go`, `setUpstreamAuthHeaders`) |
+| `x-api-key` header | Read on `GET /v1/models` as the bearer's alias (`bearerFromRequest`, `gateway/cmd/gateway/mux.go`; a non-empty `Authorization` wins), not on the chat or embeddings routes. It also appears on the outgoing upstream request the gateway builds for `anthropic` deployments (`gateway/internal/gateway/dataplane/dataplane.go`, `setUpstreamAuthHeaders`) |
 
-The OpenAI SDKs send the `api_key` constructor argument as `Authorization: Bearer`, so `OpenAI(base_url=…, api_key=os.environ["KELVRAN_KEY"])` authenticates with the raw virtual-key secret. The Anthropic SDK's default `x-api-key` path does not authenticate. Example secrets in [gateway/config.example.yaml](../../gateway/config.example.yaml) are `example-team-alpha-secret-do-not-use` and `example-team-beta-secret-do-not-use`.
+The OpenAI SDKs send the `api_key` constructor argument as `Authorization: Bearer`, so `OpenAI(base_url=…, api_key=os.environ["KELVRAN_KEY"])` authenticates with the raw virtual-key secret. The Anthropic SDK's default `x-api-key` path authenticates on `GET /v1/models` only (since item 11 slice S9a); on the chat and embeddings routes it is a `401`. Example secrets in [gateway/config.example.yaml](../../gateway/config.example.yaml) are `example-team-alpha-secret-do-not-use` and `example-team-beta-secret-do-not-use`.
 
 ## Request headers the gateway reads
 
@@ -402,7 +402,7 @@ The adapter registry is `newAdapterRegistry` in `gateway/cmd/gateway/main.go`. O
 |---|---|---|---|
 | `openai-python`, `openai-node` (`base_url` override) | Text chat (`content` as a string), tools with any accepted `tool_choice` form, `json_schema` and `json_object` output, buffered and streaming text, embeddings, `GET /v1/models` (since `gateway/v0.18.0`) | Content-array multimodal messages fail with `400 invalid_json`; streaming tool-call accumulators do not find `function.arguments`; `Idempotency-Key` body mismatch is `422` `idempotency_key_reused` since gateway/v0.19.0 (`502` before), not `400`; `max_completion_tokens` and the other dropped fields have no effect | No SDK client code or automated SDK test exists under `gateway/` or `scripts/`. OpenAI-shaped clients were exercised live during the 2026-10-07/08 verification that found defects F4 (`tool_choice` forms) and F7 (empty Bedrock `id`), and an unmodified OpenAI-compatible client (the Deep-Research planner, `response_format: json_object`) was routed through the gateway; see `docs/upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md` |
 | LangChain, LiteLLM and other OpenAI-compatible frameworks | Same as the OpenAI SDKs | Same | `type: insufficient_quota` is emitted so their retry logic treats a budget rejection as permanent |
-| `anthropic` SDK | No | No `/v1/messages` route; `x-api-key` not read. `GET /v1/models` alone answers in the SDK's list shape | The only `anthropic` import in the repository is the evals LLM judge (`evals/evals/judge/providers.py`), which calls the provider directly, not the gateway |
+| `anthropic` SDK | No | No `/v1/messages` route yet (item 11, in progress). `GET /v1/models` alone answers in the SDK's list shape and reads its `x-api-key` | The only `anthropic` import in the repository is the evals LLM judge (`evals/evals/judge/providers.py`), which calls the provider directly, not the gateway |
 | Claude Code | No | Requires `POST /v1/messages`; discovery runs only in Anthropic-Messages mode | Same |
 | First-party Kelvran SDK | None | The OpenAI SDK `base_url` drop-in is the integration path | Recorded decision; see [why there is no SDK](../explanation/why-no-sdk.md) |
 

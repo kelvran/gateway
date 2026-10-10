@@ -137,10 +137,7 @@ func newIntegrationServerFromConfig(t *testing.T, cfg *controlplane.Config) *htt
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/readyz", readyzHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -180,8 +177,7 @@ func newIntegrationServerMultiKey(t *testing.T, upstreamURL, upstreamKeyEnvVar s
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -596,8 +592,7 @@ func newIntegrationServerAnthropic(t *testing.T, upstreamURL, gatewayKey, upstre
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -1204,8 +1199,7 @@ func newIntegrationServerOpenAICompat(t *testing.T, upstreamURL, gatewayKey, ups
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -1442,8 +1436,7 @@ func newIntegrationServerGemini(t *testing.T, upstreamURL, gatewayKey, upstreamK
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -1781,8 +1774,7 @@ func newIntegrationServerBedrock(t *testing.T, upstreamURL, gatewayKey, accessKe
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

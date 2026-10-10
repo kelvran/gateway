@@ -270,3 +270,19 @@ func TestSupportsToolResultParts(t *testing.T) {
 		}
 	}
 }
+
+// TestBedrockForwardsAnthropicBeta pins the live-proven allow-list (item 11
+// slice S2's probe) and that the value Claude Code sends on every turn which
+// Converse rejects is not in it.
+func TestBedrockForwardsAnthropicBeta(t *testing.T) {
+	for _, v := range []string{"claude-code-20250219", "thinking-token-count-2026-05-13", "context-management-2025-06-27", "interleaved-thinking-2025-05-14"} {
+		if !BedrockForwardsAnthropicBeta(v) {
+			t.Errorf("%s: want forwarded (live 200 on 2026-10-10)", v)
+		}
+	}
+	for _, v := range []string{"prompt-caching-scope-2026-01-05", "not-a-beta", ""} {
+		if BedrockForwardsAnthropicBeta(v) {
+			t.Errorf("%s: want stripped", v)
+		}
+	}
+}

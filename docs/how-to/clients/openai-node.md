@@ -12,7 +12,7 @@ Use this when you already call OpenAI from Node.js with the official `openai` np
 
 ### 1. Point the client at the gateway
 
-Set `baseURL` to the gateway address plus `/v1` and `apiKey` to the virtual key secret. The SDK sends it as `Authorization: Bearer <secret>`, the only authentication the gateway accepts.
+Set `baseURL` to the gateway address plus `/v1` and `apiKey` to the virtual key secret. The SDK sends it as `Authorization: Bearer <secret>`, the authentication every `/v1` route accepts (`GET /v1/models` also takes `x-api-key` as the bearer's alias).
 
 ```js
 import OpenAI from "openai";
@@ -166,8 +166,8 @@ These behaviours first shipped in gateway/v0.18.0; gateway/v0.17.0 and earlier l
 
 ## Not available today
 
-- Anthropic Messages ingress (`/v1/messages`) and `x-api-key` authentication. The Anthropic SDK cannot use Kelvran as a base URL.
-- The Responses API, the Completions API, images, audio, files and fine-tuning routes. Only chat completions, embeddings and models exist.
+- Anthropic Messages ingress (`/v1/messages`; `x-api-key` is read on `GET /v1/models` only). The Anthropic SDK cannot use Kelvran as a base URL yet.
+- The Responses API, the Completions API, images, audio, files and fine-tuning routes. Only chat completions, embeddings and models exist under `/v1`.
 - OpenAI content-array `content` on inbound messages (400 `invalid_json`).
 - OpenAI-shaped streaming tool-call deltas. The gateway streams flat `{ index, id, name, arguments_json }` elements with no `type` and no `function` nesting, so this client's tool-call stream accumulators do not reassemble arguments (check your client version). Buffered tool calls use the OpenAI nesting.
 - Client-side `stream_options`, `n`, `seed`, `user`, `logprobs`, `max_completion_tokens` and the other dropped fields listed in step 2.

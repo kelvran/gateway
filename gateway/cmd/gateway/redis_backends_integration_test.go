@@ -121,8 +121,7 @@ func newRedisBackedIntegrationServer(t *testing.T, upstreamURL, upstreamKeyEnvVa
 		t.Fatalf("buildPipeline: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

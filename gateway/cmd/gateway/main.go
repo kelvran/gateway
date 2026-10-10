@@ -612,14 +612,7 @@ func run(configPath string, logger *slog.Logger) error {
 	// flushing unwritten data.
 	defer func() { _ = pipeline.Close() }()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", chatCompletionsHandler(pipeline))
-	mux.HandleFunc("/v1/embeddings", embeddingsHandler(pipeline))
-	// Exact path on purpose (no "/v1/models/" pattern): a trailing-slash
-	// request must be a 404, never a ServeMux 301 -- see models_handler.go.
-	mux.HandleFunc("/v1/models", modelsHandler(pipeline))
-	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/readyz", readyzHandler(pipeline))
+	mux := newDataPlaneMux(pipeline)
 
 	// inFlight tracks real client-facing handler invocations so shutdown
 	// can give them a fair, bounded chance to finish — including their
@@ -1115,6 +1108,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			Kind:                            d.Kind,
 			TPMOutputTokenMultiplier:        d.TPMOutputTokenMultiplier,
 			TPMExcludeCacheReadTokens:       d.TPMExcludeCacheReadTokens,
+			AnthropicBetaPolicy:             d.AnthropicBetaPolicy,
+			AcceptLossyAnthropicIngress:     d.AcceptLossyAnthropicIngress,
 		}
 		if d.Provider == "bedrock" {
 			if d.AccessKeyIDFile != "" {
@@ -1859,6 +1854,10 @@ func readCredentialFileOrWarn(logger *slog.Logger, subsystem, fieldLabel, path s
 // purpose (a real, healthy gateway would be marked unhealthy by an
 // unrelated provider outage). No auth required, matching every standard
 // load-balancer/orchestrator health-check convention.
+// Its wrong-method answer is a plain-text 405 (http.Error), unlike the
+// JSON method_not_allowed envelope the API-client routes and /api/hello
+// return: this is a load-balancer route, and its body is not parsed by the
+// client code that parses the /v1 error bodies.
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -235,6 +235,12 @@ type Deployment struct {
 	// Never read directly at those call sites — see
 	// effectiveCacheControlAutoDisabled, which also composes this field
 	// with SharedAcrossTenants below.
+	// AnthropicBetaPolicy and AcceptLossyAnthropicIngress mirror the
+	// controlplane.DeploymentConfig fields of the same names (RFC-1 §5, §6;
+	// item 11 slice S9a); read by the /v1/messages path when it is wired
+	// (S9b/S10a).
+	AnthropicBetaPolicy             string
+	AcceptLossyAnthropicIngress     bool
 	DisableCacheControlAutoPopulate bool
 	// SharedAcrossTenants declares that this deployment's own upstream
 	// credential (APIKey, or AccessKeyID/SecretAccessKey for Bedrock) is
