@@ -1,6 +1,6 @@
 # kelvran CLI
 
-`kelvran` is the gateway's companion binary (`gateway/cmd/kelvran`), shipped beside `kelvran-gateway` in every release archive and package and at `/kelvran` in the container image. It turns the by-hand first run — generate a secret, hash it, author `config.yaml` — into one command. On `main` since 2026-10-10, not in `gateway/v0.17.0`: the first `gateway/v*` tag pushed after that date is the first release that carries it. Design: [RFC: `kelvran` CLI and single-user mode](../rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md).
+`kelvran` is the gateway's companion binary (`gateway/cmd/kelvran`), shipped beside `kelvran-gateway` in every release archive and package and at `/kelvran` in the container image. It turns the by-hand first run — generate a secret, hash it, author `config.yaml` — into one command (`init`), and checks a config against the environment the gateway will actually run in (`doctor`). On `main` since 2026-10-10, not in `gateway/v0.17.0`: the first `gateway/v*` tag pushed after that date is the first release that carries it. Design: [RFC: `kelvran` CLI and single-user mode](../rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md).
 
 This page is the public surface [`docs/VERSIONING.md`](../VERSIONING.md) binds to for the CLI: every verb, flag, exit code and output shape below is covered by the compatibility policy once it ships in a tagged release.
 
@@ -99,14 +99,72 @@ A new `--out` is created with `O_EXCL` and mode `0644` regardless of the umask (
 | `1` | No provider credential found under `--provider auto`; bedrock without a region, or an `AWS_REGION`/`AWS_DEFAULT_REGION` that is not shaped like a region id; a model without a price or, for bedrock, without a Bedrock id; a value (such as an `--upstream-model` id) containing a quote, `#` or line break the config parser cannot represent (the value is not echoed); an existing `--out` without `--force`; a write failure; the generated config failing its own load/validate check (a bug, not a flag error) |
 | `2` | Unknown flag or positional argument; `--provider` not one of the six values; `--models` with several detected providers, empty, listing a model twice, or listing two models that collide on the deployment key (`a/b` and `a-b`); a malformed `--upstream-model` pair; a malformed (non-decimal) `--budget`; `--base-url` outside openaicompat, not an http(s) URL, or carrying credentials, a query or a fragment; `--region` or `--upstream-model` outside bedrock; a `--region` that is not shaped like an AWS region id; openaicompat without `--base-url` or `--models`; a malformed or negative `--price`; a non-positive `--budget`; a relative `--persist-path`; `--persist-path`/`--no-persist` with `--single-user`; an unparsable `--listen` or a listen host that is not an IP address or hostname; an `--out` containing a quote or a line break |
 
+## `kelvran doctor`
+
+```
+kelvran doctor [--config config.yaml] [--env-file PATH]... [--strict-env]
+               [--url URL] [--admin-url URL] [--admin-token-file PATH]
+               [--allow-insecure-http] [--json]
+```
+
+`-validate` plus the startup-only checks a user actually hits, evaluated honestly against the environment `doctor` can see. It loads the config with the gateway's own loader and validator, then prints one row per finding — `severity | check | detail`, sorted errors first — and a summary line; exit `1` when any row is an `error` (the gateway would refuse to start, or the premise is wrong), `0` otherwise. `--json` prints one document instead: `{"config", "findings": [{"severity", "check", "detail"}], "errors", "warnings", "info"}`; `findings` is always an array (`[]` for a clean config). Every line `doctor` prints — table cells, the `kelvran doctor:` error lines, the flag parser's own errors and the stderr host note — escapes control characters as `\u00XX`, so a config key, a path or a host cannot steer the terminal. No value of any variable or file is ever printed, only names and paths: a load or validation error withholds the quoted content of the offending line and prints any URL it echoes with the password redacted and the query withheld, or withheld whole when it does not parse, along with any fragment of it the URL parser's own error repeats (the loader's own messages echo both — `base_url` verbatim when it is not https; `-validate` keeps that), a `*_env` field that does not look like a variable name is reported as a pasted value without showing it, a `--config` that is the packaged env file or one of the `--env-file` paths is refused before loading (exit `2`), and a non-200 admin response contributes at most one sanitised line (nothing at all for 401/403) with the token redacted.
+
+### Where the gateway's environment comes from
+
+The CLI's process environment is not the gateway's for the deployments the packages and the image target: the unit loads `EnvironmentFile=-/etc/kelvran-gateway/env`, a container gets `docker run -e`, `env_file:` or `envFrom:`. So:
+
+- `--env-file PATH` (repeatable; later files win) parses the systemd `EnvironmentFile=` grammar — blank and `#`/`;` lines skipped, `KEY=value`, matching single or double quotes stripped, a trailing backslash continues the value — which Docker's `--env-file` and Compose's `env_file:` share when unquoted. A shell `export` prefix is refused with a pointer to `KEY=value`, because neither consumer accepts it. Its values are merged over the process environment for the checks only.
+- With no `--env-file` and a `--config` under `/etc/kelvran-gateway/`, `/etc/kelvran-gateway/env` is read automatically. It is root-only (`install -m 0600`), so a non-root run gets one `warning` (`env.file`: pass `--env-file` with a copy you can read, or run `sudo kelvran doctor …` — as root every file reads as readable, so the `*_file` rows then say less, while the world-readable checks still apply) and continues without an env source.
+- `--strict-env` says this shell *is* the gateway's whole environment (the `init --single-user` flow): every variable the config names must be set here, so each miss is an error, not the warning startup would log.
+
+### Checks
+
+| Check | Severity | Condition |
+|---|---|---|
+| `config.load`, `config.validate` | error | What `kelvran-gateway -validate` reports, as a row, with a parse error's quoted line content withheld and any echoed URL's password redacted and query withheld; a load failure stops the run |
+| any `*_env` field | error | The field holds something that is not an environment-variable name (`^[A-Za-z_][A-Za-z0-9_]*$`): almost always a pasted value, which `-validate` accepts silently; the value is not shown |
+| `env.file` | warning | The packaged `/etc/kelvran-gateway/env` exists but cannot be read (root-only: pass `--env-file` or run under `sudo`), does not parse (the unit's `EnvironmentFile=` would reject it too), or fails to open for another reason; the run continues without an env source |
+| `deployments.<name>.api_key_env` / `access_key_id_env` / `secret_access_key_env` / `session_token_env`, `guardrails.bedrock_guardrails.*_env`, `guardrails.embed_sim.session_token_env`, `*.redis_password_env`, `alerting.webhook_url_env`, `alerting.signing_secret_env` | warning with an env file, **error** with `--strict-env` | The named variable is unset or empty. With an env file the severity mirrors startup (the gateway starts and logs the consequence the detail names; the file may not be its whole environment); with `--strict-env` the shell is declared to be the whole environment, so the miss is an error; without either it says the variable is not set *in this process* and how to rerun where the gateway's environment is visible (`--env-file`, `docker exec <ctr> /kelvran doctor --config /config.yaml --strict-env`, `kubectl exec … -- /kelvran doctor … --strict-env`, `--strict-env`) |
+| `admin.token_env`, `admin.viewer_token_env`, `admin.cost_viewer_token_env`, `admin.operator_token_env`, `config_propagation.signing_secret_env` (when `redis_addr` is set), `guardrails.embed_sim.access_key_id_env` / `secret_access_key_env` | **error** with an env source, warning without | The gateway refuses to start on these: the admin tiers and the propagation channel must not run unauthenticated, and the embed-sim detector embeds its corpus at construction, so an empty credential fails startup |
+| `config_propagation.signing_secret_env` | error | `redis_addr` is set and the key is absent: the gateway refuses to start; `-validate` passes |
+| `deployments.<name>.api_key_env` | warning | The variable's value starts with `sk-ant-oat` (a Claude subscription OAuth token, not an API key; gate G33, Stage 1 form). The value is read for this prefix test only |
+| `deployments.<name>.*_file`, `guardrails.*.*_file` | warning | The credential file cannot be read as the invoking user or is empty (the gateway's own reader rule) — documented as relative to the gateway's uid and mount namespace, so a miss is a pointer, not proof |
+| `deployments.<name>.tls.*`, `admin.mtls.*`, `guardrails.embed_sim.corpus_path` | warning | The file does not exist as the invoking user |
+| `config.mode` | error | Only under `/etc/kelvran-gateway/`: the config is not world-readable, so the unit's `DynamicUser` cannot read it and `ExecStartPre -validate` fails |
+| `admin.persist_path`, `budget.persist_path`, `prompt.persist_path`, `admin.audit_log_path`, `admin.backup_dir`, every `*_file`, PEM and `guardrails.embed_sim.corpus_path` path | warning | Only under `/etc/kelvran-gateway/` (paths are cleaned first, so `..` segments cannot dodge the rules): a path under `/home`, `/root` or `/tmp` (hidden by `ProtectHome=yes`/`PrivateTmp=yes`); a writable path outside `/var/lib/kelvran-gateway/` (`ProtectSystem=strict`); a credential file that is not world-readable (the `DynamicUser` uid is allocated at start) |
+| `price_table.<model>` | warning | A deployment's model has no `price_table` entry: it costs $0 and never decrements a budget |
+| `telemetry.exporter` | error / info | Not one of `stdout`, `otlp`, `none` (the gateway refuses to start; `-validate` does not check this) / the section is absent, so the default `stdout` exporter interleaves spans and a 60 s metrics dump with the logs |
+| `admin.persistence` | warning | An `admin` section with neither `persist_path` nor `redis_addr`: admin-made key changes are lost at restart |
+| `listen_addr` | warning | Single-user mode (no `admin` section) and `listen_addr` is not loopback-only |
+| `deployments.<name>.allow_insecure_http` | warning | Requests to that deployment leave in clear text, credential included (the URL is printed with any password redacted and the query withheld) |
+| `probe.url` | error | `--url` is not an http(s) URL, or carries credentials, a query or a fragment; no request is sent |
+| `probe.readyz`, `probe.auth` | error / info | With `--url`: `GET /readyz` must answer 200 and a bearer-less `GET /v1/models` must answer 401 (the listener is up and auth is enforced). Neither request carries a credential, so `--url` is not subject to the loopback rule below, but it must be an http(s) URL without credentials, query or fragment; redirects are not followed and a 3xx is reported as a redirect |
+| `admin.probe`, `admin.config`, `admin.deployments[.<name>]` | error / warning / info | With `--admin-url`: the token resolves from `--admin-token-file`, then `KELVRAN_ADMIN_TOKEN_FILE`, then the variable the config's `admin.token_env` names, then `KELVRAN_ADMIN_TOKEN` (never a flag value; each variable is looked up in the env file first, then in this process, so `sudo kelvran doctor --admin-url …` under the package layout finds the token `/etc/kelvran-gateway/env` holds); none → `admin.probe` error, probes skipped. The probe runs only when `--admin-url` is given — `KELVRAN_ADMIN_URL` and the `http://127.0.0.1:8081` default belong to the verbs that always talk to the admin plane — and the URL must be `https`, or `http` with a loopback host, or `--allow-insecure-http` was passed — otherwise `kelvran doctor: --admin-url <url> is not https and not loopback; pass --allow-insecure-http if this is a deliberate LAN/dev endpoint`, exit `1`, no request sent. `scheme://host[:port]` is printed to stderr before the first authenticated request; the URL may not carry credentials, a query or a fragment, and redirects are never followed (a 3xx is reported as `a redirect, not followed`, so the bearer never travels to a `Location`). `GET /admin/config` must answer 200 — a 401/403 is reported by status alone, any other failure with one sanitised line of the body (the token — raw, URL-encoded or base64 — is redacted before the line is cut to 120 runes, so a truncation cannot leave a prefix behind), and the token is redacted from every detail; every entry of `GET /admin/deployments` with `healthy: false` is a warning |
+
+What `doctor` does not check yet: the lossy-ingress warning (plan item 11), Redis reachability, whether the audit log, backup and persist paths can be opened (under the package layout they are checked for location only), the Gemini and Bedrock `base_url` suffixes, and anything about a running gateway without `--url`/`--admin-url`.
+
+### Supported invocations
+
+- Local: `kelvran doctor --config config.yaml --strict-env` after `init --single-user`.
+- Package: `sudo kelvran doctor --config /etc/kelvran-gateway/config.yaml` (reads `/etc/kelvran-gateway/env`), or without `sudo` plus `--env-file`.
+- Image: `docker exec <container> /kelvran doctor --config /config.yaml --strict-env` or `kubectl exec <pod> -- /kelvran doctor --config /config.yaml --strict-env` — inside the gateway's own environment, so the `*_env` checks see what the gateway sees and, with `--strict-env`, a miss is an error rather than a warning; add `--url http://127.0.0.1:8080` for the listener probe.
+
+### Exit codes
+
+| Code | When |
+|---|---|
+| `0` | No `error` finding; `-h` |
+| `1` | Any `error` finding (including a config that does not load); an unreadable or malformed `--env-file` (a line that is not `KEY=value`, a dangling backslash, an `export` prefix); a refused or non-http(s) `--admin-url`; an unreadable or empty admin token file (`--admin-token-file` or the one `KELVRAN_ADMIN_TOKEN_FILE` names) |
+| `2` | Unknown flag or positional argument; a `--config` that is the packaged env file or one of the `--env-file` paths |
+
 ## In the container image
 
-`/kelvran` is a diagnostic and admin client, not the first-run tool: the image has no shell, `cwd` `/`, no `HOME`, UID 65532, and the documented config mount is a read-only single file. What works as shipped: `docker run --rm --entrypoint /kelvran ghcr.io/kelvran/gateway:<tag> -version`; `docker run --rm --entrypoint /kelvran ghcr.io/kelvran/gateway:<tag> init --dry-run --provider openai > config.yaml` on the host (stdout is the YAML). `init` without `--dry-run` needs a writable mount and an explicit `--out` (`-u $(id -u) -v "$PWD:/out" … init --out /out/config.yaml`).
+`/kelvran` is a diagnostic and admin client, not the first-run tool: the image has no shell, `cwd` `/`, no `HOME`, UID 65532, and the documented config mount is a read-only single file. What works as shipped: `docker run --rm --entrypoint /kelvran ghcr.io/kelvran/gateway:<tag> -version`; `docker run --rm --entrypoint /kelvran ghcr.io/kelvran/gateway:<tag> init --dry-run --provider openai > config.yaml` on the host (stdout is the YAML); `docker exec <container> /kelvran doctor --config /config.yaml --strict-env`, which reads the `:ro` mount and the container's own environment — the environment the gateway actually sees, so a missing variable is an error there. `init` without `--dry-run` needs a writable mount and an explicit `--out` (`-u $(id -u) -v "$PWD:/out" … init --out /out/config.yaml`).
 
 ## Not available today
 
-- `doctor`, `keys`, `connect`, `status` and `spend` — the remaining Stage 1 verbs of RFC-3, which follow in later commits.
-- `--json` output (every read verb gains it when the read verbs land; `init` has none to give).
+- `keys`, `connect`, `status` and `spend` — the remaining Stage 1 verbs of RFC-3, which follow in later commits.
+- `--json` on `init` (it has nothing to report as data; `doctor` has it).
 - A refusal, rather than a warning, on an OAuth token offered as an upstream credential (gate G33).
 - Any `init` for providers beyond the five the gateway ships adapters for, and any price the embedded table does not carry: pass `--price` (and `--upstream-model` for bedrock).
 

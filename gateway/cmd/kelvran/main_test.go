@@ -71,3 +71,13 @@ func TestInitDryRunOutputPassesTheGatewaysValidate(t *testing.T) {
 		t.Fatalf("-validate on init's output: %v\n%s\n--- yaml ---\n%s", err, out, yaml.String())
 	}
 }
+
+func TestRunDoctorDispatchesAndReportsAMissingConfig(t *testing.T) {
+	var out, errb strings.Builder
+	if code := run([]string{"doctor", "--config", filepath.Join(t.TempDir(), "absent.yaml")}, &out, &errb); code != 1 {
+		t.Errorf("exit = %d, want 1 (the config does not load)", code)
+	}
+	if !strings.Contains(out.String(), "config.load") {
+		t.Errorf("stdout must carry the config.load row: %q", out.String())
+	}
+}

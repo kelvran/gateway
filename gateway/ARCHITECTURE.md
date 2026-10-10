@@ -6,10 +6,10 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 
 ```
 /cmd/gateway              — main binary entrypoint (static binary)
-/cmd/kelvran              — companion CLI (RFC-3, 2026-10-10): `init` today; doctor, keys, connect, status and
-                             spend follow. A second static binary in the same archives, deb/rpm/apk and
+/cmd/kelvran              — companion CLI (RFC-3, 2026-10-10): `init` and `doctor` today; keys, connect, status
+                             and spend follow. A second static binary in the same archives, deb/rpm/apk and
                              image (/kelvran); a thin dispatcher — the logic is /internal/cli, a leaf over
-                             adminapi, controlplane, identity, adapter and telemetry/exporterkind only.
+                             adminapi, controlplane, identity, adapter, credentialstate and telemetry/exporterkind only.
 /cmd/kelvran-bench        — benchmark harness (added 2026-10-08): `run` drives open-loop Poisson load
                              through a gateway and measures latency, the overhead header, TTFT and
                              inter-chunk gaps; `upstream` serves the deterministic OpenAI-shaped mock

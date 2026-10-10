@@ -171,9 +171,9 @@ The same `Idempotency-Key` with a different body is reported as 502 `upstream_er
 
 - No admin route resets a key's spend without deleting the key.
 - No metric for health-probe transitions, fallback hops, OTLP export failures, audit-append failures or credential reload failures; these are log-only.
-- `-validate` cannot detect an unreachable Redis, an unreadable or empty credential file, an unopenable audit log path, a missing environment variable, or a wrong Gemini `:generateContent` or Bedrock `/converse` `base_url` suffix.
+- `-validate` cannot detect an unreachable Redis, an unreadable or empty credential file, an unopenable audit log path, a missing environment variable, or a wrong Gemini `:generateContent` or Bedrock `/converse` `base_url` suffix. `kelvran doctor` (on `main` since 2026-10-10, not in `gateway/v0.17.0`) reports the missing variables, unreadable credential files, the packaged layout's permissions and paths, unpriced models and an invalid telemetry exporter; Redis reachability, whether the audit log and persist paths can be opened, and the `base_url` suffixes are still unchecked.
 - No Redis logger: go-redis dial failures are plain text on stderr.
-- No request log store, no `GET /admin/requests`, and no `kelvran doctor` command.
+- No request log store and no `GET /admin/requests`.
 - Prompt-store write failures (row P6) have no log line and no metric.
 - No HTTP endpoint reports the running version; use `-version` or the `build_info` log record (both on `main` since 2026-10-08, not in `gateway/v0.17.0`).
 

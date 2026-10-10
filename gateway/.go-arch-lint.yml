@@ -173,7 +173,7 @@ deps:
       - telemetry
   # The kelvran CLI (RFC-3 decision 1): the admin wire types, the config
   # loader/validator, identity.HashSecret, adapter.ProviderNames and the
-  # exporter-name vocabulary — and nothing else. Never telemetry (OTel) and
+  # exporter-name vocabulary, plus credentialstate — and nothing else. Never telemetry (OTel) and
   # never dataplane/admin: the CLI talks to a running gateway over HTTP only.
   cli:
     mayDependOn:
@@ -182,6 +182,9 @@ deps:
       - identity
       - adapter
       - telemetry-exporterkind
+      # doctor's *_file check reads credential files with the gateway's own
+      # reader (stdlib-only leaf) so the two can never disagree on "empty".
+      - credentialstate
   adminapi:
     mayDependOn:
       - adapter

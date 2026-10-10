@@ -45,6 +45,7 @@ sudoedit /etc/kelvran-gateway/config.yaml                       # deployments, v
 sudo install -m 0600 /dev/null /etc/kelvran-gateway/env         # credentials file: root-only, systemd reads it before dropping privileges
 sudoedit /etc/kelvran-gateway/env                               # provider credentials, one KEY=value per line (read via EnvironmentFile=)
 kelvran-gateway -config /etc/kelvran-gateway/config.yaml -validate      # no sudo: reads only the 0644 config, resolves no env vars (see below)
+sudo kelvran doctor --config /etc/kelvran-gateway/config.yaml           # on main since 2026-10-10: also reads /etc/kelvran-gateway/env and reports the variables, files and paths -validate cannot see
 sudo systemctl enable --now kelvran-gateway
 ```
 

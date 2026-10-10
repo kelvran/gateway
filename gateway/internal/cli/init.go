@@ -62,11 +62,14 @@ const (
 	// oauthTokenPrefix marks a Claude subscription OAuth token offered as an
 	// API key (RFC-3 decision 9, gate G33): warned about in Stage 1, never
 	// echoed.
-	oauthTokenPrefix  = "sk-ant-oat" //nolint:gosec // G101: a token-format PREFIX compared with HasPrefix, never a credential
-	packagedConfigDir = "/etc/kelvran-gateway/"
-	packagedStateDB   = "/var/lib/kelvran-gateway/identity.db"
-	persistFileName   = "kelvran-identity.db"
+	oauthTokenPrefix = "sk-ant-oat" //nolint:gosec // G101: a token-format PREFIX compared with HasPrefix, never a credential
+	packagedStateDB  = "/var/lib/kelvran-gateway/identity.db"
+	persistFileName  = "kelvran-identity.db"
 )
+
+// packagedConfigDir is where the deb/rpm/apk keep the config; a variable so
+// tests can point the packaged-layout rules at a temp root.
+var packagedConfigDir = "/etc/kelvran-gateway/"
 
 type initOptions struct {
 	singleUser  bool

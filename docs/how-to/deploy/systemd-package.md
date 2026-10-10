@@ -18,7 +18,7 @@ Which releases have packages: the release pipeline (`.github/workflows/release.y
 | Path | What it is |
 |---|---|
 | `/usr/bin/kelvran-gateway` | Static binary (`CGO_ENABLED=0`) built from `gateway/cmd/gateway` |
-| `/usr/bin/kelvran` | The companion CLI (`kelvran init`; since 2026-10-10), built from `gateway/cmd/kelvran` — see [the CLI reference](../../reference/kelvran-cli.md) |
+| `/usr/bin/kelvran` | The companion CLI (`kelvran init` and `kelvran doctor`; since 2026-10-10), built from `gateway/cmd/kelvran` — see [the CLI reference](../../reference/kelvran-cli.md) |
 | `/usr/lib/systemd/system/kelvran-gateway.service` | The unit; source is [`deploy/systemd/kelvran-gateway.service`](../../../deploy/systemd/kelvran-gateway.service) |
 | `/etc/kelvran-gateway/config.example.yaml` | The example config, marked `config|noreplace`; source is [`gateway/config.example.yaml`](../../../gateway/config.example.yaml) |
 | `/usr/share/doc/kelvran-gateway/LICENSE`, `/usr/share/doc/kelvran-gateway/NOTICE` | License files |
@@ -102,6 +102,8 @@ kelvran-gateway -config /etc/kelvran-gateway/config.yaml -validate
 ```
 
 Prints `config is valid` and exits 0. On a problem it prints `config error: ...` and exits 1. No `sudo` is needed: `-validate` reads the config file, checks that every deployment names a registered provider and that every fallback chain targets an existing deployment, and starts nothing. It reads no environment variables, so it passes before the `env` file exists. The unit's `ExecStartPre` runs this same command before every start.
+
+`kelvran doctor` (on `main` since 2026-10-10, not in `gateway/v0.17.0`) goes further than `-validate`: `sudo kelvran doctor --config /etc/kelvran-gateway/config.yaml` also reads `/etc/kelvran-gateway/env` (the file the unit loads with `EnvironmentFile=`) and reports every credential variable the config names that is unset there, a credential file the unit's `DynamicUser` could not read (not world-readable), a persist path outside `/var/lib/kelvran-gateway/` or under `/home`/`/tmp` (which the unit hides), a config that is not world-readable (`0644` is the expected mode), an unpriced model and an invalid telemetry exporter — the things `-validate` deliberately cannot see. Without `sudo` the env file is unreadable and `doctor` says so; pass `--env-file` instead. See [the CLI reference](../../reference/kelvran-cli.md#kelvran-doctor).
 
 ### 6. Enable and start
 
