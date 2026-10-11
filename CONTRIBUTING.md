@@ -42,7 +42,7 @@ See `AGENTS.md` for the authoritative Go/Python conventions — this file doesn'
 
 ## CI Gates
 
-Real and running (`.github/workflows/ci.yml`, green on every push to `main` — see `STATUS.md`): `golangci-lint run ./...` + `go build ./... && go test ./...` for `gateway`; `ruff check .` + `uv run pytest tests/` for `evals`; `buf lint`/`buf breaking` + generated-code drift check for any `api/` change. Root `make verify` runs the fast local subset; `AGENTS.md`'s Testing section lists the eight CI steps it deliberately omits. Full test-pyramid strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`.
+Real and running (`.github/workflows/ci.yml`, green on every push to `main` — see `STATUS.md`): `golangci-lint run ./...` + `go build ./... && go test ./...` for `gateway`; `ruff check .` + `uv run pytest tests/` for `evals`; `buf lint`/`buf breaking` + generated-code drift check for any `api/` change; `cd gateway/compat && go test ./...` for the SDK compatibility matrix (the `compat` job, since 2026-10-11: the official OpenAI and Anthropic SDKs, Go and Python, against a gateway built from the tree). Root `make verify` runs the fast local subset; `AGENTS.md`'s Testing section lists the eight CI steps it deliberately omits (and, since 2026-10-11, the `compat` module). Full test-pyramid strategy (unit/integration/contract/e2e/load/chaos/fuzz): `docs/testing/TESTING.md`.
 
 ## Tests Are Part of the Change
 

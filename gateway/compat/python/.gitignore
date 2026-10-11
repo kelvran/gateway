@@ -1,0 +1,3 @@
+# uv's project environment; uv.lock IS committed. The repo root already
+# ignores **/__pycache__/ and .pytest_cache/.
+.venv/

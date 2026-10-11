@@ -204,6 +204,47 @@ jobs:
           config: ./gateway/.testcoverage.yml
           profile: gateway/coverage.out
 
+  compat:
+    name: compat (official SDKs against a built gateway)
+    runs-on: ubuntu-latest
+    # The compatibility matrix of RFC-1 §11 (item 11 slice S12), the merge gate
+    # (a required status check on main once green there):
+    # gateway/compat/ is its own Go module whose TestMain builds ./cmd/gateway
+    # from this tree, starts it against replaying httptest upstreams and drives
+    # the official anthropic-sdk-go and openai-go clients plus, through uv, the
+    # official anthropic and openai Python packages (gateway/compat/python/,
+    # own uv.lock). Outside the gateway job on purpose: a nested module is
+    # invisible to `go test ./...` from gateway/, keeps the SDKs out of
+    # gateway/go.mod, govulncheck and the coverage profile, and needs no Docker.
+    # Read-only -- checkout, module and package downloads, loopback sockets.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+          # Both sums: the harness builds the gateway module, the tests are the compat module.
+          cache-dependency-path: |
+            gateway/go.sum
+            gateway/compat/go.sum
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: golangci-lint (compat module, the gateway's config)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
+          working-directory: gateway/compat
+      - name: compatibility matrix (Go legs build and start the gateway; the Python leg runs inside)
+        working-directory: gateway/compat
+        run: |
+          go vet ./...
+          go test ./... -count=1 -v
+
   evals:
     name: evals (sync, ruff, pytest)
     runs-on: ubuntu-latest

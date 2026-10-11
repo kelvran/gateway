@@ -210,7 +210,6 @@ Expected: `401 invalid_api_key dataplane: auth: identity: invalid virtual key` (
 - A Redis-backed `Idempotency-Key` store; deduplication is per gateway instance.
 - Exact token counts on a translate hop (`POST /v1/messages/count_tokens` answers `404` on every deployment but `anthropic`, where it relays the deployment's own count). `POST /v1/messages` itself is served since gateway/v0.19.0, so the Anthropic SDK and Claude Code can use the gateway as a base URL (`x-api-key` is read on it and on `GET /v1/models`).
 - A first-party Kelvran SDK and an OpenAPI document for `/v1/*`; the `base_url` override described here is the integration path ([Why no SDK](../../explanation/why-no-sdk.md)).
-- A CI compatibility matrix that runs the official `openai` package against the gateway.
 
 ## Related pages
 

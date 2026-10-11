@@ -122,7 +122,7 @@ Run step 2. Expected: one line with the model's greeting, then a `CompletionUsag
 - OpenAI-shaped streaming tool-call deltas. The gateway streams flat `{index, id, name, arguments_json}` elements with no `function` nesting; buffered tool calls use OpenAI's nesting.
 - `X-Kelvran-Overhead-Duration-Ms` on streaming responses.
 - Embeddings and tool calling through LlamaIndex: not exercised in the recording. `POST /v1/embeddings` exists for `openai` and `bedrock` deployments ([Data-plane API](../../reference/data-plane-api.md)); whether LlamaIndex's OpenAI embedding class applies the same model-name check as Gotcha 1 is a client detail (check your client version). Confirm the route with [curl](curl.md) first.
-- A CI compatibility test that runs LlamaIndex against the gateway. The facts on this page come from the single recording named in Prerequisites.
+- A CI compatibility test that runs LlamaIndex against the gateway (the `compat` job covers the official OpenAI and Anthropic SDKs, not frameworks). The facts on this page come from the single recording named in Prerequisites.
 
 ## Related
 

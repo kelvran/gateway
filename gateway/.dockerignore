@@ -1,0 +1,7 @@
+# The Dockerfile's `COPY . .` takes this whole directory as the build context.
+# gateway/compat/ is the compatibility matrix (RFC-1 §11, item 11 slice S12):
+# a separate, test-only Go module with its own SDK dependencies and, on a
+# developer machine, a uv virtualenv under compat/python/.venv. None of it is
+# part of the gateway binary or its image, and the virtualenv alone can be
+# hundreds of megabytes of context to upload for nothing.
+compat/

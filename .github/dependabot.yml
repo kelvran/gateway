@@ -32,6 +32,30 @@ updates:
     cooldown:
       default-days: 14
 
+  # The compatibility matrix (gateway/compat, RFC-1 §11, item 11 slice S12) is
+  # its own Go module and its own uv project, so the SDKs it pins -- the test
+  # dependencies that must never enter gateway/go.mod -- get their own updates.
+  # The Python leg uses the dedicated `uv` ecosystem (a uv.lock project; the
+  # Dependabot options reference lists it beside pip, read 2026-10-11), not
+  # `pip`, whose updates rewrite pyproject ranges rather than the lock.
+  - package-ecosystem: "gomod"
+    directory: "/gateway/compat"
+    schedule:
+      interval: "weekly"
+    groups:
+      compat-gomod-deps:
+        patterns: ["*"]
+    cooldown:
+      default-days: 14
+  - package-ecosystem: "uv"
+    directory: "/gateway/compat/python"
+    schedule:
+      interval: "weekly"
+    groups:
+      compat-pip-deps:
+        patterns: ["*"]
+    cooldown:
+      default-days: 14
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

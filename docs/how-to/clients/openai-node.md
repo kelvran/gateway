@@ -173,7 +173,7 @@ These behaviours first shipped in gateway/v0.18.0; gateway/v0.17.0 and earlier l
 - Client-side `stream_options`, `n`, `seed`, `user`, `logprobs`, `max_completion_tokens` and the other dropped fields listed in step 2.
 - `X-Kelvran-Overhead-Duration-Ms` on streaming responses.
 - A first-party Kelvran SDK or an OpenAPI document. The `openai` package with `baseURL` is the integration path by recorded decision; see [Why no SDK](../../explanation/why-no-sdk.md).
-- A CI compatibility test against `openai-node`. No Node client code exists in this repository; the examples follow the gateway's wire contract and the package's public API shape.
+- A CI compatibility test against `openai-node`. The `compat` job (`gateway/compat/`) runs the official `openai-go` and `openai` (Python) packages against the gateway; no Node client code exists in this repository, and the examples follow the gateway's wire contract and the package's public API shape. A nightly TypeScript leg is planned under RFC-1 §11.
 
 ## Related
 
