@@ -157,7 +157,11 @@ func eraseSpendSessionHandler(pipeline *dataplane.Pipeline, logger auditLogger) 
 			return
 		}
 		writeJSONResponse(w, adminapi.SpendEraseResponse{RowsErased: n})
-		logger.Info("admin_spend_erased", "session_sha256_prefix", sessionAuditPrefix(req.Session), "rows_erased", n, "authorized_by", credentialTierFromContext(r.Context()))
+		// Admin-only routes sit behind requireBearerToken, which stashes no
+		// tier (see credentialTierFromContext), so the line records the
+		// literal, like every other Admin-only write route. The live proof
+		// of slice 6 caught the empty value.
+		logger.Info("admin_spend_erased", "session_sha256_prefix", sessionAuditPrefix(req.Session), "rows_erased", n, "authorized_by", "admin")
 	}
 }
 

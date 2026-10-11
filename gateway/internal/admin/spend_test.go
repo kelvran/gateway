@@ -300,8 +300,8 @@ func TestEraseSpendSessionIsAdminOnlyBoundedAndAudited(t *testing.T) {
 	prefix := hex.EncodeToString(sum[:])[:16]
 	out := buf.String()
 	// The prefix is exactly 16 hex characters: the field ends right after it (slog's text handler separates attributes with a space).
-	if !strings.Contains(out, "admin_spend_erased") || !strings.Contains(out, "session_sha256_prefix="+prefix+" rows_erased=2") {
-		t.Fatalf("audit line lacks the event, the exact 16-hex prefix or the count: %s", out)
+	if !strings.Contains(out, "admin_spend_erased") || !strings.Contains(out, "session_sha256_prefix="+prefix+" rows_erased=2 authorized_by=admin") {
+		t.Fatalf("audit line lacks the event, the exact 16-hex prefix, the count or the tier: %s", out)
 	}
 	if strings.Contains(out, "session=s1") {
 		t.Fatalf("audit line carries the raw session id: %s", out)
