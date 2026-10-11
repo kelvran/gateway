@@ -4432,3 +4432,19 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** `DECISIONS.md` `[2026-10-11]` G15 line — TypeScript as CI test tooling only, the leg's shape, the mock's Claude Code rule.
 
 **Next steps / resume point:** follow-up for the owner: the default `ssn` detector fires on a word-bounded nine-digit run anywhere in the scanned text, the system prompt included — a CI build path or a timestamp in a working-directory path blocks a Claude Code turn under the default policy; exempting `system` content, or requiring the dashed form, is a guardrail design decision (tool schemas are not scanned; tool-call arguments are) (how-to row added meanwhile). Dispatch `compat-ts-nightly.yml` once, read its artifacts, record the run; then the owner cuts `gateway/v0.19.0` (never an agent) and the release commit flips `compatibility.md`'s banner. Follow-ups carried: Dependabot's evals entry says `pip` for a uv.lock project; the S11b/S11b2/S11c lists stand.
+
+## [2026-10-11] main — fix(ci) after item 11 S13: the nightly TypeScript leg runs on the full `node:22-bookworm` image (the slim one has no system CA bundle for Go)
+
+**Files touched:** `.github/workflows/compat-ts-nightly.yml` (container image and its comment; the `CGO_ENABLED`/`GOFLAGS` comment), `docs/rfcs/2026-10-09-gateway-anthropic-messages-ingress.md` (the S13 settled block's image sentence), `gateway/ARCHITECTURE.md` (the S13 paragraph).
+
+**Intent/summary:** the first dispatched run of the nightly leg (`38112312628`, on `06724bb5`) got through checkout, setup-go and `npm ci --ignore-scripts` plus `install.cjs` — the container, the hardened install and `claude --version` all worked — and failed at `go test`: `github.com/anthropics/anthropic-sdk-go@v1.80.0: Get "https://proxy.golang.org/…": tls: failed to verify certificate: x509: certificate signed by unknown authority`. Node bundles its own CA store, so npm and the setup-go download (a node action) succeeded; Go reads the system store, and `node:22-bookworm-slim` ships no `ca-certificates`. The full `node:22-bookworm` image (`sha256:0e5f9065…`, resolved on ECR Public on 2026-10-11, verified locally to carry `ca-certificates`, git 2.39.5, node 22.23.3, npm 10.9.9) replaces it, pinned by digest as before; an `apt-get install ca-certificates` in the job would have added unpinned packages instead. The S12 compat merge gate is unaffected (it runs on the plain runner).
+
+**Reviews**: none (a container image swap with a reproduced cause; the S13 reviews stand).
+
+**Gates:** the workflow parses; `./scripts/check-doc-paths.sh` and lychee green; no `bookworm-slim` left outside this log.
+
+**Live:** the second dispatched run is the proof; recorded in the next entry.
+
+**Decisions made:** none.
+
+**Next steps / resume point:** dispatch `compat-ts-nightly.yml` again, read its artifacts (two Claude Code turns, the SDK summary, the gateway log), record the run; then the owner cuts `gateway/v0.19.0`.
