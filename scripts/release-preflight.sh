@@ -19,6 +19,11 @@
 #   5. WARNING only (also a ::warning:: annotation under GitHub Actions):
 #      docs/VERSIONING.md's support-window table lists the release being cut
 #      as the latest minor (RELEASE.md asks for it to be updated per release).
+#   6. (gateway only) gateway/openapi/kelvran-gateway.openapi.yaml exists (FAIL
+#      when missing: the document is public surface since gateway/v0.20.0,
+#      docs/VERSIONING.md § 2), and WARNING only when its info.version differs
+#      from <version> (RELEASE.md gateway step 2): that field is outside the
+#      public surface.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -82,6 +87,24 @@ if ! grep -Eq "^\| \`$deployable\` \| \`$deployable/v$version\`" "$root/docs/VER
   msg="docs/VERSIONING.md support-window table does not list $deployable/v$version as the latest minor -- update it (RELEASE.md)"
   echo "preflight WARN: $msg" >&2
   if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning::$msg"; fi
+fi
+
+# OpenAPI document (gateway only): missing is a release defect; a mismatching
+# info.version is a warning, because that field is outside the public surface.
+# The sed prints the first `  version:` line under `info:` and quits -- one
+# process, no YAML dependency, no SIGPIPE under pipefail.
+if [ "$deployable" = "gateway" ]; then
+  doc="$root/gateway/openapi/kelvran-gateway.openapi.yaml"
+  if [ ! -f "$doc" ]; then
+    fail "gateway/openapi/kelvran-gateway.openapi.yaml is missing -- the OpenAPI document is public surface since gateway/v0.20.0 (docs/VERSIONING.md § 2)"
+  else
+    declared=$(sed -n '/^  version: /{s///p;q;}' "$doc")
+    if [ "$declared" != "$version" ]; then
+      msg="gateway/openapi/kelvran-gateway.openapi.yaml declares info.version ${declared:-<none>}, tag says $version -- set it (RELEASE.md gateway step 2)"
+      echo "preflight WARN: $msg" >&2
+      if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning::$msg"; fi
+    fi
+  fi
 fi
 
 if [ "$failures" -gt 0 ]; then

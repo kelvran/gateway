@@ -190,7 +190,7 @@ If check 3 answers `404`, `audit_log_path` is not set (the route is not register
 
 ## Not available today
 
-- No OpenAPI or Swagger description of the admin API.
+- No Swagger UI or hosted rendering of the admin API's OpenAPI description; the committed document `gateway/openapi/kelvran-gateway.openapi.yaml` covers every admin route and tier ([reference](../reference/openapi.md)).
 - No `403`. A valid credential of an insufficient tier gets `401`.
 - No hot-reload or rotation of the admin tokens themselves. They are read once at startup; only a restart picks up a new value.
 - No per-route or per-resource roles beyond the four fixed tiers, and no API to create tiers.

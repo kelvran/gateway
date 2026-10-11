@@ -244,7 +244,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
 - Server-side generation of virtual-key secrets. You generate the secret and supply the hash.
 - Propagation of prompt mutations across replicas; only virtual-key and deployment-weight mutations propagate.
 - A custom CA or client certificate for Redis connections. `redis_tls` uses the system CA only.
-- An OpenAPI spec for the admin API.
+- A hosted or rendered copy of the admin API's OpenAPI description (the document `gateway/openapi/kelvran-gateway.openapi.yaml` covers it; [reference](../reference/openapi.md)).
 - A retention or deletion window for budget-spend history other than the rolling budget window. See [DATA-SUBJECT-REQUESTS.md](../operations/DATA-SUBJECT-REQUESTS.md).
 
 ## Related

@@ -172,7 +172,7 @@ These behaviours first shipped in gateway/v0.18.0; gateway/v0.17.0 and earlier l
 - OpenAI-shaped streaming tool-call deltas. The gateway streams flat `{ index, id, name, arguments_json }` elements with no `type` and no `function` nesting, so this client's tool-call stream accumulators do not reassemble arguments (check your client version). Buffered tool calls use the OpenAI nesting.
 - Client-side `stream_options`, `n`, `seed`, `user`, `logprobs`, `max_completion_tokens` and the other dropped fields listed in step 2.
 - `X-Kelvran-Overhead-Duration-Ms` on streaming responses.
-- A first-party Kelvran SDK or an OpenAPI document. The `openai` package with `baseURL` is the integration path by recorded decision; see [Why no SDK](../../explanation/why-no-sdk.md).
+- A first-party Kelvran SDK. The `openai` package with `baseURL` is the integration path by recorded decision; see [Why no SDK](../../explanation/why-no-sdk.md). The OpenAPI document for `/v1/*` exists ([reference](../../reference/openapi.md)); generating a client from it is possible, not recommended.
 - A CI compatibility test against `openai-node`. The `compat` job (`gateway/compat/`) runs the official `openai-go` and `openai` (Python) packages against the gateway; no `openai-node` client code exists in this repository, and the examples follow the gateway's wire contract and the package's public API shape. The nightly TypeScript leg (`.github/workflows/compat-ts-nightly.yml`) covers `@anthropic-ai/sdk` and Claude Code, not this package.
 
 ## Related

@@ -31,7 +31,7 @@ Kelvran is a self-hosted, OpenAI-compatible LLM gateway written in Go: one `POST
 
 ## Reference
 
-[Data-plane API](reference/data-plane-api.md) · [Admin API](reference/admin-api.md) · [Configuration](reference/config.md) · [Error codes](reference/error-codes.md) · [Metrics and logs](reference/metrics-and-logs.md) · [Compatibility](reference/compatibility.md) · [Release artifacts](reference/release-artifacts.md) · [Container image](reference/container-image.md) · [Glossary](reference/glossary.md)
+[Data-plane API](reference/data-plane-api.md) · [Admin API](reference/admin-api.md) · [Configuration](reference/config.md) · [Error codes](reference/error-codes.md) · [Metrics and logs](reference/metrics-and-logs.md) · [Compatibility](reference/compatibility.md) · [OpenAPI document](reference/openapi.md) · [Release artifacts](reference/release-artifacts.md) · [Container image](reference/container-image.md) · [Glossary](reference/glossary.md)
 
 The commented [`gateway/config.example.yaml`](../gateway/config.example.yaml) is the authoritative list of configuration keys; [Configuration](reference/config.md) is the same list as a table with defaults and validation rules.
 

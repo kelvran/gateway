@@ -75,7 +75,7 @@ If a trigger does arrive, the research's open question is whether to hand-roll o
 - A first-party typed SDK in any language.
 - A `.parse()`-style structured-output client wrapper. Structured output is a wire parameter, `response_format` with a JSON schema; see [structured output](../how-to/structured-output.md). The research notes that openai-python's `.parse()` is client-side sugar over that same wire shape, so an OpenAI SDK user already has it.
 - A provider-agnostic reasoning-effort enum as a Kelvran-native abstraction.
-- An OpenAPI 3.1 document or Swagger UI. Kelvran has no OpenAPI document anywhere. This is a separate decision from the SDK one: `not_yet` on 2026-09-13 with "a documented external API consumer beyond the pilot" as the trigger, and proposed on 2026-10-08 to flip to `build_now` because discoverability is itself the consumer. That flip is a user decision and has not been taken.
+- A Swagger UI or a hosted rendering. The OpenAPI 3.1 document itself exists since 2026-10-11 (`gateway/openapi/kelvran-gateway.openapi.yaml`, [reference](../reference/openapi.md)): the `not_yet` of 2026-09-13 (trigger: "a documented external API consumer beyond the pilot") was flipped to `build_now` by owner gate G5 (plan item 14) because discoverability is itself the consumer, and the document shipped on 2026-10-11. Hosting a rendered copy is a separate, open owner gate (G7). The SDK decision is unchanged: a client generated from the document is possible but not the recommended path.
 
 
 ## Related

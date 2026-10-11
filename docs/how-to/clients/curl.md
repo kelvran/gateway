@@ -213,7 +213,7 @@ What it returns on gateway/v0.18.0 and later: `HTTP/1.1 401 Unauthorized`, `Cont
 - No OpenAI-shaped streaming tool-call deltas; the flat shape above is what you get.
 - No `X-Kelvran-Overhead-Duration-Ms` on streaming responses.
 - No OpenAI Responses, Completions, images, audio or files routes.
-- No OpenAPI document to generate requests from.
+- No hosted copy of the OpenAPI document; the committed one (`gateway/openapi/kelvran-gateway.openapi.yaml`, [reference](../../reference/openapi.md)) can generate requests.
 - No 404 for an unknown model; it is `400 model_not_found` by design.
 
 ## Related

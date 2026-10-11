@@ -37,11 +37,12 @@ Versions: the latest tagged release is `gateway/v0.19.0` (2026-10-11). Items tha
 
 `/v1/models` is registered on the exact path. `/v1/models/` (trailing slash) is a `404`, never a `301`.
 
+The OpenAPI 3.1 document for both listeners is `gateway/openapi/kelvran-gateway.openapi.yaml` (on `main` since 2026-10-11; [what it covers and guarantees](openapi.md)).
+
 Not available today:
 
 - Exact token counts on a translate hop: an `anthropic` deployment receives the request as sent and answers with its own bytes — turns buffered and streamed, and `count_tokens` (since `gateway/v0.19.0`); every other deployment is a translate hop, where `POST /v1/messages/count_tokens` answers `404`: the gateway translates no provider's token-counting call and relays only an `anthropic` deployment's.
 - OpenAI Responses API, legacy Completions API, images, audio and files routes. `gateway/cmd/gateway/main.go` registers no such routes.
-- An OpenAPI document for `/v1/*`. It is planned as a condition for `gateway/v1.0.0` in [docs/VERSIONING.md](../VERSIONING.md).
 
 ## Authentication
 
@@ -423,7 +424,6 @@ Per-client how-tos: [OpenAI Python](../how-to/clients/openai-python.md), [OpenAI
 - OpenAI-shaped streaming tool-call deltas (`delta.tool_calls[].function.arguments`).
 - `object` fields on the embeddings response.
 - A first-party SDK (recorded decision).
-- An OpenAPI document for `/v1/*` (planned; see [docs/VERSIONING.md](../VERSIONING.md)).
 - A client-side JSON Schema validation fallback for `response_format`.
 - A CI compatibility leg for `openai-node` or a framework (LangChain, LlamaIndex): the `compat` merge gate covers `anthropic-sdk-go`, `openai-go`, `anthropic` and `openai`; the nightly, non-blocking TypeScript leg (`.github/workflows/compat-ts-nightly.yml`, since 2026-10-11 under owner decision G15 and the `docs/decisions/0003-go-python-split.md` note) covers `@anthropic-ai/sdk` and Claude Code itself (`claude -p`), not `openai-node`.
 - MCP or A2A brokering; see [MCP and A2A status](../explanation/mcp-a2a-status.md).

@@ -147,7 +147,7 @@ Terms a reader may expect that name nothing in the code:
 - **Session- or agent_run_id-level cost roll-up.** Cost finalize is per request; aggregating across a run means summing spans or `gatewayevents_v1` lines downstream ([gateway/ARCHITECTURE.md](../../gateway/ARCHITECTURE.md) request lifecycle).
 - **Traffic-derived circuit breaker.** Health is probe-derived (see *Health probe*); there is no outlier detection or cooldown learned from real request failures (`gateway/internal/router/router.go` package comment).
 - **Automatic price discovery.** *Cost tier* is operator-set; the gateway never derives it from the price table or from usage.
-- **MCP/A2A brokering**, an admin web UI, a first-party SDK, an OpenAPI spec and a Helm chart are not built, by recorded decision; see [README.md](../../README.md) and [explanation/mcp-a2a-status.md](../explanation/mcp-a2a-status.md).
+- **MCP/A2A brokering**, an admin web UI, a first-party SDK and a Helm chart are not built, by recorded decision; see [README.md](../../README.md) and [explanation/mcp-a2a-status.md](../explanation/mcp-a2a-status.md).
 
 ## Related pages
 

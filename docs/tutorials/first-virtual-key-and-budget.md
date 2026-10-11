@@ -244,7 +244,7 @@ Not available today:
 
 - There is no admin route that resets a key's spend without deleting it. The levers are `DELETE` and recreate, or a `budget_reset_interval_seconds` window.
 - There is no team or organisation hierarchy above keys; each key stands alone.
-- The admin API has no JSON error envelope (errors are plain text) and no OpenAPI specification.
+- The admin API has no JSON error envelope (errors are plain text); its OpenAPI description is part of `gateway/openapi/kelvran-gateway.openapi.yaml` ([reference](../reference/openapi.md)).
 
 ## Where next
 

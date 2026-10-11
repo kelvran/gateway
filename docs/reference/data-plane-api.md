@@ -17,6 +17,8 @@ The gateway registers exactly eight routes on one `http.ServeMux` (`newDataPlane
 | `POST` | `/v1/messages` | `Authorization: Bearer` or `x-api-key` | `200`, `application/json` (an Anthropic `message` object); or `200`, `text/event-stream` (Anthropic Messages events) when `stream` is `true` | `405`, `Allow: POST`, Anthropic error envelope |
 | `POST` | `/v1/messages/count_tokens` | `Authorization: Bearer` or `x-api-key` | On an `anthropic` deployment, the deployment's own count as received (since gateway/v0.19.0); on every other deployment `404`, Anthropic error envelope, `code` `count_tokens_unavailable`, and Claude Code estimates locally | `405`, `Allow: POST`, Anthropic error envelope |
 
+The machine-readable form of this table is `gateway/openapi/kelvran-gateway.openapi.yaml` (plan item 14; [what it covers and guarantees](openapi.md)), pinned to the route table by `TestOpenAPIRouteSetEqualsRegisteredRoutes` and to this page by `TestReferenceDocsRouteTablesMatchTheCode`.
+
 Not available today: `POST /v1/completions`, `POST /v1/responses`, and a `/metrics` route. None is registered. `POST /v1/messages`, `POST /v1/messages/count_tokens` (an `anthropic` deployment's own count; `404` on every other deployment) and the raw-body passthrough to `anthropic` deployments are served since gateway/v0.19.0.
 
 `listen_addr` is a required `config.yaml` key with no default; [config.example.yaml](../../gateway/config.example.yaml) sets it to `:8080`, and the examples below use `http://127.0.0.1:8080`.

@@ -4,7 +4,7 @@
 
 Clients call the gateway at a base URL ending in /v1 with `Authorization: Bearer <virtual key secret>`; the gateway stores only the SHA-256 of the secret (`key_hash`). The admin API is a separate listener (default 127.0.0.1:8081) with admin, operator, viewer and cost-viewer bearer tokens read from environment variables. Configuration is one YAML file; `gateway -config config.yaml -validate` checks it without starting anything; `/healthz` answers 200 when the process is up and `/readyz` reports model readiness when health probing is configured.
 
-Versions follow docs/VERSIONING.md (gateway/vX.Y.Z and evals/vX.Y.Z; a PATCH never breaks, a MINOR may with an UPGRADE.md row). There is no OpenAPI document yet; the data-plane and admin references below are the route tables. Everything linked here is a raw file on the main branch of github.com/kelvran/gateway.
+Versions follow docs/VERSIONING.md (gateway/vX.Y.Z and evals/vX.Y.Z; a PATCH never breaks, a MINOR may with an UPGRADE.md row). The OpenAPI 3.1 document for both listeners is https://raw.githubusercontent.com/kelvran/gateway/main/gateway/openapi/kelvran-gateway.openapi.yaml (what it covers and guarantees: https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/openapi.md); the data-plane and admin references below are the prose route tables. Everything linked here is a raw file on the main branch of github.com/kelvran/gateway.
 
 ## Docs
 - [Quickstart](https://raw.githubusercontent.com/kelvran/gateway/main/docs/tutorials/quickstart.md): one deployment, one virtual key, one chat completion in ten minutes
@@ -33,6 +33,7 @@ Versions follow docs/VERSIONING.md (gateway/vX.Y.Z and evals/vX.Y.Z; a PATCH nev
 - [Vercel AI SDK](https://raw.githubusercontent.com/kelvran/gateway/main/docs/how-to/clients/vercel-ai-sdk.md): openai.chat() or the openai-compatible provider, never the Responses API default
 
 ## Reference
+- [OpenAPI document](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/openapi.md): what the OpenAPI 3.1 document covers, what pins it to the code, what is public; the document itself is https://raw.githubusercontent.com/kelvran/gateway/main/gateway/openapi/kelvran-gateway.openapi.yaml
 - [Data-plane API](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/data-plane-api.md): every route, header and status code
 - [Admin API](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/admin-api.md): every admin route with its token tier
 - [Configuration](https://raw.githubusercontent.com/kelvran/gateway/main/docs/reference/config.md): every config key with type, default and validation rule
