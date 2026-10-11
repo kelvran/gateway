@@ -406,8 +406,19 @@ type ChatRequest struct {
 	// precedent as DisableCacheControlAutoPopulate. Nil for every other
 	// ingress.
 	Passthrough *Passthrough `json:"-"`
-	Tools       []ToolDef    `json:"tools,omitempty"`
-	Stream      bool         `json:"stream,omitempty"`
+	// AnthropicBetas are the anthropic-beta values a bedrock hop forwards
+	// into Converse's additionalModelRequestFields.anthropic_beta (RFC-1 §5):
+	// filled by the dataplane only when the serving deployment's
+	// anthropic_beta_policy is forward_known, and only with values on
+	// BedrockForwardKnownAnthropicBetas, normalised like the fingerprint's
+	// beta set (sorted, deduplicated); nil on every other hop and on every request a client built (an
+	// anthropic deployment forwards the header itself, through
+	// Passthrough.ForwardHeaders). Excluded from JSON like Passthrough: the
+	// idempotency fingerprint already folds the header's normalised beta
+	// set, so the field adds nothing a fingerprint could miss.
+	AnthropicBetas []string  `json:"-"`
+	Tools          []ToolDef `json:"tools,omitempty"`
+	Stream         bool      `json:"stream,omitempty"`
 	// ResponseFormat, when set, requests structured JSON output
 	// conforming to a caller-supplied schema. Nil (the default, and every
 	// ChatRequest built before this field existed) is a silent no-op --

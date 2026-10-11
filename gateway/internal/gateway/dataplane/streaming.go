@@ -897,6 +897,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	// cache_control on /v1/messages (RFC-1 §8, slice S9b).
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled() || req.Passthrough != nil
 
+	p.applyAnthropicBetaPolicy(ctx, dep, &upstreamReq)
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
 	providerReq, err := bedrockAdapter.ToProvider(upstreamReq)

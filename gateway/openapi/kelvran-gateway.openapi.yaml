@@ -3255,8 +3255,9 @@ components:
       required: false
       schema:
         type: string
-      description: One of the `anthropic-*` request headers the two Anthropic routes forward to an `anthropic` deployment; on `/v1/messages` its normalised set is part of the `Idempotency-Key` fingerprint.
-        Bounded with the rest of the family at 16 KiB in total.
+      description: 'One of the `anthropic-*` request headers the two Anthropic routes forward to an `anthropic` deployment; a `bedrock` deployment with `anthropic_beta_policy: forward_known` forwards the
+        allow-listed values into Converse''s `additionalModelRequestFields.anthropic_beta` and drops the rest with one `request_field_dropped` log line (since 2026-10-12; the configuration reference). On
+        `/v1/messages` its normalised set is part of the `Idempotency-Key` fingerprint. Bounded with the rest of the family at 16 KiB in total.'
   headers:
     X-Kelvran-Overhead-Duration-Ms:
       description: 'Whole milliseconds the gateway spent outside the upstream call; on buffered `200`s of `/v1/chat/completions` and `/v1/messages` only (never on a stream).

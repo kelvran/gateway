@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -239,6 +240,53 @@ func passthroughFingerprint(req adapter.ChatRequest) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// AnthropicBetaPolicyForwardKnown is the value of Deployment.AnthropicBetaPolicy
+// under which a bedrock hop forwards the allow-listed anthropic-beta values;
+// it mirrors controlplane.AnthropicBetaPolicyForwardKnown (the dataplane does
+// not import controlplane; cmd/gateway's
+// TestAnthropicBetaPolicyConstantsAgree keeps the two in lockstep). Every
+// other value -- "" and "strip" -- strips.
+const AnthropicBetaPolicyForwardKnown = "forward_known"
+
+// applyAnthropicBetaPolicy is RFC-1 §5's upstream leg for a bedrock hop
+// (2026-10-12): the anthropic-beta values a /v1/messages request carries
+// (Passthrough.ForwardHeaders) are stripped under the default policy,
+// silently -- stripping is the documented default, and Converse answers 400
+// to any value it does not accept -- and under forward_known only the
+// live-proven allow-list (adapter.BedrockForwardKnownAnthropicBetas) rides
+// into additionalModelRequestFields.anthropic_beta through
+// ChatRequest.AnthropicBetas in anthropicBetas' normalised order (sorted,
+// deduplicated); every other value is dropped and the request gets ONE
+// request_field_dropped line (field anthropic-beta; value the comma-joined
+// dropped values, bounded) -- the record an omitted thinking or top_k gets,
+// aggregated because the header is client input. Every other provider is untouched: an anthropic
+// deployment forwards the header itself (the passthrough hop), the rest have
+// no beta transport. Called right before noteDroppedRequestFields at the two
+// build sites a bedrock hop can reach -- callDeployment and
+// streamDeploymentBedrock (streamDeployment dispatches bedrock there before
+// its own ToProvider, so the generic stream site never sees one).
+func (p *Pipeline) applyAnthropicBetaPolicy(ctx context.Context, dep Deployment, upstreamReq *adapter.ChatRequest) {
+	upstreamReq.AnthropicBetas = nil
+	if dep.Provider != "bedrock" || upstreamReq.Passthrough == nil || dep.AnthropicBetaPolicy != AnthropicBetaPolicyForwardKnown {
+		return
+	}
+	var dropped []string
+	for _, beta := range anthropicBetas(upstreamReq.Passthrough.ForwardHeaders) {
+		if adapter.BedrockForwardsAnthropicBeta(beta) {
+			upstreamReq.AnthropicBetas = append(upstreamReq.AnthropicBetas, beta)
+			continue
+		}
+		dropped = append(dropped, beta)
+	}
+	if len(dropped) > 0 {
+		// One line per request, the dropped values comma-joined and cut on a
+		// value boundary within the bound every logged value gets, like the
+		// dropped_fields summary: a 16 KiB header of junk values is one line,
+		// never thousands (the header is client input).
+		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "anthropic-beta", boundedJoinWithin(dropped, maxModelForTelemetry), "not in adapter.BedrockForwardKnownAnthropicBetas, the values Converse accepted live; an unknown value is a Converse 400")
+	}
+}
+
 // anthropicBetas is the normalised anthropic-beta value set of the ingress's
 // forwarded headers: every header value split on commas, trimmed, empties
 // dropped, sorted and deduplicated, so token order and whitespace never
@@ -278,12 +326,21 @@ func droppedFieldsSummary(pointers []string) string {
 // client-supplied member list that leaves the process -- the telemetry
 // summary, the 400's message and its param.
 func boundedJoin(items []string) string {
-	if joined := strings.Join(items, ","); len(joined) <= maxDroppedFieldsBytes {
+	return boundedJoinWithin(items, maxDroppedFieldsBytes)
+}
+
+// boundedJoinWithin is boundedJoin under the caller's byte bound. The
+// dropped anthropic-beta values of a forward_known hop ride a
+// request_field_dropped value, bounded like every logged value
+// (maxModelForTelemetry) rather than like the span summary, so the cut and
+// its marker happen here and boundedForTelemetry never truncates them.
+func boundedJoinWithin(items []string, maxBytes int) string {
+	if joined := strings.Join(items, ","); len(joined) <= maxBytes {
 		return joined
 	}
 	for kept := len(items) - 1; kept > 0; kept-- {
 		cut := strings.Join(items[:kept], ",") + ",…+" + strconv.Itoa(len(items)-kept)
-		if len(cut) <= maxDroppedFieldsBytes {
+		if len(cut) <= maxBytes {
 			return cut
 		}
 	}

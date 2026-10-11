@@ -300,7 +300,10 @@ deployments:
     # anthropic_beta_policy: strip (the default, accepted on every provider)
     # drops the anthropic-beta values a /v1/messages request carries on a
     # bedrock deployment; forward_known forwards only the live-proven
-    # allow-list (adapter.BedrockForwardKnownAnthropicBetas) and is
+    # allow-list (adapter.BedrockForwardKnownAnthropicBetas) into Converse's
+    # additionalModelRequestFields.anthropic_beta and drops every other value,
+    # one bounded request_field_dropped log line per request (since
+    # 2026-10-12); it is
     # Bedrock-only, a load error on any other provider.
     # anthropic_beta_policy: forward_known
     # Deployment-scoped tokens-per-minute ceiling, counted the way

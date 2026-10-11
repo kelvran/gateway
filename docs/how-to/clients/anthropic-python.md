@@ -126,7 +126,6 @@ Run step 2, then look at the gateway's log: one `chat_completion` line with `ing
 
 - Fidelity on a translate hop: every deployment other than `anthropic` drops the members the schema cannot hold (reported in `dropped_fields`). An `anthropic` deployment answers `messages.create` and `messages.stream` with Anthropic's own bytes (since gateway/v0.19.0); on a stream the gateway's own `ping` event may be interleaved after 15 s or more of upstream silence, and an upstream `error` event that follows a relayed event reaches the SDK as Anthropic sent it (one that is the very first event, like a first event the gateway cannot decode, is redacted and the turn may fall back).
 - Exact token counts on a translate hop (`count_tokens` answers `404` there; an `anthropic` deployment counts exactly, see above).
-- Forwarding `anthropic-beta` values to Bedrock (`anthropic_beta_policy: forward_known` is applied by the upstream leg).
 - The `anthropic-ratelimit-unified-*` and `x-should-retry` response headers on a translate hop: the gateway forwards them from an `anthropic` deployment and synthesises none for any other.
 - The Batches, Files and Admin APIs: only `/v1/messages`, `/v1/messages/count_tokens` and `/v1/models` exist for this SDK; anything else is a plain 404.
 

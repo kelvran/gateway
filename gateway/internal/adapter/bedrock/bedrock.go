@@ -725,7 +725,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		}
 	}
 
-	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, req.TopK, req.Effort, req.Model)
+	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, req.TopK, req.Effort, req.AnthropicBetas, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -888,11 +888,12 @@ func outputConfigFormatFor(rf *adapter.ResponseFormat, model string) (map[string
 // structured output (outputConfigFormatFor, the output_config key), the
 // caller's canonical thinking configuration (thinkingFieldFor, the
 // thinking key; item 11 slice S4), top_k and output_config.effort (slice
-// S5) -- and returns nil
+// S5), and the forward_known anthropic-beta values (the anthropic_beta key;
+// RFC-1 §5, 2026-10-12) -- and returns nil
 // when none contributes, so a request carrying none stays byte-identical
 // to one built before any of them existed (every request golden relies on
 // omitempty seeing nil here).
-func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapter.ThinkingConfig, topK *int, effort string, model string) (map[string]any, error) {
+func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapter.ThinkingConfig, topK *int, effort string, betas []string, model string) (map[string]any, error) {
 	fields := map[string]any{}
 	format, err := outputConfigFormatFor(rf, model)
 	if err != nil {
@@ -924,6 +925,15 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapt
 		if forward, _ := adapter.BedrockForwardsTopK(model); forward {
 			fields["top_k"] = *topK
 		}
+	}
+	if len(betas) > 0 {
+		// anthropic_beta rides the same escape hatch (RFC-1 §5). The dataplane
+		// fills ChatRequest.AnthropicBetas only under anthropic_beta_policy
+		// forward_known and only with adapter.BedrockForwardKnownAnthropicBetas
+		// values, so nothing is re-checked here; Converse validates every value
+		// and answers 400 to one it does not accept, which is why the allow-list
+		// holds only values with a live 200.
+		fields["anthropic_beta"] = betas
 	}
 	if len(fields) == 0 {
 		return nil, nil

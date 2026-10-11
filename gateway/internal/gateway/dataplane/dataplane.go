@@ -4215,6 +4215,7 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	// slice S9b), so a request carrying Passthrough is never auto-marked.
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled() || req.Passthrough != nil
 
+	p.applyAnthropicBetaPolicy(ctx, dep, &upstreamReq)
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
 	providerReq, err := a.ToProvider(upstreamReq)
