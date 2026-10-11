@@ -11,7 +11,9 @@ The route set and bodies below are those of `gateway/v0.19.0` (2026-10-11), unch
 | Listener | A separate `net/http` server on its own port, never the client-facing mux. Default `127.0.0.1:8081`. |
 | Transport | Plain HTTP unless `admin.mtls` is configured; then TLS, and every client must present a certificate signed by the configured CA. |
 | Authentication | `Authorization: Bearer <token>` on every request. The token is compared with a constant-time comparison. |
-| Request bodies | JSON. The `Content-Type` request header is not checked. |
+| Request bodies | JSON. The `Content-Type` request header is not checked. No size limit (no `MaxBytesReader`); the data plane caps bodies at 32 MiB. |
+| JSON responses | Encoded with `encoding/json`. On every JSON-answering route except `GET /admin/audit`, a failure to encode (practically unreachable) is a plain-text `500` — `encoding response`, or `encoding config` on `GET /admin/config` — listed in that route's Errors column; `GET /admin/audit` discards an encode error (its `500` is the store query failing). |
+| Methods | Patterns carry a method, so a wrong method on a known path is net/http's plain-text `405` with `Allow`, answered before the token check; every `GET` also answers `HEAD` with the same status and headers and no body. |
 | Success bodies | JSON with `Content-Type: application/json`, or `204 No Content` for mutations that return nothing. |
 | Error bodies | Plain text written by `http.Error` (`text/plain; charset=utf-8`). Admin routes never return a JSON error envelope. The data-plane error codes in [error-codes.md](error-codes.md) do not apply here. |
 | Timeouts | `ReadHeaderTimeout` of 10 s. No other server timeout is set. |
@@ -86,29 +88,41 @@ With `admin.mtls` set, a client without a valid certificate fails at the TLS han
 
 ## Route index
 
+The machine-readable form of this table is `gateway/openapi/kelvran-gateway.openapi.yaml` (plan item 14), pinned to the route table by `TestOpenAPIRouteSetEqualsRegisteredRoutes` and to this page by `TestReferenceDocsRouteTablesMatchTheCode`.
+
 | Method | Path | Tiers | Success | Errors | Audit event |
 |---|---|---|---|---|---|
 | GET | `/admin/config` | Admin, Viewer | 200 JSON | 500 | `admin_config_read` |
 | GET | `/admin/audit` | Admin, Viewer | 200 JSON | 400, 500 | none |
-| GET | `/admin/virtual_keys` | Admin, Viewer | 200 JSON | 400 | `admin_virtual_keys_read` |
+| GET | `/admin/virtual_keys` | Admin, Viewer | 200 JSON | 400, 500 | `admin_virtual_keys_read` |
 | POST | `/admin/virtual_keys/{name}` | Admin | 204 | 400 | `admin_virtual_key_upserted` |
 | DELETE | `/admin/virtual_keys/{name}` | Admin | 204 | 400, 404, 409, 500 | `admin_virtual_key_deleted` |
 | POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404, 409 | `admin_virtual_key_rotated` |
-| GET | `/admin/virtual_keys/{name}/spend` | Admin, Viewer, CostViewer | 200 JSON | 404 | `admin_virtual_key_spend_read` |
-| GET | `/admin/virtual_keys/{name}/inflight` | Admin, Viewer | 200 JSON | 404 | `admin_virtual_key_inflight_read` |
-| GET | `/admin/prompts` | Admin, Viewer | 200 JSON | | `admin_prompts_read` |
-| GET | `/admin/prompts/{id}` | Admin, Viewer | 200 JSON | 404 | `admin_prompts_read` |
-| GET | `/admin/prompts/{id}/versions/{version}` | Admin, Viewer | 200 JSON | 400, 404 | `admin_prompts_read` |
-| POST | `/admin/prompts/{id}` | Admin | 200 JSON | 400 | `admin_prompt_upserted` |
+| GET | `/admin/virtual_keys/{name}/spend` | Admin, Viewer, CostViewer | 200 JSON | 404, 500 | `admin_virtual_key_spend_read` |
+| GET | `/admin/virtual_keys/{name}/inflight` | Admin, Viewer | 200 JSON | 404, 500 | `admin_virtual_key_inflight_read` |
+| GET | `/admin/prompts` | Admin, Viewer | 200 JSON | 500 | `admin_prompts_read` |
+| GET | `/admin/prompts/{id}` | Admin, Viewer | 200 JSON | 404, 500 | `admin_prompts_read` |
+| GET | `/admin/prompts/{id}/versions/{version}` | Admin, Viewer | 200 JSON | 400, 404, 500 | `admin_prompts_read` |
+| POST | `/admin/prompts/{id}` | Admin | 200 JSON | 400, 500 | `admin_prompt_upserted` |
 | DELETE | `/admin/prompts/{id}` | Admin | 204 | 400, 404, 500 | `admin_prompt_deleted` |
-| PUT | `/admin/prompts/{id}/labels/{label}` | Admin | 200 JSON | 400, 404 | `admin_prompt_label_set` |
+| PUT | `/admin/prompts/{id}/labels/{label}` | Admin | 200 JSON | 400, 404, 500 | `admin_prompt_label_set` |
 | DELETE | `/admin/prompts/{id}/labels/{label}` | Admin | 204 | 404, 500 | `admin_prompt_label_deleted` |
 | POST | `/admin/backup` | Admin | 200 JSON | 500, 501 | `admin_backup_completed` |
-| GET | `/admin/deployments` | Admin, Viewer | 200 JSON | | `admin_deployments_read` |
+| GET | `/admin/deployments` | Admin, Viewer | 200 JSON | 500 | `admin_deployments_read` |
 | POST | `/admin/deployments/{name}/weight` | Admin, Operator | 204 | 400, 404, 500 | `admin_deployment_weight_updated` |
 | POST | `/admin/cache/erase` | Admin, Operator | 200 JSON | 400, 404, 500 | `admin_cache_entry_erased` |
-| GET | `/admin/debug/pprof/` and named profiles | Admin | pprof output | | none |
-| POST | `/admin/debug/pprof/symbol` | Admin | pprof output | | none |
+| GET | `/admin/debug/pprof/` | Admin | pprof output |  | none |
+| GET | `/admin/debug/pprof/cmdline` | Admin | pprof output |  | none |
+| GET | `/admin/debug/pprof/profile` | Admin | pprof output | 500 | none |
+| GET | `/admin/debug/pprof/symbol` | Admin | pprof output |  | none |
+| POST | `/admin/debug/pprof/symbol` | Admin | pprof output |  | none |
+| GET | `/admin/debug/pprof/trace` | Admin | pprof output | 500 | none |
+| GET | `/admin/debug/pprof/goroutine` | Admin | pprof output | 400, 408, 500 | none |
+| GET | `/admin/debug/pprof/heap` | Admin | pprof output | 400, 408, 500 | none |
+| GET | `/admin/debug/pprof/threadcreate` | Admin | pprof output | 400, 408, 500 | none |
+| GET | `/admin/debug/pprof/block` | Admin | pprof output | 400, 408, 500 | none |
+| GET | `/admin/debug/pprof/mutex` | Admin | pprof output | 400, 408, 500 | none |
+| GET | `/admin/debug/pprof/allocs` | Admin | pprof output | 400, 408, 500 | none |
 
 Every route also answers 401 as described above. `GET /admin/audit` exists only when `admin.audit_log_path` is set. The pprof routes exist only when `admin.enable_pprof` is `true`.
 
@@ -567,14 +581,20 @@ Present only when `admin.enable_pprof: true`. Admin tier only; the Viewer tier i
 
 | Method | Path | Handler |
 |---|---|---|
-| GET | `/admin/debug/pprof/` | index |
+| GET | `/admin/debug/pprof/` | index (a subtree: every unlisted sub-path renders it) |
 | GET | `/admin/debug/pprof/cmdline` | cmdline |
-| GET | `/admin/debug/pprof/profile` | CPU profile |
-| GET, POST | `/admin/debug/pprof/symbol` | symbol |
-| GET | `/admin/debug/pprof/trace` | execution trace |
-| GET | `/admin/debug/pprof/goroutine`, `/heap`, `/threadcreate`, `/block`, `/mutex`, `/allocs` | named profiles |
+| GET | `/admin/debug/pprof/profile` | CPU profile (`seconds`, default 30) |
+| GET | `/admin/debug/pprof/symbol` | symbol |
+| POST | `/admin/debug/pprof/symbol` | symbol |
+| GET | `/admin/debug/pprof/trace` | execution trace (`seconds`, default 1) |
+| GET | `/admin/debug/pprof/goroutine` | goroutine profile (`seconds` for a delta) |
+| GET | `/admin/debug/pprof/heap` | heap profile (`seconds` for a delta) |
+| GET | `/admin/debug/pprof/threadcreate` | threadcreate profile (`seconds` for a delta) |
+| GET | `/admin/debug/pprof/block` | block profile (`seconds` for a delta) |
+| GET | `/admin/debug/pprof/mutex` | mutex profile (`seconds` for a delta) |
+| GET | `/admin/debug/pprof/allocs` | allocs profile (`seconds` for a delta) |
 
-These routes write no audit entry.
+These routes write no audit entry. `/admin/debug/pprof/` is a subtree pattern: any unlisted sub-path resolves to the index, and `/admin/debug/pprof` without the slash is a `307` redirect to the slash form under the pinned Go toolchain (`go 1.26.9`; pinned by `TestAdminServeMuxSemantics`). The handlers are net/http/pprof's own, including their plain-text errors under the pinned toolchain: `500` when a CPU profile or trace cannot start, and on the six named profiles `400` (`seconds` not a positive integer, or combined with `debug`), `408` and `500` around a delta profile; the index, `cmdline` and `symbol` never fail. Under this prefix `pprof.Index` never dispatches by profile name (its prefix check is `/debug/pprof/`), so every unlisted sub-path renders the index page.
 
 ## Audit log
 

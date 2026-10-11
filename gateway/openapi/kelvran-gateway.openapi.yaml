@@ -97,6 +97,9 @@ paths:
       security:
       - virtualKey: []
       x-kelvran-max-body-bytes: 33554432
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/EndUserID'
       requestBody:
         required: true
         content:
@@ -515,6 +518,7 @@ paths:
         in: query
         schema:
           type: string
+        description: Cursor; mutually exclusive with `after_id` (`400` `invalid_request`, `param` `after_id`); an unknown cursor is `400` `invalid_request` with `param` `before_id`, after authentication.
       responses:
         '200':
           description: The list. No rate limit, budget, guardrail or upstream call is involved.
@@ -660,6 +664,9 @@ paths:
           description: Marshalling failed (practically unreachable).
           x-kelvran-codes: []
           x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
           content:
             text/plain:
               schema:
@@ -711,6 +718,11 @@ paths:
       - virtualKey: []
       - virtualKeyXAPIKey: []
       x-kelvran-max-body-bytes: 33554432
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/EndUserID'
+      - $ref: '#/components/parameters/AnthropicVersion'
+      - $ref: '#/components/parameters/AnthropicBeta'
       requestBody:
         required: true
         content:
@@ -1062,6 +1074,9 @@ paths:
       - virtualKey: []
       - virtualKeyXAPIKey: []
       x-kelvran-max-body-bytes: 33554432
+      parameters:
+      - $ref: '#/components/parameters/AnthropicVersion'
+      - $ref: '#/components/parameters/AnthropicBeta'
       requestBody:
         required: true
         content:
@@ -1135,7 +1150,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/KelvranAnthropicError'
         '404':
-          description: The model's deployment is not an `anthropic` one, so no count exists.
+          description: The model's deployment is not an `anthropic` one, so no count exists (also `404` if the pipeline was built without a `count_tokens` upstream caller, which `cmd/gateway` always wires);
+            Claude Code then estimates locally.
           x-kelvran-codes:
           - count_tokens_unavailable
           x-kelvran-retry-after: []
@@ -1245,6 +1261,15 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the config failed. The body is `encoding config`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: The whole operator config as loaded (Go field names; `docs/reference/config.md` is the key reference).
   /admin/audit:
     servers:
     - url: http://127.0.0.1:8081
@@ -1266,6 +1291,23 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/AuditEntryResponse'
+              examples:
+                golden:
+                  summary: One durable audit line
+                  value:
+                  - time: '2026-10-10T01:02:03Z'
+                    msg: admin_virtual_key_upserted
+                    fields:
+                      name: team-a
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/AuditEntryResponse[]
+        '400':
+          description: A `since` or `until` that is not RFC 3339.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1274,6 +1316,43 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'Querying the audit store failed. The body is `querying audit log: …`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: msg
+        in: query
+        schema:
+          type: string
+        description: Exact audit event name.
+      - name: field
+        in: query
+        schema:
+          type: string
+        description: 'An audit field to filter on: with `value`, entries whose field equals it; alone, entries whose field is absent or empty.'
+      - name: value
+        in: query
+        schema:
+          type: string
+        description: 'With `field`: the value the field must equal. Ignored without `field`.'
+      - name: since
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: Lower bound, RFC 3339 (`400` otherwise); with `until` a half-open range [since, until).
+      - name: until
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: Upper bound, exclusive, RFC 3339 (`400` otherwise).
+      summary: The durable audit log, filtered.
   /admin/virtual_keys:
     servers:
     - url: http://127.0.0.1:8081
@@ -1294,6 +1373,39 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/VirtualKeyListEntry'
+              examples:
+                golden:
+                  summary: One key as listed (never its hash)
+                  value:
+                  - id: team-a
+                    budget_usd: '5'
+                    budget_reset_interval_seconds: 86400
+                    budget_warn_percent: 0.8
+                    allowed_models:
+                    - gpt-4o
+                    allowed_regions:
+                    - eu-west-1
+                    allowed_source_cidrs:
+                    - 10.0.0.0/8
+                    cache_scope_to_end_user: true
+                    attribution_capture_ids_disabled: true
+                    rate_limit_burst: 20
+                    rate_limit_refill_per_second: 10
+                    billing_subject_id: cost-centre-7
+                    expires_at: '2099-01-01T00:00:00Z'
+                    previous_key_hash_expires_at: '2026-10-10T02:00:00Z'
+                    max_concurrent_requests: 4
+                    spent_usd: '1.25'
+                    percent_used: 0.25
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/VirtualKeyListEntry[]
+        '400':
+          description: '`include` with any value but `spend`. The body is `include must be "spend"`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1302,6 +1414,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: include
+        in: query
+        schema:
+          type: string
+          enum:
+          - spend
+        description: 'Adds `spent_usd` and `percent_used` to every entry, or `spend_unavailable: true` for a key whose spend could not be read; every read shares one two-second deadline.'
+      summary: Every virtual key without its hash; `?include=spend` adds spend.
   /admin/virtual_keys/{name}:
     servers:
     - url: http://127.0.0.1:8081
@@ -1318,15 +1447,62 @@ paths:
       - Admin
       security:
       - adminToken: []
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+        description: 'At most 256 bytes (`400` beyond). The `DELETE` on this path does not check: an oversized value only fails the lookup.'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/VirtualKeyRequest'
+            examples:
+              golden:
+                summary: A full key definition (fixture hash from the wire golden; never a real one)
+                value:
+                  key_hash: abababababababababababababababababababababababababababababababab
+                  budget_usd: '12.5'
+                  budget_reset_interval_seconds: 86400
+                  budget_warn_percent: 0.8
+                  allowed_models:
+                  - gpt-4o
+                  allowed_regions:
+                  - eu-west-1
+                  allowed_source_cidrs:
+                  - 10.0.0.0/8
+                  cache_scope_to_end_user: true
+                  attribution_capture_ids_disabled: true
+                  rate_limit:
+                    burst: 20
+                    refill_per_second: 10
+                    tpm_capacity: 1000
+                    tpm_refill_per_second: 100
+                    per_model:
+                      gpt-4o:
+                        burst: 5
+                        refill_per_second: 1
+                        tpm_capacity: 500
+                        tpm_refill_per_second: 50
+                  expires_at: '2099-01-01T00:00:00Z'
+                  billing_subject_id: cost-centre-7
+                x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/VirtualKeyRequest
       responses:
         '204':
           description: Done; no body.
+        '400':
+          description: An empty or over-long name (256 bytes), a body that is not JSON, a missing `key_hash`, a negative budget or reset interval, `budget_warn_percent` outside 0–100, a past or malformed
+            `expires_at`, a bad CIDR or per-model limit, or any upsert error such as a non-hex or duplicate hash.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1335,6 +1511,7 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+      summary: Create or fully replace a virtual key.
     delete:
       operationId: deleteVirtualKey
       tags:
@@ -1344,6 +1521,14 @@ paths:
       responses:
         '204':
           description: Done; no body.
+        '400':
+          description: An empty name (the handler's own check; unreachable through the mux, which never matches an empty segment).
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1352,6 +1537,31 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such key.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '409':
+          description: The last remaining key cannot be deleted.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Any other failure.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Delete a virtual key (never the last one).
   /admin/virtual_keys/{name}/rotate:
     servers:
     - url: http://127.0.0.1:8081
@@ -1375,9 +1585,25 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RotateVirtualKeyRequest'
+            examples:
+              golden:
+                summary: A rotation with a grace period (fixture hash; never a real one)
+                value:
+                  new_key_hash: cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+                  grace_period_seconds: 600
+                  expires_at: '2099-01-01T00:00:00Z'
+                x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/RotateVirtualKeyRequest
       responses:
         '204':
           description: Done; no body.
+        '400':
+          description: An empty name, a body that is not JSON, a missing `new_key_hash`, a past or malformed `expires_at`, or any other rotation error.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1386,6 +1612,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such key.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '409':
+          description: The key has already expired and no `expires_at` was supplied.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Rotate a key's secret with a grace period for the old hash.
   /admin/virtual_keys/{name}/spend:
     servers:
     - url: http://127.0.0.1:8081
@@ -1411,6 +1654,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VirtualKeySpendResponse'
+              examples:
+                golden:
+                  summary: A key's spend against its budget
+                  value:
+                    spent_usd: '1.25'
+                    budget_usd: '5'
+                    budget_reset_interval_seconds: 86400
+                    percent_used: 0.25
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/VirtualKeySpendResponse
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1419,6 +1671,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such key. The body is `virtual key "<name>" not found`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: A key's spend against its budget — the one route the cost-viewer tier reads.
   /admin/virtual_keys/{name}/inflight:
     servers:
     - url: http://127.0.0.1:8081
@@ -1443,6 +1712,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VirtualKeyInFlightResponse'
+              examples:
+                golden:
+                  summary: In-flight requests by agent run
+                  value:
+                    total_in_flight: 2
+                    by_agent_run_id:
+                      run-1: 2
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/VirtualKeyInFlightResponse
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1451,6 +1728,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such key.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: A key's in-flight requests by agent run.
   /admin/prompts:
     servers:
     - url: http://127.0.0.1:8081
@@ -1471,6 +1765,17 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/PromptResponse'
+              examples:
+                golden:
+                  summary: One stored prompt
+                  value:
+                  - id: greeting
+                    version: 2
+                    messages:
+                    - role: system
+                      content: be brief
+                    created_at: '2026-10-10T01:02:03Z'
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/PromptResponse[]
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1479,6 +1784,15 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Every stored prompt at its latest version.
   /admin/prompts/{id}:
     servers:
     - url: http://127.0.0.1:8081
@@ -1503,6 +1817,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PromptResponse'
+              examples:
+                golden:
+                  summary: A stored prompt
+                  value:
+                    id: greeting
+                    version: 2
+                    messages:
+                    - role: system
+                      content: be brief
+                    created_at: '2026-10-10T01:02:03Z'
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/PromptResponse
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1511,18 +1836,51 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such prompt. The body is `prompt "<id>" not found`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: A stored prompt at its latest version.
     post:
       operationId: upsertPrompt
       tags:
       - Admin
       security:
       - adminToken: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+        description: 'At most 256 bytes (`400` beyond). The `GET` and `DELETE` on this path do not check: an oversized value only fails the lookup.'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/PromptRequest'
+            examples:
+              golden:
+                summary: A stored prompt's messages
+                value:
+                  messages:
+                  - role: system
+                    content: be brief
+                x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/PromptRequest
       responses:
         '200':
           description: The document.
@@ -1530,6 +1888,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PromptResponse'
+              examples:
+                golden:
+                  summary: The version just written
+                  value:
+                    id: greeting
+                    version: 2
+                    messages:
+                    - role: system
+                      content: be brief
+                    created_at: '2026-10-10T01:02:03Z'
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/PromptResponse
+        '400':
+          description: An empty or over-long id, a body that is not JSON, empty `messages`, a content-part or message-count validation failure, or any store error.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1538,6 +1915,15 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Store a new version of a prompt.
     delete:
       operationId: deletePrompt
       tags:
@@ -1547,6 +1933,14 @@ paths:
       responses:
         '204':
           description: Done; no body.
+        '400':
+          description: An empty id (the handler's own check; unreachable through the mux, which never matches an empty segment).
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1555,6 +1949,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such prompt.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Any other failure.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Delete a prompt and its versions.
   /admin/prompts/{id}/versions/{version}:
     servers:
     - url: http://127.0.0.1:8081
@@ -1585,6 +1996,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PromptResponse'
+              examples:
+                golden:
+                  summary: One version of a prompt
+                  value:
+                    id: greeting
+                    version: 2
+                    messages:
+                    - role: system
+                      content: be brief
+                    created_at: '2026-10-10T01:02:03Z'
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/PromptResponse
+        '400':
+          description: 'A version that is not a positive integer. The body is `invalid version "<v>": must be a positive integer`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1593,6 +2023,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such prompt or version.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: A stored prompt at one version.
   /admin/prompts/{id}/labels/{label}:
     servers:
     - url: http://127.0.0.1:8081
@@ -1614,12 +2061,26 @@ paths:
       - Admin
       security:
       - adminToken: []
+      parameters:
+      - name: label
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+        description: 'At most 256 bytes (`400` beyond). The `DELETE` on this path does not check: an oversized value only fails the lookup.'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/SetPromptLabelRequest'
+            examples:
+              golden:
+                summary: Point a label at a version
+                value:
+                  version: 2
+                x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/SetPromptLabelRequest
       responses:
         '200':
           description: The document.
@@ -1627,6 +2088,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LabelResponse'
+              examples:
+                golden:
+                  summary: The label after the move
+                  value:
+                    prompt_id: greeting
+                    label: prod
+                    version: 2
+                    updated_at: '2026-10-10T01:02:03Z'
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/LabelResponse
+        '400':
+          description: An empty id or label, a label over 256 bytes, a body that is not JSON, or any other store error.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1635,6 +2113,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such prompt or version.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Point a label at a version (promotion or rollback).
     delete:
       operationId: deletePromptLabel
       tags:
@@ -1652,6 +2147,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such prompt or label.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Any other failure.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Remove a label.
   /admin/backup:
     servers:
     - url: http://127.0.0.1:8081
@@ -1672,8 +2184,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BackupResponse'
+              examples:
+                golden:
+                  summary: The files written
+                  value:
+                    files:
+                    - identity.db
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/BackupResponse
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: The backup failed.
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -1688,6 +2215,7 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+      summary: Write a live bbolt backup into `admin.backup_dir`.
   /admin/deployments:
     servers:
     - url: http://127.0.0.1:8081
@@ -1708,6 +2236,20 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/DeploymentEntry'
+              examples:
+                golden:
+                  summary: One deployment with its live state
+                  value:
+                  - name: d1
+                    model: gpt-4o
+                    upstream_model: gpt-4o-2024
+                    provider: openai
+                    kind: chat
+                    healthy: true
+                    weight: 2
+                    latency_factor_percent: 70
+                    sticky: true
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/DeploymentEntry[]
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1716,6 +2258,15 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Encoding the response failed (practically unreachable). The body is `encoding response`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Every deployment with its health, weight and stickiness.
   /admin/deployments/{name}/weight:
     servers:
     - url: http://127.0.0.1:8081
@@ -1739,9 +2290,23 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/UpdateDeploymentWeightRequest'
+            examples:
+              golden:
+                summary: A new routing weight
+                value:
+                  weight: 3
+                x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/UpdateDeploymentWeightRequest
       responses:
         '204':
           description: Done; no body.
+        '400':
+          description: An empty name, a body that is not JSON, or a negative weight.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1750,6 +2315,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: No such deployment.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Any other failure.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Change a deployment's routing weight live.
   /admin/cache/erase:
     servers:
     - url: http://127.0.0.1:8081
@@ -1767,6 +2349,17 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/EraseCacheEntryRequest'
+            examples:
+              golden:
+                summary: The cached request to erase, scoped to its key and end user
+                value:
+                  virtual_key_id: team-a
+                  end_user_id: u1
+                  model: gpt-4o
+                  messages:
+                  - role: user
+                    content: hi
+                x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/EraseCacheEntryRequest
       responses:
         '200':
           description: The document.
@@ -1774,6 +2367,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EraseCacheEntryResponse'
+              examples:
+                golden:
+                  summary: What was found and erased
+                  value:
+                    l1_found: true
+                    l2_found: false
+                    l3_skipped: true
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/EraseCacheEntryResponse
+        '400':
+          description: A body that is not JSON, a missing `virtual_key_id`, both `prompt_id` and `messages`, both `prompt_label` and `prompt_version`, or a prompt that does not resolve.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1782,6 +2391,23 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: Unknown `virtual_key_id`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Any other failure.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      summary: Erase one cached answer from the in-process layers.
   /admin/debug/pprof/:
     servers:
     - url: http://127.0.0.1:8081
@@ -1796,15 +2422,11 @@ paths:
       x-kelvran-subtree: true
       responses:
         '200':
-          description: net/http/pprof's own output.
+          description: net/http/pprof's index page; under this prefix every sub-path of the subtree renders it too (`pprof.Index` dispatches by profile name only below `/debug/pprof/`).
           content:
-            text/plain:
+            text/html:
               schema:
                 type: string
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1813,6 +2435,7 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+      summary: pprof index.
   /admin/debug/pprof/cmdline:
     servers:
     - url: http://127.0.0.1:8081
@@ -1831,10 +2454,6 @@ paths:
             text/plain:
               schema:
                 type: string
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1843,6 +2462,7 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+      summary: The process command line.
   /admin/debug/pprof/profile:
     servers:
     - url: http://127.0.0.1:8081
@@ -1858,9 +2478,6 @@ paths:
         '200':
           description: net/http/pprof's own output.
           content:
-            text/plain:
-              schema:
-                type: string
             application/octet-stream:
               schema:
                 type: string
@@ -1873,6 +2490,21 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: CPU profiling could not be enabled (one is already running).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: integer
+        description: Duration in seconds; a value that fails to parse or is not greater than zero falls back to the default of 30.
+      summary: A CPU profile.
   /admin/debug/pprof/symbol:
     servers:
     - url: http://127.0.0.1:8081
@@ -1891,10 +2523,6 @@ paths:
             text/plain:
               schema:
                 type: string
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1903,6 +2531,7 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+      summary: Symbol lookup.
     post:
       operationId: pprofSymbolPost
       tags:
@@ -1910,6 +2539,13 @@ paths:
       security:
       - adminToken: []
       x-kelvran-conditional: admin.enable_pprof
+      requestBody:
+        description: 'net/http/pprof''s symbol lookup: program counters as `0x`-prefixed hexadecimal (any Go integer literal parses; a bare hex word parses to 0 and is skipped), `+`-separated; `GET` takes
+          the same list as the raw query string.'
+        content:
+          text/plain:
+            schema:
+              type: string
       responses:
         '200':
           description: net/http/pprof's own output.
@@ -1917,10 +2553,6 @@ paths:
             text/plain:
               schema:
                 type: string
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1929,6 +2561,7 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+      summary: Symbol lookup (POST form).
   /admin/debug/pprof/trace:
     servers:
     - url: http://127.0.0.1:8081
@@ -1944,9 +2577,6 @@ paths:
         '200':
           description: net/http/pprof's own output.
           content:
-            text/plain:
-              schema:
-                type: string
             application/octet-stream:
               schema:
                 type: string
@@ -1959,6 +2589,21 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: tracing could not be enabled (one is already running).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: number
+        description: Duration in seconds, fractions allowed; a value that fails to parse or is not greater than zero falls back to the default of 1.
+      summary: An execution trace.
   /admin/debug/pprof/goroutine:
     servers:
     - url: http://127.0.0.1:8081
@@ -1981,6 +2626,14 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -1989,6 +2642,36 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '408':
+          description: 'net/http/pprof''s own: a request-context deadline passed while waiting `seconds` for the delta profile. The admin server sets no such deadline, so in practice the wait ends with
+            the profile or with a client cancel (`500`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: the profile could not be collected or the delta not computed, or the request was cancelled while waiting `seconds`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+      - name: debug
+        in: query
+        schema:
+          type: integer
+        description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
+      summary: The goroutine profile.
   /admin/debug/pprof/heap:
     servers:
     - url: http://127.0.0.1:8081
@@ -2011,6 +2694,14 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -2019,6 +2710,41 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '408':
+          description: 'net/http/pprof''s own: a request-context deadline passed while waiting `seconds` for the delta profile. The admin server sets no such deadline, so in practice the wait ends with
+            the profile or with a client cancel (`500`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: the profile could not be collected or the delta not computed, or the request was cancelled while waiting `seconds`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+      - name: debug
+        in: query
+        schema:
+          type: integer
+        description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
+      - name: gc
+        in: query
+        schema:
+          type: integer
+        description: Run the garbage collector first when positive. Ignored when `seconds` is set.
+      summary: The heap profile.
   /admin/debug/pprof/threadcreate:
     servers:
     - url: http://127.0.0.1:8081
@@ -2041,6 +2767,14 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -2049,6 +2783,36 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '408':
+          description: 'net/http/pprof''s own: a request-context deadline passed while waiting `seconds` for the delta profile. The admin server sets no such deadline, so in practice the wait ends with
+            the profile or with a client cancel (`500`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: the profile could not be collected or the delta not computed, or the request was cancelled while waiting `seconds`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+      - name: debug
+        in: query
+        schema:
+          type: integer
+        description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
+      summary: The threadcreate profile.
   /admin/debug/pprof/block:
     servers:
     - url: http://127.0.0.1:8081
@@ -2071,6 +2835,14 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -2079,6 +2851,36 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '408':
+          description: 'net/http/pprof''s own: a request-context deadline passed while waiting `seconds` for the delta profile. The admin server sets no such deadline, so in practice the wait ends with
+            the profile or with a client cancel (`500`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: the profile could not be collected or the delta not computed, or the request was cancelled while waiting `seconds`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+      - name: debug
+        in: query
+        schema:
+          type: integer
+        description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
+      summary: The block profile.
   /admin/debug/pprof/mutex:
     servers:
     - url: http://127.0.0.1:8081
@@ -2101,6 +2903,14 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -2109,6 +2919,36 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '408':
+          description: 'net/http/pprof''s own: a request-context deadline passed while waiting `seconds` for the delta profile. The admin server sets no such deadline, so in practice the wait ends with
+            the profile or with a client cancel (`500`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: the profile could not be collected or the delta not computed, or the request was cancelled while waiting `seconds`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+      - name: debug
+        in: query
+        schema:
+          type: integer
+        description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
+      summary: The mutex profile.
   /admin/debug/pprof/allocs:
     servers:
     - url: http://127.0.0.1:8081
@@ -2131,6 +2971,14 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -2139,6 +2987,36 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '408':
+          description: 'net/http/pprof''s own: a request-context deadline passed while waiting `seconds` for the delta profile. The admin server sets no such deadline, so in practice the wait ends with
+            the profile or with a client cancel (`500`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: the profile could not be collected or the delta not computed, or the request was cancelled while waiting `seconds`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+      - name: debug
+        in: query
+        schema:
+          type: integer
+        description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
+      summary: The allocs profile.
 components:
   securitySchemes:
     virtualKey:
@@ -2179,6 +3057,39 @@ components:
       description: 'The operator tier, `admin.operator_token_env`; authenticates only the three reversible, single-target writes (rotate, reweight, cache erase).
 
         '
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Opaque client-chosen key, scoped to the authenticating virtual key; the same key with a different body is `422` `idempotency_key_reused`. On `/v1/messages` the fingerprint is the body
+        as received plus the normalised `anthropic-beta` set. Not read by `/v1/embeddings`, `/v1/models` or `/v1/messages/count_tokens`.
+    EndUserID:
+      name: X-Kelvran-End-User-Id
+      in: header
+      required: false
+      schema:
+        type: string
+      description: 'Caller-supplied, unauthenticated end-user identifier; partitions the response cache only for keys with `cache_scope_to_end_user: true`. On `/v1/messages` the body''s `metadata.user_id`
+        fills the same scope when the header is absent; the header wins when both are present.'
+    AnthropicVersion:
+      name: anthropic-version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: One of the `anthropic-*` request headers the two Anthropic routes forward to an `anthropic` deployment (the client's value replaces the gateway's default); the family is bounded at 16
+        KiB in total, `400` `invalid_request` beyond. The per-provider policy is in the data-plane reference.
+    AnthropicBeta:
+      name: anthropic-beta
+      in: header
+      required: false
+      schema:
+        type: string
+      description: One of the `anthropic-*` request headers the two Anthropic routes forward to an `anthropic` deployment; on `/v1/messages` its normalised set is part of the `Idempotency-Key` fingerprint.
+        Bounded with the rest of the family at 16 KiB in total.
   headers:
     X-Kelvran-Overhead-Duration-Ms:
       description: 'Whole milliseconds the gateway spent outside the upstream call; on buffered `200`s of `/v1/chat/completions` and `/v1/messages` only (never on a stream).
@@ -3051,6 +3962,7 @@ components:
       properties:
         key_hash:
           type: string
+          writeOnly: true
         budget_usd:
           type:
           - string
@@ -3098,6 +4010,7 @@ components:
       properties:
         new_key_hash:
           type: string
+          writeOnly: true
         grace_period_seconds:
           type: integer
         expires_at:

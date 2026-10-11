@@ -253,6 +253,10 @@ func TestOpenAPIExamplesMatchTheirSources(t *testing.T) {
 func compareExample(t *testing.T, repoRoot, source string, val *yaml.Node, line int) {
 	t.Helper()
 	file, pointer, _ := strings.Cut(source, "#")
+	// A trailing [] on the pointer wraps the fixture value in a one-element
+	// array: the list responses carry an array of what the golden stores once.
+	wrap := strings.HasSuffix(pointer, "[]")
+	pointer = strings.TrimSuffix(pointer, "[]")
 	// A source names a committed fixture: repo-relative, under gateway/, never
 	// absolute or above the module -- the document is the only input, but the
 	// reader must not become a way to copy a runner's files into the log.
@@ -285,6 +289,9 @@ func compareExample(t *testing.T, repoRoot, source string, val *yaml.Node, line 
 			t.Errorf("%s: pointer segment %q not found", source, seg)
 			return
 		}
+	}
+	if wrap {
+		fixture = []any{fixture}
 	}
 	var example any
 	if val == nil {
