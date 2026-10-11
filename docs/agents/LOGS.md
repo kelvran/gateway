@@ -4448,3 +4448,19 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** none.
 
 **Next steps / resume point:** dispatch `compat-ts-nightly.yml` again, read its artifacts (two Claude Code turns, the SDK summary, the gateway log), record the run; then the owner cuts `gateway/v0.19.0`.
+
+## [2026-10-11] main — item 11 S13 exit criterion met: the nightly TypeScript leg's first green run (`38113167921`); item 11's code is complete
+
+**Files touched:** `docs/how-to/clients/claude-code.md` (one sentence under "Auto mode": the stderr notice Claude Code prints behind a gateway address); this entry.
+
+**Intent/summary:** the second dispatched run of `compat-ts-nightly.yml`, on `45609c94` (the full `node:22-bookworm` image), was green through every step in about two minutes: checkout, setup-go, `npm ci --ignore-scripts` plus Claude Code's `install.cjs`, the tagged tests, the artifact upload. The artifacts say what the local runs said: `@anthropic-ai/sdk` seven checks; both `claude -p` turns (betas off, defaults) one `/v1/messages` request each at the deployment, result `The sky is blue today.`, `end_turn`, `num_turns` 1; the betas-off trace `tools=20 messages=2 last=system[string]`, the defaults trace `last=system[text]` — Claude Code ends every request with a `role: system` entry under either setting; the gateway log attributes both turns `client_tool: claude_code` on the passthrough path beside the SDK's five requests (`anthropic_node`, two of them the intended errors), and its `instance_id` is the container id. One new observation from the defaults turn's stderr, recorded in the how-to: Claude Code 2.1.296 prints a notice that auto mode's classifier requests stay billed as before because the base URL "isn't compatible with this update" — informational, nothing changes. The first run (`38112312628`) is the previous entry's `x509` failure.
+
+**Reviews**: none (a record and one how-to sentence).
+
+**Gates:** `./scripts/check-doc-paths.sh` and lychee green.
+
+**Live:** the run itself — `https://github.com/kelvran/gateway/actions/runs/38113167921`, artifacts `compat-ts-artifacts`.
+
+**Decisions made:** none.
+
+**Next steps / resume point:** item 11 (RFC-1, slices S1–S13) is complete in code and docs on `main`. The owner cuts `gateway/v0.19.0` (never an agent); the release commit flips `docs/reference/compatibility.md`'s "latest tagged release" banner and moves `gateway/changelog/unreleased.md` to the dated file. Owner follow-ups carried: the default `ssn` detector versus paths in Claude Code's system prompt (S13 entry), the pricing-aware accounting versus an `anthropic` beta/tool policy knob (S11a), Dependabot's evals entry on `pip` for a uv.lock project (S12 entry).
