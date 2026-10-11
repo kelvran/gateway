@@ -259,9 +259,11 @@ func TestSpendRefusals(t *testing.T) {
 		want int
 		msg  string
 	}{
-		{[]string{"--by", "model"}, onlineEnv(), 2, "needs the spend ledger (plan item 13d"},
-		{[]string{"--by", "tool"}, onlineEnv(), 2, "13d"},
 		{[]string{"--by", "bogus"}, onlineEnv(), 2, `--by "bogus" is not one of`},
+		{[]string{"--by", "key", "--key", "team-alpha"}, onlineEnv(), 2, "--key, --since and --until apply to --by model|tool|session"},
+		{[]string{"--by", "key", "--since", "2026-10-11T00:00:00Z"}, onlineEnv(), 2, "--key, --since and --until apply to --by model|tool|session"},
+		{[]string{"--by", "model", "--since", "yesterday"}, onlineEnv(), 2, `--since "yesterday" is not an RFC 3339 timestamp`},
+		{[]string{"--by", "model", "--until", "2026-13-40T00:00:00Z"}, onlineEnv(), 2, `--until "2026-13-40T00:00:00Z" is not an RFC 3339 timestamp`},
 		{nil, nil, 2, "and no --config"},
 		{[]string{"extra"}, nil, 2, `unexpected argument "extra"`},
 		{[]string{"--admin-url", "http://127.0.0.1:9"}, onlineEnv(), 1, "admin API unreachable"},
@@ -356,5 +358,74 @@ func TestStatusRedactsTheBearerFromABodyReadError(t *testing.T) {
 		if code != 1 || stdout != "" || strings.Contains(stderr, fakeToken()) || !strings.Contains(stderr, "***") {
 			t.Errorf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
 		}
+	}
+}
+
+// TestSpendByLedgerDimensionsOnline: --by model|tool|session reads
+// GET /admin/spend with the dimension, the optional key and window passed
+// through, prints the served window and a table of the grouped dimension
+// (the key column when the rows carry one), and --json prints the served
+// document as is (item 13d slice 5).
+func TestSpendByLedgerDimensionsOnline(t *testing.T) {
+	f := statusFake()
+	srv := f.serve(t)
+	code, stdout, stderr := runSpendCmd(t, onlineEnv(), "--admin-url", srv.URL, "--by", "model")
+	if code != 0 {
+		t.Fatalf("--by model: exit %d\n%s%s", code, stdout, stderr)
+	}
+	if last := f.calls[len(f.calls)-1]; last != "GET /admin/spend?group_by=model" {
+		t.Errorf("--by model must read GET /admin/spend?group_by=model, got %q", last)
+	}
+	flat := collapse(stdout)
+	for _, want := range []string{"window 2026-10-11T00:00:00Z .. 2026-10-12T00:00:00Z", "model spend_usd requests", "gpt-4o 1.5 3", "claude 0.25 1"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("--by model: missing %q in\n%s", want, stdout)
+		}
+	}
+	// The header is the second line (after the window line) and has no key column.
+	if lines := strings.Split(strings.TrimSpace(flat), "\n"); len(lines) < 2 || strings.TrimSpace(lines[1]) != "model spend_usd requests" {
+		t.Errorf("--by model without --key must print exactly `model spend_usd requests` as the header:\n%s", stdout)
+	}
+
+	code, stdout, stderr = runSpendCmd(t, onlineEnv(), "--admin-url", srv.URL, "--by", "session", "--key", "team-alpha", "--since", "2026-10-11T00:00:00Z", "--until", "2026-10-12T00:00:00+02:00")
+	if code != 0 {
+		t.Fatalf("--by session --key: exit %d\n%s%s", code, stdout, stderr)
+	}
+	last := f.calls[len(f.calls)-1]
+	for _, want := range []string{"group_by=session", "key=team-alpha", "since=2026-10-11T00%3A00%3A00Z", "until=2026-10-12T00%3A00%3A00%2B02%3A00"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("the query must carry %q: %q", want, last)
+		}
+	}
+	flat = collapse(stdout)
+	for _, want := range []string{"key session spend_usd requests", "team-alpha sess-1 1.5 3", "team-alpha other 0.25 1"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("--by session: missing %q in\n%s", want, stdout)
+		}
+	}
+
+	code, stdout, stderr = runSpendCmd(t, onlineEnv(), "--admin-url", srv.URL, "--by", "tool", "--json")
+	var doc adminapi.SpendResponse
+	if code != 0 || json.Unmarshal([]byte(stdout), &doc) != nil || doc.GroupBy != "tool" || len(doc.Rows) != 1 || doc.Rows[0].Tool != "curl" || strings.Contains(stdout, "window ") {
+		t.Errorf("--json: exit %d, stderr %s\n%s", code, stderr, stdout)
+	}
+
+	// A 401 from the route is reported with its status and, when --key was
+	// absent, the hint a cost viewer needs (the client never prints a 401
+	// body: it could echo the token); with --key the plain status stands.
+	f.ledgerStatus, f.ledgerBody = http.StatusUnauthorized, "cost_viewer may read /admin/spend only with key= naming one virtual key"
+	code, stdout, stderr = runSpendCmd(t, onlineEnv(), "--admin-url", srv.URL, "--by", "model")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "HTTP 401") || !strings.Contains(stderr, "--key NAME") || strings.Contains(stderr, "key= naming") {
+		t.Errorf("a 401 from the ledger route without --key: exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	code, stdout, stderr = runSpendCmd(t, onlineEnv(), "--admin-url", srv.URL, "--by", "model", "--key", "team-alpha")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "HTTP 401") || strings.Contains(stderr, "--key NAME") {
+		t.Errorf("a 401 from the ledger route with --key: exit %d, stdout %q, stderr %s", code, stdout, stderr)
+	}
+	f.ledgerStatus = 0
+	// Offline fails closed like --by key: the ledger lives behind the admin API.
+	p := writeKeysFixture(t, t.TempDir(), fixtureText(), 0o644)
+	if code, stdout, stderr := runSpendCmd(t, nil, "--config", p, "--by", "model"); code != 1 || stdout != "" || !strings.Contains(stderr, "this config has no `admin:` section") {
+		t.Errorf("offline --by model: exit %d, stdout %q, stderr %s", code, stdout, stderr)
 	}
 }

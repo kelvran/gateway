@@ -1,6 +1,6 @@
 # kelvran CLI
 
-`kelvran` is the gateway's companion binary (`gateway/cmd/kelvran`), shipped beside `kelvran-gateway` in every release archive and package and at `/kelvran` in the container image. It turns the by-hand first run — generate a secret, hash it, author `config.yaml` — into one command (`init`), checks a config against the environment the gateway will actually run in (`doctor`), creates, lists, rotates and deletes virtual keys through the admin API or in the file (`keys`), shows what the gateway serves (`status`), reads spend per key (`spend`), and prints or writes a coding tool's client configuration (`connect`). First shipped in `gateway/v0.18.0`. Design: [RFC: `kelvran` CLI and single-user mode](../rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md).
+`kelvran` is the gateway's companion binary (`gateway/cmd/kelvran`), shipped beside `kelvran-gateway` in every release archive and package and at `/kelvran` in the container image. It turns the by-hand first run — generate a secret, hash it, author `config.yaml` — into one command (`init`), checks a config against the environment the gateway will actually run in (`doctor`), creates, lists, rotates and deletes virtual keys through the admin API or in the file (`keys`), shows what the gateway serves (`status`), reads spend per key, model, tool or session (`spend`), and prints or writes a coding tool's client configuration (`connect`). First shipped in `gateway/v0.18.0`. Design: [RFC: `kelvran` CLI and single-user mode](../rfcs/2026-10-09-gateway-kelvran-cli-and-single-user-mode.md).
 
 This page is the public surface [`docs/VERSIONING.md`](../VERSIONING.md) binds to for the CLI: every verb, flag, exit code and output shape below is covered by the compatibility policy from `gateway/v0.18.0` on.
 
@@ -235,10 +235,12 @@ What the gateway serves (RFC-3 decision 10; since `gateway/v0.18.0`). The mode f
 ## `kelvran spend`
 
 ```
-kelvran spend [--by key] [--admin-url URL] [--admin-token-file PATH] [--config PATH] [--allow-insecure-http] [--json]
+kelvran spend [--by key|model|tool|session] [--key NAME] [--since RFC3339] [--until RFC3339] [--admin-url URL] [--admin-token-file PATH] [--config PATH] [--allow-insecure-http] [--json]
 ```
 
-Spend per virtual key (RFC-3 decisions 5 and 10; since `gateway/v0.18.0`): `GET /admin/virtual_keys?include=spend` rendered as `key | spent_usd | budget_usd | percent_used | expires_at`, the same cell spellings as `keys list --spend` (`unlimited`, `never`, `n/a`). A row whose spend could not be read shows `n/a`, the stderr line `kelvran spend: spend unavailable for N key(s): budget backend error` follows and the exit code is `1`. `--by` defaults to `key`; `model`, `tool` and `session` are refused with `needs the spend ledger (plan item 13d, RFC-2 …)` until that ledger lands; any other value is a usage error. `--json` prints the served entries as one document.
+Spend per virtual key (RFC-3 decisions 5 and 10; since `gateway/v0.18.0`): `GET /admin/virtual_keys?include=spend` rendered as `key | spent_usd | budget_usd | percent_used | expires_at`, the same cell spellings as `keys list --spend` (`unlimited`, `never`, `n/a`). A row whose spend could not be read shows `n/a`, the stderr line `kelvran spend: spend unavailable for N key(s): budget backend error` follows and the exit code is `1`. `--by` defaults to `key`; any other value than `key`, `model`, `tool` or `session` is a usage error. `--json` prints the served entries as one document.
+
+`--by model|tool|session` (since item 13d) reads the spend ledger, [`GET /admin/spend`](admin-api.md#get-adminspend): `group_by` is the dimension, `--key` narrows to one virtual key (what a cost-viewer token needs — without it the gateway answers `401`, which the command reports as `HTTP 401` plus the hint to pass `--key NAME`, exit `1`; the CLI never prints a `401` body), `--since`/`--until` are passed through as RFC 3339 (checked locally first: a value that is not RFC 3339 is a usage error). The served window comes first — `window <since> .. <until>`, after the gateway clamped it to `ledger.retention_hours` — then the table `<dimension> | spend_usd | requests`, with a leading `key` column when `--key` was given or `--by` is `session`; rows arrive sorted by spend. A session named `other` is what the ledger's caps folded. `--json` prints the served document (`group_by`, `key`, `since`, `until`, `rows`) as is. `--key`, `--since` and `--until` are usage errors with `--by key`, whose budget view lists every key.
 
 Spend lives only in the gateway's budget store, which the admin API fronts, so there is no offline view: with `--config` and no token the command fails closed — the same line `status` prints offline goes to stderr, exit `1` — and with neither a token nor `--config` it is exit `2`. The token order, the URL guard and the unreachable line are `keys`'.
 
@@ -246,7 +248,7 @@ Spend lives only in the gateway's budget store, which the admin API fronts, so t
 |---|---|
 | `0` | The table printed with every row's spend; `-h` |
 | `1` | An unavailable row; no token in reach with `--config` given; an admin API error or an unreachable admin URL; a refused `--admin-url`; an unloadable `--config`; an empty or unreadable admin token file |
-| `2` | Unknown flag or a positional argument; `--by` outside key/model/tool/session; `--by model`, `tool` or `session` (the ledger); neither a token nor `--config` |
+| `2` | Unknown flag or a positional argument; `--by` outside key/model/tool/session; `--key`, `--since` or `--until` with `--by key`; a `--since`/`--until` that is not RFC 3339; neither a token nor `--config` |
 
 ## `kelvran connect`
 
@@ -289,7 +291,6 @@ Print-only (G32: `--write` arrives only after each tool's own documentation is a
 - `connect codex|aider|continue --write` — print-only until each tool's own documentation is archived and cited (gate G32); `connect claude --write` is live.
 - Exact token counts on a translate hop: `POST /v1/messages/count_tokens` relays an `anthropic` deployment's own count (since gateway/v0.19.0) and answers `404` on every other deployment, where Claude Code's `/context` shows a character-based estimate. A gateway older than gateway/v0.19.0 answers the `--check` probe with a 404, reported as a build that predates the route.
 - `connect --check` for `codex`, `aider` or `continue` (no probe of `GET /v1/models`); a `connect cursor` target — Cursor is an OpenAI-shaped client: point it at `<gateway>/v1` with a virtual key by hand; and turning model discovery off again — a write without `--discovery` leaves the key in place, delete it from the settings file by hand.
-- `spend --by model|tool|session`, and any aggregate spend view — wait for the spend ledger (plan item 13d, RFC-2).
 - Flags on `keys create` for a key's `rate_limit` block (`burst`, `refill_per_second`, `tpm_*`, `per_model`, `max_concurrent_requests`), `allowed_regions`, `allowed_source_cidrs`, `cache_scope_to_end_user` and `attribution_capture_ids`: set them in `config.yaml` or in the admin API body ([reference](admin-api.md)); a `create --replace` through the CLI drops them.
 - `--json` on `init` and `connect` (they have nothing to report as data; `doctor`, `keys`, `status` and `spend` have it).
 - A refusal, rather than a warning, on an OAuth token offered as an upstream credential (gate G33).

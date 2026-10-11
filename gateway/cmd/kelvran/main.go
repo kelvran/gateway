@@ -60,7 +60,7 @@ func usage(w io.Writer) {
   doctor     load, validate and check a config against the environment the gateway will run in (kelvran doctor -h)
   keys       create, list, rotate and delete virtual keys through the admin API, or offline in the config file (kelvran keys -h)
   status     what the gateway serves: /readyz, listen_addr, deployments, keys, the admin store (kelvran status -h)
-  spend      spend per virtual key from the admin API (kelvran spend -h)
+  spend      spend per virtual key, or by model, tool or session from the spend ledger (kelvran spend -h)
   connect    the client configuration for claude (printed, --written or --checked), codex, aider or continue (kelvran connect -h)
   -version   print the build identity
 

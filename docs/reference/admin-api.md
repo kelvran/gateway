@@ -362,7 +362,7 @@ Response:
 | 401 | The cost-viewer tier without `key=`, besides the usual authentication failures. |
 | 500 | `querying spend ledger: …` when the ledger could not be read within 10 s (the text names hours and keys, never a session). |
 
-Audit entry `admin_spend_read` with `group_by`, `key`, `since`, `until`, `rows` (the count) and `authorized_by`; no figure is logged. In Redis mode a read is one `SCAN` of the hour hashes plus one `HGETALL` per hash in the window — the RFC calls it not a hot path, and the admin listener has no per-credential rate limit (it binds loopback by default), so Viewer-tier dashboards should poll it in minutes, not seconds, and a leaked read credential is a load vector as well as a disclosure. The CLI reads it as `kelvran spend --by model|tool|session` (the next slice).
+Audit entry `admin_spend_read` with `group_by`, `key`, `since`, `until`, `rows` (the count) and `authorized_by`; no figure is logged. In Redis mode a read is one `SCAN` of the hour hashes plus one `HGETALL` per hash in the window — the RFC calls it not a hot path, and the admin listener has no per-credential rate limit (it binds loopback by default), so Viewer-tier dashboards should poll it in minutes, not seconds, and a leaked read credential is a load vector as well as a disclosure. The CLI reads it as `kelvran spend --by model|tool|session [--key NAME] [--since] [--until]` ([kelvran-cli.md](kelvran-cli.md#kelvran-spend)).
 
 ## POST /admin/spend/erase
 

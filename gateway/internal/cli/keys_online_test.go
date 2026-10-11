@@ -53,6 +53,10 @@ type fakeAdmin struct {
 	deleteStatus     int
 	spendUnavailable bool
 	deployments      []adminapi.DeploymentEntry
+	// ledgerStatus/ledgerBody, when set, make GET /admin/spend answer that
+	// plain-text error instead of the fixture rows (item 13d slice 5).
+	ledgerStatus int
+	ledgerBody   string
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -76,6 +80,35 @@ func (f *fakeAdmin) handler() http.Handler {
 		}
 	}
 	mux := http.NewServeMux()
+	// GET /admin/spend (the spend ledger, item 13d): fixture rows per group_by,
+	// the key echoed onto every row when named, a fixed served window.
+	mux.HandleFunc("GET /admin/spend", auth(func(w http.ResponseWriter, r *http.Request) {
+		if f.ledgerStatus != 0 {
+			http.Error(w, f.ledgerBody, f.ledgerStatus)
+			return
+		}
+		q := r.URL.Query()
+		resp := adminapi.SpendResponse{GroupBy: q.Get("group_by"), Key: q.Get("key"), Since: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC), Until: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC), Rows: []adminapi.SpendRow{}}
+		switch resp.GroupBy {
+		case "key":
+			resp.Rows = []adminapi.SpendRow{{Key: "team-alpha", SpendUSD: "1.75", Requests: 4}}
+		case "model":
+			resp.Rows = []adminapi.SpendRow{{Model: "gpt-4o", SpendUSD: "1.5", Requests: 3}, {Model: "claude", SpendUSD: "0.25", Requests: 1}}
+		case "tool":
+			resp.Rows = []adminapi.SpendRow{{Tool: "curl", SpendUSD: "1.75", Requests: 4}}
+		case "session":
+			resp.Rows = []adminapi.SpendRow{{Key: "team-alpha", Session: "sess-1", SpendUSD: "1.5", Requests: 3}, {Key: "team-alpha", Session: "other", SpendUSD: "0.25", Requests: 1}}
+		default:
+			http.Error(w, "group_by must be one of key, model, tool, session", http.StatusBadRequest)
+			return
+		}
+		if resp.Key != "" {
+			for i := range resp.Rows {
+				resp.Rows[i].Key = resp.Key
+			}
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
 	mux.HandleFunc("GET /admin/virtual_keys", auth(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("include") {
 		case "":
