@@ -1,0 +1,14 @@
+countTokens 200
+countTokens 400
+createChatCompletion 200
+createChatCompletion 200 stream
+createChatCompletion 400
+createChatCompletion 401
+createEmbedding 400
+createMessage 200
+createMessage 200 stream
+createMessage 401
+getHealthz 200
+getReadyz 200
+listModels 200
+probeHello 204

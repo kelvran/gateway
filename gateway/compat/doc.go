@@ -24,4 +24,17 @@
 // precedence) against what the gateway answers, plus the one translate-hop
 // case RFC-1 line 191 names: a Bedrock 400 for a forwarded thinking type
 // reaches the client under Kelvran's own envelope, never Bedrock's wording.
+//
+// Since plan item 14 slice S5 the module also holds the OpenAPI conformance
+// tests (openapi_conformance_test.go): the document at
+// gateway/openapi/kelvran-gateway.openapi.yaml validated against the
+// embedded OpenAPI 3.1 meta-schema with libopenapi-validator, the committed
+// wire fixtures validated against the components that document them, and the
+// started gateway's data-plane answers (buffered, both streaming routes frame
+// by frame, the probes, two 401s and three 400s) validated against the
+// document, with the observed (operationId, status) pairs pinned to
+// testdata/openapi_live_coverage.txt. The validator is a test dependency of this
+// module for the same reason the SDKs are: it never enters gateway/go.mod;
+// the structural contract tests in gateway/cmd/gateway parse the YAML with
+// yaml/v3 alone.
 package compat
