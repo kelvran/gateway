@@ -372,8 +372,9 @@ func TestCaptureAttributionGlobalOffBlanksIdentifiersKeepsBounded(t *testing.T) 
 }
 
 var (
-	cmdGatewayMetricsOnce   sync.Once
-	cmdGatewayMetricsReader *sdkmetric.ManualReader
+	cmdGatewayMetricsOnce       sync.Once
+	cmdGatewayMetricsReader     *sdkmetric.ManualReader
+	cmdGatewayPrometheusHandler http.Handler
 )
 
 // cmdGatewayMetricsReaderForTest installs, exactly once per test binary, a
@@ -384,12 +385,38 @@ var (
 // process). No test in this package calls run()/telemetry.Init, so this is
 // the only MeterProvider the binary ever sees. The reader is cumulative
 // across -count reruns, so callers assert deltas, never absolutes.
+//
+// The same provider also carries the Prometheus pull reader (item 13c),
+// built by the production constructor telemetry.NewPrometheusReader with the
+// gateway's own resource, so TestPrometheusEndpointExposesEveryDashboardMetricName
+// scrapes exactly the exposition a running gateway serves; the ManualReader
+// and the pull reader see the same instruments.
 func cmdGatewayMetricsReaderForTest() *sdkmetric.ManualReader {
 	cmdGatewayMetricsOnce.Do(func() {
 		cmdGatewayMetricsReader = sdkmetric.NewManualReader()
-		otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(cmdGatewayMetricsReader)))
+		pr, err := telemetry.NewPrometheusReader()
+		if err != nil {
+			panic("telemetry.NewPrometheusReader: " + err.Error())
+		}
+		res, err := telemetry.NewResource(context.Background())
+		if err != nil {
+			panic("telemetry.NewResource: " + err.Error())
+		}
+		cmdGatewayPrometheusHandler = pr.Handler()
+		otel.SetMeterProvider(sdkmetric.NewMeterProvider(
+			sdkmetric.WithReader(cmdGatewayMetricsReader),
+			sdkmetric.WithReader(pr.Reader()),
+			sdkmetric.WithResource(res),
+		))
 	})
 	return cmdGatewayMetricsReader
+}
+
+// cmdGatewayPrometheusHandlerForTest returns the pull reader's handler
+// attached to the shared test provider (installing it if needed).
+func cmdGatewayPrometheusHandlerForTest() http.Handler {
+	cmdGatewayMetricsReaderForTest()
+	return cmdGatewayPrometheusHandler
 }
 
 // attributionDroppedSnapshot returns kelvran.attribution.dropped summed by

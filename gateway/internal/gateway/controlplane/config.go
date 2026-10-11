@@ -498,6 +498,22 @@ type TelemetryConfig struct {
 	Exporter string
 	// OTLPEndpoint is read only when Exporter == "otlp".
 	OTLPEndpoint string
+	// Prometheus is the optional `telemetry.prometheus` block (item 13c).
+	Prometheus PrometheusConfig
+}
+
+// PrometheusConfig is the optional `telemetry.prometheus` block per
+// docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md
+// (item 13c, owner gates G24-G26): an unauthenticated pull listener serving
+// GET /metrics from a dedicated registry, loopback by default. ListenAddr
+// omitted stays "" here and cmd/gateway applies its default
+// (127.0.0.1:9464) the way it applies defaultAdminListenAddr; present but
+// empty is a load error naming the key, so a typo never silently falls
+// through to the default -- the config-versus-code gotcha this repository
+// keeps hitting.
+type PrometheusConfig struct {
+	Enabled    bool
+	ListenAddr string
 }
 
 // AttributionConfig is the optional top-level `attribution:` section, per
@@ -1338,6 +1354,25 @@ func Parse(data []byte, source string) (*Config, error) {
 	if telemetryRaw, ok := getMap(root, "telemetry"); ok {
 		cfg.Telemetry.Exporter, _ = getString(telemetryRaw, "exporter")
 		cfg.Telemetry.OTLPEndpoint, _ = getString(telemetryRaw, "otlp_endpoint")
+		// prometheus: a non-mapping (`prometheus: true`, the natural typo for
+		// "turn it on") fails startup instead of being skipped with the
+		// listener left off, the same posture the attribution section takes.
+		if raw, present := telemetryRaw["prometheus"]; present {
+			promRaw, ok := raw.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("controlplane: telemetry.prometheus must be a mapping with `enabled` (got %T)", raw)
+			}
+			if err := assignBool(&cfg.Telemetry.Prometheus.Enabled, promRaw, "enabled", "controlplane: telemetry.prometheus"); err != nil {
+				return nil, err
+			}
+			if addrRaw, present := promRaw["listen_addr"]; present {
+				addr, ok := addrRaw.(string)
+				if !ok || addr == "" {
+					return nil, fmt.Errorf("controlplane: telemetry.prometheus.listen_addr must be a non-empty host:port when present (omit it for the default 127.0.0.1:9464)")
+				}
+				cfg.Telemetry.Prometheus.ListenAddr = addr
+			}
+		}
 	}
 	// attribution's only key is a privacy switch, so a section that is not
 	// a mapping (`attribution: false`, the natural typo for "turn it off")

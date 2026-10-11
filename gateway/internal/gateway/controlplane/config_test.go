@@ -3825,3 +3825,64 @@ func TestLoadDeploymentAnthropicBetaPolicyRefusesNonString(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadTelemetryPrometheusParsesEnabledAndListenAddr: the opt-in pull
+// reader of docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md
+// (13c) is `telemetry.prometheus.{enabled, listen_addr}`; both keys land on
+// Config.Telemetry.Prometheus, and listen_addr omitted stays "" (cmd/gateway
+// applies the loopback default, the way defaultAdminListenAddr is applied).
+func TestLoadTelemetryPrometheusParsesEnabledAndListenAddr(t *testing.T) {
+	base := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	cases := []struct {
+		name, yaml string
+		want       PrometheusConfig
+	}{
+		{"both keys", base + "telemetry:\n  exporter: \"none\"\n  prometheus:\n    enabled: true\n    listen_addr: \"0.0.0.0:9464\"\n", PrometheusConfig{Enabled: true, ListenAddr: "0.0.0.0:9464"}},
+		{"enabled only", base + "telemetry:\n  prometheus:\n    enabled: true\n", PrometheusConfig{Enabled: true}},
+		{"disabled explicitly", base + "telemetry:\n  prometheus:\n    enabled: false\n    listen_addr: \"127.0.0.1:9000\"\n", PrometheusConfig{Enabled: false, ListenAddr: "127.0.0.1:9000"}},
+		{"section absent", base + "telemetry:\n  exporter: \"stdout\"\n", PrometheusConfig{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Telemetry.Prometheus != tc.want {
+				t.Errorf("Telemetry.Prometheus = %+v, want %+v", cfg.Telemetry.Prometheus, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadTelemetryPrometheusRejectsEmptyListenAddr: a present-but-empty
+// listen_addr is a load error naming the key, never a silent fall-through to
+// the default (the config-vs-code gotcha this repository keeps hitting), and a
+// non-boolean enabled is refused the way every other bool key is.
+func TestLoadTelemetryPrometheusRejectsEmptyListenAddr(t *testing.T) {
+	base := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	cases := []struct{ name, yaml, wantSubstring string }{
+		{"empty listen_addr", base + "telemetry:\n  prometheus:\n    enabled: true\n    listen_addr: \"\"\n", "telemetry.prometheus.listen_addr"},
+		{"enabled not a bool", base + "telemetry:\n  prometheus:\n    enabled: \"yes\"\n", "enabled"},
+		{"prometheus not a mapping", base + "telemetry:\n  prometheus: true\n", "telemetry.prometheus must be a mapping"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("Load succeeded, want an error")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstring) {
+				t.Errorf("error %q does not name %q", err.Error(), tc.wantSubstring)
+			}
+		})
+	}
+}

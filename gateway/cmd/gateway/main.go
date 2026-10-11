@@ -573,8 +573,9 @@ func run(configPath string, logger *slog.Logger) error {
 	// working with the SDK's no-op default tracer, per
 	// docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md.
 	shutdown, err := telemetry.Init(context.Background(), telemetry.Config{
-		Exporter:     cfg.Telemetry.Exporter,
-		OTLPEndpoint: cfg.Telemetry.OTLPEndpoint,
+		Exporter:          cfg.Telemetry.Exporter,
+		OTLPEndpoint:      cfg.Telemetry.OTLPEndpoint,
+		PrometheusEnabled: cfg.Telemetry.Prometheus.Enabled,
 	})
 	if err != nil {
 		return fmt.Errorf("initializing telemetry: %w", err)
@@ -693,6 +694,33 @@ func run(configPath string, logger *slog.Logger) error {
 				return fmt.Errorf("configuring admin.mtls: %w", err)
 			}
 			adminServer.TLSConfig = adminTLSConfig
+		}
+	}
+
+	// metricsServer is nil unless telemetry.prometheus.enabled is set (item
+	// 13c): a third *http.Server built like the admin one, serving the pull
+	// reader telemetry.Init composed, unauthenticated by design (G24) and
+	// loopback unless the operator binds it elsewhere.
+	var metricsServer *http.Server
+	if cfg.Telemetry.Prometheus.Enabled {
+		promHandler := telemetry.PrometheusHandler()
+		if promHandler == nil {
+			return errors.New("telemetry.prometheus.enabled is set but telemetry.Init built no pull reader")
+		}
+		metricsListenAddr := cfg.Telemetry.Prometheus.ListenAddr
+		if metricsListenAddr == "" {
+			metricsListenAddr = defaultMetricsListenAddr
+		}
+		if !isLoopbackListenAddr(metricsListenAddr) {
+			logger.Warn("metrics server bound beyond loopback", "addr", metricsListenAddr, "note", "the exposition is unauthenticated: fence the bind so only the scraper reaches it (SECURITY.md)")
+		}
+		metricsServer = &http.Server{
+			Addr:              metricsListenAddr,
+			Handler:           newMetricsMux(promHandler),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       metricsReadTimeout,
+			WriteTimeout:      metricsWriteTimeout,
+			IdleTimeout:       metricsIdleTimeout,
 		}
 	}
 
@@ -838,6 +866,16 @@ func run(configPath string, logger *slog.Logger) error {
 		}()
 	}
 
+	// metricsServeErr mirrors adminServeErr: never sent to when the metrics
+	// server is nil, so the select below can always include it.
+	metricsServeErr := make(chan error, 1)
+	if metricsServer != nil {
+		go func() {
+			logger.Info("metrics server listening", "addr", metricsServer.Addr)
+			metricsServeErr <- metricsServer.ListenAndServe()
+		}()
+	}
+
 	// shutdownBoth drains the main server, and the admin server too if
 	// one was started, within one shared deadline via
 	// shutdownServersConcurrently below. Safe to call on adminServer
@@ -849,6 +887,7 @@ func run(configPath string, logger *slog.Logger) error {
 		return shutdownServersConcurrently(shutdownCtx,
 			namedServer{name: "client server", srv: server},
 			namedServer{name: "admin server", srv: adminServer},
+			namedServer{name: "metrics server", srv: metricsServer},
 		)
 	}
 
@@ -863,6 +902,12 @@ func run(configPath string, logger *slog.Logger) error {
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			_ = shutdownBoth()
 			return fmt.Errorf("admin http server: %w", err)
+		}
+		return nil
+	case err := <-metricsServeErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_ = shutdownBoth()
+			return fmt.Errorf("metrics http server: %w", err)
 		}
 		return nil
 	case <-ctx.Done():

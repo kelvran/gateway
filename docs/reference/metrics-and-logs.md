@@ -17,6 +17,8 @@ This page lists every OpenTelemetry metric instrument, span, span attribute and 
 |---|---|---|---|
 | `telemetry.exporter` | string | `"stdout"` (applied when the key is absent or empty) | One of `stdout`, `otlp`, `none`. Any other value makes telemetry initialisation return an error and the gateway does not start. |
 | `telemetry.otlp_endpoint` | string | none | `host:port` of an OTLP/HTTP collector. Read only when `exporter` is `otlp`. The scheme defaults to HTTPS; set `OTEL_EXPORTER_OTLP_INSECURE=true` in the environment for a plain-HTTP collector. |
+| `telemetry.prometheus.enabled` | bool | `false` | Adds a Prometheus pull reader to the meter provider (beside the exporter, or alone under `none`) and a third, unauthenticated listener serving `GET /metrics` (plan item 13c). |
+| `telemetry.prometheus.listen_addr` | string | `127.0.0.1:9464` | The pull listener's bind. Present but empty fails startup; a non-loopback bind logs a startup warning — fence it (`SECURITY.md`). |
 
 ```yaml
 telemetry:
@@ -32,7 +34,9 @@ The annotated example is [`gateway/config.example.yaml`](../../gateway/config.ex
 |---|---|---|
 | `stdout` | OTel stdout trace exporter, written to standard output | OTel stdout metric exporter, written to standard output |
 | `otlp` | OTLP/HTTP to `otlp_endpoint`, through a batch span processor | OTLP/HTTP to `otlp_endpoint`, through a periodic reader that exports every 60 s (the SDK default; the gateway sets no interval) |
-| `none` | No tracer provider is installed; spans are discarded | No meter provider is installed; measurements are discarded |
+| `none` | No tracer provider is installed; spans are discarded | No meter provider is installed and measurements are discarded — unless `telemetry.prometheus.enabled` is set, in which case a meter provider with only the pull reader is installed |
+
+Independently of the exporter, `telemetry.prometheus.enabled: true` adds the Prometheus pull reader (see [Prometheus names](#prometheus-names) below and [`TELEMETRY.md`](../operations/TELEMETRY.md)); the push exporters are unchanged by it.
 
 Collector outages never affect a request. The T1 row of [`docs/operations/FAILURE-MODES.md`](../operations/FAILURE-MODES.md) describes what the SDK does and logs when the collector is unreachable.
 
@@ -129,7 +133,7 @@ Explicit bucket boundaries for the two token histograms: 1, 4, 16, 64, 256, 1024
 
 ### Prometheus names
 
-A collector exporting to Prometheus translates dots to underscores, appends `_total` to counters and the unit to histograms: `kelvran.cache.lookup` is `kelvran_cache_lookup_total`, `kelvran.llm.spend_usd` is `kelvran_llm_spend_usd_total`, `gen_ai.client.operation.duration` has `gen_ai_client_operation_duration_seconds_count`. Attribute names translate the same way. Cache hit rate by layer:
+A collector exporting to Prometheus translates dots to underscores, appends `_total` to counters and the unit to histograms: `kelvran.cache.lookup` is `kelvran_cache_lookup_total`, `kelvran.llm.spend_usd` is `kelvran_llm_spend_usd_total`, `gen_ai.client.operation.duration` has `gen_ai_client_operation_duration_seconds_count`. Attribute names translate the same way. The gateway's own pull endpoint (`telemetry.prometheus.enabled`, `GET /metrics` on `127.0.0.1:9464` by default; plan item 13c) uses the same translation, pinned in code to `UnderscoreEscapingWithSuffixes`, adds `service_name` and `service_instance_id` as constant labels on every OTel-exported series, omits the `otel_scope_*` labels, and carries the Go runtime and process collectors (`go_*`, `process_*`, without the resource labels) on that path only. `TestPrometheusEndpointExposesEveryDashboardMetricName` asserts every name the dashboard and the SLO rules use appears in a real scrape. Cache hit rate by layer:
 
 ```promql
 sum by (kelvran_cache_layer) (rate(kelvran_cache_lookup_total{kelvran_cache_lookup_outcome="hit"}[5m]))
@@ -349,7 +353,6 @@ Every other structured event name in non-test gateway code, grouped by subsystem
 
 ## Not available today
 
-- A Prometheus `/metrics` endpoint. Metrics leave the process only through the configured exporter; scrape them from an OTLP collector.
 - A `kelvran.deprecation.used` counter and a `deprecated_surface_used` log line. [`docs/VERSIONING.md`](../VERSIONING.md) reserves both; nothing is deprecated yet, so neither exists.
 - Metrics for health-probe transitions, fallback hops (a span event only), OTLP export failures, admin audit-append failures, or credential-reload failures. Each has a log line only.
 - A `budget_fail_open` field on the `GatewayDecisionEvent`. The signal exists only as the `kelvran.budget.fail_open` counter and the `budget_backend_unavailable` log line.

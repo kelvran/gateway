@@ -35,7 +35,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -835,6 +834,12 @@ type Config struct {
 	Exporter string
 	// OTLPEndpoint is read only when Exporter == "otlp".
 	OTLPEndpoint string
+	// PrometheusEnabled adds the pull reader of
+	// docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md
+	// (item 13c) to the meter provider, beside the push exporter -- or alone,
+	// under Exporter "none", so a pull-only operator still gets metrics.
+	// PrometheusHandler serves it; cmd/gateway binds the third listener.
+	PrometheusEnabled bool
 }
 
 // Init sets the global TracerProvider AND MeterProvider (per cfg, sharing
@@ -865,20 +870,43 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 		exporterKind = exporterkind.Stdout
 	}
 
-	if exporterKind == exporterkind.None {
-		return func(context.Context) error { return nil }, nil
+	// The pull reader (item 13c) is built before the exporter switch so the
+	// "none" path can carry it alone; PrometheusHandler is reset on every
+	// Init so a provider that was shut down is never served again.
+	prometheusHandler = nil
+	var meterOptions []sdkmetric.Option
+	if cfg.PrometheusEnabled {
+		pr, err := NewPrometheusReader()
+		if err != nil {
+			return nil, err
+		}
+		meterOptions = append(meterOptions, sdkmetric.WithReader(pr.Reader()))
+		prometheusHandler = pr.Handler()
 	}
 
-	res, err := resource.New(ctx, resource.WithAttributes(
-		attribute.String("service.name", "kelvran-gateway"),
-		// service.instance.id is the standard OTel semantic-conventions
-		// resource attribute for exactly this purpose — set here so every
-		// exported span/metric automatically carries it, per
-		// docs/rfcs/2026-09-07-cache-cross-instance-telemetry.md.
-		attribute.String("service.instance.id", InstanceID),
-	))
+	if exporterKind == exporterkind.None {
+		if !cfg.PrometheusEnabled {
+			return func(context.Context) error { return nil }, nil
+		}
+		// No tracer provider and no push exporter: a meter provider that
+		// only the pull reader reads.
+		res, err := NewResource(ctx)
+		if err != nil {
+			return nil, err
+		}
+		meterProvider := sdkmetric.NewMeterProvider(append(meterOptions, sdkmetric.WithResource(res))...)
+		otel.SetMeterProvider(meterProvider)
+		return func(shutdownCtx context.Context) error {
+			if err := meterProvider.Shutdown(shutdownCtx); err != nil {
+				slog.WarnContext(shutdownCtx, "telemetry_metrics_shutdown_flush_failed", "error", err)
+			}
+			return nil
+		}, nil
+	}
+
+	res, err := NewResource(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("telemetry: building resource: %w", err)
+		return nil, err
 	}
 
 	var traceExporter sdktrace.SpanExporter
@@ -914,10 +942,11 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 	)
 	otel.SetTracerProvider(tracerProvider)
 
-	meterProvider := sdkmetric.NewMeterProvider(
+	meterOptions = append(meterOptions,
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
 		sdkmetric.WithResource(res),
 	)
+	meterProvider := sdkmetric.NewMeterProvider(meterOptions...)
 	otel.SetMeterProvider(meterProvider)
 
 	return func(shutdownCtx context.Context) error {

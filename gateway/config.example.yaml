@@ -348,6 +348,13 @@ deployments:
 telemetry:
   exporter: "stdout" # "stdout" | "otlp" | "none"
   # otlp_endpoint: "localhost:4318"   # only read when exporter: "otlp"
+  # Optional Prometheus pull endpoint (docs/rfcs/2026-10-09-gateway-fallback-rescued-and-prometheus-pull.md,
+  # item 13c): a third, unauthenticated listener serving GET /metrics from a dedicated registry that also
+  # carries the Go runtime and process collectors. Loopback by default; a non-loopback bind belongs behind a
+  # NetworkPolicy or firewall that admits the scraper only (SECURITY.md). Works with exporter: "none" too.
+  # prometheus:
+  #   enabled: true
+  #   listen_addr: "127.0.0.1:9464"   # default when omitted; present but empty fails startup
 
 # Request attribution (docs/rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md).
 # Optional (when present, a mapping). The normalised User-Agent client tool and

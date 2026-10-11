@@ -56,3 +56,13 @@ alerting:
   alertmanagers:
     - static_configs:
         - targets: ["alertmanager:9093"]
+# Kelvran's own pull endpoint (plan item 13c, 2026-10-11): scraped only once the
+# gateway config sets telemetry.prometheus.enabled: true with
+# listen_addr: "0.0.0.0:9464" (loopback inside the gateway container is
+# unreachable from here); until then both targets show as down, harmlessly,
+# and the dashboard keeps reading the OTLP ingest.
+scrape_configs:
+  - job_name: kelvran-gateway
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["gateway:9464", "gateway2:9464"]

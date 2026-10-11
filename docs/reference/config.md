@@ -237,8 +237,11 @@ The model name must match some deployment's `model`, else load error. Any key ot
 |---|---|---|---|
 | `exporter` | `string` | `"stdout"` | One of `stdout`, `otlp`, `none`. Empty or absent means `stdout`. Any other value fails startup (`unknown exporter`) |
 | `otlp_endpoint` | `string` | empty | Read only when `exporter` is `otlp`. A `host:port` value; the scheme defaults to HTTPS. Set the environment variable `OTEL_EXPORTER_OTLP_INSECURE=true` for a plain-HTTP collector |
+| `prometheus` | `mapping` | absent | Optional (item 13c). Must be a mapping when present: `prometheus: true` fails startup |
+| `prometheus.enabled` | `bool` | `false` | `true` adds the Prometheus pull reader to the meter provider (beside the push exporter, or alone under `exporter: "none"`) and starts a third, unauthenticated listener serving `GET /metrics` (and `HEAD`; other methods `405`, other paths `404`) from a dedicated registry that also carries the Go runtime and process collectors. A non-boolean fails startup |
+| `prometheus.listen_addr` | `string` | `127.0.0.1:9464` | The pull listener's bind, applied by the binary when the key is omitted. Present but empty or not a string fails startup. A non-loopback bind is the operator's explicit choice, logged as a warning at startup; fence it (see `SECURITY.md`). A bind failure is a startup error, as for the other two listeners |
 
-Exporter construction never dials, so an unreachable collector does not stop startup. Details in [TELEMETRY.md](../operations/TELEMETRY.md) and [metrics-and-logs.md](metrics-and-logs.md).
+Exporter construction never dials, so an unreachable collector does not stop startup. The pull exposition is pinned to the `UnderscoreEscapingWithSuffixes` translation (`kelvran_llm_spend_usd_total`, `gen_ai_client_operation_duration_seconds_count`, …) and carries `service_name` and `service_instance_id` on every OTel-exported series (the Go and process collectors' own series carry neither resource label). Details in [TELEMETRY.md](../operations/TELEMETRY.md) and [metrics-and-logs.md](metrics-and-logs.md).
 
 ## `attribution`
 
@@ -479,6 +482,7 @@ The process exits 1 before binding a listener when any of the following holds. T
 | no | `admin.audit_log_path` that cannot be opened |
 | no | `guardrails.embed_sim` cannot be constructed: `similarity_threshold` above 1, a `corpus_path` that cannot be read or parsed or has zero entries, or a corpus that cannot be embedded (bad or expired credentials) |
 | no | `telemetry.exporter` set to a value other than `stdout`, `otlp`, `none` |
+| no | `telemetry.prometheus` present but not a mapping, `telemetry.prometheus.enabled` not a boolean, or `telemetry.prometheus.listen_addr` present but empty or not a string |
 | no | `admin.mtls` certificate files that cannot be loaded |
 | no | `deployments.<name>.tls` PEM files that cannot be read or parsed (`ca_cert_path`, `client_cert_path`/`client_key_path`) |
 | no | A `key_hash` that is not valid hex or does not decode to 32 bytes |

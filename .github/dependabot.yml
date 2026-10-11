@@ -12,6 +12,10 @@
 # with it -- this repo's CI runs real AWS Bedrock calls, not free.
 version: 2
 updates:
+  # go.opentelemetry.io/otel/exporters/prometheus is pinned to the OTel SDK
+  # line (the comment on its gateway/go.mod require line; RFC-4, owner gate
+  # G25): a grouped update that moves it past v0.68.0 must move the SDK with
+  # it or be declined.
   - package-ecosystem: "gomod"
     directory: "/gateway"
     schedule:

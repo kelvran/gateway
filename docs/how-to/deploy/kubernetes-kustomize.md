@@ -193,6 +193,64 @@ docker run --rm -v "$PWD/deploy/k8s/base/config.yaml:/config.yaml:ro" \
 
 From a source build: `cd gateway && go run ./cmd/gateway -config ../deploy/k8s/base/config.yaml -validate`.
 
+## Variant: Prometheus scrape (optional, since 2026-10-11)
+
+The base exposes `8080` only. To scrape the gateway's own `/metrics` (plan item 13c; unauthenticated by design, `SECURITY.md`), enable the endpoint on a non-loopback bind, expose the port, annotate the Pod for a scrape-by-annotation Prometheus, and admit the Prometheus namespace alone on that port — all as an overlay, never in the base:
+
+1. In the generated `config.yaml`:
+
+   ```yaml
+   telemetry:
+     prometheus:
+       enabled: true
+       listen_addr: "0.0.0.0:9464"
+   ```
+
+2. A strategic-merge patch on the Deployment:
+
+   ```yaml
+   apiVersion: apps/v1
+   kind: Deployment
+   metadata:
+     name: gateway
+   spec:
+     template:
+       metadata:
+         annotations:
+           prometheus.io/scrape: "true"
+           prometheus.io/port: "9464"
+       spec:
+         containers:
+           - name: gateway
+             ports:
+               - name: metrics
+                 containerPort: 9464
+   ```
+
+3. A NetworkPolicy that admits the Prometheus namespace only (the base policy admits `8080` from anywhere and nothing else; this one adds the metrics port for one source):
+
+   ```yaml
+   apiVersion: networking.k8s.io/v1
+   kind: NetworkPolicy
+   metadata:
+     name: kelvran-gateway-metrics
+   spec:
+     podSelector:
+       matchLabels:
+         app.kubernetes.io/name: kelvran-gateway
+     policyTypes: [Ingress]
+     ingress:
+       - from:
+           - namespaceSelector:
+               matchLabels:
+                 kubernetes.io/metadata.name: monitoring
+         ports:
+           - protocol: TCP
+             port: 9464
+   ```
+
+The gateway logs `metrics server bound beyond loopback` at startup for the `0.0.0.0` bind — expected here, and the reason the NetworkPolicy exists. Verify with `kubectl port-forward` to `9464` and `curl -s localhost:9464/metrics | grep -c '^kelvran_'` after one request. Names and the parity contract: [`TELEMETRY.md`](../../operations/TELEMETRY.md). Check the Deployment name and the Pod label the base uses before applying (`deploy/k8s/base/deployment.yaml`: `gateway`, `app.kubernetes.io/name: kelvran-gateway`) and the namespace your Prometheus runs in.
+
 ## Not available today
 
 - **No Helm chart.** Kustomize is the recorded choice for Kelvran's own manifests; see "Why plain Kustomize, not Helm" in [`deploy/k8s/README.md`](../../../deploy/k8s/README.md). A chart published as OCI is a plan item awaiting an owner decision.

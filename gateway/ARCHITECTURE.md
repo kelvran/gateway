@@ -479,7 +479,15 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              top. No double-counting path exists anywhere in this pipeline.
 /internal/telemetry          — real OTel spans per request (GenAI semantic-convention attributes,
                              agent_run_id via W3C Baggage) — ACTIVE, per
-                             docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md. **Added 2026-09-14**:
+                             docs/rfcs/2026-09-02-otel-tracing-agent-run-id.md. **Added 2026-10-11 (item 13c)**:
+                             an optional Prometheus pull reader (`prometheus.go`: `NewPrometheusReader`,
+                             `PrometheusHandler`, `NewResource`) on the same MeterProvider as the push
+                             exporter, a dedicated registry with the Go and process collectors, served
+                             by `cmd/gateway`'s third listener (`metrics_server.go`; `telemetry.prometheus.
+                             {enabled, listen_addr}`, default `127.0.0.1:9464`, unauthenticated by design,
+                             G24-G26). The translation is pinned to UnderscoreEscapingWithSuffixes so the
+                             `_total`/`_seconds` names the dashboards use never follow a module default.
+                             **Added 2026-09-14**:
                              kelvran.savings.usd (ChatCompletionResult.SavingsUSD) mirrors
                              kelvran.cost.usd's exact string-typed convention, set only on a genuine
                              cache hit — the one cardinality-safe, per-agent-run signal for cache

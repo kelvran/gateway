@@ -98,6 +98,25 @@ equivalent needed at all for this path.
 
 **Redis outage runbook (added 2026-10-08).** The per-subsystem table is [`FAILURE-MODES.md`](FAILURE-MODES.md); this is the sequence to run. While Redis is unreachable: per-key rate limits and budgets fail open — requests are admitted, `kelvran.ratelimit.fail_open` / `kelvran.budget.fail_open` count every such admission and the `ratelimit_backend_unavailable` / `budget_backend_unavailable` log lines carry the error; virtual-key authentication is unaffected (verification is in-memory); an admin mutation still applies on the replica that received it, but its persistence write fails (`kelvran.persistence.failed`, `identity_persist_failed`, and `budget_persist_failed` for the budget-state cleanup a key delete, or an upsert that creates a new key id, performs) when the store is Redis and its event never reaches the other replicas (`kelvran.configpropagation.publish_failed`, `configpropagation_publish_failed`). Redis pub/sub does not replay: an event published while a subscriber was disconnected is gone for that subscriber, and go-redis reconnects silently, so once Redis is back the replicas can disagree with no further error — and the one replica that holds the mutation holds it in memory only. Therefore, once Redis is reachable again, **re-apply every admin mutation made during the outage** against any one replica: that re-persists it and re-propagates it. Upserts and deployment-weight changes are idempotent; a delete is not on the replica that already applied it (it answers 404 and writes nothing), so re-apply deletes against a replica that still holds the key, or re-POST the key and DELETE it again. Do not rely on a restart to recover them: a restart reverts the receiving replica to its last persisted state, and deployment weights are never persisted at all (a restart returns them to `config.yaml`). Separately, restart any replica whose `kelvran.configpropagation.subscribe_stopped` is above zero — its subscriber loop has stopped for good and it will miss every future mutation until restarted. This runbook covers Redis being *unreachable*; a healthy Redis holding a budget reservation that a failed settlement left behind (the key answers 429 `insufficient_quota` with no traffic in flight) is row R7 of [`FAILURE-MODES.md`](FAILURE-MODES.md).
 
+## Prometheus pull endpoint (optional)
+
+Since 2026-10-11 (plan item 13c) `telemetry.prometheus.enabled: true` serves `GET /metrics` on `telemetry.prometheus.listen_addr` (`127.0.0.1:9464` by default) — unauthenticated by design, so bind beyond loopback only where a NetworkPolicy or firewall admits the scraper alone (`SECURITY.md`; the Kustomize recipe is in [`kubernetes-kustomize.md`](../how-to/deploy/kubernetes-kustomize.md)). A static scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: kelvran-gateway
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["gateway-host:9464"]
+    # The Go runtime and process collectors ride the same endpoint; drop them if unwanted:
+    # metric_relabel_configs:
+    #   - source_labels: [__name__]
+    #     regex: "(go|process)_.*"
+    #     action: drop
+```
+
+The compose `observability` profile's Prometheus (`docs/operations/grafana/prometheus/prometheus.yaml`) carries the same job for `gateway:9464` and `gateway2:9464`; it scrapes only once the gateway config enables the endpoint with `listen_addr: "0.0.0.0:9464"` (loopback inside the container is unreachable from the Prometheus container). Names, labels and the parity contract with the OTLP path: [`TELEMETRY.md`](TELEMETRY.md), [`metrics-and-logs.md`](../reference/metrics-and-logs.md).
+
 ## Local Bbolt Persistence: Backup & Restore
 
 **Added 2026-09-26.** `identity`/`budget`/`prompt` can each optionally persist to a local bbolt file (`admin.persist_path`/`budget.persist_path`/`prompt.persist_path` in `config.yaml`) for single-process restart durability — see each `boltstore` package's own doc comment. `POST /admin/backup` (`internal/admin/admin.go`'s `backupHandler`, via `dataplane.Pipeline.BackupStores`) writes a timestamped `<store>-<UTC-timestamp>.bbolt` file per configured, persisted store to `admin.backup_dir` — safe to call while the gateway is actively serving traffic (`internal/backup.CopyFile` uses bbolt's own `Tx.CopyFile`, backed by a read transaction against a consistent MVCC snapshot, per that package's own doc comment).
