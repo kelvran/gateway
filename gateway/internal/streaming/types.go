@@ -18,6 +18,11 @@ import "github.com/kelvran/gateway/gateway/internal/adapter"
 type SSEEvent struct {
 	Event string
 	Data  string
+	// Raw is the event exactly as read from the upstream -- its lines with
+	// their terminators, comment and id: lines and the blank line that ended
+	// it -- so a relay can reproduce the stream byte for byte (RFC-1 §9, item
+	// 11 slice S11b2). Freshly allocated per event by Reader.Next.
+	Raw []byte
 }
 
 // ChatCompletionChunk is one incremental fragment of a streaming chat

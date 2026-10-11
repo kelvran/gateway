@@ -1,6 +1,10 @@
 package streaming
 
-import "github.com/kelvran/gateway/gateway/internal/adapter"
+import (
+	"net/http"
+
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+)
 
 // ChunkSink is where the dataplane writes a stream: the OpenAI-format
 // *Writer today, the Anthropic Messages encoder (internal/ingress/
@@ -32,6 +36,21 @@ type StreamEnd struct {
 // the OpenAI route's bytes end with the [DONE] sentinel alone, on every path.
 type Finisher interface {
 	WriteFinish(StreamEnd) error
+}
+
+// RawRelay is the optional ChunkSink extension for a sink that can relay an
+// upstream's own SSE frames (RFC-1 §9, item 11 slice S11b2). When the
+// request reached an `anthropic` deployment as a passthrough and the sink
+// implements it, the dataplane calls RelayHeaders once with the upstream's
+// relayable response headers before the first frame, then WriteRaw with
+// each event's bytes as read, before the event is decoded into the
+// canonical shadow, and writes no canonical chunk beside them; the sink
+// still ends the stream through WriteFinish/WriteDone, which must write
+// nothing after a relayed terminal frame. *Writer deliberately does not
+// implement it: the OpenAI route never carries another provider's frames.
+type RawRelay interface {
+	RelayHeaders(http.Header)
+	WriteRaw(frame []byte) error
 }
 
 var _ ChunkSink = (*Writer)(nil)

@@ -34,6 +34,12 @@ import (
 // the clean-end rule for a stream that must abort after a block started, and
 // is terminal like message_stop. Every write holds one mutex, so KeepAlive's goroutine can emit a
 // ping between the caller's writes without ever splitting an event.
+//
+// On RFC-1 §9's passthrough path (item 11 slice S11b2) the encoder is also
+// the streaming.RawRelay: WriteRaw relays an anthropic deployment's own
+// frames as read and mirrors their meaning (started, the open block index,
+// a relayed message_delta, the terminal frames), so WriteFinish can still
+// end a cut stream and WriteError adds nothing after the upstream's own end.
 type SSEEncoder struct {
 	mu       sync.Mutex
 	writes   uint64 // events written, read by KeepAlive to detect silence
@@ -52,6 +58,9 @@ type SSEEncoder struct {
 	stop     *string         // the stop_reason once a finish chunk arrived
 	stopSeq  string
 	usage    *adapter.Usage
+	// relayedDelta is set when the upstream's own message_delta was relayed
+	// (WriteRaw): a later finish then adds message_stop alone.
+	relayedDelta bool
 }
 
 type block struct {
@@ -155,6 +164,7 @@ const maxPendingTextBytes = 1 << 20
 var (
 	_ streaming.ChunkSink = (*SSEEncoder)(nil)
 	_ streaming.Finisher  = (*SSEEncoder)(nil)
+	_ streaming.RawRelay  = (*SSEEncoder)(nil)
 )
 
 // NewSSEEncoder writes Anthropic events to w, flushing after every event
@@ -468,12 +478,19 @@ func (e *SSEEncoder) finish(stop string) error {
 	if e.usage != nil {
 		usage = usageFor(*e.usage)
 	}
-	if err := e.event("message_delta", messageDeltaEvent{
-		Type:  "message_delta",
-		Delta: messageDeltaWire{StopReason: stop, StopSequence: stopSeq},
-		Usage: usage,
-	}); err != nil {
-		return err
+	e.mu.Lock()
+	relayedDelta := e.relayedDelta
+	e.mu.Unlock()
+	// A relayed message_delta is the client's already; a second one would
+	// contradict it, so the ending adds message_stop alone (slice S11b2).
+	if !relayedDelta {
+		if err := e.event("message_delta", messageDeltaEvent{
+			Type:  "message_delta",
+			Delta: messageDeltaWire{StopReason: stop, StopSequence: stopSeq},
+			Usage: usage,
+		}); err != nil {
+			return err
+		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -571,10 +588,118 @@ func (e *SSEEncoder) writesSeen() uint64 {
 // WriteError emits an Anthropic error event so a stream that must abort
 // after a block started never ends cleanly (the protocol reads a clean end
 // before message_delta as a dropped connection). It is terminal: no
-// message_delta, message_stop or ping follows it.
+// message_delta, message_stop or ping follows it -- and after the message
+// already ended (message_stop, or a relayed error frame) it writes nothing,
+// so the gateway never appends its own error to the upstream's.
 func (e *SSEEncoder) WriteError(errType, message string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.finished {
+		return nil
+	}
 	e.finished = true
 	return e.eventLocked("error", errorWire{Type: "error", Error: errorBodyWire{Type: errType, Message: message}})
+}
+
+// RelayHeaders puts the upstream's relayable response headers (the
+// dataplane's relayResponseHeaders: x-should-retry and
+// anthropic-ratelimit-unified-*) on the response when the writer is the
+// response itself, replacing any value already held under the same name. It
+// must run before the first frame; a plain io.Writer gets nothing.
+func (e *SSEEncoder) RelayHeaders(h http.Header) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	hw, ok := e.w.(interface{ Header() http.Header })
+	if !ok {
+		return
+	}
+	for name, values := range h {
+		hw.Header().Del(name)
+		for _, v := range values {
+			hw.Header().Add(name, v)
+		}
+	}
+}
+
+// WriteRaw relays one upstream frame exactly as read (streaming.RawRelay,
+// RFC-1 §9, item 11 slice S11b2) and mirrors what it means for the message
+// so the encoder can still end it itself after a guard cut: message_start
+// marks the stream started (the keepalive may ping during upstream silence
+// from here on), content_block_start/stop track the upstream's open block
+// index for closeOpen, message_delta is remembered so finish adds no second
+// one, and message_stop or an error frame ends the message -- nothing is
+// written after either, and a frame whose data is not JSON is relayed
+// unchanged and leaves the mirror as it was. A relayed frame counts as
+// keepalive activity.
+func (e *SSEEncoder) WriteRaw(frame []byte) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.finished {
+		return nil
+	}
+	if _, err := e.w.Write(frame); err != nil {
+		return err
+	}
+	e.writes++
+	if e.flusher != nil {
+		e.flusher.Flush()
+	}
+	kind, index, hasIndex := relayedFrameShape(frame)
+	switch kind {
+	case "message_start":
+		e.started = true
+	case "content_block_start":
+		if hasIndex {
+			e.open = &block{index: index, kind: "relayed"}
+			e.textOpen = false
+			if index >= e.next {
+				e.next = index + 1
+			}
+		}
+	case "content_block_stop":
+		// The spec always carries index; closing the open block when it is
+		// missing is defensive, so a malformed stop never leaves a block open.
+		if e.open != nil && (!hasIndex || e.open.index == index) {
+			e.open.closed = true
+			e.open = nil
+			e.textOpen = false
+		}
+	case "message_delta":
+		e.relayedDelta = true
+	case "message_stop", "error":
+		e.finished = true
+	}
+	return nil
+}
+
+// relayedFrameShape reads an SSE frame's data payload for Anthropic's type
+// and index members, falling back to the event: field name when the data
+// carries no type. Anything unparsable yields "" and the mirror stays put.
+func relayedFrameShape(frame []byte) (kind string, index int, hasIndex bool) {
+	var event string
+	var data []string
+	for _, line := range strings.Split(string(frame), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		switch {
+		case strings.HasPrefix(line, "event:"):
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		}
+	}
+	var shape struct {
+		Type  string `json:"type"`
+		Index *int   `json:"index"`
+	}
+	if err := json.Unmarshal([]byte(strings.Join(data, "\n")), &shape); err != nil {
+		return "", 0, false
+	}
+	kind = shape.Type
+	if kind == "" {
+		kind = event
+	}
+	if shape.Index != nil {
+		return kind, *shape.Index, true
+	}
+	return kind, 0, false
 }

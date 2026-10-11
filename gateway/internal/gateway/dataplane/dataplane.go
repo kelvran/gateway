@@ -6283,6 +6283,13 @@ func NewHTTPUpstreamStreamCaller(defaultClient *http.Client, perDeployment map[s
 			return nil, upErr
 		}
 
+		// Passthrough path (RFC-1 §9, slice S11b2): the relayable response
+		// headers of an anthropic deployment's streamed 2xx ride on the carrier
+		// (no body: the frames are relayed as they arrive, so Relayable stays
+		// false and the buffered handler never mistakes this record for one).
+		if _, passthrough := providerReq.(rawBodyProvider); passthrough && dep.Provider == "anthropic" {
+			recordUpstreamResponseMeta(ctx, dep.Provider, httpResp, nil)
+		}
 		return newIdleTimeoutReader(httpResp.Body, idleTimer, idleTimeout, cancel), nil
 	}
 }

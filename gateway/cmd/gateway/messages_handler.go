@@ -92,13 +92,17 @@ func messagesHandler(p *dataplane.Pipeline) http.HandlerFunc {
 		bearer := bearerFromRequest(r)
 		endUser := endUserIDFor(r, pt)
 		idempotencyKey := r.Header.Get("Idempotency-Key")
+		// The response carrier serves both branches: the stream caller records
+		// the relayable headers on it and the encoder copies them before the
+		// first frame (slice S11b2); the buffered caller records body and
+		// headers for the relay below (slice S11b).
+		ctx, upstreamMeta := dataplane.WithUpstreamResponseMeta(ctx)
 		if req.Stream {
 			handleStreamingMessages(ctx, p, w, bearer, r.RemoteAddr, endUser, req, idempotencyKey)
 			return
 		}
 
 		ctx, upstreamDuration := dataplane.WithOverheadTracker(ctx)
-		ctx, upstreamMeta := dataplane.WithUpstreamResponseMeta(ctx)
 		requestStart := time.Now()
 		resp, err := p.HandleChatCompletion(ctx, bearer, r.RemoteAddr, endUser, req, idempotencyKey)
 		if err != nil {

@@ -6,10 +6,12 @@ import (
 	"strings"
 )
 
-// UpstreamResponseMeta is what a buffered passthrough hop to an anthropic
-// deployment hands back beside the canonical response (RFC-1 §9, item 11
-// slice S11b; the stream caller never records here -- the streaming relay is
-// slice S11b2):
+// UpstreamResponseMeta is what a passthrough hop to an anthropic deployment
+// hands back beside the canonical response (RFC-1 §9, item 11 slices S11b
+// and S11b2). The buffered caller records the 2xx body and the relayable
+// headers; the stream caller records the headers alone (the frames are
+// relayed as they arrive through streaming.RawRelay), so Relayable stays
+// false for a stream and only the buffered handler ever relays Body:
 // the upstream's 2xx body as received and the response headers the Anthropic
 // Messages handler forwards (relayResponseHeaders). The handler relays Body
 // byte-for-byte once the pipeline has accepted the response; the canonical

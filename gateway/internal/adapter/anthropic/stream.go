@@ -116,6 +116,14 @@ type streamDecoder struct {
 	// usage — see ErrAnthropicDuplicateStreamEvent's own doc comment.
 	messageStartSeen bool
 	messageDeltaSeen bool
+	// sawUnknownEvent is set by an event type this decoder does not know. The
+	// canonical shadow cannot carry it, so the finish chunk (message_delta)
+	// is marked Unrepresentable and the response is never cached or
+	// replayed: on the passthrough relay the client received the event, a
+	// re-encoded copy would lack it (item 11 slice S11b2). An unknown event
+	// after message_delta is relayed but not flagged -- Anthropic sends
+	// message_delta last before message_stop.
+	sawUnknownEvent bool
 }
 
 // rawEnvelope is unmarshaled first, for every event, purely to read the
@@ -254,7 +262,9 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 	default:
 		// Forward-compatible: an event type this decoder doesn't know
 		// about yet produces no client-visible chunk rather than failing
-		// the whole stream.
+		// the whole stream -- but the response is then unrepresentable
+		// (see sawUnknownEvent).
+		d.sawUnknownEvent = true
 		return nil, false, nil, nil
 	}
 }
@@ -436,6 +446,7 @@ func (d *streamDecoder) decodeMessageDelta(data string) ([]streaming.ChatComplet
 	// The native values ride beside the canonical finish_reason (item 11 S3).
 	chunk.Choices[0].StopReason = m.Delta.StopReason
 	chunk.Choices[0].StopSequence = m.Delta.StopSequence
+	chunk.Unrepresentable = d.sawUnknownEvent
 	return []streaming.ChatCompletionChunk{chunk}, false, usage, nil
 }
 

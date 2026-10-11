@@ -694,6 +694,19 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 	if err != nil {
 		return adapter.ChatResponse{}, false, fmt.Errorf("adapter %q ToProvider: %w", dep.Provider, err)
 	}
+	// Passthrough path (RFC-1 §9, slice S11b2): when the request reaches an
+	// anthropic deployment as a PassthroughRequest and the sink can relay,
+	// every upstream frame goes to the client as read, before it is decoded
+	// into the canonical shadow (still kept for usage, cost, the cache, the
+	// post-call audit and the guard cuts), and no canonical chunk is written
+	// beside it. A translate hop, the OpenAI route's writer, a cache hit and
+	// a replay never relay.
+	var relay streaming.RawRelay
+	if r, ok := sw.(streaming.RawRelay); ok {
+		if _, passthrough := providerReq.(rawBodyProvider); passthrough && dep.Provider == "anthropic" {
+			relay = r
+		}
+	}
 
 	// upstreamCtx is a CHILD of ctx, scoped to exactly this one upstream
 	// stream call — deliberately not ctx itself. The mid-stream runaway
@@ -714,6 +727,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		return adapter.ChatResponse{}, false, fmt.Errorf("upstream stream call to deployment %q: %w", dep.Name, err)
 	}
 	defer func() { _ = body.Close() }()
+	frameRelayed := false // a frame of THIS hop reached the client (headers travel with the first one)
 
 	decoder := streamAdapter.NewStreamDecoder()
 	reader := streaming.NewReader(body)
@@ -748,9 +762,42 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 			return acc.build(usage), estimated, fmt.Errorf("reading stream from deployment %q: %w", dep.Name, readErr)
 		}
 
+		// Passthrough relay order (RFC-1 §9, slice S11b2). Every frame after the
+		// first is relayed BEFORE it is decoded, so a frame the decoder does not
+		// know, or an upstream in-band error frame, still reaches the client as
+		// read. The FIRST frame of a hop is decoded first and relayed only when
+		// the decoder accepted it: nothing has reached the client yet, so an
+		// error frame, garbage, or a known event with a malformed body is
+		// handled exactly as before the relay existed -- the decoder's error is
+		// redacted and the hop may fall back (an error-first stream is
+		// Anthropic's overloaded_error shape). The decoder is the single judge;
+		// the relay seam classifies nothing itself.
+		if relay != nil && frameRelayed {
+			if relayErr := relay.WriteRaw(ev.Raw); relayErr != nil {
+				return adapter.ChatResponse{}, false, fmt.Errorf("relaying streamed frame to client: %w", relayErr)
+			}
+			*firstChunkSent = true
+		}
 		chunks, done, usage, decErr := decoder.Decode(ev)
 		if decErr != nil {
 			return adapter.ChatResponse{}, false, fmt.Errorf("decoding stream from deployment %q: %w", dep.Name, decErr)
+		}
+		if relay != nil && !frameRelayed {
+			// The first frame, accepted by the decoder. The upstream's relayable
+			// response headers -- recorded by the stream caller on the carrier, the
+			// UpstreamResponseMeta context value on ctx that upstreamCtx inherits --
+			// travel with it and never earlier, so a hop that dies before its first
+			// frame leaves nothing on a response a fallback hop then serves. The
+			// first relayed frame is the first byte sent, which rules out a fallback
+			// hop (a second message_start) and makes the turn billable.
+			if m := UpstreamResponseMetaFromContext(ctx); m != nil {
+				relay.RelayHeaders(m.Header)
+			}
+			if relayErr := relay.WriteRaw(ev.Raw); relayErr != nil {
+				return adapter.ChatResponse{}, false, fmt.Errorf("relaying streamed frame to client: %w", relayErr)
+			}
+			frameRelayed = true
+			*firstChunkSent = true
 		}
 		if usage != nil {
 			finalUsage = usage
@@ -758,6 +805,13 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		for _, c := range chunks {
 			env.stampChunk(&c)
 			acc.add(c)
+			if relay != nil {
+				// The shadow is built (acc.add above) but the canonical chunk is not
+				// written to the client, which already has the upstream's frame; the
+				// guard cuts, usage, cost, the cache and the post-call audit below
+				// still read the shadow.
+				continue
+			}
 			if writeErr := sw.WriteChunk(c); writeErr != nil {
 				return adapter.ChatResponse{}, false, fmt.Errorf("writing streamed chunk to client: %w", writeErr)
 			}
