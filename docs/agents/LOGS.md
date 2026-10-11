@@ -4760,3 +4760,17 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** none new (the compat block's 2026-10-11 reasoning applies).
 
 **Next steps / resume point:** the embeddings uncapped-key settlement fix (test red then green in the tree, unreviewed), then the listeners wording sweep.
+
+## [2026-10-12] main — the OpenAPI document describes the two HTTP API listeners
+
+**Files touched:** `gateway/openapi/kelvran-gateway.openapi.yaml` (`info.summary`, the first sentence of `info.description`), `docs/reference/openapi.md` (intro, the "Two HTTP API listeners" bullet, a "Not in the document" bullet), `docs/reference/compatibility.md`, `gateway/changelog/unreleased.md` (the item-14 bullet's first words), `docs/agents/LOGS.md`.
+
+**Intent/summary:** the item-14 owner question about the metrics listener outside the OpenAPI document, answered the way the code already does (`metrics_server.go`: "Nothing here is part of the OpenAPI document"): the document covers the data-plane and admin listeners; the optional Prometheus pull listener (item 13c) is Prometheus exposition, not an API, and is named as outside the document in the info text and on the reference page. "Both listeners" / "Two listeners, one process" had been true until 13c added the optional third.
+
+**Gates / live:** the YAML edit went through `/tmp/kelvran-r4f/openapi-listeners.py` (load → mutate → dump, byte-identical round-trip precondition, no-alias dumper); `git diff -U0` on the document shows the info block only. `go test ./cmd/gateway -run 'TestOpenAPI|TestReferenceDocs'` green; `gateway/compat` `TestOpenAPIDocumentIsValid31` and `TestOpenAPIFixturesConformToTheirSchemas` green (8.5 s, the harness gateway built from the tree); `scripts/check-doc-paths.sh` ok. Description prose only — outside the public surface of `docs/VERSIONING.md` §2.
+
+**Reviews**: one fresh read-only `go-reviewer` lane through a Workflow: SHIP, no findings — the new bullet's facts verified against `metrics_server.go` (default bind, one-route table, HEAD/405/404 behaviour per `TestMetricsMuxServesGetAndHeadOnly`) and commit `15f16d86`; the public surface untouched per `docs/VERSIONING.md` §2; both test suites green; 'both listeners' inside the description now scoped by the new lead sentence; no remaining unqualified two-listener sentence in docs/, README or ARCHITECTURE.
+
+**Decisions made:** none new; the pull listener's exclusion was the 13c decision (G24–G26), now stated where readers of the document look.
+
+**Next steps / resume point:** size and decide `forward_known`'s upstream leg (RFC-1 §5): the dataplane already extracts the beta values (`anthropicBetas(req.Passthrough.ForwardHeaders)`) and the Bedrock adapter already assembles the Converse escape hatch (`additionalModelRequestFieldsFor`); the leg is a canonical carrier for the allow-listed values, the policy gate on the bedrock hops (three `ToProvider` sites), a `dropped_fields`-style record of the stripped values, adapter and dataplane tests, a live Converse proof, and the docs that today say "loads and validates, applied when the upstream leg lands".

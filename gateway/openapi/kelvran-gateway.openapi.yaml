@@ -2,26 +2,27 @@ openapi: 3.1.0
 info:
   title: Kelvran gateway
   version: 0.20.0
-  summary: The HTTP surface of the Kelvran LLM gateway, both listeners.
+  summary: 'The HTTP API surface of the Kelvran LLM gateway: the data-plane and admin listeners.'
   license:
     name: Apache-2.0
     identifier: Apache-2.0
-  description: "Two listeners, one process. The data plane (`listen_addr`, required; `config.example.yaml` sets `:8080`)\nserves the OpenAI-shaped `/v1/chat/completions`, `/v1/embeddings` and `/v1/models`,\
-    \ the Anthropic-shaped\n`/v1/messages` and `/v1/messages/count_tokens`, the probes `/healthz`, `/readyz` and `HEAD /api/hello`.\nThe admin listener (`admin.listen_addr`, default `127.0.0.1:8081`) exists\
-    \ only when `admin.token_env` is set\nand serves TLS only when `admin.mtls` is configured; its operations carry their own `servers` entry.\n\nWhat the OpenAPI vocabulary cannot carry, stated here and\
-    \ pinned by the gateway's own tests\n(`TestOpenAPI*` in `gateway/cmd/gateway`, `TestAdminServeMuxSemantics` in `gateway/internal/admin`):\n\n- Data-plane patterns carry no method, so a wrong method\
-    \ is the route's own `405` in the route's own\n  envelope (OpenAI JSON with `Allow` on chat, embeddings, models and hello; Anthropic JSON with `Allow` on\n  messages and count_tokens; plain text without\
-    \ `Allow` on healthz and readyz). A `HEAD` on a route that\n  does not accept it arrives as that route's `405` (`Allow` only on the JSON routes) with the body stripped by the server.\n- Admin patterns\
-    \ carry a method, so a wrong method on a known admin path is net/http's plain-text `405`\n  with `Allow`, answered before any bearer check; every admin `GET` also answers `HEAD` (same status and\n \
-    \ headers, no body); `/admin/debug/pprof/` is a subtree and `/admin/debug/pprof` without the slash is a\n  `307` redirect to it under the pinned Go toolchain. Neither the HEAD legs nor the redirect\
-    \ are operations.\n- Unknown paths are plain-text `404` on both listeners. The gateway adds no correlation header of its own: the only correlation inputs are W3C `traceparent`/`tracestate` and `baggage`.\
-    \ An admin credential of an insufficient tier is\n  `401`, never `403`.\n- Body caps: the data plane reads at most 32 MiB (`413` `request_too_large`), the admin listener has no cap;\n  `anthropic-*`\
-    \ request headers forwarded on the two Anthropic routes are bounded at 16 KiB; an `anthropic`\n  deployment's `count_tokens` answer is relayed up to 64 KiB.\n- `POST /v1/messages` and `POST /v1/messages/count_tokens`\
-    \ request schemas are permissive by construction\n  (RFC-1 Option C): members the canonical schema does not know reach an `anthropic` deployment as sent (only `model` and `stream` are rewritten on the\
-    \ top level; the canonical shadow is still scanned by the pre-call guardrail) and\n  are refused with `400` `lossy_ingress_rejected` on a translate hop unless the deployment sets\n  `accept_lossy_anthropic_ingress:\
-    \ true`.\n\nPublic surface under `docs/VERSIONING.md` §2 from `gateway/v0.20.0`, and a `gateway/v1.0.0` precondition (frozen across two consecutive minors)\nunder its §4: paths, operations, operationIds,\
-    \ security requirements, response statuses, header names, the\n`type`/`code` vocabularies and every `x-kelvran-*` value. Description prose, example payloads and\n`info.version` are not. The prose reference\
-    \ is `docs/reference/data-plane-api.md`,\n`docs/reference/admin-api.md`, `docs/reference/error-codes.md` and `docs/reference/config.md`.\n"
+  description: "Two HTTP API listeners, one process (the optional Prometheus pull listener, `telemetry.prometheus`, serves only\n`GET /metrics` and is outside this document). The data plane (`listen_addr`,\
+    \ required; `config.example.yaml` sets `:8080`)\nserves the OpenAI-shaped `/v1/chat/completions`, `/v1/embeddings` and `/v1/models`, the Anthropic-shaped\n`/v1/messages` and `/v1/messages/count_tokens`,\
+    \ the probes `/healthz`, `/readyz` and `HEAD /api/hello`.\nThe admin listener (`admin.listen_addr`, default `127.0.0.1:8081`) exists only when `admin.token_env` is set\nand serves TLS only when `admin.mtls`\
+    \ is configured; its operations carry their own `servers` entry.\n\nWhat the OpenAPI vocabulary cannot carry, stated here and pinned by the gateway's own tests\n(`TestOpenAPI*` in `gateway/cmd/gateway`,\
+    \ `TestAdminServeMuxSemantics` in `gateway/internal/admin`):\n\n- Data-plane patterns carry no method, so a wrong method is the route's own `405` in the route's own\n  envelope (OpenAI JSON with `Allow`\
+    \ on chat, embeddings, models and hello; Anthropic JSON with `Allow` on\n  messages and count_tokens; plain text without `Allow` on healthz and readyz). A `HEAD` on a route that\n  does not accept it\
+    \ arrives as that route's `405` (`Allow` only on the JSON routes) with the body stripped by the server.\n- Admin patterns carry a method, so a wrong method on a known admin path is net/http's plain-text\
+    \ `405`\n  with `Allow`, answered before any bearer check; every admin `GET` also answers `HEAD` (same status and\n  headers, no body); `/admin/debug/pprof/` is a subtree and `/admin/debug/pprof` without\
+    \ the slash is a\n  `307` redirect to it under the pinned Go toolchain. Neither the HEAD legs nor the redirect are operations.\n- Unknown paths are plain-text `404` on both listeners. The gateway adds\
+    \ no correlation header of its own: the only correlation inputs are W3C `traceparent`/`tracestate` and `baggage`. An admin credential of an insufficient tier is\n  `401`, never `403`.\n- Body caps:\
+    \ the data plane reads at most 32 MiB (`413` `request_too_large`), the admin listener has no cap;\n  `anthropic-*` request headers forwarded on the two Anthropic routes are bounded at 16 KiB; an `anthropic`\n\
+    \  deployment's `count_tokens` answer is relayed up to 64 KiB.\n- `POST /v1/messages` and `POST /v1/messages/count_tokens` request schemas are permissive by construction\n  (RFC-1 Option C): members\
+    \ the canonical schema does not know reach an `anthropic` deployment as sent (only `model` and `stream` are rewritten on the top level; the canonical shadow is still scanned by the pre-call guardrail)\
+    \ and\n  are refused with `400` `lossy_ingress_rejected` on a translate hop unless the deployment sets\n  `accept_lossy_anthropic_ingress: true`.\n\nPublic surface under `docs/VERSIONING.md` §2 from\
+    \ `gateway/v0.20.0`, and a `gateway/v1.0.0` precondition (frozen across two consecutive minors)\nunder its §4: paths, operations, operationIds, security requirements, response statuses, header names,\
+    \ the\n`type`/`code` vocabularies and every `x-kelvran-*` value. Description prose, example payloads and\n`info.version` are not. The prose reference is `docs/reference/data-plane-api.md`,\n`docs/reference/admin-api.md`,\
+    \ `docs/reference/error-codes.md` and `docs/reference/config.md`.\n"
 servers:
 - url: http://127.0.0.1:8080
   description: 'The data plane, `listen_addr` (no default; `config.example.yaml` sets `:8080`).

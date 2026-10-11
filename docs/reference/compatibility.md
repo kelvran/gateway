@@ -37,7 +37,7 @@ Versions: the latest tagged release is `gateway/v0.19.0` (2026-10-11). Items tha
 
 `/v1/models` is registered on the exact path. `/v1/models/` (trailing slash) is a `404`, never a `301`.
 
-The OpenAPI 3.1 document for both listeners is `gateway/openapi/kelvran-gateway.openapi.yaml` (on `main` since 2026-10-11; [what it covers and guarantees](openapi.md)).
+The OpenAPI 3.1 document for the data-plane and admin listeners is `gateway/openapi/kelvran-gateway.openapi.yaml` (on `main` since 2026-10-11; [what it covers and guarantees](openapi.md)).
 
 Not available today:
 
