@@ -206,7 +206,7 @@ Read `/readyz` with care:
 
 ## Pitfalls agents fall into
 
-- **Image tag prefix.** The git tag is `gateway/v0.18.0`; the image tag is `v0.18.0`. `:latest` and `:sha-<40-hex>` track main and move; pin an index digest for anything deployed. Images at v0.17.0 and earlier are `linux/amd64` only; images from v0.18.0 on are amd64 and arm64 indexes.
+- **Image tag prefix.** The git tag is `gateway/v0.19.0`; the image tag is `v0.19.0`. `:latest` and `:sha-<40-hex>` track main and move; pin an index digest for anything deployed. Images at v0.17.0 and earlier are `linux/amd64` only; images from v0.18.0 on are amd64 and arm64 indexes.
 - **Vacuous `/readyz`.** See above. An agent that reports "ready: true" as proof of a working provider key is wrong unless probing is on.
 - **Silently ignored keys.** A green `-validate` plus a typo gives a gateway that behaves as if the key were absent. Compare every key against `config.example.yaml`.
 - **`-validate` is not a reachability check.** It will not notice an unset env var, an unreadable `*_file`, an unreachable Redis or a wrong Gemini/Bedrock suffix.

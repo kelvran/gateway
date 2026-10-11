@@ -76,10 +76,10 @@ If a trigger does arrive, the research's open question is whether to hand-roll o
 - A `.parse()`-style structured-output client wrapper. Structured output is a wire parameter, `response_format` with a JSON schema; see [structured output](../how-to/structured-output.md). The research notes that openai-python's `.parse()` is client-side sugar over that same wire shape, so an OpenAI SDK user already has it.
 - A provider-agnostic reasoning-effort enum as a Kelvran-native abstraction.
 - An OpenAPI 3.1 document or Swagger UI. Kelvran has no OpenAPI document anywhere. This is a separate decision from the SDK one: `not_yet` on 2026-09-13 with "a documented external API consumer beyond the pilot" as the trigger, and proposed on 2026-10-08 to flip to `build_now` because discoverability is itself the consumer. That flip is a user decision and has not been taken.
-- An Anthropic Messages API serving mode. `GET /v1/models` is readable by the Anthropic SDK and Claude Code, but Claude Code's discovery runs only in Anthropic-Messages mode, which Kelvran does not yet serve. Chat is OpenAI-shaped only.
+
 
 ## Related
 
 - [Design decisions](design-decisions.md) explains how decisions are recorded in layers (ADRs, DECISIONS.md, RFCs and research reports) and lists the researched-and-declined items; it also records the shape an admin web UI would take if one is ever built. The full "not built, by recorded decision" list, including the admin web UI and the Helm chart (third-party charts only, per `docs/upgrade-research/kubernetes-production-deployment-2026-09-14.md`), is in [README.md](../../README.md).
 - [MCP and A2A status](mcp-a2a-status.md) covers the brokering surface that is also design-only.
-- [STATUS.md](../../STATUS.md) and [UPGRADE.md](../../UPGRADE.md) track what is on `main` versus the latest release (`gateway/v0.18.0`).
+- [STATUS.md](../../STATUS.md) and [UPGRADE.md](../../UPGRADE.md) track what is on `main` versus the latest release (`gateway/v0.19.0`).

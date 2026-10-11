@@ -174,7 +174,7 @@ Expected: `data: [DONE]`. A last line starting with `data: {"error":` means the 
 
 ## Stability
 
-The `data: {...}` framing, the in-band `data: {"error":...}` frame, the `data: [DONE]` sentinel and the `type`/`code` vocabulary are part of the public surface in [docs/VERSIONING.md](../VERSIONING.md). Error message text is not. SSE streaming shipped in gateway/v0.1.0 (2026-09-03). The latest tagged release is gateway/v0.18.0 (2026-10-10), which carries every behaviour marked "since gateway/v0.18.0" above. See [versioning](../explanation/versioning.md) and [compatibility](../reference/compatibility.md).
+The `data: {...}` framing, the in-band `data: {"error":...}` frame, the `data: [DONE]` sentinel and the `type`/`code` vocabulary are part of the public surface in [docs/VERSIONING.md](../VERSIONING.md). Error message text is not. SSE streaming shipped in gateway/v0.1.0 (2026-09-03). The latest tagged release is gateway/v0.19.0 (2026-10-11), which carries every behaviour marked "since gateway/v0.18.0" or "since gateway/v0.19.0" above. See [versioning](../explanation/versioning.md) and [compatibility](../reference/compatibility.md).
 
 ## Related pages
 

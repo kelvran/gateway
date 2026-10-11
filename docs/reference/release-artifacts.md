@@ -2,11 +2,11 @@
 
 This page lists exactly what a Kelvran release consists of: the archives, packages, SBOMs, checksums, Sigstore bundle, provenance attestation and container image tags that a `gateway/vX.Y.Z` or `evals/vX.Y.Z` tag produces, the pipeline stages that produce them, and the commands that verify each artifact. It is for operators who install or pin a release and for maintainers who cut one. The procedure for cutting a release is in [RELEASE.md](../../RELEASE.md); the version policy is in [docs/VERSIONING.md](../VERSIONING.md); the image's own reference card is [container-image.md](./container-image.md).
 
-## Status as of 2026-10-10
+## Status as of 2026-10-11
 
 | Item | State |
 |---|---|
-| Newest gateway tag | `gateway/v0.18.0` (2026-10-10) |
+| Newest gateway tag | `gateway/v0.19.0` (2026-10-11) |
 | Newest evals tag | `evals/v0.10.1` (2026-09-22) |
 | Gateway release pipeline (`.github/workflows/release.yml`, `gateway/.goreleaser.yaml`, `deploy/nfpm/postinstall.sh`, `scripts/release-preflight.sh`) | Since `gateway/v0.18.0` |
 | Evals release pipeline (`.github/workflows/release-evals.yml`) | On main since 2026-10-08, not in `evals/v0.10.1` |
@@ -370,6 +370,7 @@ scripts/release-preflight.sh evals <version>
 | `gateway/v0.16.0` | 2026-09-28 |
 | `gateway/v0.17.0` | 2026-10-07 |
 | `gateway/v0.18.0` | 2026-10-10 |
+| `gateway/v0.19.0` | 2026-10-11 |
 
 Dates are the first line of each `gateway/changelog/<version>.md`. None of the Releases up to `gateway/v0.17.0` carries the assets described on this page; `gateway/v0.18.0` is the first that does.
 
@@ -383,7 +384,7 @@ Dates are the first line of each `gateway/changelog/<version>.md`. None of the R
 
 | Deployable | Latest minor | Previous minor | Security fixes for the previous minor until |
 |---|---|---|---|
-| `gateway` | `gateway/v0.18.0` (2026-10-10) | `gateway/v0.17.0` (2026-10-07) | 2027-01-08 |
+| `gateway` | `gateway/v0.19.0` (2026-10-11) | `gateway/v0.18.0` (2026-10-10) | 2027-01-09 |
 | `evals` | `evals/v0.10.1` (2026-09-22) | `evals/v0.10.0` (2026-09-21) | 2026-12-21 |
 
 A pre-release (`-rc.N` or similar) has no support window and may change or disappear without an [UPGRADE.md](../../UPGRADE.md) row. Upgrade steps are in [docs/how-to/upgrade.md](../how-to/upgrade.md); the policy behind the numbers is in the [versioning explanation](../explanation/versioning.md) and the compatibility matrix in [compatibility.md](./compatibility.md).
@@ -395,7 +396,7 @@ A pre-release (`-rc.N` or similar) has no support window and may change or disap
 - `kelvran-bench` as a release asset. Only `./cmd/gateway` and `./cmd/kelvran` are built.
 - PyPI publication of `kelvran-evals`. Blocked on trademark clearance.
 - An Artifact Hub listing for the image. The `io.artifacthub.package.*` labels are in place; registering the repository on artifacthub.io is a one-time owner action that has not been taken.
-- Signed assets on any gateway Release before `gateway/v0.18.0`, or on any evals Release as of 2026-10-10. `gateway/v0.17.0`, `evals/v0.10.1` and every earlier tag predate both pipelines and cannot be rebuilt by them.
+- Signed assets on any gateway Release before `gateway/v0.18.0`, or on any evals Release as of 2026-10-11. `gateway/v0.17.0`, `evals/v0.10.1` and every earlier tag predate both pipelines and cannot be rebuilt by them.
 - Per-platform SBOM attestations for the image. One SBOM, generated against the index digest, is attested; the `ci.yml` comment records per-platform SBOMs as a follow-up.
 - Embedded GPG signatures on the deb, rpm or apk packages.
 - CI installation of the `.rpm` or `.apk`. Only the amd64 `.deb` is installed and started by the acceptance job.

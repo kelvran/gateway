@@ -740,7 +740,7 @@ tree nodes):
 ```
 dataplane → cache, adapter, adapter/{anthropic,bedrock,gemini,openai,openaicompat}, streaming,
             budget, ratelimit, router, costaccounting, telemetry, guardrail, identity, prompt,
-            api/gatewayevents/v1, alerting, ingress/anthropicmsgs (permitted since 2026-10-10 S7; dataplane still does not need it)
+            api/gatewayevents/v1, alerting, ingress/anthropicmsgs (permitted since 2026-10-10 S7; imported by dataplane/count_tokens.go since S11c)
 adapter/{anthropic,bedrock,gemini,openai,openaicompat} → adapter, streaming
 ingress/anthropicmsgs → adapter, streaming   (RFC-1 §1's Anthropic Messages parser/encoders, item 11 S7: a leaf
                                   beside the provider adapters, never importing one of them — its block

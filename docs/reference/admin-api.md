@@ -2,7 +2,7 @@
 
 This page lists every route on the gateway's admin HTTP surface: the credential tier each route accepts, the request and response JSON, the status codes, the side effects (persistence, cross-replica propagation, audit log), and the configuration keys that enable and secure the listener. It is for operators who run the gateway and for anyone writing automation against the admin port. For a guided setup, read [Configure the Admin API and its credential tiers](../how-to/admin-api-rbac.md); this page is the lookup table behind it.
 
-The route set and bodies below are those of `gateway/v0.18.0` (2026-10-10); where `gateway/v0.17.0` (2026-10-07) differs, the entry says so. The handler is `gateway/internal/admin/admin.go`; the listener is started by `gateway/cmd/gateway/main.go`.
+The route set and bodies below are those of `gateway/v0.19.0` (2026-10-11), unchanged from `gateway/v0.18.0` (2026-10-10); where `gateway/v0.17.0` (2026-10-07) differs, the entry says so. The handler is `gateway/internal/admin/admin.go`; the listener is started by `gateway/cmd/gateway/main.go`.
 
 ## Conventions
 

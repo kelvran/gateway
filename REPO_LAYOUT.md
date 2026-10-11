@@ -21,11 +21,11 @@ kelvran/
 │   ├── how-to/                 one page per operator task: provider-credentials, virtual-keys-and-budgets, routing-and-failover,
 │   │                            caching, streaming, structured-output, prompt-management, admin-api-rbac, backup-and-restore,
 │   │                            rotate-credentials, upgrade, troubleshooting, configure-from-a-coding-agent
-│   │   ├── clients/             openai-python, openai-node, curl — pointing a client you already use at the gateway
+│   │   ├── clients/             openai-python, openai-node, curl, langchain, llamaindex, vercel-ai-sdk, anthropic-python, claude-code — pointing a client you already use at the gateway
 │   │   └── deploy/              docker-compose, kubernetes-kustomize, ecs-fargate, systemd-package
-│   ├── reference/              data-plane-api, admin-api, config, metrics-and-logs, error-codes, release-artifacts, compatibility,
+│   ├── reference/              data-plane-api, admin-api, config, metrics-and-logs, error-codes, release-artifacts, compatibility, kelvran-cli,
 │   │                            glossary, container-image (the one reference page committed before this rebuild, 7686a0c8)
-│   ├── explanation/            architecture, security-model, versioning, why-no-sdk, cache-gate, design-decisions, mcp-a2a-status
+│   ├── explanation/            architecture, security-model, versioning, why-no-sdk, cache-gate, design-decisions, mcp-a2a-status; compare/ (litellm, portkey, bifrost)
 │   ├── decisions/              ADRs (MADR format) for the foundational, hard-to-reverse calls
 │   ├── rfcs/                   dated design proposals (YYYY-MM-DD-[<component>-]<title>.md, 2026-09-02 onward; the component segment consistently from 2026-09-05), never rewritten —
 │   │                            history, not current behaviour (rfcs/README.md); TEMPLATE.md for new ones
@@ -67,7 +67,7 @@ kelvran/
 ├── SUPPORT.md                   where to get help; routes vulnerabilities to SECURITY.md
 ├── RELEASE_NOTES.md             user-facing narrative release notes, spans both deployables
 ├── Makefile                     real targets (.PHONY list, Makefile:1): help setup config-safe lint[-gateway|-evals|-proto]
-│                                test[-gateway|-evals] verify gen-proto check-proto bench bench-ci (the last two on main since 2026-10-08, not in gateway/v0.17.0)
+│                                test[-gateway|-evals] verify gen-proto check-proto bench bench-ci (the last two since gateway/v0.18.0)
 ├── PRD.md                     one-time, dated: what to build and why
 ├── DESIGN.md                   one-time, dated: whole-system design sketch + the 3 foundational decisions' rationale
 ├── ARCHITECTURE.md             root, thin index — current-state component map and request flow
@@ -81,7 +81,7 @@ kelvran/
 ├── CODE_OF_CONDUCT.md
 ├── CODEOWNERS
 ├── RELEASE.md                   release runbook, contract-version bump procedure
-├── UPGRADE.md                    breaking-change/migration guide; first row landed (evals/v0.2.0 `--scores`), policy in docs/VERSIONING.md
+├── UPGRADE.md                    breaking-change/migration guide; two rows (evals/v0.2.0 `--scores`, gateway/v0.18.0 JSON error envelope), policy in docs/VERSIONING.md
 ├── DEPRECATED.md                 deprecation list (stub until the first one)
 ├── LICENSE
 └── README.md                    pitch, comparison table, links to everything above
