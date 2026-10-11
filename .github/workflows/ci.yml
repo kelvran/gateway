@@ -216,7 +216,7 @@ jobs:
     name: compat (official SDKs against a built gateway)
     runs-on: ubuntu-latest
     # The compatibility matrix of RFC-1 §11 (item 11 slice S12), the merge gate
-    # (a required status check on main once green there):
+    # (a required status check on main since 2026-10-11):
     # gateway/compat/ is its own Go module whose TestMain builds ./cmd/gateway
     # from this tree, starts it against replaying httptest upstreams and drives
     # the official anthropic-sdk-go and openai-go clients plus, through uv, the

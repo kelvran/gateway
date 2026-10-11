@@ -4400,3 +4400,19 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** none.
 
 **Next steps / resume point:** when this run is green, add `compat (official SDKs against a built gateway)` to the branch protection's required contexts (the S12 exit criterion), then forward-correct `THREAT_MODEL.md`'s change log and `DECISIONS.md` (they record three contexts); then S13.
+
+## [2026-10-11] main — item 11 S12 exit criterion: `compat` is the fourth required status check on `main`
+
+**Files touched:** `THREAT_MODEL.md` (change-log entry: four required checks, no new trust boundary), `DECISIONS.md` (one line), and the present-tense sweep of the pages that said "once green on `main`": `AGENTS.md`, `docs/testing/TESTING.md`, `gateway/ARCHITECTURE.md`, `gateway/compat/doc.go`, `.github/workflows/ci.yml` (comment), `gateway/changelog/unreleased.md`, the RFC's S12 settled block.
+
+**Intent/summary:** CI for `de550887` was green across all four workflows, so the `compat` job had its first green run on `main`; the branch protection's `required_status_checks` was then PATCHed through the GitHub API (payload with `checks` + `app_id` 15368, `strict` unchanged) and re-read: `api`, `gateway`, `evals`, `compat (official SDKs against a built gateway)`. The two dated records that enumerated three contexts (`THREAT_MODEL.md` `2026-10-08`, `DECISIONS.md` `[2026-09-16]`) are append-only and stay as written; the new entries carry the correction forward.
+
+**Reviews**: none (a settings change the plan's S12 exit criterion authorises, a read-back, and present-tense wording).
+
+**Gates:** the fresh `required_status_checks` read; `./scripts/check-doc-paths.sh` and lychee green; `gofmt`/`go vet` on the compat module (a comment changed).
+
+**Live:** the protection change is live on `github.com/kelvran/gateway`; CI for this commit polled after the push.
+
+**Decisions made:** `DECISIONS.md` `[2026-10-11]` — the fourth required check.
+
+**Next steps / resume point:** S13 — the nightly TypeScript leg under G15 (owner-accepted 2026-10-10), the one-line ADR 0003 note, and the release close-out (changelog categories, `docs/VERSIONING.md`, `UPGRADE.md` unchanged, `compatibility.md` banner and "Items since v0.18.0") → `gateway/v0.19.0`, which the owner cuts (never the agent). Follow-ups carried: Dependabot's evals entry says `pip` for a uv.lock project; the S11b/S11b2/S11c lists stand.

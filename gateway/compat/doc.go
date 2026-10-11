@@ -3,7 +3,7 @@
 // anthropic-sdk-go and openai-go clients, and the official `anthropic` and
 // `openai` Python packages, against a gateway binary built from this tree,
 // with replaying httptest upstreams in place of the providers. It is the CI
-// merge gate (a required status check on main once green there), not a
+// merge gate (a required status check on main since 2026-10-11), not a
 // unit-test package -- it has no non-test code of its own.
 //
 // Own module on purpose: the SDKs are test dependencies of this matrix, never
