@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791627864588,
+  "lastUpdate": 1791714772385,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -595,6 +595,208 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 overhead p99",
             "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "6dc2589537dabb38f659ee692db33f86b6b1cf18",
+          "message": "fix(gateway): request faults decided before upstream are invalid requests, not upstream errors\n\nThe 400s system_parts_unsupported, lossy_ingress_rejected and\ninvalid_prompt_reference (all four causes) are decided before any\nupstream call, so plan gate G16's rule applies: no Retry-After, no bump of the key's\nretry backoff, and OUTCOME_INVALID_REQUEST in the decision event. Their\nsix sentinels fell through outcomeFor's default to OUTCOME_UPSTREAM_ERROR\n(two postdated G16: fix(system-parts) 3de8cbd8 and slice S9b; the four\nprompt-reference ones predate it, found by the go review), so a\nclient that honoured the header waited a second for nothing, the key's\nnext real rejection started from a longer backoff, and telemetry counted\nan upstream error for a call that never left the gateway. Found by item\n14's design review against the route inventory.\n\n- dataplane.go: outcomeFor's G16 case gains errors.Is(err,\n  adapter.ErrSystemPartsUnsupported), isLossyIngressRejected(err) -- a\n  new errors.As helper for the pointer-typed lossy sentinel -- and the\n  four prompt-reference sentinels.\n- Tests first (red on the unmodified tree): six rows in\n  TestOutcomeForClassifiesEverySentinelError, six errors in\n  TestRetryStormEligibilityExcludesRequestFaults, Retry-After-absent\n  assertions in the system-parts and lossy integration tests and a new\n  prompt_id-with-messages integration test; the lossy test also pins the\n  logged OUTCOME_INVALID_REQUEST and the absence of OUTCOME_UPSTREAM_ERROR.\n  Five compiling overlay mutants (drop either new condition, drop the four\n  prompt conditions, helper returns false, helper matches the wrong type)\n  are each caught.\n- docs/reference/error-codes.md and data-plane-api.md: the Retry-After\n  tables name the three codes as never carrying it; FAILURE-MODES.md's\n  sentence on the local errors that still do is corrected (it named\n  model_not_allowed and the embeddings error, which never did); data-plane-api.md's Routes\n  row also stops saying chat-only (it is set on /v1/messages and on\n  count_tokens' 429 since gateway/v0.19.0) and its Not-eligible row gains\n  the three G16 codes it had missed.\n- docs/how-to/clients/openai-python.md, docs/reference/compatibility.md,\n  docs/how-to/troubleshooting.md: one Retry-After sentence each that said\n  invalid_prompt_reference carries it or that the header is chat-only.\n- gateway/changelog/unreleased.md: Fixed entry.\n\nVerification: go build/vet, golangci-lint, go-arch-lint, go test ./...\n-race (green except the Docker-container tests, whose Redis and mock\nupstream containers colima could not start -- a local content-store I/O\nerror, unrelated; CI runs them); three read-only reviewers (go FIX FIRST\n-> repaired, security PASS, docs FIX FIRST -> repaired) and fresh re-reads\nof every repair.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-11T10:14:11Z",
+          "url": "https://github.com/kelvran/gateway/commit/6dc2589537dabb38f659ee692db33f86b6b1cf18"
+        },
+        "date": 1791714771596,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.694025,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 3.918743,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 8.248466,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 6,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 202.006157,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 203.080725,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 203.983851,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 567.874486,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 573.136906,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 575.392099,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 52.07968,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 54.864911,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.609552,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.380781,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.650019,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.656177,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 52.450645,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 53.364379,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 53.973818,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 2,
             "unit": "ms"
           },
           {
