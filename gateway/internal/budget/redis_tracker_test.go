@@ -121,10 +121,10 @@ func TestUSDNanoUSDConversionRoundTripsExactly(t *testing.T) {
 	cases := []string{"0", "0.000000001", "1", "10.5", "0.1", "0.2", "0.3", "9999999.999999999"}
 	for _, c := range cases {
 		usd := d(c)
-		nano := usdToNanoUSD(usd)
-		back := nanoUSDToUSD(nano)
+		nano := USDToNanoUSD(usd)
+		back := NanoUSDToUSD(nano)
 		if !back.Equal(usd) {
-			t.Errorf("usdToNanoUSD(%s) -> nanoUSDToUSD = %s, want %s (exact round trip)", c, back.String(), c)
+			t.Errorf("USDToNanoUSD(%s) -> NanoUSDToUSD = %s, want %s (exact round trip)", c, back.String(), c)
 		}
 	}
 }
@@ -140,9 +140,9 @@ func TestUSDNanoUSDConversionAvoidsFloat64RepeatedAdditionDrift(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		sum = sum.Add(d("0.1"))
 	}
-	nano := usdToNanoUSD(sum)
+	nano := USDToNanoUSD(sum)
 	if nano != 1*usdScaleForTest {
-		t.Errorf("usdToNanoUSD(0.1 summed 10 times) = %d, want %d (exactly $1, no drift)", nano, usdScaleForTest)
+		t.Errorf("USDToNanoUSD(0.1 summed 10 times) = %d, want %d (exactly $1, no drift)", nano, usdScaleForTest)
 	}
 }
 
@@ -243,7 +243,7 @@ func TestReconcileRedisModeBilledAppliesRealCostMinusReservedDelta(t *testing.T)
 	if backend.adjustCalls != 1 {
 		t.Fatalf("backend.Adjust called %d times, want 1", backend.adjustCalls)
 	}
-	wantDelta := usdToNanoUSD(d("2").Sub(d("10"))) // realCost - reservedUSD = -8
+	wantDelta := USDToNanoUSD(d("2").Sub(d("10"))) // realCost - reservedUSD = -8
 	if backend.lastAdjustDeltaNano != wantDelta {
 		t.Errorf("Adjust delta = %d, want %d (realCost=2 - reserved=10, in nano-USD)", backend.lastAdjustDeltaNano, wantDelta)
 	}
@@ -258,7 +258,7 @@ func TestReconcileRedisModeReleaseOnlyAppliesNegativeReservedDelta(t *testing.T)
 	if backend.adjustCalls != 1 {
 		t.Fatalf("backend.Adjust called %d times, want 1", backend.adjustCalls)
 	}
-	wantDelta := usdToNanoUSD(d("0").Sub(d("7")))
+	wantDelta := USDToNanoUSD(d("0").Sub(d("7")))
 	if backend.lastAdjustDeltaNano != wantDelta {
 		t.Errorf("Adjust delta on a release-only Reconcile = %d, want %d (-reservedUSD)", backend.lastAdjustDeltaNano, wantDelta)
 	}
@@ -277,7 +277,7 @@ func TestReconcileRedisModeReleaseOnlyAppliesNegativeReservedDelta(t *testing.T)
 // actual epoch-mismatch enforcement itself is redisbudget's own Lua
 // script, proven separately against real Redis in that package's test
 // file). Break this by reverting Reconcile's own call site back to
-// t.backend.Adjust(ctx, keyID, usdToNanoUSD(delta)) (dropping
+// t.backend.Adjust(ctx, keyID, USDToNanoUSD(delta)) (dropping
 // reservationEpoch): this test starts failing on lastAdjustEpoch.
 func TestReconcileRedisModePassesReservationEpochThroughToBackend(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{}
@@ -330,7 +330,7 @@ func TestIncreaseReservationRedisModeUsesReserveFixedWithTheDelta(t *testing.T) 
 	if epoch != 42 {
 		t.Errorf("newReservationEpoch = %d, want 42 (returned unchanged -- a top-up never creates a new window, so the same epoch must still reach the eventual Reconcile call)", epoch)
 	}
-	wantDelta := usdToNanoUSD(d("3")) // 8 - 5
+	wantDelta := USDToNanoUSD(d("3")) // 8 - 5
 	if backend.lastFixedDeltaNano != wantDelta {
 		t.Errorf("ReserveFixed delta = %d, want %d (newReserved=8 - currentReserved=5)", backend.lastFixedDeltaNano, wantDelta)
 	}

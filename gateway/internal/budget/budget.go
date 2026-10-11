@@ -96,7 +96,7 @@ type Store interface {
 // this interface structurally.
 //
 // Every method takes capNanoUSD/deltaNanoUSD/newHighest amounts as
-// integer NANO-USD (see usdToNanoUSD/nanoUSDToUSD) or a raw float64
+// integer NANO-USD (see USDToNanoUSD/NanoUSDToUSD) or a raw float64
 // (MarkAlertBucket's newHighest, a percentage, never a currency amount) —
 // never a decimal.Decimal directly, since that type cannot cross the Lua
 // boundary redisbudget's scripts run inside.
@@ -157,7 +157,7 @@ type RedisBackend interface {
 	Close() error
 }
 
-// nanoUSDPerUSD is the fixed-point scale usdToNanoUSD/nanoUSDToUSD convert
+// nanoUSDPerUSD is the fixed-point scale USDToNanoUSD/NanoUSDToUSD convert
 // through: 9 decimal digits of USD precision, comfortably inside the
 // range Lua/Redis's float64-based number type represents every integer
 // exactly (up to 2^53, i.e. USD amounts up to roughly 9,000,000) — see
@@ -166,18 +166,21 @@ type RedisBackend interface {
 // reintroduce the exact drift decimal.Decimal was chosen to prevent.
 const nanoUSDPerUSD = 9
 
-// usdToNanoUSD converts a USD decimal.Decimal amount to an integer
-// nano-USD scalar for a RedisBackend call. Rounds to the nearest whole
+// USDToNanoUSD converts a USD decimal.Decimal amount to an integer
+// nano-USD scalar for a RedisBackend call -- exported since item 13d so the
+// spend ledger (internal/spendledger, a leaf that may not import this
+// package) stores the same scalar dataplane converts here, keeping the
+// nano-USD rule in one place. Rounds to the nearest whole
 // nano-USD (sub-nano-USD precision does not exist anywhere else in this
 // package either) — Shift(9) then Round(0) then IntPart() is an EXACT
 // integer conversion at that point, never a lossy float64 round-trip.
-func usdToNanoUSD(usd decimal.Decimal) int64 {
+func USDToNanoUSD(usd decimal.Decimal) int64 {
 	return usd.Shift(nanoUSDPerUSD).Round(0).IntPart()
 }
 
-// nanoUSDToUSD converts a RedisBackend integer nano-USD scalar back to a
-// USD decimal.Decimal — the exact inverse of usdToNanoUSD.
-func nanoUSDToUSD(nano int64) decimal.Decimal {
+// NanoUSDToUSD converts a RedisBackend integer nano-USD scalar back to a
+// USD decimal.Decimal — the exact inverse of USDToNanoUSD.
+func NanoUSDToUSD(nano int64) decimal.Decimal {
 	return decimal.New(nano, -nanoUSDPerUSD)
 }
 
@@ -452,7 +455,7 @@ func (t *Tracker) SpentUSDErr(ctx context.Context, keyID string, resetInterval t
 		if err != nil {
 			return decimal.Zero, err
 		}
-		return nanoUSDToUSD(nano), nil
+		return NanoUSDToUSD(nano), nil
 	}
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
 		t.persistZeroIfStoreConfigured(keyID, ps, pe)
@@ -548,14 +551,14 @@ func (t *Tracker) Reserve(ctx context.Context, keyID string, capUSD decimal.Deci
 		if capUSD.Sign() <= 0 {
 			return true, false, decimal.Zero, 0, nil
 		}
-		allowedRedis, reservedNano, epoch, redisErr := t.backend.Reserve(ctx, keyID, usdToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
+		allowedRedis, reservedNano, epoch, redisErr := t.backend.Reserve(ctx, keyID, USDToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
 		if redisErr != nil {
 			return false, false, decimal.Zero, 0, redisErr
 		}
 		if !allowedRedis {
 			return false, false, decimal.Zero, 0, nil
 		}
-		return true, true, nanoUSDToUSD(reservedNano), epoch, nil
+		return true, true, NanoUSDToUSD(reservedNano), epoch, nil
 	}
 
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
@@ -675,7 +678,7 @@ func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decim
 		if billed {
 			delta = realCost.Sub(reservedUSD)
 		}
-		if err := t.backend.Adjust(ctx, keyID, usdToNanoUSD(delta), reservationEpoch); err != nil {
+		if err := t.backend.Adjust(ctx, keyID, USDToNanoUSD(delta), reservationEpoch); err != nil {
 			// A lost settlement write, not a read: the reservation stays
 			// debited and the real cost is never recorded, so it counts
 			// under the same durable-write-failure counter the bbolt Save
@@ -790,7 +793,7 @@ func (t *Tracker) IncreaseReservation(ctx context.Context, keyID string, capUSD,
 			return true, currentReservedUSD, reservationEpoch, nil
 		}
 		delta := newReservedUSD.Sub(currentReservedUSD)
-		allowedRedis, redisErr := t.backend.ReserveFixed(ctx, keyID, usdToNanoUSD(capUSD), usdToNanoUSD(delta), resetIntervalToMs(resetInterval))
+		allowedRedis, redisErr := t.backend.ReserveFixed(ctx, keyID, USDToNanoUSD(capUSD), USDToNanoUSD(delta), resetIntervalToMs(resetInterval))
 		if redisErr != nil {
 			return true, currentReservedUSD, reservationEpoch, redisErr
 		}

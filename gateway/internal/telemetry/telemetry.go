@@ -745,12 +745,12 @@ func RecordBudgetThresholdCrossed(ctx context.Context, keyID string, percentBuck
 var persistenceFailedCounter = mustInt64Counter(
 	meter,
 	"kelvran.persistence.failed",
-	metric.WithDescription("Durable-store writes that failed (budget or identity), by store kind."),
+	metric.WithDescription("Durable-store writes that failed (budget, identity or ledger), by store kind."),
 	metric.WithUnit("{write}"),
 )
 
 // RecordPersistenceFailed increments the persistence-failure counter for
-// storeKind ("budget" or "identity") and keyID. Callers pair this
+// storeKind ("budget", "identity" or, since item 13d, "ledger") and keyID. Callers pair this
 // counter-then-log at each existing Warn-log call site (the more recent
 // of this codebase's two established orderings), never as a replacement
 // for that log line -- the log carries the actual error detail this

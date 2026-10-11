@@ -54,6 +54,12 @@ components:
   anomaly:                { in: anomaly }
   bench:                  { in: bench }
   cli:                    { in: cli }
+  # The spend ledger (RFC-2 item 13d): a pure leaf, its bbolt backend and the
+  # contract suite every backend runs. dataplane will write it and admin read
+  # it (slices 3-4); neither imports it yet.
+  spendledger:            { in: spendledger }
+  spendledger-boltstore:  { in: spendledger/boltstore }
+  spendledger-ledgertest: { in: spendledger/ledgertest }
   benchupstream:          { in: benchupstream }
 
 # Components deliberately absent from `deps:` below (credentialstate,
@@ -61,7 +67,7 @@ components:
 # telemetry-exporterkind, cache-correlation, cache, adapter, controlplane,
 # backup, idempotency,
 # configpropagation, alerting, budget-redisbudget, anomaly, bench,
-# benchupstream) are pure
+# benchupstream, spendledger) are pure
 # leaves per
 # gateway/ARCHITECTURE.md's dependency direction rules: a component with
 # no entry here may depend on nothing else in this project (verified
@@ -160,6 +166,12 @@ deps:
     mayDependOn:
       - adapter
       - streaming
+  spendledger-boltstore:
+    mayDependOn:
+      - spendledger
+  spendledger-ledgertest:
+    mayDependOn:
+      - spendledger
   dataplane:
     mayDependOn:
       - adapter

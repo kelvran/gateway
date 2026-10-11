@@ -460,6 +460,36 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              sentinels (`ErrInvalid`/`ErrVersionMismatch`/`ErrChecksum`, from
                              `go.etcd.io/bbolt/errors`) via `errors.Is`; any other error is now treated
                              exactly like `fail`, never reset.
+/internal/spendledger        — the bounded spend ledger of RFC-2 §13d (owner gates G27–G29;
+                             docs/rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md): hourly
+                             UTC-floored buckets per (virtual key, served model, client tool, session)
+                             of nano-USD spend and request counts; two caps per key (2,000 named
+                             sessions and 50,000 named cells by default — a cell is one row inside one
+                             hour bucket, so the same row in a later hour takes a new slot) whose
+                             overflow is written to the `other` session of the hour bucket, keeping
+                             model and tool; sessionless and `other` cells take no slot, being bounded
+                             by hour buckets × the model and tool vocabularies rather than by traffic;
+                             168 h retention, swept by whole hour buckets (the bucket at exactly
+                             `HourBucket(now) − retention` stays, so a query for the last 168 h is
+                             complete). A pure leaf with no project imports — `budget` exports the
+                             nano-USD conversions (`USDToNanoUSD`/`NanoUSDToUSD`) so the rounding rule
+                             keeps one home and the dataplane will convert at the write site (slice 3).
+                             Two backends
+                             behind one `Ledger` interface, both run through one contract suite
+                             (`spendledger/ledgertest`, a non-test package): `Memory` (bounded, lost on
+                             restart) and `spendledger/boltstore` (one bbolt file: a nested bucket per
+                             hour; the per-key session sets and row counts are derived state rebuilt
+                             by every `Sweep` and adjusted by every delete, never a second source of
+                             truth, rebuilt without stalling on undecodable rows; the one-second lock
+                             timeout and `DB()` of the other stores; its error strings name hours and
+                             keys, never a row, because a row carries a session identifier). A `Record`
+                             naming a session outside item 13a's identifier grammar (1–128 bytes of
+                             `[A-Za-z0-9._:-]`) is refused, as is the reserved name `other` and a key,
+                             model or tool over 256 bytes, so the stores' delimiters cannot collide and
+                             the erase route of slice 4 will accept the same shape. **Slice
+                             1 of item 13d (2026-10-11)**: nothing records into it and no route reads
+                             it yet — the write hook, the `ledger:` config section, the Redis backend,
+                             the admin routes and the CLI's `--by` land in the following slices.
 /internal/adapter            — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
                              docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
@@ -758,6 +788,10 @@ ingress/anthropicmsgs → adapter, streaming   (RFC-1 §1's Anthropic Messages p
                                   route of S10a, is its first and only importer)
 streaming → adapter                (canonical ChatCompletionChunk/StreamDecoder types live in adapter)
 cache/{inprocess,grpcserver,grpcclient} → cache   (each a real implementation of cache's own interfaces)
+spendledger/{boltstore,ledgertest} → spendledger   (item 13d slice 1: the bbolt backend and the contract
+                                  suite depend on the leaf alone; the leaf imports nothing of the project —
+                                  `budget` exports the nano-USD conversions rather than the ledger importing
+                                  `budget`, so neither package depends on the other)
 cache     ✗→ adapter             (cache is provider-agnostic — keyed on normalized request, not on which
                                   upstream served it; verified: cache has ZERO internal cross-package
                                   imports at all, a stricter, cleaner leaf than an earlier pass of this
