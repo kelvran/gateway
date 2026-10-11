@@ -19,7 +19,8 @@ import (
 func TestNewDataPlaneMuxRegistersExactlyTheDataPlaneRoutes(t *testing.T) {
 	mux := newDataPlaneMux(nil)
 	want := map[string]bool{"/v1/chat/completions": true, "/v1/embeddings": true, "/v1/models": true, "/healthz": true, "/readyz": true, "/api/hello": true, "/v1/messages": true, "/v1/messages/count_tokens": true}
-	for _, path := range dataPlaneRoutes {
+	for _, rt := range dataPlaneRoutes {
+		path := rt.Path
 		if !want[path] {
 			t.Errorf("unexpected route %q in dataPlaneRoutes", path)
 		}

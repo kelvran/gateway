@@ -6,41 +6,83 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 )
 
-// dataPlaneRoutes are the exact patterns newDataPlaneMux registers, in
-// registration order; attribution_test probes every one of them, so a route
-// added here is probed automatically (run() registers nothing outside the
-// builder).
-var dataPlaneRoutes = []string{"/v1/chat/completions", "/v1/embeddings", "/v1/models", "/healthz", "/readyz", "/api/hello", "/v1/messages", "/v1/messages/count_tokens"}
+// dataPlaneAuth names the credential rule a data-plane route applies. The
+// handlers own the check; the table states it so the OpenAPI document's
+// security requirements will derive from one place (plan item 14, slice S3)
+// and mux_test pins each mode against a live server.
+type dataPlaneAuth int
+
+const (
+	authNone            dataPlaneAuth = iota // healthz, readyz, hello: no credential is read
+	authBearer                               // Authorization alone: chat, embeddings (x-api-key is not read)
+	authBearerOrXAPIKey                      // bearerFromRequest: models, messages, count_tokens
+)
+
+// dataPlaneEnvelope names the error body a route's own 405 carries.
+type dataPlaneEnvelope int
+
+const (
+	envelopeOpenAI    dataPlaneEnvelope = iota // the OpenAI JSON envelope, Allow set
+	envelopeAnthropic                          // the Anthropic JSON envelope, Allow set
+	envelopePlainText                          // http.Error text, no Allow: healthz, readyz
+)
+
+// dataPlaneRoute is one row of the data-plane route table. The pattern
+// registered is Path alone, deliberately method-less: the handler answers a
+// wrong method itself, in Envelope, so the error body stays the route's own
+// rather than net/http's plain text (error_envelope_test pins that).
+type dataPlaneRoute struct {
+	Method   string // the one method the handler accepts; every other is its own 405
+	Path     string // an exact path; a trailing-slash variant is Go's plain 404
+	Auth     dataPlaneAuth
+	Envelope dataPlaneEnvelope
+}
+
+// dataPlaneRoutes are the exact routes newDataPlaneMux registers, in
+// registration order; attribution_test probes every one of them, and the
+// item 14 OpenAPI contract test (slice S3) will compare the document against
+// this table, so a route added here is probed now and documented once S3
+// lands. run() registers nothing outside the builder.
+var dataPlaneRoutes = []dataPlaneRoute{
+	{http.MethodPost, "/v1/chat/completions", authBearer, envelopeOpenAI},
+	{http.MethodPost, "/v1/embeddings", authBearer, envelopeOpenAI},
+	{http.MethodGet, "/v1/models", authBearerOrXAPIKey, envelopeOpenAI},
+	{http.MethodGet, "/healthz", authNone, envelopePlainText},
+	{http.MethodGet, "/readyz", authNone, envelopePlainText},
+	{http.MethodHead, "/api/hello", authNone, envelopeOpenAI},
+	{http.MethodPost, "/v1/messages", authBearerOrXAPIKey, envelopeAnthropic},
+	{http.MethodPost, "/v1/messages/count_tokens", authBearerOrXAPIKey, envelopeAnthropic},
+}
 
 // newDataPlaneMux is the one place the data-plane routes are registered:
 // run(), the shared integration helpers and every single-purpose test that
 // registers only data-plane routes build their server from it, so a test is
 // "wired the same way main.go wires it" by construction and a later slice
 // adds a route without a main.go edit (item 11 slice S9a; /v1/messages
-// landed here in S10a, /v1/messages/count_tokens in S10b). Every pattern is an exact path --
-// no subtree, so a trailing-slash variant is Go's plain 404 -- and the
-// server wraps the mux in dataPlaneHandler for attribution and in-flight
-// tracking.
+// landed here in S10a, /v1/messages/count_tokens in S10b). Every pattern is
+// an exact path -- no subtree, so a trailing-slash variant is Go's plain 404
+// -- and the server wraps the mux in dataPlaneHandler for attribution and
+// in-flight tracking.
 func newDataPlaneMux(p *dataplane.Pipeline) *http.ServeMux {
 	mux := http.NewServeMux()
-	for _, route := range dataPlaneRoutes {
-		switch route {
+	for _, rt := range dataPlaneRoutes {
+		switch rt.Path {
 		case "/v1/chat/completions":
-			mux.HandleFunc(route, chatCompletionsHandler(p))
+			mux.HandleFunc(rt.Path, chatCompletionsHandler(p))
 		case "/v1/embeddings":
-			mux.HandleFunc(route, embeddingsHandler(p))
+			mux.HandleFunc(rt.Path, embeddingsHandler(p))
 		case "/v1/models":
-			mux.HandleFunc(route, modelsHandler(p))
+			mux.HandleFunc(rt.Path, modelsHandler(p))
 		case "/healthz":
-			mux.HandleFunc(route, healthzHandler)
+			mux.HandleFunc(rt.Path, healthzHandler)
 		case "/readyz":
-			mux.HandleFunc(route, readyzHandler(p))
+			mux.HandleFunc(rt.Path, readyzHandler(p))
 		case "/api/hello":
-			mux.HandleFunc(route, helloHandler)
+			mux.HandleFunc(rt.Path, helloHandler)
 		case "/v1/messages":
-			mux.HandleFunc(route, messagesHandler(p))
+			mux.HandleFunc(rt.Path, messagesHandler(p))
 		case "/v1/messages/count_tokens":
-			mux.HandleFunc(route, countTokensHandler(p))
+			mux.HandleFunc(rt.Path, countTokensHandler(p))
 		}
 	}
 	return mux

@@ -294,7 +294,8 @@ func newProbeServer(t *testing.T, captureIDs bool) (*httptest.Server, *attributi
 	t.Helper()
 	probe := &attributionProbe{seen: map[string]telemetry.Attribution{}}
 	mux := http.NewServeMux()
-	for _, path := range dataPlaneRoutes {
+	for _, rt := range dataPlaneRoutes {
+		path := rt.Path
 		mux.HandleFunc(path, probe.handler(path))
 	}
 	var inFlight sync.WaitGroup
