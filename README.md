@@ -254,7 +254,7 @@ cosign verify-attestation "$DIGEST" \
 ```
 
 - CI runs golangci-lint with gosec, govulncheck, `go test -race`, ruff, mypy, pip-audit and same-runner coverage gates on every push and pull request; Trivy scans each pushed image digest (report-only) and CodeQL analyzes Go and Python weekly and on every push.
-- OpenSSF Scorecard runs weekly and publishes its results (badge above). All five workflows start from `permissions: {}` and every action is pinned to a full commit SHA; Dependabot tracks Go, pip, Actions and Docker weekly.
+- OpenSSF Scorecard runs weekly and publishes its results (badge above). All five workflows start from `permissions: {}` and every action is pinned to a full commit SHA; Dependabot tracks Go modules, the uv projects, npm, Actions and Docker weekly.
 - Infrastructure code is checked with `terraform validate`, Checkov (soft-fail) and `kubeconform -strict`; the `api/` protobuf contract is guarded by `buf lint` and `buf breaking`.
 - Threat model: [THREAT_MODEL.md](THREAT_MODEL.md) (STRIDE per component, OWASP LLM Top 10 and NIST AI 600-1 crosswalks); machine-readable posture: [SECURITY-INSIGHTS.yml](SECURITY-INSIGHTS.yml). Disclosure: report privately via [GitHub Security Advisories](https://github.com/kelvran/gateway/security/advisories/new) per [SECURITY.md](SECURITY.md); acknowledgement within 3 business days, a fix or mitigation plan within 14 days for Critical/High. Only the latest minor release of each deployable is supported; there is no bug bounty.
 

@@ -4746,3 +4746,17 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** none recorded in `DECISIONS.md` (the fix restores parity with a decision already taken for `finalize`); the Redis uncapped-window question stays the owner's and is now written into the reference pages rather than only the RFC-2 implementation note.
 
 **Next steps / resume point:** the listeners wording sweep (OpenAPI `info`, `compatibility.md`, `openapi.md`, the changelog's first bullet), then size `forward_known`'s upstream leg.
+
+## [2026-10-12] main — Dependabot tracks evals through the `uv` ecosystem
+
+**Files touched:** `.github/dependabot.yml`, `README.md`, `docs/explanation/compare/litellm.md`, `docs/explanation/compare/portkey.md`, `docs/explanation/compare/bifrost.md`, `THREAT_MODEL.md` (the ecosystem list), `DECISIONS.md` (a dated correction on the 2026-09-14 entry), `docs/agents/LOGS.md`.
+
+**Intent/summary:** the owner follow-up "Dependabot evals pip→uv" carried since item 11. evals is a uv project (`evals/pyproject.toml` + `evals/uv.lock`, no requirements file) and the CI evals job installs it from the lock; the `pip` ecosystem rewrites pyproject ranges and leaves the lock alone, so its PRs would never move what CI runs. `gateway/compat/python` made the same switch on 2026-10-11 (item 14 slice S5) with the reason written in the file; the evals block now does the same, keeping its group name so open PRs keep their label. The docker block's comment named `golang:1.26.8-alpine` while the Dockerfile pins `golang:1.27.2-alpine` by digest; it now describes the pin without a version.
+
+**Gates / live:** the file parses (PyYAML; seven update blocks, no `pip` ecosystem left); Dependabot is active on the repository (PRs on 2026-10-04, 10-08 and 10-11); the `uv` ecosystem is already accepted by GitHub for the compat block. No live run beyond that: Dependabot's own weekly run is the proof, and its first `uv` PR for evals is what to look for.
+
+**Reviews**: one read-only `go-reviewer` lane through a Workflow: FIX FIRST — four pages (README.md, `docs/explanation/compare/{litellm,portkey,bifrost}.md`) listed the ecosystems as "gomod, pip, github-actions and docker", stale since the compat blocks landed on 2026-10-11 and wrong on `pip` after this change → "gomod, uv, npm, github-actions and docker"; LOW the comment's "open PRs keep their label" was moot (no evals PR open) and mis-described the mechanism (group names ride branch names and titles, not labels) → reworded; INFO the `pip`-rewrites-ranges claim is consistent with the compat block's and Dependabot's documented pip behaviour but unverifiable offline. Fresh re-read of the repairs: FIX FIRST on two more lists the first sweep missed — `THREAT_MODEL.md` (the NIST crosswalk row) → corrected; the dated 2026-09-14 `DECISIONS.md` entry → a **Corrected 2026-10-12** addendum per the append-only convention. Those two mechanical substitutions were verified by a repository-wide grep (the only remaining hit is the released `gateway/changelog/0.11.0.md`, immutable history) rather than a third reviewer.
+
+**Decisions made:** none new (the compat block's 2026-10-11 reasoning applies).
+
+**Next steps / resume point:** the embeddings uncapped-key settlement fix (test red then green in the tree, unreviewed), then the listeners wording sweep.
