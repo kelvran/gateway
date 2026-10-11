@@ -185,7 +185,7 @@ If check 3 answers `404`, `audit_log_path` is not set (the route is not register
 ## Before you rely on it
 
 - Mutations apply in memory first and answer `204` even if the durable write fails. On the next restart a `DELETE` or rotate whose write failed resurrects the old credential. Alert on `kelvran.persistence.failed` and re-drive the mutation before restarting. See R12 in [Failure modes](../operations/FAILURE-MODES.md).
-- The admin server sets a 10 s read-header timeout and no write timeout, request span or access log. A stalled persistence disk can hold an admin request open indefinitely (P6).
+- The admin server sets a 10 s read-header timeout and 60 s read, write and idle timeouts (since 2026-10-12), and no request span or access log. A stalled persistence disk still blocks the handler's goroutine after the client's connection is closed at 60 s (P6). A large `GET /admin/audit` or `GET /admin/spend` answer over a slow link can be cut by the same bound: narrow it with `since=`/`until=`, `msg=`/`field=` or `key=`.
 - The JSONL audit file is created with mode `0600`, is append-only, is never truncated or rotated, and is not part of `POST /admin/backup`. A failed append logs `admin_audit_durable_append_failed` and the request still succeeds (P7). An unopenable path is fatal at startup. Retention is in [SECURITY.md](../../SECURITY.md).
 - Admin-token rotation itself needs a restart. See [Rotate credentials](rotate-credentials.md).
 - The admin routes, their JSON bodies and the four tiers are public, stable surface under [Versioning](../VERSIONING.md).
@@ -202,7 +202,7 @@ If check 3 answers `404`, `audit_log_path` is not set (the route is not register
 - No rotation or size cap for the JSONL audit file.
 - No metric for audit-append failures; a log line only.
 - No admin route that resets a key's spend without deleting it.
-- No request span, access log or write timeout on the admin server.
+- No request span or access log on the admin server (its timeouts are listed under "Before you rely on it").
 
 ## Release history
 

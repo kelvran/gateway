@@ -685,11 +685,9 @@ func run(configPath string, logger *slog.Logger) error {
 			}
 			defer func() { _ = auditStore.Close() }()
 		}
-		adminServer = &http.Server{
-			Addr:              adminListenAddr,
-			Handler:           admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken, CostViewer: costViewerToken, Operator: operatorToken}, logger, auditStore),
-			ReadHeaderTimeout: 10 * time.Second,
-		}
+		// newAdminServer (admin_server.go) carries the listener's four
+		// timeouts; the pprof routes extend the write bound themselves.
+		adminServer = newAdminServer(adminListenAddr, admin.Handler(cfg, pipeline, admin.Credentials{Admin: adminToken, Viewer: viewerToken, CostViewer: costViewerToken, Operator: operatorToken}, logger, auditStore))
 		// TLSConfig stays nil (plain HTTP, exactly as before this feature
 		// existed) unless admin.mtls is explicitly configured -- see
 		// controlplane.AdminMTLSConfig's own doc comment.
