@@ -10,6 +10,11 @@
 # .github/workflows/ci.yml, but is kept here too so
 # `go run github.com/vladopajic/go-test-coverage/v2@... --config=./gateway/.testcoverage.yml`
 # also works standalone from the `gateway/` directory.
+# CI also passes `source-dir: gateway` (2026-10-11): run from the repo root
+# the tool walks the tree for a go.mod, and with gateway/compat/go.mod (the
+# SDK compatibility matrix's own module) beside gateway/go.mod the walk
+# finds two and gives up, so no profile path resolves. From gateway/ the
+# go.mod is in the source dir itself and nothing changes.
 profile: coverage.out
 
 threshold:

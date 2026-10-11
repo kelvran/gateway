@@ -4384,3 +4384,19 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** `DECISIONS.md` `[2026-10-11]` S12 line — Kelvran-authored tests, not the SDKs' suites; a separate module; the Python leg's own uv project; distinct prompts because the cache is on; `compat` becomes a required status check once green on `main`.
 
 **Next steps / resume point:** after the first green `compat` run on `main`, add `compat (official SDKs against a built gateway)` to the branch protection's required contexts (the token has admin; the plan's S12 exit criterion authorises it) and record the four-context list as a forward correction in `THREAT_MODEL.md`'s change log and `DECISIONS.md`. Then S13 (the nightly TypeScript leg under G15, the ADR 0003 one-line note, the release close-out) → `gateway/v0.19.0`, which the owner cuts (never the agent). Follow-ups carried from S11b/S11b2/S11c stand; added: a cache hit on the Anthropic ingress replays the first answer's `id`; `.github/dependabot.yml`'s evals entry says `pip` for a uv.lock project (the dedicated `uv` ecosystem exists) — an evals-side decision, not changed here.
+
+## [2026-10-11] main — fix(ci) after item 11 S12: go-test-coverage needs `source-dir: gateway` once a nested module exists
+
+**Files touched:** `.github/workflows/ci.yml` (the gateway job's go-test-coverage step gains `source-dir: gateway`), `gateway/.testcoverage.yml` (comment).
+
+**Intent/summary:** the first CI run of S12 (`98c65cb9`) went red on the gateway job's last step: `go-test-coverage` failed with `could not find file [github.com/kelvran/gateway/gateway/api/gatewayevents/v1/gatewayevents.pb.go]` while the `compat` job itself passed. Mechanism, read in the tool's source (`pkg/testcoverage/coverage/module.go`, v2.19.0): with no `go.mod` in its source dir (the repo root) it walks the tree for one; `findGoModWithWalk` returns nothing when it finds more than one — `gateway/go.mod` and the new `gateway/compat/go.mod` — so the module prefix is empty and `findFilePathMatchingSearch` cannot match any profile path; the `build.Import` fallback from a module-less root fails too. Reproduced locally from the repo root with a one-line fake profile; `--source-dir=gateway` resolves the files (the go.mod is then found in the source dir, no walk), and the standalone run from `gateway/` is unchanged. Nothing in the coverage itself changed.
+
+**Reviews**: none (a one-line CI input with a reproduced mechanism; the S12 reviews stand).
+
+**Gates:** the fake-profile reproduction (fails from the root, passes with `--source-dir=gateway`, passes from `gateway/`); `ci.yml` parses; `./scripts/check-doc-paths.sh` and lychee green.
+
+**Live:** CI for this commit is the proof; polled after the push.
+
+**Decisions made:** none.
+
+**Next steps / resume point:** when this run is green, add `compat (official SDKs against a built gateway)` to the branch protection's required contexts (the S12 exit criterion), then forward-correct `THREAT_MODEL.md`'s change log and `DECISIONS.md` (they record three contexts); then S13.

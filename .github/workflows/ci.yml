@@ -203,6 +203,14 @@ jobs:
         with:
           config: ./gateway/.testcoverage.yml
           profile: gateway/coverage.out
+          # Required since gateway/compat/go.mod exists (2026-10-11): the tool
+          # looks for go.mod in its source dir and, finding none at the repo
+          # root, walks the tree -- two go.mod files make that walk return
+          # nothing ("found multiple go.mod files"), the module prefix is lost
+          # and no profile path resolves ("could not find file"). Pointing it
+          # at gateway/ finds gateway/go.mod directly; reproduced and fixed
+          # locally with a one-line profile before this landed.
+          source-dir: gateway
 
   compat:
     name: compat (official SDKs against a built gateway)
