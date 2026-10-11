@@ -501,10 +501,24 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              naming a session outside item 13a's identifier grammar (1–128 bytes of
                              `[A-Za-z0-9._:-]`) is refused, as is the reserved name `other` and a key,
                              model or tool over 256 bytes, so the stores' delimiters cannot collide and
-                             the erase route of slice 4 will accept the same shape. **Slices
-                             1–2 of item 13d (2026-10-11)**: nothing records into it and no route reads
-                             it yet — the write hook, the `ledger:` config section, the admin routes
-                             and the CLI's `--by` land in the following slices.
+                             the erase route of slice 4 will accept the same shape. **Slice 3 of
+                             item 13d (2026-10-11)** wired it: cmd/gateway's `newLedger` picks the
+                             backend by the budget's rule (`budget.redis_addr` → Redis, else
+                             `ledger.persist_path` → bbolt through `openPersistStoreWithRecovery`, else
+                             memory) from the `ledger:` section (`retention_hours` 168, the two caps;
+                             every bound a positive integer — `0` is rejected at load); the dataplane
+                             records every billable chat and embeddings call from `finalize` and the
+                             embeddings path under the exact `billable` gate that feeds
+                             `kelvran.llm.spend_usd`, on the settlement context, with the served model,
+                             the client tool and `sessionFor`'s session (the Claude Code session id, else
+                             a grammar-passing `agent_run_id` Baggage member, else none; a value equal to
+                             `other` is dropped and counted); a failed write is one Warn plus
+                             `kelvran.persistence.failed{store_kind=ledger}`, never a failed request;
+                             `RunLedgerSweepLoop` sweeps at start and hourly beside the health-probe loop;
+                             `DeleteVirtualKey` cascades to the key's rows; the bbolt file is a
+                             `BackupStores` candidate (`ledger-<stamp>.bbolt`) and `-restore-store ledger`
+                             restores it. No route reads the ledger yet — `GET /admin/spend`,
+                             `POST /admin/spend/erase` and the CLI's `--by` land in the following slices.
 /internal/adapter            — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
                              docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
@@ -793,7 +807,8 @@ tree nodes):
 ```
 dataplane → cache, adapter, adapter/{anthropic,bedrock,gemini,openai,openaicompat}, streaming,
             budget, ratelimit, router, costaccounting, telemetry, guardrail, identity, prompt,
-            api/gatewayevents/v1, alerting, ingress/anthropicmsgs (permitted since 2026-10-10 S7; imported by dataplane/count_tokens.go since S11c)
+            api/gatewayevents/v1, alerting, ingress/anthropicmsgs (permitted since 2026-10-10 S7; imported by dataplane/count_tokens.go since S11c),
+            spendledger (item 13d slice 3: the write hook, the key cascade, the sweep loop and the backup candidate; the leaf's interface only — the backends are cmd/gateway's choice)
 adapter/{anthropic,bedrock,gemini,openai,openaicompat} → adapter, streaming
 ingress/anthropicmsgs → adapter, streaming   (RFC-1 §1's Anthropic Messages parser/encoders, item 11 S7: a leaf
                                   beside the provider adapters, never importing one of them — its block

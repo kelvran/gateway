@@ -1,6 +1,6 @@
 # Back up and restore the gateway's bbolt stores
 
-This page shows an operator how to take a live backup of the gateway's bbolt-backed stores (virtual keys, budget spend, prompts) through the admin API, and how to put a backup file back in place with the offline `-restore-store` procedure after a corrupted or lost file. It is for whoever runs a single-process gateway with `persist_path` set. It also states what Redis-backed state is not covered.
+This page shows an operator how to take a live backup of the gateway's bbolt-backed stores (virtual keys, budget spend, prompts, the spend ledger) through the admin API, and how to put a backup file back in place with the offline `-restore-store` procedure after a corrupted or lost file. It is for whoever runs a single-process gateway with `persist_path` set. It also states what Redis-backed state is not covered.
 
 Use this when you have set `admin.persist_path`, `budget.persist_path` or `prompt.persist_path` and need a recovery point, or when a gateway refuses to start because one of those files is corrupt.
 
@@ -20,6 +20,7 @@ Every route, flag and key on this page is in gateway/v0.17.0 unless marked other
 | identity | `admin.persist_path` | `identity-<timestamp>.bbolt` | virtual keys: ids, key hashes, limits |
 | budget | `budget.persist_path` | `budget-<timestamp>.bbolt` | per-key spend records |
 | prompt | `prompt.persist_path` | `prompt-<timestamp>.bbolt` | prompt templates and versions |
+| ledger | `ledger.persist_path` | `ledger-<timestamp>.bbolt` | spend ledger: hourly spend and request counts by key, model, tool and session (item 13d) |
 
 Each file is a byte copy of the whole database, taken inside a bbolt read transaction. A key deleted later with `DELETE /admin/virtual_keys/{name}` also loses its persisted budget record, but a backup taken earlier still holds both (see [Data subject requests](../operations/DATA-SUBJECT-REQUESTS.md)).
 
@@ -85,12 +86,12 @@ The gateway logs `admin_backup_completed` with `files` and `authorized_by=admin`
 Restore is a one-shot CLI mode of the gateway binary. It must run against a stopped gateway: every bbolt store holds an exclusive file lock while the process runs, and replacing the file under a live process is an unsupported concurrent-access hazard.
 
 ```
-gateway -config <config.yaml> -restore-store <identity|budget|prompt> -restore-from <backup-file> [-restore-force]
+gateway -config <config.yaml> -restore-store <identity|budget|prompt|ledger> -restore-from <backup-file> [-restore-force]
 ```
 
-- `-restore-store` must be exactly `identity`, `budget` or `prompt`. One store per invocation.
+- `-restore-store` must be exactly `identity`, `budget`, `prompt` or `ledger`. One store per invocation.
 - `-restore-from` is required. The file must open as a bbolt database; Restore checks this read-only before it touches the destination.
-- The destination is resolved from the same config file: `identity` to `admin.persist_path`, `budget` to `budget.persist_path`, `prompt` to `prompt.persist_path`. A store with no `persist_path` fails with `<kind> store has no persist_path configured -- nothing to restore into`.
+- The destination is resolved from the same config file: `identity` to `admin.persist_path`, `budget` to `budget.persist_path`, `prompt` to `prompt.persist_path`, `ledger` to `ledger.persist_path`. A store with no `persist_path` fails with `<kind> store has no persist_path configured -- nothing to restore into`.
 - `-restore-force` is needed whenever the destination file exists. Without it Restore refuses with `backup: <dest> already exists, refusing to overwrite (pass force to override)`.
 - The copy is atomic: the bytes go to a temp file named `<dest>.restoring-*` in the destination directory, are fsynced, set to mode `0600`, then renamed into place. The temp file is removed on every error path.
 - The flag is evaluated before `-validate` and never starts a listener. On success it prints `restored <kind> store from "<path>"` and exits `0`; on failure it prints `restore error: ...` to stderr and exits `1`.

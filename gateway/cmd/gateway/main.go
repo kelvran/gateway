@@ -77,6 +77,9 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit/redislimiter"
 	"github.com/kelvran/gateway/gateway/internal/router"
+	"github.com/kelvran/gateway/gateway/internal/spendledger"
+	ledgerboltstore "github.com/kelvran/gateway/gateway/internal/spendledger/boltstore"
+	"github.com/kelvran/gateway/gateway/internal/spendledger/redisledger"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
@@ -359,7 +362,7 @@ func buildPerDeploymentTLSClients(deployments []controlplane.DeploymentConfig) (
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the gateway's YAML config file")
 	validateOnly := flag.Bool("validate", false, "load and validate the config file, then exit (0 if valid, 1 if not) -- no listener, no store, no telemetry, nothing else started")
-	restoreStore := flag.String("restore-store", "", "run a one-shot OFFLINE restore for this store's persist_path (identity|budget|prompt), then exit -- no listener, no server started. The gateway process must be STOPPED before running this, and must not be started again against the same persist_path until it completes; see internal/backup.Restore's own doc comment for why a live restore-while-serving is not supported")
+	restoreStore := flag.String("restore-store", "", "run a one-shot OFFLINE restore for this store's persist_path (identity|budget|prompt|ledger), then exit -- no listener, no server started. The gateway process must be STOPPED before running this, and must not be started again against the same persist_path until it completes; see internal/backup.Restore's own doc comment for why a live restore-while-serving is not supported")
 	restoreFrom := flag.String("restore-from", "", "backup file path to restore from (e.g. one written by POST /admin/backup) -- required when -restore-store is set")
 	showVersion := flag.Bool("version", false, "print the build identity (version, commit, build date, Go version, platform) on one line and exit 0")
 	restoreForce := flag.Bool("restore-force", false, "overwrite an existing destination persist_path file when restoring -- refused by default, mirroring backup.CopyFile's own refuses-to-overwrite convention")
@@ -449,8 +452,10 @@ func restorablePersistPath(cfg *controlplane.Config, storeKind string) (string, 
 		path = cfg.Budget.PersistPath
 	case "prompt":
 		path = cfg.Prompt.PersistPath
+	case "ledger":
+		path = cfg.Ledger.PersistPath
 	default:
-		return "", fmt.Errorf("unknown -restore-store %q (must be one of: identity, budget, prompt)", storeKind)
+		return "", fmt.Errorf("unknown -restore-store %q (must be one of: identity, budget, prompt, ledger)", storeKind)
 	}
 	if path == "" {
 		return "", fmt.Errorf("%s store has no persist_path configured -- nothing to restore into", storeKind)
@@ -740,6 +745,12 @@ func run(configPath string, logger *slog.Logger) error {
 	// main/admin servers below: canceled by the same SIGTERM/SIGINT that
 	// triggers graceful shutdown, no separate stop mechanism needed.
 	go pipeline.RunHealthProbeLoop(ctx, time.Duration(cfg.HealthProbe.IntervalSeconds)*time.Second)
+
+	// The spend ledger's hourly retention sweep (RFC-2 item 13d): the same
+	// ctx, so the same SIGTERM/SIGINT stops it. The in-memory and bbolt
+	// backends have no other retention; the Redis backend's per-hash TTL
+	// is only a backstop for this loop.
+	go pipeline.RunLedgerSweepLoop(ctx, ledgerSweepInterval)
 
 	// File-based credential hot-reload, per
 	// gateway/internal/gateway/dataplane/credential_reload.go's own doc
@@ -1261,6 +1272,11 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		return nil, fmt.Errorf("constructing budget tracker: %w", err)
 	}
 
+	ledger, err := newLedger(cfg.Ledger, cfg.Budget, cfg.Admin.OnCorruptStore, logger)
+	if err != nil {
+		return nil, fmt.Errorf("constructing spend ledger: %w", err)
+	}
+
 	promptStore, err := newPromptStore(cfg.Prompt, cfg.Admin.OnCorruptStore, logger)
 	if err != nil {
 		return nil, fmt.Errorf("constructing prompt store: %w", err)
@@ -1330,6 +1346,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		DeploymentConcurrency: ratelimit.NewConcurrencyLimiter(deploymentConcurrencyConfigs),
 		DeploymentLimiter:     ratelimit.NewInMemoryKeyLimiter(deploymentRateLimitConfigs),
 		Budget:                budgetTracker,
+		Ledger:                ledger,
 		Cache:                 inprocess.NewWithClockAndJitter(cfg.Cache.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.JitterFraction), rand.Float64),
 		CacheL2:               inprocess.NewWithClockAndJitter(cfg.Cache.L2.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.L2.JitterFraction), rand.Float64),
 		CacheL3:               inprocess.NewLexicalCacheWithClockAndJitter(cfg.Cache.L3.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.L3.JitterFraction), rand.Float64),
@@ -1552,6 +1569,45 @@ func mergePersistedVirtualKeys(virtualKeys []identity.VirtualKey, keyConfigs []r
 // redisbudget.Backend never fails on an unreachable address (go-redis
 // dials lazily), mirroring newKeyLimiter's identical rationale — gateway
 // startup should not fail-closed on Redis being down.
+// ledgerSweepInterval is how often the spend ledger drops expired hour
+// buckets; the unit of the ledger is the hour, so sweeping more often
+// would find nothing new.
+const ledgerSweepInterval = time.Hour
+
+// newLedger constructs the spend ledger (RFC-2 item 13d) by the budget's
+// backend rule: budget.redis_addr set → the Redis backend regardless of
+// ledger.persist_path (a warning when both are set, like the budget);
+// persist_path set → one bbolt file through openPersistStoreWithRecovery
+// (admin.on_corrupt_store applies); neither → in memory, lost on restart,
+// still bounded. The bounds come from the config (never zero: Load
+// rejects 0). Opening the Redis backend never fails on an unreachable
+// address, like every other Redis client here.
+func newLedger(cfg controlplane.LedgerConfig, budgetCfg controlplane.BudgetConfig, onCorruptStore string, logger *slog.Logger) (spendledger.Ledger, error) {
+	opts := spendledger.Options{
+		Retention:         time.Duration(cfg.RetentionHours) * time.Hour,
+		MaxSessionsPerKey: cfg.MaxSessionsPerKey,
+		MaxRowsPerKey:     cfg.MaxRowsPerKey,
+	}
+	if budgetCfg.RedisAddr != "" {
+		if cfg.PersistPath != "" {
+			logger.Warn("ledger_redis_addr_and_persist_path_both_set", "redis_addr", budgetCfg.RedisAddr, "persist_path", cfg.PersistPath)
+		}
+		store, err := redisledger.Open(redisOptions(budgetCfg.RedisAddr, budgetCfg.Redis), opts)
+		if err != nil {
+			return nil, fmt.Errorf("opening redis spend ledger at %q: %w", budgetCfg.RedisAddr, err)
+		}
+		return store, nil
+	}
+	if cfg.PersistPath == "" {
+		return spendledger.NewMemory(opts), nil
+	}
+	store, err := openPersistStoreWithRecovery(cfg.PersistPath, onCorruptStore, logger, ledgerboltstore.OpenWith(opts))
+	if err != nil {
+		return nil, fmt.Errorf("opening spend ledger store at %q: %w", cfg.PersistPath, err)
+	}
+	return store, nil
+}
+
 func newBudgetTracker(cfg controlplane.BudgetConfig, onCorruptStore string, logger *slog.Logger) (*budget.Tracker, error) {
 	if cfg.RedisAddr != "" {
 		if cfg.PersistPath != "" {

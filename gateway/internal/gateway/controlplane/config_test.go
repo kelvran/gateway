@@ -3886,3 +3886,74 @@ func TestLoadTelemetryPrometheusRejectsEmptyListenAddr(t *testing.T) {
 		})
 	}
 }
+
+// ledgerConfigYAML wraps a `ledger:` block in an otherwise minimal valid
+// config, for the item 13d slice-3 tests below.
+func ledgerConfigYAML(ledgerBlock string) string {
+	return "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\n" + ledgerBlock + "deployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+}
+
+// TestLoadLedgerSectionDefaultsWhenAbsent: a config without a `ledger:`
+// block carries the RFC-2 / G29 defaults explicitly, so cmd/gateway and the
+// reference page read one source of truth.
+func TestLoadLedgerSectionDefaultsWhenAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(ledgerConfigYAML("")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load without a ledger section: %v", err)
+	}
+	if cfg.Ledger.PersistPath != "" || cfg.Ledger.RetentionHours != 168 || cfg.Ledger.MaxSessionsPerKey != 2000 || cfg.Ledger.MaxRowsPerKey != 50000 {
+		t.Errorf("Ledger defaults = %+v, want persist_path \"\", 168 h, 2000 sessions, 50000 rows", cfg.Ledger)
+	}
+}
+
+// TestLoadLedgerSectionParsesValues: every key of the block is read.
+func TestLoadLedgerSectionParsesValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	block := "ledger:\n  persist_path: \"kelvran-ledger.db\"\n  retention_hours: 24\n  max_sessions_per_key: 10\n  max_rows_per_key: 500\n"
+	if err := os.WriteFile(path, []byte(ledgerConfigYAML(block)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with a ledger section: %v", err)
+	}
+	want := LedgerConfig{PersistPath: "kelvran-ledger.db", RetentionHours: 24, MaxSessionsPerKey: 10, MaxRowsPerKey: 500}
+	if cfg.Ledger != want {
+		t.Errorf("Ledger = %+v, want %+v", cfg.Ledger, want)
+	}
+}
+
+// TestLoadLedgerRejectsUnboundedOrMalformedValues: `retention_hours: 0`
+// would make the ledger unbounded (G29: 0 is rejected at load), a cap below
+// one is meaningless, a non-integer is a typo and a non-mapping block is the
+// natural typo for `ledger: true`.
+func TestLoadLedgerRejectsUnboundedOrMalformedValues(t *testing.T) {
+	cases := map[string]struct {
+		block string
+		want  string
+	}{
+		"zero retention":          {"ledger:\n  retention_hours: 0\n", "ledger.retention_hours"},
+		"negative retention":      {"ledger:\n  retention_hours: -5\n", "ledger.retention_hours"},
+		"non-integer retention":   {"ledger:\n  retention_hours: \"a week\"\n", "ledger.retention_hours"},
+		"zero sessions":           {"ledger:\n  max_sessions_per_key: 0\n", "ledger.max_sessions_per_key"},
+		"zero rows":               {"ledger:\n  max_rows_per_key: 0\n", "ledger.max_rows_per_key"},
+		"non-mapping block":       {"ledger: true\n", "ledger must be a mapping"},
+		"non-string persist_path": {"ledger:\n  persist_path:\n    nested: x\n", "ledger.persist_path"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(ledgerConfigYAML(tc.block)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load = %v, want an error naming %q", err, tc.want)
+			}
+		})
+	}
+}

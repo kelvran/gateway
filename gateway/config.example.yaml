@@ -401,6 +401,19 @@ telemetry:
 #   # redis_username: "default"
 #   # redis_tls: true
 
+# Spend ledger (RFC-2 item 13d): every billable call by hour, virtual key,
+# served model, client tool and session, behind GET /admin/spend. Optional:
+# omit the whole section for an in-memory ledger with these defaults (lost
+# on restart, still bounded). The backend follows budget.redis_addr: when
+# it is set the ledger shares the budget's Redis and persist_path is
+# ignored with a warning. Every bound must be a positive integer -- a
+# ledger is never unbounded, so retention_hours: 0 is rejected at load.
+# ledger:
+#   persist_path: "/var/lib/kelvran-gateway/ledger.db"
+#   retention_hours: 168
+#   max_sessions_per_key: 2000
+#   max_rows_per_key: 50000
+
 # Direct-from-Go webhook push for operational signals the gateway
 # already computes but never delivers anywhere (a budget-threshold
 # crossing today) -- see

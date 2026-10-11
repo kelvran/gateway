@@ -589,6 +589,42 @@ type BudgetConfig struct {
 	Redis RedisAuthConfig
 }
 
+// LedgerConfig is the optional `ledger:` block per
+// docs/rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md (item 13d)
+// and owner gate G29: the bounded spend ledger behind GET /admin/spend.
+// Backend selection follows the budget's rule exactly: budget.redis_addr
+// set → the Redis backend regardless of PersistPath (a warning when both
+// are set); PersistPath set → one bbolt file governed by
+// admin.on_corrupt_store; neither → in memory, lost on restart, still
+// bounded. The three bounds are never zero: a ledger is never unbounded
+// (a deliberate departure from BudgetResetIntervalSeconds's zero-means-
+// never idiom), so `retention_hours: 0` is rejected at load rather than
+// read as "keep forever". Unlike the budget, whose defaults live in
+// cmd/gateway, the three defaults are applied here in Load (the Default*
+// constants below), so a loaded Config always carries concrete bounds and
+// the reference page has one source; a new bound must be added to Load's
+// initial Config as well as to the constants.
+type LedgerConfig struct {
+	// PersistPath is the bbolt file for single-process durability. Empty
+	// means in memory unless budget.redis_addr selects Redis.
+	PersistPath string
+	// RetentionHours is how long hour buckets live; default 168 (7 days).
+	RetentionHours int
+	// MaxSessionsPerKey caps the named sessions a key keeps in the window;
+	// the rest fold into `other`. Default 2000.
+	MaxSessionsPerKey int
+	// MaxRowsPerKey caps the named cells (a row inside one hour bucket) a
+	// key keeps; the rest fold into `other`. Default 50000.
+	MaxRowsPerKey int
+}
+
+// Ledger defaults per G29.
+const (
+	DefaultLedgerRetentionHours    = 168
+	DefaultLedgerMaxSessionsPerKey = 2000
+	DefaultLedgerMaxRowsPerKey     = 50000
+)
+
 // PromptConfig configures restart-durable prompt-template persistence,
 // mirroring BudgetConfig's identical shape and optionality. A zero-valued
 // PromptConfig (PersistPath == "") means pure in-memory prompt storage,
@@ -1051,6 +1087,10 @@ type Config struct {
 	Attribution AttributionConfig
 	// Budget configures budget-spend persistence. Optional.
 	Budget BudgetConfig
+	// Ledger is the optional `ledger:` block of the spend ledger (RFC-2
+	// item 13d, G29); its defaults are explicit so a config without the
+	// block carries them.
+	Ledger LedgerConfig
 	// Prompt configures prompt-template persistence. Optional.
 	Prompt PromptConfig
 	// RateLimit configures distributed rate limiting. Optional.
@@ -1102,7 +1142,7 @@ func Parse(data []byte, source string) (*Config, error) {
 		return nil, fmt.Errorf("controlplane: parsing config %s: %w", source, err)
 	}
 
-	cfg := &Config{PriceTable: map[string]ModelPriceConfig{}}
+	cfg := &Config{PriceTable: map[string]ModelPriceConfig{}, Ledger: LedgerConfig{RetentionHours: DefaultLedgerRetentionHours, MaxSessionsPerKey: DefaultLedgerMaxSessionsPerKey, MaxRowsPerKey: DefaultLedgerMaxRowsPerKey}}
 
 	var ok bool
 	cfg.ListenAddr, ok = getString(root, "listen_addr")
@@ -1403,6 +1443,40 @@ func Parse(data []byte, source string) (*Config, error) {
 
 	if promptRaw, ok := getMap(root, "prompt"); ok {
 		cfg.Prompt.PersistPath, _ = getString(promptRaw, "persist_path")
+	}
+
+	// ledger: a non-mapping (`ledger: true`) is the natural typo and is
+	// refused loudly, like telemetry.prometheus; each bound must be a
+	// positive integer -- a ledger is never unbounded (G29).
+	if raw, present := root["ledger"]; present {
+		ledgerRaw, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("controlplane: ledger must be a mapping (got %T)", raw)
+		}
+		if raw, present := ledgerRaw["persist_path"]; present {
+			path, ok := raw.(string)
+			if !ok {
+				return nil, fmt.Errorf("controlplane: ledger.persist_path must be a string (got %T)", raw)
+			}
+			cfg.Ledger.PersistPath = path
+		}
+		for _, bound := range []struct {
+			key string
+			dst *int
+		}{
+			{"retention_hours", &cfg.Ledger.RetentionHours},
+			{"max_sessions_per_key", &cfg.Ledger.MaxSessionsPerKey},
+			{"max_rows_per_key", &cfg.Ledger.MaxRowsPerKey},
+		} {
+			if _, present := ledgerRaw[bound.key]; !present {
+				continue
+			}
+			n, ok := getInt(ledgerRaw, bound.key)
+			if !ok || n < 1 {
+				return nil, fmt.Errorf("controlplane: ledger.%s must be a positive integer (a ledger is never unbounded; omit the key for the default)", bound.key)
+			}
+			*bound.dst = n
+		}
 	}
 
 	if rateLimitRaw, ok := getMap(root, "rate_limit"); ok {

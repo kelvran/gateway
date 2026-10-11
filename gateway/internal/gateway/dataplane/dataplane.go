@@ -70,6 +70,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/prompt"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/router"
+	"github.com/kelvran/gateway/gateway/internal/spendledger"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
@@ -559,6 +560,13 @@ type Config struct {
 	// Budget tracks each virtual key's cumulative spend against its
 	// configured BudgetUSD cap. See internal/budget.
 	Budget *budget.Tracker
+	// Ledger is the bounded spend ledger of RFC-2 item 13d (see
+	// internal/spendledger): every billable call is recorded by hour,
+	// virtual key, served model, client tool and session, under the exact
+	// gate that feeds kelvran.llm.spend_usd. cmd/gateway always wires one
+	// (in memory when nothing is configured); nil, which tests use, means
+	// no ledger and the hook is a no-op.
+	Ledger spendledger.Ledger
 	// Prompts holds every operator-managed server-side prompt/template
 	// (see internal/prompt), resolved into real Messages content on a
 	// request naming PromptID. Optional -- nil defaults to a fresh,
@@ -742,6 +750,8 @@ type Pipeline struct {
 	// nil-check branch.
 	retryBackoff *ratelimit.RetryBackoff
 	budget       *budget.Tracker
+	// ledger is Config.Ledger; nil means no ledger (see ledger.go).
+	ledger spendledger.Ledger
 	// prompts is always non-nil (NewPipeline defaults it to a fresh
 	// prompt.NewStore() when Config.Prompts is unset) -- every real call
 	// site (resolvePromptIfSet, UpsertPrompt/DeletePrompt/GetPrompt/
@@ -1140,6 +1150,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		deploymentLimiter:     cfg.DeploymentLimiter,
 		retryBackoff:          ratelimit.NewRetryBackoff(),
 		budget:                cfg.Budget,
+		ledger:                cfg.Ledger,
 		prompts:               prompts,
 		cache:                 cfg.Cache,
 		cacheL2:               cfg.CacheL2,
@@ -1201,11 +1212,15 @@ func (p *Pipeline) Close() error {
 		identityErr = p.identityStore.Close()
 	}
 	promptErr := p.prompts.Close()
-	return errors.Join(budgetErr, limiterErr, identityErr, promptErr)
+	var ledgerErr error
+	if p.ledger != nil {
+		ledgerErr = p.ledger.Close()
+	}
+	return errors.Join(budgetErr, limiterErr, identityErr, promptErr, ledgerErr)
 }
 
 // BackupStores backs up every configured, bbolt-backed durable store
-// (identity/budget/prompt — whichever have a real persist_path
+// (identity/budget/prompt/ledger — whichever have a real persist_path
 // configured) to destDir, one timestamped file per store, via
 // backup.CopyFile — safe to call while this Pipeline is actively serving
 // traffic, per that package's own doc comment. A store with no
@@ -1223,6 +1238,7 @@ func (p *Pipeline) BackupStores(destDir string) ([]string, error) {
 		{"identity", p.identityStore},
 		{"budget", p.budget.Store()},
 		{"prompt", p.prompts.Persister()},
+		{"ledger", p.ledger},
 	}
 
 	var backedUp []string
@@ -1821,6 +1837,10 @@ func (p *Pipeline) applyVirtualKeyDeleteLocked(name string, v mutationVersion) e
 				telemetry.RecordPersistenceFailed(context.Background(), "budget", name)
 				p.logger.Warn("budget_persist_failed", "key_id", name, "error", err.Error())
 			}
+			// The key's spend-ledger rows go with it (RFC-2 item 13d: the
+			// cascade every replica applies), with the same posture: a
+			// ledger failure never turns a revocation into an error.
+			p.deleteLedgerKey(name)
 			p.virtualKeyVersions[name] = v
 			return nil
 		}
@@ -3632,6 +3652,11 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	spendUSD, _ := cost.Float64()
 	attribution := p.effectiveAttribution(ctx, vk)
 	telemetry.RecordLLMSpend(ctx, spendUSD, vk.ID, attribution.ClientTool, attribution.RequestClass)
+	// The spend ledger (RFC-2 item 13d): the served model is dep.Model, the
+	// one the cost above is priced against.
+	settleCtx, cancelSettle := settlementContext(ctx)
+	p.recordLedgerEntry(settleCtx, vk.ID, dep.Model, attribution, cost)
+	cancelSettle()
 
 	return resp, nil
 }
@@ -5099,6 +5124,10 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if billable {
 		spendUSD, _ := cost.Float64()
 		telemetry.RecordLLMSpend(ctx, spendUSD, virtualKeyID, attribution.ClientTool, attribution.RequestClass)
+		// The spend ledger (RFC-2 item 13d), under the same gate, priced
+		// against the same served model, on the settlement context so a
+		// client that has already disconnected does not lose the row.
+		p.recordLedgerEntry(settleCtx, virtualKeyID, realServingModel(dep, req.Model), attribution, cost)
 	}
 
 	// savingsUsd was already computed above (before result), shared by

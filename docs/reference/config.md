@@ -65,6 +65,7 @@ The gateway parses `config.yaml` with a hand-rolled YAML subset, not a YAML libr
 | `telemetry` | `mapping` | stdout exporter | See [telemetry](#telemetry) | telemetry |
 | `attribution` | `mapping` | identifier capture on | See [attribution](#attribution). Since `gateway/v0.18.0` | attribution middleware, dataplane |
 | `budget` | `mapping` | in-memory | See [budget](#budget) | budget tracker |
+| `ledger` | `mapping` | in-memory, 168 h, 2000 sessions, 50000 rows | See [ledger](#ledger). Since the gateway/v0.19.0 line (item 13d) | spend ledger |
 | `prompt` | `mapping` | in-memory | See [prompt](#prompt) | prompt store |
 | `rate_limit` | `mapping` | in-memory | See [rate_limit](#rate_limit) | per-key limiter |
 | `alerting` | `mapping` | off | See [alerting](#alerting) | alert notifier |
@@ -249,7 +250,7 @@ First shipped in `gateway/v0.18.0`. The whole section is optional; when present 
 
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
-| `capture_ids` | `bool` | `true` | `false` keeps every request from carrying the Claude Code identifiers (`x-claude-code-session-id`, `-agent-id`, `-parent-agent-id`, `-prompt-id`, `-agent-type`) onto the request span. The bounded attribution values — the normalised `User-Agent` client tool and the request class — are always captured as metric dimensions and log fields (normalised to `other` / `none` when absent) and as span attributes when present (the request class reaches the span only when its header was sent). A request that fails authentication never carries identifiers, whatever this switch says. A non-boolean value fails startup. Per-key opt-out: `virtual_keys.<name>.attribution_capture_ids`. |
+| `capture_ids` | `bool` | `true` | `false` keeps every request from carrying the Claude Code identifiers (`x-claude-code-session-id`, `-agent-id`, `-parent-agent-id`, `-prompt-id`, `-agent-type`) onto the request span. The bounded attribution values — the normalised `User-Agent` client tool and the request class — are always captured as metric dimensions and log fields (normalised to `other` / `none` when absent) and as span attributes when present (the request class reaches the span only when its header was sent). A request that fails authentication never carries identifiers, whatever this switch says. The switch governs the Claude Code headers only: the W3C Baggage `agent_run_id` member a client sends on purpose still reaches the span, and (since item 13d) the spend ledger's session when it passes the identifier grammar and no Claude Code session id was kept — the RFC's G14 treats it as the caller's own, pre-existing identifier. A non-boolean value fails startup. Per-key opt-out: `virtual_keys.<name>.attribution_capture_ids`. |
 
 See [the attribution and spend-ledger RFC](../rfcs/2026-10-09-gateway-attribution-and-spend-ledger.md) and [metrics-and-logs.md](metrics-and-logs.md).
 
@@ -264,6 +265,19 @@ Durability for virtual-key spend. With neither key set, spend is in memory and r
 | `redis_password_env`, `redis_username`, `redis_tls` | see [Redis auth keys](#redis-auth-keys) | | |
 
 The Redis client dials lazily; an unreachable Redis does not stop startup. Opening the bbolt file follows the rules in [Persistence files](#persistence-files).
+
+## `ledger`
+
+The bounded spend ledger of RFC-2 item 13d: every billable chat completion and embeddings call is recorded by hour, virtual key, served model, client tool and session, for `GET /admin/spend` (the route lands with the next slice). With no block the ledger is in memory with the defaults below and resets on restart.
+
+| Key | Type | Default | Meaning and validation |
+|---|---|---|---|
+| `persist_path` | `string` | empty (in-memory) | Path of the bbolt file for single-process durability, governed by `admin.on_corrupt_store`. Ignored, with a warning (`ledger_redis_addr_and_persist_path_both_set`), when `budget.redis_addr` is set: the ledger then shares the budget's Redis |
+| `retention_hours` | `integer` | 168 | Hour buckets older than this are dropped by an hourly sweep; a query for the last `retention_hours` is always complete. Must be at least 1: `0` is rejected at load (a ledger is never unbounded) |
+| `max_sessions_per_key` | `integer` | 2000 | Named sessions a key keeps in the window; further sessions are recorded under `other`. At least 1 |
+| `max_rows_per_key` | `integer` | 50000 | Named cells (a row inside one hour bucket) a key keeps; further cells fold into `other` keeping model and tool. At least 1 |
+
+The backend follows `budget.redis_addr` exactly as the budget does; the Redis client dials lazily. A ledger write failure never fails the request: it is one `ledger_record_failed` line and `kelvran.persistence.failed{store_kind=ledger}`.
 
 ## `prompt`
 
@@ -440,7 +454,7 @@ Not available today: a custom CA bundle or a client certificate for Redis TLS.
 
 ## Persistence files
 
-`admin.persist_path`, `budget.persist_path` and `prompt.persist_path` are bbolt files, all governed by `admin.on_corrupt_store`.
+`admin.persist_path`, `budget.persist_path`, `prompt.persist_path` and `ledger.persist_path` are bbolt files, all governed by `admin.on_corrupt_store`.
 
 | Situation | Behaviour |
 |---|---|
@@ -483,6 +497,7 @@ The process exits 1 before binding a listener when any of the following holds. T
 | no | `guardrails.embed_sim` cannot be constructed: `similarity_threshold` above 1, a `corpus_path` that cannot be read or parsed or has zero entries, or a corpus that cannot be embedded (bad or expired credentials) |
 | no | `telemetry.exporter` set to a value other than `stdout`, `otlp`, `none` |
 | no | `telemetry.prometheus` present but not a mapping, `telemetry.prometheus.enabled` not a boolean, or `telemetry.prometheus.listen_addr` present but empty or not a string |
+| yes | `ledger` present but not a mapping, `ledger.persist_path` not a string, or `ledger.retention_hours`, `ledger.max_sessions_per_key` or `ledger.max_rows_per_key` not a positive integer |
 | no | `admin.mtls` certificate files that cannot be loaded |
 | no | `deployments.<name>.tls` PEM files that cannot be read or parsed (`ca_cert_path`, `client_cert_path`/`client_key_path`) |
 | no | A `key_hash` that is not valid hex or does not decode to 32 bytes |

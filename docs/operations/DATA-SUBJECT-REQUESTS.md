@@ -50,7 +50,7 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   bbolt at all — `redis_addr` wins over `persist_path` and a warning is logged (`BudgetConfig`,
   `gateway/internal/gateway/controlplane/config.go`; `newBudgetTracker`, `gateway/cmd/gateway/main.go`)
   — and instead calls `redisbudget.Backend.Delete`, which `DEL`s that key's spend, alert-bucket and
-  warn-alert Redis keys in one call (`gateway/internal/budget/redisbudget/redisbudget.go`). The
+  warn-alert Redis keys in one call (`gateway/internal/budget/redisbudget/redisbudget.go`). Since item 13d (2026-10-11) the same route also erases the key's rows in the spend ledger — every hour bucket and the derived per-key state, on this replica's bbolt file or the shared Redis (`ledger_delete_key_failed` and `kelvran.persistence.failed{store_kind=ledger}` if that part fails; the revocation itself still succeeds). Per-session erasure (`POST /admin/spend/erase`) lands with the ledger's admin routes. The
   erasure is still complete for this store, and in this mode it is fleet-wide, because every replica
   reads the same Redis keys. See `docs/how-to/virtual-keys-and-budgets.md`.
 - **Disable the admin audit log** going forward: set `admin.enable_audit_log: false` in

@@ -316,9 +316,14 @@ type dataplaneTelemetrySnapshot struct {
 	// proof that finalize threads adapter.Usage.ReasoningTokens through
 	// ChatCompletionResult (TestHandleChatCompletionRecordsReasoningTokens).
 	reasoningTokensByModel map[string]int64
-	cacheLookupTotal       int64
-	sawAttackerModel       bool
-	sawUnresolvedSentinel  bool
+	// persistenceFailedByStoreKind is kelvran.persistence.failed by store
+	// kind; attributionDroppedByHeader is kelvran.attribution.dropped by
+	// header name (the spend ledger's write hook, item 13d slice 3).
+	persistenceFailedByStoreKind map[string]int64
+	attributionDroppedByHeader   map[string]int64
+	cacheLookupTotal             int64
+	sawAttackerModel             bool
+	sawUnresolvedSentinel        bool
 }
 
 // guardrailFailOpenSnapshotKey builds guardrailFailOpenByKeyStage's key.
@@ -334,6 +339,8 @@ func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dat
 		guardrailFailOpenByKeyStage:          map[string]int64{},
 		configPropagationPublishFailedByType: map[string]int64{},
 		reasoningTokensByModel:               map[string]int64{},
+		persistenceFailedByStoreKind:         map[string]int64{},
+		attributionDroppedByHeader:           map[string]int64{},
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -357,6 +364,26 @@ func snapshotDataplaneTelemetry(t *testing.T, rm metricdata.ResourceMetrics) dat
 				for _, dp := range sum.DataPoints {
 					if model, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrGenAIRequestModel)); hasAttr {
 						snap.reasoningTokensByModel[model.AsString()] += dp.Value
+					}
+				}
+			case "kelvran.persistence.failed":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.persistence.failed data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					if kind, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranPersistenceStoreKind)); hasAttr {
+						snap.persistenceFailedByStoreKind[kind.AsString()] += dp.Value
+					}
+				}
+			case "kelvran.attribution.dropped":
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					t.Fatalf("kelvran.attribution.dropped data type = %T, want metricdata.Sum[int64]", m.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					if header, hasAttr := dp.Attributes.Value(attribute.Key(telemetry.AttrKelvranAttributionHeader)); hasAttr {
+						snap.attributionDroppedByHeader[header.AsString()] += dp.Value
 					}
 				}
 			case "kelvran.guardrail.fail_open":
