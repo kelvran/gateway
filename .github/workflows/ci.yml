@@ -151,7 +151,8 @@ jobs:
         working-directory: gateway
         env:
           # The Redis-backed suites (budget/redisbudget, identity/redisstore,
-          # ratelimit/redislimiter, configpropagation, dataplane, cmd/gateway)
+          # ratelimit/redislimiter, spendledger/redisledger, configpropagation,
+          # dataplane, cmd/gateway)
           # each start a `redis:7-alpine` testcontainer, cmd/gateway's chaos test
           # starts `nginx:alpine`, and testcontainers-go's Ryuk reaper is a third
           # Docker Hub image. Docker Hub's anonymous

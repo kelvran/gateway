@@ -54,11 +54,15 @@ components:
   anomaly:                { in: anomaly }
   bench:                  { in: bench }
   cli:                    { in: cli }
-  # The spend ledger (RFC-2 item 13d): a pure leaf, its bbolt backend and the
-  # contract suite every backend runs. dataplane will write it and admin read
-  # it (slices 3-4); neither imports it yet.
+  # The spend ledger (RFC-2 item 13d): a pure leaf, its bbolt and Redis
+  # backends and the contract suite every backend runs. dataplane will write
+  # it and admin read it (slices 3-4); neither imports it yet. Unlike
+  # budget-redisbudget, the Redis backend imports the leaf: the Ledger
+  # interface takes the leaf's own Entry and Query types, so there is no
+  # primitive-only shape to satisfy structurally.
   spendledger:            { in: spendledger }
   spendledger-boltstore:  { in: spendledger/boltstore }
+  spendledger-redisledger: { in: spendledger/redisledger }
   spendledger-ledgertest: { in: spendledger/ledgertest }
   benchupstream:          { in: benchupstream }
 
@@ -167,6 +171,9 @@ deps:
       - adapter
       - streaming
   spendledger-boltstore:
+    mayDependOn:
+      - spendledger
+  spendledger-redisledger:
     mayDependOn:
       - spendledger
   spendledger-ledgertest:

@@ -5,9 +5,8 @@
 // counts, kept for a retention window, with two caps per key -- distinct
 // sessions and distinct rows -- whose overflow folds into the `other`
 // session rather than growing. The package is a leaf: it imports nothing
-// from this project. Backends live beside it (memory here, bbolt in a
-// sub-package, Redis to follow in slice 2) and share the contract in
-// ledgertest.
+// from this project. Backends live beside it (memory here, bbolt and Redis
+// in sub-packages) and share the contract in ledgertest.
 package spendledger
 
 import (

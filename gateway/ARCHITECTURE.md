@@ -474,22 +474,37 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              complete). A pure leaf with no project imports — `budget` exports the
                              nano-USD conversions (`USDToNanoUSD`/`NanoUSDToUSD`) so the rounding rule
                              keeps one home and the dataplane will convert at the write site (slice 3).
-                             Two backends
-                             behind one `Ledger` interface, both run through one contract suite
-                             (`spendledger/ledgertest`, a non-test package): `Memory` (bounded, lost on
-                             restart) and `spendledger/boltstore` (one bbolt file: a nested bucket per
-                             hour; the per-key session sets and row counts are derived state rebuilt
-                             by every `Sweep` and adjusted by every delete, never a second source of
-                             truth, rebuilt without stalling on undecodable rows; the one-second lock
-                             timeout and `DB()` of the other stores; its error strings name hours and
-                             keys, never a row, because a row carries a session identifier). A `Record`
+                             Three backends behind one `Ledger` interface, all run through one contract
+                             suite (`spendledger/ledgertest`, a non-test package): `Memory` (bounded,
+                             lost on restart), `spendledger/boltstore` (one bbolt file: a nested bucket
+                             per hour; the per-key session sets and cell counts are derived state
+                             rebuilt by every `Sweep` and adjusted by every delete, never a second
+                             source of truth, rebuilt without stalling on undecodable rows; the
+                             one-second lock timeout and `DB()` of the other stores) and
+                             `spendledger/redisledger` (one hash per hour and key,
+                             `ledger:<hourUnix>:<QueryEscape(key)>`, fields `<model>|<tool>|<session>`
+                             and `…#n`; the fold decision — is the session live, is there room, does the
+                             cell exist — runs inside Redis in one Lua script, so every replica writing
+                             a key shares one view of the caps; `Sweep` by the caller's clock is the
+                             retention, a TTL of retention + 1 h per hash the backstop; the derived
+                             `ledger:sessions:<key>` set and `ledger:cells:<key>` count are rebuilt by
+                             every `Sweep` from the hashes it has just read, so they are eventually
+                             exact — the writes that land between a rebuild's read and its write are
+                             missing until the next hourly `Sweep`: the caps can over-admit by that
+                             many, and a session first seen in that window can fold on its next
+                             write; reads skip a foreign key under the prefix and HGETALLs and DELs
+                             go in bounded chunks; like `identity/redisstore` and unlike
+                             `budget/redisbudget` it imports the leaf, because the `Ledger`
+                             interface takes the leaf's own types).
+                             Every backend's error strings name hours and keys, never a row or a
+                             field, because those carry a session identifier. A `Record`
                              naming a session outside item 13a's identifier grammar (1–128 bytes of
                              `[A-Za-z0-9._:-]`) is refused, as is the reserved name `other` and a key,
                              model or tool over 256 bytes, so the stores' delimiters cannot collide and
-                             the erase route of slice 4 will accept the same shape. **Slice
-                             1 of item 13d (2026-10-11)**: nothing records into it and no route reads
-                             it yet — the write hook, the `ledger:` config section, the Redis backend,
-                             the admin routes and the CLI's `--by` land in the following slices.
+                             the erase route of slice 4 will accept the same shape. **Slices
+                             1–2 of item 13d (2026-10-11)**: nothing records into it and no route reads
+                             it yet — the write hook, the `ledger:` config section, the admin routes
+                             and the CLI's `--by` land in the following slices.
 /internal/adapter            — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
                              docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
@@ -788,10 +803,10 @@ ingress/anthropicmsgs → adapter, streaming   (RFC-1 §1's Anthropic Messages p
                                   route of S10a, is its first and only importer)
 streaming → adapter                (canonical ChatCompletionChunk/StreamDecoder types live in adapter)
 cache/{inprocess,grpcserver,grpcclient} → cache   (each a real implementation of cache's own interfaces)
-spendledger/{boltstore,ledgertest} → spendledger   (item 13d slice 1: the bbolt backend and the contract
-                                  suite depend on the leaf alone; the leaf imports nothing of the project —
-                                  `budget` exports the nano-USD conversions rather than the ledger importing
-                                  `budget`, so neither package depends on the other)
+spendledger/{boltstore,redisledger,ledgertest} → spendledger   (item 13d slices 1–2: the bbolt and Redis
+                                  backends and the contract suite depend on the leaf alone; the leaf imports
+                                  nothing of the project — `budget` exports the nano-USD conversions rather
+                                  than the ledger importing `budget`, so neither package depends on the other)
 cache     ✗→ adapter             (cache is provider-agnostic — keyed on normalized request, not on which
                                   upstream served it; verified: cache has ZERO internal cross-package
                                   imports at all, a stricter, cleaner leaf than an earlier pass of this

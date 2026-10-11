@@ -1,7 +1,7 @@
 // Package ledgertest is the contract every spendledger backend must meet:
 // bucket math, the session and row caps, retention, queries, erasure. It is
-// a non-test package so the memory and bbolt backends (Redis joins in
-// slice 2) share one suite; only tests import it.
+// a non-test package so the memory, bbolt and Redis backends share one
+// suite; only tests import it.
 package ledgertest
 
 import (
@@ -166,6 +166,7 @@ func Run(t *testing.T, f Factory) {
 		// both slots for the named rows that follow.
 		must(t, l.Record(ctx, entry("k1", "m5", "curl", "", hour0, 1, 1)))
 		must(t, l.Record(ctx, entry("k1", "m1", "curl", "s1", hour0, 1, 1)))
+		must(t, l.Record(ctx, entry("k1", "m1", "curl", "s1", hour0, 1, 1)))  // the same cell again: no second slot
 		must(t, l.Record(ctx, entry("k1", "m2", "curl", "s2", hour0, 1, 1)))  // the second named row: kept by name
 		must(t, l.Record(ctx, entry("k1", "m6", "curl", "s9", hour0, 1, 1)))  // over the session cap: other, no row slot
 		must(t, l.Record(ctx, entry("k1", "m3", "curl", "s1", hour0, 1, 1)))  // a live session, a third named row: folded
@@ -175,11 +176,11 @@ func Run(t *testing.T, f Factory) {
 		q := window
 		q.GroupBy = spendledger.GroupBySession
 		got := describe(rows(t, l, q))
-		if want := "k1///=1:1 k1///other=4:4 k1///s1=2:2 k1///s2=1:1"; got != want {
+		if want := "k1///=1:1 k1///other=4:4 k1///s1=3:3 k1///s2=1:1"; got != want {
 			t.Errorf("row cap = %q, want %q", got, want)
 		}
 		q.GroupBy = spendledger.GroupByModel
-		if got := describe(rows(t, l, q)); got != "/m1//=3:3 /m2//=1:1 /m3//=1:1 /m4//=1:1 /m5//=1:1 /m6//=1:1" {
+		if got := describe(rows(t, l, q)); got != "/m1//=4:4 /m2//=1:1 /m3//=1:1 /m4//=1:1 /m5//=1:1 /m6//=1:1" {
 			t.Errorf("folded rows keep their model under other: %q", got)
 		}
 	})
@@ -207,17 +208,23 @@ func Run(t *testing.T, f Factory) {
 		}
 	})
 
-	t.Run("DeleteKey removes every row of the key across hours and leaves other keys", func(t *testing.T) {
-		l := f(t, spendledger.Options{})
+	t.Run("DeleteKey removes every row of the key across hours, frees its slots and leaves other keys", func(t *testing.T) {
+		l := f(t, spendledger.Options{MaxSessionsPerKey: 2})
 		defer func() { _ = l.Close() }()
 		must(t, l.Record(ctx, entry("k1", "m", "curl", "s1", hour0, 1, 1)))
-		must(t, l.Record(ctx, entry("k1", "m", "curl", "s2", hour1, 1, 1)))
+		must(t, l.Record(ctx, entry("k1", "m", "curl", "s2", hour1, 1, 1))) // k1 is at its session cap
 		must(t, l.Record(ctx, entry("k2", "m", "curl", "s1", hour0, 1, 1)))
 		must(t, l.DeleteKey(ctx, "k1"))
 		q := window
 		q.GroupBy = spendledger.GroupBySession
 		if got := describe(rows(t, l, q)); got != "k2///s1=1:1" {
 			t.Errorf("after DeleteKey = %q", got)
+		}
+		// The deleted key's derived state went with its rows: two new sessions are kept by name.
+		must(t, l.Record(ctx, entry("k1", "m", "curl", "s3", hour0, 1, 1)))
+		must(t, l.Record(ctx, entry("k1", "m", "curl", "s4", hour0, 1, 1)))
+		if got := describe(rows(t, l, q)); got != "k1///s3=1:1 k1///s4=1:1 k2///s1=1:1" {
+			t.Errorf("after DeleteKey, slots freed = %q", got)
 		}
 		must(t, l.DeleteKey(ctx, "absent")) // idempotent
 	})
