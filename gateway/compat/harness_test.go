@@ -126,8 +126,19 @@ func runMatrix(m *testing.M) (int, error) {
 	if code != 0 {
 		fmt.Fprintf(os.Stderr, "--- gateway log (%s) ---\n%s\n", bin, gw.output())
 	}
+	if dir := os.Getenv(artifactDirEnv); dir != "" {
+		// The nightly leg keeps the gateway's own log beside its route counts.
+		if err := os.MkdirAll(dir, 0o750); err == nil { //nolint:gosec // the operator names the artifact dir on purpose
+			_ = os.WriteFile(filepath.Join(dir, "gateway.log"), []byte(gw.output()), 0o600) //nolint:gosec // same
+		}
+	}
 	return code, nil
 }
+
+// artifactDirEnv names a directory the run leaves its artifacts in -- the
+// gateway log and, from the nightly leg, Claude Code's output and the
+// per-route request counts; unset on the PR gate.
+const artifactDirEnv = "KELVRAN_COMPAT_ARTIFACT_DIR"
 
 // gatewayBinary returns the binary under test: the operator's override when
 // set, otherwise a fresh build of ./cmd/gateway from the gateway module this

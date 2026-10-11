@@ -56,6 +56,17 @@ updates:
         patterns: ["*"]
     cooldown:
       default-days: 14
+  # The nightly TypeScript leg's manifest (.github/compat-ts, item 11 slice S13,
+  # ADR 0003 note): @anthropic-ai/sdk and @anthropic-ai/claude-code, pinned.
+  - package-ecosystem: "npm"
+    directory: "/.github/compat-ts"
+    schedule:
+      interval: "weekly"
+    groups:
+      compat-npm-deps:
+        patterns: ["*"]
+    cooldown:
+      default-days: 14
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

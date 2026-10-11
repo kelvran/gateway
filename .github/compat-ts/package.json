@@ -1,0 +1,11 @@
+{
+  "name": "kelvran-compat-ts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kelvran compatibility matrix, nightly TypeScript leg: @anthropic-ai/sdk and Claude Code (claude -p) against a gateway built in the job (RFC-1 §11, item 11 slice S13; ADR 0003 test-tooling note). CI test tooling only: nothing under gateway/ or evals/ is TypeScript and no Node enters a release image.",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.296",
+    "@anthropic-ai/sdk": "0.133.0"
+  }
+}

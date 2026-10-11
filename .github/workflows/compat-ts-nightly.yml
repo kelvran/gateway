@@ -1,0 +1,83 @@
+name: Compatibility (nightly TypeScript leg)
+
+# RFC-1 §11's TypeScript leg (item 11 slice S13), under owner decision G15
+# (2026-10-10) and the one-line note in docs/decisions/0003-go-python-split.md:
+# TypeScript appears only as CI test tooling, in a CI container, nightly and
+# non-blocking: no pull_request or push trigger, and not among main's required
+# status checks.
+# The job builds the gateway from the tree (the compat harness does that
+# itself), installs .github/compat-ts/ (the official @anthropic-ai/sdk and
+# @anthropic-ai/claude-code at pinned versions) and runs the two tests behind
+# the `compat_ts` build tag: the SDK against the gateway's Anthropic routes,
+# and `claude -p` -- Claude Code itself, the P0 client -- for one headless
+# turn. Nothing under gateway/ or evals/ is TypeScript and no Node enters a
+# release image.
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: compat-ts-nightly
+  cancel-in-progress: false
+
+jobs:
+  ts-leg:
+    name: "@anthropic-ai/sdk and claude -p against a built gateway"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Digest-pinned node image from the ECR Public mirror of the Docker
+    # library (Docker Hub's anonymous pull limit bit ci.yml on 2026-10-10).
+    # `docker buildx imagetools inspect public.ecr.aws/docker/library/node:22-bookworm-slim`
+    # resolved to this index digest on 2026-10-11; the tag is named here
+    # because a trailing comment on the image line is not read by anyone.
+    container:
+      image: public.ecr.aws/docker/library/node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+          # No Go cache in a job that runs third-party npm code before the
+          # cache's post-step would save it: nothing a compromised dependency
+          # touches may be stored for another job.
+          cache: false
+      - name: npm ci (the pinned SDK and Claude Code, lockfile committed)
+        working-directory: .github/compat-ts
+        timeout-minutes: 10 # the ~240 MB platform binary is an integrity-checked optional dependency npm fetches
+        run: |
+          node --version
+          npm --version
+          # --ignore-scripts: no dependency's lifecycle script runs. Claude Code's
+          # own postinstall (install.cjs) only links (or copies) the platform binary
+          # npm has already fetched and verified, so it is run explicitly; without
+          # it node_modules/.bin/claude is a stub that exits 1.
+          npm ci --ignore-scripts
+          node node_modules/@anthropic-ai/claude-code/install.cjs
+          HOME="$(mktemp -d)" DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 node_modules/.bin/claude --version
+      - name: TypeScript leg (the harness builds and starts the gateway; node and claude -p run against it)
+        working-directory: gateway/compat
+        timeout-minutes: 15 # each claude -p turn times out on its own at 4 minutes; this bounds the gateway build too
+        env:
+          KELVRAN_COMPAT_TS_DIR: ${{ github.workspace }}/.github/compat-ts
+          KELVRAN_COMPAT_ARTIFACT_DIR: ${{ github.workspace }}/compat-ts-artifacts
+          # The slim image has no C toolchain and the checkout in a container
+          # has no git for VCS stamping; neither is needed for the test build.
+          CGO_ENABLED: "0"
+          GOFLAGS: -buildvcs=false
+        # -timeout above the three 4-minute per-child bounds, so a fully red night
+        # ends with the per-turn message rather than Go's own test-timeout panic.
+        run: go test -tags compat_ts -timeout 14m -run '^TestTypeScriptLeg' -count=1 -v ./...
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() # the gateway log and the route counts matter most on a red run
+        with:
+          name: compat-ts-artifacts
+          path: compat-ts-artifacts/
+          if-no-files-found: warn
+          retention-days: 30

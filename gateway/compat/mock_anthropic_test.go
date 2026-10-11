@@ -85,6 +85,9 @@ const (
 	goldenStreamText   = "anthropic_stream_text.txt"
 	goldenStreamTool   = "anthropic_stream_thinking_tool.txt"
 	mockTokenCount     = `{"input_tokens":2095}`
+	// Claude Code's own beta value, present on every request it sends and
+	// forwarded verbatim to an anthropic deployment.
+	claudeCodeBetaMarker = "claude-code-"
 	// A request whose text carries this marker is answered with Anthropic's
 	// own 400 envelope -- the shape RFC-1 §9 relays verbatim so Claude Code's
 	// recovery can match Anthropic's wording.
@@ -149,13 +152,13 @@ func (u *anthropicUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, mockTokenCount)
 	case "/v1/messages":
-		u.serveMessages(w, body)
+		u.serveMessages(w, r, body)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-func (u *anthropicUpstream) serveMessages(w http.ResponseWriter, body []byte) {
+func (u *anthropicUpstream) serveMessages(w http.ResponseWriter, r *http.Request, body []byte) {
 	var req struct {
 		Stream   bool              `json:"stream"`
 		Tools    []json.RawMessage `json:"tools"`
@@ -185,8 +188,21 @@ func (u *anthropicUpstream) serveMessages(w http.ResponseWriter, body []byte) {
 		return
 	}
 	toolTurn := len(req.Tools) > 0
-	if n := len(req.Messages); n > 0 && bytes.Contains(req.Messages[n-1].Content, []byte(`"tool_result"`)) {
-		toolTurn = false // the loop's second turn: answer with text so the loop ends
+	if hasToolResultBlock(req.Messages) {
+		// A loop's later turn: answer with text so the loop ends. Any message,
+		// not only the last -- under its mid-conversation-system beta Claude
+		// Code ends every request with a role: system message, so a tool_result
+		// is never the last one.
+		toolTurn = false
+	}
+	if strings.Contains(r.Header.Get("anthropic-beta"), claudeCodeBetaMarker) {
+		// Claude Code (twenty tools at 2.1.296) sends tools the mock cannot serve; its own beta
+		// value rides the forwarded anthropic-beta header, and the nightly leg
+		// wants one text turn. The gateway forwards no User-Agent, so this is
+		// the one Claude Code signal that reaches a deployment; should a
+		// release stop sending the value, the nightly goes red and this rule
+		// is what changes.
+		toolTurn = false
 	}
 	if req.Stream {
 		u.stream(w, pick(toolTurn, goldenStreamTool, goldenStreamText))
@@ -224,6 +240,28 @@ func (u *anthropicUpstream) stream(w http.ResponseWriter, golden string) {
 			flusher.Flush()
 		}
 	}
+}
+
+// hasToolResultBlock reports whether any message's content array carries a
+// block of type tool_result -- by structure, so a user text that merely
+// mentions the word cannot flip the mock.
+func hasToolResultBlock(messages []struct {
+	Content json.RawMessage `json:"content"`
+}) bool {
+	for _, m := range messages {
+		var blocks []struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(m.Content, &blocks) != nil {
+			continue // a string content has no blocks
+		}
+		for _, b := range blocks {
+			if b.Type == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func pick(cond bool, yes, no string) string {

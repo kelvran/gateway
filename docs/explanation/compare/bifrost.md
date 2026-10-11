@@ -21,7 +21,7 @@ Kelvran is a self-hosted, Apache-2.0 LLM gateway: one static Go binary that expo
 
 ## Choose Bifrost if …
 
-- You need Anthropic Messages ingress (the Anthropic SDK, Claude Code), the Responses API, audio, image, rerank or OCR routes: Kelvran serves none of these ([api.md](https://docs.getbifrost.ai/_llms/api.md); [claude-code](https://docs.getbifrost.ai/cli-agents/claude-code); [compatibility](../../reference/compatibility.md)).
+- You need the Responses API, audio, image, rerank or OCR routes: Kelvran serves none of these; the Anthropic Messages ingress (the Anthropic SDK, Claude Code) it does serve since `gateway/v0.19.0`, `POST /v1/messages` with buffered and streamed relay from an `anthropic` deployment ([api.md](https://docs.getbifrost.ai/_llms/api.md); [claude-code](https://docs.getbifrost.ai/cli-agents/claude-code); [compatibility](../../reference/compatibility.md)).
 - You need more than five providers; Bifrost's matrix lists 31 ([supported-providers](https://docs.getbifrost.ai/providers/supported-providers/overview)).
 - You need hierarchical budgets (Customer > Team > Virtual Key > provider config), calendar-aligned resets, temporary budget overrides or model-level limits; Kelvran's budgets are flat per key ([budget-and-limits](https://docs.getbifrost.ai/features/governance/budget-and-limits)).
 - You want a web UI, a management API, a request log store with content and retry trails, a Helm chart and deployment guides for the major clouds ([setting-up](https://docs.getbifrost.ai/quickstart/gateway/setting-up); [deployment-guides](https://docs.getbifrost.ai/deployment-guides/overview.md)).

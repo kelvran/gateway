@@ -61,7 +61,7 @@ or, on the deployment, `accept_lossy_anthropic_ingress: true`, which drops the m
 
 The attribution block Claude Code puts first in `system` (`x-anthropic-billing-header: …`, controlled by `CLAUDE_CODE_ATTRIBUTION_HEADER`) travels as its own system block, so the protocol page's remedy for gateways that merge the system array, `CLAUDE_CODE_ATTRIBUTION_HEADER=0`, is not needed here. On 2026-10-11 Bedrock's Anthropic backend accepted Claude Code's block and counted none of it as input tokens; an invented block with the same prefix was refused by the backend as a reserved keyword.
 
-A `role: system` entry inside `messages` — Claude Code's mid-conversation system message, sent with the betas on under the `mid-conversation-system-2026-04-07` beta value seen in the 2026-10-11 run — is parsed like the top-level `system` array (one system block per text block, `cache_control` kept). On a Bedrock, Gemini or (translate-hop) Anthropic deployment it is hoisted into the provider's system prompt after the other system blocks, since none of them has a mid-conversation slot; on an OpenAI or OpenAI-compatible deployment it stays in place as a `role: system` message. The protocol page asks gateways to keep block-form system content rather than flattening it to a string, and that is what happens here (2026-10-11).
+A `role: system` entry inside `messages` — Claude Code's mid-conversation system message, sent under the `mid-conversation-system-2026-04-07` beta value with the pre-release betas on or off — `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` does not remove it, and Claude Code 2.1.296 ends every request with such an entry (the nightly leg's trace, 2026-10-11) — is parsed like the top-level `system` array (one system block per text block, `cache_control` kept). On a Bedrock, Gemini or (translate-hop) Anthropic deployment it is hoisted into the provider's system prompt after the other system blocks, since none of them has a mid-conversation slot; on an OpenAI or OpenAI-compatible deployment it stays in place as a `role: system` message. The protocol page asks gateways to keep block-form system content rather than flattening it to a string, and that is what happens here (2026-10-11).
 
 The message never names a deployment and never contains the strings Claude Code matches on for its own recovery (`thinking`, `cache_control`, `system`, `output_config.effort`, ...), so Claude Code surfaces it to you rather than silently disabling a capability.
 
@@ -94,7 +94,7 @@ When the provider rejects a prompt as too long, the gateway's error message star
 
 ### GitHub Actions and headless runs
 
-`claude -p` and the GitHub Action read the same variables; both need `ANTHROPIC_BASE_URL` and one credential variable in the job's environment. A headless run that hits an `allowed_models` key prints the `403` envelope; give the key the model or the model the key.
+`claude -p` and the GitHub Action read the same variables; both need `ANTHROPIC_BASE_URL` and one credential variable in the job's environment. A headless run that hits an `allowed_models` key prints the `403` envelope; give the key the model or the model the key. Give `claude -p` a closed stdin (`</dev/null`) in a non-interactive shell: in print mode a non-TTY stdin is read until EOF, and a pipe that never closes hangs the run before any request is sent. The nightly CI leg (`.github/workflows/compat-ts-nightly.yml`) runs exactly this shape — `claude -p` with `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` against a gateway built in the job.
 
 ## How errors surface in Claude Code
 
@@ -104,6 +104,7 @@ Every error is Anthropic's envelope with Kelvran's `code` kept — except an `an
 |---|---|---|---|
 | 400 | `invalid_request_error` | `model_not_found` | The model id is not a canonical model of this gateway; pick one from `/model` or `GET /v1/models`. |
 | 400 | `invalid_request_error` | `lossy_ingress_rejected` | Step 3: disable the pre-release betas, or set `accept_lossy_anthropic_ingress` on the deployment. `param` lists the members. |
+| 400 | `invalid_request_error` | `content_policy_violation` | The gateway's guardrail blocked the turn before any upstream call — and it scans the system prompt Claude Code builds, not only your message. Under the default policy a word-bounded nine-digit run with an SSN's shape (a build number or timestamp in your working-directory path, which Claude Code writes into the prompt) trips the `ssn` detector; the nightly compatibility leg hit this with a temp directory and gives Claude Code a letters-only home. Rename the directory, or relax `government_id` in the gateway's `guardrails.category_overrides` (`government_id: "warn"`), which applies to every deployment and key. |
 | 400 / 422 | Anthropic's own | none | An `anthropic` deployment's own rejection, relayed as Anthropic sent it; read `message`. No `Retry-After`. |
 | 401 | `authentication_error` | `invalid_api_key` / `key_expired` / none | The credential is not a virtual key, has expired, or two variables carry different values; set exactly one current key. |
 | 403 | `permission_error` | `model_not_allowed` | The key's `allowed_models` excludes the model. |
