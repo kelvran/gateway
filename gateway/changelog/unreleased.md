@@ -7,6 +7,7 @@ Versioning: [SemVer](https://semver.org/) — load-bearing for the Go module pat
 ## Added
 
 ## Changed
+- `internal/admin` registers its routes from one table (`admin.Routes`, `gateway/internal/admin/routes.go`: 31 patterns over 26 paths, each with its method, auth tier and registration condition) instead of one `mux.Handle` call per route (31 registrations over 26 call sites); `Handler` refuses to start when the table and its handler map disagree. No request or response changes — every wrapper, status and error text is the same, pinned by the unchanged admin test suite — and the table is the source the item 14 OpenAPI document (slice S3, owner gate G5) will be checked against.
 
 ## Deprecated
 

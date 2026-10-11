@@ -39,6 +39,7 @@ import (
 	"net/http/pprof"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -171,95 +172,97 @@ func (a auditLogger) Warn(msg string, args ...any) {
 // comment.
 func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Credentials, logger *slog.Logger, auditStore *auditstore.Store) http.Handler {
 	audit := auditLogger{logger: logger, enabled: cfg.Admin.EnableAuditLog, store: auditStore}
+	handlers := routeHandlers(cfg, pipeline, audit, auditStore)
 	mux := http.NewServeMux()
-	mux.Handle("GET /admin/config", requireEitherBearerToken(creds, getConfigHandler(cfg, audit)))
-	if auditStore != nil {
-		mux.Handle("GET /admin/audit", requireEitherBearerToken(creds, queryAuditLogHandler(auditStore)))
-	}
-	mux.Handle("GET /admin/virtual_keys", requireEitherBearerToken(creds, listVirtualKeysHandler(pipeline, audit)))
-	mux.Handle("POST /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, upsertVirtualKeyHandler(pipeline, audit)))
-	mux.Handle("DELETE /admin/virtual_keys/{name}", requireBearerToken(creds.Admin, deleteVirtualKeyHandler(pipeline, audit)))
-	mux.Handle("POST /admin/virtual_keys/{name}/rotate", requireAdminOrOperatorBearerToken(creds, rotateVirtualKeyHandler(pipeline, audit)))
-	// Deliberately its own middleware call, not requireEitherBearerToken:
-	// this is the one route CostViewer authenticates, alongside Admin and
-	// Viewer (both of which already see strictly more elsewhere on this
-	// mux, so neither loses anything by also being able to read this
-	// narrower view) — see requireAnyBearerToken's own doc comment.
-	mux.Handle("GET /admin/virtual_keys/{name}/spend", requireAnyBearerToken(
-		getVirtualKeySpendHandler(pipeline, audit),
-		tokenTier{creds.Admin, "admin"},
-		tokenTier{creds.Viewer, "viewer"},
-		tokenTier{creds.CostViewer, "cost_viewer"},
-	))
-	// Same tier as GET /admin/virtual_keys itself (requireEitherBearerToken
-	// -- admin-or-viewer), not the narrower CostViewer-inclusive tier
-	// .../spend uses above: this is operational in-flight-load state, the
-	// same category as the config/topology GET /admin/virtual_keys already
-	// exposes, not a cost/billing view a finance-only CostViewer credential
-	// has any specific need to see.
-	mux.Handle("GET /admin/virtual_keys/{name}/inflight", requireEitherBearerToken(creds, getVirtualKeyInFlightHandler(pipeline, audit)))
-	// Prompt/template management, per this feature's own design: prompts
-	// are GLOBAL, operator-managed config (the same category as
-	// price_table/deployments/guardrails config above) -- reads are
-	// viewer-or-admin, like GET /admin/config; writes are admin-only,
-	// like the virtual-key routes above.
-	mux.Handle("GET /admin/prompts", requireEitherBearerToken(creds, listPromptsHandler(pipeline, audit)))
-	mux.Handle("GET /admin/prompts/{id}", requireEitherBearerToken(creds, getPromptHandler(pipeline, audit)))
-	mux.Handle("GET /admin/prompts/{id}/versions/{version}", requireEitherBearerToken(creds, getPromptVersionHandler(pipeline, audit)))
-	mux.Handle("POST /admin/prompts/{id}", requireBearerToken(creds.Admin, upsertPromptHandler(pipeline, audit)))
-	mux.Handle("DELETE /admin/prompts/{id}", requireBearerToken(creds.Admin, deletePromptHandler(pipeline, audit)))
-	// Prompt label management (promote/rollback), per
-	// internal/prompt.Store.SetLabel's own doc comment -- reuses the
-	// Admin tier exactly, the same convention every other write route on
-	// this mux already follows (no precedent exists for a narrower
-	// "labels-only" tier, and no named demand for one yet). Rollback is
-	// SetLabel to an OLDER version, not a separate route.
-	mux.Handle("PUT /admin/prompts/{id}/labels/{label}", requireBearerToken(creds.Admin, setPromptLabelHandler(pipeline, audit)))
-	mux.Handle("DELETE /admin/prompts/{id}/labels/{label}", requireBearerToken(creds.Admin, deletePromptLabelHandler(pipeline, audit)))
-	// Live bbolt backup, per cfg.Admin.BackupDir's own doc comment --
-	// admin-only (a write-shaped, disk-touching operation, same tier as
-	// every other write route on this mux), always registered (unlike
-	// EnablePprof's conditional mount above) so an unconfigured caller
-	// gets an informative 501 from backupHandler itself, not a bare 404
-	// indistinguishable from a typo'd path.
-	mux.Handle("POST /admin/backup", requireBearerToken(creds.Admin, backupHandler(cfg, pipeline, audit)))
-	// Deployment weight live-mutation, per
-	// docs/upgrade-research/admin-operator-experience-2026-09-14.md -- a
-	// deployment's routing weight is an operational lever, not read-only
-	// reporting. Admin-or-Operator, per
-	// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md: reversible
-	// (re-set the weight) and scoped to a single named deployment.
-	mux.Handle("GET /admin/deployments", requireEitherBearerToken(creds, listDeploymentsHandler(pipeline, audit)))
-	mux.Handle("POST /admin/deployments/{name}/weight", requireAdminOrOperatorBearerToken(creds, updateDeploymentWeightHandler(pipeline, audit)))
-	// Admin-or-Operator, same RFC as above: a cache erasure is reversible
-	// in the sense that it only removes a cached entry (never mutates
-	// live traffic routing/budget/identity state) and is scoped to a
-	// single named virtual-key+request combination.
-	mux.Handle("POST /admin/cache/erase", requireAdminOrOperatorBearerToken(creds, eraseCacheEntryHandler(pipeline, audit)))
-	// pprof, per cfg.Admin.EnablePprof's own doc comment — off by
-	// default, admin-credential-gated (never the viewer tier: profiling
-	// data is a stronger information-disclosure/DoS-surface signal than
-	// anything the read-only viewer tier exposes elsewhere on this mux),
-	// mounted only on this already off-by-default, loopback-default,
-	// bearer-token-protected mux -- never a second listener, never a
-	// second credential space.
-	if cfg.Admin.EnablePprof {
-		mux.Handle("GET /admin/debug/pprof/", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Index)))
-		mux.Handle("GET /admin/debug/pprof/cmdline", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Cmdline)))
-		mux.Handle("GET /admin/debug/pprof/profile", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Profile)))
-		mux.Handle("GET /admin/debug/pprof/symbol", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Symbol)))
-		mux.Handle("POST /admin/debug/pprof/symbol", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Symbol)))
-		mux.Handle("GET /admin/debug/pprof/trace", requireBearerToken(creds.Admin, http.HandlerFunc(pprof.Trace)))
-		// Named profiles registered against the DefaultServeMux by pprof's
-		// own package init() (goroutine, heap, threadcreate, block, mutex,
-		// allocs) -- Handler() looks them up by name via pprof.Handler,
-		// the same indirection net/http/pprof's own docs recommend for
-		// mounting under a custom prefix instead of DefaultServeMux.
-		for _, name := range []string{"goroutine", "heap", "threadcreate", "block", "mutex", "allocs"} {
-			mux.Handle("GET /admin/debug/pprof/"+name, requireBearerToken(creds.Admin, pprof.Handler(name)))
+	// Registration is table-driven (routes.go, plan item 14): the table and
+	// the handler map must agree in both directions, checked here at
+	// construction -- the same failure class as ServeMux's own duplicate-
+	// pattern panic, and every admin test constructs Handler, so a mismatch
+	// cannot reach main unnoticed.
+	for _, rt := range Routes(cfg, auditStore != nil) {
+		h, ok := handlers[rt.OperationID]
+		if !ok {
+			panic("admin: route " + rt.Pattern() + " (" + rt.OperationID + ") has no handler")
 		}
+		mux.Handle(rt.Pattern(), requireTier(creds, rt.Tier, h))
+		delete(handlers, rt.OperationID)
+	}
+	if len(handlers) != 0 {
+		leftover := make([]string, 0, len(handlers))
+		for id := range handlers {
+			leftover = append(leftover, id)
+		}
+		sort.Strings(leftover)
+		panic("admin: handlers without a route under this configuration: " + strings.Join(leftover, ", "))
 	}
 	return mux
+}
+
+// routeHandlers builds every handler Handler may register, keyed by the route
+// table's OperationID. A conditional handler is present exactly when its
+// condition holds (the audit store, cfg.Admin.EnablePprof), so Handler's
+// lockstep check holds in both directions. pprof is mounted only on this
+// already off-by-default, loopback-default, bearer-protected mux -- never a
+// second listener, never a second credential space -- and the named profiles
+// are looked up by name through pprof.Handler, the indirection
+// net/http/pprof's own docs recommend for a custom prefix.
+func routeHandlers(cfg *controlplane.Config, pipeline *dataplane.Pipeline, audit auditLogger, auditStore *auditstore.Store) map[string]http.Handler {
+	handlers := map[string]http.Handler{
+		"getAdminConfig":         getConfigHandler(cfg, audit),
+		"listVirtualKeys":        listVirtualKeysHandler(pipeline, audit),
+		"upsertVirtualKey":       upsertVirtualKeyHandler(pipeline, audit),
+		"deleteVirtualKey":       deleteVirtualKeyHandler(pipeline, audit),
+		"rotateVirtualKey":       rotateVirtualKeyHandler(pipeline, audit),
+		"getVirtualKeySpend":     getVirtualKeySpendHandler(pipeline, audit),
+		"getVirtualKeyInFlight":  getVirtualKeyInFlightHandler(pipeline, audit),
+		"listPrompts":            listPromptsHandler(pipeline, audit),
+		"getPrompt":              getPromptHandler(pipeline, audit),
+		"getPromptVersion":       getPromptVersionHandler(pipeline, audit),
+		"upsertPrompt":           upsertPromptHandler(pipeline, audit),
+		"deletePrompt":           deletePromptHandler(pipeline, audit),
+		"setPromptLabel":         setPromptLabelHandler(pipeline, audit),
+		"deletePromptLabel":      deletePromptLabelHandler(pipeline, audit),
+		"createBackup":           backupHandler(cfg, pipeline, audit),
+		"listDeployments":        listDeploymentsHandler(pipeline, audit),
+		"updateDeploymentWeight": updateDeploymentWeightHandler(pipeline, audit),
+		"eraseCacheEntry":        eraseCacheEntryHandler(pipeline, audit),
+	}
+	if auditStore != nil {
+		handlers["queryAuditLog"] = queryAuditLogHandler(auditStore)
+	}
+	if cfg.Admin.EnablePprof {
+		handlers["pprofIndex"] = http.HandlerFunc(pprof.Index)
+		handlers["pprofCmdline"] = http.HandlerFunc(pprof.Cmdline)
+		handlers["pprofProfile"] = http.HandlerFunc(pprof.Profile)
+		handlers["pprofSymbol"] = http.HandlerFunc(pprof.Symbol)
+		handlers["pprofSymbolPost"] = http.HandlerFunc(pprof.Symbol)
+		handlers["pprofTrace"] = http.HandlerFunc(pprof.Trace)
+		for _, profile := range pprofProfiles {
+			handlers[pprofOperationID(profile)] = pprof.Handler(profile)
+		}
+	}
+	return handlers
+}
+
+// requireTier wraps next in the one auth wrapper a Tier names. The wrappers
+// themselves (bearerToken, the constant-time compares, the tier stash for
+// the audit lines, every 401 text) are unchanged; this is only the mapping.
+func requireTier(creds Credentials, tier Tier, next http.Handler) http.Handler {
+	switch tier {
+	case TierAdmin:
+		return requireBearerToken(creds.Admin, next)
+	case TierAdminOrViewer:
+		return requireEitherBearerToken(creds, next)
+	case TierAdminOrOperator:
+		return requireAdminOrOperatorBearerToken(creds, next)
+	case TierAdminViewerCostViewer:
+		return requireAnyBearerToken(next,
+			tokenTier{creds.Admin, "admin"},
+			tokenTier{creds.Viewer, "viewer"},
+			tokenTier{creds.CostViewer, "cost_viewer"},
+		)
+	}
+	panic("admin: unknown tier " + string(tier))
 }
 
 // requireBearerToken wraps next so every request must present
