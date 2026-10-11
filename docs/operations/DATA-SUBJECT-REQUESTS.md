@@ -73,7 +73,25 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   (the default), the original sentence remains accurate. See `docs/how-to/admin-api-rbac.md`
   ("Read the audit trail").
 
+- **Erase one session's rows from the spend ledger** (item 13d, 2026-10-11): `POST /admin/spend/erase`
+  with `{"session": "<id>"}` — the Claude Code session id (or the `agent_run_id` Baggage member the
+  ledger fell back to) whose hourly spend rows should go. Admin credential only; irreversible. Returns
+  `{"rows_erased": <n>}`. The ledger is per replica in bbolt and in-memory modes, so run the call once per
+  replica; the Redis ledger is shared and one call is enough (idempotent). The audit line carries only
+  a 16-hex SHA-256 prefix of the session and the count, never the id. Rows that the caps already folded
+  into `other` cannot be erased on their own (see the limitation below); they go with the key
+  (`DELETE /admin/virtual_keys/{name}` cascades to the ledger) or with the retention sweep
+  (`ledger.retention_hours`, default 168 h), which also closes a miss on a replica the call never reached.
+
 ## Real limitations — read before promising a data subject anything
+
+- **The spend ledger's `other` session is lossy by design.** A key keeps at most
+  `ledger.max_sessions_per_key` (2,000) named sessions and `ledger.max_rows_per_key` (50,000) named
+  cells in the retention window; the rest is recorded under the session `other`, which keeps the model
+  and tool but not the session, and which `POST /admin/spend/erase` refuses. A client that rotates
+  session ids per request can exhaust a key's named sessions until the hours age out; the recovery is
+  `DELETE /admin/virtual_keys/{name}`, which removes every row of the key. Named rows are erasable by
+  session (above) and by key; everything expires with the retention sweep.
 
 - **Cache L3 (lexical near-duplicate) has no erasure mechanism at all.** `POST /admin/cache/erase`
   deliberately does not cover it (no `Delete` method exists on the `LexicalCache` interface).

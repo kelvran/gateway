@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -127,4 +128,45 @@ func (p *Pipeline) sweepLedger(ctx context.Context) {
 		telemetry.RecordPersistenceFailed(ctx, ledgerStoreKind, "")
 		p.logger.Warn("ledger_sweep_failed", "error", err.Error())
 	}
+}
+
+// ErrNoSpendLedger is QuerySpend's and EraseSpendSession's answer when the
+// pipeline has no ledger (cmd/gateway always wires one; tests may not).
+var ErrNoSpendLedger = errors.New("dataplane: no spend ledger is configured")
+
+// SpendRow is one aggregate of the spend ledger in USD: the leaf stores
+// nano-USD, and the admin package may not import budget, so the conversion
+// happens here, in the package that owns the nano-USD rule's other half.
+type SpendRow struct {
+	Key, Model, Tool, Session string
+	SpendUSD                  decimal.Decimal
+	Requests                  int64
+}
+
+// QuerySpend answers GET /admin/spend: the ledger's rows for q, converted to
+// USD. The window, the group_by and the key are the caller's; the ledger
+// validates group_by.
+func (p *Pipeline) QuerySpend(ctx context.Context, q spendledger.Query) ([]SpendRow, error) {
+	if p.ledger == nil {
+		return nil, ErrNoSpendLedger
+	}
+	rows, err := p.ledger.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SpendRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, SpendRow{Key: r.Key, Model: r.Model, Tool: r.Tool, Session: r.Session, SpendUSD: budget.NanoUSDToUSD(r.SpendNanoUSD), Requests: r.Requests})
+	}
+	return out, nil
+}
+
+// EraseSpendSession answers POST /admin/spend/erase: the session's cells go
+// from every key and hour on this replica's ledger (the shared store in Redis
+// mode); it returns how many went. The ledger refuses "" and `other`.
+func (p *Pipeline) EraseSpendSession(ctx context.Context, session string) (int, error) {
+	if p.ledger == nil {
+		return 0, ErrNoSpendLedger
+	}
+	return p.ledger.DeleteSession(ctx, session)
 }

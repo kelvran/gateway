@@ -421,3 +421,37 @@ func TestRunLedgerSweepLoopSweepsOnStartThenEveryInterval(t *testing.T) {
 	pn, _ := ledgerTestPipeline(t, nil, nil, nil)
 	pn.RunLedgerSweepLoop(context.Background(), time.Millisecond) // no ledger: returns at once
 }
+
+// TestQuerySpendAndEraseSpendSessionWrapTheLedger: the admin routes read and
+// erase through the pipeline, which converts nano-USD to decimal USD (admin
+// cannot import budget); with no ledger both report ErrNoSpendLedger.
+func TestQuerySpendAndEraseSpendSessionWrapTheLedger(t *testing.T) {
+	ledger := spendledger.NewMemory(spendledger.Options{})
+	p, _ := ledgerTestPipeline(t, nil, nil, ledger)
+	ctx := context.Background()
+	now := time.Now()
+	if err := ledger.Record(ctx, spendledger.Entry{Key: "test-key", Model: "gpt-4o", Tool: "curl", Session: "s1", At: now, SpendNanoUSD: 1_250_000_000, Requests: 2}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := p.QuerySpend(ctx, spendledger.Query{GroupBy: spendledger.GroupBySession, Since: now.Add(-time.Hour), Until: now.Add(time.Hour)})
+	if err != nil || len(rows) != 1 || rows[0].Key != "test-key" || rows[0].Session != "s1" || rows[0].SpendUSD.String() != "1.25" || rows[0].Requests != 2 {
+		t.Fatalf("QuerySpend = %+v, %v; want one row test-key/s1 1.25 USD, 2 requests", rows, err)
+	}
+	if _, err := p.QuerySpend(ctx, spendledger.Query{GroupBy: "hour"}); !errors.Is(err, spendledger.ErrInvalidGroupBy) {
+		t.Fatalf("QuerySpend with an unknown group_by: %v, want ErrInvalidGroupBy", err)
+	}
+	n, err := p.EraseSpendSession(ctx, "s1")
+	if err != nil || n != 1 {
+		t.Fatalf("EraseSpendSession = %d, %v; want 1 cell", n, err)
+	}
+	if _, err := p.EraseSpendSession(ctx, spendledger.OtherSession); !errors.Is(err, spendledger.ErrSessionNotErasable) {
+		t.Fatalf("EraseSpendSession(other): %v, want ErrSessionNotErasable", err)
+	}
+	none, _ := ledgerTestPipeline(t, nil, nil, nil)
+	if _, err := none.QuerySpend(ctx, spendledger.Query{GroupBy: spendledger.GroupByKey}); !errors.Is(err, ErrNoSpendLedger) {
+		t.Fatalf("QuerySpend without a ledger: %v, want ErrNoSpendLedger", err)
+	}
+	if _, err := none.EraseSpendSession(ctx, "s1"); !errors.Is(err, ErrNoSpendLedger) {
+		t.Fatalf("EraseSpendSession without a ledger: %v, want ErrNoSpendLedger", err)
+	}
+}

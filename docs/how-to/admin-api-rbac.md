@@ -13,7 +13,7 @@ Use this when someone other than you needs to read config, watch spend, or rotat
 
 ## Which tier opens which route
 
-Admin is a superset of every other tier. Operator authenticates no read route. CostViewer authenticates exactly one route.
+Admin is a superset of every other tier. Operator authenticates no read route. CostViewer authenticates two read routes, the second only with `key=`.
 
 | Route | Admin | Viewer | CostViewer | Operator |
 |---|---|---|---|---|
@@ -21,6 +21,8 @@ Admin is a superset of every other tier. Operator authenticates no read route. C
 | `GET /admin/audit` (registered only when `audit_log_path` is set) | yes | yes | - | - |
 | `GET /admin/virtual_keys` | yes | yes | - | - |
 | `GET /admin/virtual_keys/{name}/spend` | yes | yes | yes | - |
+| `GET /admin/spend` (since item 13d) | yes | yes | only with `key=` | - |
+| `POST /admin/spend/erase` (since item 13d) | yes | - | - | - |
 | `GET /admin/virtual_keys/{name}/inflight` | yes | yes | - | - |
 | `GET /admin/deployments` (since `gateway/v0.18.0`) | yes | yes | - | - |
 | `GET /admin/prompts`, `GET /admin/prompts/{id}`, `GET /admin/prompts/{id}/versions/{version}` | yes | yes | - | - |
@@ -149,7 +151,7 @@ Set `listen_addr` to a non-loopback address on purpose. The shipped Kubernetes m
 
 ### Give finance a spend-only credential
 
-Set `token_env` and `cost_viewer_token_env` only. The CostViewer token answers `401` on every route except `GET /admin/virtual_keys/{name}/spend`, and that response carries no key hash, model list or rate-limit shape.
+Set `token_env` and `cost_viewer_token_env` only. The CostViewer token answers `401` on every route except `GET /admin/virtual_keys/{name}/spend` and `GET /admin/spend?key=<name>&group_by=…` (one key at a time; a cross-key aggregate is `401`), and those responses carry no key hash, model list or rate-limit shape.
 
 ### Turn the audit trail off
 

@@ -66,6 +66,12 @@ func wireSamples() map[string]any {
 		"LabelResponse":                       LabelResponse{PromptID: "greeting", Label: "prod", Version: 2, UpdatedAt: at},
 		"PerModelRateLimitRequest":            PerModelRateLimitRequest{Burst: 5, RefillPerSecond: 1},
 		"RateLimitRequest.zero":               RateLimitRequest{},
+		"SpendRow":                            SpendRow{Key: "team-a", Model: "gpt-4o", Tool: "claude_code", Session: "sess-1", SpendUSD: "1.25", Requests: 3},
+		"SpendRow.byModel":                    SpendRow{Model: "gpt-4o", SpendUSD: "0.5", Requests: 2},
+		"SpendResponse":                       SpendResponse{GroupBy: "session", Key: "team-a", Since: at, Until: at.Add(24 * time.Hour), Rows: []SpendRow{{Key: "team-a", Session: "sess-1", SpendUSD: "1.25", Requests: 3}}},
+		"SpendResponse.empty":                 SpendResponse{GroupBy: "key", Since: at, Until: at.Add(24 * time.Hour), Rows: []SpendRow{}},
+		"SpendEraseRequest":                   SpendEraseRequest{Session: "sess-1"},
+		"SpendEraseResponse":                  SpendEraseResponse{RowsErased: 2},
 	}
 }
 

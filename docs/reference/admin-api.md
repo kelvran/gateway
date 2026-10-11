@@ -70,7 +70,7 @@ Four tiers. Admin is required; the other three are optional. Admin is a strict s
 |---|---|---|---|
 | Admin | `admin.token_env` | `admin` | Every route. |
 | Viewer | `admin.viewer_token_env` | `viewer` | Every `GET` route except pprof. No write route. |
-| CostViewer | `admin.cost_viewer_token_env` | `cost_viewer` | Only `GET /admin/virtual_keys/{name}/spend`. |
+| CostViewer | `admin.cost_viewer_token_env` | `cost_viewer` | Only the two spend reads: `GET /admin/virtual_keys/{name}/spend`, and `GET /admin/spend` with `key=` naming one virtual key (without `key=` it is `401`). |
 | Operator | `admin.operator_token_env` | `operator` | Only `POST /admin/virtual_keys/{name}/rotate`, `POST /admin/deployments/{name}/weight`, `POST /admin/cache/erase`. |
 
 Design records: [2026-09-05 admin API RFC](../rfcs/2026-09-05-gateway-admin-api.md), [2026-09-09 viewer role RFC](../rfcs/2026-09-09-gateway-admin-viewer-role.md), [2026-09-20 RBAC risk-tiering RFC](../rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md).
@@ -100,6 +100,8 @@ The machine-readable form of this table is `gateway/openapi/kelvran-gateway.open
 | POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404, 409 | `admin_virtual_key_rotated` |
 | GET | `/admin/virtual_keys/{name}/spend` | Admin, Viewer, CostViewer | 200 JSON | 404, 500 | `admin_virtual_key_spend_read` |
 | GET | `/admin/virtual_keys/{name}/inflight` | Admin, Viewer | 200 JSON | 404, 500 | `admin_virtual_key_inflight_read` |
+| GET | `/admin/spend` | Admin, Viewer, CostViewer | 200 JSON | 400, 500 | `admin_spend_read` |
+| POST | `/admin/spend/erase` | Admin | 200 JSON | 400, 500 | `admin_spend_erased` |
 | GET | `/admin/prompts` | Admin, Viewer | 200 JSON | 500 | `admin_prompts_read` |
 | GET | `/admin/prompts/{id}` | Admin, Viewer | 200 JSON | 404, 500 | `admin_prompts_read` |
 | GET | `/admin/prompts/{id}/versions/{version}` | Admin, Viewer | 200 JSON | 400, 404, 500 | `admin_prompts_read` |
@@ -313,7 +315,7 @@ See [rotate-credentials.md](../how-to/rotate-credentials.md) for the procedure.
 
 ## GET /admin/virtual_keys/{name}/spend
 
-Returns the key's current spend against its cap. The only route the CostViewer tier may call.
+Returns the key's current spend against its cap. One of the two routes the CostViewer tier may call (the other is `GET /admin/spend` with `key=`).
 
 Response:
 
@@ -331,6 +333,52 @@ Response:
 | 404 | `virtual key "<name>" not found` |
 
 Audit entry `admin_virtual_key_spend_read` with `name` and `authorized_by`; the figures are not logged. In Redis budget mode a backend error, or a read not answered within 2 s, omits `spent_usd` and `percent_used` and sets `spend_unavailable: true` (before 2026-10-10 it read as `0`); see row R8 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md).
+
+## GET /admin/spend
+
+The spend ledger (item 13d) aggregated by one dimension over a window: every billable chat completion and embeddings call is recorded by hour, virtual key, served model, client tool and session (the Claude Code session id, else a grammar-passing `agent_run_id` Baggage member). Admin and Viewer read any query. **CostViewer reads only with `key=` naming one virtual key**, across every `group_by`; without `key=` the answer is `401` (`cost_viewer may read /admin/spend only with key= naming one virtual key`).
+
+Query parameters:
+
+| Parameter | Required | Meaning |
+|---|---|---|
+| `group_by` | yes | `key`, `model`, `tool` or `session`. Rows keep the grouped dimension; `key` is also kept when the query names one key or groups by session. |
+| `key` | for CostViewer | One virtual key. An unknown key is an empty `rows` array, not `404`. |
+| `since` | no | RFC 3339. Default `until` minus 24 hours. Clamped to now minus `ledger.retention_hours`, so the served `since` can be later than the one asked for. Buckets are hours; the bucket containing `since` is included whole. |
+| `until` | no | RFC 3339, exclusive. Default now. Must be after `since`. A window that lies entirely before the retention floor is served as `[floor, floor)` with no rows, never an error. |
+
+Response:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `group_by`, `key` | string | The query as served (`key` omitted when absent). |
+| `since`, `until` | RFC 3339 | The window as served, after the clamp. |
+| `rows[]` | array | Sorted by spend, highest first. Each row: the grouped dimension (`key`/`model`/`tool`/`session`, the others omitted), `spend_usd` (decimal string, USD), `requests` (integer). A session named `other` holds what the caps folded: the sessions beyond `ledger.max_sessions_per_key` and the cells beyond `ledger.max_rows_per_key`, keeping model and tool. |
+
+| Status | Body |
+|---|---|
+| 200 | The object; `rows` is `[]` when nothing matched. |
+| 400 | `group_by must be one of key, model, tool, session`; `since "<v>" is not a valid RFC 3339 timestamp: …`; `until "<v>" is not a valid RFC 3339 timestamp: …`; `until must be after since` |
+| 401 | The cost-viewer tier without `key=`, besides the usual authentication failures. |
+| 500 | `querying spend ledger: …` when the ledger could not be read within 10 s (the text names hours and keys, never a session). |
+
+Audit entry `admin_spend_read` with `group_by`, `key`, `since`, `until`, `rows` (the count) and `authorized_by`; no figure is logged. In Redis mode a read is one `SCAN` of the hour hashes plus one `HGETALL` per hash in the window — the RFC calls it not a hot path, and the admin listener has no per-credential rate limit (it binds loopback by default), so Viewer-tier dashboards should poll it in minutes, not seconds, and a leaked read credential is a load vector as well as a disclosure. The CLI reads it as `kelvran spend --by model|tool|session` (the next slice).
+
+## POST /admin/spend/erase
+
+Erases one session's rows from the spend ledger: every cell of that session across every key and hour. Admin only — irreversible, and cross-tenant by nature (a session id is not scoped to a key). Body, bounded at 4 KiB:
+
+```json
+{"session": "<id>"}
+```
+
+| Status | Body |
+|---|---|
+| 200 | `{"rows_erased": <n>}` — how many cells (a row inside one hour bucket) went; `0` when the session had none. |
+| 400 | `invalid request body: …` (not JSON, or over 4 KiB); `session is required`; `session "other" cannot be erased on its own: it is the fold target, removed only with its key or by retention`; `session must be 1-128 bytes of [A-Za-z0-9._:-]` |
+| 500 | `erasing spend ledger session: …` when the ledger could not erase within 10 s. |
+
+The erase does not propagate (owner gate G28): in bbolt and in-memory modes each replica holds its own ledger, so run the call once per replica; in Redis mode the ledger is shared and one call is enough and idempotent. A session that was folded into `other` cannot be erased on its own — only `DELETE /admin/virtual_keys/{name}` (which cascades to the key's rows) or the retention sweep removes it. Audit entry `admin_spend_erased` with `session_sha256_prefix` (the first 16 hex characters of the session's SHA-256, never the id — the audit log is append-only and indefinite), `rows_erased` and `authorized_by`. See [DATA-SUBJECT-REQUESTS.md](../operations/DATA-SUBJECT-REQUESTS.md) for the procedure.
 
 ## GET /admin/virtual_keys/{name}/inflight
 
@@ -609,6 +657,8 @@ Every successful call to a route with an audit event in the route index writes o
 | `admin_virtual_key_rotated` | `name`, `grace_period_seconds` |
 | `admin_virtual_key_spend_read` | `name` |
 | `admin_virtual_key_inflight_read` | `name` |
+| `admin_spend_read` | `group_by`, `key`, `since`, `until`, `rows` (count) |
+| `admin_spend_erased` | `session_sha256_prefix` (16 hex characters of the session's SHA-256, never the id), `rows_erased` |
 | `admin_prompts_read` | none for the list; `id` for one prompt; `id`, `version` for one version |
 | `admin_prompt_upserted` | `id`, `version` |
 | `admin_prompt_deleted` | `id` |
@@ -619,7 +669,7 @@ Every successful call to a route with an audit event in the route index writes o
 | `admin_deployment_weight_updated` | `name`, `weight` |
 | `admin_cache_entry_erased` | `virtual_key_id`, `model`, `l1_found`, `l2_found` |
 
-No entry ever carries a token, a key hash, prompt content, or spend figures.
+No entry ever carries a token, a key hash, prompt content, spend figures or a session identifier.
 
 When the durable append fails, the request still succeeds, the `slog` line is the only copy, and a Warn line `admin_audit_durable_append_failed` with `error` is written. There is no metric for this failure. `GET /admin/audit` has no marker for the gap. See row P7 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md). Log and metric names across the gateway are in [metrics-and-logs.md](metrics-and-logs.md).
 
@@ -653,7 +703,7 @@ With `config_propagation.redis_addr` and `config_propagation.signing_secret_env`
 | `DELETE /admin/virtual_keys/{name}` | `virtual_key_delete` |
 | `POST /admin/deployments/{name}/weight` | `deployment_weight` |
 
-A replica ignores its own events and applies the others with last-writer-wins ordering. A publish failure leaves the local mutation applied and the other replicas stale; it is logged as `configpropagation_publish_failed` and, since `gateway/v0.18.0`, counted by `kelvran.configpropagation.publish_failed`. Rows R13 and R14 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md) cover publish and subscribe outages.
+`POST /admin/spend/erase` publishes nothing (G28): in bbolt and in-memory modes run it once per replica; the Redis ledger is shared. A replica ignores its own events and applies the others with last-writer-wins ordering. A publish failure leaves the local mutation applied and the other replicas stale; it is logged as `configpropagation_publish_failed` and, since `gateway/v0.18.0`, counted by `kelvran.configpropagation.publish_failed`. Rows R13 and R14 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md) cover publish and subscribe outages.
 
 ## Not available today
 

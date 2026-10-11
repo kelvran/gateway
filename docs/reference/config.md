@@ -268,7 +268,7 @@ The Redis client dials lazily; an unreachable Redis does not stop startup. Openi
 
 ## `ledger`
 
-The bounded spend ledger of RFC-2 item 13d: every billable chat completion and embeddings call is recorded by hour, virtual key, served model, client tool and session, for `GET /admin/spend` (the route lands with the next slice). With no block the ledger is in memory with the defaults below and resets on restart.
+The bounded spend ledger of RFC-2 item 13d: every billable chat completion and embeddings call is recorded by hour, virtual key, served model, client tool and session, read by [`GET /admin/spend`](admin-api.md#get-adminspend) and erased per session by [`POST /admin/spend/erase`](admin-api.md#post-adminspenderase). With no block the ledger is in memory with the defaults below and resets on restart.
 
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|

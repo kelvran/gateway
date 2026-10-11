@@ -19,6 +19,8 @@ var adminStatusTable = map[string][]string{
 	"getPromptVersion": {"200", "400", "404", "500"}, "upsertPrompt": {"200", "400", "500"}, "deletePrompt": {"204", "400", "404", "500"},
 	"setPromptLabel": {"200", "400", "404", "500"}, "deletePromptLabel": {"204", "404", "500"}, "createBackup": {"200", "500", "501"},
 	"listDeployments": {"200", "500"}, "updateDeploymentWeight": {"204", "400", "404", "500"}, "eraseCacheEntry": {"200", "400", "404", "500"},
+	// The spend ledger's routes (item 13d slice 4): the read's 401 includes the cost-viewer-without-key= case (G27).
+	"getSpend": {"200", "400", "500"}, "eraseSpendSession": {"200", "400", "500"},
 	// net/http/pprof's own, under the pinned toolchain: the index, cmdline and symbol never fail; Profile and Trace answer 500
 	// when profiling cannot start; the six named profiles answer 400/408/500 around a delta profile (`seconds`).
 	"pprofIndex": {"200"}, "pprofCmdline": {"200"}, "pprofProfile": {"200", "500"}, "pprofSymbol": {"200"}, "pprofSymbolPost": {"200"}, "pprofTrace": {"200", "500"},

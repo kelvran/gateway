@@ -517,8 +517,15 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              `RunLedgerSweepLoop` sweeps at start and hourly beside the health-probe loop;
                              `DeleteVirtualKey` cascades to the key's rows; the bbolt file is a
                              `BackupStores` candidate (`ledger-<stamp>.bbolt`) and `-restore-store ledger`
-                             restores it. No route reads the ledger yet — `GET /admin/spend`,
-                             `POST /admin/spend/erase` and the CLI's `--by` land in the following slices.
+                             restores it. **Slice 4 (2026-10-11)** added the routes: `GET /admin/spend`
+                             (`TierAdminViewerCostViewer`; G27 inside the handler — the cost-viewer tier
+                             only with `key=`; the window defaults to the last 24 h and is clamped to the
+                             retention; rows sorted by spend; `spend_usd` a decimal string converted by
+                             `Pipeline.QuerySpend` because `admin` may not import `budget`) and
+                             `POST /admin/spend/erase` (`TierAdmin`; body ≤ 4 KiB; `other` and the empty
+                             session refused; the audit line carries a 16-hex SHA-256 prefix of the
+                             session, never the id — G28), with their OpenAPI operations and the
+                             `adminapi` wire types. The CLI's `--by` lands in the next slice.
 /internal/adapter            — OpenAI/Anthropic/Gemini/Bedrock/self-hosted client wrappers
 /internal/costaccounting     — token/$ metering, Decimal-precision ledger — real, per
                              docs/rfcs/2026-09-02-decimal-cost-accounting.md (github.com/shopspring/decimal,
@@ -849,7 +856,8 @@ ratelimit/redislimiter ✗→ ratelimit   (the interface (RedisBackend) lives in
                                   Redis-specific implementation never imports it back — the same pattern
                                   budget/boltstore already established, so go-redis stays out of
                                   ratelimit's own dependency graph in the default, in-memory-only case)
-admin → adapter, adminapi, admin/auditstore, controlplane, dataplane, identity, prompt, ratelimit
+admin → adapter, adminapi, admin/auditstore, controlplane, dataplane, identity, prompt, ratelimit, spendledger (item 13d slice 4: the Query type and the
+                                  group_by/session validators; the rows come through dataplane's accessors, which convert nano-USD)
 cli   → adminapi, controlplane, identity, adapter, telemetry/exporterkind   (the kelvran CLI, RFC-3: never
                                   telemetry — that would pull OTel into a diagnostic tool — and never
                                   dataplane or admin; it talks to a running gateway over HTTP only)

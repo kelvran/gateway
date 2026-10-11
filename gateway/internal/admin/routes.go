@@ -26,8 +26,9 @@ const (
 	// docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md.
 	TierAdminOrOperator Tier = "admin_or_operator"
 	// TierAdminViewerCostViewer is requireAnyBearerToken over admin, viewer
-	// and cost_viewer: the one route the CostViewer tier authenticates, the
-	// per-key spend view.
+	// and cost_viewer: the two spend reads the CostViewer tier authenticates,
+	// GET /admin/virtual_keys/{name}/spend and GET /admin/spend (the latter
+	// only with key= naming one key -- G27, decided inside its handler).
 	TierAdminViewerCostViewer Tier = "admin_viewer_cost_viewer"
 )
 
@@ -92,8 +93,8 @@ func pprofOperationID(profile string) string {
 	return "pprof" + strings.ToUpper(profile[:1]) + profile[1:]
 }
 
-// routeTable holds every route in registration order: 18 unconditional, the
-// audit route, the twelve pprof routes -- 31 rows over 26 paths. Prompts are
+// routeTable holds every route in registration order: 20 unconditional, the
+// audit route, the twelve pprof routes -- 33 rows over 28 paths. Prompts are
 // global operator-managed config, so their reads are viewer-or-admin like
 // GET /admin/config and their writes admin-only like the virtual-key routes;
 // POST /admin/backup is always registered so an unconfigured caller gets an
@@ -113,6 +114,11 @@ func buildRouteTable() []Route {
 		// In-flight load is operational topology state, the category
 		// GET /admin/virtual_keys exposes -- not a cost view, so no CostViewer.
 		{"getVirtualKeyInFlight", http.MethodGet, "/admin/virtual_keys/{name}/inflight", TierAdminOrViewer, Always},
+		// The spend ledger (RFC-2 item 13d, G27/G28): the read admits the
+		// cost-viewer tier too, but only with key= -- decided inside the
+		// handler; the erase is irreversible and cross-tenant, so Admin only.
+		{"getSpend", http.MethodGet, "/admin/spend", TierAdminViewerCostViewer, Always},
+		{"eraseSpendSession", http.MethodPost, "/admin/spend/erase", TierAdmin, Always},
 		{"listPrompts", http.MethodGet, "/admin/prompts", TierAdminOrViewer, Always},
 		{"getPrompt", http.MethodGet, "/admin/prompts/{id}", TierAdminOrViewer, Always},
 		{"getPromptVersion", http.MethodGet, "/admin/prompts/{id}/versions/{version}", TierAdminOrViewer, Always},
@@ -140,7 +146,7 @@ func buildRouteTable() []Route {
 }
 
 // Routes returns the rows Handler registers for cfg and hasAuditStore, in
-// registration order: 18 always, +1 with an audit store, +12 with
+// registration order: 20 always, +1 with an audit store, +12 with
 // cfg.Admin.EnablePprof. Pure.
 func Routes(cfg *controlplane.Config, hasAuditStore bool) []Route {
 	out := make([]Route, 0, len(routeTable))
@@ -164,7 +170,7 @@ func Routes(cfg *controlplane.Config, hasAuditStore bool) []Route {
 }
 
 // AllRoutes returns every row with every condition on -- the set the OpenAPI
-// document describes (31 rows over 26 paths). A copy; callers may sort it.
+// document describes (33 rows over 28 paths). A copy; callers may sort it.
 func AllRoutes() []Route {
 	out := make([]Route, len(routeTable))
 	copy(out, routeTable)

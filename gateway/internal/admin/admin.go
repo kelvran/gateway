@@ -62,7 +62,9 @@ import (
 // is full read access (GET /admin/config, prompts) but never a write.
 // CostViewer, per docs/upgrade-research/multi-tenancy-access-control-2026-09-14.md's
 // narrow-third-tier recommendation, is narrower still: it authenticates
-// ONLY GET /admin/virtual_keys/{name}/spend, never config, prompts, or any
+// ONLY the two spend reads, GET /admin/virtual_keys/{name}/spend and GET
+// /admin/spend (the latter only with key= naming one key, G27 -- the one
+// tier rule decided inside a handler), never config, prompts, or any
 // write route — a credential an operator can hand to a billing/finance
 // consumer without granting it any visibility into deployment topology,
 // prompt content, or model/rate-limit configuration. Operator, per
@@ -215,6 +217,8 @@ func routeHandlers(cfg *controlplane.Config, pipeline *dataplane.Pipeline, audit
 		"rotateVirtualKey":       rotateVirtualKeyHandler(pipeline, audit),
 		"getVirtualKeySpend":     getVirtualKeySpendHandler(pipeline, audit),
 		"getVirtualKeyInFlight":  getVirtualKeyInFlightHandler(pipeline, audit),
+		"getSpend":               getSpendHandler(pipeline, ledgerRetention(cfg), audit),
+		"eraseSpendSession":      eraseSpendSessionHandler(pipeline, audit),
 		"listPrompts":            listPromptsHandler(pipeline, audit),
 		"getPrompt":              getPromptHandler(pipeline, audit),
 		"getPromptVersion":       getPromptVersionHandler(pipeline, audit),
@@ -329,8 +333,9 @@ type tokenTier struct {
 // requireAnyBearerToken wraps next so a request authenticates with ANY of
 // pairs' non-empty tokens, stashing whichever tier matched into the
 // request's context exactly like requireEitherBearerToken does. Used
-// directly by GET /admin/virtual_keys/{name}/spend (the one route the
-// CostViewer tier authenticates) and, through
+// directly by the two spend reads, GET /admin/virtual_keys/{name}/spend and
+// GET /admin/spend (the routes the CostViewer tier authenticates; the second
+// only with key=, checked in its handler) and, through
 // requireAdminOrOperatorBearerToken below, by the three Operator-tier
 // write routes; every other route keeps using
 // requireBearerToken/requireEitherBearerToken. A zero-value token in

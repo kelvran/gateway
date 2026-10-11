@@ -290,3 +290,40 @@ type LabelResponse struct {
 	Version   int       `json:"version"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// SpendRow is one aggregate of GET /admin/spend (item 13d): the dimension the
+// query grouped by (the others omitted), plus `key` whenever the query named
+// one key or grouped by session; `spend_usd` is a decimal string in USD,
+// `requests` the billed request count. Rows arrive sorted by spend, highest
+// first.
+type SpendRow struct {
+	Key      string `json:"key,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Tool     string `json:"tool,omitempty"`
+	Session  string `json:"session,omitempty"`
+	SpendUSD string `json:"spend_usd"`
+	Requests int64  `json:"requests"`
+}
+
+// SpendResponse is GET /admin/spend's response body: the query as served
+// (`since` after the retention clamp, `until` as given or now) and its rows,
+// an empty array when nothing matched.
+type SpendResponse struct {
+	GroupBy string     `json:"group_by"`
+	Key     string     `json:"key,omitempty"`
+	Since   time.Time  `json:"since"`
+	Until   time.Time  `json:"until"`
+	Rows    []SpendRow `json:"rows"`
+}
+
+// SpendEraseRequest is POST /admin/spend/erase's request body: the session
+// whose ledger rows are erased, 1-128 bytes of [A-Za-z0-9._:-]; never `other`.
+type SpendEraseRequest struct {
+	Session string `json:"session"`
+}
+
+// SpendEraseResponse is POST /admin/spend/erase's response body: how many
+// cells (a row inside one hour bucket) went, across every key.
+type SpendEraseResponse struct {
+	RowsErased int `json:"rows_erased"`
+}

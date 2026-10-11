@@ -91,6 +91,45 @@
   "SetPromptLabelRequest": {
     "version": 2
   },
+  "SpendEraseRequest": {
+    "session": "sess-1"
+  },
+  "SpendEraseResponse": {
+    "rows_erased": 2
+  },
+  "SpendResponse": {
+    "group_by": "session",
+    "key": "team-a",
+    "since": "2026-10-10T01:02:03Z",
+    "until": "2026-10-11T01:02:03Z",
+    "rows": [
+      {
+        "key": "team-a",
+        "session": "sess-1",
+        "spend_usd": "1.25",
+        "requests": 3
+      }
+    ]
+  },
+  "SpendResponse.empty": {
+    "group_by": "key",
+    "since": "2026-10-10T01:02:03Z",
+    "until": "2026-10-11T01:02:03Z",
+    "rows": []
+  },
+  "SpendRow": {
+    "key": "team-a",
+    "model": "gpt-4o",
+    "tool": "claude_code",
+    "session": "sess-1",
+    "spend_usd": "1.25",
+    "requests": 3
+  },
+  "SpendRow.byModel": {
+    "model": "gpt-4o",
+    "spend_usd": "0.5",
+    "requests": 2
+  },
   "UpdateDeploymentWeightRequest": {
     "weight": 3
   },

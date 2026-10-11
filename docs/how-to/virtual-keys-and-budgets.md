@@ -142,6 +142,17 @@ rate_limit:
 - Per-key concurrency, deployment ceilings, idempotency, prompts and the response cache stay per replica regardless.
 - On the request path a Redis failure fails open for rate limiting and budget: the request is admitted and `kelvran.ratelimit.fail_open` or `kelvran.budget.fail_open` increments. An unreachable identity Redis at startup fails closed: the process exits before listening. Row-by-row detail is in [FAILURE-MODES.md](../operations/FAILURE-MODES.md).
 
+### See what a key spent, by model, tool or session
+
+Since item 13d every billable call is recorded in the spend ledger. With the admin listener on and a token that may read spend (Admin, Viewer, or CostViewer with `key=`):
+
+```bash
+curl -H "Authorization: Bearer $KELVRAN_ADMIN_TOKEN" \
+  "$ADMIN/admin/spend?group_by=model&key=team-alpha&since=2026-10-10T00:00:00Z&until=2026-10-11T00:00:00Z"
+```
+
+Rows come sorted by spend, highest first, `spend_usd` as a decimal string. `group_by=session` shows the Claude Code session ids (or the `agent_run_id` Baggage member) a key ran; a session named `other` is what the caps folded. The window is clamped to `ledger.retention_hours` (168 h by default). See [GET /admin/spend](../reference/admin-api.md#get-adminspend) and the [`ledger` section](../reference/config.md#ledger) of the configuration reference.
+
 ### Manage keys live through the admin API
 
 The admin API is off until `admin.token_env` names an environment variable, and that variable must resolve non-empty or the gateway refuses to start. It listens on its own address, `127.0.0.1:8081` by default:

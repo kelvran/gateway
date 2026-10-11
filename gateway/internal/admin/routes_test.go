@@ -67,10 +67,10 @@ type routeCondition struct {
 func routeConditions(t *testing.T) []routeCondition {
 	t.Helper()
 	return []routeCondition{
-		{"no audit store, pprof off", testConfig(), nil, 18},
-		{"audit store, pprof off", testConfig(), openTestAuditStore(t), 19},
-		{"no audit store, pprof on", pprofEnabledConfig(), nil, 30},
-		{"audit store, pprof on", pprofEnabledConfig(), openTestAuditStore(t), 31},
+		{"no audit store, pprof off", testConfig(), nil, 20},
+		{"audit store, pprof off", testConfig(), openTestAuditStore(t), 21},
+		{"no audit store, pprof on", pprofEnabledConfig(), nil, 32},
+		{"audit store, pprof on", pprofEnabledConfig(), openTestAuditStore(t), 33},
 	}
 }
 
@@ -82,12 +82,12 @@ func patternSet(routes []Route) map[string]bool {
 	return set
 }
 
-// TestAllRoutesIsTheDocumentsRouteSet pins the table's shape: 31 rows over 26
+// TestAllRoutesIsTheDocumentsRouteSet pins the table's shape: 33 rows over 28
 // distinct paths, every pattern and operationId unique, exactly one subtree.
 func TestAllRoutesIsTheDocumentsRouteSet(t *testing.T) {
 	all := AllRoutes()
-	if len(all) != 31 {
-		t.Fatalf("AllRoutes() has %d rows, want 31", len(all))
+	if len(all) != 33 {
+		t.Fatalf("AllRoutes() has %d rows, want 33", len(all))
 	}
 	patterns, ids, paths, subtrees := map[string]bool{}, map[string]bool{}, map[string]bool{}, 0
 	for _, rt := range all {
@@ -105,8 +105,8 @@ func TestAllRoutesIsTheDocumentsRouteSet(t *testing.T) {
 			t.Errorf("%s: Tier %q admits %v, want admin first", rt.Pattern(), rt.Tier, rt.Tier.Tiers())
 		}
 	}
-	if len(paths) != 26 {
-		t.Errorf("AllRoutes() spans %d distinct paths, want 26", len(paths))
+	if len(paths) != 28 {
+		t.Errorf("AllRoutes() spans %d distinct paths, want 28", len(paths))
 	}
 	if subtrees != 1 {
 		t.Errorf("AllRoutes() has %d subtree patterns, want exactly one (GET /admin/debug/pprof/)", subtrees)
@@ -117,8 +117,9 @@ func TestAllRoutesIsTheDocumentsRouteSet(t *testing.T) {
 // baseline the RBAC RFCs set (docs/rfcs/2026-09-09-gateway-admin-viewer-role.md,
 // docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md): every write is
 // admin-only except exactly the three reversible, single-target operator
-// routes; every read is admin-or-viewer except the one spend view, which adds
-// cost_viewer; every pprof row is admin-only. The tier matrix cannot catch a
+// routes; every read is admin-or-viewer except the two spend views, which add
+// cost_viewer (the ledger view only with key=, decided in its handler — item
+// 13d, G27); every pprof row is admin-only. The tier matrix cannot catch a
 // table edit on its own because its oracle is the table.
 func TestRouteTableTiersFollowTheRBACBaseline(t *testing.T) {
 	operatorRoutes := map[string]bool{"rotateVirtualKey": true, "updateDeploymentWeight": true, "eraseCacheEntry": true}
@@ -131,7 +132,7 @@ func TestRouteTableTiersFollowTheRBACBaseline(t *testing.T) {
 			want = TierAdminOrOperator
 		case rt.Method != http.MethodGet:
 			want = TierAdmin
-		case rt.OperationID == "getVirtualKeySpend":
+		case rt.OperationID == "getVirtualKeySpend" || rt.OperationID == "getSpend":
 			want = TierAdminViewerCostViewer
 		}
 		if rt.Tier != want {
@@ -141,7 +142,7 @@ func TestRouteTableTiersFollowTheRBACBaseline(t *testing.T) {
 			t.Errorf("%s: condition %q does not match its path", rt.Pattern(), rt.Condition)
 		}
 	}
-	for _, id := range []string{"rotateVirtualKey", "updateDeploymentWeight", "eraseCacheEntry", "getVirtualKeySpend"} {
+	for _, id := range []string{"rotateVirtualKey", "updateDeploymentWeight", "eraseCacheEntry", "getVirtualKeySpend", "getSpend", "eraseSpendSession"} {
 		found := false
 		for _, rt := range AllRoutes() {
 			found = found || rt.OperationID == id

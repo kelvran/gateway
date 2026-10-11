@@ -56,7 +56,8 @@ components:
   cli:                    { in: cli }
   # The spend ledger (RFC-2 item 13d): a pure leaf, its bbolt and Redis
   # backends and the contract suite every backend runs. dataplane writes it
-  # (slice 3); admin will read it (slice 4). Unlike
+  # (slice 3); admin reads and erases through dataplane's accessors but names
+  # the leaf's Query and validators (slice 4). Unlike
   # budget-redisbudget, the Redis backend imports the leaf: the Ledger
   # interface takes the leaf's own Entry and Query types, so there is no
   # primitive-only shape to satisfy structurally.
@@ -221,6 +222,7 @@ deps:
       - adapter
   admin:
     mayDependOn:
+      - spendledger
       - adapter
       - admin-auditstore
       - adminapi

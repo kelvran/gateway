@@ -145,11 +145,11 @@ func TestOpenAPIRouteSetEqualsRegisteredRoutes(t *testing.T) {
 	for _, e := range extra {
 		t.Errorf("in the document, not registered: - %s", e)
 	}
-	if got := len(mappingKeys(mappingGet(root, "paths"))); got != 34 {
-		t.Errorf("the document has %d path items, want 34 (8 data-plane + 26 admin)", got)
+	if got := len(mappingKeys(mappingGet(root, "paths"))); got != 36 {
+		t.Errorf("the document has %d path items, want 36 (8 data-plane + 28 admin)", got)
 	}
-	if len(ops) != 39 {
-		t.Errorf("the document has %d operations, want 39 (8 data-plane + 31 admin)", len(ops))
+	if len(ops) != 41 {
+		t.Errorf("the document has %d operations, want 41 (8 data-plane + 33 admin)", len(ops))
 	}
 	for _, op := range ops {
 		if op.method == "HEAD" && op.path != "/api/hello" {

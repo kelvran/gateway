@@ -3017,6 +3017,172 @@ paths:
           type: integer
         description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
       summary: The allocs profile.
+  /admin/spend:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: getSpend
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      - costViewerToken: []
+      summary: The spend ledger aggregated by key, model, tool or session over a window (item 13d).
+      description: 'Admin and Viewer read any query. The cost-viewer tier reads only with `key=` naming one virtual key, across every `group_by` (owner gate G27); without it the answer is `401`. The window
+        defaults to the last 24 hours ending now and is clamped to the ledger''s `retention_hours`; the response carries the window as served. Rows come sorted by spend, highest first; a key with no rows
+        is an empty array, not an error. `other` is the fold target: the sessions beyond `ledger.max_sessions_per_key` and the cells beyond `ledger.max_rows_per_key`.'
+      parameters:
+      - name: group_by
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - key
+          - model
+          - tool
+          - session
+        description: The dimension to aggregate by (`400` otherwise). `key` is kept on every row when the query names one key or groups by session.
+      - name: key
+        in: query
+        schema:
+          type: string
+        description: One virtual key; required for the cost-viewer tier (`401` without it). An unknown key yields an empty row list.
+      - name: since
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: 'Lower bound, RFC 3339 (`400` otherwise); default `until` minus 24 hours; clamped to now minus `ledger.retention_hours`. Buckets are hours: the bucket containing `since` is included
+          whole.'
+      - name: until
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: Upper bound, exclusive, RFC 3339 (`400` otherwise); default now; must be after `since` (`400` otherwise). A window that lies entirely before the retention floor is served as `[floor,
+          floor)` with no rows.
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpendResponse'
+              examples:
+                golden:
+                  summary: One key's spend by session over the served window
+                  value:
+                    group_by: session
+                    key: team-a
+                    since: '2026-10-10T01:02:03Z'
+                    until: '2026-10-11T01:02:03Z'
+                    rows:
+                    - key: team-a
+                      session: sess-1
+                      spend_usd: '1.25'
+                      requests: 3
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/SpendResponse
+                empty:
+                  summary: A window with no rows
+                  value:
+                    group_by: key
+                    since: '2026-10-10T01:02:03Z'
+                    until: '2026-10-11T01:02:03Z'
+                    rows: []
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/SpendResponse.empty
+        '400':
+          description: '`group_by must be one of key, model, tool, session`; `since "<v>" is not a valid RFC 3339 timestamp: …`; `until "<v>" is not a valid RFC 3339 timestamp: …`; `until must be after
+            since`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403. The cost-viewer tier without `key=` is `cost_viewer may read /admin/spend
+            only with key= naming one virtual key` (G27).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'The ledger could not be read within 10 s (`querying spend ledger: …`, naming hours and keys, never a session), or encoding the response failed (`encoding response`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/spend/erase:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    post:
+      operationId: eraseSpendSession
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      summary: Erase one session's rows from the spend ledger (item 13d; Admin only).
+      description: 'Irreversible and cross-tenant by nature (a session id is not scoped to a key), so Admin only (owner gate G28). Removes the session''s cells from every key and hour on this replica''s
+        ledger — bbolt and in-memory modes need one call per replica; the Redis backend is shared. Rows already folded into `other` cannot be erased on their own: `other` goes with its key (`DELETE /admin/virtual_keys/{name}`)
+        or by retention. The body is bounded at 4 KiB. The audit line carries a 16-hex SHA-256 prefix of the session and `rows_erased`, never the id.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpendEraseRequest'
+            examples:
+              golden:
+                summary: The session to erase
+                value:
+                  session: sess-1
+                x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/SpendEraseRequest
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpendEraseResponse'
+              examples:
+                golden:
+                  summary: How many cells went
+                  value:
+                    rows_erased: 2
+                  x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/SpendEraseResponse
+        '400':
+          description: 'A body that is not JSON or over 4 KiB (`invalid request body: …`), `session is required`, `session "other" cannot be erased on its own: it is the fold target, removed only with its
+            key or by retention`, or `session must be 1-128 bytes of [A-Za-z0-9._:-]`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'The ledger could not erase within 10 s (`erasing spend ledger session: …`), or encoding the response failed (`encoding response`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
 components:
   securitySchemes:
     virtualKey:
@@ -4549,4 +4715,77 @@ components:
       x-kelvran-passthrough: anthropic
       properties:
         input_tokens:
+          type: integer
+    SpendRow:
+      description: 'One aggregate of GET /admin/spend: the grouped dimension (the others omitted), plus `key` when the query named one key or grouped by session; `spend_usd` is a decimal string in USD,
+        `requests` the billed request count.'
+      type: object
+      required:
+      - spend_usd
+      - requests
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        model:
+          type: string
+        tool:
+          type: string
+        session:
+          type: string
+        spend_usd:
+          type: string
+        requests:
+          type: integer
+          format: int64
+    SpendResponse:
+      description: 'GET /admin/spend''s body: the query as served (`since` after the retention clamp, `until` as given or now, RFC 3339) and its rows, sorted by spend, highest first; an empty array when
+        nothing matched.'
+      type: object
+      required:
+      - group_by
+      - since
+      - until
+      - rows
+      additionalProperties: false
+      properties:
+        group_by:
+          type: string
+          enum:
+          - key
+          - model
+          - tool
+          - session
+        key:
+          type: string
+        since:
+          type: string
+          format: date-time
+        until:
+          type: string
+          format: date-time
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpendRow'
+    SpendEraseRequest:
+      description: 'POST /admin/spend/erase''s body: the session whose rows are erased.'
+      type: object
+      required:
+      - session
+      properties:
+        session:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9._:-]+$
+          description: 1-128 bytes of `[A-Za-z0-9._:-]`; never `other`.
+    SpendEraseResponse:
+      description: 'POST /admin/spend/erase''s body: how many cells (a row inside one hour bucket) went, across every key.'
+      type: object
+      required:
+      - rows_erased
+      additionalProperties: false
+      properties:
+        rows_erased:
           type: integer
