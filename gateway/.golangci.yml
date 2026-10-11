@@ -120,6 +120,14 @@ linters:
         linters:
           - gosec
         text: "G304"
+      # The OpenAPI contract test (item 14) reads example fixtures at the
+      # repo-relative paths the committed document names in
+      # x-kelvran-example-source -- test-only, fixed by the document, never
+      # attacker-reachable input; the same reasoning as the entries above.
+      - path: cmd/gateway/openapi_contract_mirror_test.go
+        linters:
+          - gosec
+        text: "G304"
       # guardrail_credential_file_test.go writes real AWS credential
       # VALUES (read from the operator's own AWS_ACCESS_KEY_ID/
       # AWS_SECRET_ACCESS_KEY env vars under RUN_LIVE_LLM_TESTS=1) to a

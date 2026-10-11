@@ -1,0 +1,3639 @@
+openapi: 3.1.0
+info:
+  title: Kelvran gateway
+  version: 0.20.0
+  summary: The HTTP surface of the Kelvran LLM gateway, both listeners.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  description: "Two listeners, one process. The data plane (`listen_addr`, required; `config.example.yaml` sets `:8080`)\nserves the OpenAI-shaped `/v1/chat/completions`, `/v1/embeddings` and `/v1/models`,\
+    \ the Anthropic-shaped\n`/v1/messages` and `/v1/messages/count_tokens`, the probes `/healthz`, `/readyz` and `HEAD /api/hello`.\nThe admin listener (`admin.listen_addr`, default `127.0.0.1:8081`) exists\
+    \ only when `admin.token_env` is set\nand serves TLS only when `admin.mtls` is configured; its operations carry their own `servers` entry.\n\nWhat the OpenAPI vocabulary cannot carry, stated here and\
+    \ pinned by the gateway's own tests\n(`TestOpenAPI*` in `gateway/cmd/gateway`, `TestAdminServeMuxSemantics` in `gateway/internal/admin`):\n\n- Data-plane patterns carry no method, so a wrong method\
+    \ is the route's own `405` in the route's own\n  envelope (OpenAI JSON with `Allow` on chat, embeddings, models and hello; Anthropic JSON with `Allow` on\n  messages and count_tokens; plain text without\
+    \ `Allow` on healthz and readyz). A `HEAD` on a route that\n  does not accept it arrives as that route's `405` (`Allow` only on the JSON routes) with the body stripped by the server.\n- Admin patterns\
+    \ carry a method, so a wrong method on a known admin path is net/http's plain-text `405`\n  with `Allow`, answered before any bearer check; every admin `GET` also answers `HEAD` (same status and\n \
+    \ headers, no body); `/admin/debug/pprof/` is a subtree and `/admin/debug/pprof` without the slash is a\n  `307` redirect to it under the pinned Go toolchain. Neither the HEAD legs nor the redirect\
+    \ are operations.\n- Unknown paths are plain-text `404` on both listeners. The gateway adds no correlation header of its own: the only correlation inputs are W3C `traceparent`/`tracestate` and `baggage`.\
+    \ An admin credential of an insufficient tier is\n  `401`, never `403`.\n- Body caps: the data plane reads at most 32 MiB (`413` `request_too_large`), the admin listener has no cap;\n  `anthropic-*`\
+    \ request headers forwarded on the two Anthropic routes are bounded at 16 KiB; an `anthropic`\n  deployment's `count_tokens` answer is relayed up to 64 KiB.\n- `POST /v1/messages` and `POST /v1/messages/count_tokens`\
+    \ request schemas are permissive by construction\n  (RFC-1 Option C): members the canonical schema does not know reach an `anthropic` deployment as sent (only `model` and `stream` are rewritten on the\
+    \ top level; the canonical shadow is still scanned by the pre-call guardrail) and\n  are refused with `400` `lossy_ingress_rejected` on a translate hop unless the deployment sets\n  `accept_lossy_anthropic_ingress:\
+    \ true`.\n\nPublic surface, to be entered in `docs/VERSIONING.md` §2 with `gateway/v0.20.0`; already a `gateway/v1.0.0` precondition (frozen across two consecutive minors)\nunder its §4: paths, operations,\
+    \ operationIds, security requirements, response statuses, header names, the\n`type`/`code` vocabularies and every `x-kelvran-*` value. Description prose, example payloads and\n`info.version` are not.\
+    \ The prose reference is `docs/reference/data-plane-api.md`,\n`docs/reference/admin-api.md`, `docs/reference/error-codes.md` and `docs/reference/config.md`.\n"
+servers:
+- url: http://127.0.0.1:8080
+  description: 'The data plane, `listen_addr` (no default; `config.example.yaml` sets `:8080`).
+
+    '
+tags:
+- name: Data plane
+  description: 'The OpenAI-shaped and Anthropic-shaped model routes on the data-plane listener, authenticated by a virtual key.
+
+    '
+- name: Health
+  description: 'Probes on the data-plane listener, no credential read. A wrong method is a plain-text `405` without `Allow` on `/healthz` and `/readyz`, and the OpenAI envelope with `Allow` on `/api/hello`.
+
+    '
+- name: Admin
+  description: 'The admin listener. Bearer tokens only (`Authorization: Bearer <token>`, literal `Bearer ` prefix and at least one character),
+
+    compared in constant time against the four static tiers named by `admin.token_env`, `admin.viewer_token_env`,
+
+    `admin.cost_viewer_token_env` and `admin.operator_token_env`. Every admin error is `http.Error` plain text with
+
+    `X-Content-Type-Options: nosniff` and a trailing newline; never a JSON envelope, never `Retry-After`. No request-body
+
+    limit. Patterns carry a method: a wrong method is net/http''s plain-text `405` with `Allow`, before the token check,
+
+    and every `GET` also answers `HEAD`.
+
+    '
+- name: Debug
+  description: 'pprof under `/admin/debug/pprof/`, registered only with `admin.enable_pprof: true`, admin tier only. `/admin/debug/pprof/` is a subtree pattern; `/admin/debug/pprof` without the slash redirects
+    `307`. The handlers are net/http/pprof''s own, including their plain-text `400`/`500`.
+
+    '
+x-kelvran-servemux:
+  data_plane:
+    method_in_pattern: false
+  admin:
+    method_in_pattern: true
+    wrong_method:
+      status: 405
+      content_type: text/plain; charset=utf-8
+      allow_header: true
+      before_auth: true
+    head_for_get: true
+    subtree_patterns:
+    - GET /admin/debug/pprof/
+    redirects:
+    - from: /admin/debug/pprof
+      to: /admin/debug/pprof/
+      status: 307
+x-kelvran-extensions:
+- x-kelvran-servemux
+- x-kelvran-extensions
+- x-kelvran-conditional
+- x-kelvran-subtree
+- x-kelvran-method-not-allowed
+- x-kelvran-codes
+- x-kelvran-retry-after
+- x-kelvran-passthrough
+- x-kelvran-example-source
+- x-kelvran-max-body-bytes
+- x-kelvran-sse-events
+- x-kelvran-relayed-header-prefix
+- x-kelvran-when-unconfigured
+- x-kelvran-schema
+paths:
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      tags:
+      - Data plane
+      summary: OpenAI Chat Completions, buffered or streamed.
+      security:
+      - virtualKey: []
+      x-kelvran-max-body-bytes: 33554432
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              toolTurn:
+                summary: A tool-use conversation, the OpenAI adapter's canonical request fixture
+                value:
+                  model: gpt-4o
+                  messages:
+                  - role: system
+                    content: You are a helpful assistant that can check the weather.
+                  - role: user
+                    content: What's the weather in Boston?
+                  - role: assistant
+                    tool_calls:
+                    - id: call_abc123
+                      type: function
+                      function:
+                        name: get_weather
+                        arguments: '{"city":"Boston","unit":"fahrenheit"}'
+                  - role: tool
+                    content: '{"temperature":72,"condition":"sunny"}'
+                    tool_call_id: call_abc123
+                  - role: assistant
+                    content: It's 72°F and sunny in Boston.
+                  temperature: 0.3
+                  max_tokens: 1024
+                  tools:
+                  - type: function
+                    function:
+                      name: get_weather
+                      description: Get the current weather for a given city
+                      parameters:
+                        type: object
+                        properties:
+                          city:
+                            type: string
+                          unit:
+                            type: string
+                            enum:
+                            - celsius
+                            - fahrenheit
+                        required:
+                        - city
+                x-kelvran-example-source: gateway/internal/adapter/openai/testdata/request_canonical.json
+      responses:
+        '200':
+          description: 'Buffered: the completion. `stream: true`: `text/event-stream` of `data: <ChatCompletionChunk>` frames then `data: [DONE]`; a failure after the first byte is one in-band `data: <OpenAIStreamErrorFrame>`
+            and no `[DONE]`.'
+          headers:
+            X-Kelvran-Overhead-Duration-Ms:
+              $ref: '#/components/headers/X-Kelvran-Overhead-Duration-Ms'
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Connection:
+              $ref: '#/components/headers/Connection'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+              examples:
+                buffered:
+                  summary: A buffered completion with the gateway's stamped id, object and created
+                  value:
+                    id: chatcmpl-9f2a3c1e7b
+                    object: chat.completion
+                    created: 1760169600
+                    model: gpt-4o
+                    choices:
+                    - index: 0
+                      message:
+                        role: assistant
+                        content: It's 72°F and sunny in Boston.
+                      finish_reason: stop
+                    usage:
+                      prompt_tokens: 58
+                      completion_tokens: 12
+                      total_tokens: 70
+                  x-kelvran-example-source: hand-authored
+            text/event-stream:
+              schema:
+                type: string
+              x-kelvran-sse-events:
+              - 'data: <ChatCompletionChunk>'
+              - 'data: [DONE]'
+              - 'data: <OpenAIStreamErrorFrame> (then no [DONE])'
+        '400':
+          description: Request-shape faults and guardrail blocks.
+          x-kelvran-codes:
+          - model_not_found
+          - content_policy_violation
+          - empty_messages
+          - invalid_prompt_reference
+          - streaming_not_supported
+          - response_format_unsupported
+          - tool_result_parts_unsupported
+          - system_parts_unsupported
+          - invalid_body
+          - invalid_json
+          - invalid_tool_choice
+          - invalid_request
+          x-kelvran-retry-after:
+          - streaming_not_supported
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '401':
+          description: Missing, malformed, unknown or expired credential (`code` is `null` when the header is missing or malformed).
+          x-kelvran-codes:
+          - invalid_api_key
+          - key_expired
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+              examples:
+                missingHeader:
+                  summary: No Authorization header (code is null)
+                  value:
+                    error:
+                      message: 'dataplane: auth: identity: missing or malformed Authorization header'
+                      type: authentication_error
+                      param: null
+                      code: null
+                  x-kelvran-example-source: hand-authored
+        '403':
+          description: The key may not use this model, or the source IP is outside the key's allow-list.
+          x-kelvran-codes:
+          - model_not_allowed
+          - source_ip_not_allowed
+          x-kelvran-retry-after:
+          - source_ip_not_allowed
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '405':
+          description: 'Any method but POST: the route''s own OpenAI envelope with `Allow`.'
+          x-kelvran-codes:
+          - method_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            Allow:
+              $ref: '#/components/headers/Allow'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+          x-kelvran-method-not-allowed:
+            status: 405
+            allow: POST
+            content_type: application/json; charset=utf-8
+            body: openai-envelope
+        '413':
+          description: Body over 32 MiB.
+          x-kelvran-codes:
+          - request_too_large
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '422':
+          description: '`Idempotency-Key` reused within its window with a different body.'
+          x-kelvran-codes:
+          - idempotency_key_reused
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '429':
+          description: The key's RPM/TPM or concurrency ceiling, or its budget.
+          x-kelvran-codes:
+          - rate_limit_exceeded
+          - concurrency_limit_exceeded
+          - insufficient_quota
+          x-kelvran-retry-after:
+          - rate_limit_exceeded
+          - concurrency_limit_exceeded
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '501':
+          description: '`stream: true` with no streaming client configured.'
+          x-kelvran-codes:
+          - streaming_not_configured
+          x-kelvran-retry-after:
+          - streaming_not_configured
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '502':
+          description: Every upstream failure, redacted.
+          x-kelvran-codes:
+          - upstream_error
+          x-kelvran-retry-after:
+          - upstream_error
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '503':
+          description: Every deployment in the pool is at its own ceiling.
+          x-kelvran-codes:
+          - deployment_capacity_exceeded
+          x-kelvran-retry-after:
+          - deployment_capacity_exceeded
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+  /v1/embeddings:
+    post:
+      operationId: createEmbedding
+      tags:
+      - Data plane
+      summary: OpenAI embeddings.
+      security:
+      - virtualKey: []
+      x-kelvran-max-body-bytes: 33554432
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbeddingsRequest'
+      responses:
+        '200':
+          description: The embeddings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingsResponse'
+        '400':
+          description: Request-shape faults, a chat-kind model, a guardrail block.
+          x-kelvran-codes:
+          - model_not_found
+          - content_policy_violation
+          - not_an_embedding_model
+          - invalid_body
+          - invalid_json
+          - missing_required_parameter
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '401':
+          description: Missing, malformed, unknown or expired credential.
+          x-kelvran-codes:
+          - invalid_api_key
+          - key_expired
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '403':
+          description: Model or source-IP allow-list.
+          x-kelvran-codes:
+          - model_not_allowed
+          - source_ip_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '405':
+          description: 'Any method but POST: the route''s own OpenAI envelope with `Allow`.'
+          x-kelvran-codes:
+          - method_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            Allow:
+              $ref: '#/components/headers/Allow'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+          x-kelvran-method-not-allowed:
+            status: 405
+            allow: POST
+            content_type: application/json; charset=utf-8
+            body: openai-envelope
+        '413':
+          description: Body over 32 MiB.
+          x-kelvran-codes:
+          - request_too_large
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '429':
+          description: The key's rate limit or budget; never `Retry-After` on this route.
+          x-kelvran-codes:
+          - rate_limit_exceeded
+          - insufficient_quota
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '501':
+          description: No embedding client configured.
+          x-kelvran-codes:
+          - embeddings_not_configured
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '502':
+          description: Upstream failure, redacted; no fallback and no `Retry-After` on this route.
+          x-kelvran-codes:
+          - upstream_error
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+  /v1/models:
+    get:
+      operationId: listModels
+      tags:
+      - Data plane
+      summary: The canonical models this key may use, in the OpenAI, Anthropic and Claude Code shapes at once.
+      security:
+      - virtualKey: []
+      - virtualKeyXAPIKey: []
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+        description: Clamped to 1000; empty means all. Invalid is `400` `invalid_request` (`param` `limit`), checked before authentication.
+      - name: after_id
+        in: query
+        schema:
+          type: string
+        description: Cursor; mutually exclusive with `before_id` (`400` `invalid_request`, `param` `after_id`); an unknown cursor is `400` after authentication.
+      - name: before_id
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The list. No rate limit, budget, guardrail or upstream call is involved.
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+        '400':
+          description: Bad `limit`, both cursors, or an unknown cursor.
+          x-kelvran-codes:
+          - invalid_request
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '401':
+          description: Missing, malformed, unknown or expired credential.
+          x-kelvran-codes:
+          - invalid_api_key
+          - key_expired
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '403':
+          description: Source IP outside the key's allow-list.
+          x-kelvran-codes:
+          - source_ip_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+        '405':
+          description: 'Any method but GET: the route''s own OpenAI envelope with `Allow`.'
+          x-kelvran-codes:
+          - method_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            Allow:
+              $ref: '#/components/headers/Allow'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+          x-kelvran-method-not-allowed:
+            status: 405
+            allow: GET
+            content_type: application/json; charset=utf-8
+            body: openai-envelope
+  /healthz:
+    get:
+      operationId: getHealthz
+      tags:
+      - Health
+      summary: Liveness.
+      security: []
+      responses:
+        '200':
+          description: Always `{"status":"ok"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthzResponse'
+              examples:
+                ok:
+                  summary: The only body
+                  value:
+                    status: ok
+                  x-kelvran-example-source: hand-authored
+        '405':
+          description: 'Any method but GET: `http.Error` plain text, no `Allow`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+          x-kelvran-method-not-allowed:
+            status: 405
+            allow: null
+            content_type: text/plain; charset=utf-8
+            body: text
+  /readyz:
+    get:
+      operationId: getReadyz
+      tags:
+      - Health
+      summary: 'Readiness: every canonical model has a healthy deployment.'
+      security: []
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyzResponse'
+              examples:
+                ready:
+                  summary: Every canonical model has a healthy deployment
+                  value:
+                    ready: true
+                    models:
+                      gpt-4o: true
+                      claude-sys: true
+                  x-kelvran-example-source: hand-authored
+        '405':
+          description: 'Any method but GET: `http.Error` plain text, no `Allow`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+          x-kelvran-method-not-allowed:
+            status: 405
+            allow: null
+            content_type: text/plain; charset=utf-8
+            body: text
+        '500':
+          description: Marshalling failed (practically unreachable).
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '503':
+          description: 'Not ready; the same body with `ready: false`. No `Retry-After`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyzResponse'
+  /api/hello:
+    head:
+      operationId: probeHello
+      tags:
+      - Health
+      summary: 'Claude Code''s gateway probe: a 2xx tells it to send its hint headers.'
+      security: []
+      responses:
+        '204':
+          description: No body, no credential read.
+        '405':
+          description: 'Any method but HEAD: the route''s own OpenAI envelope with `Allow`.'
+          x-kelvran-codes:
+          - method_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            Allow:
+              $ref: '#/components/headers/Allow'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIError'
+          x-kelvran-method-not-allowed:
+            status: 405
+            allow: HEAD
+            content_type: application/json; charset=utf-8
+            body: openai-envelope
+  /v1/messages:
+    post:
+      operationId: createMessage
+      tags:
+      - Data plane
+      summary: Anthropic Messages, buffered or streamed; relayed verbatim from an `anthropic` deployment, translated otherwise.
+      security:
+      - virtualKey: []
+      - virtualKeyXAPIKey: []
+      x-kelvran-max-body-bytes: 33554432
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnthropicMessagesRequest'
+            examples:
+              claudeCodeTurn:
+                summary: 'A recorded Claude Code turn: system blocks with cache_control, thinking, a tool_use and its result'
+                value:
+                  model: planner
+                  max_tokens: 4096
+                  system:
+                  - type: text
+                    text: 'x-anthropic-billing-header: cc_version=2.1.0; cc_entrypoint=cli; cch=abc12;'
+                    cache_control:
+                      type: ephemeral
+                  - type: text
+                    text: You are Claude Code.
+                    cache_control:
+                      type: ephemeral
+                      ttl: 1h
+                  messages:
+                  - role: user
+                    content: Read the file and summarise it.
+                  - role: assistant
+                    content:
+                    - type: thinking
+                      thinking: I should read it first.
+                      signature: EqQBCkYIBhgCKkD3sig==
+                    - type: text
+                      text: Reading.
+                    - type: tool_use
+                      id: toolu_01A
+                      name: Read
+                      input:
+                        file_path: /tmp/a.txt
+                  - role: user
+                    content:
+                    - type: tool_result
+                      tool_use_id: toolu_01A
+                      content: hello world
+                      is_error: false
+                      cache_control:
+                        type: ephemeral
+                  - role: assistant
+                    content:
+                    - type: redacted_thinking
+                      data: EmQBCkYIBhgC
+                    - type: tool_use
+                      id: toolu_01B
+                      name: Screenshot
+                      input: {}
+                  - role: user
+                    content:
+                    - type: tool_result
+                      tool_use_id: toolu_01B
+                      content:
+                      - type: text
+                        text: screenshot attached
+                      - type: image
+                        source:
+                          type: base64
+                          media_type: image/png
+                          data: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==
+                    - type: image
+                      source:
+                        type: url
+                        url: https://example.test/diagram.png
+                    - type: document
+                      source:
+                        type: base64
+                        media_type: application/pdf
+                        data: UERG
+                      cache_control:
+                        type: ephemeral
+                    - type: text
+                      text: What do you see?
+                  tools:
+                  - name: Read
+                    description: Read a file
+                    input_schema:
+                      type: object
+                      properties:
+                        file_path:
+                          type: string
+                      required:
+                      - file_path
+                    cache_control:
+                      type: ephemeral
+                  - name: Screenshot
+                    description: Take a screenshot
+                    input_schema:
+                      type: object
+                      properties: {}
+                    strict: true
+                  tool_choice:
+                    type: auto
+                    disable_parallel_tool_use: true
+                  temperature: 1
+                  top_p: 0.95
+                  top_k: 40
+                  stop_sequences:
+                  - END
+                  stream: true
+                  metadata:
+                    user_id: user-7f3a
+                  thinking:
+                    type: adaptive
+                    block_binding:
+                      prefix_mismatch_behavior: error
+                  output_config:
+                    effort: high
+                x-kelvran-example-source: gateway/internal/ingress/anthropicmsgs/testdata/request_claude_code_turn.json
+      responses:
+        '200':
+          description: 'Buffered: the message (an `anthropic` deployment''s bytes verbatim, with its relayed headers). `stream: true`: Anthropic SSE from `message_start` to `message_stop`, `event: ping`
+            after 15 s of silence, relayed headers before the first frame; a failure after the first byte is one `event: error`.'
+          headers:
+            X-Kelvran-Overhead-Duration-Ms:
+              $ref: '#/components/headers/X-Kelvran-Overhead-Duration-Ms'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            x-should-retry:
+              $ref: '#/components/headers/x-should-retry'
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Connection:
+              $ref: '#/components/headers/Connection'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicMessage'
+              examples:
+                passthroughText:
+                  summary: An anthropic deployment's answer relayed verbatim (the compat mock's golden; no type member)
+                  value:
+                    id: msg_01XFDUDYJgAACzvnptvVoYEL
+                    model: claude-opus-4-20250514
+                    role: assistant
+                    content:
+                    - type: text
+                      text: It's 72°F and sunny in Boston.
+                    stop_reason: end_turn
+                    usage:
+                      input_tokens: 58
+                      output_tokens: 12
+                  x-kelvran-example-source: gateway/compat/testdata/anthropic_response_text.json
+            text/event-stream:
+              schema:
+                type: string
+              x-kelvran-sse-events:
+              - 'event: message_start'
+              - 'event: content_block_start'
+              - 'event: content_block_delta'
+              - 'event: content_block_stop'
+              - 'event: message_delta'
+              - 'event: message_stop'
+              - 'event: ping'
+              - 'event: error (then nothing)'
+        '400':
+          description: Request-shape faults, guardrail blocks, a lossy body on a translate hop — or an `anthropic` deployment's own `400`, relayed verbatim.
+          x-kelvran-codes:
+          - model_not_found
+          - content_policy_violation
+          - empty_messages
+          - streaming_not_supported
+          - response_format_unsupported
+          - tool_result_parts_unsupported
+          - invalid_body
+          - invalid_json
+          - invalid_tool_choice
+          - invalid_request
+          - lossy_ingress_rejected
+          - missing_required_parameter
+          x-kelvran-retry-after:
+          - streaming_not_supported
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+            x-should-retry:
+              $ref: '#/components/headers/x-should-retry'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/KelvranAnthropicError'
+                - $ref: '#/components/schemas/AnthropicUpstreamError'
+              examples:
+                lossy:
+                  summary: A lossy body on a translate hop
+                  value:
+                    type: error
+                    error:
+                      type: invalid_request_error
+                      message: 'dataplane: request carries 1 member this gateway cannot translate for the deployment that would serve it (service_tier); set accept_lossy_anthropic_ingress: true on that
+                        deployment to drop them, or start Claude Code with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1'
+                      code: lossy_ingress_rejected
+                      param: /service_tier
+                  x-kelvran-example-source: hand-authored
+        '401':
+          description: Missing, malformed, unknown or expired credential.
+          x-kelvran-codes:
+          - invalid_api_key
+          - key_expired
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '403':
+          description: Model or source-IP allow-list.
+          x-kelvran-codes:
+          - model_not_allowed
+          - source_ip_not_allowed
+          x-kelvran-retry-after:
+          - source_ip_not_allowed
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '405':
+          description: 'Any method but POST: the route''s own Anthropic envelope with `Allow`.'
+          x-kelvran-codes:
+          - method_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            Allow:
+              $ref: '#/components/headers/Allow'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+          x-kelvran-method-not-allowed:
+            status: 405
+            allow: POST
+            content_type: application/json; charset=utf-8
+            body: anthropic-envelope
+        '413':
+          description: Body over 32 MiB.
+          x-kelvran-codes:
+          - request_too_large
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '422':
+          description: '`Idempotency-Key` reused with a different body — or an `anthropic` deployment''s own `422`, relayed verbatim.'
+          x-kelvran-codes:
+          - idempotency_key_reused
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            x-should-retry:
+              $ref: '#/components/headers/x-should-retry'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/KelvranAnthropicError'
+                - $ref: '#/components/schemas/AnthropicUpstreamError'
+        '429':
+          description: The key's RPM/TPM or concurrency ceiling, or its budget.
+          x-kelvran-codes:
+          - rate_limit_exceeded
+          - concurrency_limit_exceeded
+          - insufficient_quota
+          x-kelvran-retry-after:
+          - rate_limit_exceeded
+          - concurrency_limit_exceeded
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '501':
+          description: '`stream: true` with no streaming client configured.'
+          x-kelvran-codes:
+          - streaming_not_configured
+          x-kelvran-retry-after:
+          - streaming_not_configured
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '502':
+          description: 'Every upstream failure, redacted (a context-window rejection keeps its status with the `capability_rejected: prompt_too_long` message prefix).'
+          x-kelvran-codes:
+          - upstream_error
+          x-kelvran-retry-after:
+          - upstream_error
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '503':
+          description: Every deployment in the pool is at its own ceiling.
+          x-kelvran-codes:
+          - deployment_capacity_exceeded
+          x-kelvran-retry-after:
+          - deployment_capacity_exceeded
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+  /v1/messages/count_tokens:
+    post:
+      operationId: countTokens
+      tags:
+      - Data plane
+      summary: Anthropic token counting, served by an `anthropic` deployment's own count.
+      security:
+      - virtualKey: []
+      - virtualKeyXAPIKey: []
+      x-kelvran-max-body-bytes: 33554432
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnthropicCountTokensRequest'
+      responses:
+        '200':
+          description: The deployment's answer, relayed verbatim (at most 64 KiB) with its headers.
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            x-should-retry:
+              $ref: '#/components/headers/x-should-retry'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicCountTokensResponse'
+              examples:
+                count:
+                  summary: The deployment's count
+                  value:
+                    input_tokens: 2095
+                  x-kelvran-example-source: hand-authored
+        '400':
+          description: Request-shape faults and guardrail blocks — or the deployment's own `400`, relayed verbatim.
+          x-kelvran-codes:
+          - model_not_found
+          - content_policy_violation
+          - invalid_body
+          - invalid_json
+          - invalid_tool_choice
+          - missing_required_parameter
+          - invalid_request
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            x-should-retry:
+              $ref: '#/components/headers/x-should-retry'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/KelvranAnthropicError'
+                - $ref: '#/components/schemas/AnthropicUpstreamError'
+        '401':
+          description: Missing, malformed, unknown or expired credential.
+          x-kelvran-codes:
+          - invalid_api_key
+          - key_expired
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '403':
+          description: Source-IP or model allow-list.
+          x-kelvran-codes:
+          - source_ip_not_allowed
+          - model_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '404':
+          description: The model's deployment is not an `anthropic` one, so no count exists.
+          x-kelvran-codes:
+          - count_tokens_unavailable
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '405':
+          description: 'Any method but POST: the route''s own Anthropic envelope with `Allow`.'
+          x-kelvran-codes:
+          - method_not_allowed
+          x-kelvran-retry-after: []
+          headers:
+            Allow:
+              $ref: '#/components/headers/Allow'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+          x-kelvran-method-not-allowed:
+            status: 405
+            allow: POST
+            content_type: application/json; charset=utf-8
+            body: anthropic-envelope
+        '413':
+          description: Body over 32 MiB.
+          x-kelvran-codes:
+          - request_too_large
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '422':
+          description: The deployment's own `422`, relayed verbatim; the gateway itself never writes one here.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            x-should-retry:
+              $ref: '#/components/headers/x-should-retry'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/KelvranAnthropicError'
+                - $ref: '#/components/schemas/AnthropicUpstreamError'
+        '429':
+          description: The key's RPM ceiling, the one count_tokens rejection that carries `Retry-After`.
+          x-kelvran-codes:
+          - rate_limit_exceeded
+          x-kelvran-retry-after:
+          - rate_limit_exceeded
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+        '502':
+          description: Upstream failure, redacted; no `Retry-After`.
+          x-kelvran-codes:
+          - upstream_error
+          x-kelvran-retry-after: []
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/X-Content-Type-Options'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KelvranAnthropicError'
+  /admin/config:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: getAdminConfig
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminConfig'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/audit:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: queryAuditLog
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      x-kelvran-conditional: admin.audit_log_path
+      responses:
+        '200':
+          description: The list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEntryResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/virtual_keys:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: listVirtualKeys
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      responses:
+        '200':
+          description: The list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VirtualKeyListEntry'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/virtual_keys/{name}:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      operationId: upsertVirtualKey
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VirtualKeyRequest'
+      responses:
+        '204':
+          description: Done; no body.
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+    delete:
+      operationId: deleteVirtualKey
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      responses:
+        '204':
+          description: Done; no body.
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/virtual_keys/{name}/rotate:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      operationId: rotateVirtualKey
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateVirtualKeyRequest'
+      responses:
+        '204':
+          description: Done; no body.
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/virtual_keys/{name}/spend:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      operationId: getVirtualKeySpend
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      - costViewerToken: []
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualKeySpendResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/virtual_keys/{name}/inflight:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      operationId: getVirtualKeyInFlight
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualKeyInFlightResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/prompts:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: listPrompts
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      responses:
+        '200':
+          description: The list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PromptResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/prompts/{id}:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      operationId: getPrompt
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+    post:
+      operationId: upsertPrompt
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptRequest'
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+    delete:
+      operationId: deletePrompt
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      responses:
+        '204':
+          description: Done; no body.
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/prompts/{id}/versions/{version}:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: version
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    get:
+      operationId: getPromptVersion
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/prompts/{id}/labels/{label}:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: label
+      in: path
+      required: true
+      schema:
+        type: string
+    put:
+      operationId: setPromptLabel
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPromptLabelRequest'
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LabelResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+    delete:
+      operationId: deletePromptLabel
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      responses:
+        '204':
+          description: Done; no body.
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/backup:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    post:
+      operationId: createBackup
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      x-kelvran-when-unconfigured:
+        status: 501
+        config: admin.backup_dir
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '501':
+          description: '`admin.backup_dir is not configured`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/deployments:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: listDeployments
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - viewerToken: []
+      responses:
+        '200':
+          description: The list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeploymentEntry'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/deployments/{name}/weight:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      operationId: updateDeploymentWeight
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDeploymentWeightRequest'
+      responses:
+        '204':
+          description: Done; no body.
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/cache/erase:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    post:
+      operationId: eraseCacheEntry
+      tags:
+      - Admin
+      security:
+      - adminToken: []
+      - operatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EraseCacheEntryRequest'
+      responses:
+        '200':
+          description: The document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EraseCacheEntryResponse'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofIndex
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      x-kelvran-subtree: true
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/cmdline:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofCmdline
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/profile:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofProfile
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/symbol:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofSymbol
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+    post:
+      operationId: pprofSymbolPost
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/trace:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofTrace
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/goroutine:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofGoroutine
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/heap:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofHeap
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/threadcreate:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofThreadcreate
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/block:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofBlock
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/mutex:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofMutex
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+  /admin/debug/pprof/allocs:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofAllocs
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+components:
+  securitySchemes:
+    virtualKey:
+      type: http
+      scheme: bearer
+      description: 'A virtual key''s raw secret as `Authorization: Bearer <secret>`; the gateway matches its SHA-256 against the key''s `key_hash`. Admin tokens never authenticate on `/v1/*`.
+
+        '
+    virtualKeyXAPIKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: 'The bearer''s alias on `/v1/models`, `/v1/messages` and `/v1/messages/count_tokens` (the Anthropic SDKs'' and Claude Code''s header). A non-empty `Authorization` wins, so exactly one
+        credential is ever verified; a wrong bearer beside a valid `x-api-key` is `401`.
+
+        '
+    adminToken:
+      type: http
+      scheme: bearer
+      description: 'The admin tier, the token in the environment variable named by `admin.token_env`. Virtual keys never authenticate on `/admin/*`.
+
+        '
+    viewerToken:
+      type: http
+      scheme: bearer
+      description: 'The read-only viewer tier, `admin.viewer_token_env`; authenticates nothing when unset.
+
+        '
+    costViewerToken:
+      type: http
+      scheme: bearer
+      description: 'The cost-viewer tier, `admin.cost_viewer_token_env`; authenticates only `GET /admin/virtual_keys/{name}/spend`.
+
+        '
+    operatorToken:
+      type: http
+      scheme: bearer
+      description: 'The operator tier, `admin.operator_token_env`; authenticates only the three reversible, single-target writes (rotate, reweight, cache erase).
+
+        '
+  headers:
+    X-Kelvran-Overhead-Duration-Ms:
+      description: 'Whole milliseconds the gateway spent outside the upstream call; on buffered `200`s of `/v1/chat/completions` and `/v1/messages` only (never on a stream).
+
+        '
+      schema:
+        type: string
+        pattern: ^[0-9]+$
+    Retry-After:
+      description: 'Whole seconds to wait, the key''s own backoff (500 ms doubling to 30 s, rounded up, floor 1) floored by an upstream `Retry-After` capped at 60 s. Present exactly where the response''s
+        `x-kelvran-retry-after` list names the answer''s `code`.
+
+        '
+      schema:
+        type: integer
+        minimum: 1
+    Allow:
+      description: 'The one method the route accepts; on every data-plane JSON `405`, never on the plain-text ones.
+
+        '
+      required: true
+      schema:
+        type: string
+    X-Content-Type-Options:
+      description: '`nosniff`; on every JSON error body and on the `200`s of `/v1/models`, buffered `/v1/messages` and `/v1/messages/count_tokens`.
+
+        '
+      schema:
+        type: string
+        const: nosniff
+    x-should-retry:
+      description: 'Relayed from an `anthropic` deployment, never synthesised; with the `anthropic-ratelimit-unified-*` family (`x-kelvran-relayed-header-prefix`) on `/v1/messages` and `/v1/messages/count_tokens`
+        answers served by one.
+
+        '
+      schema:
+        type: string
+      x-kelvran-relayed-header-prefix: anthropic-ratelimit-unified-
+    Cache-Control:
+      description: '`no-cache`, on the two streaming `200`s.
+
+        '
+      schema:
+        type: string
+        const: no-cache
+    Connection:
+      description: '`keep-alive`, on the two streaming `200`s.
+
+        '
+      schema:
+        type: string
+        const: keep-alive
+  schemas:
+    ErrorCode:
+      description: 'Every machine-readable `code` the gateway emits, on either envelope. Equality with the code is pinned by `TestOpenAPIStatusesAndCodes`.
+
+        '
+      type: string
+      enum:
+      - method_not_allowed
+      - request_too_large
+      - invalid_body
+      - invalid_json
+      - invalid_tool_choice
+      - invalid_request
+      - missing_required_parameter
+      - invalid_api_key
+      - key_expired
+      - model_not_allowed
+      - source_ip_not_allowed
+      - model_not_found
+      - content_policy_violation
+      - empty_messages
+      - invalid_prompt_reference
+      - streaming_not_supported
+      - response_format_unsupported
+      - tool_result_parts_unsupported
+      - system_parts_unsupported
+      - lossy_ingress_rejected
+      - not_an_embedding_model
+      - idempotency_key_reused
+      - rate_limit_exceeded
+      - concurrency_limit_exceeded
+      - insufficient_quota
+      - streaming_not_configured
+      - embeddings_not_configured
+      - upstream_error
+      - deployment_capacity_exceeded
+      - count_tokens_unavailable
+    OpenAIError:
+      description: 'The OpenAI-shaped envelope of every error on `/v1/chat/completions`, `/v1/embeddings`, `/v1/models` and `HEAD /api/hello`''s `405`. All four keys are always present (`null` when unknown).
+        Written as `application/json; charset=utf-8` with `X-Content-Type-Options: nosniff`.
+
+        '
+      type: object
+      required:
+      - error
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          - type
+          - param
+          - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              enum:
+              - invalid_request_error
+              - authentication_error
+              - permission_error
+              - rate_limit_error
+              - insufficient_quota
+              - server_error
+            param:
+              type:
+              - string
+              - 'null'
+            code:
+              oneOf:
+              - $ref: '#/components/schemas/ErrorCode'
+              - type: 'null'
+    OpenAIStreamErrorFrame:
+      description: 'The one in-band `data:` frame a `/v1/chat/completions` stream carries when it fails after the first byte; `param` is always `null` and no `data: [DONE]` follows.
+
+        '
+      type: object
+      required:
+      - error
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          - type
+          - param
+          - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              enum:
+              - invalid_request_error
+              - authentication_error
+              - permission_error
+              - rate_limit_error
+              - insufficient_quota
+              - server_error
+            param:
+              type: 'null'
+            code:
+              oneOf:
+              - $ref: '#/components/schemas/ErrorCode'
+              - type: 'null'
+    KelvranAnthropicError:
+      description: 'The Anthropic-shaped envelope of every error the gateway itself writes on `/v1/messages` and `/v1/messages/count_tokens` (their `405`s included). `type` follows the status (`401` authentication_error,
+        `403` permission_error, `404` not_found_error, `413` request_too_large, `429` rate_limit_error, `5xx` api_error, else invalid_request_error); `code` and `param` are omitted when unknown. A `message`
+        may begin with `capability_rejected: prompt_too_long` on an upstream context-window rejection.
+
+        '
+      type: object
+      required:
+      - type
+      - error
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          const: error
+        error:
+          type: object
+          required:
+          - type
+          - message
+          additionalProperties: false
+          properties:
+            type:
+              type: string
+              enum:
+              - invalid_request_error
+              - authentication_error
+              - permission_error
+              - not_found_error
+              - request_too_large
+              - rate_limit_error
+              - api_error
+            message:
+              type: string
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            param:
+              type: string
+    AnthropicUpstreamError:
+      description: 'An `anthropic` deployment''s own `400` or `422` body, relayed verbatim with its status and its `x-should-retry` / `anthropic-ratelimit-unified-*` headers, carrying no Kelvran `code`,
+        `param` or `Retry-After` (RFC-1 §9). Permissive by construction.
+
+        '
+      type: object
+      required:
+      - type
+      - error
+      additionalProperties: true
+      x-kelvran-passthrough: anthropic
+      properties:
+        type:
+          type: string
+          const: error
+        error:
+          type: object
+          required:
+          - type
+          - message
+          additionalProperties: true
+          properties:
+            type:
+              type: string
+            message:
+              type: string
+    AnthropicStreamErrorEvent:
+      description: 'The one `event: error` a `/v1/messages` stream carries when it fails after the first byte; `type` and `message` only.
+
+        '
+      type: object
+      required:
+      - type
+      - error
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          const: error
+        error:
+          type: object
+          required:
+          - type
+          - message
+          additionalProperties: false
+          properties:
+            type:
+              type: string
+            message:
+              type: string
+    PlainTextError:
+      description: '`http.Error` text with a trailing newline: healthz/readyz `405` (no `Allow`) and readyz `500`; every admin error; net/http''s `Method Not Allowed` and `404 page not found`.
+
+        '
+      type: string
+    CacheControl:
+      type: object
+      additionalProperties: true
+      properties:
+        ttl:
+          type: string
+        key:
+          type: string
+    ContentPart:
+      type: object
+      required:
+      - type
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+        text:
+          type: string
+        media_type:
+          type: string
+        data:
+          type: string
+          description: Base64 inline data.
+        url:
+          type: string
+        cache_control:
+          $ref: '#/components/schemas/CacheControl'
+    ReasoningBlock:
+      type: object
+      required:
+      - sequence
+      additionalProperties: true
+      properties:
+        sequence:
+          type: integer
+        redacted:
+          type: boolean
+        text:
+          type: string
+        data:
+          type: string
+        signature:
+          type: string
+    ToolCall:
+      description: 'The OpenAI tool-call wire shape (`toolCallWire`); `arguments` is a JSON-encoded string.
+
+        '
+      type: object
+      required:
+      - id
+      - type
+      - function
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: function
+        function:
+          type: object
+          required:
+          - name
+          - arguments
+          additionalProperties: true
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+    Message:
+      type: object
+      required:
+      - role
+      additionalProperties: true
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContentPart'
+          description: 'Kelvran extension, multimodal parts; a non-text part on a `role: system` message is `400` `system_parts_unsupported`, on a `role: tool` message `400` `tool_result_parts_unsupported`
+            when no deployment in the pool can carry it.
+
+            '
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+        tool_call_id:
+          type: string
+        cache_control:
+          $ref: '#/components/schemas/CacheControl'
+        refusal:
+          type: string
+        reasoning_blocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReasoningBlock'
+    ToolDef:
+      description: 'The OpenAI function-tool wire shape (`toolDefWire`).
+
+        '
+      type: object
+      required:
+      - type
+      - function
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+          const: function
+        function:
+          type: object
+          required:
+          - name
+          additionalProperties: true
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              description: A JSON Schema object, passed through to the provider.
+        cache_control:
+          $ref: '#/components/schemas/CacheControl'
+        strict:
+          type: boolean
+    ToolChoice:
+      description: 'The three inbound forms the gateway accepts; anything else is `400` `invalid_tool_choice` (`param` `tool_choice`), including an object that sets both `mode` and `type`, which matches
+        neither object form here.
+
+        '
+      oneOf:
+      - type: string
+        enum:
+        - auto
+        - required
+        - none
+      - type: object
+        required:
+        - type
+        - function
+        additionalProperties: true
+        properties:
+          type:
+            type: string
+            const: function
+          function:
+            type: object
+            required:
+            - name
+            additionalProperties: true
+            properties:
+              name:
+                type: string
+        not:
+          required:
+          - mode
+      - type: object
+        required:
+        - mode
+        additionalProperties: true
+        properties:
+          mode:
+            type: string
+            enum:
+            - auto
+            - required
+            - none
+            - tool
+          tool_name:
+            type: string
+          disable_parallel_tool_use:
+            type: boolean
+        not:
+          required:
+          - type
+    JSONSchema:
+      type: object
+      required:
+      - name
+      - schema
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        strict:
+          type: boolean
+        schema:
+          description: 'A JSON Schema object: depth at most 32 and at most 10000 tokens.'
+    ResponseFormat:
+      type: object
+      required:
+      - type
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+        json_schema:
+          $ref: '#/components/schemas/JSONSchema'
+    ChatCompletionRequest:
+      description: 'The OpenAI Chat Completions request plus Kelvran''s extensions (`prompt_id`, `prompt_version`, `prompt_label`,
+
+        `prompt_variables`, `thinking_binding_mode`, `parts` and `reasoning_blocks` on messages, the canonical
+
+        `tool_choice` object). Either `messages` or `prompt_id` supplies the conversation — one of them, never both (`400` `invalid_prompt_reference`); a request that resolves to no messages is `400` `empty_messages`.
+        Decoded with `encoding/json`: unknown members are ignored at every depth. At most 2000 messages and
+
+        256 tools; no single string field beyond 8 MiB. `stop` is a string or an array of strings.
+
+        '
+      type: object
+      required:
+      - model
+      additionalProperties: true
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          maxItems: 2000
+          items:
+            $ref: '#/components/schemas/Message'
+        temperature:
+          type: number
+        max_tokens:
+          type: integer
+        stop:
+          oneOf:
+          - type: string
+          - type: array
+            items:
+              type: string
+        top_p:
+          type: number
+        tools:
+          type: array
+          maxItems: 256
+          items:
+            $ref: '#/components/schemas/ToolDef'
+        stream:
+          type: boolean
+        response_format:
+          $ref: '#/components/schemas/ResponseFormat'
+        prompt_id:
+          type: string
+          description: 'Kelvran extension: a server-side prompt whose content replaces `messages`, which must then be absent or empty.'
+        prompt_version:
+          type: integer
+        prompt_label:
+          type: string
+        prompt_variables:
+          type: object
+          additionalProperties:
+            type: string
+        tool_choice:
+          $ref: '#/components/schemas/ToolChoice'
+        thinking_binding_mode:
+          type: string
+    Usage:
+      type: object
+      required:
+      - prompt_tokens
+      - completion_tokens
+      - total_tokens
+      additionalProperties: false
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+          description: Always `prompt_tokens + completion_tokens`.
+        cache_read_tokens:
+          type: integer
+        cache_creation_tokens:
+          type: integer
+        reasoning_tokens:
+          type: integer
+    Choice:
+      type: object
+      required:
+      - index
+      - message
+      - finish_reason
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/Message'
+        finish_reason:
+          type: string
+    InputTransformation:
+      type: object
+      required:
+      - type
+      - path
+      - reason
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+        path:
+          type: string
+        reason:
+          type: string
+    ChatCompletionResponse:
+      type: object
+      required:
+      - id
+      - object
+      - created
+      - model
+      - choices
+      - usage
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: chat.completion
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Choice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+        input_transformations:
+          type: array
+          items:
+            $ref: '#/components/schemas/InputTransformation'
+        stop_reason:
+          type: string
+        stop_sequence:
+          type: string
+    ToolCallDelta:
+      type: object
+      required:
+      - index
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+        id:
+          type: string
+        name:
+          type: string
+        arguments_json:
+          type: string
+    ReasoningDelta:
+      type: object
+      required:
+      - index
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+        text:
+          type: string
+        redacted:
+          type: boolean
+        data:
+          type: string
+        signature:
+          type: string
+    MessageDelta:
+      type: object
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCallDelta'
+        reasoning_blocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReasoningDelta'
+        refusal:
+          type: string
+    ChunkChoice:
+      type: object
+      required:
+      - index
+      - delta
+      - finish_reason
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+        delta:
+          $ref: '#/components/schemas/MessageDelta'
+        finish_reason:
+          type:
+          - string
+          - 'null'
+        stop_reason:
+          type: string
+        stop_sequence:
+          type: string
+    ChatCompletionChunk:
+      type: object
+      required:
+      - id
+      - object
+      - created
+      - model
+      - choices
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: chat.completion.chunk
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChunkChoice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+    EmbeddingsRequest:
+      type: object
+      required:
+      - model
+      - input
+      additionalProperties: true
+      properties:
+        model:
+          type: string
+        input:
+          oneOf:
+          - type: string
+          - type: array
+            items:
+              type: string
+        dimensions:
+          type: integer
+    EmbeddingData:
+      type: object
+      required:
+      - index
+      - embedding
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+        embedding:
+          type: array
+          items:
+            type: number
+    EmbeddingsResponse:
+      type: object
+      required:
+      - model
+      - data
+      - usage
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbeddingData'
+        usage:
+          $ref: '#/components/schemas/Usage'
+    Model:
+      description: 'One model in the OpenAI, Anthropic and Claude Code dialects at once.
+
+        '
+      type: object
+      required:
+      - id
+      - object
+      - created
+      - owned_by
+      - type
+      - created_at
+      - display_name
+      - description
+      - kind
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: model
+        created:
+          type: integer
+          description: 'Unix seconds: the catalog load time.'
+        owned_by:
+          type: string
+          description: The serving providers, comma-joined.
+        type:
+          type: string
+          const: model
+        created_at:
+          type: string
+          format: date-time
+        display_name:
+          type: string
+        description:
+          type: string
+        kind:
+          type: string
+          enum:
+          - chat
+          - embedding
+    ModelList:
+      type: object
+      required:
+      - object
+      - data
+      - first_id
+      - last_id
+      - has_more
+      additionalProperties: false
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+        first_id:
+          type:
+          - string
+          - 'null'
+        last_id:
+          type:
+          - string
+          - 'null'
+        has_more:
+          type: boolean
+    HealthzResponse:
+      type: object
+      required:
+      - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok
+    ReadyzResponse:
+      type: object
+      required:
+      - ready
+      - models
+      additionalProperties: false
+      properties:
+        ready:
+          type: boolean
+        models:
+          type: object
+          additionalProperties:
+            type: boolean
+    PerModelRateLimitRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        burst:
+          type: number
+        refill_per_second:
+          type: number
+        tpm_capacity:
+          type: number
+        tpm_refill_per_second:
+          type: number
+    RateLimitRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        burst:
+          type: number
+        refill_per_second:
+          type: number
+        tpm_capacity:
+          type: number
+        tpm_refill_per_second:
+          type: number
+        per_model:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            $ref: '#/components/schemas/PerModelRateLimitRequest'
+    VirtualKeyRequest:
+      description: A full replacement of the named key. `key_hash` is the SHA-256 hex of the raw secret, the only member the handler requires; `budget_usd` is a decimal, accepted as a JSON number or string.
+        Nil slices and a nil `rate_limit` marshal as `null`, as the wire golden's zero value shows.
+      type: object
+      required:
+      - key_hash
+      additionalProperties: true
+      properties:
+        key_hash:
+          type: string
+        budget_usd:
+          type:
+          - string
+          - number
+        budget_reset_interval_seconds:
+          type: integer
+        budget_warn_percent:
+          type: number
+        allowed_models:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+        allowed_regions:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+        allowed_source_cidrs:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+        cache_scope_to_end_user:
+          type: boolean
+        attribution_capture_ids_disabled:
+          type: boolean
+        rate_limit:
+          oneOf:
+          - $ref: '#/components/schemas/RateLimitRequest'
+          - type: 'null'
+        expires_at:
+          type: string
+          format: date-time
+        billing_subject_id:
+          type: string
+    RotateVirtualKeyRequest:
+      type: object
+      required:
+      - new_key_hash
+      additionalProperties: true
+      properties:
+        new_key_hash:
+          type: string
+        grace_period_seconds:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+    AuditEntryResponse:
+      type: object
+      required:
+      - time
+      - msg
+      additionalProperties: false
+      properties:
+        time:
+          type: string
+          format: date-time
+        msg:
+          type: string
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+    BackupResponse:
+      type: object
+      required:
+      - files
+      additionalProperties: false
+      properties:
+        files:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+    UpdateDeploymentWeightRequest:
+      type: object
+      required:
+      - weight
+      additionalProperties: true
+      properties:
+        weight:
+          type: integer
+          minimum: 0
+    EraseCacheEntryRequest:
+      description: The chat request whose cached answer is erased, plus the key and end-user scope it was cached under (`virtual_key_id` required).
+      allOf:
+      - $ref: '#/components/schemas/ChatCompletionRequest'
+      - type: object
+        required:
+        - virtual_key_id
+        properties:
+          virtual_key_id:
+            type: string
+          end_user_id:
+            type: string
+    EraseCacheEntryResponse:
+      type: object
+      required:
+      - l1_found
+      - l2_found
+      - l3_skipped
+      additionalProperties: false
+      properties:
+        l1_found:
+          type: boolean
+        l2_found:
+          type: boolean
+        l3_skipped:
+          type: boolean
+          const: true
+    VirtualKeySpendResponse:
+      type: object
+      required:
+      - budget_usd
+      - budget_reset_interval_seconds
+      additionalProperties: false
+      properties:
+        spent_usd:
+          type: string
+        budget_usd:
+          type: string
+        budget_reset_interval_seconds:
+          type: integer
+        percent_used:
+          type: number
+        spend_unavailable:
+          type: boolean
+    VirtualKeyListEntry:
+      description: One key as `GET /admin/virtual_keys` lists it; never carries `key_hash`. The three spend members appear only with `?include=spend`.
+      type: object
+      required:
+      - id
+      - budget_usd
+      - budget_reset_interval_seconds
+      - budget_warn_percent
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        budget_usd:
+          type: string
+        budget_reset_interval_seconds:
+          type: integer
+        budget_warn_percent:
+          type: number
+        allowed_models:
+          type: array
+          items:
+            type: string
+        allowed_regions:
+          type: array
+          items:
+            type: string
+        allowed_source_cidrs:
+          type: array
+          items:
+            type: string
+        cache_scope_to_end_user:
+          type: boolean
+        attribution_capture_ids_disabled:
+          type: boolean
+        rate_limit_burst:
+          type: number
+        rate_limit_refill_per_second:
+          type: number
+        billing_subject_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        previous_key_hash_expires_at:
+          type: string
+          format: date-time
+        max_concurrent_requests:
+          type: integer
+        spent_usd:
+          type: string
+        percent_used:
+          type: number
+        spend_unavailable:
+          type: boolean
+    DeploymentEntry:
+      type: object
+      required:
+      - name
+      - model
+      - upstream_model
+      - provider
+      - kind
+      - healthy
+      - weight
+      - latency_factor_percent
+      - sticky
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        model:
+          type: string
+        upstream_model:
+          type: string
+        provider:
+          type: string
+        kind:
+          type: string
+          enum:
+          - chat
+          - embedding
+        healthy:
+          type: boolean
+        weight:
+          type: integer
+        latency_factor_percent:
+          type: integer
+        sticky:
+          type: boolean
+    VirtualKeyInFlightResponse:
+      type: object
+      required:
+      - total_in_flight
+      - by_agent_run_id
+      additionalProperties: false
+      properties:
+        total_in_flight:
+          type: integer
+        by_agent_run_id:
+          type: object
+          additionalProperties:
+            type: integer
+    PromptRequest:
+      type: object
+      required:
+      - messages
+      additionalProperties: true
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Message'
+    PromptResponse:
+      type: object
+      required:
+      - id
+      - version
+      - messages
+      - created_at
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        version:
+          type: integer
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        created_at:
+          type: string
+          format: date-time
+    SetPromptLabelRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        version:
+          type: integer
+          description: The version the label points at; `0`, negative or absent means the current latest version, resolved to a concrete number at call time and stored as that number.
+    LabelResponse:
+      type: object
+      required:
+      - prompt_id
+      - label
+      - version
+      - updated_at
+      additionalProperties: false
+      properties:
+        prompt_id:
+          type: string
+        label:
+          type: string
+        version:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    AdminConfig:
+      description: '`GET /admin/config` encodes the whole operator config struct, which has no JSON tags, so its members are the Go field names and `docs/reference/config.md` is the key reference. Only
+        the top-level members are named here; nested shapes change with every config key and are not pinned.'
+      type: object
+      additionalProperties: true
+      x-kelvran-schema: untyped-go-struct
+      properties:
+        ListenAddr:
+          type: string
+        VirtualKeys:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        Deployments:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        PriceTable:
+          type: object
+          additionalProperties: true
+        Models:
+          type: object
+          additionalProperties: true
+        Telemetry:
+          type: object
+          additionalProperties: true
+        Attribution:
+          type: object
+          additionalProperties: true
+        Budget:
+          type: object
+          additionalProperties: true
+        Prompt:
+          type: object
+          additionalProperties: true
+        RateLimit:
+          type: object
+          additionalProperties: true
+        ConfigPropagation:
+          type: object
+          additionalProperties: true
+        Cache:
+          type: object
+          additionalProperties: true
+        Guardrails:
+          type: object
+          additionalProperties: true
+        Admin:
+          type: object
+          additionalProperties: true
+        HealthProbe:
+          type: object
+          additionalProperties: true
+        Alerting:
+          type: object
+          additionalProperties: true
+        CredentialReload:
+          type: object
+          additionalProperties: true
+    AnthropicMessagesRequest:
+      description: 'The Anthropic Messages request, permissive by construction (RFC-1 Option C): the known members are typed
+
+        loosely here, and every member at any depth that the canonical schema has no home for is kept in the
+
+        passthrough record — an `anthropic` deployment receives the body as sent, with only `model` and `stream` rewritten on the top level, and the canonical shadow is still scanned by the pre-call guardrail;
+        a translate hop refuses it with
+
+        `400` `lossy_ingress_rejected` (`param` lists the JSON pointers) unless the deployment sets
+
+        `accept_lossy_anthropic_ingress: true`. A duplicate member at any depth, nesting beyond 64 levels or invalid
+
+        UTF-8 is `400` `invalid_json`; `metadata.user_id` is capped at 256 bytes (`400` `invalid_request`).
+
+        '
+      type: object
+      required:
+      - model
+      - max_tokens
+      - messages
+      additionalProperties: true
+      x-kelvran-passthrough: anthropic
+      properties:
+        model:
+          type: string
+        max_tokens:
+          type: integer
+        messages:
+          type: array
+          maxItems: 2000
+          items:
+            type: object
+            required:
+            - content
+            additionalProperties: true
+            properties:
+              role:
+                type: string
+                description: Read when present; the gateway's parser demands only `content` and does not supply a `role` that is missing — the deployment's provider judges it (an `anthropic` deployment
+                  receives the body as sent).
+              content:
+                oneOf:
+                - type: string
+                - type: array
+                  items:
+                    type: object
+                    additionalProperties: true
+        system:
+          oneOf:
+          - type: string
+          - type: array
+            items:
+              type: object
+              additionalProperties: true
+        tools:
+          type: array
+          maxItems: 256
+          items:
+            type: object
+            additionalProperties: true
+        tool_choice:
+          type: object
+          additionalProperties: true
+        thinking:
+          type: object
+          additionalProperties: true
+        output_config:
+          type: object
+          additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+          properties:
+            user_id:
+              type: string
+              maxLength: 256
+        stream:
+          type: boolean
+        stop_sequences:
+          type: array
+          items:
+            type: string
+        temperature:
+          type: number
+        top_p:
+          type: number
+        top_k:
+          type: integer
+    AnthropicMessage:
+      description: 'A Messages response. On the translate path the gateway''s encoder always emits `type: message`; on the
+
+        passthrough path the bytes are the `anthropic` deployment''s own, relayed verbatim (a real Anthropic answer
+
+        carries `type` too, the gateway''s own compat mock does not), so `type` is optional here and the shape is
+
+        permissive by construction.
+
+        '
+      type: object
+      required:
+      - id
+      - role
+      - content
+      - model
+      - stop_reason
+      - usage
+      additionalProperties: true
+      x-kelvran-passthrough: anthropic
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: message
+        role:
+          type: string
+          const: assistant
+        model:
+          type: string
+        content:
+          type: array
+          items:
+            type: object
+            required:
+            - type
+            additionalProperties: true
+            properties:
+              type:
+                type: string
+              text:
+                type: string
+              id:
+                type: string
+              name:
+                type: string
+              input: {}
+              thinking:
+                type: string
+              signature:
+                type: string
+              data:
+                type: string
+        stop_reason:
+          type:
+          - string
+          - 'null'
+        stop_sequence:
+          type:
+          - string
+          - 'null'
+        usage:
+          type: object
+          required:
+          - input_tokens
+          - output_tokens
+          additionalProperties: true
+          properties:
+            input_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+            cache_read_input_tokens:
+              type: integer
+            cache_creation_input_tokens:
+              type: integer
+            output_tokens_details:
+              type: object
+              additionalProperties: true
+              properties:
+                thinking_tokens:
+                  type: integer
+        input_transformations:
+          type: array
+          items:
+            $ref: '#/components/schemas/InputTransformation'
+    AnthropicStreamEvent:
+      description: One `data:` payload of a `/v1/messages` stream, discriminated by `type`; payloads are permissive by construction.
+      type: object
+      required:
+      - type
+      additionalProperties: true
+      x-kelvran-passthrough: anthropic
+      properties:
+        type:
+          type: string
+          enum:
+          - message_start
+          - content_block_start
+          - content_block_delta
+          - content_block_stop
+          - message_delta
+          - message_stop
+          - ping
+          - error
+    AnthropicCountTokensRequest:
+      description: The Anthropic `count_tokens` body — a Messages request without `max_tokens`; permissive by construction. The handler reads the whole body (32 MiB cap) and demands `model` on every deployment;
+        only an `anthropic` deployment with the `count_tokens` upstream wired then parses it into the canonical shadow (where `messages` is demanded), scans that with the pre-call guardrail and forwards
+        the body as received with only `model` rewritten on the top level — every other deployment answers `404` `count_tokens_unavailable` without parsing further.
+      type: object
+      required:
+      - model
+      additionalProperties: true
+      x-kelvran-passthrough: anthropic
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: 'Demanded (`400` `missing_required_parameter`, `param` `messages`) only where the body is parsed: an `anthropic` deployment with the `count_tokens` upstream wired.'
+        system: {}
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        tool_choice:
+          type: object
+          additionalProperties: true
+        thinking:
+          type: object
+          additionalProperties: true
+    AnthropicCountTokensResponse:
+      description: The `anthropic` deployment's own answer, relayed verbatim (at most 64 KiB).
+      type: object
+      required:
+      - input_tokens
+      additionalProperties: true
+      x-kelvran-passthrough: anthropic
+      properties:
+        input_tokens:
+          type: integer

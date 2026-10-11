@@ -56,42 +56,48 @@ func strPtr(s string) *string { return &s }
 // is added without a row here, the default-502 branch is the only thing
 // that catches it, which is exactly the regression this table exists to
 // make visible.
+// envelopeCase is one row of the envelope table: a sentinel and the status,
+// type and code writeErrorResponse must give it. Package-level so the OpenAPI
+// contract test (item 14) can tie components.schemas.ErrorCode to it.
+type envelopeCase struct {
+	name    string
+	err     error
+	status  int
+	typ     string
+	code    *string
+	wantMsg string // substring the message must contain
+}
+
+var envelopeCases = []envelopeCase{
+	{"missing header", identity.ErrMissingHeader, http.StatusUnauthorized, "authentication_error", nil, identity.ErrMissingHeader.Error()},
+	{"invalid key", identity.ErrInvalidKey, http.StatusUnauthorized, "authentication_error", strPtr("invalid_api_key"), identity.ErrInvalidKey.Error()},
+	{"key expired", &identity.KeyExpiredError{ID: "team-expired-fixture", ExpiresAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}, http.StatusUnauthorized, "authentication_error", strPtr("key_expired"), identity.ErrKeyExpired.Error()},
+	{"rate limited", dataplane.ErrRateLimited, http.StatusTooManyRequests, "rate_limit_error", strPtr("rate_limit_exceeded"), dataplane.ErrRateLimited.Error()},
+	{"budget exceeded", dataplane.ErrBudgetExceeded, http.StatusTooManyRequests, "insufficient_quota", strPtr("insufficient_quota"), dataplane.ErrBudgetExceeded.Error()},
+	{"concurrency", dataplane.ErrConcurrencyLimitExceeded, http.StatusTooManyRequests, "rate_limit_error", strPtr("concurrency_limit_exceeded"), dataplane.ErrConcurrencyLimitExceeded.Error()},
+	{"deployment capacity", &dataplane.DeploymentCapacityError{Deployment: "d", Reason: "rpm"}, http.StatusServiceUnavailable, "server_error", strPtr("deployment_capacity_exceeded"), "capacity"},
+	{"model not allowed", dataplane.ErrModelNotAllowed, http.StatusForbidden, "permission_error", strPtr("model_not_allowed"), dataplane.ErrModelNotAllowed.Error()},
+	{"source ip", dataplane.ErrSourceIPNotAllowed, http.StatusForbidden, "permission_error", strPtr("source_ip_not_allowed"), dataplane.ErrSourceIPNotAllowed.Error()},
+	{"no deployment", dataplane.ErrNoDeployment, http.StatusBadRequest, "invalid_request_error", strPtr("model_not_found"), dataplane.ErrNoDeployment.Error()},
+	{"guardrail", dataplane.ErrGuardrailBlocked, http.StatusBadRequest, "invalid_request_error", strPtr("content_policy_violation"), dataplane.ErrGuardrailBlocked.Error()},
+	{"streaming unsupported", dataplane.ErrStreamingNotSupported, http.StatusBadRequest, "invalid_request_error", strPtr("streaming_not_supported"), dataplane.ErrStreamingNotSupported.Error()},
+	{"not an embedding deployment", dataplane.ErrNotAnEmbeddingDeployment, http.StatusBadRequest, "invalid_request_error", strPtr("not_an_embedding_model"), dataplane.ErrNotAnEmbeddingDeployment.Error()},
+	{"empty messages", dataplane.ErrEmptyMessages, http.StatusBadRequest, "invalid_request_error", strPtr("empty_messages"), dataplane.ErrEmptyMessages.Error()},
+	{"streaming not configured", dataplane.ErrStreamingNotConfigured, http.StatusNotImplemented, "server_error", strPtr("streaming_not_configured"), dataplane.ErrStreamingNotConfigured.Error()},
+	{"embeddings not configured", dataplane.ErrEmbeddingsNotConfigured, http.StatusNotImplemented, "server_error", strPtr("embeddings_not_configured"), dataplane.ErrEmbeddingsNotConfigured.Error()},
+	{"upstream http", &dataplane.UpstreamHTTPError{StatusCode: 503, Body: "x"}, http.StatusBadGateway, "server_error", strPtr("upstream_error"), "503"},
+	{"unknown", errors.New("something else"), http.StatusBadGateway, "server_error", strPtr("upstream_error"), "something else"},
+	// G16 (docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md): both are
+	// faults known from the request alone, so 4xx with their own codes, not
+	// the 502 default they fell to before.
+	{"idempotency key reused", idempotency.ErrFingerprintMismatch, http.StatusUnprocessableEntity, "invalid_request_error", strPtr("idempotency_key_reused"), idempotency.ErrFingerprintMismatch.Error()},
+	{"response_format unsupported", adapter.ErrStructuredOutputUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("response_format_unsupported"), adapter.ErrStructuredOutputUnsupported.Error()},
+	{"tool result parts unsupported", adapter.ErrToolResultPartsUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("tool_result_parts_unsupported"), adapter.ErrToolResultPartsUnsupported.Error()},
+	{"system parts unsupported", adapter.ErrSystemPartsUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("system_parts_unsupported"), adapter.ErrSystemPartsUnsupported.Error()},
+}
+
 func TestWriteErrorResponseEnvelopeTable(t *testing.T) {
-	cases := []struct {
-		name    string
-		err     error
-		status  int
-		typ     string
-		code    *string
-		wantMsg string // substring the message must contain
-	}{
-		{"missing header", identity.ErrMissingHeader, http.StatusUnauthorized, "authentication_error", nil, identity.ErrMissingHeader.Error()},
-		{"invalid key", identity.ErrInvalidKey, http.StatusUnauthorized, "authentication_error", strPtr("invalid_api_key"), identity.ErrInvalidKey.Error()},
-		{"key expired", &identity.KeyExpiredError{ID: "team-expired-fixture", ExpiresAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}, http.StatusUnauthorized, "authentication_error", strPtr("key_expired"), identity.ErrKeyExpired.Error()},
-		{"rate limited", dataplane.ErrRateLimited, http.StatusTooManyRequests, "rate_limit_error", strPtr("rate_limit_exceeded"), dataplane.ErrRateLimited.Error()},
-		{"budget exceeded", dataplane.ErrBudgetExceeded, http.StatusTooManyRequests, "insufficient_quota", strPtr("insufficient_quota"), dataplane.ErrBudgetExceeded.Error()},
-		{"concurrency", dataplane.ErrConcurrencyLimitExceeded, http.StatusTooManyRequests, "rate_limit_error", strPtr("concurrency_limit_exceeded"), dataplane.ErrConcurrencyLimitExceeded.Error()},
-		{"deployment capacity", &dataplane.DeploymentCapacityError{Deployment: "d", Reason: "rpm"}, http.StatusServiceUnavailable, "server_error", strPtr("deployment_capacity_exceeded"), "capacity"},
-		{"model not allowed", dataplane.ErrModelNotAllowed, http.StatusForbidden, "permission_error", strPtr("model_not_allowed"), dataplane.ErrModelNotAllowed.Error()},
-		{"source ip", dataplane.ErrSourceIPNotAllowed, http.StatusForbidden, "permission_error", strPtr("source_ip_not_allowed"), dataplane.ErrSourceIPNotAllowed.Error()},
-		{"no deployment", dataplane.ErrNoDeployment, http.StatusBadRequest, "invalid_request_error", strPtr("model_not_found"), dataplane.ErrNoDeployment.Error()},
-		{"guardrail", dataplane.ErrGuardrailBlocked, http.StatusBadRequest, "invalid_request_error", strPtr("content_policy_violation"), dataplane.ErrGuardrailBlocked.Error()},
-		{"streaming unsupported", dataplane.ErrStreamingNotSupported, http.StatusBadRequest, "invalid_request_error", strPtr("streaming_not_supported"), dataplane.ErrStreamingNotSupported.Error()},
-		{"not an embedding deployment", dataplane.ErrNotAnEmbeddingDeployment, http.StatusBadRequest, "invalid_request_error", strPtr("not_an_embedding_model"), dataplane.ErrNotAnEmbeddingDeployment.Error()},
-		{"empty messages", dataplane.ErrEmptyMessages, http.StatusBadRequest, "invalid_request_error", strPtr("empty_messages"), dataplane.ErrEmptyMessages.Error()},
-		{"streaming not configured", dataplane.ErrStreamingNotConfigured, http.StatusNotImplemented, "server_error", strPtr("streaming_not_configured"), dataplane.ErrStreamingNotConfigured.Error()},
-		{"embeddings not configured", dataplane.ErrEmbeddingsNotConfigured, http.StatusNotImplemented, "server_error", strPtr("embeddings_not_configured"), dataplane.ErrEmbeddingsNotConfigured.Error()},
-		{"upstream http", &dataplane.UpstreamHTTPError{StatusCode: 503, Body: "x"}, http.StatusBadGateway, "server_error", strPtr("upstream_error"), "503"},
-		{"unknown", errors.New("something else"), http.StatusBadGateway, "server_error", strPtr("upstream_error"), "something else"},
-		// G16 (docs/rfcs/2026-10-10-gateway-owner-gate-decisions.md): both are
-		// faults known from the request alone, so 4xx with their own codes, not
-		// the 502 default they fell to before.
-		{"idempotency key reused", idempotency.ErrFingerprintMismatch, http.StatusUnprocessableEntity, "invalid_request_error", strPtr("idempotency_key_reused"), idempotency.ErrFingerprintMismatch.Error()},
-		{"response_format unsupported", adapter.ErrStructuredOutputUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("response_format_unsupported"), adapter.ErrStructuredOutputUnsupported.Error()},
-		{"tool result parts unsupported", adapter.ErrToolResultPartsUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("tool_result_parts_unsupported"), adapter.ErrToolResultPartsUnsupported.Error()},
-		{"system parts unsupported", adapter.ErrSystemPartsUnsupported, http.StatusBadRequest, "invalid_request_error", strPtr("system_parts_unsupported"), adapter.ErrSystemPartsUnsupported.Error()},
-	}
-	for _, tc := range cases {
+	for _, tc := range envelopeCases {
 		for _, wrapped := range []bool{false, true} {
 			err := tc.err
 			name := tc.name
