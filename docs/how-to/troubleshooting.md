@@ -62,7 +62,7 @@ curl -s -D - http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Look at the status, `Retry-After`, then `.error.type` and `.error.code`. `Retry-After` and fallback are chat-only: `/v1/embeddings` uses the same envelope and shares most of these codes (it never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded` or the chat-shape codes), with no `Retry-After` header on any of them and no fallback hop.
+Look at the status, `Retry-After`, then `.error.type` and `.error.code`. `Retry-After` and fallback belong to the chat routes (`/v1/chat/completions`, `/v1/messages`; `/v1/messages/count_tokens` carries `Retry-After` on its `429` only and never falls back): `/v1/embeddings` uses the same envelope and shares most of these codes (it never produces `concurrency_limit_exceeded`, `deployment_capacity_exceeded` or the chat-shape codes), with no `Retry-After` header on any of them and no fallback hop.
 
 | Status | `type` / `code` | Meaning | Check and fix |
 |---|---|---|---|

@@ -89,4 +89,10 @@ func TestIntegrationChatCompletionsSystemMessageNonTextPartIs400(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Errorf("upstream calls = %d, want 0: the refusal is decided before any upstream call", calls.Load())
 	}
+	// G16's rule: a request-shape fault carries no Retry-After and bumps no
+	// backoff (until 2026-10-11 this sentinel fell through to the
+	// upstream-error outcome and did both).
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		t.Errorf("Retry-After = %q, want none", ra)
+	}
 }

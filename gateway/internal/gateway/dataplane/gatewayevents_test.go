@@ -58,6 +58,15 @@ func TestOutcomeForClassifiesEverySentinelError(t *testing.T) {
 		{"idempotency key reused", fmt.Errorf("dataplane: idempotency: %w", idempotency.ErrFingerprintMismatch), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
 		{"tool result parts unsupported", fmt.Errorf("dataplane: %w: model m", adapter.ErrToolResultPartsUnsupported), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
 		{"response_format unsupported", fmt.Errorf("%w: model m", adapter.ErrStructuredOutputUnsupported), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
+		// The same rule for the two request faults that postdated G16 (2026-10-11).
+		{"system parts unsupported", fmt.Errorf("dataplane: %w: model m", adapter.ErrSystemPartsUnsupported), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
+		{"lossy ingress rejected (a pointer type, through errors.As)", fmt.Errorf("dataplane: %w", &ErrLossyIngressRejected{TopLevelFields: 1, Pointers: []string{"/service_tier"}}), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
+		// The four invalid_prompt_reference causes: resolved against the local
+		// prompt store, never upstream (they predate G16; same rule, 2026-10-11).
+		{"prompt_id and messages both set", ErrPromptAndMessagesBothSet, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
+		{"prompt_label and prompt_version both set", ErrPromptLabelAndVersionBothSet, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
+		{"prompt resolution failed (wrapped twice, as resolvePromptIfSet does)", fmt.Errorf("%w: %w", ErrPromptResolutionFailed, errors.New("no such prompt")), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
+		{"resolved prompt content invalid", fmt.Errorf("%w: %w", ErrResolvedPromptContentInvalid, errors.New("bad mime")), gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST},
 		{"generic upstream error", context.DeadlineExceeded, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_UPSTREAM_ERROR},
 		{"deployment capacity (concurrency)", &DeploymentCapacityError{Deployment: "d1", Reason: "concurrency"}, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},
 		{"deployment capacity (rate_limit)", &DeploymentCapacityError{Deployment: "d1", Reason: "rate_limit"}, gatewayeventsv1.GatewayDecisionEvent_OUTCOME_DEPLOYMENT_CAPACITY},

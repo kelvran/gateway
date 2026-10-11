@@ -292,14 +292,24 @@ func TestIntegrationMessagesErrorEnvelopeIsAnthropicShaped(t *testing.T) {
 func TestIntegrationMessagesLossyBodyIs400WithTheQ5Message(t *testing.T) {
 	lossy := `{"model":"gpt-4o","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"service_tier":"auto","thinking":{"type":"adaptive","display":"summarized"}}`
 	upstream, calls := newMockUpstream(t)
-	gw := newMessagesIntegrationServer(t, upstream.URL, false, nil)
-	status, _, raw := postMessages(t, gw.URL, nil, lossy)
+	var rejectLogs bytes.Buffer
+	gw := newMessagesIntegrationServer(t, upstream.URL, false, slog.New(slog.NewJSONHandler(&rejectLogs, nil)))
+	status, hdr, raw := postMessages(t, gw.URL, nil, lossy)
 	if status != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body %s", status, raw)
 	}
 	e := decodeAnthropicError(t, raw)
 	if e.Error.Type != "invalid_request_error" || e.Error.Code != "lossy_ingress_rejected" || e.Error.Param != "/service_tier,/thinking/display" {
 		t.Errorf("envelope = %+v", e.Error)
+	}
+	// A lossy body is the client's own request fault (G16's rule): no
+	// Retry-After, no backoff bump, and the decision event records an invalid
+	// request, never an upstream error for a call that never left the gateway.
+	if ra := hdr.Get("Retry-After"); ra != "" {
+		t.Errorf("Retry-After = %q, want none: a lossy body is not a transient condition", ra)
+	}
+	if got := rejectLogs.String(); !strings.Contains(got, "OUTCOME_INVALID_REQUEST") || strings.Contains(got, "OUTCOME_UPSTREAM_ERROR") {
+		t.Errorf("decision event outcome: want OUTCOME_INVALID_REQUEST and never OUTCOME_UPSTREAM_ERROR in:\n%s", got)
 	}
 	for _, want := range []string{"service_tier", "accept_lossy_anthropic_ingress", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1", "1 nested member"} {
 		if !strings.Contains(e.Error.Message, want) {

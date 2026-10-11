@@ -5303,6 +5303,14 @@ func expiredKeyFromErr(err error) *identity.KeyExpiredError {
 	return nil
 }
 
+// isLossyIngressRejected reports whether err wraps an *ErrLossyIngressRejected.
+// It is a pointer type carrying the offending members, so outcomeFor reaches
+// it through errors.As where its other request-fault sentinels use errors.Is.
+func isLossyIngressRejected(err error) bool {
+	var lossy *ErrLossyIngressRejected
+	return errors.As(err, &lossy)
+}
+
 func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 	switch {
 	case err == nil:
@@ -5330,13 +5338,23 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST
 	case errors.Is(err, ErrGuardrailBlocked):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED
-	case errors.Is(err, adapter.ErrStructuredOutputUnsupported), errors.Is(err, idempotency.ErrFingerprintMismatch), errors.Is(err, adapter.ErrToolResultPartsUnsupported):
-		// G16 (2026-10-10): both are decided from the request alone before
-		// any upstream call -- an unenforceable response_format, a reused
-		// Idempotency-Key with a different body -- so they classify as the
-		// client's invalid request, and (through isRetryStormEligible) carry
-		// no Retry-After and bump no backoff. Before this they fell to
-		// OUTCOME_UPSTREAM_ERROR and the 502 default.
+	case errors.Is(err, adapter.ErrStructuredOutputUnsupported), errors.Is(err, idempotency.ErrFingerprintMismatch), errors.Is(err, adapter.ErrToolResultPartsUnsupported),
+		errors.Is(err, adapter.ErrSystemPartsUnsupported), isLossyIngressRejected(err),
+		errors.Is(err, ErrPromptAndMessagesBothSet), errors.Is(err, ErrPromptLabelAndVersionBothSet),
+		errors.Is(err, ErrPromptResolutionFailed), errors.Is(err, ErrResolvedPromptContentInvalid):
+		// G16 (2026-10-10): every one of these is decided from the request
+		// alone before any upstream call -- an unenforceable response_format,
+		// a reused Idempotency-Key with a different body, a tool-result or
+		// system part no deployment can carry, a lossy Anthropic body, a
+		// prompt reference that is malformed, unknown or resolves to invalid
+		// content (resolved against the local prompt store, never upstream)
+		// -- so they classify as the client's invalid request, and (through
+		// isRetryStormEligible) carry no Retry-After and bump no backoff.
+		// Before G16 the first two fell to OUTCOME_UPSTREAM_ERROR and the 502
+		// default; the system-parts and lossy sentinels postdated G16, and the
+		// four invalid_prompt_reference sentinels predate it, and all six fell
+		// through the same way until 2026-10-11 (found by item 14's design
+		// review against the route inventory and its go review).
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_INVALID_REQUEST
 	default:
 		var capErr *DeploymentCapacityError

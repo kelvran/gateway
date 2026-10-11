@@ -370,7 +370,7 @@ All four keys are always present (`null` when unknown). The OpenAI SDKs choose t
 | `429` | `insufficient_quota` | `insufficient_quota` | Budget exhausted; no `Retry-After` |
 | `501` | `server_error` | `streaming_not_configured`, `embeddings_not_configured` | |
 | `502` | `server_error` | `upstream_error` | Default for every unclassified failure, including adapter rejections; `Retry-After` set on `/v1/chat/completions` and `/v1/messages` (not on an `anthropic` deployment's relayed `400`/`422`). Upstream bodies are redacted to `upstream provider returned status N` (on `/v1/messages` an `anthropic` deployment's own `400`/`422` is relayed as sent) |
-| `503` | `server_error` | `deployment_capacity_exceeded` | `Retry-After` set on `/v1/chat/completions` |
+| `503` | `server_error` | `deployment_capacity_exceeded` | `Retry-After` set on `/v1/chat/completions` and `/v1/messages` |
 
 The full catalogue is in [error codes](error-codes.md).
 

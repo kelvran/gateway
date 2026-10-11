@@ -115,6 +115,32 @@ func TestIntegrationResponseFormatWithNoCapableDeploymentIs400(t *testing.T) {
 	}
 }
 
+// TestIntegrationPromptIDWithMessagesIs400WithoutRetryAfter: a request that
+// sets both prompt_id and messages is the client's own shape fault, 400
+// invalid_prompt_reference, decided before any prompt lookup and before any
+// upstream call; under G16's rule it carries no Retry-After and bumps no
+// backoff (until 2026-10-11 every invalid_prompt_reference cause fell through
+// to the upstream-error outcome and did both).
+func TestIntegrationPromptIDWithMessagesIs400WithoutRetryAfter(t *testing.T) {
+	upstream, calls := newMockUpstream(t)
+	gw := newIntegrationServer(t, upstream.URL, "test-gateway-key-g16c", "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_G16C")
+	resp := postChatWithHeaders(t, gw, "test-gateway-key-g16c", `{"model":"gpt-4o","prompt_id":"greeting","messages":[{"role":"user","content":"hi"}]}`, nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	body := decodeAPIErrorResponse(t, resp)
+	if body.Error.Type != "invalid_request_error" || body.Error.Code == nil || *body.Error.Code != "invalid_prompt_reference" {
+		t.Errorf("envelope type/code = %q/%v, want invalid_request_error/invalid_prompt_reference", body.Error.Type, body.Error.Code)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		t.Errorf("Retry-After = %q, want none: a malformed prompt reference is not a transient condition", ra)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("mock upstream calls = %d, want 0", got)
+	}
+}
+
 // decodeAPIErrorResponse is decodeAPIError for a live *http.Response.
 func decodeAPIErrorResponse(t *testing.T, resp *http.Response) apiErrorBody {
 	t.Helper()
