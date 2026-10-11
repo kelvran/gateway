@@ -36,12 +36,12 @@ func embeddingsTestFakeCredential(suffix string) string {
 func newEmbeddingTestPipeline(t *testing.T, embeddingUpstream UpstreamCaller, deployments []Deployment, priceTable costaccounting.PriceTable) *Pipeline {
 	t.Helper()
 	keys := []identity.VirtualKey{
-		// A real, generous BudgetUSD cap (never zero/"unlimited") --
-		// Reserve is a real no-op for an unlimited key (capUSD.Sign()
-		// <= 0 short-circuits before ever reserving/tracking anything),
-		// so Reconcile never runs and real cost never gets applied to
-		// SpentUSD -- the exact same behavior the chat pipeline already
-		// has. A capped key is what actually exercises cost tracking.
+		// A real, generous BudgetUSD cap (never zero/"unlimited"): Reserve
+		// short-circuits for an unlimited key (capUSD.Sign() <= 0 reserves
+		// nothing), so a capped key is what exercises the reservation
+		// path. The unreserved-but-billable settlement an unlimited key
+		// relies on has its own test,
+		// TestEmbeddingsSettleAnUncappedKeyLikeAChatCompletion.
 		{ID: "test-key", KeyHash: testHashOf("test-key"), RateLimitBurst: 100, RateLimitRefill: 100, BudgetUSD: decimal.RequireFromString("1000")},
 	}
 	verifier, err := identity.NewVerifier(keys)

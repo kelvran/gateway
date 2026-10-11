@@ -3574,7 +3574,16 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	}
 	var realCost *decimal.Decimal
 	defer func() {
-		if budgetReserved {
+		// Settle on a reservation OR a billable response, exactly as
+		// finalize does for chat completions: a key without a cap is never
+		// reserved against (Reserve short-circuits for capUSD <= 0), so
+		// its spend reaches the budget tracker only through this call
+		// with reservedUSD zero and realCost set. Until 2026-10-12 this
+		// gate was `if budgetReserved` alone, so an uncapped key's
+		// embeddings spend never reached GET /admin/virtual_keys/{name}/spend
+		// or `kelvran spend --by key` in any backend
+		// (TestEmbeddingsSettleAnUncappedKeyLikeAChatCompletion).
+		if budgetReserved || realCost != nil {
 			settleCtx, cancelSettle := settlementContext(ctx)
 			defer cancelSettle()
 			p.budget.Reconcile(settleCtx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)

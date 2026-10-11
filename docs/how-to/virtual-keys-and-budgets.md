@@ -229,7 +229,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
    curl -sS http://127.0.0.1:8081/admin/virtual_keys/team-alpha/spend -H "Authorization: Bearer $KELVRAN_ADMIN_TOKEN"
    ```
 
-   Returns `{"spent_usd":"...","budget_usd":"100","budget_reset_interval_seconds":2592000,"percent_used":...}`. `percent_used` is `0` when the budget is unlimited.
+   Returns `{"spent_usd":"...","budget_usd":"100","budget_reset_interval_seconds":2592000,"percent_used":...}`. `percent_used` is `0` when the budget is unlimited, and so is `spent_usd` under `budget.redis_addr` (the Redis tracker never opens a window for an uncapped key); the spend ledger, `kelvran spend --by model --key team-alpha`, has the figure in every mode.
 
 4. Limits are enforced. Send a request to `POST /v1/chat/completions` with the raw secret as the bearer token and observe the rejection you provoke:
 
