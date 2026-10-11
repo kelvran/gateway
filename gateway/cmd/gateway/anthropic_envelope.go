@@ -78,8 +78,8 @@ func writeAnthropicStatus(w http.ResponseWriter, status int, code, param, messag
 // Callers must not have written headers already; the streaming
 // handler uses the encoder's own error event once the stream has started.
 func writeAnthropicError(w http.ResponseWriter, err error) {
-	// count_tokens on a deployment that cannot count (every deployment until
-	// slice S11) is Anthropic's 404 not_found_error -- the status Claude Code
+	// count_tokens on a deployment that cannot count (every deployment but
+	// anthropic, slice S11c) is Anthropic's 404 not_found_error -- the status Claude Code
 	// reads as "estimate locally". HandleCountTokens has one caller, this
 	// route, so the sentinel never reaches errorStatus's table and the OpenAI
 	// envelope stays untouched (item 11 slice S10b).

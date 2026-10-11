@@ -88,12 +88,13 @@ msg = client.messages.create(
 ```python
 from anthropic import NotFoundError
 try:
-    client.messages.count_tokens(model="gpt-4o", messages=[{"role": "user", "content": "how many?"}])
+    count = client.messages.count_tokens(model="gpt-4o", messages=[{"role": "user", "content": "how many?"}])
+    print(count.input_tokens)       # the count when gpt-4o's deployment is `anthropic`; NotFoundError otherwise
 except NotFoundError as e:
-    print(e.body["error"]["code"])   # count_tokens_unavailable
+    print(e.body["error"]["code"])   # count_tokens_unavailable: the model's deployment is not `anthropic`
 ```
 
-`POST /v1/messages/count_tokens` is served and answers `404` `not_found_error` (`code` `count_tokens_unavailable`) for every deployment until the passthrough leg adds the `anthropic` branch. The call authenticates, applies the key's allowlists and consumes one RPM token; it debits no budget.
+`POST /v1/messages/count_tokens` answers with the deployment's own count on an `anthropic` deployment (slice S11c: the pre-call guardrail scans the body first, then it is forwarded as received — `model` rewritten to the deployment's `upstream_model` — and the answer relayed unchanged) and `404` `not_found_error` (`code` `count_tokens_unavailable`) on every other deployment. The call authenticates, applies the key's allowlists and consumes one RPM token; it debits no budget (Anthropic bills nothing for a count).
 
 ## How errors surface in this client
 
@@ -104,7 +105,7 @@ Every error is Anthropic's envelope with Kelvran's `code` and `param` kept — e
 | 400 | `invalid_request_error` | `model_not_found`, `lossy_ingress_rejected`, `missing_required_parameter`, `invalid_request`, `invalid_json`, `content_policy_violation` | `BadRequestError` |
 | 401 | `authentication_error` | `invalid_api_key`, `key_expired` or none | `AuthenticationError` |
 | 403 | `permission_error` | `model_not_allowed`, `source_ip_not_allowed` | `PermissionDeniedError` |
-| 404 | `not_found_error` | `count_tokens_unavailable` | `NotFoundError` |
+| 404 | `not_found_error` | `count_tokens_unavailable` (`count_tokens` on a deployment other than `anthropic`) | `NotFoundError` |
 | 413 | `request_too_large` | `request_too_large` | `APIStatusError` |
 | 422 | `invalid_request_error` | `idempotency_key_reused` (`param` `Idempotency-Key`) | `UnprocessableEntityError` |
 | 400 / 422 | Anthropic's own | none — an `anthropic` deployment's own rejection, relayed as sent; read `message` | `BadRequestError` / `UnprocessableEntityError` |
@@ -124,7 +125,7 @@ Run step 2, then look at the gateway's log: one `chat_completion` line with `ing
 ## Not available today
 
 - Fidelity on a translate hop: every deployment other than `anthropic` drops the members the schema cannot hold (reported in `dropped_fields`). An `anthropic` deployment answers `messages.create` and `messages.stream` with Anthropic's own bytes (slices S11b/S11b2); on a stream the gateway's own `ping` event may be interleaved after 15 s or more of upstream silence, and an upstream `error` event that follows a relayed event reaches the SDK as Anthropic sent it (one that is the very first event, like a first event the gateway cannot decode, is redacted and the turn may fall back).
-- Exact token counts (`count_tokens` answers `404`; see above).
+- Exact token counts on a translate hop (`count_tokens` answers `404` there; an `anthropic` deployment counts exactly, see above).
 - Forwarding `anthropic-beta` values to Bedrock (`anthropic_beta_policy: forward_known` is applied by the upstream leg).
 - The `anthropic-ratelimit-unified-*` and `x-should-retry` response headers on a translate hop: the gateway forwards them from an `anthropic` deployment and synthesises none for any other.
 - The Batches, Files and Admin APIs: only `/v1/messages`, `/v1/messages/count_tokens` and `/v1/models` exist for this SDK; anything else is a plain 404.

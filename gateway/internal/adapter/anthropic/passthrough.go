@@ -54,6 +54,18 @@ func passthroughRequestFor(req adapter.ChatRequest) (*PassthroughRequest, bool, 
 	return &PassthroughRequest{Raw: raw, Headers: pt.ForwardHeaders}, true, nil
 }
 
+// NewCountTokensPassthrough carries a count_tokens body to the deployment as
+// received (item 11 slice S11c): model rewritten to upstreamModel and nothing
+// else added -- count_tokens has no stream member, so none is appended --
+// with the client's forwarded anthropic-* headers riding along.
+func NewCountTokensPassthrough(raw json.RawMessage, upstreamModel string, headers http.Header) (*PassthroughRequest, error) {
+	out, err := rewriteTopLevelModel(raw, upstreamModel)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: count_tokens passthrough body: %w", err)
+	}
+	return &PassthroughRequest{Raw: out, Headers: headers}, nil
+}
+
 // rewriteTopLevel re-emits the top-level object of raw with model and stream
 // set to the given values -- replaced in place when present, appended when
 // absent -- and every other member copied as its original bytes in the
@@ -61,6 +73,18 @@ func passthroughRequestFor(req adapter.ChatRequest) (*PassthroughRequest, bool, 
 // never touched, so nested whitespace and unknown members survive. The
 // ingress has already rejected duplicate members and trailing data.
 func rewriteTopLevel(raw []byte, model string, stream bool) ([]byte, error) {
+	return rewriteTopLevelMembers(raw, model, &stream)
+}
+
+// rewriteTopLevelModel is rewriteTopLevel for a body that has no stream
+// member (count_tokens): model alone is replaced or appended.
+func rewriteTopLevelModel(raw []byte, model string) ([]byte, error) {
+	return rewriteTopLevelMembers(raw, model, nil)
+}
+
+// rewriteTopLevelMembers does the work for both: stream is rewritten or
+// appended only when non-nil.
+func rewriteTopLevelMembers(raw []byte, model string, stream *bool) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	tok, err := dec.Token()
 	if err != nil {
@@ -73,7 +97,10 @@ func rewriteTopLevel(raw []byte, model string, stream bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	streamJSON := []byte(strconv.FormatBool(stream)) // bare true/false: valid JSON, Anthropic's wire form
+	var streamJSON []byte
+	if stream != nil {
+		streamJSON = []byte(strconv.FormatBool(*stream)) // bare true/false: valid JSON, Anthropic's wire form
+	}
 
 	var out bytes.Buffer
 	out.Grow(len(raw) + 64)
@@ -96,7 +123,9 @@ func rewriteTopLevel(raw []byte, model string, stream bool) ([]byte, error) {
 		case "model":
 			value, sawModel = modelJSON, true
 		case "stream":
-			value, sawStream = streamJSON, true
+			if stream != nil {
+				value, sawStream = streamJSON, true
+			}
 		}
 		keyJSON, err := json.Marshal(key)
 		if err != nil {
@@ -125,7 +154,7 @@ func rewriteTopLevel(raw []byte, model string, stream bool) ([]byte, error) {
 		out.WriteString(`"model":`)
 		out.Write(modelJSON)
 	}
-	if !sawStream {
+	if stream != nil && !sawStream {
 		if !first {
 			out.WriteByte(',')
 		}

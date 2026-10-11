@@ -1295,6 +1295,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		CostCalculator:        costaccounting.NewCalculator(priceTable),
 		Upstream:              dataplane.NewHTTPUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}, perDeploymentBufferedClients),
 		EmbeddingUpstream:     dataplane.NewHTTPEmbeddingUpstreamCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}, perDeploymentBufferedClients),
+		CountTokensUpstream:   dataplane.NewHTTPCountTokensCaller(&http.Client{Timeout: upstreamHTTPTimeout, Transport: upstreamTransport}, perDeploymentBufferedClients),
 		ConfigPublisher:       configPublisher,
 		AlertNotifier:         alertNotifier,
 		// Streaming upstream calls deliberately do NOT use client.Timeout

@@ -41,11 +41,11 @@ func postCountTokens(t *testing.T, gwURL string, headers map[string]string, body
 
 const countTokensBody = `{"model":"gpt-4o","messages":[{"role":"user","content":"how many tokens"}]}`
 
-// TestIntegrationCountTokensIs404UntilTheAnthropicBranchLands: a 404
-// not_found_error with Kelvran's code, no upstream call; the call still
-// consumed one RPM token (the burst key's next turn is a 429) and moved no
-// budget (the tiny-budget key's one paid turn still succeeds afterwards).
-func TestIntegrationCountTokensIs404UntilTheAnthropicBranchLands(t *testing.T) {
+// A deployment that is not anthropic answers 404 not_found_error with code
+// count_tokens_unavailable whatever the body (the S10b contract, kept by slice
+// S11c): one RPM token is consumed, no budget moves, no cache layer or
+// upstream is touched, and Claude Code reads the 404 as an absent endpoint.
+func TestIntegrationCountTokensIs404OnANonAnthropicDeployment(t *testing.T) {
 	upstream, calls := newMockUpstream(t)
 	gw := newMessagesIntegrationServer(t, upstream.URL, false, nil)
 	status, header, raw := postCountTokens(t, gw.URL, nil, countTokensBody)

@@ -40,6 +40,18 @@ const maxErrorFragment = 128
 // DisableCacheControlAutoPopulate is set: the client owns cache_control on
 // this ingress (RFC-1 §8).
 func Parse(body []byte) (adapter.ChatRequest, *adapter.Passthrough, error) {
+	return parse(body, true)
+}
+
+// ParseCountTokens is Parse for the token-counting body (item 11 slice
+// S11c): the same members, shadow and Passthrough, but max_tokens is not
+// required -- count_tokens has none -- and is kept when present (Claude
+// Code's /context sends the turn's own body).
+func ParseCountTokens(body []byte) (adapter.ChatRequest, *adapter.Passthrough, error) {
+	return parse(body, false)
+}
+
+func parse(body []byte, requireMaxTokens bool) (adapter.ChatRequest, *adapter.Passthrough, error) {
 	if err := checkBody(body); err != nil {
 		return adapter.ChatRequest{}, nil, err
 	}
@@ -51,7 +63,7 @@ func Parse(body []byte) (adapter.ChatRequest, *adapter.Passthrough, error) {
 	req := adapter.ChatRequest{DisableCacheControlAutoPopulate: true}
 	pt := &adapter.Passthrough{Format: Format, RawBody: append(json.RawMessage(nil), body...)}
 
-	msgsRaw, err := parseRequired(top, &req)
+	msgsRaw, err := parseRequired(top, &req, requireMaxTokens)
 	if err != nil {
 		return adapter.ChatRequest{}, nil, err
 	}
@@ -107,7 +119,9 @@ func Parse(body []byte) (adapter.ChatRequest, *adapter.Passthrough, error) {
 // parseRequired consumes model and max_tokens and takes messages (returned
 // raw; it is parsed after system so system messages come first). JSON null
 // counts as absent for all three, as it does at Anthropic (take's rule).
-func parseRequired(top map[string]json.RawMessage, req *adapter.ChatRequest) (json.RawMessage, error) {
+// max_tokens is required on a Messages body and optional on a count_tokens
+// body (requireMaxTokens).
+func parseRequired(top map[string]json.RawMessage, req *adapter.ChatRequest, requireMaxTokens bool) (json.RawMessage, error) {
 	raw, ok := take(top, "model")
 	if !ok {
 		return nil, ErrMissingModel
@@ -116,14 +130,16 @@ func parseRequired(top map[string]json.RawMessage, req *adapter.ChatRequest) (js
 		return nil, err
 	}
 	raw, ok = take(top, "max_tokens")
-	if !ok {
+	if !ok && requireMaxTokens {
 		return nil, ErrMissingMaxTokens
 	}
-	var n int
-	if err := decode(raw, &n, "/max_tokens"); err != nil {
-		return nil, err
+	if ok {
+		var n int
+		if err := decode(raw, &n, "/max_tokens"); err != nil {
+			return nil, err
+		}
+		req.MaxTokens = &n
 	}
-	req.MaxTokens = &n
 	msgs, ok := take(top, "messages")
 	if !ok {
 		return nil, ErrMissingMessages

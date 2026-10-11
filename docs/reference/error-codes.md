@@ -6,7 +6,7 @@ This page lists every error the gateway's data plane can return: the JSON envelo
 
 | Item | Value |
 |---|---|
-| Routes covered | `POST /v1/chat/completions` (buffered and SSE), `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (buffered and SSE; the Anthropic envelope below, since gateway/v0.19.0), `POST /v1/messages/count_tokens` (the Anthropic envelope; `404` `count_tokens_unavailable` for every deployment until slice S11) |
+| Routes covered | `POST /v1/chat/completions` (buffered and SSE), `POST /v1/embeddings`, `GET /v1/models`, `POST /v1/messages` (buffered and SSE; the Anthropic envelope below, since gateway/v0.19.0), `POST /v1/messages/count_tokens` (the Anthropic envelope; an `anthropic` deployment's own count; `404` `count_tokens_unavailable` on every other deployment) |
 | Routes not covered | `GET /healthz`, `GET /readyz`, every `/admin/*` route, unknown paths (see [Routes outside the envelope](#routes-outside-the-envelope)) |
 | JSON error envelope | since `gateway/v0.18.0`. `gateway/v0.17.0` returns a `text/plain` body with no `type` or `code`, with the same status codes and the same message text except for the `tool_choice` statuses and the message changes listed two rows below |
 | `GET /v1/models` | since `gateway/v0.18.0` |
@@ -88,7 +88,7 @@ These are produced after the request body is accepted, by the shared error write
 | 429 | `insufficient_quota` | `insufficient_quota` | `null` | no | The key has spent its `budget_usd` | `dataplane: budget exceeded` |
 | 403 | `permission_error` | `model_not_allowed` | `null` | no | The key has an `allowed_models` list that excludes the requested model | `dataplane: model not allowed for this virtual key` |
 | 403 | `permission_error` | `source_ip_not_allowed` | `null` | yes | The key has an `allowed_source_cidrs` list that excludes the client IP | `dataplane: source IP not allowed for this virtual key` |
-| 404 | `not_found_error` (Anthropic envelope) | `count_tokens_unavailable` | `null` | no | `/v1/messages/count_tokens` only: the model's deployment cannot count tokens — every deployment until slice S11 adds the `anthropic` branch. One RPM token consumed; no budget, cache or upstream touched. Since `gateway/v0.19.0` | `dataplane: token counting is not available for this model's deployment` |
+| 404 | `not_found_error` (Anthropic envelope) | `count_tokens_unavailable` | `null` | no | `/v1/messages/count_tokens` only: the model's deployment cannot count tokens — every deployment but `anthropic` (slice S11c). One RPM token consumed; no budget, cache or upstream touched. Since `gateway/v0.19.0` | `dataplane: token counting is not available for this model's deployment` |
 | 400 | `invalid_request_error` | `model_not_found` | `null` | no | No deployment serves the requested model. No upstream call is made | `dataplane: no deployment configured for requested model` |
 | 400 | `invalid_request_error` | `content_policy_violation` | `null` | no | A Block-tier guardrail verdict rejected the request (pre-call or post-call), or a Block-tier detector errored | `dataplane: request blocked by guardrail policy` |
 | 400 | `invalid_request_error` | `empty_messages` | `"messages"` | no | The request resolves to zero messages (sent `messages: []` with no `prompt_id`, or the prompt resolved to an empty list) | `dataplane: request resolved to zero messages` |

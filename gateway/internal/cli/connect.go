@@ -255,7 +255,7 @@ func printOpenAIPair(env IO, tool, base, secret string) error {
 	out.printf("export OPENAI_BASE_URL=%s/v1\n", sanitizeCell(base))
 	out.printf("export %s=%s\n", envOpenAIAPIVar, secret)
 	out.println("# " + pointer + ".")
-	out.println("# Under /v1 this gateway serves POST /v1/chat/completions, POST /v1/embeddings and GET /v1/models only; POST /v1/responses (the OpenAI Responses API) is a 404 — if your tool defaults to the Responses API, switch it to Chat Completions per its own documentation.")
+	out.println("# Under /v1 this gateway serves POST /v1/chat/completions, POST /v1/embeddings, GET /v1/models, POST /v1/messages and POST /v1/messages/count_tokens; POST /v1/responses (the OpenAI Responses API) is a 404 — if your tool defaults to the Responses API, switch it to Chat Completions per its own documentation.")
 	return firstErr(out)
 }
 

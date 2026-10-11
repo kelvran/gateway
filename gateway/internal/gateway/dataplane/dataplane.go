@@ -611,6 +611,11 @@ type Config struct {
 	// guaranteed no-op: HandleEmbeddings returns ErrEmbeddingsNotConfigured
 	// rather than a nil-pointer panic.
 	EmbeddingUpstream UpstreamCaller
+	// CountTokensUpstream calls an anthropic deployment's own count_tokens
+	// with the client's body as received (item 11 slice S11c). nil is a
+	// guaranteed no-op: HandleCountTokens answers ErrCountTokensUnavailable
+	// for every deployment then, as it did before the branch existed.
+	CountTokensUpstream CountTokensCaller
 	// ConfigPublisher pushes a live deployment-weight mutation to every
 	// other gateway instance sharing the same Redis address, per
 	// internal/configpropagation's own doc comment. nil (the default —
@@ -754,12 +759,13 @@ type Pipeline struct {
 	// modelMetadata and catalogLoadedAt back GET /v1/models (models.go):
 	// the operator's display metadata by canonical model, and when this
 	// process built its catalog (the `created` every entry reports).
-	modelMetadata     map[string]ModelMetadata
-	catalogLoadedAt   time.Time
-	costCalc          *costaccounting.Calculator
-	upstream          UpstreamCaller
-	embeddingUpstream UpstreamCaller
-	configPublisher   configpropagation.Publisher
+	modelMetadata       map[string]ModelMetadata
+	catalogLoadedAt     time.Time
+	costCalc            *costaccounting.Calculator
+	upstream            UpstreamCaller
+	embeddingUpstream   UpstreamCaller
+	countTokensUpstream CountTokensCaller
+	configPublisher     configpropagation.Publisher
 	// instanceID is this process's own MutationEvent.OriginInstanceID
 	// (telemetry.InstanceID at NewPipeline time; tests override it to
 	// simulate several replicas in one process). It is both what every
@@ -1151,6 +1157,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		// SetLatencyFactor call always has a real router to report to.
 		upstream:                 wrapUpstreamCallerFor503Deweight(cfg.Upstream, cfg.Router),
 		embeddingUpstream:        wrapUpstreamCallerFor503Deweight(cfg.EmbeddingUpstream, cfg.Router),
+		countTokensUpstream:      cfg.CountTokensUpstream,
 		configPublisher:          cfg.ConfigPublisher,
 		instanceID:               telemetry.InstanceID,
 		weightVersions:           map[weightVersionKey]mutationVersion{},

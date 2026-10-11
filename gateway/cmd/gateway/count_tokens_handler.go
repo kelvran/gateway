@@ -1,28 +1,40 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 
+	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
-// POST /v1/messages/count_tokens (item 11 slice S10b, RFC-1 §9). The
-// optional Anthropic endpoint Claude Code calls for exact context counts and
-// falls back from, to a character-based estimate, when it answers 404. The
-// handler reads only `model` from the body (the count needs no other member
-// until the anthropic branch forwards the raw body, slice S11), then hands
-// the body's own gates to dataplane.Pipeline.HandleCountTokens. Exact path,
-// as every data-plane route: `/v1/messages/count_tokens/` is a plain 404.
+// countTokensHandler serves POST /v1/messages/count_tokens (item 11 slices
+// S10b and S11c): the method, the 16 KiB bound on the forwarded anthropic-*
+// headers (checked before the body is read), the 32 MiB body cap and the
+// shallow model parse are the handler's; the gates, the anthropic branch and
+// the 404 for every other deployment are HandleCountTokens'. On an anthropic
+// deployment the answer is relayed as received with its relayable headers; a
+// body the parser or the request validators reject is the parser's 400.
 func countTokensHandler(p *dataplane.Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeAnthropicStatus(w, http.StatusMethodNotAllowed, "method_not_allowed", "", "method not allowed")
+			return
+		}
+		// The client's anthropic-* headers travel to an anthropic deployment as
+		// an open list by prefix, bounded as on /v1/messages (slice S11a) and
+		// checked before the body is read, so an over-long header set is refused
+		// cheaply.
+		forward := forwardHeadersFrom(r.Header)
+		if n := headerBytes(forward); n > maxForwardedAnthropicHeaderBytes {
+			writeAnthropicStatus(w, http.StatusBadRequest, "invalid_request", "", fmt.Sprintf("anthropic-* request headers total %d bytes; this gateway forwards at most %d", n, maxForwardedAnthropicHeaderBytes))
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
@@ -48,17 +60,30 @@ func countTokensHandler(p *dataplane.Pipeline) http.HandlerFunc {
 			return
 		}
 		ctx := telemetry.ExtractContext(r.Context(), r)
-		counted, err := p.HandleCountTokens(ctx, bearerFromRequest(r), r.RemoteAddr, req.Model)
+		counted, err := p.HandleCountTokens(ctx, bearerFromRequest(r), r.RemoteAddr, req.Model, body, forward)
 		if err != nil {
+			var bodyErr *dataplane.CountTokensBodyError
+			if errors.As(err, &bodyErr) {
+				// The same code and param /v1/messages gives the same body:
+				// validateMessagesRequest names a tool_choice rejection; the parser's
+				// sentinels keep their codes; anything else is invalid_request.
+				code, param := parseErrorCode(bodyErr.Err)
+				if errors.Is(bodyErr.Err, adapter.ErrInvalidToolChoice) {
+					code, param = "invalid_tool_choice", "tool_choice"
+				}
+				writeAnthropicStatus(w, http.StatusBadRequest, code, param, bodyErr.Err.Error())
+				return
+			}
 			writeAnthropicError(w, err)
 			return
 		}
-		// Unreachable until slice S11: the provider's own count_tokens answer,
-		// relayed as received.
+		// The anthropic deployment's own answer, relayed as received with its
+		// relayable headers (item 11 slice S11c).
+		copyRelayHeaders(w.Header(), counted.Header)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if err := json.NewEncoder(w).Encode(json.RawMessage(counted)); err != nil {
-			slog.Error("encoding count_tokens response", "error", err)
+		if _, err := io.Copy(w, bytes.NewReader(counted.Body)); err != nil {
+			slog.Error("writing count_tokens response", "error", err)
 		}
 	}
 }

@@ -82,7 +82,7 @@ Claude Code reads every turn as a stream. The gateway emits the Anthropic event 
 
 ### Exact token counts
 
-Claude Code calls `POST /v1/messages/count_tokens` for `/context`. The gateway serves the route since `gateway/v0.19.0` and answers `404` `not_found_error` (`code` `count_tokens_unavailable`) for every deployment until the passthrough leg adds the `anthropic` branch; Claude Code then falls back to its character-based estimate, as the protocol page describes for an absent endpoint. The call still authenticates, applies the key's allowlists and consumes one RPM token; it touches no budget and no cache. In the 2026-10-11 run with the betas on, Claude Code called it once, received the `404` and continued the turn.
+Claude Code calls `POST /v1/messages/count_tokens` for `/context`. On an `anthropic` deployment the gateway answers with Anthropic's own count (slice S11c: the body is scanned by the pre-call guardrail, then forwarded to the deployment's `count_tokens` as received, only `model` rewritten to the deployment's `upstream_model`, and the answer comes back unchanged). There `/context` is exact; on every other deployment it answers `404` `not_found_error` (`code` `count_tokens_unavailable`) and Claude Code falls back to its character-based estimate, as the protocol page describes for an absent endpoint. Either way the call authenticates, applies the key's allowlists and consumes one RPM token; it touches no budget and no cache (Anthropic bills nothing for a count). In the 2026-10-11 run with the betas on, against the Bedrock pilot, Claude Code called it once, received the `404` and continued the turn; the `anthropic` branch is mock-proven only, no key being available.
 
 ### Auto mode
 
@@ -107,7 +107,7 @@ Every error is Anthropic's envelope with Kelvran's `code` kept — except an `an
 | 400 / 422 | Anthropic's own | none | An `anthropic` deployment's own rejection, relayed as Anthropic sent it; read `message`. No `Retry-After`. |
 | 401 | `authentication_error` | `invalid_api_key` / `key_expired` / none | The credential is not a virtual key, has expired, or two variables carry different values; set exactly one current key. |
 | 403 | `permission_error` | `model_not_allowed` | The key's `allowed_models` excludes the model. |
-| 404 | `not_found_error` | `count_tokens_unavailable` | Expected on `/context` today; Claude Code estimates locally. |
+| 404 | `not_found_error` | `count_tokens_unavailable` | `/context` on a deployment other than `anthropic`; Claude Code estimates locally. |
 | 429 | `rate_limit_error` | `rate_limit_exceeded` / `concurrency_limit_exceeded` | Retry after `Retry-After` (integer seconds, at most 60). |
 | 429 | `rate_limit_error` | `insufficient_quota` | The key's budget is spent; no `Retry-After`, Claude Code retries on its own schedule until an operator raises the budget or the window resets. |
 | 502 / 503 | `api_error` | `upstream_error` / `deployment_capacity_exceeded` | A provider or capacity failure after fallback; the message is redacted. |
@@ -119,7 +119,7 @@ Every error is Anthropic's envelope with Kelvran's `code` kept — except an `an
 ## Not available today
 
 - Fidelity on a translate hop: every deployment other than `anthropic` is served by shadow-encoding the canonical request, so unknown members are dropped there (reported in `dropped_fields`) and `kelvran.ingress.passthrough` is `false`. An `anthropic` deployment relays request and response as sent, buffered and streamed (slices S11a/S11b/S11b2, `kelvran.ingress.passthrough: true`); on a streamed turn the gateway's own `event: ping` may be interleaved after 15 s or more of upstream silence, and an upstream `error` frame that follows a relayed frame reaches Claude Code as Anthropic sent it (one that is the very first event, like a first frame the gateway cannot decode, is redacted and the turn may fall back).
-- Exact token counts (`count_tokens` answers `404`; see above).
+- Exact token counts on a translate hop (`count_tokens` answers `404` there; an `anthropic` deployment counts exactly, see above).
 - The Amazon Bedrock and Google Vertex AI request formats (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`): Kelvran speaks the Anthropic Messages format only; point Claude Code at it with `ANTHROPIC_BASE_URL`.
 - Forwarding `anthropic-beta` values to Bedrock: `anthropic_beta_policy: forward_known` loads and validates today and is applied when the upstream leg lands; a Bedrock hop strips the header until then; an `anthropic` deployment forwards it as sent.
 - `anthropic-ratelimit-unified-*` and `x-should-retry` response headers on a translate hop: the gateway forwards them from an `anthropic` deployment and synthesises none for any other (they express Anthropic plan limits).

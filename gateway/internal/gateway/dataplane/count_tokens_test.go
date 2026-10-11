@@ -65,7 +65,7 @@ func TestCountTokensRateLimitFailOpenIncrementsMetricCounter(t *testing.T) {
 		t.Fatalf("NewPipeline: %v", err)
 	}
 
-	body, err := p.HandleCountTokens(context.Background(), "Bearer "+keyID, "", "gpt-4o")
+	body, err := p.HandleCountTokens(context.Background(), "Bearer "+keyID, "", "gpt-4o", []byte(`{"model":"gpt-4o","messages":[]}`), nil)
 	if body != nil {
 		t.Fatalf("HandleCountTokens body = %q, want nil before slice S11", body)
 	}
