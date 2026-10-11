@@ -4,7 +4,7 @@ go 1.26.9
 
 require (
 	github.com/KimMachineGun/automemlimit v1.0.0
-	github.com/aws/aws-sdk-go-v2 v1.47.0
+	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/redis/go-redis/v9 v9.22.0
@@ -22,7 +22,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/sdk/metric v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
-	golang.org/x/sync v0.23.0
+	golang.org/x/sync v0.24.0
 	golang.org/x/text v0.42.0
 	google.golang.org/protobuf v1.36.12
 )
