@@ -10,7 +10,11 @@
 // docs/rfcs/2026-09-02-streaming-support.md for the full design.
 package streaming
 
-import "github.com/kelvran/gateway/gateway/internal/adapter"
+import (
+	"encoding/json"
+
+	"github.com/kelvran/gateway/gateway/internal/adapter"
+)
 
 // SSEEvent is one already-framed Server-Sent Event read from a provider's
 // raw response body — the "event:" and "data:" fields, nothing more (no
@@ -106,11 +110,86 @@ type MessageDelta struct {
 // introduces this tool call (Index identifies which one); every chunk that
 // contributes to its arguments carries a fragment of ArgumentsJSON, which
 // callers concatenate in order to reconstruct the full JSON string.
+//
+// The Go struct stays flat for the adapters' convenience, like
+// adapter.ToolCall; the wire shape is toolCallDeltaWire's, written by the
+// MarshalJSON/UnmarshalJSON pair below.
+//
+// Index inside the gateway is the provider's own position space (Anthropic's
+// and Bedrock's content-block index, Gemini's part position, OpenAI's own
+// ordinal): the dataplane's accumulator rebuilds reasoning Sequence from it
+// and the Anthropic-messages encoder keys its blocks by it. Writer renumbers
+// it to OpenAI's meaning -- the call's position in the final tool_calls, 0
+// first, by order of first appearance -- on the /v1/chat/completions wire
+// (toolCallIndexer), so the two spaces meet only there.
 type ToolCallDelta struct {
-	Index         int    `json:"index"`
-	ID            string `json:"id,omitempty"`
-	Name          string `json:"name,omitempty"`
-	ArgumentsJSON string `json:"arguments_json,omitempty"`
+	Index         int
+	ID            string
+	Name          string
+	ArgumentsJSON string
+}
+
+// toolCallDeltaWire is ToolCallDelta's wire shape: the flat members
+// (`name`, `arguments_json`) every chunk has carried since the first release,
+// deprecated in gateway/v0.20.0 (DEPRECATED.md), side by side with OpenAI's
+// ChatCompletionMessageToolCallChunk nesting (`type`, `function.{name,
+// arguments}`; confirmed against the official openai-openapi spec), so the
+// official SDKs' stream accumulators and a client written for the flat shape
+// both reassemble the call during the deprecation window. Index is the only
+// required member, as in OpenAI's schema.
+type toolCallDeltaWire struct {
+	Index         int                    `json:"index"`
+	ID            string                 `json:"id,omitempty"`
+	Type          string                 `json:"type,omitempty"`
+	Name          string                 `json:"name,omitempty"`
+	ArgumentsJSON string                 `json:"arguments_json,omitempty"`
+	Function      *toolCallFunctionDelta `json:"function,omitempty"`
+}
+
+// toolCallFunctionDelta is the `function` member of toolCallDeltaWire, present
+// on every fragment: Name when the fragment introduces the call, Arguments
+// always (empty when the fragment carries none), as in OpenAI's own stream.
+// openai-python's stream helper asserts `function` on every tool-call delta,
+// and Bedrock's ConverseStream opens a tool block with an index-only
+// fragment (seen live, 2026-10-12), so the member can never be omitted.
+type toolCallFunctionDelta struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments"`
+}
+
+// MarshalJSON implements json.Marshaler. The fragment that introduces a call
+// (ID set) carries `type: "function"` beside `id`, as OpenAI's own stream
+// does; every fragment carries `function`, with `arguments` an empty string
+// when there is nothing to append (toolCallFunctionDelta).
+func (d ToolCallDelta) MarshalJSON() ([]byte, error) {
+	w := toolCallDeltaWire{Index: d.Index, ID: d.ID, Name: d.Name, ArgumentsJSON: d.ArgumentsJSON}
+	if d.ID != "" {
+		w.Type = "function"
+	}
+	w.Function = &toolCallFunctionDelta{Name: d.Name, Arguments: d.ArgumentsJSON}
+	return json.Marshal(w)
+}
+
+// UnmarshalJSON implements json.Unmarshaler, accepting the flat members, the
+// nested ones (OpenAI's shape, and the only one once the flat members are
+// removed) or both. When both are present the flat member wins: it is the
+// one every chunk carried before the nesting existed, so a frame that sets
+// only it keeps meaning what it meant; a disagreement is not an error.
+func (d *ToolCallDelta) UnmarshalJSON(data []byte) error {
+	var w toolCallDeltaWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	d.Index, d.ID, d.Name, d.ArgumentsJSON = w.Index, w.ID, w.Name, w.ArgumentsJSON
+	if w.Function != nil {
+		if d.Name == "" {
+			d.Name = w.Function.Name
+		}
+		if d.ArgumentsJSON == "" {
+			d.ArgumentsJSON = w.Function.Arguments
+		}
+	}
+	return nil
 }
 
 // ReasoningDelta is one incremental fragment of a single reasoning/thinking

@@ -144,7 +144,7 @@ Unlike a client library, curl prints everything, so expect these Kelvran additio
 - `choices[].message.refusal` (openai and openaicompat only) and a top-level `input_transformations[]` (Anthropic only).
 - A top-level `stop_reason` and, when a stop sequence matched, `stop_sequence` on Anthropic and Bedrock responses, and, inside `choices[]`, on the streaming chunk that sets `finish_reason` (since gateway/v0.19.0); `finish_reason` is unchanged.
 - On `GET /v1/models`: `kind` (`chat` or `embedding`) on every entry, plus the Anthropic-dialect fields `type`, `created_at`, `display_name`, `description`, `first_id`, `last_id`, `has_more` in the same document.
-- Streaming tool-call deltas are flat `{index, id, name, arguments_json}` objects, not OpenAI's `function.{name,arguments}` nesting.
+- Streaming tool-call deltas carry the deprecated flat `name` and `arguments_json` beside OpenAI's `type` and `function.{name,arguments}` since gateway/v0.20.0 ([`DEPRECATED.md`](../../../DEPRECATED.md)); before that release the flat members were the only shape. Read `function`.
 
 ## What to do on 429: `rate_limit_error` versus `insufficient_quota`
 

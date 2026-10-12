@@ -265,7 +265,7 @@ Set `stream: true`. Frames are `data: <json>\n\n`; the stream ends with `data: [
 | `choices[].index` | Candidate index |
 | `choices[].delta.role` | First chunk of a message only |
 | `choices[].delta.content` | Text fragment |
-| `choices[].delta.tool_calls[]` | `{index, id, name, arguments_json}`; see divergence below |
+| `choices[].delta.tool_calls[]` | `{index, id, type, name, arguments_json, function: {name, arguments}}` since gateway/v0.20.0: OpenAI's members beside the deprecated flat `name`/`arguments_json` ([`DEPRECATED.md`](../../DEPRECATED.md)); `index` is the call's position, `0` first. Before: flat only; see below |
 | `choices[].delta.reasoning_blocks[]` | Extension: `{index, text, signature, redacted, data}`, keyed by `index` like `tool_calls` |
 | `choices[].delta.refusal` | Extension sibling, `openai`/`openaicompat` only |
 | `choices[].finish_reason` | `null` until the final delta |
@@ -276,7 +276,7 @@ Set `stream: true`. Frames are `data: <json>\n\n`; the stream ends with `data: [
 
 | Topic | OpenAI | Kelvran |
 |---|---|---|
-| Tool-call delta | `delta.tool_calls[].{index, id, type, function: {name, arguments}}` | `delta.tool_calls[].{index, id, name, arguments_json}`, flat, no `type`, no `function` nesting (`gateway/internal/streaming/types.go`). An OpenAI SDK stream accumulator that reads `function.arguments` finds nothing |
+| Tool-call delta | `delta.tool_calls[].{index, id, type, function: {name, arguments}}` | The same members since gateway/v0.20.0, with `index` the call's position (`0` first), plus the deprecated flat `name` and `arguments_json` beside them until their removal ([`DEPRECATED.md`](../../DEPRECATED.md)); the official SDKs' stream accumulators reassemble the call (pinned by the compatibility matrix). Before gateway/v0.20.0: flat only, no `type`, no `function`, and on `anthropic`/`bedrock` deployments `index` was the provider's content-block index (`1` after a thinking block), so an accumulator that read `function.arguments` found nothing and one that trusted `index` padded a phantom call |
 | `stream_options.include_usage` | Client opt-in | Client value ignored. The gateway always sends `stream_options.include_usage: true` to `openai` and `openaicompat` upstreams |
 | `model` on chunks vs buffered response | Same | For `openai`, `openaicompat` and `anthropic`, chunks keep the upstream model name while the buffered response reports the canonical name, so the two can differ (recorded follow-up) |
 | Mid-stream failure | `data: {"error":…}` frame | Same convention: one `data: {"error":{"message","type","param":null,"code"}}` frame with the buffered envelope's type and code (`param` is always `null` in a stream frame), then the stream ends without `[DONE]`. Since `gateway/v0.18.0` |

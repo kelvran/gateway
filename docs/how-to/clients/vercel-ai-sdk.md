@@ -154,7 +154,7 @@ try {
 - `POST /v1/completions`: the legacy Completions API. Only chat completions, embeddings and models exist under `/v1`.
 - The SDK's Anthropic provider (`@ai-sdk/anthropic`) against this gateway: `POST /v1/messages` and `POST /v1/messages/count_tokens` are served since `gateway/v0.19.0` with `x-api-key` read, so it has routes to call, but this page covers the OpenAI provider only and that path is untested here; the Anthropic shape is documented in [Use the Anthropic Python SDK with Kelvran](anthropic-python.md).
 - A first-party Kelvran SDK or provider package. The OpenAI-shaped providers above are the integration path.
-- OpenAI-shaped streaming tool-call deltas: the gateway streams flat `{ index, id, name, arguments_json }` elements with no `function` nesting. Tool calling through this SDK is not exercised in the recording.
+- OpenAI-shaped streaming tool-call deltas before gateway/v0.20.0 (flat `{ index, id, name, arguments_json }` only there). Since gateway/v0.20.0 `type` and `function.{name,arguments}` travel beside the deprecated flat members ([`DEPRECATED.md`](../../../DEPRECATED.md)) and `index` is the call's position. Tool calling through this SDK is not exercised in the recording.
 - OpenAI content arrays on inbound messages (400 `invalid_json`); multimodal input uses Kelvran's own `parts` field. Image or file parts through this SDK are not exercised in the recording.
 - Model listing and embeddings through this SDK: not exercised in the recording. The gateway serves `GET /v1/models` and `POST /v1/embeddings`; use [curl](curl.md) for them.
 - `X-Kelvran-Overhead-Duration-Ms` on streaming responses.

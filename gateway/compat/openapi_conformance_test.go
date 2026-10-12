@@ -274,8 +274,13 @@ func TestOpenAPILiveResponsesConform(t *testing.T) {
 		}
 	}
 	// Streams: the frames by hand (the validator skips non-JSON bodies).
+	// A streamed tool turn validates the tool-call delta in both of its shapes
+	// (the deprecated flat members beside OpenAI's `type` + `function`, since
+	// gateway/v0.20.0) against ToolCallDelta's closed property set.
+	chatTools := strings.Replace(chat, `"model"`, `"stream":true,"tools":[{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"model"`, 1)
 	for _, s := range []struct{ operationID, path, body, component, first, last string }{
 		{"createChatCompletion", "/v1/chat/completions", strings.Replace(chat, `"model"`, `"stream":true,"model"`, 1), "ChatCompletionChunk", "", "[DONE]"},
+		{"createChatCompletion", "/v1/chat/completions", chatTools, "ChatCompletionChunk", "", "[DONE]"},
 		{"createMessage", "/v1/messages", strings.Replace(messages, `"model"`, `"stream":true,"model"`, 1), "AnthropicStreamEvent", "message_start", "message_stop"},
 	} {
 		req, err := http.NewRequest(http.MethodPost, gatewayURL+s.path, strings.NewReader(s.body))

@@ -8,8 +8,10 @@ import (
 
 // TestWriteChunkGoldenWireFormat pins the exact byte-for-byte SSE output for
 // a representative chunk carrying every field kind (role+content, a
-// tool-call delta, a set finish_reason, and usage) — the client-facing wire
-// format every SSE consumer parses. This is this package's equivalent of
+// tool-call delta in both of its shapes -- the deprecated flat members and
+// OpenAI's `type` + `function` nesting, DEPRECATED.md -- a set
+// finish_reason, and usage) — the client-facing wire format every SSE
+// consumer parses. This is this package's equivalent of
 // internal/adapter/{openai,anthropic}/regression_test.go: those pin OUR
 // wire format against each PROVIDER's; this pins OUR wire format against
 // ITSELF, so an accidental JSON tag rename or field reorder in types.go is
@@ -45,7 +47,7 @@ func TestWriteChunkGoldenWireFormat(t *testing.T) {
 		t.Fatalf("WriteChunk() error = %v", err)
 	}
 
-	const want = "data: {\"id\":\"chunk-1\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"name\":\"get_weather\",\"arguments_json\":\"{\\\"city\\\":\\\"Boston\\\"}\"}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"
+	const want = "data: {\"id\":\"chunk-1\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"name\":\"get_weather\",\"arguments_json\":\"{\\\"city\\\":\\\"Boston\\\"}\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Boston\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"
 	if got := rec.Body.String(); got != want {
 		t.Errorf("golden SSE byte output mismatch:\n got:  %q\n want: %q", got, want)
 	}

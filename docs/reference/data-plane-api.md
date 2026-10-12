@@ -276,7 +276,7 @@ Chunk shape:
 |---|---|---|
 | `role` | string | First chunk of a message only. |
 | `content` | string | Incremental text. |
-| `tool_calls[]` | array | Flat `{"index", "id", "name", "arguments_json"}`. `id` and `name` appear on the chunk that introduces the call; `arguments_json` fragments concatenate in order. This is not OpenAI's `function.{name,arguments}` nesting; see Not available today. |
+| `tool_calls[]` | array | `{"index", "id", "type", "name", "arguments_json", "function": {"name", "arguments"}}` since gateway/v0.20.0: OpenAI's `ChatCompletionMessageToolCallChunk` members (`type`, `function`) beside Kelvran's flat `name` and `arguments_json`, which are deprecated ([`DEPRECATED.md`](../../DEPRECATED.md)) — read `function`. `index` is the call's position in the final `message.tool_calls` (OpenAI's meaning), `0` for the first call whatever the provider's own block numbering; `id` and `type` appear on the chunk that introduces the call; `function` is present on every element with `arguments` always a string (empty when the element appends nothing), as in OpenAI's stream; its fragments concatenate in order. Before gateway/v0.20.0: the flat members only, and on `anthropic` and `bedrock` deployments `index` was the provider's content-block index. |
 | `reasoning_blocks[]` | array | `{"index", "text", "signature", "redacted", "data"}`. `text` fragments concatenate; `signature` and `data` arrive whole. |
 | `refusal` | string | Incremental refusal text (`openai`, `openaicompat` only). |
 
@@ -618,7 +618,6 @@ Design: [2026-09-07-gateway-retry-storm-mitigation.md](../rfcs/2026-09-07-gatewa
 | Fidelity on a translate hop | Every deployment other than `anthropic` is served by shadow-encoding the canonical request, so members the schema cannot hold are dropped there and reported in `kelvran.ingress.dropped_fields`; an `anthropic` deployment relays request and response as sent, buffered and streamed (since gateway/v0.19.0). |
 | `x-api-key` authentication | Accepted on `GET /v1/models`, `POST /v1/messages` and `POST /v1/messages/count_tokens` (the bearer's alias; `Authorization` wins); the chat and embeddings routes take `Authorization: Bearer` alone. |
 | Trusting `X-Forwarded-For` for source-IP allowlists | Not implemented; no configuration knob exists. |
-| OpenAI-shaped streaming `tool_calls` deltas (`function.{name,arguments}`) | Not implemented. Streaming deltas are flat `{index, id, name, arguments_json}`; buffered `tool_calls` are OpenAI-nested. |
 | Streaming on `/v1/embeddings` | No streaming concept. |
 | Fallback chains or provider-derived `Retry-After` on `/v1/embeddings` | Not implemented; a bare `502`. |
 | A Redis-backed `Idempotency-Key` store | Not implemented; the store is in-process, single instance. |

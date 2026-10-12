@@ -1,6 +1,8 @@
 """The official `openai` package against the gateway's OpenAI-compatible routes,
 served by an anthropic deployment through the translate path."""
 
+import json
+
 import openai
 import pytest
 
@@ -41,6 +43,46 @@ def test_stream_accumulates(
         finish = chunk.choices[0].finish_reason or finish
     assert text == EXPECTED_STREAM_TEXT
     assert finish == "stop"
+
+
+WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a city",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    },
+}
+# the tool_use id the streamed tool golden (anthropic_stream_thinking_tool.txt) introduces
+STREAMED_TOOL_USE_ID = "toolu_01WeatherThink000000"
+
+
+def test_stream_helper_reassembles_a_tool_call(
+    gateway_url: str, gateway_credential: str, model: str, question: Turn
+) -> None:
+    """The SDK's stream helper accumulates `delta.tool_calls[].function.*` and
+    never the flat members; since gateway/v0.20.0 the gateway writes OpenAI's
+    nesting beside the deprecated flat `name`/`arguments_json`, so the final
+    completion carries the whole call."""
+    with _client(gateway_url, gateway_credential).chat.completions.stream(
+        model=model, messages=question, tools=[WEATHER_TOOL]
+    ) as stream:
+        for _ in stream:
+            pass
+        final = stream.get_final_completion()
+    choice = final.choices[0]
+    assert choice.finish_reason == "tool_calls"
+    assert choice.message.tool_calls is not None
+    assert len(choice.message.tool_calls) == 1
+    call = choice.message.tool_calls[0]
+    assert call.id == STREAMED_TOOL_USE_ID
+    assert call.type == "function"
+    assert call.function.name == "get_weather"
+    assert json.loads(call.function.arguments) == {"city": "Boston"}
 
 
 def test_models_list_names_the_model(

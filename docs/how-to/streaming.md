@@ -101,13 +101,13 @@ The frame carries the same `type` and `code` a buffered error would. Messages ar
 
 ### 7. Reassemble tool calls and reasoning blocks
 
-Tool-call deltas use Kelvran's flat shape, keyed by `index`:
+Tool-call deltas carry OpenAI's `ChatCompletionMessageToolCallChunk` shape beside Kelvran's flat members, keyed by `index` — the call's position in the final `tool_calls`, `0` for the first call:
 
 ```json
-{"index":0,"id":"call_1","name":"get_weather","arguments_json":"{\"city\":"}
+{"index":0,"id":"call_1","type":"function","name":"get_weather","arguments_json":"{\"city\":","function":{"name":"get_weather","arguments":"{\"city\":"}}
 ```
 
-`id` and `name` arrive on the frame that introduces the call; later frames append fragments of `arguments_json`, which you concatenate in order. This is not OpenAI's nested `function: {name, arguments}` shape; a consumer written for that shape must read `name` and `arguments_json` instead.
+`id` and `type` arrive on the frame that introduces the call; every frame's element carries `function`, and later frames append fragments of `function.arguments` (an empty string when a frame appends nothing), which you concatenate in order — the official SDKs' stream accumulators (`openai.ChatCompletionAccumulator`, `client.chat.completions.stream()`) do this for you. The flat `name` and `arguments_json` members carry the same values and are deprecated since gateway/v0.20.0 ([`DEPRECATED.md`](../../DEPRECATED.md)); switch to `function` before their removal release. Before gateway/v0.20.0 only the flat members exist, and on `anthropic` and `bedrock` deployments `index` is the provider's content-block index rather than the call's position.
 
 Reasoning content streams as `delta.reasoning_blocks[]` with `index`, `text`, `signature`, `redacted` and `data`. `text` fragments concatenate per `index`; `signature` and `data` arrive whole.
 
@@ -169,7 +169,6 @@ Expected: `data: [DONE]`. A last line starting with `data: {"error":` means the 
 - No configurable streaming idle timeout; the 60-second idle window is fixed.
 - No `X-Kelvran-Overhead-Duration-Ms` header on streams.
 - No `event:`, `id:` or `retry:` SSE fields and no keep-alive comment frames.
-- No OpenAI-compatible nested `function` shape for streamed tool-call deltas; `arguments_json` is the only shape.
 - No WebSocket or bidirectional realtime transport. [gateway/ARCHITECTURE.md](../../gateway/ARCHITECTURE.md) records SSE-only as the design.
 
 ## Stability

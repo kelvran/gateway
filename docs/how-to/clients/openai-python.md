@@ -111,7 +111,7 @@ resp = client.chat.completions.create(
 
 Buffered `tool_calls` use OpenAI's native nesting, so `resp.choices[0].message.tool_calls[0].function.arguments` works as usual. The SDK's default `tool_choice` strings `"auto"`, `"required"`, `"none"` and the object `{"type":"function","function":{"name":...}}` are accepted since gateway/v0.18.0; in gateway/v0.17.0 and earlier the string form was `400` and the object form `502`. Any other shape is `400` with `code` `invalid_tool_choice` and `param` `tool_choice`, as is a forced tool that `tools[]` does not define.
 
-Streaming tool-call deltas are not OpenAI-shaped: each element is flat `{index, id, name, arguments_json}` with no `function` nesting, so the SDK's `delta.tool_calls[].function` is not populated. Read the fragments from the raw chunk (`chunk.model_dump()`) and concatenate `arguments_json` per `index` (check your client version).
+Streaming tool-call deltas carry OpenAI's shape since gateway/v0.20.0: `delta.tool_calls[].function.{name,arguments}` is populated and `index` is the call's position, so `client.chat.completions.stream()` and its `get_final_completion()` reassemble the call (pinned by the compatibility matrix with this package). The flat `name` and `arguments_json` members travel beside it and are deprecated ([`DEPRECATED.md`](../../../DEPRECATED.md)). Before gateway/v0.20.0 the elements were flat only and `function` was not populated: read the fragments from the raw chunk (`chunk.model_dump()`) and concatenate `arguments_json` per `index` (check your gateway version).
 
 ### Kelvran request extensions
 

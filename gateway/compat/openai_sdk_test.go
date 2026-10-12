@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -118,6 +119,43 @@ func TestOpenAISDKToolLoop(t *testing.T) {
 	fwd := anthropicMock.last(t)
 	if !fwd.bodyHas(`"tool_use_id":"`+replayedToolUseID+`"`) || !fwd.bodyHas(`"name":"get_weather"`) {
 		t.Errorf("replayed turn translated without the tool_result or the tool:\n%s", fwd.Body)
+	}
+}
+
+// streamedToolUseID is the tool_use id the streamed tool golden
+// (anthropic_stream_thinking_tool.txt) introduces.
+const streamedToolUseID = "toolu_01WeatherThink000000"
+
+// TestOpenAISDKStreamToolCallAccumulates: the official accumulator reads
+// `delta.tool_calls[].{id, type, function.{name, arguments}}` and never the
+// flat members. Since gateway/v0.20.0 the gateway writes OpenAI's nesting
+// beside the deprecated flat `name`/`arguments_json` (DEPRECATED.md), so a
+// streamed tool call comes back whole through the translate path.
+func TestOpenAISDKStreamToolCallAccumulates(t *testing.T) {
+	anthropicMock.reset()
+	client := newOpenAIClient()
+	stream := client.Chat.Completions.NewStreaming(testContext(t), openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(modelAnthropic),
+		Messages: openAIUserTurn(uniqueQuestion(t)),
+		Tools:    []openai.ChatCompletionToolUnionParam{openAIWeatherTool},
+	})
+	acc := openai.ChatCompletionAccumulator{}
+	for stream.Next() {
+		acc.AddChunk(stream.Current())
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(acc.Choices) != 1 || acc.Choices[0].FinishReason != "tool_calls" || len(acc.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("accumulated %+v, want one tool_calls choice with one call", acc.Choices)
+	}
+	call := acc.Choices[0].Message.ToolCalls[0]
+	var args map[string]any
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+		t.Fatalf("arguments %q did not reassemble into JSON: %v", call.Function.Arguments, err)
+	}
+	if call.ID != streamedToolUseID || call.Type != "function" || call.Function.Name != "get_weather" || args["city"] != "Boston" {
+		t.Errorf("tool call = %+v, want get_weather(city=Boston) with id %s and type function", call, streamedToolUseID)
 	}
 }
 

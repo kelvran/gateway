@@ -14,10 +14,13 @@ const doneSentinel = "data: [DONE]\n\n"
 // Writer writes canonical chunks to an HTTP client as Server-Sent Events,
 // flushing after every write so the client receives each chunk as soon as
 // it's ready rather than buffered until the response completes. Scoped to
-// one in-flight request; not safe for concurrent use.
+// one in-flight request; not safe for concurrent use. Tool-call deltas are
+// renumbered to OpenAI's positions on the way out (toolCallIndexer); the
+// chunk the caller passed is not touched.
 type Writer struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
+	tools   toolCallIndexer
 }
 
 // NewWriter constructs a Writer over w. Returns an error if w does not
@@ -44,6 +47,7 @@ func (sw *Writer) WriteChunk(chunk ChatCompletionChunk) error {
 	if chunk.Choices == nil {
 		chunk.Choices = []ChunkChoice{}
 	}
+	chunk = sw.tools.renumber(chunk)
 	payload, err := json.Marshal(chunk)
 	if err != nil {
 		return fmt.Errorf("streaming: marshaling chunk: %w", err)

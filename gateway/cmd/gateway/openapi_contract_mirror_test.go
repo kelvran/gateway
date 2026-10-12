@@ -44,7 +44,6 @@ var wireTypes = []wireType{
 	{"ChatCompletionChunk", reflect.TypeOf(streaming.ChatCompletionChunk{}), false, []string{"object", "created"}},
 	{"ChunkChoice", reflect.TypeOf(streaming.ChunkChoice{}), false, nil},
 	{"MessageDelta", reflect.TypeOf(streaming.MessageDelta{}), false, nil},
-	{"ToolCallDelta", reflect.TypeOf(streaming.ToolCallDelta{}), false, nil},
 	{"ReasoningDelta", reflect.TypeOf(streaming.ReasoningDelta{}), false, nil},
 	{"EmbeddingsResponse", reflect.TypeOf(adapter.EmbeddingResponse{}), false, nil},
 	{"EmbeddingData", reflect.TypeOf(adapter.EmbeddingData{}), false, nil},
@@ -107,8 +106,8 @@ func jsonFields(t reflect.Type) map[string]bool {
 // and `required` follows the direction: a response requires every
 // non-omitempty member (plus the stamped ones); a request requires only what
 // the handler demands, which must be a subset of the members. Types with
-// custom marshalling (ToolDef, ToolCall, EmbeddingsRequest.input, stop,
-// tool_choice) are checked by marshalling a populated sample; a new
+// custom marshalling (ToolDef, ToolCall, ToolCallDelta, EmbeddingsRequest.input,
+// stop, tool_choice) are checked by marshalling a populated sample; a new
 // custom-marshal type must be added to wireSamples by hand.
 func TestOpenAPISchemasMirrorTheGoWireTypes(t *testing.T) {
 	root := loadOpenAPI(t)
@@ -202,6 +201,7 @@ func wireSamples(t *testing.T) map[string]map[string]json.RawMessage {
 	}
 	add("ToolDef", adapter.ToolDef{Name: "f", Description: "d", ParametersJSON: "{}", CacheControl: &adapter.CacheControl{TTL: "1h"}, Strict: true})
 	add("ToolCall", adapter.ToolCall{ID: "c", Name: "f", ArgumentsJSON: "{}"})
+	add("ToolCallDelta", streaming.ToolCallDelta{Index: 1, ID: "c", Name: "f", ArgumentsJSON: "{}"})
 	add("EmbeddingsRequest", adapter.EmbeddingRequest{Model: "m", Input: []string{"a"}, Dimensions: 3})
 	return out
 }

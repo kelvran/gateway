@@ -56,7 +56,7 @@ A change to anything in the left column is a **breaking change** if an existing,
 
 1. A row in [`DEPRECATED.md`](../DEPRECATED.md): surface, version that deprecated it, planned removal (a version, at least two minors or 90 days later, whichever is later), replacement.
 2. A `## Deprecated` changelog entry in the release that adds the row.
-3. Where the gateway can detect use of the deprecated surface at runtime, it logs `deprecated_surface_used` at `WARN` once per process per surface and increments the `kelvran.deprecation.used` counter with the surface name as attribute. Nothing is deprecated today, so neither the log line nor the counter exists yet; the first deprecation adds both.
+3. Where the gateway can detect use of the deprecated surface at runtime, it logs `deprecated_surface_used` at `WARN` once per process per surface and increments the `kelvran.deprecation.used` counter with the surface name as attribute. The first deprecation (the flat streamed tool-call delta members, `gateway/v0.20.0`, [`DEPRECATED.md`](../DEPRECATED.md)) is a response member the gateway writes and cannot observe a client reading, so it carries no runtime signal; neither the log line nor the counter exists yet, and the first deprecation of a surface the gateway can see in use adds both.
 4. Removal happens in the planned release, with a `**BREAKING**` entry and an `UPGRADE.md` row, and the `DEPRECATED.md` row is kept with its removal version filled in.
 
 ## 6. Support window

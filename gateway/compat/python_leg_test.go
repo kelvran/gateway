@@ -15,7 +15,7 @@ const pythonLegTimeout = 5 * time.Minute
 // pythonLegCases is how many pytest cases python/tests holds. Pinned so a
 // mis-named test file cannot shrink the leg while the gate stays green;
 // update it when a case is added there.
-const pythonLegCases = 12
+const pythonLegCases = 13
 
 // runPythonLeg runs the official anthropic and openai Python packages' tests
 // (python/tests) in their own uv project against whatever env names. uv is

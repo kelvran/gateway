@@ -3860,19 +3860,62 @@ components:
         stop_sequence:
           type: string
     ToolCallDelta:
+      description: 'One fragment of a streamed tool call (`toolCallDeltaWire`), keyed by `index`. Two shapes travel together during the deprecation window opened in gateway/v0.20.0 (DEPRECATED.md): OpenAI''s
+
+        `ChatCompletionMessageToolCallChunk` members `type` and `function.{name,arguments}`, which the official SDKs'' stream accumulators read, and the deprecated flat `name` and `arguments_json`.
+
+        `id` and `type` appear on the fragment that introduces the call; `function` is present on every fragment and `function.arguments` is always a string (empty when the fragment appends nothing),
+
+        as in OpenAI''s own stream; its fragments concatenate in order. Before gateway/v0.20.0 only the flat members exist.
+
+        '
       type: object
       required:
       - index
+      - function
       additionalProperties: false
       properties:
         index:
           type: integer
         id:
           type: string
+          description: 'On the fragment that introduces the call.
+
+            '
+        type:
+          type: string
+          const: function
+          description: 'On the fragment that introduces the call, beside `id`.
+
+            '
         name:
           type: string
+          deprecated: true
+          description: 'Deprecated since gateway/v0.20.0 (DEPRECATED.md): the same value as `function.name`.
+
+            '
         arguments_json:
           type: string
+          deprecated: true
+          description: 'Deprecated since gateway/v0.20.0 (DEPRECATED.md): the same fragment as `function.arguments`.
+
+            '
+        function:
+          type: object
+          additionalProperties: false
+          required:
+          - arguments
+          properties:
+            name:
+              type: string
+              description: 'On the fragment that introduces the call.
+
+                '
+            arguments:
+              type: string
+              description: 'A fragment of the JSON-encoded arguments, possibly empty; concatenate per `index`.
+
+                '
     ReasoningDelta:
       type: object
       required:
