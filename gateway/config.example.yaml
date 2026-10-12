@@ -367,6 +367,10 @@ telemetry:
 # capture_ids: false keeps the Claude Code identifiers (session, agent,
 # parent-agent and prompt ids, agent type) off the request span for every
 # key; the per-key form is virtual_keys.<name>.attribution_capture_ids: false.
+# Neither form touches the W3C Baggage agent_run_id member -- the
+# integrator's own correlation id, placed on purpose, unlike the headers
+# Claude Code sends on the end user's behalf (docs/reference/config.md,
+# RFC-2 gate G14).
 # attribution:
 #   capture_ids: true
 

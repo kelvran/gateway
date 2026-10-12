@@ -55,7 +55,7 @@ The dataplane's tracer and meter share one instrumentation-scope name: `github.c
 
 - A composite W3C TraceContext + Baggage propagator is installed unconditionally, including under `exporter: none`.
 - An incoming `traceparent` header makes the caller's trace the parent of the gateway's spans.
-- The Baggage member `agent_run_id` becomes the `kelvran.agent_run_id` span attribute and the `agent_run_id` field of the `GatewayDecisionEvent`. It is empty when absent; it is never fabricated.
+- The Baggage member `agent_run_id` becomes the `kelvran.agent_run_id` span attribute and the `agent_run_id` field of the `GatewayDecisionEvent`. It is empty when absent; it is never fabricated. `attribution.capture_ids: false` does not blank it: the switch governs the Claude Code header identifiers only — Claude Code sends those on the end user's behalf, while `agent_run_id` is placed in Baggage on purpose by the integrator (RFC-2, gate G14; reaffirmed by the owner 2026-10-13).
 
 ### Shutdown
 
@@ -173,7 +173,7 @@ Attributes are set at the end of the request. A value that is not known is omitt
 | `gen_ai.usage.cache_read.input_tokens` | int | > 0. |
 | `gen_ai.usage.cache_write.input_tokens` | int | > 0. |
 | `gen_ai.usage.reasoning.output_tokens` | int | > 0. |
-| `kelvran.agent_run_id` | string | The `agent_run_id` Baggage member was present on the request. |
+| `kelvran.agent_run_id` | string | The `agent_run_id` Baggage member was present on the request. Set whatever `attribution.capture_ids` says; that switch governs the Claude Code header identifiers only. |
 | `kelvran.client.tool` | string | The request passed the attribution middleware (every request through the data server); the normalised `User-Agent` product, `other` when unknown. Since `gateway/v0.18.0`. |
 | `kelvran.claude_code.session_id`, `kelvran.claude_code.agent_id`, `kelvran.claude_code.parent_agent_id`, `kelvran.claude_code.prompt_id` | string | The corresponding `x-claude-code-*` header was present and passed the identifier grammar, the request authenticated (an unauthenticated request never carries identifiers), and identifier capture is on for the gateway and the key. Span attributes only — never a metric label or log field. |
 | `kelvran.claude_code.request_class`, `kelvran.claude_code.compaction`, `kelvran.claude_code.context_compacted` | string | The corresponding hint header was present (bounded vocabularies; `other` for an unknown value). |
@@ -256,7 +256,7 @@ The `gatewayevents_v1` value is a `GatewayDecisionEvent` message from `api/gatew
 | `fallback_from_deployment` | `fallbackFromDeployment` | string | The first deployment tried and abandoned. `""` when no fallback happened. |
 | `fallback_reason` | `fallbackReason` | string | The first attempt's error text. `""` when no fallback happened. |
 | `budget_spent_usd` | `budgetSpentUsd` | string (decimal) | Cumulative spend for the key at the moment of the budget check, before this request's own cost. Always present as a decimal string: `"0"` both for a key that has spent nothing and for a request where the budget check never ran (`OUTCOME_AUTH_FAILED`, `OUTCOME_MODEL_NOT_ALLOWED` and `OUTCOME_RATE_LIMITED` precede it). Cross-reference `outcome` to tell the two apart. |
-| `agent_run_id` | `agentRunId` | string | The propagated Baggage member; `""` when none. |
+| `agent_run_id` | `agentRunId` | string | The propagated Baggage member; `""` when none. Not blanked by `attribution.capture_ids` (Claude Code headers only). |
 | `cost_usd` | `costUsd` | string (decimal) | This request's cost. `"0"` is a real value. |
 | `savings_usd` | `savingsUsd` | string (decimal) | Notional cost avoided by a cache hit. Key absent on every non-hit (the proto default `""`, never `"0"`). |
 | `cost_is_estimated` | `costIsEstimated` | bool | `true` only for a streamed response billed from an estimate. |
