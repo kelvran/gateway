@@ -19,11 +19,13 @@
 #   5. WARNING only (also a ::warning:: annotation under GitHub Actions):
 #      docs/VERSIONING.md's support-window table lists the release being cut
 #      as the latest minor (RELEASE.md asks for it to be updated per release).
-#   6. (gateway only) gateway/openapi/kelvran-gateway.openapi.yaml exists (FAIL
-#      when missing: the document is public surface since gateway/v0.20.0,
-#      docs/VERSIONING.md § 2), and WARNING only when its info.version differs
-#      from <version> (RELEASE.md gateway step 2): that field is outside the
-#      public surface.
+#   6. (gateway only) gateway/openapi/kelvran-gateway.openapi.yaml exists and
+#      its info.version equals <version>; FAIL on either. The document is
+#      public surface since gateway/v0.20.0 (docs/VERSIONING.md § 2).
+#      info.version is outside that surface, but RELEASE.md gateway step 2
+#      requires setting it and the file ships inside the tag's Go module zip,
+#      so a stale value reaches anyone generating a client from it (a WARNING
+#      until 2026-10-12).
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -89,20 +91,21 @@ if ! grep -Eq "^\| \`$deployable\` \| \`$deployable/v$version\`" "$root/docs/VER
   if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning::$msg"; fi
 fi
 
-# OpenAPI document (gateway only): missing is a release defect; a mismatching
-# info.version is a warning, because that field is outside the public surface.
-# The sed prints the first `  version:` line under `info:` and quits -- one
+# OpenAPI document (gateway only): missing is a release defect, and so is a
+# mismatching info.version -- outside the public surface, but a RELEASE.md
+# step 2 item that ships inside the tag's Go module zip (a warning until
+# 2026-10-12). The sed prints the first `  version:` line inside the `info:`
+# block -- the range ends at the next top-level key, so a two-space
+# `version:` under another key is never the one compared -- and quits: one
 # process, no YAML dependency, no SIGPIPE under pipefail.
 if [ "$deployable" = "gateway" ]; then
   doc="$root/gateway/openapi/kelvran-gateway.openapi.yaml"
   if [ ! -f "$doc" ]; then
     fail "gateway/openapi/kelvran-gateway.openapi.yaml is missing -- the OpenAPI document is public surface since gateway/v0.20.0 (docs/VERSIONING.md § 2)"
   else
-    declared=$(sed -n '/^  version: /{s///p;q;}' "$doc")
+    declared=$(sed -n '/^info:/,/^[^ ]/{/^  version: /{s///p;q;};}' "$doc")
     if [ "$declared" != "$version" ]; then
-      msg="gateway/openapi/kelvran-gateway.openapi.yaml declares info.version ${declared:-<none>}, tag says $version -- set it (RELEASE.md gateway step 2)"
-      echo "preflight WARN: $msg" >&2
-      if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning::$msg"; fi
+      fail "gateway/openapi/kelvran-gateway.openapi.yaml declares info.version ${declared:-<none>}, tag says $version -- set it (RELEASE.md gateway step 2)"
     fi
   fi
 fi

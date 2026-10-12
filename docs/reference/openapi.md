@@ -63,7 +63,7 @@ The root `x-kelvran-extensions` is the closed registry; a new extension must be 
 
 ## What is public
 
-The public surface is the document's row in [`VERSIONING.md`](../VERSIONING.md) §2, from `gateway/v0.20.0`: paths, operations, operationIds, security requirements, response statuses, header names, the `type`/`code` vocabularies and every `x-kelvran-*` value. Description prose, example payloads and `info.version` are not. The document frozen across two consecutive minors is a `gateway/v1.0.0` precondition under §4. Release preflight (`scripts/release-preflight.sh`) fails when the document is missing and warns when `info.version` does not match the version being cut.
+The public surface is the document's row in [`VERSIONING.md`](../VERSIONING.md) §2, from `gateway/v0.20.0`: paths, operations, operationIds, security requirements, response statuses, header names, the `type`/`code` vocabularies and every `x-kelvran-*` value. Description prose, example payloads and `info.version` are not. The document frozen across two consecutive minors is a `gateway/v1.0.0` precondition under §4. Release preflight (`scripts/release-preflight.sh`) fails when the document is missing or when `info.version` does not match the version being cut (a warning until 2026-10-12: the field is outside the public surface, but the file ships inside the tag's Go module zip).
 
 ## Not in the document
 
