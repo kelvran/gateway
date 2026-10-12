@@ -71,7 +71,7 @@ All rate-limit fields sit under `rate_limit:` inside the key:
 ```
 
 - `burst` and `refill_per_second` must both be set or both omitted, and may not be negative. Omitted resolves to the gateway default of 20 burst and 10 per second, on both the YAML and the admin-API path.
-- `tpm_capacity` and `tpm_refill_per_second` follow the same pair rule and add a tokens-per-minute dimension. TPM is reserved before the upstream call from past usage and reconciled to real usage afterwards. It is enforced in both in-memory and Redis mode; the Redis path uses GCRA and ships in gateway/v0.14.0 (2026-09-21) and later.
+- `tpm_capacity` and `tpm_refill_per_second` follow the same pair rule and add a tokens-per-minute dimension. TPM is reserved before the upstream call from past usage (in Redis mode too since gateway/v0.20.0; before, Redis mode reserved the whole capacity, one request per key at a time) and reconciled to real usage afterwards. It is enforced in both in-memory and Redis mode; the Redis path uses GCRA and ships in gateway/v0.14.0 (2026-09-21) and later.
 - `max_concurrent_requests` caps the key's simultaneously in-flight requests. It is counted in memory per gateway instance. The concurrency check runs after the RPM and TPM checks, so a request rejected for concurrency has already spent one RPM token; its TPM reservation is returned when the request finalizes.
 - `per_model.<model>` gives one model its own RPM bucket and, optionally, its own TPM pair. Every other model keeps the key's default bucket.
 

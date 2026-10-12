@@ -17,6 +17,23 @@ type fakeBackend struct {
 	adjustTPMFunc func(ctx context.Context, key string, deltaIncrement float64) error
 	closeErr      error
 	closed        bool
+	// ReserveTPM/SettleTPM (2026-10-13): hooks plus the recorded arguments of
+	// the last call, so tests can assert what KeyLimiter handed the backend
+	// and take back a backend-chosen reservation.
+	reserveTPMFunc func(ctx context.Context, key string, burst, rate, periodSec, coldStartCost float64) (bool, float64, float64, error)
+	settleTPMFunc  func(ctx context.Context, key string, deltaIncrement float64, realTokens *float64) error
+	// reserveTPMReserved is what ReserveTPM reports as reserved when no hook
+	// is set; 0 means "the cold-start cost", a backend with no history.
+	reserveTPMReserved       float64
+	reserveTPMErr            error
+	lastReserveKey           string
+	lastReserveBurst         float64
+	lastReserveRate          float64
+	lastReserveColdStartCost float64
+	lastSettleKey            string
+	lastSettleDelta          float64
+	lastSettleReal           *float64
+	adjustCalls              int
 
 	// recorded captures the last call's arguments, so tests can assert
 	// KeyLimiter passed the right per-key Capacity/RefillPerSecond
@@ -47,7 +64,31 @@ func (f *fakeBackend) AllowTPM(ctx context.Context, key string, burst, rate, per
 	return true, 0, nil
 }
 
+func (f *fakeBackend) ReserveTPM(ctx context.Context, key string, burst, rate, periodSec, coldStartCost float64) (bool, float64, float64, error) {
+	f.lastReserveKey, f.lastReserveBurst, f.lastReserveRate, f.lastReserveColdStartCost = key, burst, rate, coldStartCost
+	if f.reserveTPMFunc != nil {
+		return f.reserveTPMFunc(ctx, key, burst, rate, periodSec, coldStartCost)
+	}
+	if f.reserveTPMErr != nil {
+		return false, 0, 0, f.reserveTPMErr
+	}
+	reserved := f.reserveTPMReserved
+	if reserved == 0 {
+		reserved = coldStartCost
+	}
+	return true, 0, reserved, nil
+}
+
+func (f *fakeBackend) SettleTPM(ctx context.Context, key string, deltaIncrement float64, realTokens *float64) error {
+	f.lastSettleKey, f.lastSettleDelta, f.lastSettleReal = key, deltaIncrement, realTokens
+	if f.settleTPMFunc != nil {
+		return f.settleTPMFunc(ctx, key, deltaIncrement, realTokens)
+	}
+	return nil
+}
+
 func (f *fakeBackend) AdjustTPM(ctx context.Context, key string, deltaIncrement float64) error {
+	f.adjustCalls++
 	f.recordedAdjustDelta = deltaIncrement
 	if f.adjustTPMFunc != nil {
 		return f.adjustTPMFunc(ctx, key, deltaIncrement)
@@ -684,11 +725,11 @@ func TestRegisterReusesTheExistingTPMBucketObjectRatherThanReplacingIt(t *testin
 // it, a Redis-mode KeyLimiter's ReserveTPM was an UNCONDITIONAL no-op
 // (tpmBuckets is only ever populated by NewInMemoryKeyLimiter), so every
 // call silently returned "allowed" regardless of the backend's own
-// decision. Now it must genuinely call backend.AllowTPM and honor a
+// decision. Now it must genuinely call backend.ReserveTPM and honor a
 // rejection.
 func TestReserveTPMRedisModeGenuinelyEnforcesTPM(t *testing.T) {
-	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
-		return false, 2.5, nil
+	backend := &fakeBackend{reserveTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, coldStartCost float64) (bool, float64, float64, error) {
+		return false, 2.5, 0, nil
 	}}
 	l := NewRedisKeyLimiter([]KeyConfig{{
 		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
@@ -704,18 +745,16 @@ func TestReserveTPMRedisModeGenuinelyEnforcesTPM(t *testing.T) {
 	}
 }
 
-// TestReserveTPMRedisModeUsesTheFullBurstAsItsColdStartEstimate proves
-// the disclosed Redis-mode estimate strategy (no historical-average
-// tracking, unlike the in-memory bucket's billedTokens/billedCount):
-// every reservation's cost argument to AllowTPM is the key's own
-// configured TPM burst, and a successful reservation reports that same
-// value as reservedTokens.
-func TestReserveTPMRedisModeUsesTheFullBurstAsItsColdStartEstimate(t *testing.T) {
-	var gotCost float64
-	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
-		gotCost = cost
-		return true, 0, nil
-	}}
+// TestReserveTPMRedisModeHandsTheBackendTheFullBurstAsColdStartCost: the
+// backend sizes the reservation from the key's own usage history
+// (redislimiter's tpmReserveLuaSrc); what KeyLimiter contributes is the
+// cold-start cost -- the full configured burst, mirroring the in-memory
+// bucket's own no-history fallback -- and it reports whatever the backend
+// reserved as reservedTokens. Before 2026-10-13 the full burst WAS the
+// reservation on every call, which admitted one request per key at a time
+// (the 2026-10-08 live run's F2).
+func TestReserveTPMRedisModeHandsTheBackendTheFullBurstAsColdStartCost(t *testing.T) {
+	backend := &fakeBackend{reserveTPMReserved: 125}
 	l := NewRedisKeyLimiter([]KeyConfig{{
 		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
 		TPMCapacity: 1000, TPMRefillPerSecond: 50,
@@ -725,11 +764,11 @@ func TestReserveTPMRedisModeUsesTheFullBurstAsItsColdStartEstimate(t *testing.T)
 	if err != nil {
 		t.Fatalf("ReserveTPM() error = %v", err)
 	}
-	if !allowed || !reserved || tokens != 1000 {
-		t.Fatalf("ReserveTPM() = (%v, %v, %v), want (true, true, 1000)", allowed, reserved, tokens)
+	if !allowed || !reserved || tokens != 125 {
+		t.Fatalf("ReserveTPM() = (%v, %v, %v), want (true, true, 125) -- the backend's own history-sized reservation", allowed, reserved, tokens)
 	}
-	if gotCost != 1000 {
-		t.Errorf("AllowTPM's own cost argument = %v, want 1000 (the full configured burst, the cold-start-conservative estimate)", gotCost)
+	if backend.lastReserveColdStartCost != 1000 || backend.lastReserveBurst != 1000 || backend.lastReserveRate != 50 || backend.lastReserveKey != "team-alpha" {
+		t.Errorf("backend saw cold-start cost %v, burst %v, rate %v, key %q; want 1000, 1000, 50, team-alpha", backend.lastReserveColdStartCost, backend.lastReserveBurst, backend.lastReserveRate, backend.lastReserveKey)
 	}
 }
 
@@ -737,9 +776,9 @@ func TestReserveTPMRedisModeUsesTheFullBurstAsItsColdStartEstimate(t *testing.T)
 // ReserveTPM's in-memory "no TPM configured" contract exactly: a key
 // with TPMCapacity <= 0 never even calls the backend.
 func TestReserveTPMRedisModeNotConfiguredIsUnconditionalAllow(t *testing.T) {
-	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
-		t.Fatal("AllowTPM must not be called when TPM isn't configured for this key")
-		return false, 0, nil
+	backend := &fakeBackend{reserveTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, coldStartCost float64) (bool, float64, float64, error) {
+		t.Fatal("ReserveTPM must not be called when TPM isn't configured for this key")
+		return false, 0, 0, nil
 	}}
 	l := NewRedisKeyLimiter([]KeyConfig{{ID: "team-alpha", Capacity: 100, RefillPerSecond: 100}}, backend)
 
@@ -757,8 +796,8 @@ func TestReserveTPMRedisModeNotConfiguredIsUnconditionalAllow(t *testing.T) {
 // fail-open policy" contract for the RPM dimension, applied to TPM.
 func TestReserveTPMRedisModeFailsOpenOnBackendError(t *testing.T) {
 	wantErr := errors.New("boom")
-	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
-		return false, 0, wantErr
+	backend := &fakeBackend{reserveTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, coldStartCost float64) (bool, float64, float64, error) {
+		return false, 0, 0, wantErr
 	}}
 	l := NewRedisKeyLimiter([]KeyConfig{{
 		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
@@ -781,9 +820,9 @@ func TestReserveTPMRedisModeFailsOpenOnBackendError(t *testing.T) {
 // default.
 func TestReserveTPMRedisModeUsesPerModelOverrideKey(t *testing.T) {
 	var gotKey string
-	backend := &fakeBackend{allowTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, cost float64) (bool, float64, error) {
+	backend := &fakeBackend{reserveTPMFunc: func(ctx context.Context, key string, burst, rate, periodSec, coldStartCost float64) (bool, float64, float64, error) {
 		gotKey = key
-		return true, 0, nil
+		return true, 0, coldStartCost, nil
 	}}
 	l := NewRedisKeyLimiter([]KeyConfig{{
 		ID: "team-alpha", Capacity: 100, RefillPerSecond: 100,
@@ -795,14 +834,14 @@ func TestReserveTPMRedisModeUsesPerModelOverrideKey(t *testing.T) {
 		t.Fatalf("ReserveTPM() error = %v", err)
 	}
 	if want := perModelBackendKey("team-alpha", "gpt-4o"); gotKey != want {
-		t.Errorf("AllowTPM's own key argument = %q, want %q", gotKey, want)
+		t.Errorf("ReserveTPM's own key argument = %q, want %q", gotKey, want)
 	}
 
 	if _, _, _, _, err := l.ReserveTPM(context.Background(), "team-alpha", "claude-opus-4"); err != nil {
 		t.Fatalf("ReserveTPM() error = %v", err)
 	}
 	if gotKey != "team-alpha" {
-		t.Errorf("an unconfigured model's AllowTPM key argument = %q, want the plain key ID %q (the shared default)", gotKey, "team-alpha")
+		t.Errorf("an unconfigured model's ReserveTPM key argument = %q, want the plain key ID %q (the shared default)", gotKey, "team-alpha")
 	}
 }
 
@@ -821,8 +860,8 @@ func TestReconcileTPMRedisModeComputesTheCorrectDelta(t *testing.T) {
 	l.ReconcileTPM(context.Background(), "team-alpha", "", 8, 0, &realTokens)
 
 	wantDelta := (1000.0 / 50.0) * (2.0 - 8.0)
-	if backend.recordedAdjustDelta != wantDelta {
-		t.Errorf("AdjustTPM's own deltaIncrement argument = %v, want %v", backend.recordedAdjustDelta, wantDelta)
+	if backend.lastSettleDelta != wantDelta {
+		t.Errorf("SettleTPM's own deltaIncrement argument = %v, want %v", backend.lastSettleDelta, wantDelta)
 	}
 }
 
@@ -843,8 +882,8 @@ func TestReconcileTPMRedisModeReleasesFullReservationWhenRealTokensIsNil(t *test
 	l.ReconcileTPM(context.Background(), "team-alpha", "", 8, 0, nil)
 
 	wantDelta := (1000.0 / 50.0) * (0.0 - 8.0)
-	if backend.recordedAdjustDelta != wantDelta {
-		t.Errorf("AdjustTPM's own deltaIncrement argument = %v, want %v (a full release, no replacement)", backend.recordedAdjustDelta, wantDelta)
+	if backend.lastSettleDelta != wantDelta {
+		t.Errorf("SettleTPM's own deltaIncrement argument = %v, want %v (a full release, no replacement)", backend.lastSettleDelta, wantDelta)
 	}
 }
 

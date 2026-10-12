@@ -87,7 +87,11 @@ extend that same already-correct technique to budget and TPM, not to invent a ne
   `max_tokens`-as-worst-case guess.
 - If the key has no history yet (`billedCount == 0` — a brand-new key, or one whose window/store
   just reset), reserve the full remaining headroom (`capUSD - spent`, or the bucket's own current
-  balance for TPM). This is the maximally conservative choice given zero information: it can
+  balance for TPM). *Implementation note, 2026-10-13: Redis-mode TPM shipped on 2026-09-21 with the
+  cold-start branch only (every reservation was the full `tpm_capacity`, a disclosed v1 simplification
+  that admitted one request per key at a time — the 2026-10-08 live run's F2); it now keeps the
+  key's `sum`/`count` of reconciled real tokens in Redis for 24 h beside the arrival time and reserves
+  the mean, so both modes follow this section.* This is the maximally conservative choice given zero information: it can
   never let a cold-start key's concurrent burst overshoot its cap, because the reservation itself
   is bounded exactly at the point past which the key would already be rejected serially.
 

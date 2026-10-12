@@ -192,6 +192,14 @@ func (failingRedisBackend) AdjustTPM(_ context.Context, _ string, _ float64) err
 	return errors.New("simulated redis backend failure")
 }
 
+func (failingRedisBackend) ReserveTPM(_ context.Context, _ string, _, _, _, _ float64) (bool, float64, float64, error) {
+	return false, 0, 0, errors.New("simulated redis backend failure")
+}
+
+func (failingRedisBackend) SettleTPM(_ context.Context, _ string, _ float64, _ *float64) error {
+	return errors.New("simulated redis backend failure")
+}
+
 func (failingRedisBackend) Close() error { return nil }
 
 // TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors is the

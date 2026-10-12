@@ -71,11 +71,12 @@ virtual_keys:
       # Enforced in BOTH in-memory and Redis mode since gateway/v0.14.0
       # (2026-09-21, gateway/changelog/0.14.0.md): with rate_limit.redis_addr
       # (below) set, the same reserve-then-reconcile runs as a GCRA
-      # admission check inside Redis (redislimiter.Limiter.AllowTPM/AdjustTPM;
-      # the estimate there is ALWAYS the configured tpm_capacity, never
-      # a running mean — Redis mode keeps no per-key usage history, a
-      # disclosed v1 simplification per
-      # internal/ratelimit.KeyLimiter.ReserveTPM) — the RFC's original
+      # admission check inside Redis (redislimiter.Limiter.ReserveTPM/
+      # SettleTPM; since 2026-10-13 the estimate there is the same running
+      # mean of the key's real usage, kept in Redis for 24 h beside the
+      # arrival time, with the full tpm_capacity only for a key with no
+      # history — before, it was ALWAYS the full tpm_capacity, which
+      # admitted one request per key at a time) — the RFC's original
       # "in-memory only in v1, a no-op under Redis" scope limit is
       # closed; see internal/ratelimit.KeyConfig.TPMCapacity's doc
       # comment.

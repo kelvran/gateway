@@ -129,6 +129,17 @@ func (*settlementCapturingTPMBackend) AllowTPM(context.Context, string, float64,
 	return true, 0, nil
 }
 
+func (*settlementCapturingTPMBackend) ReserveTPM(_ context.Context, _ string, _, _, _, coldStartCost float64) (bool, float64, float64, error) {
+	return true, 0, coldStartCost, nil
+}
+
+// SettleTPM is the settlement path the dataplane takes in Redis mode since
+// 2026-10-13; it records the same thing AdjustTPM did so the context tests
+// keep observing the settlement's ctx.
+func (b *settlementCapturingTPMBackend) SettleTPM(ctx context.Context, key string, deltaIncrement float64, _ *float64) error {
+	return b.AdjustTPM(ctx, key, deltaIncrement)
+}
+
 func (b *settlementCapturingTPMBackend) AdjustTPM(ctx context.Context, _ string, _ float64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

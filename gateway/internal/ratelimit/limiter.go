@@ -130,6 +130,17 @@ type RedisBackend interface {
 	Allow(ctx context.Context, keyID string, capacity, refillPerSecond float64) (bool, error)
 	AllowTPM(ctx context.Context, key string, burst, rate, periodSec, cost float64) (allowed bool, retryAfterSec float64, err error)
 	AdjustTPM(ctx context.Context, key string, deltaIncrement float64) error
+	// ReserveTPM and SettleTPM (2026-10-13) are the reserve-then-reconcile
+	// pair for a request's TPM reservation, sized from the key's own usage
+	// history kept in the backend: ReserveTPM reserves coldStartCost only
+	// while the key has no settled history and the running mean of settled
+	// real tokens afterwards, returning what it reserved; SettleTPM moves
+	// the arrival time by deltaIncrement and, when realTokens is non-nil,
+	// records it in that history. AllowTPM/AdjustTPM stay for the
+	// mid-stream top-up path (IncreaseReservationTPM), which changes a
+	// reservation without any real usage to learn from.
+	ReserveTPM(ctx context.Context, key string, burst, rate, periodSec, coldStartCost float64) (allowed bool, retryAfterSec, reservedCost float64, err error)
+	SettleTPM(ctx context.Context, key string, deltaIncrement float64, realTokens *float64) error
 	Close() error
 }
 
@@ -462,25 +473,25 @@ func (l *KeyLimiter) ReserveTPM(ctx context.Context, keyID, model string) (allow
 		if burst <= 0 {
 			return true, false, 0, 0, nil
 		}
-		// Cold-start-conservative estimate: reserve the full configured
-		// burst, mirroring TokenBucket.reservationAmountLocked's own
-		// "no usage history yet" fallback. Redis mode does not track a
-		// historical per-key running average the way the in-memory
-		// bucket's billedTokens/billedCount does — a disclosed,
-		// deliberate v1 simplification: this only affects estimate
-		// QUALITY (a systematically-too-large estimate under-utilizes
-		// burst capacity across concurrent requests; AdjustTPM's later
-		// real-cost delta always corrects the stored TAT to the true
-		// value regardless), never CORRECTNESS.
-		estimate := burst
-		allowedRedis, _, tpmErr := l.backend.AllowTPM(ctx, key, burst, rate, 1.0, estimate)
+		// The backend sizes the reservation from the key's own usage
+		// history, mirroring TokenBucket.reservationAmountLocked: the
+		// running mean of settled real tokens once the key has history,
+		// and the full configured burst -- the cold-start cost passed
+		// here -- until then, so a cold key's concurrent burst can never
+		// overshoot its cap (docs/rfcs/2026-09-08-gateway-budget-
+		// ratelimit-toctou-fix.md). Before 2026-10-13 Redis mode kept no
+		// history and every reservation was the full burst, which
+		// admitted one request per key at a time (the 2026-10-08 live
+		// run's F2). reservedCost is what was actually reserved; the
+		// caller hands it back to ReconcileTPM, which settles the delta.
+		allowedRedis, _, reservedCost, tpmErr := l.backend.ReserveTPM(ctx, key, burst, rate, 1.0, burst)
 		if tpmErr != nil {
 			return true, false, 0, 0, tpmErr
 		}
 		if !allowedRedis {
 			return false, false, 0, 0, nil
 		}
-		return true, true, estimate, 0, nil
+		return true, true, reservedCost, 0, nil
 	}
 	bucket := l.resolveTPMBucket(keyID, model)
 	l.mu.RUnlock()
@@ -587,7 +598,11 @@ func (l *KeyLimiter) ReconcileTPM(ctx context.Context, keyID, model string, rese
 		// admission math entirely.
 		emissionInterval := 1000.0 / rate
 		deltaIncrement := emissionInterval * (effectiveRealTokens - reservedTokens)
-		_ = l.backend.AdjustTPM(ctx, key, deltaIncrement)
+		// SettleTPM, not AdjustTPM: the same arrival-time move, plus the
+		// real count recorded in the key's usage history when known, so
+		// the next ReserveTPM is sized from it (a nil realTokens teaches
+		// nothing). Errors fail open as before, uncounted (FAILURE-MODES).
+		_ = l.backend.SettleTPM(ctx, key, deltaIncrement, realTokens)
 		return
 	}
 	bucket := l.resolveTPMBucket(keyID, model)
