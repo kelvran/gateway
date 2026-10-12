@@ -415,5 +415,23 @@
     "tier": "regression",
     "tags": ["category:guardrail", "provenance:hand-written"],
     "flaky": false
+  },
+  {
+    "id": "regcorpus-guardrail-25-ssn-bare-nine-digit-run-in-a-path-is-clean",
+    "revision": 1,
+    "task_spec": {
+      "input": "cwd is /tmp/kelvran-compat-claude-home-349521234/project -- run the build there and report back.",
+      "attack_class": "false_positive_ssn_bare_digit_run_working_directory_path",
+      "output": "clean",
+      "match": "exact",
+      "rationale": "Pins the 2026-10-12 rule in gateway/internal/guardrail/ssn.go: a bare nine-digit run with an SSN's shape (349521234 clears every excluded range) is a finding only when it is the separated form (ssnSeparatedPattern) or an SSN cue ends within ssnCueWindow bytes before it (ssnCuePattern: ssn, ss#, ss number, social security, soc sec). A build number or timestamp in a working-directory path -- which Claude Code writes into its system prompt, so the default government_id Block tier used to reject the whole turn (docs/how-to/clients/claude-code.md, the nightly compat leg's letters-only home) -- has no cue and is clean. regcorpus-guardrail-20 keeps the separated form blocking. Verified through TestSSNDetectorBareNineDigitRunNeedsAnSSNCue (SSNDetector.Detect on the path text: no findings); Engine.Check under DefaultPolicy blocks only on a finding, so the turn is clean."
+    },
+    "reference": "clean",
+    "tier": "regression",
+    "tags": [
+      "category:guardrail",
+      "provenance:hand-written"
+    ],
+    "flaky": false
   }
 ]

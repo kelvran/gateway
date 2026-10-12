@@ -194,6 +194,19 @@ func runClaudeCodeTurn(t *testing.T, dir, artifactSuffix string, betasOff bool) 
 	if err != nil {
 		t.Fatalf("claude -p failed: %v\n--- stdout ---\n%s\n--- stderr ---\n%s", err, stdout.String(), lastLines(stderr.String(), 20))
 	}
+	// The home's nine-digit run must have reached the gateway inside a
+	// /v1/messages body (Claude Code writes its paths into the system prompt),
+	// or a passing turn proves nothing about the ssn rule it exists to prove.
+	carried := false
+	for _, r := range anthropicMock.all() {
+		if r.Path == "/v1/messages" && r.bodyHas(claudeCodeHomeDigitRun) {
+			carried = true
+			break
+		}
+	}
+	if !carried {
+		t.Fatalf("no /v1/messages request body carried the home's digit run %q; the leg no longer exercises the ssn rule", claudeCodeHomeDigitRun)
+	}
 	var result claudeCodeResult
 	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
 		t.Fatalf("claude -p output is not one JSON object (%v):\n%s", err, stdout.String())
@@ -272,14 +285,21 @@ func (rec *recorder) pathCounts() map[string]int {
 	return counts
 }
 
-// claudeCodeHome is a private HOME whose path carries no digits. Claude Code
-// writes its own paths into the system prompt (the memory directory, the
-// working directory), and the gateway's default guardrail scans that text:
-// its ssn detector blocks a word-bounded nine-digit run with an SSN's shape.
-// t.TempDir's parent directory ends in random digits (the leaf is /001),
-// and a subtest name ending in ")" supplies the boundary -- four of six local runs of the betas-off turn were blocked
-// 400 content_policy_violation that way. Letters only, so the leg tests the
-// gateway and not the dice.
+// claudeCodeHomeDigitRun is a word-bounded nine-digit run with a valid SSN
+// shape (area 349, group 52, serial 1234: inside every allowed range) that
+// the home directory's path carries ON PURPOSE. Claude Code writes its own
+// paths into the system prompt (the memory directory, the working
+// directory) and the gateway's default guardrail scans that text; until
+// 2026-10-12 the ssn detector blocked such a run outright, so the leg gave
+// Claude Code a letters-only home and tested the dice rather than the
+// gateway. The detector now needs an SSN cue before a bare run
+// (internal/guardrail/ssn.go), and this run proves it on the real binary:
+// a regression in that rule blocks every turn of the leg with 400
+// content_policy_violation.
+const claudeCodeHomeDigitRun = "349521234"
+
+// claudeCodeHome is a private HOME whose path carries
+// claudeCodeHomeDigitRun followed by random letters for uniqueness.
 func claudeCodeHome(t *testing.T) string {
 	t.Helper()
 	const letters = "abcdefghijklmnopqrstuvwxyz"
@@ -292,13 +312,13 @@ func claudeCodeHome(t *testing.T) string {
 		for i, b := range raw {
 			suffix[i] = letters[int(b)%len(letters)]
 		}
-		home := filepath.Join(os.TempDir(), "kelvran-compat-claude-home-"+string(suffix))
+		home := filepath.Join(os.TempDir(), "kelvran-compat-claude-home-"+claudeCodeHomeDigitRun+"-"+string(suffix))
 		if err := os.Mkdir(home, 0o700); err == nil {
 			t.Cleanup(func() { _ = os.RemoveAll(home) })
 			return home
 		}
 	}
-	t.Fatal("no free letters-only home directory after 16 attempts")
+	t.Fatal("no free home directory after 16 attempts")
 	return ""
 }
 
