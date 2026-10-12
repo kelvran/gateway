@@ -20,10 +20,14 @@ import (
 // import internal/guardrail, so the three default detectors whose patterns
 // can match a bare digit run are copied here verbatim; TestPIIPatternsAre
 // TheGatewaysOwn reads the guardrail sources so the copies cannot drift.
+// Since 2026-10-12 ssn.go's Detect reports a bare run only behind an SSN
+// cue or with both separators; the copy here is deliberately the broader
+// candidate pattern (the first MustCompile literal in that file): a prompt
+// that avoids even a candidate avoids the finding under any future gate.
 var piiPatterns = map[string]*regexp.Regexp{
 	"phone.go":      regexp.MustCompile(`(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b|\+[1-9]\d{7,14}\b`),
 	"creditcard.go": regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`),
-	"ssn.go":        regexp.MustCompile(`\b(?:[0-7][0-9]{2}|8[0-8][0-9])[-\s]?(?:[1-9][0-9])[-\s]?(?:[1-9][0-9]{3})\b`),
+	"ssn.go":        regexp.MustCompile(`\b(?:00[1-9]|0[1-9][0-9]|[1-5][0-9]{2}|6[0-5][0-9]|66[0-57-9]|6[7-9][0-9]|[78][0-9]{2})[-\s]?(?:[1-9][0-9])[-\s]?(?:[1-9][0-9]{3})\b`),
 }
 
 var mustCompileLiteral = regexp.MustCompile("regexp\\.MustCompile\\(`([^`]*)`\\)")
