@@ -335,6 +335,14 @@ func boundedJoin(items []string) string {
 // (maxModelForTelemetry) rather than like the span summary, so the cut and
 // its marker happen here and boundedForTelemetry never truncates them.
 func boundedJoinWithin(items []string, maxBytes int) string {
+	// Every item is client-authored (a member name, a header value): the
+	// control characters and invalid bytes go before the join, so the cut
+	// below -- on item boundaries, never inside one -- works on clean text.
+	clean := make([]string, len(items))
+	for i, item := range items {
+		clean[i] = dropControlRunes(item)
+	}
+	items = clean
 	if joined := strings.Join(items, ","); len(joined) <= maxBytes {
 		return joined
 	}

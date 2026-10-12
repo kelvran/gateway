@@ -5010,20 +5010,23 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// requestModelForMetrics guards RequestModel's own single consumer
 	// (RecordChatCompletionMetrics's gen_ai.request.model attribute)
 	// against an unbounded-cardinality DoS: req.Model is fully
-	// client-controlled, unauthenticated input at this point (finalize
-	// runs via defer on every call, including an auth failure that never
-	// resolved a deployment at all), and an OTel/Prometheus metric
+	// client-controlled input, and finalize runs via defer on every call
+	// -- an auth failure that never resolved a deployment (dep.Name == "")
+	// as much as an authenticated request that did -- and an OTel/Prometheus metric
 	// attribute is exactly the sink where an attacker minting one unique
 	// req.Model string per request would otherwise create one brand-new,
 	// permanent time series per request. dep.Name != "" reuses the same
 	// signal responseFormatRequestedNotEnforced above already relies
 	// on: a non-empty dep.Name means req.Model genuinely matched a real,
 	// admin-configured model group and the router resolved a deployment
-	// for it — bounded cardinality by construction, safe to pass through
-	// unchanged. An empty dep.Name (auth failure, no deployment
+	// for it (an exact-match map lookup, so the string IS a configured
+	// name) — bounded cardinality by construction. It still goes through
+	// boundedModelForTelemetry like every other telemetry copy of the
+	// string, so the sanitised-and-bounded invariant does not rest on the
+	// router (2026-10-12). An empty dep.Name (auth failure, no deployment
 	// configured for this model, or a guardrail block before routing)
 	// means req.Model could be anything; sentinel it instead.
-	requestModelForMetrics := req.Model
+	requestModelForMetrics := boundedModelForTelemetry(req.Model)
 	if dep.Name == "" {
 		requestModelForMetrics = "unresolved"
 	}
@@ -5147,11 +5150,14 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// applicable" convention, per
 	// docs/rfcs/2026-09-12-gateway-cache-savings-agent-attribution.md.
 	event := &gatewayeventsv1.GatewayDecisionEvent{
-		TraceId:                span.SpanContext().TraceID().String(),
-		SpanId:                 span.SpanContext().SpanID().String(),
-		OccurredAt:             timestamppb.Now(),
-		VirtualKeyId:           virtualKeyID,
-		RequestedModel:         req.Model,
+		TraceId:      span.SpanContext().TraceID().String(),
+		SpanId:       span.SpanContext().SpanID().String(),
+		OccurredAt:   timestamppb.Now(),
+		VirtualKeyId: virtualKeyID,
+		// The client's model string before any resolution, sanitised like the
+		// span name: protojson passes a C1 control through and fails on
+		// invalid UTF-8, which would drop the whole event from the log line.
+		RequestedModel:         boundedModelForTelemetry(req.Model),
 		Outcome:                outcome,
 		RateLimitFailOpen:      rateLimitFailedOpen,
 		FallbackHappened:       fallback.happened,
@@ -5502,22 +5508,21 @@ func primaryFinishReason(resp adapter.ChatResponse) string {
 // to be unusually long.
 const maxModelForTelemetry = 256
 
-// boundedModelForTelemetry truncates model to maxModelForTelemetry bytes
-// for use in a span name or log field -- see that constant's own doc
-// comment.
+// boundedModelForTelemetry sanitises and bounds model for use in a span
+// name or log field -- see maxModelForTelemetry's own doc comment.
 func boundedModelForTelemetry(model string) string {
 	return boundedForTelemetry(model)
 }
 
-// boundedForTelemetry truncates any caller-controlled string to
-// maxModelForTelemetry bytes before it becomes a span or log field -- the
-// model name (boundedModelForTelemetry) and the dropped-field values
-// (noteDroppedRequestField) share the one bound.
+// boundedForTelemetry makes any caller-controlled string safe for a span
+// name, a span or log field: dropControlRunes (control characters, the
+// line separators and invalid UTF-8 removed), then at most
+// maxModelForTelemetry bytes cut on a rune boundary (telemetry_sanitize.go).
+// The model name (boundedModelForTelemetry) and the dropped-field values
+// (noteDroppedRequestField) share the one bound. Before 2026-10-12 this was
+// a bare byte slice: controls passed through and a cut could split a rune.
 func boundedForTelemetry(s string) string {
-	if len(s) <= maxModelForTelemetry {
-		return s
-	}
-	return s[:maxModelForTelemetry]
+	return truncateBytesOnRuneBoundary(dropControlRunes(s), maxModelForTelemetry)
 }
 
 // traceLogFields returns "trace_id"/"span_id" key-value pairs for ctx's

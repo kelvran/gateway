@@ -19,8 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 )
@@ -111,7 +109,10 @@ func resolveAWSErrorType(h http.Header, body []byte) string {
 //     log line in a plain-text sink nor recolour an operator's terminal
 //     through an ANSI-rendering log viewer — slog's JSON handler already
 //     escapes them, but the plain-text handler does not. Invalid UTF-8
-//     bytes are dropped too, so the field is always valid UTF-8;
+//     bytes are dropped too, so the field is always valid UTF-8; since
+//     2026-10-12 the rule is dropControlRunes (telemetry_sanitize.go), the
+//     one every client string headed for telemetry goes through, which also
+//     drops the U+2028/U+2029 line separators;
 //   - the result is cut to maxUpstreamErrorTypeLen runes on a rune
 //     boundary (see truncateRunes), never mid-sequence.
 //
@@ -124,13 +125,7 @@ func sanitizeAWSErrorType(code string) string {
 	if idx := strings.Index(code, "#"); idx != -1 {
 		code = code[idx+1:]
 	}
-	code = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || r == utf8.RuneError {
-			return -1
-		}
-		return r
-	}, code)
-	return truncateRunes(strings.TrimSpace(code), maxUpstreamErrorTypeLen)
+	return truncateRunes(strings.TrimSpace(dropControlRunes(code)), maxUpstreamErrorTypeLen)
 }
 
 // truncateRunes returns s cut to at most n runes, on a rune boundary.
