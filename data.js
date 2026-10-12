@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791714772385,
+  "lastUpdate": 1791804923006,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -787,6 +787,208 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 latency p99",
             "value": 53.973818,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "696dd69cc8172772c8db67dec2eae10e88dba220",
+          "message": "feat(streaming): OpenAI-shaped tool-call deltas beside the flat members, positions on the wire\n\nStreamed tool-call deltas on POST /v1/chat/completions now carry\nOpenAI's ChatCompletionMessageToolCallChunk members -- `type`\n(\"function\", on the fragment that introduces the call, beside `id`)\nand `function.{name,arguments}` -- beside Kelvran's flat `name` and\n`arguments_json`, which are deprecated (DEPRECATED.md, first row;\nremoval no earlier than gateway/v0.22.0 and 90 days after v0.20.0\nships). `function` is present on every fragment with `arguments`\nalways a string, as in OpenAI's own stream. The Go struct stays flat\nfor the eight producers; the wire shape is a MarshalJSON/UnmarshalJSON\npair, adapter.ToolCall's device; reads accept flat, nested or both.\n\nOn anthropic and bedrock deployments the decoders number tool deltas\nby the provider's content-block index, so with a thinking or text\nblock first the first call streamed as index 1; openai-python's\nstream helper raised IndexError and openai-go's accumulator padded a\nphantom empty call (probed). streaming.Writer -- the only OpenAI SSE\nsink -- now renumbers per stream and per choice to positions by first\nappearance, on a copy; internal chunks keep the provider index, which\nthe cache accumulator's reasoning Sequence rebuild and the Anthropic\nmessages encoder rely on. openai upstreams and cache replays already\ncarry positions, so the mapping is the identity there.\n\nWhy both shapes: the SSE body has been public surface since the\npolicy took effect, and section 3 allows a minor to break it only\nwith a deprecation window where the old surface can live on -- it\ncan, by emitting both. Freezing the flat shape would have carried the\nbuffered/streamed asymmetry into 1.0 with the official SDKs' stream\naccumulators broken.\n\nContract: the ToolCallDelta schema gains `type`, a required `function`\n(with required `arguments`) and `deprecated: true` on the flat members; the mirror\ntest checks the type by a marshalled sample. Compat: the openai-go\naccumulator and the openai-python stream helper each reassemble a\nstreamed tool call through the gateway; the conformance probe\nvalidates every frame of a streamed tool turn.\n\nProof: reds recorded for the shape, the mirror and the renumbering;\n9/9 overlay mutants caught; whole non-Docker suite with -race, lint,\narch-lint green; compat suite green; live on real Bedrock the official\nopenai-python 3.28.0 helper returned get_weather({\"city\":\"Boston\"})\nwith a text block first and wire index 0 -- the first live run had\nfailed on Bedrock's index-only fragment, which is what made `function`\nunconditional.\n\nOwner decisions 2026-10-12: brainstorm item (j) first question, the\nwire-only renumbering, and the design approvals. Docs: data-plane\nreference, compatibility, streaming how-to, six client pages, the\nBifrost comparison, DEPRECATED.md, VERSIONING section 5, changelog\n(Added, Deprecated, Fixed), DECISIONS.md, LOGS.md.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T10:28:44Z",
+          "url": "https://github.com/kelvran/gateway/commit/696dd69cc8172772c8db67dec2eae10e88dba220"
+        },
+        "date": 1791804922086,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.266895,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 2.255011,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 3.203539,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 201.852268,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 202.695106,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 203.586266,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 566.928154,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 572.282226,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 575.499122,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 51.785616,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 53.571476,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.561201,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.362922,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.545439,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.478903,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 52.637857,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 53.282834,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 53.69586,
             "unit": "ms"
           },
           {
