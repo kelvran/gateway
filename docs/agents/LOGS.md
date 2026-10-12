@@ -4884,3 +4884,15 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** one `DECISIONS.md` entry (one rule shared by the four consumers; why now; the three rejected policies; the §2 reading).
 
 **Next steps / resume point:** the brainstorm's ranked list continues at (d) `capture_ids` vs Baggage `agent_run_id` (G14) and (i) the pricing-aware accounting spike; parked until a trigger: (e) per-credential admin rate limit, (g) Redis ledger `Query` SCAN, (f) Redis Cluster hash tags; housekeeping on the owner's word: (k) Dependabot PR #12, (l) colima restart.
+
+## [2026-10-12] main — The Deprecated bullet spelled the literal breaking marker; the preflight would have failed the v0.20.0 cut
+
+**Files touched:** `gateway/changelog/unreleased.md` (the `## Deprecated` bullet's last sentence), this file.
+
+**Intent/summary:** found while answering "what is still open": the flat-members deprecation bullet written today said the removal release carries "a `**BREAKING**` entry and an `UPGRADE.md` row". `scripts/release-preflight.sh` check 3 greps the dated changelog for that bold marker case-insensitively and then demands an `UPGRADE.md` table row for the release being cut — so the first release to carry this bullet, `gateway/v0.20.0`, which breaks nothing, would have failed at the tag. The same trap bit the v0.18.0 prep (`unreleased.md:18`, 2026-10-10). Reworded to "a breaking-change changelog entry … (the marker itself is not spelled here: the release preflight greps the dated changelog for it)".
+
+**Gates / live:** proven with the preflight itself on a scratch tree (`mktemp -d`; the script copied in; today's `unreleased.md` body as `gateway/changelog/0.20.0.md`; an `UPGRADE.md` with no 0.20.0 row; `info.version` 0.20.0): before the reword `preflight FAIL: … has a **BREAKING** entry but UPGRADE.md has no table row for gateway/v0.20.0`, exit 1; after it `preflight OK: gateway v0.20.0`, exit 0; the marker count in `unreleased.md` is 0; `scripts/check-doc-paths.sh` ok. No Go change; no review lanes for a one-sentence rewording proven by the gate it concerns.
+
+**Decisions made:** none; a rule worth keeping: never spell the bold breaking marker in prose inside a changelog, cite "a breaking-change entry" instead.
+
+**Next steps / resume point:** the open inventory given to the owner on 2026-10-12 (F2 Redis-mode TPM one-in-flight, (d) `capture_ids` vs Baggage, (i) the pricing spike, the ssn follow-ups, the Gemini gaps, FAILURE-MODES §9, the v0.20.0 cut and its after-tag steps, 15a, Dependabot #10/#12/#13, the owner-only actions).
