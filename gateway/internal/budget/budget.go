@@ -107,7 +107,9 @@ type RedisBackend interface {
 	// starting a fresh resetIntervalMs-TTL'd window if keyID has no
 	// existing entry. resetIntervalMs <= 0 means no expiry (a
 	// lifetime-of-the-key cap, mirroring the in-memory Tracker's own
-	// resetInterval<=0 convention). epoch identifies the WINDOW this
+	// resetInterval<=0 convention). capNanoUSD <= 0 (an uncapped key, since
+	// 2026-10-12) opens the window the same way, reserves nothing and
+	// answers allowed with the window's epoch. epoch identifies the WINDOW this
 	// reservation was taken against — the exact value that must be
 	// threaded back through the matching Adjust call, unchanged, the
 	// same way the in-memory branch's reservationEpoch already must be
@@ -518,7 +520,11 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 // Record that let concurrent requests all pass the check before any of
 // them committed a debit. capUSD <= 0 (unlimited) behaves exactly like
 // Allow: always allowed, reserved is false, reservedUSD is
-// decimal.Zero — nothing is ever reserved against an uncapped key.
+// decimal.Zero — nothing is ever reserved against an uncapped key. In
+// Redis mode (since 2026-10-12) the backend still opens the key's window
+// and the returned reservationEpoch names it, so a Reconcile carrying a
+// real cost lands in that window; before, an uncapped key never reached
+// Redis and its spend read 0 there while the in-memory tracker recorded it.
 // allowed is false exactly when Allow would have returned false, in
 // which case reserved is also false and reservedUSD is decimal.Zero:
 // nothing was mutated, so there is nothing for a caller to release.
@@ -548,12 +554,19 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 // branch now genuinely consults it too.
 func (t *Tracker) Reserve(ctx context.Context, keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal, reservationEpoch int64, err error) {
 	if t.backend != nil {
-		if capUSD.Sign() <= 0 {
-			return true, false, decimal.Zero, 0, nil
-		}
 		allowedRedis, reservedNano, epoch, redisErr := t.backend.Reserve(ctx, keyID, USDToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
 		if redisErr != nil {
 			return false, false, decimal.Zero, 0, redisErr
+		}
+		if capUSD.Sign() <= 0 {
+			// An uncapped key: the backend opened (or kept) the key's window
+			// and reserved nothing; the window's epoch is what Reconcile's
+			// Adjust needs to land the real cost, so it is returned with
+			// reserved=false (nothing to release). Until 2026-10-12 this
+			// branch returned before the backend was called, no window
+			// existed, and the key's spend read 0 in Redis mode while the
+			// in-memory tracker recorded it.
+			return true, false, decimal.Zero, epoch, nil
 		}
 		if !allowedRedis {
 			return false, false, decimal.Zero, 0, nil

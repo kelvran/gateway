@@ -321,7 +321,7 @@ Response:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `spent_usd` | string | Decimal spend within the current window. Omitted when `spend_unavailable` is `true`. For a key without a cap (`budget_usd` `"0"`) the figure depends on the backend: the in-memory and bbolt trackers settle every billable request's real cost (embeddings included since 2026-10-12), but the Redis tracker never opens a window for an uncapped key, so its figure stays `0`; the spend ledger (`GET /admin/spend?key=`) records every billable request regardless of cap. |
+| `spent_usd` | string | Decimal spend within the current window. Omitted when `spend_unavailable` is `true`. For a key without a cap (`budget_usd` `"0"`) the figure is still real: every tracker settles each billable request's real cost (embeddings included since 2026-10-12), and in Redis mode the key's window is opened on first sight rather than skipped (since 2026-10-12, before which the Redis figure stayed `0`); the window follows the key's `budget_reset_interval_seconds` like a capped key's. The spend ledger (`GET /admin/spend?key=`) records every billable request as well, over its own retention window. |
 | `budget_usd` | string | Decimal cap. `"0"` means unlimited. |
 | `budget_reset_interval_seconds` | int | The key's window. |
 | `percent_used` | number | `spent_usd / budget_usd` as a fraction (`0.5` means 50 %). `0` when `budget_usd` is not positive. Omitted when `spend_unavailable` is `true`. |

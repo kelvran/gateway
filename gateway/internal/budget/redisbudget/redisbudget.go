@@ -89,6 +89,22 @@ if spent == nil then
   epoch = tonumber(time[1]) * 1000000 + tonumber(time[2])
 end
 
+if cap <= 0 then
+  -- An uncapped key (2026-10-12): spend is tracked for every key and
+  -- enforced only for capped ones, so the window is opened on first sight
+  -- (spent 0, this epoch, the same TTL rule as below) and nothing is
+  -- reserved; the epoch goes back so the settlement's Adjust lands the real
+  -- cost here instead of finding no window. Bare numbers, never tostring'd
+  -- -- see the note at the end of this script.
+  if is_new_window then
+    redis.call('HSET', KEYS[1], 'spent', 0, 'epoch', epoch)
+    if reset_interval_ms > 0 then
+      redis.call('PEXPIRE', KEYS[1], reset_interval_ms)
+    end
+  end
+  return {1, 0, epoch}
+end
+
 if spent >= cap then
   return {0, 0, epoch}
 end

@@ -181,16 +181,37 @@ func TestReserveRedisModeConvertsUnitsCorrectly(t *testing.T) {
 	}
 }
 
-func TestReserveRedisModeUnlimitedCapNeverCallsBackend(t *testing.T) {
-	backend := &fakeRedisBudgetBackend{}
+// TestReserveRedisModeUnlimitedCapOpensTheWindowWithoutReserving replaces
+// the pre-2026-10-12 pin that an unlimited key never reached the backend.
+// That short-circuit left no Redis window for the settlement's Adjust to
+// land on, so an uncapped key's spend read 0 in Redis mode while the
+// in-memory tracker recorded it (DECISIONS.md 2026-10-12). Now the backend
+// is called exactly once, with the zero cap and the key's reset interval,
+// so the window opens; nothing is reserved; the window's epoch comes back
+// for Reconcile.
+func TestReserveRedisModeUnlimitedCapOpensTheWindowWithoutReserving(t *testing.T) {
+	backend := &fakeRedisBudgetBackend{
+		reserveFunc: func(_ context.Context, _ string, capNanoUSD, _ int64) (bool, int64, int64, error) {
+			if capNanoUSD != 0 {
+				t.Errorf("backend received capNanoUSD = %d for an unlimited key, want 0", capNanoUSD)
+			}
+			return true, 0, 4242, nil
+		},
+	}
 	tr := NewRedisTracker(backend, nil)
 
-	allowed, reserved, reservedUSD, _, err := tr.Reserve(context.Background(), "k", d("0"), time.Hour)
+	allowed, reserved, reservedUSD, epoch, err := tr.Reserve(context.Background(), "k", d("0"), time.Hour)
 	if err != nil || !allowed || reserved || !reservedUSD.IsZero() {
 		t.Fatalf("Reserve(cap=0) = (%v, %v, %v, err=%v), want (true, false, 0, nil)", allowed, reserved, reservedUSD, err)
 	}
-	if backend.reserveCalls != 0 {
-		t.Errorf("backend.Reserve called %d times for an unlimited (cap<=0) key, want 0", backend.reserveCalls)
+	if epoch != 4242 {
+		t.Errorf("reservationEpoch = %d, want the backend's window epoch 4242 (Reconcile lands the real cost with it)", epoch)
+	}
+	if backend.reserveCalls != 1 {
+		t.Errorf("backend.Reserve called %d times for an unlimited (cap<=0) key, want exactly 1 (the window must be opened)", backend.reserveCalls)
+	}
+	if backend.lastReserveResetMs != 3_600_000 {
+		t.Errorf("backend received resetIntervalMs = %d, want 3600000 (the key's own window, as for a capped key)", backend.lastReserveResetMs)
 	}
 }
 
