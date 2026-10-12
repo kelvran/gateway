@@ -44,9 +44,8 @@ tags:
 
     `admin.cost_viewer_token_env` and `admin.operator_token_env`. Every admin error is `http.Error` plain text with
 
-    `X-Content-Type-Options: nosniff` and a trailing newline; never a JSON envelope, never `Retry-After`. No request-body
-
-    limit. Patterns carry a method: a wrong method is net/http''s plain-text `405` with `Allow`, before the token check,
+    `X-Content-Type-Options: nosniff` and a trailing newline; never a JSON envelope, never `Retry-After`. Request bodies are capped at 1 MiB on the write routes (4 KiB on `POST /admin/spend/erase`; `413
+    request body too large`, since 2026-10-12). Patterns carry a method: a wrong method is net/http''s plain-text `405` with `Allow`, before the token check,
 
     and every `GET` also answers `HEAD`.
 
@@ -1512,6 +1511,14 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '413':
+          description: '`request body too large`: the body exceeds 1 MiB. Since 2026-10-12; before, the write routes read the body unbounded.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
       summary: Create or fully replace a virtual key.
     delete:
       operationId: deleteVirtualKey
@@ -1623,6 +1630,14 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '409':
           description: The key has already expired and no `expires_at` was supplied.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '413':
+          description: '`request body too large`: the body exceeds 1 MiB. Since 2026-10-12; before, the write routes read the body unbounded.'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -1916,6 +1931,14 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '413':
+          description: '`request body too large`: the body exceeds 1 MiB. Since 2026-10-12; before, the write routes read the body unbounded.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '500':
           description: Encoding the response failed (practically unreachable). The body is `encoding response`.
           x-kelvran-codes: []
@@ -2116,6 +2139,14 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '404':
           description: No such prompt or version.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '413':
+          description: '`request body too large`: the body exceeds 1 MiB. Since 2026-10-12; before, the write routes read the body unbounded.'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -2324,6 +2355,14 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '413':
+          description: '`request body too large`: the body exceeds 1 MiB. Since 2026-10-12; before, the write routes read the body unbounded.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '500':
           description: Any other failure.
           x-kelvran-codes: []
@@ -2394,6 +2433,14 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '404':
           description: Unknown `virtual_key_id`.
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '413':
+          description: '`request body too large`: the body exceeds 1 MiB. Since 2026-10-12; before, the write routes read the body unbounded.'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -2483,6 +2530,15 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: '`seconds must be at most 60`: the gateway''s cap on the duration (2026-10-12), answered before net/http/pprof runs; a value that fails to parse or is not greater than zero still
+            falls back to the library''s default.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -2504,7 +2560,8 @@ paths:
         in: query
         schema:
           type: integer
-        description: Duration in seconds; a value that fails to parse or is not greater than zero falls back to the default of 30.
+          maximum: 60
+        description: Duration in seconds, at most 60 (`400` above, since 2026-10-12); a value that fails to parse or is not greater than zero falls back to the default of 30.
       summary: A CPU profile.
   /admin/debug/pprof/symbol:
     servers:
@@ -2582,6 +2639,15 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: '`seconds must be at most 60`: the gateway''s cap on the duration (2026-10-12), answered before net/http/pprof runs; a value that fails to parse or is not greater than zero still
+            falls back to the library''s default.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
           x-kelvran-codes: []
@@ -2603,7 +2669,8 @@ paths:
         in: query
         schema:
           type: number
-        description: Duration in seconds, fractions allowed; a value that fails to parse or is not greater than zero falls back to the default of 1.
+          maximum: 60
+        description: Duration in seconds, at most 60 (`400` above, since 2026-10-12), fractions allowed; a value that fails to parse or is not greater than zero falls back to the default of 1.
       summary: An execution trace.
   /admin/debug/pprof/goroutine:
     servers:
@@ -2628,7 +2695,7 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`; or the gateway''s `seconds must be at most 60` (2026-10-12).'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -2666,7 +2733,8 @@ paths:
         schema:
           type: integer
           minimum: 1
-        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+          maximum: 60
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; at most 60, `400` above since 2026-10-12; incompatible with `debug`).'
       - name: debug
         in: query
         schema:
@@ -2696,7 +2764,7 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`; or the gateway''s `seconds must be at most 60` (2026-10-12).'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -2734,7 +2802,8 @@ paths:
         schema:
           type: integer
           minimum: 1
-        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+          maximum: 60
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; at most 60, `400` above since 2026-10-12; incompatible with `debug`).'
       - name: debug
         in: query
         schema:
@@ -2769,7 +2838,7 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`; or the gateway''s `seconds must be at most 60` (2026-10-12).'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -2807,7 +2876,8 @@ paths:
         schema:
           type: integer
           minimum: 1
-        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+          maximum: 60
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; at most 60, `400` above since 2026-10-12; incompatible with `debug`).'
       - name: debug
         in: query
         schema:
@@ -2837,7 +2907,7 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`; or the gateway''s `seconds must be at most 60` (2026-10-12).'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -2875,7 +2945,8 @@ paths:
         schema:
           type: integer
           minimum: 1
-        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+          maximum: 60
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; at most 60, `400` above since 2026-10-12; incompatible with `debug`).'
       - name: debug
         in: query
         schema:
@@ -2905,7 +2976,7 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`; or the gateway''s `seconds must be at most 60` (2026-10-12).'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -2943,7 +3014,8 @@ paths:
         schema:
           type: integer
           minimum: 1
-        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+          maximum: 60
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; at most 60, `400` above since 2026-10-12; incompatible with `debug`).'
       - name: debug
         in: query
         schema:
@@ -2973,7 +3045,7 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`.'
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`; or the gateway''s `seconds must be at most 60` (2026-10-12).'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -3011,7 +3083,8 @@ paths:
         schema:
           type: integer
           minimum: 1
-        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; incompatible with `debug`).'
+          maximum: 60
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; at most 60, `400` above since 2026-10-12; incompatible with `debug`).'
       - name: debug
         in: query
         schema:
@@ -3160,8 +3233,8 @@ paths:
                     rows_erased: 2
                   x-kelvran-example-source: gateway/internal/adminapi/testdata/wire.golden.json#/SpendEraseResponse
         '400':
-          description: 'A body that is not JSON or over 4 KiB (`invalid request body: …`), `session is required`, `session "other" cannot be erased on its own: it is the fold target, removed only with its
-            key or by retention`, or `session must be 1-128 bytes of [A-Za-z0-9._:-]`.'
+          description: 'A body that is not JSON (`invalid request body: …`; over 4 KiB is `413`), `session is required`, `session "other" cannot be erased on its own: it is the fold target, removed only
+            with its key or by retention`, or `session must be 1-128 bytes of [A-Za-z0-9._:-]`.'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -3170,6 +3243,14 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '401':
           description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '413':
+          description: '`request body too large`: the body exceeds 4 KiB (before 2026-10-12 this was a `400`).'
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:

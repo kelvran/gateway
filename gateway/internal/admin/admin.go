@@ -207,7 +207,9 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 // already off-by-default, loopback-default, bearer-protected mux -- never a
 // second listener, never a second credential space -- and the named profiles
 // are looked up by name through pprof.Handler, the indirection
-// net/http/pprof's own docs recommend for a custom prefix.
+// net/http/pprof's own docs recommend for a custom prefix. The eight pprof
+// routes that read `seconds` sit behind capPprofSeconds (limits.go), and every
+// write route decodes its body through decodeJSONBody's bound.
 func routeHandlers(cfg *controlplane.Config, pipeline *dataplane.Pipeline, audit auditLogger, auditStore *auditstore.Store) map[string]http.Handler {
 	handlers := map[string]http.Handler{
 		"getAdminConfig":         getConfigHandler(cfg, audit),
@@ -237,12 +239,12 @@ func routeHandlers(cfg *controlplane.Config, pipeline *dataplane.Pipeline, audit
 	if cfg.Admin.EnablePprof {
 		handlers["pprofIndex"] = http.HandlerFunc(pprof.Index)
 		handlers["pprofCmdline"] = http.HandlerFunc(pprof.Cmdline)
-		handlers["pprofProfile"] = http.HandlerFunc(pprof.Profile)
+		handlers["pprofProfile"] = capPprofSeconds(http.HandlerFunc(pprof.Profile), pprofMaxSeconds)
 		handlers["pprofSymbol"] = http.HandlerFunc(pprof.Symbol)
 		handlers["pprofSymbolPost"] = http.HandlerFunc(pprof.Symbol)
-		handlers["pprofTrace"] = http.HandlerFunc(pprof.Trace)
+		handlers["pprofTrace"] = capPprofSeconds(http.HandlerFunc(pprof.Trace), pprofMaxSeconds)
 		for _, profile := range pprofProfiles {
-			handlers[pprofOperationID(profile)] = pprof.Handler(profile)
+			handlers[pprofOperationID(profile)] = capPprofSeconds(pprof.Handler(profile), pprofMaxSeconds)
 		}
 	}
 	return handlers
@@ -562,8 +564,7 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 		}
 
 		var req virtualKeyRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		if !decodeJSONBody(w, r, adminWriteBodyLimit, &req) {
 			return
 		}
 		if req.KeyHash == "" {
@@ -757,8 +758,7 @@ func rotateVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 		}
 
 		var req rotateVirtualKeyRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		if !decodeJSONBody(w, r, adminWriteBodyLimit, &req) {
 			return
 		}
 		if req.NewKeyHash == "" {
@@ -863,8 +863,7 @@ func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger auditLog
 		}
 
 		var req updateDeploymentWeightRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		if !decodeJSONBody(w, r, adminWriteBodyLimit, &req) {
 			return
 		}
 		if req.Weight < 0 {
@@ -912,8 +911,7 @@ func updateDeploymentWeightHandler(pipeline *dataplane.Pipeline, logger auditLog
 func eraseCacheEntryHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req eraseCacheEntryRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		if !decodeJSONBody(w, r, adminWriteBodyLimit, &req) {
 			return
 		}
 		if req.VirtualKeyID == "" {
@@ -1316,8 +1314,7 @@ func upsertPromptHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.
 		}
 
 		var req promptRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		if !decodeJSONBody(w, r, adminWriteBodyLimit, &req) {
 			return
 		}
 		if len(req.Messages) == 0 {
@@ -1413,8 +1410,7 @@ func setPromptLabelHandler(pipeline *dataplane.Pipeline, logger auditLogger) htt
 		}
 
 		var req setPromptLabelRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		if !decodeJSONBody(w, r, adminWriteBodyLimit, &req) {
 			return
 		}
 

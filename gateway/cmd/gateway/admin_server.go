@@ -25,13 +25,14 @@ import (
 // (heap?seconds= and friends) each run for `seconds`. net/http/pprof handles
 // that itself: each of those handlers calls its configureWriteDeadline, which
 // extends the connection's write deadline by WriteTimeout + seconds whenever
-// the server has a WriteTimeout, so a 120 s profile completes under a 60 s
-// bound. `seconds` is the Admin-tier caller's own choice and is not capped, so
-// with admin.enable_pprof such a caller can hold a connection for as long as
-// it asks; before this change every admin connection could, with no pprof
-// call at all. TestAdminServerWriteTimeoutIsExtendedByPprof pins the
-// extension in this toolchain against a control handler the same timeout
-// does cut off.
+// the server has a WriteTimeout, so a 60 s profile completes under a 60 s
+// bound. The library never bounds `seconds` itself; internal/admin caps it at
+// 60 (limits.go, since 2026-10-12), so a pprof connection lives at most 120 s.
+// Before the cap an Admin-tier caller could hold a connection, and the
+// exclusive CPU profiler, for as long as it asked; before the timeouts every
+// admin connection could, with no pprof call at all.
+// TestAdminServerWriteTimeoutIsExtendedByPprof pins the extension in this
+// toolchain against a control handler the same timeout does cut off.
 const (
 	adminReadHeaderTimeout = 10 * time.Second
 	adminReadTimeout       = 60 * time.Second

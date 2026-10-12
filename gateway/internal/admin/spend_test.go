@@ -263,18 +263,23 @@ func TestEraseSpendSessionIsAdminOnlyBoundedAndAudited(t *testing.T) {
 		}
 	}
 	for name, body := range map[string]string{
-		"not json":          `{`,
-		"empty session":     `{"session":""}`,
-		"missing session":   `{}`,
-		"the fold target":   `{"session":"other"}`,
-		"outside grammar":   `{"session":"bad|id"}`,
-		"too long":          `{"session":"` + strings.Repeat("a", 129) + `"}`,
-		"over the body cap": `{"session":"s1","pad":"` + strings.Repeat("x", 5000) + `"}`,
+		"not json":        `{`,
+		"empty session":   `{"session":""}`,
+		"missing session": `{}`,
+		"the fold target": `{"session":"other"}`,
+		"outside grammar": `{"session":"bad|id"}`,
+		"too long":        `{"session":"` + strings.Repeat("a", 129) + `"}`,
 	} {
 		rec := doRequest(t, h, http.MethodPost, "/admin/spend/erase", fakeAdminCredential(), body)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400; body %s", name, rec.Code, rec.Body.String())
 		}
+	}
+	// Over the 4 KiB bound is 413 since 2026-10-12 (decodeJSONBody); before, the
+	// bounded reader's error fell into the 400 `invalid request body` text.
+	over := doRequest(t, h, http.MethodPost, "/admin/spend/erase", fakeAdminCredential(), `{"session":"s1","pad":"`+strings.Repeat("x", 5000)+`"}`)
+	if over.Code != http.StatusRequestEntityTooLarge || over.Body.String() != "request body too large\n" {
+		t.Errorf("over the body cap: status = %d, want 413; body %s", over.Code, over.Body.String())
 	}
 	if strings.Contains(buf.String(), "admin_spend_erased") {
 		t.Fatalf("a refused erase must not be audited as an erasure: %s", buf.String())

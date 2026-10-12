@@ -401,7 +401,7 @@ The admin HTTP server starts only when `token_env` is set. It listens on its own
 | `persist_path` | `string` | empty (in-memory) | bbolt file for admin-created and rotated virtual keys |
 | `redis_addr` | `string` | empty | Redis `host:port` for a cross-replica identity store. When both are set, `redis_addr` wins and a warning (`identity_redis_addr_and_persist_path_both_set`) is logged. Unlike the other Redis consumers, the identity store is loaded at startup: an unreachable Redis is a startup failure |
 | `redis_password_env`, `redis_username`, `redis_tls` | see [Redis auth keys](#redis-auth-keys) | | |
-| `enable_pprof` | `bool` | `false` | Mounts `net/http/pprof` under `/admin/debug/pprof/` behind the Admin token |
+| `enable_pprof` | `bool` | `false` | Mounts `net/http/pprof` under `/admin/debug/pprof/` behind the Admin token; `seconds=` is capped at 60 on the eight routes that read it (`400` above, since 2026-10-12) |
 | `backup_dir` | `string` | empty (route answers 501) | Directory `POST /admin/backup` writes into. The route is always registered; with `backup_dir` empty it returns `501 Not Implemented` (`admin.backup_dir is not configured`) |
 | `enable_audit_log` | `bool` | `true` | Gates every admin-route audit event, both the log line and the durable trail. Defaults to `true` even when the `admin` section is absent |
 | `audit_log_path` | `string` | empty (no durable trail) | JSONL file for admin audit events; enables `GET /admin/audit`. Governed by `enable_audit_log`. If the file cannot be opened the process refuses to start. Not read when `token_env` is unset |

@@ -11,12 +11,12 @@ The route set and bodies below are those of `gateway/v0.19.0` (2026-10-11), unch
 | Listener | A separate `net/http` server on its own port, never the client-facing mux. Default `127.0.0.1:8081`. |
 | Transport | Plain HTTP unless `admin.mtls` is configured; then TLS, and every client must present a certificate signed by the configured CA. |
 | Authentication | `Authorization: Bearer <token>` on every request. The token is compared with a constant-time comparison. |
-| Request bodies | JSON. The `Content-Type` request header is not checked. No size limit (no `MaxBytesReader`); the data plane caps bodies at 32 MiB. |
+| Request bodies | JSON. The `Content-Type` request header is not checked. Capped at 1 MiB on every write route (`413 request body too large`, plain text; `POST /admin/spend/erase` at 4 KiB); the data plane caps bodies at 32 MiB. Before 2026-10-12 the write routes read the body unbounded. The one body the gateway does not cap is `POST /admin/debug/pprof/symbol`'s: `net/http/pprof` reads the posted addresses in full under the 60 s read bound alone (Admin-only, loopback by default). |
 | JSON responses | Encoded with `encoding/json`. On every JSON-answering route except `GET /admin/audit`, a failure to encode (practically unreachable) is a plain-text `500` — `encoding response`, or `encoding config` on `GET /admin/config` — listed in that route's Errors column; `GET /admin/audit` discards an encode error (its `500` is the store query failing). |
 | Methods | Patterns carry a method, so a wrong method on a known path is net/http's plain-text `405` with `Allow`, answered before the token check; every `GET` also answers `HEAD` with the same status and headers and no body. |
 | Success bodies | JSON with `Content-Type: application/json`, or `204 No Content` for mutations that return nothing. |
 | Error bodies | Plain text written by `http.Error` (`text/plain; charset=utf-8`). Admin routes never return a JSON error envelope. The data-plane error codes in [error-codes.md](error-codes.md) do not apply here. |
-| Timeouts | `ReadHeaderTimeout` 10 s; `ReadTimeout`, `WriteTimeout` and `IdleTimeout` 60 s (`gateway/cmd/gateway/admin_server.go`; before 2026-10-12 only the first was set). The read bound covers the whole request, body included (the write routes have no body cap, the 4 KiB erase body excepted). The write bound counts from the request header, so a handler blocked on a stalled disk loses its client at 60 s (the goroutine itself is not cancelled; a `POST /admin/backup` whose copies outlive the bound still completes on disk and only its response is lost), and a large `GET /admin/audit` or `GET /admin/spend` answer over a slow link can be cut by it — narrow the query (`since=`/`until=`, `msg=`/`field=`, `key=`). The pprof `seconds=` routes extend the connection's write deadline by `WriteTimeout + seconds` through `net/http/pprof`, so a profile longer than 60 s completes; `seconds` is not capped, so with `admin.enable_pprof` an Admin-tier caller holds a connection for as long as it asks (before 2026-10-12 every connection could). No server-wide request-context deadline is set, so pprof's `408` stays unreachable; individual handlers bound their own backend calls (10 s for `GET /admin/spend`, 2 s for `?include=spend`). |
+| Timeouts | `ReadHeaderTimeout` 10 s; `ReadTimeout`, `WriteTimeout` and `IdleTimeout` 60 s (`gateway/cmd/gateway/admin_server.go`; before 2026-10-12 only the first was set). The read bound covers the whole request, body included (the write bodies are capped at 1 MiB, the erase body at 4 KiB). The write bound counts from the request header, so a handler blocked on a stalled disk loses its client at 60 s (the goroutine itself is not cancelled; a `POST /admin/backup` whose copies outlive the bound still completes on disk and only its response is lost), and a large `GET /admin/audit` or `GET /admin/spend` answer over a slow link can be cut by it — narrow the query (`since=`/`until=`, `msg=`/`field=`, `key=`). The pprof `seconds=` routes extend the connection's write deadline by `WriteTimeout + seconds` through `net/http/pprof`, and `seconds` is capped at 60 (`400 seconds must be at most 60`, checked before the library runs), so a pprof connection lives at most 120 s; before 2026-10-12 `seconds` was uncapped and an Admin-tier caller held a connection, and the exclusive CPU profiler, for as long as it asked (and before the timeouts every connection could). No server-wide request-context deadline is set, so pprof's `408` stays unreachable; individual handlers bound their own backend calls (10 s for `GET /admin/spend`, 2 s for `?include=spend`). |
 | Identifiers | A virtual-key name, prompt id or label is at most 256 bytes on write routes (upsert, label set). Content is not validated. Read, delete and rotate routes do not check the length. |
 | Durations | Every duration field is an integer number of seconds. |
 | Money | In responses, `budget_usd` and `spent_usd` are decimal strings, never floats. The upsert request accepts `budget_usd` as a decimal string or a JSON number. |
@@ -95,30 +95,30 @@ The machine-readable form of this table is `gateway/openapi/kelvran-gateway.open
 | GET | `/admin/config` | Admin, Viewer | 200 JSON | 500 | `admin_config_read` |
 | GET | `/admin/audit` | Admin, Viewer | 200 JSON | 400, 500 | none |
 | GET | `/admin/virtual_keys` | Admin, Viewer | 200 JSON | 400, 500 | `admin_virtual_keys_read` |
-| POST | `/admin/virtual_keys/{name}` | Admin | 204 | 400 | `admin_virtual_key_upserted` |
+| POST | `/admin/virtual_keys/{name}` | Admin | 204 | 400, 413 | `admin_virtual_key_upserted` |
 | DELETE | `/admin/virtual_keys/{name}` | Admin | 204 | 400, 404, 409, 500 | `admin_virtual_key_deleted` |
-| POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404, 409 | `admin_virtual_key_rotated` |
+| POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404, 409, 413 | `admin_virtual_key_rotated` |
 | GET | `/admin/virtual_keys/{name}/spend` | Admin, Viewer, CostViewer | 200 JSON | 404, 500 | `admin_virtual_key_spend_read` |
 | GET | `/admin/virtual_keys/{name}/inflight` | Admin, Viewer | 200 JSON | 404, 500 | `admin_virtual_key_inflight_read` |
 | GET | `/admin/spend` | Admin, Viewer, CostViewer | 200 JSON | 400, 500 | `admin_spend_read` |
-| POST | `/admin/spend/erase` | Admin | 200 JSON | 400, 500 | `admin_spend_erased` |
+| POST | `/admin/spend/erase` | Admin | 200 JSON | 400, 413, 500 | `admin_spend_erased` |
 | GET | `/admin/prompts` | Admin, Viewer | 200 JSON | 500 | `admin_prompts_read` |
 | GET | `/admin/prompts/{id}` | Admin, Viewer | 200 JSON | 404, 500 | `admin_prompts_read` |
 | GET | `/admin/prompts/{id}/versions/{version}` | Admin, Viewer | 200 JSON | 400, 404, 500 | `admin_prompts_read` |
-| POST | `/admin/prompts/{id}` | Admin | 200 JSON | 400, 500 | `admin_prompt_upserted` |
+| POST | `/admin/prompts/{id}` | Admin | 200 JSON | 400, 413, 500 | `admin_prompt_upserted` |
 | DELETE | `/admin/prompts/{id}` | Admin | 204 | 400, 404, 500 | `admin_prompt_deleted` |
-| PUT | `/admin/prompts/{id}/labels/{label}` | Admin | 200 JSON | 400, 404, 500 | `admin_prompt_label_set` |
+| PUT | `/admin/prompts/{id}/labels/{label}` | Admin | 200 JSON | 400, 404, 413, 500 | `admin_prompt_label_set` |
 | DELETE | `/admin/prompts/{id}/labels/{label}` | Admin | 204 | 404, 500 | `admin_prompt_label_deleted` |
 | POST | `/admin/backup` | Admin | 200 JSON | 500, 501 | `admin_backup_completed` |
 | GET | `/admin/deployments` | Admin, Viewer | 200 JSON | 500 | `admin_deployments_read` |
-| POST | `/admin/deployments/{name}/weight` | Admin, Operator | 204 | 400, 404, 500 | `admin_deployment_weight_updated` |
-| POST | `/admin/cache/erase` | Admin, Operator | 200 JSON | 400, 404, 500 | `admin_cache_entry_erased` |
+| POST | `/admin/deployments/{name}/weight` | Admin, Operator | 204 | 400, 404, 413, 500 | `admin_deployment_weight_updated` |
+| POST | `/admin/cache/erase` | Admin, Operator | 200 JSON | 400, 404, 413, 500 | `admin_cache_entry_erased` |
 | GET | `/admin/debug/pprof/` | Admin | pprof output |  | none |
 | GET | `/admin/debug/pprof/cmdline` | Admin | pprof output |  | none |
-| GET | `/admin/debug/pprof/profile` | Admin | pprof output | 500 | none |
+| GET | `/admin/debug/pprof/profile` | Admin | pprof output | 400, 500 | none |
 | GET | `/admin/debug/pprof/symbol` | Admin | pprof output |  | none |
 | POST | `/admin/debug/pprof/symbol` | Admin | pprof output |  | none |
-| GET | `/admin/debug/pprof/trace` | Admin | pprof output | 500 | none |
+| GET | `/admin/debug/pprof/trace` | Admin | pprof output | 400, 500 | none |
 | GET | `/admin/debug/pprof/goroutine` | Admin | pprof output | 400, 408, 500 | none |
 | GET | `/admin/debug/pprof/heap` | Admin | pprof output | 400, 408, 500 | none |
 | GET | `/admin/debug/pprof/threadcreate` | Admin | pprof output | 400, 408, 500 | none |
@@ -245,6 +245,7 @@ Status codes:
 | 400 | `virtual key name is required` |
 | 400 | `virtual key name exceeds 256 characters` |
 | 400 | `invalid request body: ...` |
+| 413 | `request body too large` (over 1 MiB) |
 | 400 | `key_hash is required` |
 | 400 | `dataplane: applyVirtualKeyUpsert: identity: NewVerifier: virtual key "<name>": key_hash "<value>" is not valid hex: ...` or `... must decode to 32 bytes (a SHA-256 digest), got <n>` |
 | 400 | `dataplane: applyVirtualKeyUpsert: identity: duplicate virtual key hash in config: virtual key "<id>"`, with a ` (previous_key_hash)` suffix when the collision is with a grace-period hash |
@@ -298,6 +299,7 @@ Request body:
 | 204 | none |
 | 400 | `virtual key name is required` |
 | 400 | `invalid request body: ...` |
+| 413 | `request body too large` (over 1 MiB) |
 | 400 | `new_key_hash is required` |
 | 400 | `expires_at "<value>" is not a valid RFC 3339 timestamp: ...` or `expires_at must be in the future` |
 | 400 | any other pipeline error, as raw text |
@@ -375,7 +377,8 @@ Erases one session's rows from the spend ledger: every cell of that session acro
 | Status | Body |
 |---|---|
 | 200 | `{"rows_erased": <n>}` — how many cells (a row inside one hour bucket) went; `0` when the session had none. |
-| 400 | `invalid request body: …` (not JSON, or over 4 KiB); `session is required`; `session "other" cannot be erased on its own: it is the fold target, removed only with its key or by retention`; `session must be 1-128 bytes of [A-Za-z0-9._:-]` |
+| 400 | `invalid request body: …` (not JSON); `session is required`; `session "other" cannot be erased on its own: it is the fold target, removed only with its key or by retention`; `session must be 1-128 bytes of [A-Za-z0-9._:-]` |
+| 413 | `request body too large` (over 4 KiB; before 2026-10-12 a `400`) |
 | 500 | `erasing spend ledger session: …` when the ledger could not erase within 10 s. |
 
 The erase does not propagate (owner gate G28): in bbolt and in-memory modes each replica holds its own ledger, so run the call once per replica; in Redis mode the ledger is shared and one call is enough and idempotent. A session that was folded into `other` cannot be erased on its own — only `DELETE /admin/virtual_keys/{name}` (which cascades to the key's rows) or the retention sweep removes it. Audit entry `admin_spend_erased` with `session_sha256_prefix` (the first 16 hex characters of the session's SHA-256, never the id — the audit log is append-only and indefinite), `rows_erased` and `authorized_by`. See [DATA-SUBJECT-REQUESTS.md](../operations/DATA-SUBJECT-REQUESTS.md) for the procedure.
@@ -465,6 +468,7 @@ Request body: `{"messages": Message[]}`.
 | 400 | `prompt id is required` |
 | 400 | `prompt id exceeds 256 characters` |
 | 400 | `invalid request body: ...` |
+| 413 | `request body too large` (over 1 MiB) |
 | 400 | `messages is required and must be non-empty` |
 | 400 | a content-part validation error: invalid base64 in `parts[].data`, or a declared `media_type` whose category does not match the detected content |
 | 400 | the message-count error when `messages` has more than 2000 elements |
@@ -506,6 +510,7 @@ Response:
 | 400 | `prompt id and label are both required` |
 | 400 | `label exceeds 256 characters` |
 | 400 | `invalid request body: ...` |
+| 413 | `request body too large` (over 1 MiB) |
 | 400 | any other store error, as raw text |
 | 404 | `prompt: prompt not found: "<id>"` or `prompt: prompt not found: "<id>" version <n>` |
 
@@ -571,6 +576,7 @@ Request body: `{"weight": int}`.
 | 204 | none |
 | 400 | `deployment name is required` |
 | 400 | `invalid request body: ...` |
+| 413 | `request body too large` (over 1 MiB) |
 | 400 | `weight must be non-negative, got <n>` |
 | 404 | `dataplane: deployment not found: "<name>"` |
 | 500 | any other error, as raw text |
@@ -610,6 +616,7 @@ Response:
 |---|---|
 | 200 | The object. `l1_found` and `l2_found` both `false` is a successful "nothing cached" answer, not an error. |
 | 400 | `invalid request body: ...` |
+| 413 | `request body too large` (over 1 MiB) |
 | 400 | `virtual_key_id is required` |
 | 400 | `dataplane: request sets both prompt_id and messages` |
 | 400 | `dataplane: request sets both prompt_label and prompt_version` |
@@ -631,16 +638,16 @@ Present only when `admin.enable_pprof: true`. Admin tier only; the Viewer tier i
 |---|---|---|
 | GET | `/admin/debug/pprof/` | index (a subtree: every unlisted sub-path renders it) |
 | GET | `/admin/debug/pprof/cmdline` | cmdline |
-| GET | `/admin/debug/pprof/profile` | CPU profile (`seconds`, default 30) |
+| GET | `/admin/debug/pprof/profile` | CPU profile (`seconds`, default 30, at most 60) |
 | GET | `/admin/debug/pprof/symbol` | symbol |
-| POST | `/admin/debug/pprof/symbol` | symbol |
-| GET | `/admin/debug/pprof/trace` | execution trace (`seconds`, default 1) |
-| GET | `/admin/debug/pprof/goroutine` | goroutine profile (`seconds` for a delta) |
-| GET | `/admin/debug/pprof/heap` | heap profile (`seconds` for a delta) |
-| GET | `/admin/debug/pprof/threadcreate` | threadcreate profile (`seconds` for a delta) |
-| GET | `/admin/debug/pprof/block` | block profile (`seconds` for a delta) |
-| GET | `/admin/debug/pprof/mutex` | mutex profile (`seconds` for a delta) |
-| GET | `/admin/debug/pprof/allocs` | allocs profile (`seconds` for a delta) |
+| POST | `/admin/debug/pprof/symbol` | symbol (the posted addresses are read in full by the library; no byte cap of the gateway's own, the 60 s read bound applies) |
+| GET | `/admin/debug/pprof/trace` | execution trace (`seconds`, default 1, at most 60) |
+| GET | `/admin/debug/pprof/goroutine` | goroutine profile (`seconds` for a delta, at most 60) |
+| GET | `/admin/debug/pprof/heap` | heap profile (`seconds` for a delta, at most 60) |
+| GET | `/admin/debug/pprof/threadcreate` | threadcreate profile (`seconds` for a delta, at most 60) |
+| GET | `/admin/debug/pprof/block` | block profile (`seconds` for a delta, at most 60) |
+| GET | `/admin/debug/pprof/mutex` | mutex profile (`seconds` for a delta, at most 60) |
+| GET | `/admin/debug/pprof/allocs` | allocs profile (`seconds` for a delta, at most 60) |
 
 These routes write no audit entry. `/admin/debug/pprof/` is a subtree pattern: any unlisted sub-path resolves to the index, and `/admin/debug/pprof` without the slash is a `307` redirect to the slash form under the pinned Go toolchain (`go 1.26.9`; pinned by `TestAdminServeMuxSemantics`). The handlers are net/http/pprof's own, including their plain-text errors under the pinned toolchain: `500` when a CPU profile or trace cannot start, and on the six named profiles `400` (`seconds` not a positive integer, or combined with `debug`), `408` and `500` around a delta profile; the index, `cmdline` and `symbol` never fail. Under this prefix `pprof.Index` never dispatches by profile name (its prefix check is `/debug/pprof/`), so every unlisted sub-path renders the index page.
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -125,17 +124,15 @@ func getSpendHandler(pipeline *dataplane.Pipeline, retention time.Duration, logg
 }
 
 // eraseSpendSessionHandler serves POST /admin/spend/erase with body
-// {"session": "<id>"}: Admin-only by its wrapper; 400 for a body that is not
-// JSON, an empty session, the fold target `other` (removed only with its key
+// {"session": "<id>"}: Admin-only by its wrapper; 413 over 4 KiB, 400 for a
+// body that is not JSON, an empty session, the fold target `other` (removed only with its key
 // or by retention) or a value outside the identifier grammar. The audit line
 // carries a 16-hex SHA-256 prefix of the session and the count (G28).
 func eraseSpendSessionHandler(pipeline *dataplane.Pipeline, logger auditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req adminapi.SpendEraseRequest
-		// encoding/json's errors carry an offset or a type name, never the
-		// body's bytes, and the body is bounded, so the text can go back.
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, spendEraseBodyLimit)).Decode(&req); err != nil {
-			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		// The 4 KiB bound and the 413/400 split live in decodeJSONBody.
+		if !decodeJSONBody(w, r, spendEraseBodyLimit, &req) {
 			return
 		}
 		switch {

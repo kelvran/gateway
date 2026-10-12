@@ -14,16 +14,18 @@ import (
 // encode-or-500; the pprof rows follow net/http/pprof under the pinned toolchain).
 var adminStatusTable = map[string][]string{
 	"getAdminConfig": {"200", "500"}, "queryAuditLog": {"200", "400", "500"}, "listVirtualKeys": {"200", "400", "500"},
-	"upsertVirtualKey": {"204", "400"}, "deleteVirtualKey": {"204", "400", "404", "409", "500"}, "rotateVirtualKey": {"204", "400", "404", "409"},
+	"upsertVirtualKey": {"204", "400", "413"}, "deleteVirtualKey": {"204", "400", "404", "409", "500"}, "rotateVirtualKey": {"204", "400", "404", "409", "413"},
 	"getVirtualKeySpend": {"200", "404", "500"}, "getVirtualKeyInFlight": {"200", "404", "500"}, "listPrompts": {"200", "500"}, "getPrompt": {"200", "404", "500"},
-	"getPromptVersion": {"200", "400", "404", "500"}, "upsertPrompt": {"200", "400", "500"}, "deletePrompt": {"204", "400", "404", "500"},
-	"setPromptLabel": {"200", "400", "404", "500"}, "deletePromptLabel": {"204", "404", "500"}, "createBackup": {"200", "500", "501"},
-	"listDeployments": {"200", "500"}, "updateDeploymentWeight": {"204", "400", "404", "500"}, "eraseCacheEntry": {"200", "400", "404", "500"},
+	"getPromptVersion": {"200", "400", "404", "500"}, "upsertPrompt": {"200", "400", "413", "500"}, "deletePrompt": {"204", "400", "404", "500"},
+	"setPromptLabel": {"200", "400", "404", "413", "500"}, "deletePromptLabel": {"204", "404", "500"}, "createBackup": {"200", "500", "501"},
+	"listDeployments": {"200", "500"}, "updateDeploymentWeight": {"204", "400", "404", "413", "500"}, "eraseCacheEntry": {"200", "400", "404", "413", "500"},
 	// The spend ledger's routes (item 13d slice 4): the read's 401 includes the cost-viewer-without-key= case (G27).
-	"getSpend": {"200", "400", "500"}, "eraseSpendSession": {"200", "400", "500"},
+	"getSpend": {"200", "400", "500"}, "eraseSpendSession": {"200", "400", "413", "500"},
 	// net/http/pprof's own, under the pinned toolchain: the index, cmdline and symbol never fail; Profile and Trace answer 500
-	// when profiling cannot start; the six named profiles answer 400/408/500 around a delta profile (`seconds`).
-	"pprofIndex": {"200"}, "pprofCmdline": {"200"}, "pprofProfile": {"200", "500"}, "pprofSymbol": {"200"}, "pprofSymbolPost": {"200"}, "pprofTrace": {"200", "500"},
+	// when profiling cannot start and, since 2026-10-12, the gateway's own 400 above the 60 s `seconds` cap (internal/admin's
+	// capPprofSeconds); the six named profiles answer 400/408/500 around a delta profile (`seconds`), the cap's 400 among them.
+	// The seven write operations answer 413 over decodeJSONBody's bound (1 MiB; 4 KiB on the erase route).
+	"pprofIndex": {"200"}, "pprofCmdline": {"200"}, "pprofProfile": {"200", "400", "500"}, "pprofSymbol": {"200"}, "pprofSymbolPost": {"200"}, "pprofTrace": {"200", "400", "500"},
 	"pprofGoroutine": {"200", "400", "408", "500"}, "pprofHeap": {"200", "400", "408", "500"}, "pprofThreadcreate": {"200", "400", "408", "500"},
 	"pprofBlock": {"200", "400", "408", "500"}, "pprofMutex": {"200", "400", "408", "500"}, "pprofAllocs": {"200", "400", "408", "500"},
 }
