@@ -169,6 +169,33 @@ type CacheControl struct {
 	Key string `json:"key,omitempty"`
 }
 
+// CacheTTLOneHour is the CacheControl.TTL value both Anthropic and Bedrock
+// accept for the longer, 2x-priced cache lifetime.
+const CacheTTLOneHour = "1h"
+
+// HasOneHourCacheBreakpoint reports whether req carries any cache_control
+// breakpoint with the 1-hour TTL -- on a message, a content part or a tool
+// definition. The dataplane uses it to price a Bedrock request's cache
+// writes at the 1-hour rate, since Converse's usage reports no TTL split.
+func HasOneHourCacheBreakpoint(req ChatRequest) bool {
+	for _, m := range req.Messages {
+		if m.CacheControl != nil && m.CacheControl.TTL == CacheTTLOneHour {
+			return true
+		}
+		for _, part := range m.Parts {
+			if part.CacheControl != nil && part.CacheControl.TTL == CacheTTLOneHour {
+				return true
+			}
+		}
+	}
+	for _, tool := range req.Tools {
+		if tool.CacheControl != nil && tool.CacheControl.TTL == CacheTTLOneHour {
+			return true
+		}
+	}
+	return false
+}
+
 // ToolCall is a single tool/function invocation requested by the model.
 //
 // ArgumentsJSON is always a JSON-encoded string in the canonical schema,
@@ -703,6 +730,29 @@ type Usage struct {
 	// telemetry only emits the matching counter/attribute when > 0. Per
 	// docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md.
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// CacheCreation1hTokens is the subset of CacheCreationTokens written with
+	// the 1-hour cache TTL: Anthropic usage.cache_creation.ephemeral_1h_input_tokens
+	// (anthropic-sdk-go v1.80.0). Bedrock reports no TTL split, so the
+	// dataplane sets it from the request it sent -- every write, when a 1h
+	// breakpoint was forwarded. Billed at 2x base input on the pricing page
+	// (2026-10-13) against 1.25x for a 5-minute write, so costaccounting
+	// prices it at its own optional rate. Internal (json:"-"): the OpenAI-
+	// shaped client wire has no such member and the OpenAPI document pins it.
+	CacheCreation1hTokens int `json:"-"`
+	// WebSearchRequests is Anthropic usage.server_tool_use.web_search_requests:
+	// server-side searches billed per request ($10 per 1,000) on top of the
+	// tokens. Web fetch is free and code execution is billed per
+	// container-hour at the organisation level, so neither is lifted here.
+	// Internal.
+	WebSearchRequests int `json:"-"`
+	// InferenceGeo is Anthropic usage.inference_geo ("global" or "us"); "us"
+	// bills every token category at 1.1x on Claude 4.6 and later. Empty when
+	// the provider does not report it. Internal.
+	InferenceGeo string `json:"-"`
+	// ServiceTier is Anthropic usage.service_tier ("standard", "priority",
+	// "batch"), recorded for telemetry only -- priority is an organisation
+	// commitment, not a per-request price. Internal.
+	ServiceTier string `json:"-"`
 }
 
 // Choice is a single generated completion candidate.

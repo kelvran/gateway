@@ -31,10 +31,10 @@ import (
 // global endpoints (regional endpoints carry a 10 % premium the table does
 // not apply); the price_table is keyed by canonical model, so a bedrock
 // deployment of claude-sonnet-5-5 shares the entry below.
-const priceTableAsOf = "2026-10-10"
+const priceTableAsOf = "2026-10-13"
 
 // modelEntry is one row of the embedded table: a canonical (client-facing)
-// model id, the vendor whose hosted endpoint the price describes, the four
+// model id, the vendor whose hosted endpoint the price describes, the
 // price_table rates in USD per token as decimal strings (written verbatim —
 // the loader parses money from the source text, never through float64) and,
 // for Anthropic models, the Amazon Bedrock model id that serves the same
@@ -46,15 +46,19 @@ type modelEntry struct {
 	CompletionUSD string // price_table.<model>.completion_per_token
 	CacheReadUSD  string // cache_read_per_token; "" = loader prices it at PromptUSD
 	CacheWriteUSD string // cache_creation_per_token; "" = same fallback
-	BedrockID     string // "" = not offered on Bedrock, or not in the embedded mapping
+	// CacheWrite1hUSD is cache_creation_1h_per_token: the pricing page bills a
+	// 1-hour cache write at 2x base input on every model (read 2026-10-13);
+	// "" = the loader prices 1h writes at CacheWriteUSD.
+	CacheWrite1hUSD string
+	BedrockID       string // "" = not offered on Bedrock, or not in the embedded mapping
 }
 
 // models is the embedded table, keyed by canonical id.
 var models = map[string]modelEntry{
-	"claude-sonnet-5-5": {Canonical: "claude-sonnet-5-5", Vendor: "anthropic", PromptUSD: "0.000002", CompletionUSD: "0.00001", CacheReadUSD: "0.0000001", CacheWriteUSD: "0.0000025", BedrockID: "global.anthropic.claude-sonnet-5-5"},
-	"claude-opus-5-5":   {Canonical: "claude-opus-5-5", Vendor: "anthropic", PromptUSD: "0.000004", CompletionUSD: "0.00002", CacheReadUSD: "0.0000002", CacheWriteUSD: "0.000005", BedrockID: "global.anthropic.claude-opus-5-5"},
-	"claude-haiku-5-5":  {Canonical: "claude-haiku-5-5", Vendor: "anthropic", PromptUSD: "0.0000001", CompletionUSD: "0.0000005", CacheReadUSD: "0.00000001", CacheWriteUSD: "0.000000125", BedrockID: "global.anthropic.claude-haiku-5-5"},
-	"claude-fable-5-1":  {Canonical: "claude-fable-5-1", Vendor: "anthropic", PromptUSD: "0.00001", CompletionUSD: "0.00005", CacheReadUSD: "0.00000025", CacheWriteUSD: "0.0000125", BedrockID: "global.anthropic.claude-fable-5-1"},
+	"claude-sonnet-5-5": {Canonical: "claude-sonnet-5-5", Vendor: "anthropic", PromptUSD: "0.000002", CompletionUSD: "0.00001", CacheReadUSD: "0.0000001", CacheWriteUSD: "0.0000025", CacheWrite1hUSD: "0.000004", BedrockID: "global.anthropic.claude-sonnet-5-5"},
+	"claude-opus-5-5":   {Canonical: "claude-opus-5-5", Vendor: "anthropic", PromptUSD: "0.000004", CompletionUSD: "0.00002", CacheReadUSD: "0.0000002", CacheWriteUSD: "0.000005", CacheWrite1hUSD: "0.000008", BedrockID: "global.anthropic.claude-opus-5-5"},
+	"claude-haiku-5-5":  {Canonical: "claude-haiku-5-5", Vendor: "anthropic", PromptUSD: "0.0000001", CompletionUSD: "0.0000005", CacheReadUSD: "0.00000001", CacheWriteUSD: "0.000000125", CacheWrite1hUSD: "0.0000002", BedrockID: "global.anthropic.claude-haiku-5-5"},
+	"claude-fable-5-1":  {Canonical: "claude-fable-5-1", Vendor: "anthropic", PromptUSD: "0.00001", CompletionUSD: "0.00005", CacheReadUSD: "0.00000025", CacheWriteUSD: "0.0000125", CacheWrite1hUSD: "0.00002", BedrockID: "global.anthropic.claude-fable-5-1"},
 	"gpt-4o":            {Canonical: "gpt-4o", Vendor: "openai", PromptUSD: "0.0000025", CompletionUSD: "0.00001"},
 	"gemini-2.5-flash":  {Canonical: "gemini-2.5-flash", Vendor: "gemini", PromptUSD: "0.0000003", CompletionUSD: "0.0000025"},
 }

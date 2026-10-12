@@ -170,6 +170,12 @@ var bedrockCacheTTLModelSubstrings = []string{
 	"claude-haiku-4-5",
 }
 
+// ModelSupportsCacheTTL reports whether the adapter forwards a request's
+// cache_control.ttl to Converse for model (bedrockCacheTTLModelSubstrings).
+// The dataplane needs the same answer to price a 1-hour breakpoint's cache
+// writes at the 1-hour rate -- Converse's usage carries no TTL split.
+func ModelSupportsCacheTTL(model string) bool { return bedrockModelSupportsCacheTTL(model) }
+
 // bedrockModelSupportsCacheTTL reports whether model (a Bedrock model
 // ID, carrying its own region/version prefix and date/version suffix)
 // matches one of bedrockCacheTTLModelSubstrings.

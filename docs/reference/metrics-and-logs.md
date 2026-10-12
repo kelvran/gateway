@@ -173,6 +173,10 @@ Attributes are set at the end of the request. A value that is not known is omitt
 | `gen_ai.usage.cache_read.input_tokens` | int | > 0. |
 | `gen_ai.usage.cache_write.input_tokens` | int | > 0. |
 | `gen_ai.usage.reasoning.output_tokens` | int | > 0. |
+| `kelvran.usage.cache_creation_1h.input_tokens` | int | > 0: the slice of the cache writes billed at the 1-hour rate — Anthropic's `usage.cache_creation.ephemeral_1h_input_tokens`; on Bedrock, every write of a request that carried a 1h breakpoint the adapter forwarded. |
+| `kelvran.usage.web_search_requests` | int | > 0: server-side web searches Anthropic billed on the request (`usage.server_tool_use.web_search_requests`). |
+| `kelvran.usage.inference_geo` | string | Anthropic reported `usage.inference_geo` (`global` or `us`). |
+| `kelvran.usage.service_tier` | string | Anthropic reported `usage.service_tier` (`standard`, `priority` or `batch`); informational, never a price. |
 | `kelvran.agent_run_id` | string | The `agent_run_id` Baggage member was present on the request. Set whatever `attribution.capture_ids` says; that switch governs the Claude Code header identifiers only. |
 | `kelvran.client.tool` | string | The request passed the attribution middleware (every request through the data server); the normalised `User-Agent` product, `other` when unknown. Since `gateway/v0.18.0`. |
 | `kelvran.claude_code.session_id`, `kelvran.claude_code.agent_id`, `kelvran.claude_code.parent_agent_id`, `kelvran.claude_code.prompt_id` | string | The corresponding `x-claude-code-*` header was present and passed the identifier grammar, the request authenticated (an unauthenticated request never carries identifiers), and identifier capture is on for the gateway and the key. Span attributes only — never a metric label or log field. |

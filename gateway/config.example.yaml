@@ -780,3 +780,14 @@ price_table:
     completion_per_token: 0.00001
     cache_read_per_token: 0.00000005
     cache_creation_per_token: 0.0000025
+    # The members Anthropic bills beyond flat tokens (pricing page, read
+    # 2026-10-13): cache writes with cache_control.ttl "1h" at 2x base input
+    # (the 5m write above is 1.25x), $10 per 1,000 server-side web searches,
+    # and usage.inference_geo "us" at 1.1x on every token category. Absent
+    # keys keep the earlier behaviour: 1h writes at cache_creation_per_token,
+    # searches unpriced, no US multiplier. The gateway reads the first two
+    # from the response usage (and, on Bedrock, the 1h writes from the
+    # request it forwarded); the multiplier applies to token cost only.
+    cache_creation_1h_per_token: 0.000004
+    web_search_per_request: 0.01
+    us_inference_multiplier: 1.1

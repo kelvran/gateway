@@ -25,7 +25,23 @@ type Usage struct {
 	// producer: CacheReadTokens+CacheCreationTokens <= PromptTokens.
 	CacheReadTokens     int
 	CacheCreationTokens int
+	// CacheCreation1hTokens is the subset of CacheCreationTokens written with
+	// the 1-hour TTL (adapter.Usage.CacheCreation1hTokens); a count outside
+	// [0, CacheCreationTokens] is clamped -- below to 0, above to every write
+	// (the conservative reading, never undercounting).
+	CacheCreation1hTokens int
+	// WebSearchRequests is the number of server-side web searches the
+	// provider billed on this request (adapter.Usage.WebSearchRequests).
+	WebSearchRequests int
+	// InferenceGeo is the provider-reported inference geography
+	// (adapter.Usage.InferenceGeo); InferenceGeoUS applies the model's
+	// USInferenceMultiplier to every token category.
+	InferenceGeo string
 }
+
+// InferenceGeoUS is the usage.inference_geo value Anthropic bills at a
+// multiplier (1.1x on the pricing page, 2026-10-13).
+const InferenceGeoUS = "us"
 
 // ModelPrice is the per-token price for one model's prompt and completion
 // tokens, in USD, plus OPTIONAL per-cache-class rates.
@@ -40,6 +56,20 @@ type ModelPrice struct {
 	CompletionPerToken    decimal.Decimal
 	CacheReadPerToken     *decimal.Decimal
 	CacheCreationPerToken *decimal.Decimal
+	// CacheCreation1hPerToken prices the 1-hour slice of cache writes
+	// (price_table.<model>.cache_creation_1h_per_token). nil falls back to
+	// the resolved CacheCreationPerToken -- the behaviour before this field
+	// existed, so an operator who sets nothing sees no change -- which
+	// undercounts a 1h write by the documented 2x-vs-1.25x gap until set.
+	CacheCreation1hPerToken *decimal.Decimal
+	// WebSearchPerRequest is the fee per server-side web search
+	// (price_table.<model>.web_search_per_request). nil leaves searches
+	// unpriced, as before this field existed.
+	WebSearchPerRequest *decimal.Decimal
+	// USInferenceMultiplier scales the token cost (not the search fees) when
+	// the provider reports InferenceGeoUS (price_table.<model>.
+	// us_inference_multiplier, at least 1). nil applies no multiplier.
+	USInferenceMultiplier *decimal.Decimal
 }
 
 // PriceTable maps a model name to its ModelPrice.
@@ -93,6 +123,13 @@ func NewCalculator(prices PriceTable) *Calculator {
 // them inside CompletionTokens and bills them at the plain output rate, so
 // CompletionPerToken * CompletionTokens is already the right charge —
 // pricing them separately would double-bill.
+//
+// The pricing members (item (i), 2026-10-13): cache writes split into the
+// 5-minute slice at CacheCreationPerToken and the 1-hour slice at
+// CacheCreation1hPerToken; every token category is then scaled by
+// USInferenceMultiplier when InferenceGeo is InferenceGeoUS; the web-search
+// fee (WebSearchRequests x WebSearchPerRequest) is added last, unscaled --
+// the pricing page applies the US multiplier to token categories only.
 func (c *Calculator) Calculate(model string, usage Usage) decimal.Decimal {
 	price, ok := c.prices[model]
 	if !ok {
@@ -105,9 +142,31 @@ func (c *Calculator) Calculate(model string, usage Usage) decimal.Decimal {
 	freshPromptTokens := usage.PromptTokens - cacheReadTokens - cacheCreationTokens
 	cost := decimal.NewFromInt(int64(freshPromptTokens)).Mul(price.PromptPerToken)
 	cost = cost.Add(decimal.NewFromInt(int64(cacheReadTokens)).Mul(resolveCacheRate(price.CacheReadPerToken, price.PromptPerToken)))
-	cost = cost.Add(decimal.NewFromInt(int64(cacheCreationTokens)).Mul(resolveCacheRate(price.CacheCreationPerToken, price.PromptPerToken)))
+	oneHourTokens := clampOneHourTokens(usage.CacheCreation1hTokens, cacheCreationTokens)
+	fiveMinuteRate := resolveCacheRate(price.CacheCreationPerToken, price.PromptPerToken)
+	cost = cost.Add(decimal.NewFromInt(int64(cacheCreationTokens - oneHourTokens)).Mul(fiveMinuteRate))
+	cost = cost.Add(decimal.NewFromInt(int64(oneHourTokens)).Mul(resolveCacheRate(price.CacheCreation1hPerToken, fiveMinuteRate)))
 	cost = cost.Add(decimal.NewFromInt(int64(usage.CompletionTokens)).Mul(price.CompletionPerToken))
+	if usage.InferenceGeo == InferenceGeoUS && price.USInferenceMultiplier != nil {
+		cost = cost.Mul(*price.USInferenceMultiplier)
+	}
+	if price.WebSearchPerRequest != nil && usage.WebSearchRequests > 0 {
+		cost = cost.Add(decimal.NewFromInt(int64(usage.WebSearchRequests)).Mul(*price.WebSearchPerRequest))
+	}
 	return cost
+}
+
+// clampOneHourTokens bounds the 1-hour write count to [0, writes]: a count
+// above the write total is an adapter/provider invariant violation read
+// conservatively (every write at the 1-hour rate); a negative count is none.
+func clampOneHourTokens(oneHour, writes int) int {
+	if oneHour < 0 {
+		return 0
+	}
+	if oneHour > writes {
+		return writes
+	}
+	return oneHour
 }
 
 // resolveCacheRate returns *rate, or fallbackRate when rate is nil

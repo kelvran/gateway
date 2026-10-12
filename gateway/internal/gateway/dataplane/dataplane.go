@@ -4853,6 +4853,10 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// buffered path's runMissPath explicitly returns billable=false on
 	// its own error branch), so this is a genuinely narrow, deliberate
 	// exception, not a general loosening.
+	// Bedrock reports no TTL split on its cache writes; the gateway knows
+	// what it forwarded (item (i)) -- settled here, once, so the price and
+	// the span attribute agree.
+	resp.Usage.CacheCreation1hTokens = oneHourCacheWriteTokens(dep, req, resp.Usage)
 	var cost decimal.Decimal
 	if err == nil || billable {
 		// Priced against realServingModel(dep, req.Model), NOT req.Model
@@ -4873,11 +4877,14 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// which finalize's caller may not have populated at all on an
 		// error path.
 		cost = p.costCalc.Calculate(realServingModel(dep, req.Model), costaccounting.Usage{
-			PromptTokens:        resp.Usage.PromptTokens,
-			CompletionTokens:    resp.Usage.CompletionTokens,
-			TotalTokens:         resp.Usage.TotalTokens,
-			CacheReadTokens:     resp.Usage.CacheReadTokens,
-			CacheCreationTokens: resp.Usage.CacheCreationTokens,
+			PromptTokens:          resp.Usage.PromptTokens,
+			CompletionTokens:      resp.Usage.CompletionTokens,
+			TotalTokens:           resp.Usage.TotalTokens,
+			CacheReadTokens:       resp.Usage.CacheReadTokens,
+			CacheCreationTokens:   resp.Usage.CacheCreationTokens,
+			CacheCreation1hTokens: resp.Usage.CacheCreation1hTokens,
+			WebSearchRequests:     resp.Usage.WebSearchRequests,
+			InferenceGeo:          resp.Usage.InferenceGeo,
 		})
 	}
 
@@ -5056,6 +5063,14 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// comment for why this previously never reached a span attribute.
 		CacheReadTokens:     resp.Usage.CacheReadTokens,
 		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		// The pricing members (item (i)): the 1h slice settled above, the
+		// searches, geography and tier the provider reported.
+		CacheCreation1hTokens: resp.Usage.CacheCreation1hTokens,
+		WebSearchRequests:     resp.Usage.WebSearchRequests,
+		// The two strings are upstream-controlled: bounded like every other
+		// foreign string that reaches a span attribute (item (m)).
+		InferenceGeo: boundedForTelemetry(resp.Usage.InferenceGeo),
+		ServiceTier:  boundedForTelemetry(resp.Usage.ServiceTier),
 		// ReasoningTokens: the subset of CompletionTokens the adapters
 		// lift out of the provider's own breakdown (Anthropic/Bedrock
 		// thinking_tokens, OpenAI reasoning_tokens); 0 when not reported.

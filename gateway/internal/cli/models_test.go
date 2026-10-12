@@ -48,7 +48,7 @@ func TestEveryPriceIsAPositiveDecimalTheLoaderAccepts(t *testing.T) {
 				t.Errorf("%s %s = %q, want a positive decimal (err %v)", id, name, raw, err)
 			}
 		}
-		for name, raw := range map[string]string{"cache_read_per_token": e.CacheReadUSD, "cache_creation_per_token": e.CacheWriteUSD} {
+		for name, raw := range map[string]string{"cache_read_per_token": e.CacheReadUSD, "cache_creation_per_token": e.CacheWriteUSD, "cache_creation_1h_per_token": e.CacheWrite1hUSD} {
 			if raw == "" {
 				continue
 			}
@@ -59,6 +59,14 @@ func TestEveryPriceIsAPositiveDecimalTheLoaderAccepts(t *testing.T) {
 		}
 		if (e.CacheReadUSD == "") != (e.CacheWriteUSD == "") {
 			t.Errorf("%s prices only one of the two cache rates", id)
+		}
+		// The pricing page bills a 1-hour cache write at 2x base input on every
+		// model (2026-10-13); a priced Anthropic row must carry that rate.
+		if e.CacheWriteUSD != "" {
+			want := decimal.RequireFromString(e.PromptUSD).Mul(decimal.NewFromInt(2))
+			if got, err := decimal.NewFromString(e.CacheWrite1hUSD); err != nil || !got.Equal(want) {
+				t.Errorf("%s cache_creation_1h_per_token = %q, want %s (2x prompt_per_token)", id, e.CacheWrite1hUSD, want)
+			}
 		}
 		if e.Vendor == "anthropic" && !strings.HasPrefix(e.BedrockID, "global.anthropic.") {
 			t.Errorf("anthropic model %s Bedrock id = %q, want the global inference-profile form (the base id is rejected by Converse; live-checked 2026-10-10)", id, e.BedrockID)

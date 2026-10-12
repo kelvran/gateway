@@ -99,7 +99,7 @@ type deployment struct {
 
 // priceRow is one emitted price_table.<model> block.
 type priceRow struct {
-	Model, Prompt, Completion, CacheRead, CacheWrite string
+	Model, Prompt, Completion, CacheRead, CacheWrite, CacheWrite1h string
 }
 
 // initPlan is everything the renderer needs, resolved and validated.
@@ -532,7 +532,7 @@ func priceFor(provider, model string, overrides map[string]priceRow) (priceRow, 
 		return priceRow{}, runtimeErr("%q is not in the embedded price table for %s (as of %s it prices %s); pass --price %s=<prompt_per_token>,<completion_per_token> — an unpriced model never decrements a budget",
 			model, provider, priceTableAsOf, strings.Join(embeddedModelsFor(provider), ", "), model)
 	}
-	return priceRow{Model: model, Prompt: e.PromptUSD, Completion: e.CompletionUSD, CacheRead: e.CacheReadUSD, CacheWrite: e.CacheWriteUSD}, nil
+	return priceRow{Model: model, Prompt: e.PromptUSD, Completion: e.CompletionUSD, CacheRead: e.CacheReadUSD, CacheWrite: e.CacheWriteUSD, CacheWrite1h: e.CacheWrite1hUSD}, nil
 }
 
 // resolvePersistPath picks admin.persist_path for team mode: --persist-path

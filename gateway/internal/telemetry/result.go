@@ -389,6 +389,16 @@ type ChatCompletionResult struct {
 	// InputTokens/OutputTokens's own identical convention.
 	CacheReadTokens     int
 	CacheCreationTokens int
+	// CacheCreation1hTokens/WebSearchRequests/InferenceGeo/ServiceTier mirror
+	// the adapter.Usage pricing members (item (i), 2026-10-13): the 1-hour
+	// slice of CacheCreationTokens, the server-side web searches, and the
+	// inference geography and service tier Anthropic reported. Zero/empty
+	// when not reported; RecordChatCompletionResult emits each kelvran.usage.*
+	// attribute only then.
+	CacheCreation1hTokens int
+	WebSearchRequests     int
+	InferenceGeo          string
+	ServiceTier           string
 	// ReasoningTokens mirrors adapter.Usage.ReasoningTokens — the subset
 	// of OutputTokens spent on reasoning/extended thinking (Anthropic
 	// thinking_tokens, Bedrock's copy of it, OpenAI reasoning_tokens).
@@ -589,6 +599,18 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	if r.ReasoningTokens > 0 {
 		attrs = append(attrs, attribute.Int(AttrGenAIUsageReasoningOutputTokens, r.ReasoningTokens))
 	}
+	if r.CacheCreation1hTokens > 0 {
+		attrs = append(attrs, attribute.Int(AttrKelvranUsageCacheCreation1hInputTokens, r.CacheCreation1hTokens))
+	}
+	if r.WebSearchRequests > 0 {
+		attrs = append(attrs, attribute.Int(AttrKelvranUsageWebSearchRequests, r.WebSearchRequests))
+	}
+	if r.InferenceGeo != "" {
+		attrs = append(attrs, attribute.String(AttrKelvranUsageInferenceGeo, r.InferenceGeo))
+	}
+	if r.ServiceTier != "" {
+		attrs = append(attrs, attribute.String(AttrKelvranUsageServiceTier, r.ServiceTier))
+	}
 	if r.FallbackHops > 0 {
 		attrs = append(attrs, attribute.Int(AttrKelvranFallbackHops, r.FallbackHops))
 	}
@@ -688,3 +710,14 @@ func appendAttributionSpanAttrs(attrs []attribute.KeyValue, a Attribution) []att
 	}
 	return attrs
 }
+
+// The pricing-member span attributes (item (i), 2026-10-13): the usage
+// members Anthropic bills beyond flat tokens, recorded when present so a
+// trace shows why a request cost what it did. kelvran.* because the gen_ai
+// semantic conventions have no attribute for any of them.
+const (
+	AttrKelvranUsageCacheCreation1hInputTokens = "kelvran.usage.cache_creation_1h.input_tokens"
+	AttrKelvranUsageWebSearchRequests          = "kelvran.usage.web_search_requests"
+	AttrKelvranUsageInferenceGeo               = "kelvran.usage.inference_geo"
+	AttrKelvranUsageServiceTier                = "kelvran.usage.service_tier"
+)

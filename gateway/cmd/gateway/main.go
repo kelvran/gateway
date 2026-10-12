@@ -1255,15 +1255,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		RecoveryRampInitialPercent: cfg.HealthProbe.RecoveryRampInitialPercent,
 	})
 
-	priceTable := costaccounting.PriceTable{}
-	for model, price := range cfg.PriceTable {
-		priceTable[model] = costaccounting.ModelPrice{
-			PromptPerToken:        price.PromptPerToken,
-			CompletionPerToken:    price.CompletionPerToken,
-			CacheReadPerToken:     price.CacheReadPerToken,
-			CacheCreationPerToken: price.CacheCreationPerToken,
-		}
-	}
+	priceTable := costPriceTable(cfg.PriceTable)
 
 	budgetTracker, err := newBudgetTracker(cfg.Budget, cfg.Admin.OnCorruptStore, logger)
 	if err != nil {
@@ -2427,4 +2419,23 @@ func retryAfterSeconds(d time.Duration) int {
 		seconds = 1
 	}
 	return seconds
+}
+
+// costPriceTable maps the loaded price_table onto the calculator's table,
+// every optional rate included -- a rate the loader accepts but this mapping
+// drops would be silently unpriced (TestCostPriceTableCarriesEveryOptionalRate).
+func costPriceTable(cfg map[string]controlplane.ModelPriceConfig) costaccounting.PriceTable {
+	priceTable := make(costaccounting.PriceTable, len(cfg))
+	for model, price := range cfg {
+		priceTable[model] = costaccounting.ModelPrice{
+			PromptPerToken:          price.PromptPerToken,
+			CompletionPerToken:      price.CompletionPerToken,
+			CacheReadPerToken:       price.CacheReadPerToken,
+			CacheCreationPerToken:   price.CacheCreationPerToken,
+			CacheCreation1hPerToken: price.CacheCreation1hPerToken,
+			WebSearchPerRequest:     price.WebSearchPerRequest,
+			USInferenceMultiplier:   price.USInferenceMultiplier,
+		}
+	}
+	return priceTable
 }

@@ -107,6 +107,9 @@ func renderConfig(p *initPlan) (string, error) {
 		if r.CacheWrite != "" {
 			y.raw(2, "cache_creation_per_token", r.CacheWrite)
 		}
+		if r.CacheWrite1h != "" {
+			y.raw(2, "cache_creation_1h_per_token", r.CacheWrite1h)
+		}
 	}
 	return y.String()
 }

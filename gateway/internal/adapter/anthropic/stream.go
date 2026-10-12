@@ -111,6 +111,12 @@ type streamDecoder struct {
 	inputTokens         int
 	cacheReadTokens     int
 	cacheCreationTokens int
+	// cacheCreation1hTokens/serviceTier/inferenceGeo are the pricing members
+	// message_start carries (item (i)); the final usage copies them. The
+	// cumulative server_tool_use rides message_delta instead.
+	cacheCreation1hTokens int
+	serviceTier           string
+	inferenceGeo          string
 	// messageStartSeen/messageDeltaSeen guard against a duplicate/
 	// replayed event corrupting the fields above or the final billed
 	// usage — see ErrAnthropicDuplicateStreamEvent's own doc comment.
@@ -140,6 +146,11 @@ type rawMessageStart struct {
 			InputTokens              int `json:"input_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			// The pricing members ride message_start's full usage object
+			// (see Usage.CacheCreation / ServiceTier / InferenceGeo).
+			CacheCreation *CacheCreationBreakdown `json:"cache_creation,omitempty"`
+			ServiceTier   string                  `json:"service_tier,omitempty"`
+			InferenceGeo  string                  `json:"inference_geo,omitempty"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -198,6 +209,9 @@ type rawMessageDelta struct {
 	Usage struct {
 		OutputTokens        int                  `json:"output_tokens"`
 		OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"`
+		// ServerToolUse is the whole response's server_tool_use (cumulative,
+		// like output_tokens) -- anthropic-sdk-go v1.80.0's MessageDeltaUsage.
+		ServerToolUse *ServerToolUsage `json:"server_tool_use,omitempty"`
 	} `json:"usage"`
 }
 
@@ -284,6 +298,9 @@ func (d *streamDecoder) decodeMessageStart(data string) ([]streaming.ChatComplet
 	d.inputTokens = m.Message.Usage.InputTokens
 	d.cacheReadTokens = m.Message.Usage.CacheReadInputTokens
 	d.cacheCreationTokens = m.Message.Usage.CacheCreationInputTokens
+	d.cacheCreation1hTokens = oneHourCacheTokensOf(m.Message.Usage.CacheCreation)
+	d.serviceTier = m.Message.Usage.ServiceTier
+	d.inferenceGeo = m.Message.Usage.InferenceGeo
 	return nil, false, nil, nil
 }
 
@@ -428,12 +445,16 @@ func (d *streamDecoder) decodeMessageDelta(data string) ([]streaming.ChatComplet
 		return nil, false, nil, fmt.Errorf("anthropic: decoding message_delta: %w", err)
 	}
 	usage := &adapter.Usage{
-		PromptTokens:        d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens,
-		CompletionTokens:    m.Usage.OutputTokens,
-		TotalTokens:         d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens + m.Usage.OutputTokens,
-		CacheReadTokens:     d.cacheReadTokens,
-		CacheCreationTokens: d.cacheCreationTokens,
-		ReasoningTokens:     thinkingTokensOf(m.Usage.OutputTokensDetails),
+		PromptTokens:          d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens,
+		CompletionTokens:      m.Usage.OutputTokens,
+		TotalTokens:           d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens + m.Usage.OutputTokens,
+		CacheReadTokens:       d.cacheReadTokens,
+		CacheCreationTokens:   d.cacheCreationTokens,
+		ReasoningTokens:       thinkingTokensOf(m.Usage.OutputTokensDetails),
+		CacheCreation1hTokens: d.cacheCreation1hTokens,
+		WebSearchRequests:     webSearchRequestsOf(m.Usage.ServerToolUse),
+		ServiceTier:           d.serviceTier,
+		InferenceGeo:          d.inferenceGeo,
 	}
 	// message_delta is the ONLY event that ever carries stop_reason — a
 	// chunk reconstructing the full canonical response (for cache

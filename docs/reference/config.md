@@ -218,6 +218,11 @@ USD price per token, keyed by canonical model name. Every deployment sharing a `
 | `completion_per_token` | `decimal` | required | Price of one completion token. Same rules |
 | `cache_read_per_token` | `decimal` | absent (priced at `prompt_per_token`) | Price of one cache-read token. Negative is a load error |
 | `cache_creation_per_token` | `decimal` | absent (priced at `prompt_per_token`) | Price of one cache-write token. Negative is a load error |
+| `cache_creation_1h_per_token` | `decimal` | absent (priced at `cache_creation_per_token`, or its fallback) | Price of one cache-write token written with `cache_control.ttl: "1h"` — Anthropic's `usage.cache_creation.ephemeral_1h_input_tokens`; on Bedrock, every write of a request that carried a 1h breakpoint the adapter forwarded. The pricing page bills it at 2× base input against 1.25× for a 5-minute write. Negative, or below `cache_creation_per_token` (or `prompt_per_token` when that key is absent), is a load error: a 1-hour write never costs less than a 5-minute one |
+| `web_search_per_request` | `decimal` | absent (searches unpriced) | Fee per server-side web search (`usage.server_tool_use.web_search_requests`), added after the token cost and outside the US multiplier. Negative is a load error |
+| `us_inference_multiplier` | `decimal` | absent (no multiplier) | Multiplies the token cost when the response reports `usage.inference_geo: "us"` (1.1 on the pricing page). Below 1 is a load error |
+
+The three member rates landed 2026-10-13 (brainstorm item (i)). What a budget still cannot price after them: fast mode (`speed: "fast"`, a separate price row on Claude Opus 5.5 / 5 / 4.8), Claude Haiku 5.5's higher rates for a prompt over 100,000 tokens, and code execution's container-hours (an organisation-level allowance, not a per-request figure); see [the budgets how-to](../how-to/virtual-keys-and-budgets.md#know-what-a-budget-cannot-see-on-an-anthropic-passthrough-hop).
 
 An entry that is not a mapping is a load error. A model with no entry is not a load error and produces no warning: every call to that model is costed at `0`, so `budget_usd` is never consumed and `budget_warn_percent` never fires for it.
 

@@ -624,6 +624,54 @@ type Usage struct {
 	// with 0" stay distinguishable at the wire level, even though both
 	// map to adapter.Usage.ReasoningTokens == 0.
 	OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"`
+	// CacheCreation is usage.cache_creation, the TTL breakdown of
+	// CacheCreationInputTokens (ephemeral_5m_input_tokens +
+	// ephemeral_1h_input_tokens; anthropic-sdk-go v1.80.0's Usage). nil when
+	// absent. The 1h slice is billed at 2x base input, so FromProvider lifts
+	// it into adapter.Usage.CacheCreation1hTokens for cost accounting.
+	CacheCreation *CacheCreationBreakdown `json:"cache_creation,omitempty"`
+	// ServerToolUse is usage.server_tool_use: per-request counts of the
+	// server-side tools. Web searches are billed per request; web fetch is
+	// free; code execution is billed per container-hour at the organisation
+	// level, which no per-request count can price.
+	ServerToolUse *ServerToolUsage `json:"server_tool_use,omitempty"`
+	// ServiceTier is usage.service_tier ("standard", "priority", "batch").
+	ServiceTier string `json:"service_tier,omitempty"`
+	// InferenceGeo is usage.inference_geo ("global" or "us").
+	InferenceGeo string `json:"inference_geo,omitempty"`
+}
+
+// CacheCreationBreakdown is Anthropic's usage.cache_creation object -- see
+// Usage.CacheCreation.
+type CacheCreationBreakdown struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+}
+
+// ServerToolUsage is Anthropic's usage.server_tool_use object -- see
+// Usage.ServerToolUse.
+type ServerToolUsage struct {
+	WebSearchRequests     int `json:"web_search_requests"`
+	WebFetchRequests      int `json:"web_fetch_requests"`
+	CodeExecutionRequests int `json:"code_execution_requests"`
+}
+
+// oneHourCacheTokensOf returns the 1-hour slice of a cache_creation
+// breakdown, 0 when the response carried none.
+func oneHourCacheTokensOf(c *CacheCreationBreakdown) int {
+	if c == nil {
+		return 0
+	}
+	return c.Ephemeral1hInputTokens
+}
+
+// webSearchRequestsOf returns server_tool_use.web_search_requests, 0 when
+// the response carried no server_tool_use.
+func webSearchRequestsOf(s *ServerToolUsage) int {
+	if s == nil {
+		return 0
+	}
+	return s.WebSearchRequests
 }
 
 // OutputTokensDetails is Anthropic's usage.output_tokens_details object --
@@ -1098,12 +1146,16 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			{Index: 0, Message: message, FinishReason: finishReason},
 		},
 		Usage: adapter.Usage{
-			PromptTokens:        native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens,
-			CompletionTokens:    native.Usage.OutputTokens,
-			TotalTokens:         native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens + native.Usage.OutputTokens,
-			CacheReadTokens:     native.Usage.CacheReadInputTokens,
-			CacheCreationTokens: native.Usage.CacheCreationInputTokens,
-			ReasoningTokens:     thinkingTokensOf(native.Usage.OutputTokensDetails),
+			PromptTokens:          native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens,
+			CompletionTokens:      native.Usage.OutputTokens,
+			TotalTokens:           native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens + native.Usage.OutputTokens,
+			CacheReadTokens:       native.Usage.CacheReadInputTokens,
+			CacheCreationTokens:   native.Usage.CacheCreationInputTokens,
+			ReasoningTokens:       thinkingTokensOf(native.Usage.OutputTokensDetails),
+			CacheCreation1hTokens: oneHourCacheTokensOf(native.Usage.CacheCreation),
+			WebSearchRequests:     webSearchRequestsOf(native.Usage.ServerToolUse),
+			ServiceTier:           native.Usage.ServiceTier,
+			InferenceGeo:          native.Usage.InferenceGeo,
 		},
 		InputTransformations: inputTransformations,
 		Unrepresentable:      unrepresentable,

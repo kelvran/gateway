@@ -348,6 +348,13 @@ type ModelPriceConfig struct {
 	// bare decimal.Decimal.
 	CacheReadPerToken     *decimal.Decimal
 	CacheCreationPerToken *decimal.Decimal
+	// CacheCreation1hPerToken/WebSearchPerRequest/USInferenceMultiplier are
+	// the optional cache_creation_1h_per_token, web_search_per_request and
+	// us_inference_multiplier keys (item (i)), nil unless configured -- see
+	// costaccounting.ModelPrice for what each prices and how nil falls back.
+	CacheCreation1hPerToken *decimal.Decimal
+	WebSearchPerRequest     *decimal.Decimal
+	USInferenceMultiplier   *decimal.Decimal
 }
 
 // VirtualKeyConfig is one statically-configured virtual key, per
@@ -1694,6 +1701,36 @@ func Parse(data []byte, source string) (*Config, error) {
 					return nil, fmt.Errorf("controlplane: price_table entry %q has a negative cache_creation_per_token", model)
 				}
 				entry.CacheCreationPerToken = &cacheCreationPer
+			}
+			if oneHourPer, ok := getDecimal(priceMap, "cache_creation_1h_per_token"); ok {
+				if oneHourPer.Sign() < 0 {
+					return nil, fmt.Errorf("controlplane: price_table entry %q has a negative cache_creation_1h_per_token", model)
+				}
+				// A 1-hour write never costs less than the 5-minute write it
+				// falls back from (2x against 1.25x base input on the pricing
+				// page); a lower rate would undercount every 1h write.
+				floor := promptPer
+				if entry.CacheCreationPerToken != nil {
+					floor = *entry.CacheCreationPerToken
+				}
+				if oneHourPer.LessThan(floor) {
+					return nil, fmt.Errorf("controlplane: price_table entry %q has a cache_creation_1h_per_token (%s) below the 5-minute cache-write rate it falls back from (%s): a 1-hour write never costs less than a 5-minute one", model, oneHourPer, floor)
+				}
+				entry.CacheCreation1hPerToken = &oneHourPer
+			}
+			if webSearchPer, ok := getDecimal(priceMap, "web_search_per_request"); ok {
+				if webSearchPer.Sign() < 0 {
+					return nil, fmt.Errorf("controlplane: price_table entry %q has a negative web_search_per_request", model)
+				}
+				entry.WebSearchPerRequest = &webSearchPer
+			}
+			if usMultiplier, ok := getDecimal(priceMap, "us_inference_multiplier"); ok {
+				// Below 1 would bill US-only inference under the standard rate:
+				// the undercounting direction every rate here refuses.
+				if usMultiplier.LessThan(decimal.NewFromInt(1)) {
+					return nil, fmt.Errorf("controlplane: price_table entry %q has a us_inference_multiplier below 1 (%s)", model, usMultiplier)
+				}
+				entry.USInferenceMultiplier = &usMultiplier
 			}
 			cfg.PriceTable[model] = entry
 		}
