@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791804923006,
+  "lastUpdate": 1791890610155,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -989,6 +989,208 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 latency p99",
             "value": 53.69586,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "9269dec85f962dd8a0dd18ce0fcedaf1ee81235f",
+          "message": "feat(costaccounting): price the members Anthropic bills beyond flat tokens\n\nBrainstorm item (i), approved by the owner 2026-10-13 as \"accounting first, a\npolicy knob only on a trigger\". The gateway priced every request from tokens x\nmodel; Anthropic bills three response-reported members differently: cache\nwrites with a 1-hour TTL (2x base input against 1.25x for 5-minute writes),\nserver-side web searches ($10 per 1,000) and inference_geo \"us\" (1.1x on every\ntoken category). The item's recorded premise -- that forward_known betas change\nBedrock billing -- was wrong: the four forwarded betas are token-billed. Bedrock's\nreal gap is cachePoint.ttl \"1h\", whose 2x price Converse's usage never splits out.\n\nWhat changes:\n- adapter.Usage gains CacheCreation1hTokens, WebSearchRequests, InferenceGeo and\n  ServiceTier as internal json:\"-\" fields; the anthropic adapter parses\n  usage.cache_creation, usage.server_tool_use, usage.inference_geo and\n  usage.service_tier, buffered and streamed (anthropic-sdk-go v1.80.0 shape).\n- price_table.<model> accepts cache_creation_1h_per_token, web_search_per_request\n  and us_inference_multiplier; Calculate splits writes into the 5m and 1h slices\n  (1h clamped to [0, writes]), scales token cost by the multiplier on \"us\" and\n  adds the search fee unscaled. Negative rates, a multiplier below 1 and a 1h\n  rate below the 5-minute rate it falls back from are load errors. An absent key\n  keeps the earlier behaviour for that member: no hard-coded ratio, the same\n  choice as the 2026-09-10 cache-rate fallback.\n- dataplane.finalize settles the 1h slice once: on a bedrock deployment a\n  request that carried a 1h breakpoint on a model the adapter forwards the ttl\n  for prices every write at the 1h rate (bedrock.ModelSupportsCacheTTL, now\n  exported; adapter.HasOneHourCacheBreakpoint); the inference is confined to\n  bedrock and pinned by a test.\n- Four kelvran.usage.* span attributes, the two upstream strings bounded before\n  the span; kelvran init renders the 1h rate (2x base on every Anthropic row).\n- Docs: config reference, budgets how-to, THREAT_MODEL residual (1) narrowed,\n  metrics reference, RFC 2026-09-10 addendum, RFC-1 S11a resolution, data-plane\n  and CLI references, example config, changelog, DECISIONS, LOGS.\n\nVerification: red tests first in eight packages; 19 overlay mutants all caught;\nwhole non-Docker suite -race, compat suite, golangci-lint and go-arch-lint\ngreen; a live proof against a mock Anthropic Messages upstream moved the logged\ncost from 0.00785 to 0.04111 (buffered) and 0.00465 to 0.025511 (streamed) once\nthe keys were set, with the internal members absent from the client body.\nReviews: Go SHIP, docs SHIP, security FIX_FIRST on one MED (the loader floor\nabove), repaired and re-read SHIP by a fresh reviewer.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T22:04:15Z",
+          "url": "https://github.com/kelvran/gateway/commit/9269dec85f962dd8a0dd18ce0fcedaf1ee81235f"
+        },
+        "date": 1791890609523,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.456738,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 2.649934,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 3.909043,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 3,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 201.952276,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 202.924729,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 203.693772,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 569.776588,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 576.492415,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 578.984845,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 52.075899,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 54.404067,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.605536,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.373694,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.599414,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.715285,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 52.653755,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 53.476342,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 54.054436,
             "unit": "ms"
           },
           {
