@@ -41,7 +41,7 @@ func TestStripHiddenUnicodeRemovesZeroWidthSpace(t *testing.T) {
 }
 
 func TestStripHiddenUnicodeRemovesEveryDocumentedRange(t *testing.T) {
-	// One representative rune from each hiddenUnicodeRanges entry
+	// At least one representative rune from each hiddenUnicodeRanges entry
 	// (promptinjection.go) -- this helper must stay in exact sync with
 	// that set, never define a second, inconsistent one.
 	cases := []struct {
@@ -53,6 +53,9 @@ func TestStripHiddenUnicodeRemovesEveryDocumentedRange(t *testing.T) {
 		{"bom", 0xFEFF},
 		{"bidi_control", 0x202E},
 		{"unicode_tag", 0xE0041},
+		{"word_joiner", 0x2060},
+		{"variation_selector_fe0f", 0xFE0F},
+		{"variation_selector_supplement_e0100", 0xE0100},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

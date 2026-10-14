@@ -117,8 +117,10 @@ func joinAsWordSeparatedAlternation(phrases []string) string {
 // hiddenUnicodeRanges are the real, documented hidden-Unicode
 // prompt-injection ranges Kong's AI Prompt Guard plugin publishes as
 // known attack vectors: zero-width characters, bidirectional-control
-// characters, and Unicode tag characters — none of which have any
-// legitimate reason to appear in ordinary chat input.
+// characters, and Unicode tag characters — which rarely have a
+// legitimate reason to appear in ordinary chat input (the two selector
+// blocks below name their exceptions: emoji presentation and CJK
+// ideographic variation sequences, both Warn-tier).
 //
 // Widened 2026-09-20, by this repo's own end-to-end research round
 // (docs/upgrade-research/ai-security-hardening-tier1-2026-09-20.md):
@@ -144,6 +146,23 @@ func joinAsWordSeparatedAlternation(phrases []string) string {
 // unassigned code points in between are covered too — an unassigned
 // but encodable code point is exactly what a smuggler would reach for
 // once the assigned ones are filtered.
+//
+// Widened again 2026-10-15 (round-5 Tier S item 23,
+// docs/upgrade-research/kelvran-deep-research-round5-2026-10-14.md): the
+// Variation Selectors Supplement U+E0100-E01EF (VS17-VS256, 240 selectors
+// whose only standard use is ideographic variation sequences; the emoji
+// presentation selectors VS15/VS16 live in the U+FE00-FE0F block above)
+// joins the list. Evidence is a preprint on open-weight models (arXiv
+// 2510.05025) -- medium confidence, recorded as such -- but the class is
+// identical to the FE00 block already listed: invisible, encodable, rare in
+// chat input. The one legitimate source is an ideographic variation
+// sequence in Japanese or Chinese text from IVD-aware systems (Adobe-Japan1,
+// Hanyo-Denshi / Moji_Joho, pasted forms and PDFs); that costs one Warn-tier
+// log line and nothing else under the default policy -- the same accepted
+// exposure as VS16 (U+FE0F, every emoji with a presentation selector) and
+// the ZWJ already in this table. stripHiddenUnicode (normalize.go)
+// reads this same table, so the other regex detectors become robust to a
+// supplement selector injected mid-run at the same time.
 var hiddenUnicodeRanges = [][2]rune{
 	{0x200B, 0x200D},   // zero-width space/non-joiner/joiner
 	{0x2060, 0x2060},   // word joiner
@@ -151,6 +170,7 @@ var hiddenUnicodeRanges = [][2]rune{
 	{0xFEFF, 0xFEFF},   // zero-width no-break space (BOM)
 	{0x202A, 0x202E},   // bidirectional control
 	{0xE0000, 0xE007F}, // Unicode Tags block (whole block, per OWASP LLM01 2026)
+	{0xE0100, 0xE01EF}, // Variation Selectors Supplement VS17-VS256 (round-5 Tier S item 23, 2026-10-15)
 }
 
 func isHiddenUnicode(r rune) bool {
