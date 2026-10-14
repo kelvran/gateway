@@ -100,8 +100,8 @@ The machine-readable form of this table is `gateway/openapi/kelvran-gateway.open
 | POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404, 409, 413 | `admin_virtual_key_rotated` |
 | GET | `/admin/virtual_keys/{name}/spend` | Admin, Viewer, CostViewer | 200 JSON | 404, 500 | `admin_virtual_key_spend_read` |
 | GET | `/admin/virtual_keys/{name}/inflight` | Admin, Viewer | 200 JSON | 404, 500 | `admin_virtual_key_inflight_read` |
-| GET | `/admin/spend` (since `gateway/v0.20.0`) | Admin, Viewer, CostViewer | 200 JSON | 400, 500 | `admin_spend_read` |
-| POST | `/admin/spend/erase` (since `gateway/v0.20.0`) | Admin | 200 JSON | 400, 413, 500 | `admin_spend_erased` |
+| GET | `/admin/spend` | Admin, Viewer, CostViewer | 200 JSON | 400, 500 | `admin_spend_read` |
+| POST | `/admin/spend/erase` | Admin | 200 JSON | 400, 413, 500 | `admin_spend_erased` |
 | GET | `/admin/prompts` | Admin, Viewer | 200 JSON | 500 | `admin_prompts_read` |
 | GET | `/admin/prompts/{id}` | Admin, Viewer | 200 JSON | 404, 500 | `admin_prompts_read` |
 | GET | `/admin/prompts/{id}/versions/{version}` | Admin, Viewer | 200 JSON | 400, 404, 500 | `admin_prompts_read` |
@@ -338,6 +338,8 @@ Audit entry `admin_virtual_key_spend_read` with `name` and `authorized_by`; the 
 
 ## GET /admin/spend
 
+Since `gateway/v0.20.0`; `gateway/v0.19.0` has no spend routes.
+
 The spend ledger (item 13d) aggregated by one dimension over a window: every billable chat completion and embeddings call is recorded by hour, virtual key, served model, client tool and session (the Claude Code session id, else a grammar-passing `agent_run_id` Baggage member). Admin and Viewer read any query. **CostViewer reads only with `key=` naming one virtual key**, across every `group_by`; without `key=` the answer is `401` (`cost_viewer may read /admin/spend only with key= naming one virtual key`).
 
 Query parameters:
@@ -367,6 +369,8 @@ Response:
 Audit entry `admin_spend_read` with `group_by`, `key`, `since`, `until`, `rows` (the count) and `authorized_by`; no figure is logged. In Redis mode a read is one `SCAN` of the hour hashes plus one `HGETALL` per hash in the window — the RFC calls it not a hot path, and the admin listener has no per-credential rate limit (it binds loopback by default), so Viewer-tier dashboards should poll it in minutes, not seconds, and a leaked read credential is a load vector as well as a disclosure. The CLI reads it as `kelvran spend --by model|tool|session [--key NAME] [--since] [--until]` ([kelvran-cli.md](kelvran-cli.md#kelvran-spend)).
 
 ## POST /admin/spend/erase
+
+Since `gateway/v0.20.0`; `gateway/v0.19.0` has no spend routes.
 
 Erases one session's rows from the spend ledger: every cell of that session across every key and hour. Admin only — irreversible, and cross-tenant by nature (a session id is not scoped to a key). Body, bounded at 4 KiB:
 
