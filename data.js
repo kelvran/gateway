@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791890610155,
+  "lastUpdate": 1791969317658,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -1191,6 +1191,208 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 latency p99",
             "value": 54.054436,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "739b11df4285bc7206911fac4582efcf4dac8e2a",
+          "message": "fix(gateway): gate Claude 5.x fixed sampling, prefill, thinking disabled and forced tool_choice before the call\n\nRound-5 research 2026-10-14, Tier A item 2; closes the 2026-10-08 live\nverification's F5. The Claude 5.x models answer 400 to request shapes the\n4.x generation accepted, and every one reached Kelvran's clients as a 502\nupstream_error. One provider-agnostic table in adapter/capabilities.go now\ndecides each shape per family, matched at a family boundary so\nclaude-sonnet-5 never admits claude-sonnet-5-5:\n\n- Fixed sampling (Sonnet 5, Sonnet 5.5, Haiku 5.5, Fable 5.1 proven on\n  Bedrock; Mythos 5.1 by release note): a temperature other than 1, a top_p\n  other than 0.99, top_p beside temperature 1, and any top_k are left off\n  the wire by the anthropic and bedrock adapters and logged by the dataplane\n  on the existing request_field_dropped line (field, value, reason).\n  Dropping beats relaying the 400: a fallback chain or alias can land a\n  request on a generation the client did not pick, and the request then\n  runs at the model's only sampling anyway. Opus 5.5 is deliberately not\n  gated (unprobeable on the verifying account, undocumented).\n- Assistant prefill (Sonnet 4.6, Sonnet 5, Sonnet 5.5, Haiku 5.5, Fable 5.1\n  proven; Mythos 5.1 by release note) cannot be dropped without changing the\n  request, so it is a routing property (capabilityOKForRequest's fourth):\n  the pool is searched for an accepting deployment, otherwise the first-pick\n  sites answer 400 assistant_prefill_unsupported (param messages) before any\n  upstream call, with the per-call check kept as a backstop. A /v1/messages\n  body relayed as received to an anthropic deployment is never checked; a\n  bedrock translate hop is (isPassthroughHop mirrors passthroughRequestFor).\n- thinking disabled: rewritten to between_tools on Sonnet 5.5 (its documented\n  off switch, both halves proven) and dropped on the always-on families\n  (Fable 5.1 proven; Opus 5.5, Mythos 5.1 documented), where the request runs\n  as one without a thinking field, the block-binding default included.\n- Sonnet 5.5 joins the forced-tool-choice rejecters, and the bedrock adapter's\n  required branch (Converse any) now refuses the rejecters as tool already did.\n\nEvidence: Bedrock Converse probes with max_tokens 1 on 2026-10-14 (through\nthe gateway and directly), 19 overlay mutants caught, the whole non-Docker\nsuite with -race, golangci-lint, go-arch-lint and the compat suite green, a\nlive run of the new build against real Bedrock (200s with drop lines, the\nprefill 400, the forced-choice refusal, thinking disabled a 200 on all three\nfamilies). Three read-only review lanes plus a fresh re-read of the repairs;\nDECISIONS.md and docs/agents/LOGS.md record the design and the evidence.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-14T06:47:43Z",
+          "url": "https://github.com/kelvran/gateway/commit/739b11df4285bc7206911fac4582efcf4dac8e2a"
+        },
+        "date": 1791969316649,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.410104,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 2.711832,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 3.645609,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 3,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 202.047458,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 203.323832,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 204.318779,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 3,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 572.775878,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 578.085679,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 579.997266,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 51.991173,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 54.447463,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.541276,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.326525,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.567253,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.632631,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 52.52981,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 53.367325,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 53.818847,
             "unit": "ms"
           },
           {
