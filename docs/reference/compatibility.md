@@ -23,6 +23,7 @@ Versions: the latest tagged release is `gateway/v0.19.0` (2026-10-11). Items tha
 | Tool-result `parts` (image, document) on a `role: tool` message carried to `anthropic` (a `tool_result` block array) and `bedrock` (`toolResult.content` blocks); `openai`/`openaicompat` text parts only, `gemini` none — such a request is routed to a capable deployment in the pool, else `400` `tool_result_parts_unsupported` | `gateway/v0.19.0`; `gateway/changelog/0.19.0.md` | `anthropic`, `bedrock` and `gemini` rejected the message before any upstream call (`502` `upstream_error`); `openai`/`openaicompat` forwarded an `image_url` part the provider rejects (a document part was already the adapter's own `502`) |
 | A response carrying a provider block the canonical schema cannot represent (an Anthropic block or delta type newer than the adapter) is never cached | `gateway/v0.19.0`; `gateway/changelog/0.19.0.md` | Cached and replayed without the block |
 | The Anthropic ingress's passthrough fingerprint (the members of a `/v1/messages` body the canonical schema cannot hold, and its `is_error` tool results) folded into cache keys — empty for every `/v1/chat/completions` request; `parts[].text` bounded at 8 MiB like `content` | `gateway/v0.19.0`; `gateway/changelog/0.19.0.md` | Keys did not fold it (no `/v1/messages` route); a text part was bounded only by the 32 MiB body cap |
+| Claude 5.x request gates: fixed sampling dropped and logged, prefill `400` `assistant_prefill_unsupported` (a routing property), `thinking: disabled` rewritten or dropped per family, Sonnet 5.5 a forced-`tool_choice` rejecter, Bedrock `required` refused on the rejecters | `main` since 2026-10-14; `gateway/internal/adapter/capabilities.go` | A `temperature`, `top_p` or `top_k` the Claude 5.x model rejects, a prefill, `thinking: disabled` on Sonnet 5.5/Fable 5.1/Opus 5.5 and `tool_choice: required` on Bedrock Sonnet 5.5 all reach the model and come back as `502` `upstream_error` (the 2026-10-08 live verification's F5) |
 
 ## Routes
 
@@ -88,9 +89,9 @@ The handler decodes the body with plain `json.Unmarshal` into `adapter.ChatReque
 |---|---|---|
 | `model` | string | Canonical model name from the operator's `model:` config, resolved to a deployment. An unknown model is `400`, `code: model_not_found` (OpenAI returns `404`) |
 | `messages` | array | At most 2000 entries, else `400 invalid_request`. Zero messages after prompt resolution is `400`, `code: empty_messages`, `param: messages` |
-| `temperature` | number | Forwarded |
+| `temperature` | number | Forwarded; on an `anthropic`/`bedrock` deployment serving a fixed-sampling Claude family any value but `1` is dropped and logged — see [Claude 5.x request gates](#claude-5x-request-gates) |
 | `max_tokens` | integer | Forwarded |
-| `top_p` | number | Forwarded (since gateway/v0.19.0; dropped silently before) |
+| `top_p` | number | Forwarded (since gateway/v0.19.0; dropped silently before); on a fixed-sampling Claude family any value but `0.99`, and `0.99` beside `temperature: 1`, is dropped and logged — see [Claude 5.x request gates](#claude-5x-request-gates) |
 | `stop` | string or array of strings | Forwarded as an array to every provider (since gateway/v0.19.0; dropped silently before); provider limits are the provider's own `400` |
 | `tools` | array | At most 256 entries, else `400 invalid_request`; see [tools](#tools) |
 | `stream` | boolean | Selects the SSE path |
@@ -120,6 +121,17 @@ Consequences: `max_completion_tokens` does not cap output (use `max_tokens`); `n
 | `tool_choice.disable_parallel_tool_use` | boolean | Honoured only by the direct Anthropic adapter; every other adapter ignores it |
 
 Setting both `prompt_id` and `messages` is `400`, `code: invalid_prompt_reference`.
+
+### Claude 5.x request gates
+
+Since 2026-10-14 (`main`; round-5 research, Tier A item 2) the gateway knows four request shapes the Claude 5.x generation answers `400` to, and handles each before the model sees it. The rules are provider-agnostic (`anthropic` and `bedrock` deployments alike; the direct API and Converse run the same per-model validation) with one scope limit: on an `anthropic` deployment only `/v1/chat/completions` traffic is gated, because a `/v1/messages` body is relayed to it as received and Anthropic's own `400` is relayed under its envelope — so the `thinking` rewrite below is reachable only on `bedrock`. Matched at a family boundary (`claude-sonnet-5` never admits `claude-sonnet-5-5`), and listed in `gateway/internal/adapter/capabilities.go` with a proven-or-documented label per family. Every row below marked proven was probed on Bedrock on 2026-10-14 (`max_tokens: 1`); Mythos 5.1 is placed as Fable 5.1's twin by Anthropic's release note, Opus 5.5's thinking rule by its own release note.
+
+| Shape | Families | What the gateway does | Client sees |
+|---|---|---|---|
+| `temperature` other than `1`, `top_p` other than `0.99`, `top_p` beside `temperature: 1`, any `top_k` (fixed sampling) | Sonnet 5, Sonnet 5.5, Haiku 5.5, Fable 5.1 (proven), Mythos 5.1 (documented). Opus 5.5 is deliberately not gated: unprobeable on the verifying account and undocumented | The value is dropped before the call (the pair keeps `temperature`) and logged on the `request_field_dropped` line `top_k`/`effort`/`thinking` drops already use, with field, value and reason | `200`, the model's only sampling; before 2026-10-14 a `502 upstream_error`. The response carries no marker of the drop (operator log only), so `temperature: 0` determinism is not available on these families; cache keys and the `Idempotency-Key` fingerprint still fold the caller's values, so two requests differing only in a dropped value are two cache entries |
+| A conversation ending on an `assistant` message (prefill) | Sonnet 4.6, Sonnet 5, Sonnet 5.5, Haiku 5.5, Fable 5.1 (proven), Mythos 5.1 (documented) | Prefill is a routing property: a pool with a deployment that accepts it serves the request there; otherwise refused before any upstream call. A `/v1/messages` body relayed as received to an `anthropic` deployment is never checked (a `bedrock` translate hop is) | `400`, `code: assistant_prefill_unsupported`, `param: messages`; before, the model's `400` relayed as a `502` |
+| `thinking: {"type": "disabled"}` (a `/v1/messages` field) | Sonnet 5.5 (proven): rewritten to `between_tools`, its documented way to turn up-front thinking off. Fable 5.1 (proven), Mythos 5.1 and Opus 5.5 (documented): dropped, the request runs as one without a `thinking` field. Haiku 5.5, Sonnet 5 and the 4.x families accept `disabled` and get it verbatim | Logged on the same `request_field_dropped` line, the reason naming the rewrite or the drop | `200` |
+| Forced `tool_choice` (`required`, `tool`) | Fable 5.1, Mythos 5.1, Opus 5.5, and since 2026-10-14 Sonnet 5.5 (proven); Haiku 5.5 accepts a forced choice (proven) | Adapter error before any upstream call, on `bedrock` now for `required` (Converse's `any`) as well as `tool`; see [Forced tool choice by provider and model](#forced-tool-choice-by-provider-and-model) | `502`, `code: upstream_error` (the pre-existing convention for adapter errors) |
 
 ## Messages
 
@@ -208,9 +220,9 @@ Anthropic's object dialect is deliberately not accepted on this route. Re-encodi
 | Provider | Rule | Failure |
 |---|---|---|
 | `bedrock` | `mode: tool` only for model ids containing `claude-3` or `nova` (AWS's Converse `SpecificToolChoice` restriction) | Adapter error before any upstream call; `502`, `code: upstream_error`, message `upstream call failed for model "<model>"` (the reason appears only in the gateway's `chat_completion` log line) |
-| `bedrock`, Anthropic-family models | Additionally, model ids containing `claude-fable-5-1`, `claude-mythos-5-1` or `claude-opus-5-5` reject `mode: tool` | Same `502`, same message |
+| `bedrock`, Anthropic-family models | Additionally, model ids containing `claude-fable-5-1`, `claude-mythos-5-1`, `claude-opus-5-5` or `claude-sonnet-5-5` (the last since 2026-10-14) reject `mode: tool` and, since 2026-10-14, `mode: required` (Converse's `any`; before, forwarded and the model's `400` relayed) | Same `502`, same message |
 | `bedrock` | `mode: none` has no Converse equivalent | Adapter error before any upstream call; `502`, `code: upstream_error`, message `upstream call failed for model "<model>"` |
-| `anthropic` | Model ids containing `claude-fable-5-1`, `claude-mythos-5-1` or `claude-opus-5-5` reject forced modes (`required` and `tool`, Anthropic's `any`/`tool`) | Same `502`, same message |
+| `anthropic` | Model ids containing `claude-fable-5-1`, `claude-mythos-5-1`, `claude-opus-5-5` or `claude-sonnet-5-5` (the last since 2026-10-14) reject forced modes (`required` and `tool`, Anthropic's `any`/`tool`) | Same `502`, same message |
 | `openai`, `openaicompat`, `gemini` | No model restriction in the gateway | Provider's own answer |
 
 Lists are in `gateway/internal/adapter/capabilities.go`. Design: [docs/rfcs/2026-09-14-gateway-tool-choice-normalization.md](../rfcs/2026-09-14-gateway-tool-choice-normalization.md).

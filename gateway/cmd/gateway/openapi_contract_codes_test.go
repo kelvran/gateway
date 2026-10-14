@@ -27,7 +27,7 @@ func readOpenAPIBytes(t *testing.T) []byte {
 // the handler; the enum test below ties the union back to the code.
 var dataPlaneStatusTable = map[string]map[string][]string{
 	"POST /v1/chat/completions": {
-		"200": {}, "400": {"model_not_found", "content_policy_violation", "empty_messages", "invalid_prompt_reference", "streaming_not_supported", "response_format_unsupported", "tool_result_parts_unsupported", "system_parts_unsupported", "invalid_body", "invalid_json", "invalid_tool_choice", "invalid_request"},
+		"200": {}, "400": {"model_not_found", "content_policy_violation", "empty_messages", "invalid_prompt_reference", "streaming_not_supported", "response_format_unsupported", "tool_result_parts_unsupported", "system_parts_unsupported", "assistant_prefill_unsupported", "invalid_body", "invalid_json", "invalid_tool_choice", "invalid_request"},
 		"401": {"invalid_api_key", "key_expired"}, "403": {"model_not_allowed", "source_ip_not_allowed"}, "405": {"method_not_allowed"}, "413": {"request_too_large"},
 		"422": {"idempotency_key_reused"}, "429": {"rate_limit_exceeded", "concurrency_limit_exceeded", "insufficient_quota"}, "501": {"streaming_not_configured"}, "502": {"upstream_error"}, "503": {"deployment_capacity_exceeded"},
 	},
@@ -41,7 +41,7 @@ var dataPlaneStatusTable = map[string]map[string][]string{
 	"GET /readyz":     {"200": {}, "405": {}, "500": {}, "503": {}},
 	"HEAD /api/hello": {"204": {}, "405": {"method_not_allowed"}},
 	"POST /v1/messages": {
-		"200": {}, "400": {"model_not_found", "content_policy_violation", "empty_messages", "streaming_not_supported", "response_format_unsupported", "tool_result_parts_unsupported", "invalid_body", "invalid_json", "invalid_tool_choice", "invalid_request", "lossy_ingress_rejected", "missing_required_parameter"},
+		"200": {}, "400": {"model_not_found", "content_policy_violation", "empty_messages", "streaming_not_supported", "response_format_unsupported", "tool_result_parts_unsupported", "assistant_prefill_unsupported", "invalid_body", "invalid_json", "invalid_tool_choice", "invalid_request", "lossy_ingress_rejected", "missing_required_parameter"},
 		"401": {"invalid_api_key", "key_expired"}, "403": {"model_not_allowed", "source_ip_not_allowed"}, "405": {"method_not_allowed"}, "413": {"request_too_large"},
 		"422": {"idempotency_key_reused"}, "429": {"rate_limit_exceeded", "concurrency_limit_exceeded", "insufficient_quota"}, "501": {"streaming_not_configured"}, "502": {"upstream_error"}, "503": {"deployment_capacity_exceeded"},
 	},

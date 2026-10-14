@@ -158,10 +158,15 @@ func BedrockModelSupportsForcedToolChoice(model string) bool {
 // docs/upgrade-research/upstream-provider-api-changes-2026-09-24.md
 // Finding 1 -- Anthropic's own 2026-09-22 release notes confirm Opus 5.5
 // inherits this same restriction from Fable 5.1/Mythos 5.1.
+// "claude-sonnet-5-5" added 2026-10-14 (round-5 Tier A item 2): the
+// 2026-09-28 release notes list it, and tool_choice "any" was PROVEN a
+// 400 on Bedrock Sonnet 5.5 the same day; Haiku 5.5 accepts a forced
+// choice (its migration guide; proven) and stays off the list.
 var anthropicForcedToolChoiceUnsupportedModelSubstrings = []string{
 	"claude-fable-5-1",
 	"claude-mythos-5-1",
 	"claude-opus-5-5",
+	"claude-sonnet-5-5",
 }
 
 // AnthropicModelRejectsForcedToolChoice reports whether model (an
@@ -356,6 +361,166 @@ var BedrockForwardKnownAnthropicBetas = []string{
 func BedrockForwardsAnthropicBeta(value string) bool {
 	for _, v := range BedrockForwardKnownAnthropicBetas {
 		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
+// Claude 5.x request gates (round-5 research 2026-10-14, Tier A item 2;
+// closes the 2026-10-08 live verification's F5). The Claude 5.x models
+// validate three request shapes the 4.x generation accepted, each a 400
+// upstream that Kelvran's client saw as a 502: non-default sampling, an
+// assistant prefill, and thinking.type "disabled". The rules are
+// provider-agnostic -- the direct API and Bedrock Converse run the same
+// per-model validation; every PROVEN below is a Converse probe with
+// max_tokens 1 on 2026-10-14 (no direct Anthropic key was available), and
+// DOCUMENTED means the family is placed by Anthropic's own release note or
+// migration guide alone, to be re-probed before relying on it. Matching is
+// at a family boundary (claudeFamilyListed), so "claude-sonnet-5" never
+// admits "claude-sonnet-5-5"; a family in no list is never gated, because
+// for an unknown the upstream's own answer is the honest one
+// (BedrockForwardsThinking's asymmetry).
+
+// claudeFixedSamplingFamilies accept temperature only at 1 and top_p only at
+// 0.99, reject the two together even at those values, and reject top_k at
+// any value. PROVEN: sonnet-5-5, haiku-5-5, fable-5-1, and sonnet-5 (a
+// direct Converse probe the same day: "`temperature` is deprecated for this
+// model", "`top_p` is deprecated", "cannot both be specified"; F5 had seen
+// temperature 0.3 rejected on 2026-10-08). DOCUMENTED: mythos-5-1 (Fable
+// 5.1's twin by its release note). Opus 5.5 is
+// deliberately absent: not probeable on the probing account (an explicit
+// deny) and not documented as rejecting sampling, so the forward-by-default
+// policy above applies -- a live 400 on Opus 5.5 sampling is the evidence
+// that would add it.
+var claudeFixedSamplingFamilies = []string{
+	"claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-mythos-5-1",
+}
+
+// ClaudeFixedTemperature and ClaudeFixedTopP are the only values the fixed-
+// sampling families accept for the two fields.
+const (
+	ClaudeFixedTemperature = 1.0
+	ClaudeFixedTopP        = 0.99
+)
+
+// SamplingDrops names, per sampling field, why the adapter about to run
+// leaves the caller's value off the wire; "" means the value is forwarded.
+// Returned by ClaudeSamplingDropsFor and read by both Claude-serving
+// adapters (to build the wire) and by the dataplane (to log the drop with
+// the same reason), so the two never disagree.
+type SamplingDrops struct {
+	Temperature string
+	TopP        string
+	TopK        string
+}
+
+// ClaudeSamplingDropsFor applies the fixed-sampling rule to the caller's
+// temperature, top_p and top_k for model. Outside claudeFixedSamplingFamilies
+// nothing is dropped. Inside, a temperature other than 1 and a top_p other
+// than 0.99 are dropped (the model would 400); when both arrive at their
+// accepted values top_p is dropped and temperature kept, because the pair is
+// a 400 even then; top_k is dropped at any value. Dropping beats relaying the
+// 400 for BedrockForwardsThinking's reason -- a fallback chain or an alias
+// can land a request on a generation the client did not pick -- and the
+// request then runs at the model's only sampling anyway. Exact float64
+// equality is deliberate: JSON 1 and 0.99 decode to the same float64 as the
+// two constants, and any other decoded value -- a near miss such as
+// 0.9899999999 included -- is a different value, dropped like any other (the
+// never-400 direction), never rounded into the accepted value and forwarded
+// on the gateway's own guess.
+func ClaudeSamplingDropsFor(model string, temperature, topP *float64, topK *int) SamplingDrops {
+	if !claudeFamilyListed(model, claudeFixedSamplingFamilies) {
+		return SamplingDrops{}
+	}
+	var drops SamplingDrops
+	temperatureKept := false
+	if temperature != nil {
+		if *temperature == ClaudeFixedTemperature {
+			temperatureKept = true
+		} else {
+			drops.Temperature = "the model's Claude generation accepts temperature only at 1 (fixed sampling)"
+		}
+	}
+	if topP != nil {
+		switch {
+		case *topP != ClaudeFixedTopP:
+			drops.TopP = "the model's Claude generation accepts top_p only at 0.99 (fixed sampling)"
+		case temperatureKept:
+			drops.TopP = "the model's Claude generation rejects temperature and top_p together even at their accepted values; temperature is kept"
+		}
+	}
+	if topK != nil {
+		drops.TopK = "the model's Claude generation rejects top_k at any value (fixed sampling)"
+	}
+	return drops
+}
+
+// claudeAssistantPrefillRejectingFamilies answer 400 to a conversation that
+// ends on an assistant turn (the prefill idiom). PROVEN: sonnet-5-5,
+// haiku-5-5, fable-5-1, and sonnet-4-6 and sonnet-5 (a direct Converse probe
+// the same day: "This model does not support assistant message prefill";
+// the Sonnet 5.5 migration guide names both). DOCUMENTED: mythos-5-1 (Fable
+// 5.1's twin). Haiku 4.5 accepts prefill (proven, the control); Opus 5.5 is
+// absent (unprobeable here, documented as accepting).
+var claudeAssistantPrefillRejectingFamilies = []string{
+	"claude-sonnet-4-6", "claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-mythos-5-1",
+}
+
+// ClaudeRejectsAssistantPrefill reports whether model is in
+// claudeAssistantPrefillRejectingFamilies. The dataplane consults it before
+// any upstream call and answers ErrAssistantPrefillUnsupported (a 400):
+// unlike a sampling value, a prefill cannot be dropped without changing what
+// the caller asked for.
+func ClaudeRejectsAssistantPrefill(model string) bool {
+	return claudeFamilyListed(model, claudeAssistantPrefillRejectingFamilies)
+}
+
+// ClaudeThinkingDisabledTreatment's answers for a canonical thinking.type
+// "disabled" on a model.
+const (
+	// ThinkingDisabledForward: the model takes "disabled"; forwarded verbatim.
+	ThinkingDisabledForward = ""
+	// ThinkingDisabledBetweenTools: the model rejects "disabled" and documents
+	// "between_tools" as its way to turn up-front thinking off; rewritten.
+	ThinkingDisabledBetweenTools = "between_tools"
+	// ThinkingDisabledDrop: thinking is always on for the model ("disabled"
+	// and "between_tools" are both 400s); the field is dropped and the request
+	// runs as one that never carried it.
+	ThinkingDisabledDrop = "drop"
+)
+
+// claudeThinkingDisabledBetweenToolsFamilies: PROVEN sonnet-5-5 (both halves
+// -- "disabled" a 400, "between_tools" a 200).
+var claudeThinkingDisabledBetweenToolsFamilies = []string{"claude-sonnet-5-5"}
+
+// claudeThinkingAlwaysOnFamilies: PROVEN fable-5-1 ("disabled" and
+// "between_tools" both 400s). DOCUMENTED: opus-5-5 (its 2026-09-22 release
+// note: "disabled" and "enabled" are 400s, adaptive thinking is always on),
+// mythos-5-1 (Fable 5.1's twin). Haiku 5.5 and Sonnet 5 accept "disabled"
+// (PROVEN; Sonnet 5 rejects "between_tools") and are in neither list.
+var claudeThinkingAlwaysOnFamilies = []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5-5"}
+
+// ClaudeThinkingDisabledTreatment decides what both Claude-serving adapters
+// do with a canonical thinking.type "disabled" for model, and what the
+// dataplane logs about it.
+func ClaudeThinkingDisabledTreatment(model string) string {
+	switch {
+	case claudeFamilyListed(model, claudeThinkingDisabledBetweenToolsFamilies):
+		return ThinkingDisabledBetweenTools
+	case claudeFamilyListed(model, claudeThinkingAlwaysOnFamilies):
+		return ThinkingDisabledDrop
+	default:
+		return ThinkingDisabledForward
+	}
+}
+
+// claudeFamilyListed reports whether model names one of families at a family
+// boundary (bedrockModelFamilyMatches, which reads a bare direct-API id the
+// same way as a region-prefixed, date-suffixed Bedrock one).
+func claudeFamilyListed(model string, families []string) bool {
+	for _, family := range families {
+		if bedrockModelFamilyMatches(model, family) {
 			return true
 		}
 	}

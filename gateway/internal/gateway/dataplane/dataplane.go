@@ -346,6 +346,15 @@ func capabilityOKForRequest(dep Deployment, req adapter.ChatRequest) bool {
 	if lossyIngressIneligible(dep, req) {
 		return false
 	}
+	// An assistant prefill is the fourth routing property (round-5 Tier A
+	// item 2, 2026-10-14): a conversation ending on an assistant turn is a
+	// 400 on the Claude families adapter.ClaudeRejectsAssistantPrefill
+	// names, on the direct API and on Bedrock alike, so such a deployment
+	// is skipped when the pool has one that accepts it -- and refused
+	// (checkAssistantPrefillAccepted) when it does not.
+	if checkAssistantPrefillAccepted(dep, req) != nil {
+		return false
+	}
 	if req.ResponseFormat == nil {
 		return true
 	}
@@ -425,6 +434,51 @@ func checkToolResultPartsCarriable(dep Deployment, req adapter.ChatRequest) erro
 		return nil
 	}
 	return fmt.Errorf("%w: model %s", adapter.ErrToolResultPartsUnsupported, dep.Model)
+}
+
+// checkAssistantPrefillAccepted returns adapter.ErrAssistantPrefillUnsupported
+// (wrapped with the model) when req ends on an assistant turn -- the prefill
+// idiom -- and dep serves a Claude family that answers 400 to it
+// (adapter.ClaudeRejectsAssistantPrefill; round-5 Tier A item 2, 2026-10-14).
+// Called beside its two siblings at both first-pick sites, after
+// rerouteToCapableDeploymentIfNeeded has already moved the request to an
+// accepting deployment when the pool has one (capabilityOKForRequest's
+// fourth property), so the 400 carries the sentinel's own text; and again
+// in callDeployment and the two streaming twins right before ToProvider,
+// the backstop for any path that reaches an adapter without the gate (a
+// fallback hop is gated by the same property and never does). A passthrough
+// hop (isPassthroughHop: an anthropic deployment relaying a /v1/messages
+// body as received) is never checked -- the gateway does not re-encode it
+// and the upstream's own answer stands -- but a /v1/messages body translated
+// for a bedrock deployment is. The role check is the model's own rule as
+// Bedrock words it ("The conversation must end with a user message"): an
+// assistant turn ending in tool calls is refused too, and a tool result is
+// a user turn on every Claude wire. Only the two Claude-serving providers
+// are consulted; an openaicompat backend that happens to front a Claude
+// model answers for itself.
+func checkAssistantPrefillAccepted(dep Deployment, req adapter.ChatRequest) error {
+	if isPassthroughHop(dep, req) || len(req.Messages) == 0 {
+		return nil
+	}
+	if dep.Provider != "anthropic" && dep.Provider != "bedrock" {
+		return nil
+	}
+	if req.Messages[len(req.Messages)-1].Role != "assistant" || !adapter.ClaudeRejectsAssistantPrefill(dep.UpstreamModel) {
+		return nil
+	}
+	return fmt.Errorf("%w: model %s", adapter.ErrAssistantPrefillUnsupported, dep.Model)
+}
+
+// isPassthroughHop reports whether dep will relay req's Anthropic Messages
+// body as received -- anthropic.passthroughRequestFor's own condition: an
+// anthropic deployment and a Passthrough carrying a RawBody. The parser sets
+// Passthrough on every /v1/messages request, so the field alone does not say
+// whether the adapter re-encodes the shadow (a bedrock translate hop does) or
+// relays the bytes (an anthropic hop does); the Claude 5.x gates and their
+// request_field_dropped lines apply only to what the gateway itself encodes.
+func isPassthroughHop(dep Deployment, req adapter.ChatRequest) bool {
+	return dep.Provider == "anthropic" && req.Passthrough != nil &&
+		req.Passthrough.Format == adapter.IngressFormatAnthropicMessages && len(req.Passthrough.RawBody) > 0
 }
 
 // Closes the "first attempt" half of two real, deliberately-accepted v1
@@ -4062,6 +4116,9 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		if err := checkToolResultPartsCarriable(dep, req); err != nil {
 			return nil, err
 		}
+		if err := checkAssistantPrefillAccepted(dep, req); err != nil {
+			return nil, err
+		}
 		if err := checkLossyIngressEligible(dep, req); err != nil {
 			return nil, err
 		}
@@ -4215,6 +4272,9 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	// slice S9b), so a request carrying Passthrough is never auto-marked.
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled() || req.Passthrough != nil
 
+	if err := checkAssistantPrefillAccepted(dep, upstreamReq); err != nil {
+		return adapter.ChatResponse{}, err
+	}
 	p.applyAnthropicBetaPolicy(ctx, dep, &upstreamReq)
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
@@ -5399,13 +5459,14 @@ func outcomeFor(err error) gatewayeventsv1.GatewayDecisionEvent_Outcome {
 	case errors.Is(err, ErrGuardrailBlocked):
 		return gatewayeventsv1.GatewayDecisionEvent_OUTCOME_GUARDRAIL_BLOCKED
 	case errors.Is(err, adapter.ErrStructuredOutputUnsupported), errors.Is(err, idempotency.ErrFingerprintMismatch), errors.Is(err, adapter.ErrToolResultPartsUnsupported),
-		errors.Is(err, adapter.ErrSystemPartsUnsupported), isLossyIngressRejected(err),
+		errors.Is(err, adapter.ErrSystemPartsUnsupported), errors.Is(err, adapter.ErrAssistantPrefillUnsupported), isLossyIngressRejected(err),
 		errors.Is(err, ErrPromptAndMessagesBothSet), errors.Is(err, ErrPromptLabelAndVersionBothSet),
 		errors.Is(err, ErrPromptResolutionFailed), errors.Is(err, ErrResolvedPromptContentInvalid):
 		// G16 (2026-10-10): every one of these is decided from the request
 		// alone before any upstream call -- an unenforceable response_format,
 		// a reused Idempotency-Key with a different body, a tool-result or
-		// system part no deployment can carry, a lossy Anthropic body, a
+		// system part no deployment can carry, an assistant prefill on a
+		// Claude family that rejects it (2026-10-14), a lossy Anthropic body, a
 		// prompt reference that is malformed, unknown or resolves to invalid
 		// content (resolved against the local prompt store, never upstream)
 		// -- so they classify as the client's invalid request, and (through
@@ -5836,7 +5897,11 @@ func hiddenFieldsFingerprint(req adapter.ChatRequest) string {
 // noteDroppedRequestFields records, one request_field_dropped Warn line
 // per field, every canonical request field the adapter about to run will
 // leave out of the upstream request -- thinking (item 11 slice S4), top_k
-// and effort (slice S5) today: the bedrock adapter omits a value the served
+// and effort (slice S5), and since 2026-10-14 (round-5 Tier A item 2)
+// temperature and top_p under the Claude 5.x fixed-sampling rule on the
+// anthropic and bedrock providers (adapter.ClaudeSamplingDropsFor, which
+// also owns top_k on anthropic), plus a thinking.type "disabled" the served
+// family rewrites to between_tools or drops: the bedrock adapter omits a value the served
 // model's Claude generation rejects (adapter.BedrockForwardsThinking /
 // BedrockForwardsTopK / BedrockForwardsEffort -- the same predicates the
 // adapter consults, so this
@@ -5848,14 +5913,61 @@ func hiddenFieldsFingerprint(req adapter.ChatRequest) string {
 // ingress exists it is a caller-controlled string) and reason -- are pinned
 // by test.
 func (p *Pipeline) noteDroppedRequestFields(ctx context.Context, dep Deployment, upstreamReq adapter.ChatRequest) {
+	if isPassthroughHop(dep, upstreamReq) {
+		// The body goes out as received; nothing below is encoded, so nothing
+		// is dropped (the anthropic adapter returns before its sampling and
+		// thinking logic runs on this hop).
+		return
+	}
 	if upstreamReq.Thinking != nil {
 		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "thinking", upstreamReq.Thinking.Type, thinkingDropReason(dep, upstreamReq))
 	}
+	sampling := samplingDropReasons(dep, upstreamReq)
+	if upstreamReq.Temperature != nil {
+		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "temperature", strconv.FormatFloat(*upstreamReq.Temperature, 'g', -1, 64), sampling.Temperature)
+	}
+	if upstreamReq.TopP != nil {
+		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "top_p", strconv.FormatFloat(*upstreamReq.TopP, 'g', -1, 64), sampling.TopP)
+	}
 	if upstreamReq.TopK != nil {
-		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "top_k", strconv.Itoa(*upstreamReq.TopK), topKDropReason(dep, upstreamReq))
+		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "top_k", strconv.Itoa(*upstreamReq.TopK), topKDropReason(dep, upstreamReq, sampling))
 	}
 	if upstreamReq.Effort != "" {
 		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "effort", upstreamReq.Effort, effortDropReason(dep, upstreamReq))
+	}
+}
+
+// samplingDropReasons is the Claude 5.x fixed-sampling verdict for the
+// request's temperature, top_p and top_k on dep (round-5 Tier A item 2):
+// the anthropic and bedrock adapters consult adapter.ClaudeSamplingDropsFor
+// for the model they serve; every other provider forwards the fields its
+// own API has (topKDropReason covers the ones with no top_k), so the
+// verdict is empty there.
+func samplingDropReasons(dep Deployment, upstreamReq adapter.ChatRequest) adapter.SamplingDrops {
+	switch dep.Provider {
+	case "anthropic", "bedrock":
+		return adapter.ClaudeSamplingDropsFor(upstreamReq.Model, upstreamReq.Temperature, upstreamReq.TopP, upstreamReq.TopK)
+	default:
+		return adapter.SamplingDrops{}
+	}
+}
+
+// thinkingDisabledTreatmentReason is "" unless the request's thinking.type
+// is "disabled" and the served Claude family rejects it
+// (adapter.ClaudeThinkingDisabledTreatment; round-5 Tier A item 2): the
+// value "disabled" then leaves the wire either way -- rewritten to
+// between_tools or dropped outright -- and the line says which.
+func thinkingDisabledTreatmentReason(upstreamReq adapter.ChatRequest) string {
+	if upstreamReq.Thinking.Type != "disabled" {
+		return ""
+	}
+	switch adapter.ClaudeThinkingDisabledTreatment(upstreamReq.Model) {
+	case adapter.ThinkingDisabledBetweenTools:
+		return "the model's Claude family rejects thinking.type disabled; rewritten to between_tools, its documented way to turn up-front thinking off"
+	case adapter.ThinkingDisabledDrop:
+		return "the model's Claude family rejects thinking.type disabled: thinking is always on, the field is dropped"
+	default:
+		return ""
 	}
 }
 
@@ -5881,8 +5993,11 @@ func effortDropReason(dep Deployment, upstreamReq adapter.ChatRequest) string {
 func thinkingDropReason(dep Deployment, upstreamReq adapter.ChatRequest) string {
 	switch dep.Provider {
 	case "anthropic":
-		return ""
+		return thinkingDisabledTreatmentReason(upstreamReq)
 	case "bedrock":
+		if why := thinkingDisabledTreatmentReason(upstreamReq); why != "" {
+			return why
+		}
 		forward, why := adapter.BedrockForwardsThinking(upstreamReq.Model, upstreamReq.Thinking.Type)
 		if forward {
 			return ""
@@ -5894,17 +6009,21 @@ func thinkingDropReason(dep Deployment, upstreamReq adapter.ChatRequest) string 
 }
 
 // topKDropReason is "" when dep's adapter forwards the canonical top_k,
-// else why it will not.
-func topKDropReason(dep Deployment, upstreamReq adapter.ChatRequest) string {
+// else why it will not; on anthropic the fixed-sampling verdict (sampling)
+// is the only reason, on bedrock the per-generation table answers first and
+// the fixed-sampling verdict covers a family that table does not list
+// (Mythos 5.1) -- the same two gates the bedrock adapter applies.
+func topKDropReason(dep Deployment, upstreamReq adapter.ChatRequest, sampling adapter.SamplingDrops) string {
 	switch dep.Provider {
-	case "anthropic", "gemini":
+	case "anthropic":
+		return sampling.TopK
+	case "gemini":
 		return ""
 	case "bedrock":
-		forward, why := adapter.BedrockForwardsTopK(upstreamReq.Model)
-		if forward {
-			return ""
+		if forward, why := adapter.BedrockForwardsTopK(upstreamReq.Model); !forward {
+			return why
 		}
-		return why
+		return sampling.TopK
 	default:
 		return "provider " + dep.Provider + " has no top_k; the value is ignored"
 	}

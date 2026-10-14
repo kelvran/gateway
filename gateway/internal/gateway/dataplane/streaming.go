@@ -380,6 +380,9 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 	if err = checkToolResultPartsCarriable(dep, req); err != nil {
 		return
 	}
+	if err = checkAssistantPrefillAccepted(dep, req); err != nil {
+		return
+	}
 	if err = checkLossyIngressEligible(dep, req); err != nil {
 		return
 	}
@@ -688,6 +691,9 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 	// cache_control on /v1/messages (RFC-1 §8, slice S9b).
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled() || req.Passthrough != nil
 
+	if err := checkAssistantPrefillAccepted(dep, upstreamReq); err != nil {
+		return adapter.ChatResponse{}, false, err
+	}
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 
 	providerReq, err := streamAdapter.ToProvider(upstreamReq)
@@ -897,6 +903,9 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	// cache_control on /v1/messages (RFC-1 §8, slice S9b).
 	upstreamReq.DisableCacheControlAutoPopulate = dep.effectiveCacheControlAutoDisabled() || req.Passthrough != nil
 
+	if err := checkAssistantPrefillAccepted(dep, upstreamReq); err != nil {
+		return adapter.ChatResponse{}, false, err
+	}
 	p.applyAnthropicBetaPolicy(ctx, dep, &upstreamReq)
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
 

@@ -1698,24 +1698,30 @@ func TestToProviderCanonicalThinkingAdaptiveOmitsBudgetTokens(t *testing.T) {
 	}
 }
 
-// TestToProviderCanonicalThinkingDisabledOmitsBlockBinding: a caller that
-// turned thinking off gets no block_binding and no beta header even on a
-// gate model -- the prefix check only applies to replayed thinking, and
-// a block_binding beside "disabled" is not a shape Anthropic documents.
-func TestToProviderCanonicalThinkingDisabledOmitsBlockBinding(t *testing.T) {
-	req := thinkingBindingChatRequest("claude-fable-5-1", "strict")
-	req.Thinking = &adapter.ThinkingConfig{Type: "disabled"}
+// TestToProviderCanonicalThinkingDisabledOnAlwaysOnFamilyRunsAsUnset: both
+// gate models (Fable 5.1, Opus 5.5) are always-on families that 400 on
+// thinking.type "disabled" (round-5 Tier A item 2, 2026-10-14: Fable 5.1
+// proven on Bedrock, Opus 5.5 by its release note), so the caller's field is
+// dropped and the request runs exactly as one that never carried it -- the
+// gate's own adaptive + block_binding default and its beta header included.
+// Before 2026-10-14 this test pinned "disabled" forwarded without a
+// block_binding on Fable 5.1, a wire the model rejects.
+func TestToProviderCanonicalThinkingDisabledOnAlwaysOnFamilyRunsAsUnset(t *testing.T) {
+	for _, model := range []string{"claude-fable-5-1", "claude-opus-5-5"} {
+		req := thinkingBindingChatRequest(model, "strict")
+		req.Thinking = &adapter.ThinkingConfig{Type: "disabled"}
 
-	nativeAny, err := New().ToProvider(req)
-	if err != nil {
-		t.Fatalf("ToProvider: %v", err)
-	}
-	native := nativeAny.(*Request)
-	if native.Thinking == nil || native.Thinking.Type != "disabled" || native.Thinking.BlockBinding != nil {
-		t.Fatalf("Thinking = %+v, want {disabled 0 <nil>}", native.Thinking)
-	}
-	if _, needed := ThinkingBindingBetaHeaderValue(native); needed {
-		t.Error("ThinkingBindingBetaHeaderValue = needed, want not needed when thinking is disabled")
+		nativeAny, err := New().ToProvider(req)
+		if err != nil {
+			t.Fatalf("%s: ToProvider: %v", model, err)
+		}
+		native := nativeAny.(*Request)
+		if native.Thinking == nil || native.Thinking.Type != "adaptive" || native.Thinking.BlockBinding == nil || native.Thinking.BlockBinding.PrefixMismatchBehavior != "error" {
+			t.Fatalf("%s: Thinking = %+v, want the gate's adaptive + block_binding error, as for a request without a thinking field", model, native.Thinking)
+		}
+		if _, needed := ThinkingBindingBetaHeaderValue(native); !needed {
+			t.Errorf("%s: ThinkingBindingBetaHeaderValue = not needed, want needed once the gate's default applies", model)
+		}
 	}
 }
 

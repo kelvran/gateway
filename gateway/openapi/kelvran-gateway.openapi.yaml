@@ -200,6 +200,7 @@ paths:
           - response_format_unsupported
           - tool_result_parts_unsupported
           - system_parts_unsupported
+          - assistant_prefill_unsupported
           - invalid_body
           - invalid_json
           - invalid_tool_choice
@@ -892,6 +893,7 @@ paths:
           - streaming_not_supported
           - response_format_unsupported
           - tool_result_parts_unsupported
+          - assistant_prefill_unsupported
           - invalid_body
           - invalid_json
           - invalid_tool_choice
@@ -3417,6 +3419,7 @@ components:
       - response_format_unsupported
       - tool_result_parts_unsupported
       - system_parts_unsupported
+      - assistant_prefill_unsupported
       - lossy_ingress_rejected
       - not_an_embedding_model
       - idempotency_key_reused

@@ -166,3 +166,14 @@ var ErrToolResultPartsUnsupported = errors.New("adapter: a tool result carries c
 // through a message's `parts` member. The openai and openaicompat adapters
 // render every part through contentToNative and never return it.
 var ErrSystemPartsUnsupported = errors.New("adapter: a system message carries a content part that is not text")
+
+// ErrAssistantPrefillUnsupported is returned, wrapped, when a conversation
+// ends on an assistant turn -- the prefill idiom -- and the deployment about
+// to serve it runs a Claude family that answers 400 to prefill
+// (ClaudeRejectsAssistantPrefill; round-5 Tier A item 2, 2026-10-14). The
+// dataplane decides it from the request and the deployment alone, before
+// any upstream call, and the handler maps it to 400
+// assistant_prefill_unsupported with param "messages"; before, the model's
+// own 400 reached the client as a 502 upstream_error. Never raised for a
+// passthrough /v1/messages body, which is relayed as received.
+var ErrAssistantPrefillUnsupported = errors.New("adapter: the conversation ends on an assistant turn (prefill), which this model rejects")

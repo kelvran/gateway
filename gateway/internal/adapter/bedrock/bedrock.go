@@ -466,7 +466,11 @@ type ToolChoiceWire struct {
 // Mode "tool" errors when model is not on
 // adapter.BedrockModelSupportsForcedToolChoice's whitelist, or when
 // adapter.AnthropicModelRejectsForcedToolChoice's own real per-model
-// restriction also applies to this Bedrock-hosted Anthropic model.
+// restriction also applies to this Bedrock-hosted Anthropic model. Mode
+// "required" (Converse's "any") errors on those same families too: PROVEN
+// a ValidationException on Bedrock Sonnet 5.5 and Fable 5.1 on 2026-10-14
+// (round-5 Tier A item 2); before, it was forwarded and the 400 relayed
+// as a 502.
 func toolChoiceToProvider(tc *adapter.ToolChoice, model string) (*ToolChoiceWire, error) {
 	if tc == nil {
 		return nil, nil
@@ -475,6 +479,9 @@ func toolChoiceToProvider(tc *adapter.ToolChoice, model string) (*ToolChoiceWire
 	case "auto":
 		return &ToolChoiceWire{Auto: &AutoToolChoice{}}, nil
 	case "required":
+		if adapter.AnthropicModelRejectsForcedToolChoice(model) {
+			return nil, fmt.Errorf("bedrock: model %q rejects forced tool_choice (mode %q)", model, tc.Mode)
+		}
 		return &ToolChoiceWire{Any: &AnyToolChoice{}}, nil
 	case "none":
 		return nil, fmt.Errorf("bedrock: tool_choice mode %q has no Converse equivalent -- omit req.Tools entirely instead of requesting %q", tc.Mode, tc.Mode)
@@ -721,17 +728,38 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		toolConfig.ToolChoice = toolChoice
 	}
 
+	// The Claude 5.x fixed-sampling rule (adapter.ClaudeSamplingDropsFor;
+	// round-5 Tier A item 2): a temperature or topP the served family would
+	// 400 on is left out of inferenceConfig -- a quiet omission at this layer
+	// like thinkingFieldFor's -- and the dataplane records the drop by the
+	// same predicate. top_k rides additionalModelRequestFields, where the
+	// per-generation table (adapter.BedrockForwardsTopK) gates it too; the
+	// fixed-sampling verdict covers a family that table does not list
+	// (Mythos 5.1), so the two gates are applied together.
+	temperature, topP, topK := req.Temperature, req.TopP, req.TopK
+	drops := adapter.ClaudeSamplingDropsFor(req.Model, temperature, topP, topK)
+	if drops.Temperature != "" {
+		temperature = nil
+	}
+	if drops.TopP != "" {
+		topP = nil
+	}
+	if drops.TopK != "" {
+		topK = nil
+	}
+	// The condition reads the post-drop values: a request whose only
+	// sampling fields were dropped sends no inferenceConfig at all.
 	var inferenceConfig *InferenceConfig
-	if req.Temperature != nil || req.MaxTokens != nil || len(req.StopSequences) > 0 || req.TopP != nil {
+	if temperature != nil || req.MaxTokens != nil || len(req.StopSequences) > 0 || topP != nil {
 		inferenceConfig = &InferenceConfig{
-			Temperature:   req.Temperature,
+			Temperature:   temperature,
 			MaxTokens:     req.MaxTokens,
 			StopSequences: req.StopSequences,
-			TopP:          req.TopP,
+			TopP:          topP,
 		}
 	}
 
-	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, req.TopK, req.Effort, req.AnthropicBetas, req.Model)
+	additionalFields, err := additionalModelRequestFieldsFor(req.ResponseFormat, req.Thinking, topK, req.Effort, req.AnthropicBetas, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -955,15 +983,27 @@ func additionalModelRequestFieldsFor(rf *adapter.ResponseFormat, thinking *adapt
 // asymmetry), nil otherwise. A nil return here is a quiet omission at
 // this layer by design -- ToProvider is a pure wire translation -- and
 // the dataplane, which has the logger and the deployment, records it
-// (noteDroppedRequestFields) by calling the same predicate.
+// (noteDroppedRequestFields) by calling the same predicate. A "disabled"
+// first passes adapter.ClaudeThinkingDisabledTreatment (round-5 Tier A
+// item 2) -- the same rewrite-to-between_tools or drop the anthropic
+// adapter applies, so the two never disagree about what reaches a model.
 func thinkingFieldFor(t *adapter.ThinkingConfig, model string) map[string]any {
 	if t == nil {
 		return nil
 	}
-	if forward, _ := adapter.BedrockForwardsThinking(model, t.Type); !forward {
+	thinkingType := t.Type
+	if thinkingType == "disabled" {
+		switch adapter.ClaudeThinkingDisabledTreatment(model) {
+		case adapter.ThinkingDisabledBetweenTools:
+			thinkingType = "between_tools"
+		case adapter.ThinkingDisabledDrop:
+			return nil
+		}
+	}
+	if forward, _ := adapter.BedrockForwardsThinking(model, thinkingType); !forward {
 		return nil
 	}
-	field := map[string]any{"type": t.Type}
+	field := map[string]any{"type": thinkingType}
 	if t.BudgetTokens != 0 {
 		// Non-zero means the caller sent a budget; it is forwarded as sent,
 		// never validated (a nonsensical value is the provider's own 400),

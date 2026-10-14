@@ -539,7 +539,13 @@ func thinkingBindingToProvider(mode, model string) (*Thinking, error) {
 // longer overwrite them; the gate still contributes BlockBinding on a
 // model it names, unless the caller turned thinking off -- the prefix
 // check only applies to replayed thinking, and a block_binding beside
-// "disabled" is not a shape Anthropic documents.
+// "disabled" is not a shape Anthropic documents. Since 2026-10-14 (round-5
+// Tier A item 2) "disabled" is the one type not forwarded verbatim:
+// adapter.ClaudeThinkingDisabledTreatment rewrites it to "between_tools" on
+// the family that documents that as its off switch (Sonnet 5.5) and drops
+// it on the always-on families (Fable 5.1, Mythos 5.1, Opus 5.5), where the
+// request then runs exactly as one that never carried the field -- the
+// gate's own default included. The dataplane logs either.
 func thinkingToProvider(req adapter.ChatRequest) (*Thinking, error) {
 	gate, err := thinkingBindingToProvider(req.ThinkingBindingMode, req.Model)
 	if err != nil {
@@ -549,7 +555,15 @@ func thinkingToProvider(req adapter.ChatRequest) (*Thinking, error) {
 		return gate, nil
 	}
 	thinking := &Thinking{Type: req.Thinking.Type, BudgetTokens: req.Thinking.BudgetTokens}
-	if gate != nil && thinking.Type != "disabled" {
+	if thinking.Type == "disabled" {
+		switch adapter.ClaudeThinkingDisabledTreatment(req.Model) {
+		case adapter.ThinkingDisabledBetweenTools:
+			thinking.Type = "between_tools"
+		case adapter.ThinkingDisabledDrop:
+			return gate, nil
+		}
+	}
+	if gate != nil && thinking.Type != "disabled" && thinking.Type != "between_tools" {
 		thinking.BlockBinding = gate.BlockBinding
 	}
 	return thinking, nil
@@ -853,15 +867,32 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		return nil, err
 	}
 
+	// The Claude 5.x fixed-sampling rule (adapter.ClaudeSamplingDropsFor;
+	// round-5 Tier A item 2): a value the model would 400 on is left off the
+	// wire -- a quiet omission at this layer by design, like the bedrock
+	// adapter's thinkingFieldFor -- and the dataplane, which has the logger
+	// and the deployment, records it by calling the same predicate.
+	temperature, topP, topK := req.Temperature, req.TopP, req.TopK
+	drops := adapter.ClaudeSamplingDropsFor(req.Model, temperature, topP, topK)
+	if drops.Temperature != "" {
+		temperature = nil
+	}
+	if drops.TopP != "" {
+		topP = nil
+	}
+	if drops.TopK != "" {
+		topK = nil
+	}
+
 	return &Request{
 		Model:         req.Model,
 		System:        systemBlocks,
 		Messages:      messages,
 		MaxTokens:     maxTokens,
-		Temperature:   req.Temperature,
+		Temperature:   temperature,
 		StopSequences: req.StopSequences,
-		TopP:          req.TopP,
-		TopK:          req.TopK,
+		TopP:          topP,
+		TopK:          topK,
 		Tools:         tools,
 		Stream:        req.Stream,
 		OutputConfig:  outputConfig,

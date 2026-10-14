@@ -250,6 +250,12 @@ func errorTypeAndCode(err error, status int) (errType string, code *string) {
 		// Fix after item 11 slice S10b: a system message carries a non-text
 		// part no system prompt can hold -- a request-shape fault, so a 400.
 		return errTypeInvalidRequest, codePtr("system_parts_unsupported")
+	case errors.Is(err, adapter.ErrAssistantPrefillUnsupported):
+		// Round-5 Tier A item 2 (2026-10-14): the conversation ends on an
+		// assistant turn and the served Claude family rejects prefill -- known
+		// before any upstream call, so a 400 with its own code instead of the
+		// model's 400 relayed as a 502.
+		return errTypeInvalidRequest, codePtr("assistant_prefill_unsupported")
 	case errors.As(err, &lossyErr):
 		// Item 11 slice S9b: members no deployment in the pool can carry --
 		// known from the request alone, so a 400; param lists the pointers.
@@ -303,6 +309,8 @@ func errorParam(err error) *string {
 	case errors.Is(err, adapter.ErrToolResultPartsUnsupported):
 		return codePtr("messages")
 	case errors.Is(err, adapter.ErrSystemPartsUnsupported):
+		return codePtr("messages")
+	case errors.Is(err, adapter.ErrAssistantPrefillUnsupported):
 		return codePtr("messages")
 	case errors.As(err, &lossyErr):
 		return codePtr(lossyErr.Param())

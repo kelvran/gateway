@@ -2260,6 +2260,11 @@ func errorStatus(err error) int {
 		// non-text part no system prompt can hold, decided in the adapter
 		// before any upstream call.
 		status = http.StatusBadRequest
+	case errors.Is(err, adapter.ErrAssistantPrefillUnsupported):
+		// 400 (round-5 Tier A item 2, 2026-10-14): the conversation ends on
+		// an assistant turn and the served Claude family rejects prefill,
+		// decided in the dataplane before any upstream call.
+		status = http.StatusBadRequest
 	case errors.As(err, &lossyErr):
 		// 400 (item 11 slice S9b): an Anthropic Messages request carries
 		// members no deployment in the pool can carry, decided before any
