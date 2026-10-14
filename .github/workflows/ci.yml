@@ -119,14 +119,14 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
           working-directory: gateway
       - name: go-arch-lint (dependency-direction enforcement)
         working-directory: gateway
         run: go run github.com/fe3dback/go-arch-lint@v1.18.0 check
       - name: govulncheck (dependency CVE scanning)
         working-directory: gateway
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Pre-pull the test container images, once each, with retries
         # The Redis-backed packages and cmd/gateway's chaos test start their
         # containers concurrently; without this, several packages race to
@@ -246,7 +246,7 @@ jobs:
       - name: golangci-lint (compat module, the gateway's config)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
           working-directory: gateway/compat
       - name: compatibility matrix (Go legs build and start the gateway; the Python leg runs inside)
         working-directory: gateway/compat
