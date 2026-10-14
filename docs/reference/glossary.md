@@ -1,8 +1,8 @@
 # Glossary
 
-This page defines every Kelvran-specific term in one or two sentences and names the file that defines it, so the other pages can use the term without re-explaining it. It is for operators, client developers and contributors who meet a term in a config file, a log line, an error envelope or another page and need its exact meaning. Entries are grouped by area; within a group they are alphabetical. Each definition states the default and the validation rule as the code has them at the cited location. Where a capability is newer than gateway/v0.17.0, the entry says so in the words "since gateway/v0.18.0" or "since gateway/v0.19.0".
+This page defines every Kelvran-specific term in one or two sentences and names the file that defines it, so the other pages can use the term without re-explaining it. It is for operators, client developers and contributors who meet a term in a config file, a log line, an error envelope or another page and need its exact meaning. Entries are grouped by area; within a group they are alphabetical. Each definition states the default and the validation rule as the code has them at the cited location. Where a capability is newer than gateway/v0.17.0, the entry says so in the words "since gateway/v0.18.0", "since gateway/v0.19.0" or "since gateway/v0.20.0".
 
-Current releases: `gateway/v0.19.0` (2026-10-11) and `evals/v0.10.1` (2026-09-22); see [VERSIONING.md](../VERSIONING.md).
+Current releases: `gateway/v0.20.0` (2026-10-15) and `evals/v0.10.1` (2026-09-22); see [VERSIONING.md](../VERSIONING.md).
 
 ## 1. Deployables, versions and build identity
 

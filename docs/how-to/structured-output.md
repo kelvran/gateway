@@ -154,7 +154,7 @@ Observability. A request that set `response_format` and was still served by an i
 
 ## Versions
 
-Structured output shipped in gateway/v0.5.0 (2026-09-15). The first-pick gate that rejects a pool with no capable deployment was corrected 2026-09-21. The latest tagged release is gateway/v0.19.0 (2026-10-11); the Sonnet 5 whitelist entry and the JSON error envelope first shipped in gateway/v0.18.0, the `400` `response_format_unsupported` code in gateway/v0.19.0. See [versioning](../explanation/versioning.md) and [compatibility](../reference/compatibility.md).
+Structured output shipped in gateway/v0.5.0 (2026-09-15). The first-pick gate that rejects a pool with no capable deployment was corrected 2026-09-21. The latest tagged release is gateway/v0.20.0 (2026-10-15); the Sonnet 5 whitelist entry and the JSON error envelope first shipped in gateway/v0.18.0, the `400` `response_format_unsupported` code in gateway/v0.19.0. See [versioning](../explanation/versioning.md) and [compatibility](../reference/compatibility.md).
 
 ## Related
 

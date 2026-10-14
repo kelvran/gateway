@@ -193,7 +193,7 @@ docker run --rm -v "$PWD/deploy/k8s/base/config.yaml:/config.yaml:ro" \
 
 From a source build: `cd gateway && go run ./cmd/gateway -config ../deploy/k8s/base/config.yaml -validate`.
 
-## Variant: Prometheus scrape (optional, since 2026-10-11)
+## Variant: Prometheus scrape (optional, since `gateway/v0.20.0` (on `main` from 2026-10-11))
 
 The base exposes `8080` only. To scrape the gateway's own `/metrics` (plan item 13c; unauthenticated by design, `SECURITY.md`), enable the endpoint on a non-loopback bind, expose the port, annotate the Pod for a scrape-by-annotation Prometheus, and admit the Prometheus namespace alone on that port — all as an overlay, never in the base:
 

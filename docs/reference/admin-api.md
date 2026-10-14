@@ -2,7 +2,7 @@
 
 This page lists every route on the gateway's admin HTTP surface: the credential tier each route accepts, the request and response JSON, the status codes, the side effects (persistence, cross-replica propagation, audit log), and the configuration keys that enable and secure the listener. It is for operators who run the gateway and for anyone writing automation against the admin port. For a guided setup, read [Configure the Admin API and its credential tiers](../how-to/admin-api-rbac.md); this page is the lookup table behind it.
 
-The route set and bodies below are those of `gateway/v0.19.0` (2026-10-11), unchanged from `gateway/v0.18.0` (2026-10-10); where `gateway/v0.17.0` (2026-10-07) differs, the entry says so. The handler is `gateway/internal/admin/admin.go`; the listener is started by `gateway/cmd/gateway/main.go`.
+The route set and bodies below are those of `gateway/v0.20.0` (2026-10-15); where `gateway/v0.19.0` (2026-10-11) differs — no `GET /admin/spend` or `POST /admin/spend/erase`, no write-body cap, only the read-header timeout — or `gateway/v0.17.0` (2026-10-07) differs, the entry says so. The handler is `gateway/internal/admin/admin.go`; the listener is started by `gateway/cmd/gateway/main.go`.
 
 ## Conventions
 
@@ -100,8 +100,8 @@ The machine-readable form of this table is `gateway/openapi/kelvran-gateway.open
 | POST | `/admin/virtual_keys/{name}/rotate` | Admin, Operator | 204 | 400, 404, 409, 413 | `admin_virtual_key_rotated` |
 | GET | `/admin/virtual_keys/{name}/spend` | Admin, Viewer, CostViewer | 200 JSON | 404, 500 | `admin_virtual_key_spend_read` |
 | GET | `/admin/virtual_keys/{name}/inflight` | Admin, Viewer | 200 JSON | 404, 500 | `admin_virtual_key_inflight_read` |
-| GET | `/admin/spend` | Admin, Viewer, CostViewer | 200 JSON | 400, 500 | `admin_spend_read` |
-| POST | `/admin/spend/erase` | Admin | 200 JSON | 400, 413, 500 | `admin_spend_erased` |
+| GET | `/admin/spend` (since `gateway/v0.20.0`) | Admin, Viewer, CostViewer | 200 JSON | 400, 500 | `admin_spend_read` |
+| POST | `/admin/spend/erase` (since `gateway/v0.20.0`) | Admin | 200 JSON | 400, 413, 500 | `admin_spend_erased` |
 | GET | `/admin/prompts` | Admin, Viewer | 200 JSON | 500 | `admin_prompts_read` |
 | GET | `/admin/prompts/{id}` | Admin, Viewer | 200 JSON | 404, 500 | `admin_prompts_read` |
 | GET | `/admin/prompts/{id}/versions/{version}` | Admin, Viewer | 200 JSON | 400, 404, 500 | `admin_prompts_read` |
@@ -323,7 +323,7 @@ Response:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `spent_usd` | string | Decimal spend within the current window. Omitted when `spend_unavailable` is `true`. For a key without a cap (`budget_usd` `"0"`) the figure is still real: every tracker settles each billable request's real cost (embeddings included since 2026-10-12), and in Redis mode the key's window is opened on first sight rather than skipped (since 2026-10-12, before which the Redis figure stayed `0`); the window follows the key's `budget_reset_interval_seconds` like a capped key's. The spend ledger (`GET /admin/spend?key=`) records every billable request as well, over its own retention window. |
+| `spent_usd` | string | Decimal spend within the current window. Omitted when `spend_unavailable` is `true`. For a key without a cap (`budget_usd` `"0"`) the figure is still real: every tracker settles each billable request's real cost (embeddings included since `gateway/v0.20.0`), and in Redis mode the key's window is opened on first sight rather than skipped (since `gateway/v0.20.0`, before which the Redis figure stayed `0`); the window follows the key's `budget_reset_interval_seconds` like a capped key's. The spend ledger (`GET /admin/spend?key=`) records every billable request as well, over its own retention window. |
 | `budget_usd` | string | Decimal cap. `"0"` means unlimited. |
 | `budget_reset_interval_seconds` | int | The key's window. |
 | `percent_used` | number | `spent_usd / budget_usd` as a fraction (`0.5` means 50 %). `0` when `budget_usd` is not positive. Omitted when `spend_unavailable` is `true`. |

@@ -107,7 +107,7 @@ Tool-call deltas carry OpenAI's `ChatCompletionMessageToolCallChunk` shape besid
 {"index":0,"id":"call_1","type":"function","name":"get_weather","arguments_json":"{\"city\":","function":{"name":"get_weather","arguments":"{\"city\":"}}
 ```
 
-`id` and `type` arrive on the frame that introduces the call; every frame's element carries `function`, and later frames append fragments of `function.arguments` (an empty string when a frame appends nothing), which you concatenate in order — the official SDKs' stream accumulators (`openai.ChatCompletionAccumulator`, `client.chat.completions.stream()`) do this for you. The flat `name` and `arguments_json` members carry the same values and are deprecated since gateway/v0.20.0 ([`DEPRECATED.md`](../../DEPRECATED.md)); switch to `function` before their removal release. Before gateway/v0.20.0 only the flat members exist, and on `anthropic` and `bedrock` deployments `index` is the provider's content-block index rather than the call's position.
+`id` and `type` arrive on the frame that introduces the call; every frame's element carries `function` (since gateway/v0.20.0; `gateway/v0.19.0` streams only the flat members), and later frames append fragments of `function.arguments` (an empty string when a frame appends nothing), which you concatenate in order — the official SDKs' stream accumulators (`openai.ChatCompletionAccumulator`, `client.chat.completions.stream()`) do this for you. The flat `name` and `arguments_json` members carry the same values and are deprecated since gateway/v0.20.0 ([`DEPRECATED.md`](../../DEPRECATED.md)); switch to `function` before their removal release. Before gateway/v0.20.0 only the flat members exist, and on `anthropic` and `bedrock` deployments `index` is the provider's content-block index rather than the call's position.
 
 Reasoning content streams as `delta.reasoning_blocks[]` with `index`, `text`, `signature`, `redacted` and `data`. `text` fragments concatenate per `index`; `signature` and `data` arrive whole.
 
@@ -173,7 +173,7 @@ Expected: `data: [DONE]`. A last line starting with `data: {"error":` means the 
 
 ## Stability
 
-The `data: {...}` framing, the in-band `data: {"error":...}` frame, the `data: [DONE]` sentinel and the `type`/`code` vocabulary are part of the public surface in [docs/VERSIONING.md](../VERSIONING.md). Error message text is not. SSE streaming shipped in gateway/v0.1.0 (2026-09-03). The latest tagged release is gateway/v0.19.0 (2026-10-11), which carries every behaviour marked "since gateway/v0.18.0" or "since gateway/v0.19.0" above. See [versioning](../explanation/versioning.md) and [compatibility](../reference/compatibility.md).
+The `data: {...}` framing, the in-band `data: {"error":...}` frame, the `data: [DONE]` sentinel and the `type`/`code` vocabulary are part of the public surface in [docs/VERSIONING.md](../VERSIONING.md). Error message text is not. SSE streaming shipped in gateway/v0.1.0 (2026-09-03). The latest tagged release is gateway/v0.20.0 (2026-10-15), which carries every behaviour marked "since gateway/v0.18.0", "since gateway/v0.19.0" or "since gateway/v0.20.0" above. See [versioning](../explanation/versioning.md) and [compatibility](../reference/compatibility.md).
 
 ## Related pages
 

@@ -8,7 +8,7 @@ Kelvran ships two independently versioned deployables from one repository:
 
 | Deployable | Tag | Published as | Current |
 |---|---|---|---|
-| `gateway` (Go) | `gateway/vX.Y.Z` | `ghcr.io/kelvran/gateway:vX.Y.Z` image, Go module `github.com/kelvran/gateway/gateway`, and — from `gateway/v0.18.0` — GitHub Release assets (archives, deb/rpm/apk): the release pipeline (`.github/workflows/release.yml`, `gateway/.goreleaser.yaml`) first ran for a tag at `gateway/v0.18.0`; the `gateway/v0.17.0` GitHub Release carries no assets | `gateway/v0.19.0` (2026-10-11) |
+| `gateway` (Go) | `gateway/vX.Y.Z` | `ghcr.io/kelvran/gateway:vX.Y.Z` image, Go module `github.com/kelvran/gateway/gateway`, and — from `gateway/v0.18.0` — GitHub Release assets (archives, deb/rpm/apk): the release pipeline (`.github/workflows/release.yml`, `gateway/.goreleaser.yaml`) first ran for a tag at `gateway/v0.18.0`; the `gateway/v0.17.0` GitHub Release carries no assets | `gateway/v0.20.0` (2026-10-15) |
 | `evals` (Python) | `evals/vX.Y.Z` | GitHub Release assets (sdist, wheel); the intended PyPI name is `kelvran-evals`, and the first publish is blocked on trademark clearance (`RELEASE.md`, Pre-flight Blockers) | `evals/v0.10.1` (2026-09-22) |
 
 Both follow [Semantic Versioning 2.0.0](https://semver.org/). The tag prefixes are permanent: `gateway/` is load-bearing for Go, whose nested-module rule requires a `gateway/v*` tag for `go install github.com/kelvran/gateway/gateway/cmd/gateway@latest` to resolve, and `evals/` disambiguates the second line. Image tags and release-asset names drop the prefix (`v0.17.0`, `kelvran-gateway_0.17.0_linux_amd64.tar.gz`); the binary's `-version` prints the bare version.
@@ -50,7 +50,7 @@ A change to anything in the left column is a **breaking change** if an existing,
 
 ## 4. The 1.0 promise
 
-`gateway/v1.0.0` will be cut when all of these are true, not before and not for marketing: the OpenAPI document for the public routes ([`gateway/openapi/kelvran-gateway.openapi.yaml`](../gateway/openapi/kelvran-gateway.openapi.yaml), on `main` since 2026-10-11 under [plan item 14](upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md); [reference](reference/openapi.md)) has been frozen across two consecutive minors; `config.yaml` carries a `schema_version`; the support window below has been operated for two minors; the OpenSSF Best Practices badge is at Passing; and five consecutive releases have carried signed assets. From 1.0 on, a public surface changes incompatibly only in a MAJOR release, after at least six months in `DEPRECATED.md`. `evals/v1.0.0` follows its own copy of the same conditions, minus the OpenAPI and `schema_version` items.
+`gateway/v1.0.0` will be cut when all of these are true, not before and not for marketing: the OpenAPI document for the public routes ([`gateway/openapi/kelvran-gateway.openapi.yaml`](../gateway/openapi/kelvran-gateway.openapi.yaml), since `gateway/v0.20.0` (on `main` from 2026-10-11) under [plan item 14](upgrade-research/kelvran-deep-research-round4-discoverability-2026-10-08.md); [reference](reference/openapi.md)) has been frozen across two consecutive minors; `config.yaml` carries a `schema_version`; the support window below has been operated for two minors; the OpenSSF Best Practices badge is at Passing; and five consecutive releases have carried signed assets. From 1.0 on, a public surface changes incompatibly only in a MAJOR release, after at least six months in `DEPRECATED.md`. `evals/v1.0.0` follows its own copy of the same conditions, minus the OpenAPI and `schema_version` items.
 
 ## 5. Deprecation mechanics
 
@@ -67,7 +67,7 @@ A change to anything in the left column is a **breaking change** if an existing,
 
 | Deployable | Latest minor | Previous minor | Security fixes for the previous minor until |
 |---|---|---|---|
-| `gateway` | `gateway/v0.19.0` (2026-10-11) | `gateway/v0.18.0` (2026-10-10) | 2027-01-09 |
+| `gateway` | `gateway/v0.20.0` (2026-10-15) | `gateway/v0.19.0` (2026-10-11) | 2027-01-13 |
 | `evals` | `evals/v0.10.1` (2026-09-22) | `evals/v0.10.0` (2026-09-21) | 2026-12-21 |
 
 Each release updates this table (`RELEASE.md` step); `scripts/release-preflight.sh` warns — as a GitHub Actions warning annotation in the release workflow — when the "Latest minor" column does not name the version being released. [`SECURITY.md`](../SECURITY.md) points here instead of carrying its own copy.

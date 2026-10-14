@@ -42,7 +42,7 @@ print(resp.choices[0].message.content)
 print(resp.usage.prompt_tokens, resp.usage.completion_tokens, resp.usage.total_tokens)
 ```
 
-The gateway reads these request fields: `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format`, `service_tier` (since 2026-10-14), plus Kelvran's own extensions. Every other field the SDK lets you pass (`n`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `parallel_tool_calls`, `max_completion_tokens`, `store`, `metadata`, `reasoning_effort`) is silently dropped: the request succeeds and the field has no effect.
+The gateway reads these request fields: `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format`, `service_tier` (since `gateway/v0.20.0`), plus Kelvran's own extensions. Every other field the SDK lets you pass (`n`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `parallel_tool_calls`, `max_completion_tokens`, `store`, `metadata`, `reasoning_effort`) is silently dropped: the request succeeds and the field has no effect.
 
 `messages[].content` must be a string. OpenAI's array-of-parts `content` is rejected with `400` `invalid_json` (see "Not available today").
 
@@ -131,7 +131,7 @@ Every data-plane error body is `{"error":{"message","type","param","code"}}`, al
 | 403 | `permission_error` | `model_not_allowed` | Key may not call this model | no |
 | 403 | `permission_error` | `source_ip_not_allowed` | Client IP outside `allowed_source_cidrs` | yes (recorded gap: this local rejection falls into the upstream-error outcome) |
 | 400 | `invalid_request_error` | `model_not_found` | Unknown `model`; Kelvran uses 400, not OpenAI's 404 | no |
-| 400 | `invalid_request_error` | `invalid_json`, `invalid_request`, `invalid_tool_choice`, `empty_messages`, `content_policy_violation`, `invalid_prompt_reference` | Request-shape problems and guardrail blocks | no (`invalid_prompt_reference`: on `main` since 2026-10-11; `gateway/v0.19.0` carries one) |
+| 400 | `invalid_request_error` | `invalid_json`, `invalid_request`, `invalid_tool_choice`, `empty_messages`, `content_policy_violation`, `invalid_prompt_reference` | Request-shape problems and guardrail blocks | no (`invalid_prompt_reference`: since `gateway/v0.20.0`; `gateway/v0.19.0` carries one) |
 | 400 | `invalid_request_error` | `response_format_unsupported` | `response_format` with no capable deployment (`param` `response_format`; since gateway/v0.19.0, `502` before) | no |
 | 400 | `invalid_request_error` | `tool_result_parts_unsupported` | A `role: tool` message carries image or document `parts` and no deployment in the pool can carry them (`param` `messages`; since gateway/v0.19.0, `502` before) | no |
 | 413 | `invalid_request_error` | `request_too_large` | Body over 32 MiB | no |

@@ -41,7 +41,7 @@ console.log(completion.usage); // { prompt_tokens, completion_tokens, total_toke
 The response carries `id`, `object: "chat.completion"`, `created`, `model`, `choices[]` and `usage`, so the SDK's response types fit. Two request rules differ from OpenAI:
 
 - `messages[].content` must be a string. The content-array form (`content: [{ type: "text", ... }, { type: "image_url", ... }]`) fails to decode and returns 400 with `code: "invalid_json"`. Multimodal input uses Kelvran's own `parts` field; see [Compatibility](../../reference/compatibility.md).
-- Of OpenAI's request fields, only `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format` and, since 2026-10-14, `service_tier` are read (Kelvran's own extensions are listed under "What Kelvran adds that this client ignores"). `max_completion_tokens`, `n`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stream_options`, `store`, `metadata`, `parallel_tool_calls` and `reasoning_effort` are dropped silently. Use `max_tokens`, not `max_completion_tokens`.
+- Of OpenAI's request fields, only `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format` and, since `gateway/v0.20.0`, `service_tier` are read (Kelvran's own extensions are listed under "What Kelvran adds that this client ignores"). `max_completion_tokens`, `n`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stream_options`, `store`, `metadata`, `parallel_tool_calls` and `reasoning_effort` are dropped silently. Use `max_tokens`, not `max_completion_tokens`.
 
 ### 3. Stream
 

@@ -168,6 +168,7 @@ The one thing genuinely specific to a two-deployable system: `gateway` and `eval
 | v0.17.0 | v0.10.1 | `api/gatewayevents/v1` (still unchanged — `api/gatewayevents/v1/gatewayevents.proto` is the only contract file, and every change to it has passed `buf breaking`, per `UPGRADE.md`) | ✅ — current, as of 2026-10-08 |
 | v0.18.0 | v0.10.1 | `api/gatewayevents/v1` (still unchanged) | ✅ — current, as of 2026-10-10 |
 | v0.19.0 | v0.10.1 | `api/gatewayevents/v1` (still unchanged) | ✅ — current, as of 2026-10-11 |
+| v0.20.0 | v0.10.1 | `api/gatewayevents/v1` (still unchanged) | ✅ — current, as of 2026-10-15 |
 
 **Corrected 2026-09-11**: this table previously stopped at `v0.1.0`/`v0.1.0`, calling it "the only released pair so far" — stale since the second release. Both deployables have since versioned independently at least once (`gateway/v0.8.0` shipped alone, `evals` staying at `v0.7.0`, per `DECISIONS.md`) — see `gateway/changelog/`/`evals/changelog/` for the full per-version history; this table only needs to track the `api/` contract compatibility boundary, not every release.
 
@@ -176,6 +177,8 @@ The one thing genuinely specific to a two-deployable system: `gateway` and `eval
 **Corrected 2026-10-10**: the `v0.17.0`/`v0.10.1` row's "current, as of 2026-10-08" is historical in turn — the current releases are `gateway/v0.18.0` (2026-10-10) and `evals/v0.10.1` (2026-09-22); the new row above records them. The contract boundary is still `api/gatewayevents/v1`, unchanged.
 
 **Corrected 2026-10-11**: the `v0.18.0`/`v0.10.1` row's "current, as of 2026-10-10" is historical in turn — the current releases are `gateway/v0.19.0` (2026-10-11) and `evals/v0.10.1` (2026-09-22); the new row above records them. The contract boundary is still `api/gatewayevents/v1`, unchanged.
+
+**Corrected 2026-10-15**: the `v0.19.0`/`v0.10.1` row's "current, as of 2026-10-11" is historical in turn — the current releases are `gateway/v0.20.0` (2026-10-15) and `evals/v0.10.1` (2026-09-22); the new row above records them. The contract boundary is still `api/gatewayevents/v1`, unchanged.
 
 Rollout order for a coordinated upgrade: bump the `api/` contract first (both sides regenerate bindings, per `RELEASE.md`'s bump-and-validate procedure), then `gateway` and `evals` can each roll out independently afterward, in either order, since both are already speaking the new contract version.
 
