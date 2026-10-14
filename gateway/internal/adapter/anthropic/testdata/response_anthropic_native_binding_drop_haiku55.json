@@ -1,0 +1,42 @@
+{
+  "model": "claude-haiku-5-5",
+  "id": "msg_bdrk_tzv5wdlp3r2226hurdniblaakipi5v6jzfmo3xcildu5yd2aa4oa",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "signature-redacted-for-the-fixture"
+    },
+    {
+      "type": "text",
+      "text": "Leaving at 10:00 instead, the train would arrive at **11:35**."
+    }
+  ],
+  "container": null,
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 132,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 118,
+    "output_tokens_details": {
+      "thinking_tokens": 90
+    },
+    "service_tier": "standard"
+  },
+  "input_transformations": [
+    {
+      "type": "thinking_dropped",
+      "path": "messages.1.content.0",
+      "reason": "prefix_binding_mismatch"
+    }
+  ]
+}

@@ -545,7 +545,12 @@ type ChatRequest struct {
 	//     field existed): Kelvran requests Anthropic's NON-STRICT mode
 	//     ("drop_block") -- deliberately the OPPOSITE of Anthropic's own
 	//     strict-by-default behavior for accounts created on or after
-	//     2026-08-31. This divergence is intentional, not an oversight:
+	//     2026-08-31 (older accounts run the check only when this field is
+	//     set -- Kelvran always sets it on a gate model, so every account is
+	//     opted into the check at drop_block: a stale replayed block an older
+	//     account previously accepted is dropped and reported in
+	//     input_transformations). This divergence is intentional, not an
+	//     oversight:
 	//     Kelvran has no mechanism to guarantee prefix stability across
 	//     turns given its own live-mutable global prompt design, so
 	//     inheriting Anthropic's strict default would let an ordinary
@@ -559,7 +564,8 @@ type ChatRequest struct {
 	//
 	// Meaningless -- a silent no-op -- for every provider/model that
 	// doesn't run this check at all, which today is every Anthropic
-	// model except the two named in anthropic.go's own model gate, and
+	// model except the four named in anthropic.go's own model gate (Fable
+	// 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 since 2026-10-14), and
 	// every non-Anthropic provider.
 	ThinkingBindingMode string `json:"thinking_binding_mode,omitempty"`
 	// Thinking is the caller's own extended/adaptive-thinking
@@ -888,9 +894,15 @@ type InputTransformation struct {
 	// opaque, never parsed or interpreted by Kelvran.
 	Path string `json:"path"`
 	// Reason is "prefix_binding_mismatch" (the live-mutable-prompt
-	// reachability risk this whole feature exists to surface) or
+	// reachability risk this whole feature exists to surface),
 	// "model_binding_mismatch" (the block was produced by a model the
-	// serving model can't read).
+	// serving model can't read) or, documented 2026-10-14 (round-5 Tier A
+	// item 6), "organization_binding_mismatch": the block came from another
+	// account -- Sonnet 5.5 and Haiku 5.5 thinking blocks are bound to the
+	// account that produced them, and a replay from another account drops
+	// them with the request succeeding (two unlinked Anthropic accounts
+	// behind one canonical model is the reachable case). Passed through
+	// verbatim; Anthropic adds values, so never reject an unknown one.
 	Reason string `json:"reason"`
 }
 

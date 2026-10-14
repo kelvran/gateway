@@ -44,9 +44,20 @@ const thinkingBindingControlsBeta = "thinking-binding-controls-2026-08-01"
 // model-family substrings Anthropic documents as running the
 // preserved-thinking prefix-integrity check at all, live-verified
 // against platform.claude.com/docs/en/build-with-claude/preserved-thinking
-// (2026-09-24): "On Claude Fable 5.1 and Claude Opus 5.5, a thinking
-// block stays valid only while everything you sent before it is
-// unchanged." Every other Claude model has no such check to opt into --
+// (2026-09-24, Fable 5.1 and Opus 5.5; re-read 2026-10-14, round-5 Tier A
+// item 6): "On Claude Fable 5.1, Claude Opus 5.5, Claude Sonnet 5.5, and
+// Claude Haiku 5.5, a thinking block stays valid only while everything you
+// sent before it is unchanged on later requests" and "Claude Mythos 5.1
+// and models before Claude Fable 5.1 don't run the prefix check" -- so
+// Mythos 5.1 is deliberately NOT listed. Sonnet 5.5 and Haiku 5.5 are
+// PROVEN, not documentation alone: on 2026-10-14 Bedrock InvokeModel
+// (Anthropic's native shape) accepted thinking {adaptive, block_binding}
+// with the beta on both, dropped a replayed block under a changed system
+// prompt (input_transformations thinking_dropped / prefix_binding_mismatch
+// -- the bodies are testdata/response_anthropic_native_binding_drop_*.json)
+// and returned the 400 under "error". On those two, block_binding works
+// only beside type "adaptive", which is what this gate sends. Every other
+// Claude model has no such check to opt into --
 // sending thinking.type: "adaptive" to one of those would be a real,
 // live regression (a model that supports only manual "enabled" thinking
 // rejects "adaptive" with a 400), so this gate exists specifically to
@@ -56,11 +67,15 @@ const thinkingBindingControlsBeta = "thinking-binding-controls-2026-08-01"
 // internal/adapter/capabilities.go for the same real-model-ID reason
 // (region/version prefixes and date/version suffixes around the family
 // name) -- kept local to this package rather than promoted there since
-// no other adapter needs it today (Bedrock's Anthropic-family models
-// running this same check is unverified as of this writing).
+// no other adapter needs it today. Bedrock-hosted Claude models DO run the
+// check -- proven through InvokeModel on 2026-10-14 -- but the bedrock
+// adapter speaks Converse, which has no block_binding member; whether a
+// Converse replay trips the check, and under which default, is unverified.
 var thinkingBlockBindingModelSubstrings = []string{
-	"claude-fable-5-1",
-	"claude-opus-5-5",
+	"claude-fable-5-1",  // PROVEN 2026-09-24
+	"claude-opus-5-5",   // PROVEN 2026-09-24
+	"claude-sonnet-5-5", // PROVEN 2026-10-14 (Bedrock InvokeModel)
+	"claude-haiku-5-5",  // PROVEN 2026-10-14 (Bedrock InvokeModel)
 }
 
 // modelSupportsThinkingBlockBinding reports whether model (an Anthropic
@@ -547,6 +562,15 @@ func thinkingBindingToProvider(mode, model string) (*Thinking, error) {
 // it on the always-on families (Fable 5.1, Mythos 5.1, Opus 5.5), where the
 // request then runs exactly as one that never carried the field -- the
 // gate's own default included. The dataplane logs either.
+//
+// Since 2026-10-14 (round-5 Tier A item 6) the gate's BlockBinding rides
+// beside a caller-supplied type only where the page says it works
+// (blockBindingAccompanies): "adaptive" on every gate family, "enabled" on
+// Fable 5.1 and Opus 5.5 but not on Sonnet 5.5 or Haiku 5.5. Two facts
+// make this a correctness rule rather than a live fix: every /v1/messages
+// request to an anthropic deployment is a passthrough hop that never
+// reaches this function, and every gate family rejects "enabled" itself
+// (round-5 item 2) -- re-check both when a family is added.
 func thinkingToProvider(req adapter.ChatRequest) (*Thinking, error) {
 	gate, err := thinkingBindingToProvider(req.ThinkingBindingMode, req.Model)
 	if err != nil {
@@ -564,10 +588,43 @@ func thinkingToProvider(req adapter.ChatRequest) (*Thinking, error) {
 			return gate, nil
 		}
 	}
-	if gate != nil && thinking.Type != "disabled" && thinking.Type != "between_tools" {
+	if gate != nil && blockBindingAccompanies(thinking.Type, req.Model) {
 		thinking.BlockBinding = gate.BlockBinding
 	}
 	return thinking, nil
+}
+
+// thinkingBlockBindingAdaptiveOnlyModelSubstrings are the gate families on
+// which the page (2026-10-14) says "block_binding works only with
+// thinking: {type: adaptive}"; on Fable 5.1 and Opus 5.5 it "is accepted
+// alongside thinking.type: adaptive and thinking.type: enabled".
+var thinkingBlockBindingAdaptiveOnlyModelSubstrings = []string{
+	"claude-sonnet-5-5",
+	"claude-haiku-5-5",
+}
+
+// blockBindingAccompanies reports whether the gate's BlockBinding may ride
+// beside a caller-supplied thinking type on model: "adaptive" everywhere
+// the gate applies, "enabled" only where the page allows it, never
+// "disabled" or "between_tools" (the prefix check applies to replayed
+// thinking, and a block_binding beside an off switch is not a shape
+// Anthropic documents). Attaching it where the page says it does not work
+// would be a Kelvran-caused 400 the moment such a request reaches the
+// translate path; today none does (see thinkingToProvider).
+func blockBindingAccompanies(thinkingType, model string) bool {
+	switch thinkingType {
+	case "adaptive":
+		return true
+	case "enabled":
+		for _, substr := range thinkingBlockBindingAdaptiveOnlyModelSubstrings {
+			if strings.Contains(model, substr) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // ThinkingBindingBetaHeaderValue reports the anthropic-beta header value

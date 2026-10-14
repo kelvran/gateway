@@ -1385,7 +1385,7 @@ func thinkingBindingChatRequest(model, mode string) adapter.ChatRequest {
 }
 
 // TestThinkingBindingToProviderTableDriven proves thinkingBindingToProvider's
-// full decision table directly: the model gate (only the two models
+// full decision table directly: the model gate (only the four models
 // Anthropic documents as running the preserved-thinking prefix check at
 // all ever get a non-nil Thinking -- every other model is untouched, the
 // exact regression this gate exists to prevent), Kelvran's own
@@ -1404,6 +1404,9 @@ func TestThinkingBindingToProviderTableDriven(t *testing.T) {
 		{name: "qualifying model, default mode", model: "claude-opus-5-5", mode: "", wantBehavior: "drop_block"},
 		{name: "qualifying model, explicit non_strict", model: "claude-fable-5-1", mode: "non_strict", wantBehavior: "drop_block"},
 		{name: "qualifying model, explicit strict", model: "claude-opus-5-5", mode: "strict", wantBehavior: "error"},
+		{name: "qualifying Sonnet 5.5, default mode (gate widened 2026-10-14)", model: "claude-sonnet-5-5", mode: "", wantBehavior: "drop_block"},
+		{name: "qualifying Haiku 5.5, explicit strict (gate widened 2026-10-14)", model: "global.anthropic.claude-haiku-5-5", mode: "strict", wantBehavior: "error"},
+		{name: "non-qualifying Mythos 5.1 (the page: it does not run the prefix check)", model: "claude-mythos-5-1", mode: "strict", wantNil: true},
 		{name: "qualifying bedrock-style model ID, default mode", model: "global.anthropic.claude-opus-5-5-20260901-v1:0", mode: "", wantBehavior: "drop_block"},
 		{name: "non-qualifying model, default mode", model: "claude-sonnet-5", mode: "", wantNil: true},
 		{name: "non-qualifying model, explicit strict", model: "claude-opus-4-6", mode: "strict", wantNil: true},
@@ -1460,7 +1463,7 @@ func TestThinkingBindingToProviderTableDriven(t *testing.T) {
 // strict-by-default 400 to the caller; this test does not by itself
 // prove the scenario is reachable or handled correctly end-to-end.
 func TestToProviderThinkingBindingDefaultsToNonStrictForQualifyingModel(t *testing.T) {
-	for _, model := range []string{"claude-opus-5-5", "claude-fable-5-1"} {
+	for _, model := range []string{"claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"} {
 		nativeAny, err := New().ToProvider(thinkingBindingChatRequest(model, ""))
 		if err != nil {
 			t.Fatalf("ToProvider(%q): %v", model, err)
@@ -1483,7 +1486,7 @@ func TestToProviderThinkingBindingDefaultsToNonStrictForQualifyingModel(t *testi
 // harmless no-op, per thinkingBlockBindingModelSubstrings' own doc
 // comment.
 func TestToProviderThinkingBindingOmittedForNonQualifyingModel(t *testing.T) {
-	for _, model := range []string{"claude-sonnet-5", "claude-opus-4-6", "claude-3-5-sonnet-20241022"} {
+	for _, model := range []string{"claude-sonnet-5", "claude-opus-4-6", "claude-3-5-sonnet-20241022", "claude-mythos-5-1"} {
 		nativeAny, err := New().ToProvider(thinkingBindingChatRequest(model, ""))
 		if err != nil {
 			t.Fatalf("ToProvider(%q): %v", model, err)
@@ -1652,6 +1655,45 @@ func TestToProviderCanonicalThinkingTakesPrecedenceOverBindingGate(t *testing.T)
 	}
 }
 
+// TestToProviderBlockBindingRidesOnlyWhereThePageAllowsIt (round-5 Tier A
+// item 6): on Sonnet 5.5 and Haiku 5.5 the page says block_binding works only
+// beside thinking.type "adaptive", so a caller's "enabled" is forwarded
+// verbatim WITHOUT the gate's BlockBinding (and so without the beta header)
+// -- the model's own 400 on "enabled" stays honest instead of a
+// block_binding complaint Kelvran caused -- while a caller's "adaptive"
+// still carries it; on Fable 5.1 "enabled" keeps carrying it, as the page
+// allows and the test above pins.
+func TestToProviderBlockBindingRidesOnlyWhereThePageAllowsIt(t *testing.T) {
+	for _, tc := range []struct {
+		model, thinkingType string
+		wantBinding         bool
+	}{
+		{"claude-haiku-5-5", "enabled", false},
+		{"claude-sonnet-5-5", "enabled", false},
+		{"claude-sonnet-5-5", "adaptive", true},
+		{"global.anthropic.claude-haiku-5-5", "adaptive", true},
+		{"claude-fable-5-1", "enabled", true},
+		{"claude-opus-5-5", "adaptive", true},
+	} {
+		req := thinkingBindingChatRequest(tc.model, "")
+		req.Thinking = &adapter.ThinkingConfig{Type: tc.thinkingType, BudgetTokens: 2048}
+		nativeAny, err := New().ToProvider(req)
+		if err != nil {
+			t.Fatalf("ToProvider(%s, %s): %v", tc.model, tc.thinkingType, err)
+		}
+		native := nativeAny.(*Request)
+		if native.Thinking == nil || native.Thinking.Type != tc.thinkingType || native.Thinking.BudgetTokens != 2048 {
+			t.Fatalf("ToProvider(%s, %s): Thinking = %+v, want the caller's type and budget verbatim", tc.model, tc.thinkingType, native.Thinking)
+		}
+		if got := native.Thinking.BlockBinding != nil; got != tc.wantBinding {
+			t.Errorf("ToProvider(%s, %s): BlockBinding present = %v, want %v", tc.model, tc.thinkingType, got, tc.wantBinding)
+		}
+		if _, needed := ThinkingBindingBetaHeaderValue(native); needed != tc.wantBinding {
+			t.Errorf("ToProvider(%s, %s): beta header needed = %v, want %v", tc.model, tc.thinkingType, needed, tc.wantBinding)
+		}
+	}
+}
+
 // TestToProviderCanonicalThinkingForwardedOnNonGateModel: on a model the
 // binding gate does not name, the caller's object is forwarded as-is --
 // no block_binding, no beta header -- byte-for-byte the shape Anthropic
@@ -1701,8 +1743,8 @@ func TestToProviderCanonicalThinkingAdaptiveOmitsBudgetTokens(t *testing.T) {
 	}
 }
 
-// TestToProviderCanonicalThinkingDisabledOnAlwaysOnFamilyRunsAsUnset: both
-// gate models (Fable 5.1, Opus 5.5) are always-on families that 400 on
+// TestToProviderCanonicalThinkingDisabledOnAlwaysOnFamilyRunsAsUnset: two of
+// the four gate models (Fable 5.1, Opus 5.5) are always-on families that 400 on
 // thinking.type "disabled" (round-5 Tier A item 2, 2026-10-14: Fable 5.1
 // proven on Bedrock, Opus 5.5 by its release note), so the caller's field is
 // dropped and the request runs exactly as one that never carried it -- the

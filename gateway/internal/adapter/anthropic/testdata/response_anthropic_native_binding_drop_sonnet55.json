@@ -1,0 +1,37 @@
+{
+  "model": "claude-sonnet-5-5",
+  "id": "msg_bdrk_sdiqwxux435wz3f25vqwpkoj3s3wo67kcge4oonlyiiqxeindhna",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "**Setting up**\n\n- Ben pays 35 \u20ac.\n- Cal pays 5 \u20ac more than Ben: 35 + 5 = 40 \u20ac.\n- Ana pays 0.4T.\n\n**Equation**\n\n0.4T + 35 + 40 = T\n\n0.4T + 75 = T\n\n75 = 0.6T\n\nT = 75 / 0.6 = **125 \u20ac**\n\n**Ana's share**\n\nAna = 0.4 \u00d7 125 = **50 \u20ac**\n\n**Check**\n\n50 + 35 + 40 = 125 \u20ac, and 50 / 125 = 0.40 \u2714\n\n**Answer:** The total bill was 125 \u20ac, and Ana paid 50 \u20ac. This one comes out in whole euros."
+    }
+  ],
+  "container": null,
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 476,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 228,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "service_tier": "standard"
+  },
+  "input_transformations": [
+    {
+      "type": "thinking_dropped",
+      "path": "messages.1.content.0",
+      "reason": "prefix_binding_mismatch"
+    }
+  ]
+}
