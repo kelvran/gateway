@@ -173,6 +173,9 @@ func TestFromProviderMapsStopReasonToCanonicalFinishReason(t *testing.T) {
 		{"max_tokens", "length"},
 		{"tool_use", "tool_calls"},
 		{"refusal", "content_filter"},
+		// compaction (the compaction betas, 2026-10-14) stays verbatim: an explicit
+		// case, not the default branch, so the choice is pinned.
+		{"compaction", "compaction"},
 	}
 
 	a := New()

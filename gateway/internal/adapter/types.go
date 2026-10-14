@@ -753,6 +753,31 @@ type Usage struct {
 	// "batch"), recorded for telemetry only -- priority is an organisation
 	// commitment, not a per-request price. Internal.
 	ServiceTier string `json:"-"`
+	// CompactionIterations is the number of "compaction" entries in Anthropic
+	// usage.iterations (the compaction betas compact-2026-09-04 and
+	// compact-2026-01-12; round-5 Tier A item 3, 2026-10-14): how many
+	// server-side summarization calls the request paid for. When the array is
+	// present the anthropic adapter derives every count above from it -- the
+	// only complete record of what the request consumed (on-demand compaction
+	// reports top-level zeros, threshold compaction's top-level counts exclude
+	// the compaction iteration) -- so this is informational: telemetry emits
+	// kelvran.usage.compaction_iterations when > 0, and the dataplane never
+	// caches a response that ran one (its output is bound to the conversation
+	// state at that moment, and a failed summarization is a 200 with empty
+	// content). Internal.
+	CompactionIterations int `json:"-"`
+	// ForeignModelIterations is the number of usage.iterations entries that
+	// name a model other than the response's own (advisor_message and
+	// fallback_message sub-inferences). Their tokens are summed like every
+	// entry and priced at the serving model's rates -- an approximation the
+	// dataplane logs (usage_iterations_foreign_model), since the real model
+	// may cost more. Internal.
+	ForeignModelIterations int `json:"-"`
+	// ForeignIterationModels names the models those entries carried -- the
+	// distinct Anthropic model ids, sorted and comma-joined -- so the warning
+	// can say whose rate was under-applied. Upstream-controlled: the dataplane
+	// bounds it before logging. Internal.
+	ForeignIterationModels string `json:"-"`
 }
 
 // Choice is a single generated completion candidate.

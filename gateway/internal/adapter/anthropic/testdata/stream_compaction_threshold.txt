@@ -1,0 +1,37 @@
+: Threshold compaction (anthropic-beta compact-2026-01-12, context_management compact_20260112, trigger 50000) on claude-sonnet-4-6; the compaction ran mid-request.
+: Captured from Bedrock InvokeModelWithResponseStream (Anthropic's native event shape) on 2026-10-14;
+: Bedrock's amazon-bedrock-invocationMetrics member on message_stop removed, as the Anthropic API sends none.
+
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-6","id":"msg_bdrk_3yhbs2x6x3suqfoygb6iye6iowqq2hsrj4wsxvp3znnk77mxez4a","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":57411,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard"},"context_management":null}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":null}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"The animals mentioned are a fox and a dog.\n\n<summary>\nThe user presented a very long repetitive document containing the sentence \"The quick brown fox jumps over the lazy dog near the quiet river bank while the morning sun rises slowly.\" repeated hundreds of times. The user then asked \"In one short sentence"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"The"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" animals mentioned are a **"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"fox** and a **dog**."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":165,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":16,"iterations":[{"input_tokens":57411,"output_tokens":64,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"compaction"},{"input_tokens":165,"output_tokens":16,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message"}]},"context_management":{"applied_edits":[]}}
+
+event: message_stop
+data: {"type":"message_stop"}
+

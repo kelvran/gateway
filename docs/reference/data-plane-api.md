@@ -246,8 +246,8 @@ A cache hit or an `Idempotency-Key` replay returns the `id` and `created` the co
 
 | Field | Type | Meaning |
 |---|---|---|
-| `prompt_tokens` | integer | Total input tokens charged. Already includes the two cache counts below. |
-| `completion_tokens` | integer | Output tokens. Already includes `reasoning_tokens`. |
+| `prompt_tokens` | integer | Total input tokens charged. Already includes the two cache counts below. (The gateway's metered prompt count — the `chat_completion` line, the span, the ledger — is the sum over `usage.iterations` when an `anthropic` response carries it; such a response is reachable only through `/v1/messages`, where the client receives Anthropic's own bytes — see [compatibility: compaction usage](compatibility.md#compaction-usage-usageiterations).) |
+| `completion_tokens` | integer | Output tokens. Already includes `reasoning_tokens`. (Metered count: summed over `usage.iterations` when present, as for `prompt_tokens`.) |
 | `total_tokens` | integer | `prompt_tokens + completion_tokens`. |
 | `cache_read_tokens` | integer | Subset of `prompt_tokens` read from the provider's prompt cache. Omitted when `0`. |
 | `cache_creation_tokens` | integer | Subset of `prompt_tokens` spent writing a cache entry. Omitted when `0`. |

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -653,6 +654,115 @@ type Usage struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// InferenceGeo is usage.inference_geo ("global" or "us").
 	InferenceGeo string `json:"inference_geo,omitempty"`
+	// Iterations is usage.iterations, present on every response once a
+	// compaction beta (compact-2026-09-04 on-demand, compact-2026-01-12
+	// threshold) is enabled: one entry per server-side sampling iteration.
+	// When non-empty it is the whole request's consumption and the only
+	// correct source for the canonical counts -- see sumIterations. Proven
+	// on Bedrock InvokeModel (Anthropic's native shape) 2026-10-14; the array
+	// rides message_delta's usage on a stream.
+	Iterations []UsageIteration `json:"iterations,omitempty"`
+}
+
+// UsageIteration is one entry of Usage.Iterations: the token usage of one
+// server-side sampling iteration -- "message" (the reply), "compaction"
+// (the summarization call), "advisor_message" and "fallback_message"
+// (other sub-inferences); anthropic-sdk-go v1.80.0's
+// BetaIterationsUsageItemUnion. Every variant carries the four token counts
+// and the cache_creation breakdown; the non-compaction variants may name
+// their model. An unknown type is summed like the rest (forward compatible:
+// Anthropic bills every entry).
+type UsageIteration struct {
+	Type                     string                  `json:"type"`
+	Model                    string                  `json:"model,omitempty"`
+	InputTokens              int                     `json:"input_tokens"`
+	OutputTokens             int                     `json:"output_tokens"`
+	CacheCreationInputTokens int                     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                     `json:"cache_read_input_tokens"`
+	CacheCreation            *CacheCreationBreakdown `json:"cache_creation,omitempty"`
+}
+
+// iterationTotals is the sum of a usage.iterations array (sumIterations).
+type iterationTotals struct {
+	input, output, cacheRead, cacheCreation, cacheCreation1h int
+	compactions                                              int
+	// foreignModels are the distinct models named by entries other than the
+	// response's own (advisor_message / fallback_message), sorted.
+	foreignModels []string
+}
+
+// sumIterations adds up every usage.iterations entry (round-5 Tier A item
+// 3). Anthropic's rule for both compaction betas is "sum across all entries":
+// on-demand compaction reports top-level input/output 0 and the
+// summarization call only here; threshold compaction's top-level counts are
+// the sum of the non-compaction entries alone (proven 2026-10-14: top-level
+// 165/56 beside a 57411/64 compaction entry and a 165/56 message entry). So
+// when the array is non-empty the caller uses the sum INSTEAD of the
+// top-level counts -- never added to them, which would double count the
+// message entries -- floored per count at the top-level value
+// (applyIterationTotals), and an absent, null or empty array keeps the
+// top-level mapping (ok false). responseModel tells a foreign-model entry
+// apart.
+func sumIterations(its []UsageIteration, responseModel string) (iterationTotals, bool) {
+	if len(its) == 0 {
+		return iterationTotals{}, false
+	}
+	var t iterationTotals
+	for _, it := range its {
+		t.input += it.InputTokens
+		t.output += it.OutputTokens
+		t.cacheRead += it.CacheReadInputTokens
+		t.cacheCreation += it.CacheCreationInputTokens
+		t.cacheCreation1h += oneHourCacheTokensOf(it.CacheCreation)
+		if it.Type == "compaction" {
+			t.compactions++
+		}
+		if it.Model != "" && it.Model != responseModel {
+			t.foreignModels = append(t.foreignModels, it.Model)
+		}
+	}
+	sort.Strings(t.foreignModels)
+	t.foreignModels = distinctSorted(t.foreignModels)
+	return t, true
+}
+
+// distinctSorted drops adjacent duplicates from a sorted slice.
+func distinctSorted(s []string) []string {
+	out := s[:0]
+	for i, v := range s {
+		if i == 0 || v != s[i-1] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// applyIterationTotals rewrites u's token counts from t -- shared by
+// FromProvider and the stream decoder's final message_delta so the two never
+// disagree. PromptTokens stays cache-inclusive and TotalTokens derived, as
+// in every adapter; ReasoningTokens, the server-tool counts and the pricing
+// strings are per response, not per iteration, and are left as mapped.
+//
+// Each count is floored at the top-level value u arrived with (the security
+// review of 2026-10-14): a response is never metered below either source the
+// body carries. Equal on every live body, where the array is complete; it
+// matters only for a partially populated array -- the shape AWS's own
+// documentation describes -- where the bare sum would lose the reply. The
+// cache tiers follow whichever source won the prompt count.
+func applyIterationTotals(u *adapter.Usage, t iterationTotals) {
+	if summed := t.input + t.cacheRead + t.cacheCreation; summed >= u.PromptTokens {
+		u.PromptTokens = summed
+		u.CacheReadTokens = t.cacheRead
+		u.CacheCreationTokens = t.cacheCreation
+		u.CacheCreation1hTokens = t.cacheCreation1h
+	}
+	if t.output >= u.CompletionTokens {
+		u.CompletionTokens = t.output
+	}
+	u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	u.CompactionIterations = t.compactions
+	u.ForeignModelIterations = len(t.foreignModels)
+	u.ForeignIterationModels = strings.Join(t.foreignModels, ",")
 }
 
 // CacheCreationBreakdown is Anthropic's usage.cache_creation object -- see
@@ -1168,6 +1278,25 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		})
 	}
 
+	usage := adapter.Usage{
+		PromptTokens:          native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens,
+		CompletionTokens:      native.Usage.OutputTokens,
+		TotalTokens:           native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens + native.Usage.OutputTokens,
+		CacheReadTokens:       native.Usage.CacheReadInputTokens,
+		CacheCreationTokens:   native.Usage.CacheCreationInputTokens,
+		ReasoningTokens:       thinkingTokensOf(native.Usage.OutputTokensDetails),
+		CacheCreation1hTokens: oneHourCacheTokensOf(native.Usage.CacheCreation),
+		WebSearchRequests:     webSearchRequestsOf(native.Usage.ServerToolUse),
+		ServiceTier:           native.Usage.ServiceTier,
+		InferenceGeo:          native.Usage.InferenceGeo,
+	}
+	// The compaction betas report the request's consumption in
+	// usage.iterations; when present it replaces the top-level counts (see
+	// sumIterations).
+	if totals, ok := sumIterations(native.Usage.Iterations, native.Model); ok {
+		applyIterationTotals(&usage, totals)
+	}
+
 	return adapter.ChatResponse{
 		ID:           native.ID,
 		Model:        native.Model,
@@ -1176,18 +1305,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		Choices: []adapter.Choice{
 			{Index: 0, Message: message, FinishReason: finishReason},
 		},
-		Usage: adapter.Usage{
-			PromptTokens:          native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens,
-			CompletionTokens:      native.Usage.OutputTokens,
-			TotalTokens:           native.Usage.InputTokens + native.Usage.CacheReadInputTokens + native.Usage.CacheCreationInputTokens + native.Usage.OutputTokens,
-			CacheReadTokens:       native.Usage.CacheReadInputTokens,
-			CacheCreationTokens:   native.Usage.CacheCreationInputTokens,
-			ReasoningTokens:       thinkingTokensOf(native.Usage.OutputTokensDetails),
-			CacheCreation1hTokens: oneHourCacheTokensOf(native.Usage.CacheCreation),
-			WebSearchRequests:     webSearchRequestsOf(native.Usage.ServerToolUse),
-			ServiceTier:           native.Usage.ServiceTier,
-			InferenceGeo:          native.Usage.InferenceGeo,
-		},
+		Usage:                usage,
 		InputTransformations: inputTransformations,
 		Unrepresentable:      unrepresentable,
 	}, nil

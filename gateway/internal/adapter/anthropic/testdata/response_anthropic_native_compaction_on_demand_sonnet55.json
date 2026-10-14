@@ -1,0 +1,41 @@
+{
+  "model": "claude-sonnet-5-5",
+  "id": "msg_bdrk_csedip5jkpct53hgq3njkndc6i2vssj4swpkwvygjndrvp3dm3rq",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "compaction",
+      "content": "**Context so far:** The user is planning a small garden and asked about vegetables suited to partial shade.\n\n**Key points established:**\n- Three vegetables that grow well in partial shade: **lettuce, spinach, and kale**.\n- Of those, **lettuce is the fastest to harvest**, at roughly 30 days for leaf varieties.\n\n**Latest user message:** The user thanked me and asked me to \"keep this plan in mind,\" meaning they may follow up with further garden-planning questions that build on the above (partial-shade vegetables, with lettuce as the quickest crop).\n\n**Next steps:** Be ready to continue helping with the garden plan, such as spacing, planting times, succession planting, soil, watering, or adding other crops. Use the established info (lettuce, spinach, kale; partial shade; lettuce ~30 days) as the baseline. No unresolved questions or pending tasks at this time.",
+      "signature": "CAISqwgKIAgSEAEYAvIBF2NvbXBhY3Rpb25fc2lnbmF0dXJlX3YxEgyu5jnxUjQPEm2+ABoaDJYyapwlursteQ2UliIwfIQOa+POA4qje1t8fz8cqify11r4RCBxIv3On0C0H2rslAWph289pgsx7kfQOFeHKrgHOS+DwPveqesdg7j99VTjXM5hBbJteyWJuGC9LA2ml6NcgfI+t5MtkT5hlqp/Ixfu584coiDCjQXhR6x4YybkQyizfmBVRyLnuiYZPMHDXol7fxm6nQOREjycH5gcXVK8iJjqLPqYny2WXekwPUajqQvXV/kJR49NFlgHzbo137V6ONsg3tL2sbmYAbcYUbYkwzl5ssHQacQ4M3S1I/WXDrtvDxJr5hpP2mw0mBNIpGFKAUgwIR/Bm/YOHKC05qc4q8H4Lpr0JixobFbornR0lhZ8O3DLtZwXiEF0tzHyf4w5hlzecE765XeRkXBvdJrYMdyufR+VXa7F7GM7FwUAQmV3LE++SDcicV1Nm9eDqflr8PtSGi1P6D0FQBXYRqSvmM/S6ypb/acTXr9R6d+AU7fjDbxZrYAm823WUJThtC3yeXTvKtRWerUcQ733HTOJYZOk8HVHNCnKzDos/As+yLdIpfwMIzH3vu7d1S9pNOMX+lXO04JYMf5rqhu3dr0F/eIX/MmgrMAKMnDA3VhgIicXK5OVOdAQvOITRc6niv9nW0fIGoS4Pf9u95HBVNaOQMXPZXouNn1ygF1yv1uWqe9djXAZ9klvKJzpuFpLwu9YfwEHk5XwgeEXcuCWfj5UzbHR2k42stMzovxLsMDxvCMVNmJZKe+mwT817dCoB3snGLflg15yMJsj65RcJ55ENIwKp/YTjJG+heyIhNfs2dxw8ipDK0+4ptyfm88fnV/2qS8PoH5gquqylF8zjh/zbl+zR+gqeAk3rIbQbNWWpcvRLYN6xQe5+WkP7eKdK9mILPjMgC+kmwy2dCUBQTDS8Rg0Gi68QfhAncUzsWBEZk602g0fEznBpTzvJh4UpBeCzeaKF4T7wcEHCCprFVxoDo53+c2e23KhvXgNScdZwPPUu+xmePUu0Ku1AGXqJUlcWaG3zvb8Z3Gzw28rKTEh9VkfX8kyegdAKXqo7S6eqKQcQFTNIn68kDj65yBvbzaad8tIGy86brSjnjiV3D6U3MgAFsyOC0LKIgIryl+BAqmRidrkBsA1aYoKBURRsUieHTIH793ZgE/p5R07MGk+tJ6XttB86zdH2OL6KZRc6STfodSnFv3S4V7x8XgSv50rxC5OCzUor5YB8JPPBZ6KSEdt1YFoUheM1roD0lT041uzOdC56aqhsX6rhDV8fmJDBtOWr5Zz/i50R115Fg77roiS9jw+rg2MCHP79XqxMvgnLfeszJkO7F/ORnOD8PLALWJ8V27BUBgL"
+    }
+  ],
+  "container": null,
+  "stop_reason": "compaction",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "iterations": [
+      {
+        "input_tokens": 172,
+        "output_tokens": 307,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "compaction"
+      }
+    ],
+    "output_tokens": 0,
+    "service_tier": "standard"
+  }
+}

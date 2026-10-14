@@ -117,6 +117,12 @@ type streamDecoder struct {
 	cacheCreation1hTokens int
 	serviceTier           string
 	inferenceGeo          string
+	// iterations is usage.iterations as message_start carried it (the
+	// compaction betas). On the live stream (2026-10-14) message_start
+	// carries none and the final message_delta carries the whole array, so
+	// message_delta's copy wins when present (anthropic-sdk-go's accumulator
+	// overwrites the same way) and this is the fallback.
+	iterations []UsageIteration
 	// messageStartSeen/messageDeltaSeen guard against a duplicate/
 	// replayed event corrupting the fields above or the final billed
 	// usage — see ErrAnthropicDuplicateStreamEvent's own doc comment.
@@ -151,6 +157,7 @@ type rawMessageStart struct {
 			CacheCreation *CacheCreationBreakdown `json:"cache_creation,omitempty"`
 			ServiceTier   string                  `json:"service_tier,omitempty"`
 			InferenceGeo  string                  `json:"inference_geo,omitempty"`
+			Iterations    []UsageIteration        `json:"iterations,omitempty"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -212,6 +219,10 @@ type rawMessageDelta struct {
 		// ServerToolUse is the whole response's server_tool_use (cumulative,
 		// like output_tokens) -- anthropic-sdk-go v1.80.0's MessageDeltaUsage.
 		ServerToolUse *ServerToolUsage `json:"server_tool_use,omitempty"`
+		// Iterations is the whole response's usage.iterations (the compaction
+		// betas; cumulative like the rest) -- BetaMessageDeltaUsage. Proven
+		// 2026-10-14 to be the event that carries the array.
+		Iterations []UsageIteration `json:"iterations,omitempty"`
 	} `json:"usage"`
 }
 
@@ -230,6 +241,14 @@ func finishReasonFromStopReason(stopReason string) string {
 		return "tool_calls"
 	case "refusal":
 		return "content_filter"
+	case "compaction":
+		// The compaction betas' own stop reason: the response is a compaction
+		// block and no reply (compact-2026-09-04, or compact-2026-01-12 with
+		// pause_after_compaction). Kept verbatim -- no OpenAI value means it,
+		// and it reaches clients only on the /v1/messages relay, where the
+		// native stop_reason is what they read; an explicit case so the
+		// choice is pinned rather than left to the default branch.
+		return "compaction"
 	case "":
 		return ""
 	default:
@@ -301,6 +320,7 @@ func (d *streamDecoder) decodeMessageStart(data string) ([]streaming.ChatComplet
 	d.cacheCreation1hTokens = oneHourCacheTokensOf(m.Message.Usage.CacheCreation)
 	d.serviceTier = m.Message.Usage.ServiceTier
 	d.inferenceGeo = m.Message.Usage.InferenceGeo
+	d.iterations = m.Message.Usage.Iterations
 	return nil, false, nil, nil
 }
 
@@ -455,6 +475,16 @@ func (d *streamDecoder) decodeMessageDelta(data string) ([]streaming.ChatComplet
 		WebSearchRequests:     webSearchRequestsOf(m.Usage.ServerToolUse),
 		ServiceTier:           d.serviceTier,
 		InferenceGeo:          d.inferenceGeo,
+	}
+	// The compaction betas' usage.iterations replaces the two-event split
+	// above (see sumIterations): message_delta's cumulative copy when it
+	// carries one, else whatever message_start carried.
+	iterations := m.Usage.Iterations
+	if len(iterations) == 0 {
+		iterations = d.iterations
+	}
+	if totals, ok := sumIterations(iterations, d.model); ok {
+		applyIterationTotals(usage, totals)
 	}
 	// message_delta is the ONLY event that ever carries stop_reason — a
 	// chunk reconstructing the full canonical response (for cache

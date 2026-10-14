@@ -1,0 +1,43 @@
+{
+  "model": "claude-sonnet-4-6",
+  "id": "msg_bdrk_4mqairxmbywmvroqcd3ydfcvt3lxjxnfl6z3pkwtcxdo7skvu4dq",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Sure! To summarize your garden plan so far:\n\n- You are planning"
+    }
+  ],
+  "container": null,
+  "stop_reason": "max_tokens",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 153,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "iterations": [
+      {
+        "input_tokens": 153,
+        "output_tokens": 16,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "output_tokens": 16,
+    "service_tier": "standard"
+  },
+  "context_management": {
+    "applied_edits": []
+  }
+}

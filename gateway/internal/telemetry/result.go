@@ -399,6 +399,12 @@ type ChatCompletionResult struct {
 	WebSearchRequests     int
 	InferenceGeo          string
 	ServiceTier           string
+	// CompactionIterations mirrors adapter.Usage.CompactionIterations (the
+	// compaction betas; round-5 Tier A item 3): the server-side
+	// summarization calls the request paid for. Zero when none;
+	// RecordChatCompletionResult emits kelvran.usage.compaction_iterations
+	// only then.
+	CompactionIterations int
 	// ReasoningTokens mirrors adapter.Usage.ReasoningTokens — the subset
 	// of OutputTokens spent on reasoning/extended thinking (Anthropic
 	// thinking_tokens, Bedrock's copy of it, OpenAI reasoning_tokens).
@@ -611,6 +617,9 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	if r.ServiceTier != "" {
 		attrs = append(attrs, attribute.String(AttrKelvranUsageServiceTier, r.ServiceTier))
 	}
+	if r.CompactionIterations > 0 {
+		attrs = append(attrs, attribute.Int(AttrKelvranUsageCompactionIterations, r.CompactionIterations))
+	}
 	if r.FallbackHops > 0 {
 		attrs = append(attrs, attribute.Int(AttrKelvranFallbackHops, r.FallbackHops))
 	}
@@ -720,4 +729,9 @@ const (
 	AttrKelvranUsageWebSearchRequests          = "kelvran.usage.web_search_requests"
 	AttrKelvranUsageInferenceGeo               = "kelvran.usage.inference_geo"
 	AttrKelvranUsageServiceTier                = "kelvran.usage.service_tier"
+	// AttrKelvranUsageCompactionIterations counts the compaction entries of
+	// Anthropic's usage.iterations (round-5 Tier A item 3): how many
+	// server-side summarization calls the request paid for; the token counts
+	// above already include them.
+	AttrKelvranUsageCompactionIterations = "kelvran.usage.compaction_iterations"
 )

@@ -1,0 +1,18 @@
+: SYNTHETIC: stream_compaction_on_demand.txt with the iterations array moved from message_delta to message_start,
+: pinning the decoder's fallback when only message_start carries it (the live 2026-10-14 stream carried it on message_delta).
+
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-5-5","id":"msg_bdrk_mb4j73c3xwaikjzwrylu54qwpnalksm5b2amiitvj7u2ncj5xt3a","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":0,"service_tier":"standard","iterations":[{"input_tokens":172,"output_tokens":224,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"compaction"}]}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":"The user is planning a small garden. Lettuce, spinach, and kale were identified as three vegetables that grow well in partial shade. Lettuce was named the fastest to harvest, at roughly 30 days for leaf varieties. The user asked me to keep this plan in mind for future help.","signature":"CAISrggKIAgSEAEYAvIBF2NvbXBhY3Rpb25fc2lnbmF0dXJlX3YxEgye3QPxXFl0YdFvS10aDARRFcJsIyZCUEmbZyIwgeW8Evt909J68hXSbm1LGnAixWsZbwqr9FdJrFhIqY4WNXZFrlv6rjUMRHk6vZ/jKrsHBaxHtgS6R8X9IRv3iOYrhgurrBvQrSRsgKhO5gmNZvfwDKr7uTEi5PpDJ91v4HBCGbu6fsmcRm/Pvzqb1mfcDUiHPbD2UzqQ4STARwAtukBWyT4ABh6/IEK2srKiwhJiA/XrQwfSXDlDprozRyH2WT9sTEIcBW+aQRxhhsZrakMV6mqd81iMvlWEvArIXan0QXTH+ImFZCibJW04rX9DySeVPolCzP0jTYGDXTUq5Tmx4/5XwRJAX5BrPVOZWwXW+psagFKQYUaUE34Cxcx+0/P1P+1Mqj4EEAANNul03TbKbsoBDE3SopTjQPpVNx4/u7ehfGz1BWv1+a9jCUP+AnCDBZLTU+vCp5zCEN152KoZOEmpkdNE6oVyvbyhI+aXkG4sYAlMe5TCUPODTfXGVNx6hU50ofyqPY7hy/WV/YyaQ5Sq+5BaMuC6WPawcdiCME+i8F8yC1A3khjJjkiOCLbeNX1RfPP4xVJtKNxEvUQQBXe/CJ7gd8W96N1cTA+TlUDDNZkDKkT6mxrCMY8qFp2i9HtWv7mNRQ2dfluJkoMQ9EOw6qcqh+Z5LGRkErv8ASWG/dpIRb8VDQZ8o3pdxp1Jrd2xDyi6U2kCNOsYfP3qZ8evwISAngT1mJtx5U40xt0PotX+WX1+6Q4jWZBQnmMSOZqZuyQDVebhmpOJ9j9yexTR78KdM7nNeiSeS7DHcjZIq6zyyMJAzt9kiccVEfBxpzv0KxeqB9vmxVk9VWDnmm3gby5nULPJsoViqen9F0O/vJTXsyUNMzYizoGSwhxyZpMEiaPJjRC7IMqnbjode7eELatV9Agm2W/57ysXxsDoFvLovp6RAWnAIa0ATLDwKbeaUI/1K5VK0qObpSySbzyMv4tpuOnOCqRjPLWAjArJV2qAWxi6k1ATSc66/PXirMDLgxMkd6xcUBKfcagsNgVDKmOv1jAxUg3gSTV8OwekXzqeHHAi7ZM16U+qB6eyntsmCdbHCsRblEgGThZprQu+IqTnTQVi5BbmRiQYQz2WPGTt3qJXmxqWog2b+XNrKUnRYVg5YFbr/IWB4FtNYrZ/05VUBmDL0amzRCKE5gtHT8/5VzgxVYreLcMSWg5Zl+2phAVsd5zwjH356kenLMaA7znvEOjSUGhnRszTInxM0m8HD/o0/YYpaCgaulfU5KVqmocdWNmnkColMmm+MVwi2QefljodlBSpizl/ySOXLLM749nqEZB1F/0Y0QaqvpUwDr3NxVb4n6MSuiMO3xGiWvfLxdPzthgL"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"compaction","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+

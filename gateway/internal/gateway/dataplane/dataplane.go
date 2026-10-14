@@ -4220,7 +4220,7 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		}
 		p.noteGuardrailFailOpen(ctx, vk.ID, telemetry.GuardrailStagePostcall, postVerdict)
 
-		if !responseWasTruncated(resp) && !resp.Unrepresentable {
+		if !responseWasTruncated(resp) && !resp.Unrepresentable && !responseRanCompaction(resp) {
 			if encoded, marshalErr := json.Marshal(resp); marshalErr == nil {
 				p.writeCache(ctx, cacheScope, l1Key, l2Key, l3Signature, Fingerprint(req.Messages), req.Model, responseFormatFingerprint(req.ResponseFormat), promptFP, NegationFingerprint(req.Messages), reasoningBlocksFingerprint(req.Messages), req.ThinkingBindingMode, toolsFingerprint(req), thinkingFingerprint(req), samplingFingerprint(req), passthroughFingerprint(req), encoded)
 			}
@@ -4917,6 +4917,22 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// what it forwarded (item (i)) -- settled here, once, so the price and
 	// the span attribute agree.
 	resp.Usage.CacheCreation1hTokens = oneHourCacheWriteTokens(dep, req, resp.Usage)
+	// An iteration that names another model (an advisor or a server-side
+	// fallback) is priced below at the serving model's rates; say so once per
+	// response, since the real model may cost more (round-5 Tier A item 3).
+	if resp.Usage.ForeignModelIterations > 0 {
+		foreignKeyID := ""
+		if vk != nil {
+			foreignKeyID = vk.ID
+		}
+		p.logger.Warn("usage_iterations_foreign_model", append(traceLogFields(ctx),
+			"virtual_key_id", foreignKeyID,
+			"model", boundedForTelemetry(realServingModel(dep, req.Model)),
+			"foreign_models", boundedForTelemetry(resp.Usage.ForeignIterationModels),
+			"iterations", resp.Usage.ForeignModelIterations,
+			"reason", "usage.iterations entries name another model (advisor or fallback); their tokens are priced at the serving model's rates",
+		)...)
+	}
 	var cost decimal.Decimal
 	if err == nil || billable {
 		// Priced against realServingModel(dep, req.Model), NOT req.Model
@@ -5131,6 +5147,9 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// foreign string that reaches a span attribute (item (m)).
 		InferenceGeo: boundedForTelemetry(resp.Usage.InferenceGeo),
 		ServiceTier:  boundedForTelemetry(resp.Usage.ServiceTier),
+		// The compaction iterations the request paid for (round-5 Tier A
+		// item 3); their tokens are already in InputTokens/OutputTokens.
+		CompactionIterations: resp.Usage.CompactionIterations,
 		// ReasoningTokens: the subset of CompletionTokens the adapters
 		// lift out of the provider's own breakdown (Anthropic/Bedrock
 		// thinking_tokens, OpenAI reasoning_tokens); 0 when not reported.
@@ -5545,6 +5564,23 @@ func responseWasTruncated(resp adapter.ChatResponse) bool {
 		}
 	}
 	return false
+}
+
+// responseRanCompaction reports whether resp paid for a compaction iteration
+// (adapter.Usage.CompactionIterations; round-5 Tier A item 3). Such a
+// response is never written to the cache, beside the truncation and
+// unrepresentability gates: a compaction result is bound to the conversation
+// state at that moment, not a reusable answer, and a failed summarization is
+// a representable 200 with empty content that a cache hit would replay for
+// the life of the TTL. Keyed off the usage, not stop_reason "compaction",
+// because a failed summarization carries an ordinary stop reason. The
+// Idempotency-Key store is deliberately not gated here: a response carrying
+// a compaction block is unrepresentable, so completeIdempotency already
+// releases its claim (a retried key re-runs the call), and the representable
+// failed-summarization shape replays for the same key -- that header's
+// contract, RFC-1 §8's rule unchanged.
+func responseRanCompaction(resp adapter.ChatResponse) bool {
+	return resp.Usage.CompactionIterations > 0
 }
 
 // primaryFinishReason returns resp's first choice's own FinishReason, for

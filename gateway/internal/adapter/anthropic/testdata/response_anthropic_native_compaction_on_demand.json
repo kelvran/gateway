@@ -1,0 +1,41 @@
+{
+  "model": "claude-haiku-5-5",
+  "id": "msg_bdrk_vfvlxanxkf7fclasyplxvjjiygezxtohdbpch5oencxamdjqzf7q",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "compaction",
+      "content": "The user is planning a small garden. In this conversation, I identified three vegetables that grow well in partial shade: lettuce, spinach, and kale. When asked which is fastest to harvest, I said lettuce, at roughly 30 days for leaf varieties. The user acknowledged and asked me to keep this plan in mind. No other tasks or constraints have been stated yet.",
+      "signature": "CAISrggKIAgSEAEYAvIBF2NvbXBhY3Rpb25fc2lnbmF0dXJlX3YxEgxpTLgIeyXVsNA/lUwaDE+InUJ3wyuzgZEQCyIwhI7pyxj5gj5XLCsCFWxpm5l83qyKXchmJvaccrlewCLeP7CnfXCzTvNtt7kd92LTKrsHtBHZVuLtcWt5BGLInzTscljhB0ur4VM4H/8MTkhj5MCI/11cjLzz7J61xScXoDj4MH1phj5jxmrt7BYidMA1zA6G+LI5dKx1DtFNi2fcDkKrEVLCBWuZThEU75n6fe/Bkhkn7PsGnfxncV9kBpcbl+p5exhMII8TsEGR1GJN9h7JbDnaVQKm+RSWjuPbMX/NgnqpTr6SK0wNMoneHBNDnR4y35Mtnm4eKb4osLcYdMX/qXB04vOzQ9N4MIoE7O2utQJYV+dHO8eiNZzNf7yoYOzMCn8q+16qMgrl6gAW0eoX70aYoJcXHSv7w/kNFG9pkdNn3LLlHIE+OrHZbgKl/Cr2Mnn4Tv6XwnDC7L/Ajw8IueHac/wlhx/qSf3iqtFy6qLSy+K73XzclZ94hoaVIiLiQqwV184SqpzQSTs9AOwFzuJtvvUNYquU3jecoYuQc7pKDAzMx6NSSCZ6/cg66BHYk2rESySqtGfldl64H6lOBhf2z4EDgJ+Fd0lZagagDywWztaz9wBSJvkVhPAsGOx7Jcca0oQKERc0y6qu+quE1zGgkM9k8T/VcfqqNoiZcT8JSddESn9YKugtgSCdWHz9+99ctFzERBQXYGRC3Il3o3Nz7WgHrAZm22XfGrzMLKFlWl0r9x5Njsax43W5aURq3I5mhl4P9GShPe6DNSaIkH+DCucjA9Hh21cgzXC8MsOxZPdADvhQT3VBRaYUOYOQfuNz/9pKvIf94qJOPmfO1O9GhvUt+2EnsEjjssMrvDJL4XM2P9VWDZOKdWGPq/p8lHo1C3faSB7UuEYeBR9RCAOHjjKpVOvLReSB3Oviu5++vCxjCMnJv+q6lU3cKKMwYBbDdQ9SgTRJ+h86wxw40n7NNfJluZVgVJJBAMvpw1hnts/y3pvZiWnqruB4IkcVBVRfu54zElEMyJywkWkiWRg9hRgzhNdaQnHw2UIlFr9cT67oJ3owb+73UaGX46hHRikuU76+JqktixeXMmxH/QWL9BnOz2hCbpcH2X4s+DoehZnyrs7d7efm8eS54HfurkfNahlGG5TFNym4D+cswmtLOawXaJaJH3T/1bQwAa3N4PxtWKmEf2yyPwVJh9ce9Ug/KXuwipMOqDvmwAL3KrBVp+eXRlXjxqwk0AQyzQ/4yVcaLjts4xQRp3sT+63uMiwCSTRRAyojhwB1FFhruvUfs6OPbt0imCmFoTnKHUDEHT57BCCdDYza0cK4Wd4iAndsp45m1EdtH5rTpX+MtDf8gRsiG2YKxRgL"
+    }
+  ],
+  "container": null,
+  "stop_reason": "compaction",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "iterations": [
+      {
+        "input_tokens": 172,
+        "output_tokens": 241,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "compaction"
+      }
+    ],
+    "output_tokens": 0,
+    "service_tier": "standard"
+  }
+}

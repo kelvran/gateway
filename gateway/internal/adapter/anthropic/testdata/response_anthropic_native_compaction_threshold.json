@@ -1,0 +1,58 @@
+{
+  "model": "claude-sonnet-4-6",
+  "id": "msg_bdrk_jaspqsbotuskj7tl65ybeuwecqixnhxy4oyrkzmybmwb2vcuhkja",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "compaction",
+      "content": "The document mentions a fox and a dog.\n\n<summary>\nThe user presented a long repetitive document containing the sentence \"The quick brown fox jumps over the lazy dog near the quiet river bank while the morning sun rises slowly.\" repeated hundreds of times. The user then asked a simple question: \"In one"
+    },
+    {
+      "type": "text",
+      "text": "It looks like your question got cut off! You started with \"In one...\" but it didn't complete.\n\nBased on the document, which repeatedly contained the sentence about **a fox and a dog**, could you finish your question? I'm happy to help!"
+    }
+  ],
+  "container": null,
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 165,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "iterations": [
+      {
+        "input_tokens": 57411,
+        "output_tokens": 64,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "compaction"
+      },
+      {
+        "input_tokens": 165,
+        "output_tokens": 56,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "output_tokens": 56,
+    "service_tier": "standard"
+  },
+  "context_management": {
+    "applied_edits": []
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "model": "claude-haiku-5-5",
+  "id": "msg_bdrk_i2qb6l2bqleznjoeukddvk3spxivpl3od2sv6vvrpsixlfnotkza",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Got it. I'll keep the plan in mind:"
+    }
+  ],
+  "container": null,
+  "stop_reason": "max_tokens",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 114,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "iterations": [
+      {
+        "input_tokens": 114,
+        "output_tokens": 16,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "output_tokens": 16,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "service_tier": "standard"
+  }
+}
