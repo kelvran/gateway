@@ -60,9 +60,13 @@ func TestEveryPriceIsAPositiveDecimalTheLoaderAccepts(t *testing.T) {
 		if (e.CacheReadUSD == "") != (e.CacheWriteUSD == "") {
 			t.Errorf("%s prices only one of the two cache rates", id)
 		}
-		// The pricing page bills a 1-hour cache write at 2x base input on every
-		// model (2026-10-13); a priced Anthropic row must carry that rate.
-		if e.CacheWriteUSD != "" {
+		// Anthropic bills a 1-hour cache write at 2x base input on every model
+		// (2026-10-13); a priced Anthropic row must carry that rate. OpenAI has no
+		// 1-hour TTL, so its rows leave the field empty.
+		if e.Vendor != "anthropic" && e.CacheWrite1hUSD != "" {
+			t.Errorf("%s carries a 1h cache-write rate but only Anthropic prices one", id)
+		}
+		if e.Vendor == "anthropic" && e.CacheWriteUSD != "" {
 			want := decimal.RequireFromString(e.PromptUSD).Mul(decimal.NewFromInt(2))
 			if got, err := decimal.NewFromString(e.CacheWrite1hUSD); err != nil || !got.Equal(want) {
 				t.Errorf("%s cache_creation_1h_per_token = %q, want %s (2x prompt_per_token)", id, e.CacheWrite1hUSD, want)
@@ -115,8 +119,11 @@ func TestBedrockIDForPrefersAnExplicitOverrideAndNamesTheFlagOtherwise(t *testin
 			t.Errorf("error %q must mention %q", err.Error(), want)
 		}
 	}
-	if got := embeddedModelsFor("openai"); len(got) != 1 || got[0] != "gpt-4o" {
-		t.Errorf("embeddedModelsFor(openai) = %v", got)
+	// The OpenAI rows: gpt-4o plus the GPT-6.x and GPT-5.6 families added 2026-10-14
+	// (round-5 item 1), sorted, so the init error message stays deterministic.
+	wantOpenAI := []string{"gpt-4o", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"}
+	if got := embeddedModelsFor("openai"); strings.Join(got, ",") != strings.Join(wantOpenAI, ",") {
+		t.Errorf("embeddedModelsFor(openai) = %v, want %v", got, wantOpenAI)
 	}
 }
 

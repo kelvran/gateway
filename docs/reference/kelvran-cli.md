@@ -51,7 +51,7 @@ Bedrock is the one provider where the canonical `model` differs from `upstream_m
 
 - `--models a,b` replaces the provider's default model with the listed canonical ids. It applies to one provider: with `--provider auto` and several credentials detected it is a usage error (exit `2`) — pass `--provider`.
 - Every emitted model must have a `price_table` entry, because a model absent from the table costs $0 and never decrements a budget. `init` takes the price from `--price MODEL=PROMPT_PER_TOKEN,COMPLETION_PER_TOKEN` (USD per token; `0,0` is the documented way to opt into $0 knowingly) or from its embedded table; a model in neither is exit `1` naming the model and the flag.
-- The embedded table, as of **2026-10-13**, from the providers' pricing pages (Anthropic's standard tier; Haiku 5.5 at its ≤100k-token-prompt tier; Gemini's paid tier; gpt-4o from this repository's documented example):
+- The embedded table, as of **2026-10-14**, from the providers' pricing pages (Anthropic's standard tier; Haiku 5.5 at its ≤100k-token-prompt tier; Gemini's paid tier; gpt-4o from this repository's documented example):
 
 | Canonical model | Provider | `prompt_per_token` | `completion_per_token` | `cache_read_per_token` | `cache_creation_per_token` | `cache_creation_1h_per_token` | Bedrock id |
 |---|---|---|---|---|---|---|---|
@@ -60,6 +60,13 @@ Bedrock is the one provider where the canonical `model` differs from `upstream_m
 | `claude-haiku-5-5` | anthropic, bedrock | 0.0000001 | 0.0000005 | 0.00000001 | 0.000000125 | 0.0000002 | `global.anthropic.claude-haiku-5-5` |
 | `claude-fable-5-1` | anthropic, bedrock | 0.00001 | 0.00005 | 0.00000025 | 0.0000125 | 0.00002 | `global.anthropic.claude-fable-5-1` |
 | `gpt-4o` | openai | 0.0000025 | 0.00001 | | | | |
+| `gpt-6-astra` | openai | 0.00001 | 0.00005 | 0.000001 | 0.0000125 | | |
+| `gpt-6.1-sol` | openai | 0.000002 | 0.00001 | 0.0000001 | 0.0000025 | | |
+| `gpt-6-sol` | openai | 0.000002 | 0.00001 | 0.0000002 | 0.0000025 | | |
+| `gpt-6-luna` | openai | 0.0000001 | 0.0000005 | 0.00000001 | 0.000000125 | | |
+| `gpt-5.6-sol` | openai | 0.000004 | 0.00002 | 0.0000004 | 0.000005 | | |
+| `gpt-5.6-luna` | openai | 0.0000002 | 0.0000012 | 0.00000002 | 0.00000025 | | |
+| `gpt-5.6-terra` | openai | 0.000002 | 0.000012 | 0.0000002 | 0.0000025 | | |
 | `gemini-2.5-flash` | gemini | 0.0000003 | 0.0000025 | | | | |
 
   The date is written as a comment above the emitted `price_table`. Bedrock bills these models at Anthropic's first-party rates on its global endpoints; regional endpoints carry a premium the table does not apply. Prices change — check your provider's page and override with `--price`.

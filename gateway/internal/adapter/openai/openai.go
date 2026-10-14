@@ -229,13 +229,17 @@ type Choice struct {
 
 // Usage is OpenAI's native token-accounting shape. PromptTokens is
 // already cache-inclusive (OpenAI's own convention, matching Anthropic's
-// and Bedrock's) — PromptTokensDetails.CachedTokens is the SUBSET of it
-// served from OpenAI's automatic, zero-opt-in prompt cache, live-verified
-// directly against OpenAI's own OpenAPI spec (openapi.yaml's
-// CompletionUsage schema) rather than assumed. There is no separate
-// cache-CREATION signal or charge here the way Anthropic's/Bedrock's
-// opt-in caching has — see FromProvider's own doc comment on why
-// adapter.Usage.CacheCreationTokens stays 0 for every OpenAI response.
+// and Bedrock's) -- PromptTokensDetails.CachedTokens is the SUBSET of it
+// served from OpenAI's automatic prompt cache, and
+// PromptTokensDetails.CacheWriteTokens the SUBSET written to it, both
+// verified against OpenAI's published OpenAPI spec (openapi.yaml
+// CompletionUsage.prompt_tokens_details, info.version 2.3.0, read
+// 2026-10-14). Cache writes were free until GPT-5.5; the prompt-caching
+// guide bills them at 1.25x the uncached input rate on GPT-5.6 and later,
+// so FromProvider lifts them into adapter.Usage.CacheCreationTokens exactly
+// as Anthropic's cache_creation_input_tokens is lifted (round-5 research,
+// 2026-10-14; the field was absent from this struct before, so every
+// OpenAI cache write was priced as a fresh prompt token).
 type Usage struct {
 	PromptTokens            int                      `json:"prompt_tokens"`
 	CompletionTokens        int                      `json:"completion_tokens"`
@@ -246,7 +250,8 @@ type Usage struct {
 
 // PromptTokensDetails is OpenAI's breakdown of Usage.PromptTokens.
 type PromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
 }
 
 // CompletionTokensDetails is OpenAI's breakdown of Usage.CompletionTokens
@@ -266,6 +271,16 @@ func cacheReadTokensFromUsage(native Usage) int {
 		return 0
 	}
 	return native.PromptTokensDetails.CachedTokens
+}
+
+// cacheWriteTokensFromUsage returns native's cache-write token count, or 0
+// when PromptTokensDetails is absent or carries no cache_write_tokens (GPT-5.5
+// and earlier, which write to the cache at no charge and report nothing).
+func cacheWriteTokensFromUsage(native Usage) int {
+	if native.PromptTokensDetails == nil {
+		return 0
+	}
+	return native.PromptTokensDetails.CacheWriteTokens
 }
 
 // reasoningTokensFromUsage returns native's reasoning-token count, or 0
@@ -466,11 +481,12 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		Model:   native.Model,
 		Choices: choices,
 		Usage: adapter.Usage{
-			PromptTokens:     native.Usage.PromptTokens,
-			CompletionTokens: native.Usage.CompletionTokens,
-			TotalTokens:      native.Usage.TotalTokens,
-			CacheReadTokens:  cacheReadTokensFromUsage(native.Usage),
-			ReasoningTokens:  reasoningTokensFromUsage(native.Usage),
+			PromptTokens:        native.Usage.PromptTokens,
+			CompletionTokens:    native.Usage.CompletionTokens,
+			TotalTokens:         native.Usage.TotalTokens,
+			CacheReadTokens:     cacheReadTokensFromUsage(native.Usage),
+			CacheCreationTokens: cacheWriteTokensFromUsage(native.Usage),
+			ReasoningTokens:     reasoningTokensFromUsage(native.Usage),
 		},
 	}, nil
 }

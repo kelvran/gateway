@@ -201,11 +201,12 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 	var finalUsage *adapter.Usage
 	if native.Usage != nil {
 		finalUsage = &adapter.Usage{
-			PromptTokens:     native.Usage.PromptTokens,
-			CompletionTokens: native.Usage.CompletionTokens,
-			TotalTokens:      native.Usage.TotalTokens,
-			CacheReadTokens:  cacheReadTokensFromUsage(*native.Usage),
-			ReasoningTokens:  reasoningTokensFromUsage(*native.Usage),
+			PromptTokens:        native.Usage.PromptTokens,
+			CompletionTokens:    native.Usage.CompletionTokens,
+			TotalTokens:         native.Usage.TotalTokens,
+			CacheReadTokens:     cacheReadTokensFromUsage(*native.Usage),
+			CacheCreationTokens: cacheWriteTokensFromUsage(*native.Usage),
+			ReasoningTokens:     reasoningTokensFromUsage(*native.Usage),
 		}
 		chunk.Usage = finalUsage
 	}

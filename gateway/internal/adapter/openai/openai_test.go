@@ -168,7 +168,7 @@ func TestFromProviderExtractsRealCachedTokens(t *testing.T) {
 		t.Errorf("Usage.CacheReadTokens = %d, want 896", got.Usage.CacheReadTokens)
 	}
 	if got.Usage.CacheCreationTokens != 0 {
-		t.Errorf("Usage.CacheCreationTokens = %d, want 0 -- OpenAI's automatic caching has no cache-creation charge", got.Usage.CacheCreationTokens)
+		t.Errorf("Usage.CacheCreationTokens = %d, want 0 -- the response carried no cache_write_tokens", got.Usage.CacheCreationTokens)
 	}
 }
 

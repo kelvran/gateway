@@ -277,6 +277,14 @@ type Choice struct {
 // real, source-grounded claim about upstream behavior, not a fabricated one
 // — but it is still an assertion about code this codebase doesn't run
 // itself, not a live-verified guarantee the way OpenAI's spec is.
+//
+// CacheWriteTokens mirrors OpenAI's prompt_tokens_details.cache_write_tokens
+// (added to this struct 2026-10-14 with the openai adapter, round-5
+// research): the subset of PromptTokens a runtime reports as written to its
+// cache, lifted into adapter.Usage.CacheCreationTokens. No surveyed
+// self-hosted runtime is known to send it today; like CachedTokens it is the
+// backend's own say-so, and costaccounting.Calculate's invariant check
+// treats a breakdown larger than PromptTokens as uncached.
 type Usage struct {
 	PromptTokens            int                      `json:"prompt_tokens"`
 	CompletionTokens        int                      `json:"completion_tokens"`
@@ -287,7 +295,8 @@ type Usage struct {
 
 // PromptTokensDetails is the breakdown of Usage.PromptTokens.
 type PromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
 }
 
 // CompletionTokensDetails mirrors internal/adapter/openai.CompletionTokensDetails
@@ -307,6 +316,16 @@ func cacheReadTokensFromUsage(native Usage) int {
 		return 0
 	}
 	return native.PromptTokensDetails.CachedTokens
+}
+
+// cacheWriteTokensFromUsage returns native's cache-write token count, or 0
+// when PromptTokensDetails is absent or carries no cache_write_tokens --
+// mirroring internal/adapter/openai exactly.
+func cacheWriteTokensFromUsage(native Usage) int {
+	if native.PromptTokensDetails == nil {
+		return 0
+	}
+	return native.PromptTokensDetails.CacheWriteTokens
 }
 
 // reasoningTokensFromUsage returns native's reasoning-token count, or 0
@@ -478,11 +497,12 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 		Model:   native.Model,
 		Choices: choices,
 		Usage: adapter.Usage{
-			PromptTokens:     native.Usage.PromptTokens,
-			CompletionTokens: native.Usage.CompletionTokens,
-			TotalTokens:      native.Usage.TotalTokens,
-			CacheReadTokens:  cacheReadTokensFromUsage(native.Usage),
-			ReasoningTokens:  reasoningTokensFromUsage(native.Usage),
+			PromptTokens:        native.Usage.PromptTokens,
+			CompletionTokens:    native.Usage.CompletionTokens,
+			TotalTokens:         native.Usage.TotalTokens,
+			CacheReadTokens:     cacheReadTokensFromUsage(native.Usage),
+			CacheCreationTokens: cacheWriteTokensFromUsage(native.Usage),
+			ReasoningTokens:     reasoningTokensFromUsage(native.Usage),
 		},
 	}, nil
 }

@@ -1700,6 +1700,13 @@ func Parse(data []byte, source string) (*Config, error) {
 				if cacheCreationPer.Sign() < 0 {
 					return nil, fmt.Errorf("controlplane: price_table entry %q has a negative cache_creation_per_token", model)
 				}
+				// A cache write never costs less than an uncached prompt token on any
+				// provider that reports one (Anthropic and Bedrock 1.25x, OpenAI 1.25x
+				// on GPT-5.6+); a lower configured rate would undercount every write,
+				// and on openaicompat the write count is the backend's own say-so.
+				if cacheCreationPer.LessThan(promptPer) {
+					return nil, fmt.Errorf("controlplane: price_table entry %q has a cache_creation_per_token (%s) below prompt_per_token (%s): a cache write never costs less than an uncached prompt token", model, cacheCreationPer, promptPer)
+				}
 				entry.CacheCreationPerToken = &cacheCreationPer
 			}
 			if oneHourPer, ok := getDecimal(priceMap, "cache_creation_1h_per_token"); ok {

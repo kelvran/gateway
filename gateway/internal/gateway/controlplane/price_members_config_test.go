@@ -62,6 +62,7 @@ func TestLoadPriceTableRejectsBadPricingMemberRates(t *testing.T) {
 		{"us_inference_multiplier below one", "    us_inference_multiplier: 0.9\n", "us_inference_multiplier"},
 		{"negative us_inference_multiplier", "    us_inference_multiplier: -1\n", "us_inference_multiplier"},
 		{"cache_creation_1h_per_token below cache_creation_per_token", "    cache_creation_per_token: 0.0000025\n    cache_creation_1h_per_token: 0.000002\n", "cache_creation_1h_per_token"},
+		{"cache_creation_per_token below prompt_per_token", "    cache_creation_per_token: 0.000001\n", "cache_creation_per_token"},
 		{"cache_creation_1h_per_token below prompt_per_token with no 5m rate", "    cache_creation_1h_per_token: 0.000001\n", "cache_creation_1h_per_token"},
 	} {
 		_, err := loadPriceTableFixture(t, base+tc.line)
@@ -75,6 +76,10 @@ func TestLoadPriceTableRejectsBadPricingMemberRates(t *testing.T) {
 	}
 	if _, err := loadPriceTableFixture(t, base+"    us_inference_multiplier: 1\n"); err != nil {
 		t.Errorf("us_inference_multiplier: 1 (an explicit no-op) must load, got %v", err)
+	}
+	// Equal to prompt_per_token is the floor for the 5-minute write rate.
+	if _, err := loadPriceTableFixture(t, base+"    cache_creation_per_token: 0.000002\n"); err != nil {
+		t.Errorf("cache_creation_per_token equal to prompt_per_token must load, got %v", err)
 	}
 	// Equal to the 5-minute rate is the floor, not below it.
 	if _, err := loadPriceTableFixture(t, base+"    cache_creation_per_token: 0.0000025\n    cache_creation_1h_per_token: 0.0000025\n"); err != nil {

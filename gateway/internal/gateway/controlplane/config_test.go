@@ -314,7 +314,7 @@ func TestLoadCacheSectionParsesL1AndNestedL2(t *testing.T) {
 func TestLoadPriceTableParsesCacheTokenRates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  claude-opus-4:\n    prompt_per_token: 0.000015\n    completion_per_token: 0.000075\n    cache_read_per_token: 0.0000003\n    cache_creation_per_token: 0.00001\n  gpt-4o:\n    prompt_per_token: 0.0000025\n    completion_per_token: 0.00001\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
+	content := "listen_addr: \":8080\"\nvirtual_keys:\n  team-alpha:\n    key_hash: \"aa\"\nprice_table:\n  claude-opus-4:\n    prompt_per_token: 0.000015\n    completion_per_token: 0.000075\n    cache_read_per_token: 0.0000003\n    cache_creation_per_token: 0.00001875\n  gpt-4o:\n    prompt_per_token: 0.0000025\n    completion_per_token: 0.00001\ndeployments:\n  d1:\n    model: \"m\"\n    provider: \"openai\"\n    upstream_model: \"m\"\n    base_url: \"https://x\"\n    api_key_env: \"X\"\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -337,8 +337,8 @@ func TestLoadPriceTableParsesCacheTokenRates(t *testing.T) {
 	if opus.CacheCreationPerToken == nil {
 		t.Fatal("claude-opus-4.CacheCreationPerToken = nil, want a set rate")
 	}
-	if !opus.CacheCreationPerToken.Equal(decimal.RequireFromString("0.00001")) {
-		t.Errorf("claude-opus-4.CacheCreationPerToken = %v, want 0.00001", *opus.CacheCreationPerToken)
+	if !opus.CacheCreationPerToken.Equal(decimal.RequireFromString("0.00001875")) {
+		t.Errorf("claude-opus-4.CacheCreationPerToken = %v, want 0.00001875 (1.25x prompt_per_token)", *opus.CacheCreationPerToken)
 	}
 
 	gpt4o, ok := cfg.PriceTable["gpt-4o"]
