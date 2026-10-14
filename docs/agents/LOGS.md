@@ -4952,3 +4952,17 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** none — the ranked list is the owner's to pick from; Tier D names the four owner decisions (upstream Chat→Responses bridge, Silver governance files, OpenAPI 3.2 timing, Redis Cluster as a 1.0 goal). Recorded observation: a `deep-research` lane that returns nothing for a sub-area is a coverage gap, not a verdict — two completeness lanes were needed this round.
 
 **Next steps / resume point:** append section 5 when `wf_3723ffc5-ede` lands and re-rank if it adds Tier-A items; the owner picks a tier; Tier A items 1–6 are each a bounded red → green → review slice in the house process; Tier B items 7–9 are one session together. The open inventory (ssn follow-ups, Gemini gaps, FAILURE-MODES §9, F8/F9/F11, the v0.20.0 cut on the owner's tag, 15a, Dependabot #10/#12/#13) is unchanged.
+
+## [2026-10-14] main — Deep-research round 5, section 5 appended (security, compliance, operator UX, DR); the report is complete
+
+**Files touched:** `docs/upgrade-research/kelvran-deep-research-round5-2026-10-14.md` (section 5 replaces the placeholder; a new ranked Tier S with seven items; the list renumbered to 41; open questions and method notes extended; the title no longer says "security lane pending").
+
+**Intent/summary:** lane 5 (`wf_3723ffc5-ede`, 108 agents, 1,711 tool uses, 6 h 36 min; 129 claims → 25 verified → 14 confirmed / 11 refuted) landed after the first commit of the report. It covered the OWASP 2026 taxonomies fully (LLM01–10 unchanged in membership versus 2025, rank moves already recorded in THREAT_MODEL; the Agentic Top 10 ASI01–10 dated 2025-12-09; the Agent Control Standard's version and hook model refuted as claimed) and parts of injection practice and EU AI Act timing, and left NIST/ISO, peer logging hygiene, abuse detection, disclosure posture, RFC 9457/SSE, doctor UX and DR unanswered — recorded as research gaps, not clean bills. Main-session re-verification: the OWASP LLM Top 10 2026 resource page is dated 2026-08-03 (2026-09-01 is the announcement); Regulation (EU) 2026/1744 (adopted 2026-07-08, OJ 2026-07-24) moves Chapter III Sections 1–3 to 2027-12-02 (Annex III) and 2028-08-02 (Annex I) per recital 40; LiteLLM v1.97.0's `scan_only_tool_results` is on its release page; in the repo `hiddenUnicodeRanges` lacks U+E0100–E01EF, the admin audit trail is plain `O_APPEND` JSONL with no hash or signature, `SECURITY-INSIGHTS.yml` is schema 2.0.0, and neither tokens-per-day nor detector role scoping exists. Tier S: the Variation Selectors Supplement (adopt_now), `tokens_per_day`, role-scoped detectors, a tamper-evident audit trail, an injection subtype taxonomy plus canary stages, budget scopes beyond the key, and the retention/date corrections.
+
+**Gates / live:** docs only; `scripts/check-doc-paths.sh` ok.
+
+**Reviews**: none (research report).
+
+**Decisions made:** none; the owner chose Tier A for implementation earlier today (see the Tier A entries that follow).
+
+**Next steps / resume point:** Tier A slices in order (A1 OpenAI cache-write tokens is in review; A2 Claude 5.5 capability gates is probed and designed); Tier S item 1 is a half-day candidate to fold in after Tier A; a third completeness pass for the unanswered security/operations areas waits for the owner's word.
