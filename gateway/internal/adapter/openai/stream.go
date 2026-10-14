@@ -45,6 +45,14 @@ type nativeStreamChunk struct {
 	// set by the gateway.
 	Usage *Usage             `json:"usage,omitempty"`
 	Error *nativeStreamError `json:"error,omitempty"`
+	// ServiceTier is the chunk's top-level service_tier (the same enum as the
+	// buffered Response's). Which chunk carries it is undocumented, so the
+	// decoder latches the last non-empty value it sees (openai-go's own
+	// accumulator does the same) and puts it on the final usage. A tier that
+	// first appears AFTER the usage-bearing chunk is lost: that chunk's usage
+	// has already been handed to the dataplane, and OpenAI ends a stream with
+	// the usage chunk (the fixtures pin the observed order).
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 // nativeStreamError is OpenAI's real mid-stream error payload shape — see
@@ -124,6 +132,9 @@ type streamDecoder struct {
 	// cross-call state: it must persist from the Decode call that saw
 	// [DONE] to every subsequent Decode call on this decoder instance.
 	done bool
+	// serviceTier is the last non-empty service_tier any chunk carried
+	// (nativeStreamChunk.ServiceTier), copied onto the final usage.
+	serviceTier string
 }
 
 // NewStreamDecoder implements streaming.StreamingAdapter, returning a
@@ -176,6 +187,9 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 		}
 	}
 
+	if native.ServiceTier != "" {
+		d.serviceTier = native.ServiceTier
+	}
 	var finalUsage *adapter.Usage
 	if native.Usage != nil {
 		finalUsage = &adapter.Usage{
@@ -185,6 +199,7 @@ func (d *streamDecoder) Decode(raw streaming.SSEEvent) ([]streaming.ChatCompleti
 			CacheReadTokens:     cacheReadTokensFromUsage(*native.Usage),
 			CacheCreationTokens: cacheWriteTokensFromUsage(*native.Usage),
 			ReasoningTokens:     reasoningTokensFromUsage(*native.Usage),
+			ServiceTier:         d.serviceTier,
 		}
 		chunk.Usage = finalUsage
 	}

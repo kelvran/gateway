@@ -24,9 +24,13 @@ type Request struct {
 	Stop []string `json:"stop,omitempty"`
 	// TopP is top_p, the canonical ChatRequest.TopP forwarded verbatim
 	// (item 11 slice S5).
-	TopP   *float64 `json:"top_p,omitempty"`
-	Tools  []Tool   `json:"tools,omitempty"`
-	Stream bool     `json:"stream,omitempty"`
+	TopP *float64 `json:"top_p,omitempty"`
+	// ServiceTier is service_tier, the canonical ChatRequest.ServiceTier
+	// forwarded verbatim (round-5 Tier A item 4); the dataplane blanks it under
+	// a deployment's strip policy before this adapter runs.
+	ServiceTier string `json:"service_tier,omitempty"`
+	Tools       []Tool `json:"tools,omitempty"`
+	Stream      bool   `json:"stream,omitempty"`
 	// StreamOptions is only ever sent when Stream is true. include_usage
 	// is required for the dataplane to get cost-accounting data on a
 	// streamed response at all — OpenAI only emits a final usage-bearing
@@ -218,6 +222,12 @@ type Response struct {
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
 	Usage   Usage    `json:"usage"`
+	// ServiceTier is the response's top-level service_tier: "the processing
+	// mode actually used to serve the request", which may differ from the
+	// request (auto -> default; a ramp-downgraded fast -> default, billed
+	// Standard). Nullable on the wire; empty when absent. Lifted into
+	// adapter.Usage.ServiceTier for pricing (round-5 Tier A item 4).
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 // Choice is a single native completion candidate.
@@ -380,6 +390,7 @@ func (a *Adapter) ToProvider(req adapter.ChatRequest) (any, error) {
 		MaxTokens:      req.MaxTokens,
 		Stop:           req.StopSequences,
 		TopP:           req.TopP,
+		ServiceTier:    req.ServiceTier,
 		Tools:          tools,
 		Stream:         req.Stream,
 		StreamOptions:  streamOpts,
@@ -487,6 +498,7 @@ func (a *Adapter) FromProvider(resp any) (adapter.ChatResponse, error) {
 			CacheReadTokens:     cacheReadTokensFromUsage(native.Usage),
 			CacheCreationTokens: cacheWriteTokensFromUsage(native.Usage),
 			ReasoningTokens:     reasoningTokensFromUsage(native.Usage),
+			ServiceTier:         native.ServiceTier,
 		},
 	}, nil
 }

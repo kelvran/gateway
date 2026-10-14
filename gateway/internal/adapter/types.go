@@ -395,6 +395,22 @@ type ChatRequest struct {
 	// unknown field on /v1/chat/completions. Folded into every cache key
 	// and the L3 gate (dataplane.samplingFingerprint).
 	TopP *float64 `json:"top_p,omitempty"`
+	// ServiceTier is OpenAI's service_tier (auto | default | flex | scale |
+	// priority | fast; round-5 Tier A item 4, 2026-10-14): the processing tier
+	// the caller asks for, forwarded verbatim by the openai adapter unless the
+	// deployment's service_tier_policy is strip, never validated here (the
+	// enum, and a tier the model lacks, are the upstream's own 400). Every
+	// other provider has no such member -- Anthropic's own service_tier takes
+	// auto|standard_only on /v1/messages, a different vocabulary -- so the
+	// dataplane drops it there with a request_field_dropped line. The tier
+	// actually served comes back in Usage.ServiceTier and is what is priced
+	// (price_table.<model>.service_tier_multipliers); when the response is
+	// silent a requested premium tier is billed at its multiplier (never
+	// undercount a lever the client pulled), a requested discount never. In
+	// the Idempotency-Key fingerprint like every wire member; deliberately NOT
+	// folded into cache keys: the tier changes price and latency, not what
+	// the model produces, and a cache hit bills $0 either way.
+	ServiceTier string `json:"service_tier,omitempty"`
 	// TopK is the caller's top-k sampling parameter -- Anthropic's `top_k`,
 	// Gemini's `generationConfig.topK`, Converse's additionalModelRequestFields
 	// `top_k` -- set only by the Anthropic Messages ingress (item 11 slice
@@ -749,9 +765,13 @@ type Usage struct {
 	// bills every token category at 1.1x on Claude 4.6 and later. Empty when
 	// the provider does not report it. Internal.
 	InferenceGeo string `json:"-"`
-	// ServiceTier is Anthropic usage.service_tier ("standard", "priority",
-	// "batch"), recorded for telemetry only -- priority is an organisation
-	// commitment, not a per-request price. Internal.
+	// ServiceTier is the processing tier the provider reports it used:
+	// Anthropic usage.service_tier ("standard", "priority", "batch" --
+	// telemetry only, since priority is an organisation commitment, not a
+	// per-request price) and, since 2026-10-14 (round-5 Tier A item 4),
+	// OpenAI's response service_tier ("default", "flex", "priority",
+	// "fast", "scale"), which costaccounting prices through
+	// price_table.<model>.service_tier_multipliers. Internal.
 	ServiceTier string `json:"-"`
 	// CompactionIterations is the number of "compaction" entries in Anthropic
 	// usage.iterations (the compaction betas compact-2026-09-04 and

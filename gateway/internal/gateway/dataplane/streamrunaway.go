@@ -221,7 +221,8 @@ func (p *Pipeline) checkMidStreamReservationTopup(ctx context.Context, dep Deplo
 	}
 
 	estimatedCostUSD := p.costCalc.Calculate(realServingModel(dep, req.Model), costaccounting.Usage{
-		CompletionTokens: int(estimatedTokens),
+		CompletionTokens:     int(estimatedTokens),
+		RequestedServiceTier: requestedServiceTierFor(dep, req),
 	})
 	if estimatedCostUSD.GreaterThan(*msr.budgetReservedUSD) {
 		allowed, applied, newEpoch, budgetErr := p.budget.IncreaseReservation(ctx, msr.vk.ID, msr.vk.BudgetUSD, *msr.budgetReservedUSD, estimatedCostUSD, *msr.budgetReservationEpoch, msr.vk.BudgetResetInterval)

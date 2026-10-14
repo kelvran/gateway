@@ -123,6 +123,7 @@ Unknown top-level fields (`n`, `seed`, `top_k`, and so on) are ignored: the body
 | `max_tokens` | integer | no | Forwarded to the provider. |
 | `top_p` | number | no | Forwarded to the provider (since gateway/v0.19.0; dropped silently before). Sonnet 4.5 and Haiku 4.5 reject `temperature` and `top_p` together; that is the provider's own `400`. On a fixed-sampling Claude 5.x family any value but `0.99`, and `0.99` beside `temperature: 1`, is dropped before the call and logged — see [Claude 5.x request gates](compatibility.md#claude-5x-request-gates). |
 | `stop` | string or string array | no | Forwarded to the provider as an array (since gateway/v0.19.0; dropped silently before). Provider limits (OpenAI: four) are the provider's own `400`. |
+| `service_tier` | string | no | OpenAI's processing tier (`auto`, `default`, `flex`, `scale`, `priority`, `fast`), forwarded verbatim to an `openai` deployment unless its `service_tier_policy` is `strip`; dropped and logged on every other provider; never validated (the enum is the provider's own `400`). The tier the response reports is priced through `price_table.<model>.service_tier_multipliers`. Since 2026-10-14 on `main` (dropped silently before). |
 | `tools` | `ToolDef[]` | no | At most 256. OpenAI nested shape; see below. |
 | `tool_choice` | string or object | no | See `tool_choice` below. |
 | `stream` | boolean | no, default `false` | `true` selects the SSE response. |

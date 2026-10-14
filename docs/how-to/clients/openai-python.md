@@ -42,7 +42,7 @@ print(resp.choices[0].message.content)
 print(resp.usage.prompt_tokens, resp.usage.completion_tokens, resp.usage.total_tokens)
 ```
 
-The gateway reads these request fields: `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format`, plus Kelvran's own extensions. Every other field the SDK lets you pass (`n`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `parallel_tool_calls`, `max_completion_tokens`, `store`, `metadata`, `reasoning_effort`) is silently dropped: the request succeeds and the field has no effect.
+The gateway reads these request fields: `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop`, `tools`, `tool_choice`, `stream`, `response_format`, `service_tier` (since 2026-10-14), plus Kelvran's own extensions. Every other field the SDK lets you pass (`n`, `seed`, `user`, `logprobs`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `parallel_tool_calls`, `max_completion_tokens`, `store`, `metadata`, `reasoning_effort`) is silently dropped: the request succeeds and the field has no effect.
 
 `messages[].content` must be a string. OpenAI's array-of-parts `content` is rejected with `400` `invalid_json` (see "Not available today").
 

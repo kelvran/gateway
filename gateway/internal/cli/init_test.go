@@ -626,3 +626,29 @@ func TestInitRefusesADirectoryAsOut(t *testing.T) {
 		t.Errorf("--out <symlink to a directory> --force: exit %d, stderr %s", code, stderr)
 	}
 }
+
+// --price on an embedded OpenAI row replaces the two base rates and drops the
+// row's cache rates (absolute dollars), but keeps its service_tier_multipliers
+// (ratios of Standard): an operator updating gpt-6-sol's price must not start
+// billing a served fast at Standard. A --price row for a model outside the
+// table carries no multipliers.
+func TestInitPriceOverrideKeepsTheEmbeddedServiceTierMultipliers(t *testing.T) {
+	code, stdout, stderr := runInit(t, nil, "--dry-run", "--provider", "openai", "--models", "gpt-6-sol,x-unknown", "--price", "gpt-6-sol=0.000001,0.000002", "--price", "x-unknown=0.000001,0.000002")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	cfg := loadYAML(t, stdout)
+	p, ok := cfg.PriceTable["gpt-6-sol"]
+	if !ok || p.PromptPerToken.String() != "0.000001" || p.CompletionPerToken.String() != "0.000002" {
+		t.Fatalf("price_table[gpt-6-sol] = %+v, want the overridden rates", p)
+	}
+	if p.CacheReadPerToken != nil || p.CacheCreationPerToken != nil {
+		t.Errorf("cache rates survived the override: %+v (they are absolute dollars and must be re-supplied)", p)
+	}
+	if len(p.ServiceTierMultipliers) != 2 || p.ServiceTierMultipliers["flex"].String() != "0.5" || p.ServiceTierMultipliers["priority"].String() != "2" {
+		t.Errorf("service_tier_multipliers after --price = %v, want the embedded flex 0.5 / priority 2", p.ServiceTierMultipliers)
+	}
+	if u := cfg.PriceTable["x-unknown"]; len(u.ServiceTierMultipliers) != 0 {
+		t.Errorf("x-unknown (outside the table) got multipliers %v", u.ServiceTierMultipliers)
+	}
+}

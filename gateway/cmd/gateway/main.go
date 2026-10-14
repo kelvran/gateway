@@ -1164,6 +1164,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			TPMExcludeCacheReadTokens:       d.TPMExcludeCacheReadTokens,
 			AnthropicBetaPolicy:             d.AnthropicBetaPolicy,
 			AcceptLossyAnthropicIngress:     d.AcceptLossyAnthropicIngress,
+			ServiceTierPolicy:               d.ServiceTierPolicy,
 		}
 		if d.Provider == "bedrock" {
 			if d.AccessKeyIDFile != "" {
@@ -2440,6 +2441,7 @@ func costPriceTable(cfg map[string]controlplane.ModelPriceConfig) costaccounting
 			CacheCreation1hPerToken: price.CacheCreation1hPerToken,
 			WebSearchPerRequest:     price.WebSearchPerRequest,
 			USInferenceMultiplier:   price.USInferenceMultiplier,
+			ServiceTierMultipliers:  price.ServiceTierMultipliers,
 		}
 	}
 	return priceTable

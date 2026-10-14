@@ -3836,6 +3836,11 @@ components:
               type: string
         top_p:
           type: number
+        service_tier:
+          type: string
+          description: OpenAI's processing tier (`auto`, `default`, `flex`, `scale`, `priority`, `fast`), forwarded verbatim to an `openai` deployment unless its `service_tier_policy` is `strip`, dropped
+            and logged on every other provider; never validated by the gateway (the enum and a tier the model lacks are the provider's own `400`). The tier the response says was served is priced through
+            `price_table.<model>.service_tier_multipliers`. Since 2026-10-14 (`main`; dropped silently before).
         tools:
           type: array
           maxItems: 256

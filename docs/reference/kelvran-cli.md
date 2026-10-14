@@ -69,6 +69,8 @@ Bedrock is the one provider where the canonical `model` differs from `upstream_m
 | `gpt-5.6-terra` | openai | 0.000002 | 0.000012 | 0.0000002 | 0.0000025 | | |
 | `gemini-2.5-flash` | gemini | 0.0000003 | 0.0000025 | | | | |
 
+The OpenAI rows also carry `service_tier_multipliers` (since 2026-10-14, the pricing page's multiples of Standard): `flex: 0.5` and `priority: 2` on every GPT-6 and GPT-5.6 row, plus `ultrafast: 6` on `gpt-6-astra` and `gpt-6.1-sol` (a Responses-API tier the gateway cannot request today; kept so a future route is priced); `gpt-4o` carries `priority: 1.7` and no `flex`. `priority` also prices a response served as `fast`. `--price MODEL=…` on one of these rows replaces the two base rates and drops the row's cache rates (absolute dollars that cannot survive a rate change) but keeps its `service_tier_multipliers` (ratios of Standard, still true; with the matching `--provider`); a `--price` row for a model outside the table carries no multipliers — add them by hand, or its premium tiers bill Standard and log `service_tier_unpriced`.
+
   The date is written as a comment above the emitted `price_table`. Bedrock bills these models at Anthropic's first-party rates on its global endpoints; regional endpoints carry a premium the table does not apply. Prices change — check your provider's page and override with `--price`.
 - `--upstream-model CANONICAL=BEDROCK_ID` (bedrock only, repeatable) supplies the Bedrock id for a `--models` entry the embedded mapping lacks, or overrides a mapped one (for example a regional `us.`/`eu.` inference-profile form); without it such a model is exit `1` naming the flag. `--base-url` is rejected for bedrock (exit `2`): the Converse URL is derived.
 

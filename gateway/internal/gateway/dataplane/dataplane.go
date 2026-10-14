@@ -240,8 +240,12 @@ type Deployment struct {
 	// controlplane.DeploymentConfig fields of the same names (RFC-1 §5, §6;
 	// item 11 slice S9a); read by the /v1/messages path when it is wired
 	// (S9b/S10a).
-	AnthropicBetaPolicy             string
-	AcceptLossyAnthropicIngress     bool
+	AnthropicBetaPolicy         string
+	AcceptLossyAnthropicIngress bool
+	// ServiceTierPolicy mirrors controlplane.DeploymentConfig.ServiceTierPolicy
+	// (round-5 Tier A item 4): ServiceTierPolicyStrip blanks a client's OpenAI
+	// service_tier before the adapter runs; anything else forwards it.
+	ServiceTierPolicy               string
 	DisableCacheControlAutoPopulate bool
 	// SharedAcrossTenants declares that this deployment's own upstream
 	// credential (APIKey, or AccessKeyID/SecretAccessKey for Bedrock) is
@@ -4277,6 +4281,7 @@ func (p *Pipeline) callDeployment(ctx context.Context, dep Deployment, req adapt
 	}
 	p.applyAnthropicBetaPolicy(ctx, dep, &upstreamReq)
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
+	stripServiceTier(dep, &upstreamReq)
 
 	providerReq, err := a.ToProvider(upstreamReq)
 	if err != nil {
@@ -4921,12 +4926,8 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// fallback) is priced below at the serving model's rates; say so once per
 	// response, since the real model may cost more (round-5 Tier A item 3).
 	if resp.Usage.ForeignModelIterations > 0 {
-		foreignKeyID := ""
-		if vk != nil {
-			foreignKeyID = vk.ID
-		}
 		p.logger.Warn("usage_iterations_foreign_model", append(traceLogFields(ctx),
-			"virtual_key_id", foreignKeyID,
+			"virtual_key_id", virtualKeyIDOf(vk),
 			"model", boundedForTelemetry(realServingModel(dep, req.Model)),
 			"foreign_models", boundedForTelemetry(resp.Usage.ForeignIterationModels),
 			"iterations", resp.Usage.ForeignModelIterations,
@@ -4961,7 +4962,23 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			CacheCreation1hTokens: resp.Usage.CacheCreation1hTokens,
 			WebSearchRequests:     resp.Usage.WebSearchRequests,
 			InferenceGeo:          resp.Usage.InferenceGeo,
+			ServiceTier:           servedServiceTierFor(dep, resp.Usage.ServiceTier),
+			RequestedServiceTier:  requestedServiceTierFor(dep, req),
 		})
+		// A served tier the price table does not carry (scale, a future tier, or
+		// a map the operator never wrote) was billed at Standard; say so once so
+		// the multiplier can be added (round-5 Tier A item 4). openai only, like
+		// the pricing itself: Anthropic's tier is telemetry.
+		if tier := servedServiceTierFor(dep, resp.Usage.ServiceTier); tier != "" {
+			if _, known := p.costCalc.ServiceTierMultiplier(realServingModel(dep, req.Model), tier); !known {
+				p.logger.Warn("service_tier_unpriced", append(traceLogFields(ctx),
+					"virtual_key_id", virtualKeyIDOf(vk),
+					"model", boundedForTelemetry(realServingModel(dep, req.Model)),
+					"service_tier", boundedForTelemetry(tier),
+					"reason", "the response was served at a tier price_table.<model>.service_tier_multipliers does not carry; billed at the standard rate",
+				)...)
+			}
+		}
 	}
 
 	// Reservation reconciliation/release, per
@@ -5971,6 +5988,71 @@ func (p *Pipeline) noteDroppedRequestFields(ctx context.Context, dep Deployment,
 	if upstreamReq.Effort != "" {
 		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "effort", upstreamReq.Effort, effortDropReason(dep, upstreamReq))
 	}
+	if upstreamReq.ServiceTier != "" {
+		p.noteDroppedRequestField(ctx, dep, upstreamReq.Model, "service_tier", upstreamReq.ServiceTier, serviceTierDropReason(dep))
+	}
+}
+
+// ServiceTierPolicyStrip mirrors controlplane.ServiceTierPolicyStrip: the
+// deployment drops a client's OpenAI service_tier (round-5 Tier A item 4).
+const ServiceTierPolicyStrip = "strip"
+
+// serviceTierDropReason is "" when dep forwards OpenAI's service_tier (an
+// openai deployment under the default forward policy), else why it will
+// not: every other provider has no such member (Anthropic's own takes
+// auto|standard_only on /v1/messages, a different vocabulary), or the
+// operator closed the lever on this deployment.
+func serviceTierDropReason(dep Deployment) string {
+	switch {
+	case dep.Provider != "openai":
+		return "provider " + dep.Provider + " has no OpenAI service_tier; the value is ignored"
+	case dep.ServiceTierPolicy == ServiceTierPolicyStrip:
+		return "deployment service_tier_policy strip: the tier is not forwarded and the provider runs its default tier"
+	default:
+		return ""
+	}
+}
+
+// stripServiceTier blanks the canonical service_tier on a deployment whose
+// policy is strip -- after noteDroppedRequestFields has recorded it -- so
+// the openai adapter sends no member.
+func stripServiceTier(dep Deployment, upstreamReq *adapter.ChatRequest) {
+	if dep.ServiceTierPolicy == ServiceTierPolicyStrip {
+		upstreamReq.ServiceTier = ""
+	}
+}
+
+// servedServiceTierFor is the tier costaccounting prices: the response's
+// service_tier on an openai deployment, empty on every other provider --
+// Anthropic's usage.service_tier (standard | priority | batch) is a capacity
+// commitment, telemetry only, and must never meet a multiplier an operator
+// might configure on a Claude row by mistake. The span attribute still
+// carries the raw value for every provider.
+func servedServiceTierFor(dep Deployment, served string) string {
+	if dep.Provider != "openai" {
+		return ""
+	}
+	return served
+}
+
+// requestedServiceTierFor is the tier the request asked for AS FORWARDED:
+// the client's value on an openai deployment that forwards it, empty when
+// the deployment stripped it or has no such member -- so the cost
+// fallback for a silent response (costaccounting.Usage.RequestedServiceTier)
+// never bills a premium the provider was never asked for.
+func requestedServiceTierFor(dep Deployment, req adapter.ChatRequest) string {
+	if dep.Provider != "openai" || dep.ServiceTierPolicy == ServiceTierPolicyStrip {
+		return ""
+	}
+	return req.ServiceTier
+}
+
+// virtualKeyIDOf is vk's id, "" when authentication never produced one.
+func virtualKeyIDOf(vk *identity.VirtualKey) string {
+	if vk == nil {
+		return ""
+	}
+	return vk.ID
 }
 
 // samplingDropReasons is the Claude 5.x fixed-sampling verdict for the

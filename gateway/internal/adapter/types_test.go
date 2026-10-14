@@ -406,3 +406,24 @@ func TestChatRequestPassthroughAndToolResultIsErrorAreNotOnTheWire(t *testing.T)
 		t.Errorf("Marshal leaked a hidden member: %s", out)
 	}
 }
+
+// TestChatRequestServiceTierDecodesAndOmits (round-5 Tier A item 4): OpenAI's
+// service_tier is a wire member -- it decodes from /v1/chat/completions,
+// Marshal omits it when unset (so the Idempotency-Key fingerprint of a body
+// without it is unchanged), and no value is validated here.
+func TestChatRequestServiceTierDecodesAndOmits(t *testing.T) {
+	var req ChatRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","messages":[],"service_tier":"flex"}`), &req); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if req.ServiceTier != "flex" {
+		t.Fatalf("ServiceTier = %q, want flex", req.ServiceTier)
+	}
+	out, err := json.Marshal(ChatRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "service_tier") {
+		t.Errorf("Marshal of a request without service_tier emitted the key: %s", out)
+	}
+}

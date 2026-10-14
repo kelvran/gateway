@@ -744,6 +744,18 @@ price_table:
   gpt-4o:
     prompt_per_token: 0.0000025
     completion_per_token: 0.00001
+    # OpenAI bills a request at the processing tier it was served at, as a
+    # multiple of Standard across every token category (pricing page,
+    # 2026-10-14): the response's service_tier picks the multiplier; a served
+    # tier absent here is billed at Standard and logged (service_tier_unpriced).
+    # gpt-4o offers Fast (echoed as priority) at 1.7x and no Flex; the GPT-6
+    # and GPT-5.6 families are flex 0.5 / priority 2 (ultrafast 6 on
+    # gpt-6-astra and gpt-6.1-sol, a Responses-API tier the gateway cannot
+    # request yet) -- `kelvran init` writes those rows. A
+    # client's service_tier is forwarded by default; close the lever on a
+    # deployment with service_tier_policy: "strip".
+    service_tier_multipliers:
+      priority: 1.7
 
   # cache_read_per_token/cache_creation_per_token, per
   # docs/rfcs/2026-09-10-gateway-cache-token-cost-accounting.md, price a

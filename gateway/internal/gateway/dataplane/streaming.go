@@ -695,6 +695,7 @@ func (p *Pipeline) streamDeployment(ctx context.Context, dep Deployment, req ada
 		return adapter.ChatResponse{}, false, err
 	}
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
+	stripServiceTier(dep, &upstreamReq)
 
 	providerReq, err := streamAdapter.ToProvider(upstreamReq)
 	if err != nil {
@@ -908,6 +909,7 @@ func (p *Pipeline) streamDeploymentBedrock(ctx context.Context, dep Deployment, 
 	}
 	p.applyAnthropicBetaPolicy(ctx, dep, &upstreamReq)
 	p.noteDroppedRequestFields(ctx, dep, upstreamReq)
+	stripServiceTier(dep, &upstreamReq)
 
 	providerReq, err := bedrockAdapter.ToProvider(upstreamReq)
 	if err != nil {

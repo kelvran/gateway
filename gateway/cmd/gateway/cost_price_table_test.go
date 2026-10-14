@@ -17,6 +17,7 @@ func TestCostPriceTableCarriesEveryOptionalRate(t *testing.T) {
 			PromptPerToken: decimal.RequireFromString("0.00001"), CompletionPerToken: decimal.RequireFromString("0.00005"),
 			CacheReadPerToken: d("0.00000025"), CacheCreationPerToken: d("0.0000125"),
 			CacheCreation1hPerToken: d("0.00002"), WebSearchPerRequest: d("0.01"), USInferenceMultiplier: d("1.1"),
+			ServiceTierMultipliers: map[string]decimal.Decimal{"flex": decimal.RequireFromString("0.5"), "priority": decimal.RequireFromString("2")},
 		},
 		"bare": {PromptPerToken: decimal.RequireFromString("0.0000025"), CompletionPerToken: decimal.RequireFromString("0.00001")},
 	}
@@ -36,8 +37,11 @@ func TestCostPriceTableCarriesEveryOptionalRate(t *testing.T) {
 	if !full.PromptPerToken.Equal(cfg["full"].PromptPerToken) || !full.CompletionPerToken.Equal(cfg["full"].CompletionPerToken) {
 		t.Errorf("full base rates = %v/%v", full.PromptPerToken, full.CompletionPerToken)
 	}
+	if len(full.ServiceTierMultipliers) != 2 || !full.ServiceTierMultipliers["flex"].Equal(decimal.RequireFromString("0.5")) || !full.ServiceTierMultipliers["priority"].Equal(decimal.RequireFromString("2")) {
+		t.Errorf("full.ServiceTierMultipliers = %v, want flex 0.5 and priority 2", full.ServiceTierMultipliers)
+	}
 	bare := got["bare"]
-	if bare.CacheReadPerToken != nil || bare.CacheCreationPerToken != nil || bare.CacheCreation1hPerToken != nil || bare.WebSearchPerRequest != nil || bare.USInferenceMultiplier != nil {
+	if bare.CacheReadPerToken != nil || bare.CacheCreationPerToken != nil || bare.CacheCreation1hPerToken != nil || bare.WebSearchPerRequest != nil || bare.USInferenceMultiplier != nil || bare.ServiceTierMultipliers != nil {
 		t.Errorf("bare = %+v, want every optional rate nil", bare)
 	}
 }

@@ -95,7 +95,10 @@ func renderConfig(p *initPlan) (string, error) {
 	y.blank()
 	y.comment(0, "USD per token, as of "+priceTableAsOf+", from the providers' pricing pages (and the")
 	y.comment(0, "repository's documented example for gpt-4o). Prices change: check them. A model")
-	y.comment(0, "absent from this table costs $0 and never decrements a budget.")
+	y.comment(0, "absent from this table costs $0 and never decrements a budget. OpenAI rows carry")
+	y.comment(0, "service_tier_multipliers: the tier a response says it was served at (flex, priority/fast,")
+	y.comment(0, "ultrafast) multiplies the token cost; a request's service_tier is forwarded by default")
+	y.comment(0, "(deployments.<name>.service_tier_policy: strip closes the lever).")
 	y.section(0, "price_table")
 	for _, r := range p.prices {
 		y.section(1, r.Model)
@@ -109,6 +112,14 @@ func renderConfig(p *initPlan) (string, error) {
 		}
 		if r.CacheWrite1h != "" {
 			y.raw(2, "cache_creation_1h_per_token", r.CacheWrite1h)
+		}
+		if len(r.Tiers) > 0 {
+			y.section(2, "service_tier_multipliers")
+			for _, tier := range []string{"flex", "priority", "ultrafast"} {
+				if v := r.Tiers[tier]; v != "" {
+					y.raw(3, tier, v)
+				}
+			}
 		}
 	}
 	return y.String()
@@ -147,6 +158,11 @@ func selfCheck(yaml string, p *initPlan) error {
 	for _, d := range cfg.Deployments {
 		if _, ok := cfg.PriceTable[d.Model]; !ok {
 			problems = append(problems, "price_table."+d.Model)
+		}
+	}
+	for _, r := range p.prices {
+		if len(cfg.PriceTable[r.Model].ServiceTierMultipliers) != len(r.Tiers) {
+			problems = append(problems, "price_table."+r.Model+".service_tier_multipliers")
 		}
 	}
 	if len(problems) > 0 {

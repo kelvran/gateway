@@ -40,6 +40,15 @@ const (
 	AnthropicBetaPolicyForwardKnown = "forward_known"
 )
 
+// ServiceTierPolicy values (DeploymentConfig.ServiceTierPolicy; round-5 Tier
+// A item 4): forward (the default) sends a request's OpenAI service_tier to
+// the provider and prices the served tier; strip drops it on this deployment
+// (logged as request_field_dropped), so the provider runs its default tier.
+const (
+	ServiceTierPolicyForward = "forward"
+	ServiceTierPolicyStrip   = "strip"
+)
+
 type DeploymentConfig struct {
 	// Name uniquely identifies this deployment within the config file.
 	// Multiple deployments may share the same Model, in which case the
@@ -194,6 +203,13 @@ type DeploymentConfig struct {
 	// exists. `kelvran doctor` warns about every non-anthropic deployment
 	// that leaves it false.
 	AcceptLossyAnthropicIngress bool
+	// ServiceTierPolicy is service_tier_policy: forward (default) or strip --
+	// whether a client's OpenAI service_tier reaches this deployment's
+	// provider. The lever it governs is price: a tier costs 0.5x to 2.5x of
+	// Standard on the operator's key through Chat Completions (ultrafast's 6x
+	// is a Responses-API tier the gateway cannot request), and under forward
+	// the served tier is always priced (price_table.<model>.service_tier_multipliers).
+	ServiceTierPolicy string
 	// MaxConcurrentRequests bounds how many requests may be simultaneously
 	// in flight against THIS deployment, aggregated across every virtual
 	// key that routes to it -- including via a fallback_chains hop, or
@@ -355,6 +371,10 @@ type ModelPriceConfig struct {
 	CacheCreation1hPerToken *decimal.Decimal
 	WebSearchPerRequest     *decimal.Decimal
 	USInferenceMultiplier   *decimal.Decimal
+	// ServiceTierMultipliers is the optional service_tier_multipliers mapping
+	// (tier -> multiple of Standard; round-5 Tier A item 4), nil unless
+	// configured -- see costaccounting.ModelPrice.ServiceTierMultipliers.
+	ServiceTierMultipliers map[string]decimal.Decimal
 }
 
 // VirtualKeyConfig is one statically-configured virtual key, per
@@ -1365,6 +1385,18 @@ func Parse(data []byte, source string) (*Config, error) {
 		default:
 			return nil, fmt.Errorf("controlplane: deployment %q anthropic_beta_policy %q is not one of %q, %q", name, policy, AnthropicBetaPolicyStrip, AnthropicBetaPolicyForwardKnown)
 		}
+		tierPolicy, tierIsString := getString(depMap, "service_tier_policy")
+		if _, present := depMap["service_tier_policy"]; present && !tierIsString {
+			return nil, fmt.Errorf("controlplane: deployment %q service_tier_policy must be a string (%q or %q), not %T", name, ServiceTierPolicyForward, ServiceTierPolicyStrip, depMap["service_tier_policy"])
+		}
+		switch tierPolicy {
+		case "", ServiceTierPolicyForward:
+			dep.ServiceTierPolicy = ServiceTierPolicyForward
+		case ServiceTierPolicyStrip:
+			dep.ServiceTierPolicy = ServiceTierPolicyStrip
+		default:
+			return nil, fmt.Errorf("controlplane: deployment %q service_tier_policy %q is not one of %q, %q", name, tierPolicy, ServiceTierPolicyForward, ServiceTierPolicyStrip)
+		}
 		dep.Kind, _ = getString(depMap, "kind")
 		switch dep.Kind {
 		case "", "chat":
@@ -1738,6 +1770,62 @@ func Parse(data []byte, source string) (*Config, error) {
 					return nil, fmt.Errorf("controlplane: price_table entry %q has a us_inference_multiplier below 1 (%s)", model, usMultiplier)
 				}
 				entry.USInferenceMultiplier = &usMultiplier
+			}
+			if rawTiers, present := priceMap["service_tier_multipliers"]; present {
+				// The first nested mapping under a price entry. A malformed value is a
+				// load error here, unlike the optional scalar rates (treated as unset):
+				// a silently unset ultrafast: 6 would undercount every call served
+				// at that tier by 6x.
+				tiers, ok := rawTiers.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers must be a mapping of tier to multiplier", model)
+				}
+				entry.ServiceTierMultipliers = make(map[string]decimal.Decimal, len(tiers))
+				for rawTier := range tiers {
+					m, ok := getDecimal(tiers, rawTier)
+					if !ok {
+						return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers.%s is not a decimal", model, rawTier)
+					}
+					if m.Sign() <= 0 {
+						return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers.%s must be positive (%s)", model, rawTier, m)
+					}
+					// Keys are matched against the lower-case tier OpenAI echoes, so a
+					// capitalised or padded key is normalised rather than silently
+					// never matching (which would undercount every call at that tier).
+					tier := strings.TrimSpace(strings.ToLower(rawTier))
+					if _, dup := entry.ServiceTierMultipliers[tier]; dup {
+						return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers names the tier %q twice", model, tier)
+					}
+					switch tier {
+					case "flex":
+						// A discount tier by design (0.5x on the pricing page); above 1 is
+						// the operator's own overcount, never refused.
+					case "priority", "fast", "ultrafast", "scale":
+						if m.LessThan(decimal.NewFromInt(1)) {
+							return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers.%s is below 1 (%s): a premium tier never bills under the standard rate", model, tier, m)
+						}
+					case "default", "standard", "auto":
+						return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers.%s is not a priced tier (default and standard are the standard rate itself; auto is a request-side routing preference, never a served tier)", model, tier)
+					default:
+						// A tier this build does not know: accepted at 1 or above so a
+						// new OpenAI tier can be priced without a release (a typo can
+						// then only over-bill), refused below 1 (a misspelt flex would
+						// silently never match and the real key's discount is the only
+						// legitimate one).
+						if m.LessThan(decimal.NewFromInt(1)) {
+							return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers.%s is not a known OpenAI service tier (flex, priority, fast, ultrafast, scale) and is below 1 (%s): an unknown tier is accepted only at 1 or above", model, tier, m)
+						}
+					}
+					entry.ServiceTierMultipliers[tier] = m
+				}
+				// fast and priority are one price column (either key serves both), so
+				// two different values would bill by which literal OpenAI happened to
+				// echo for the model generation.
+				if fast, hasFast := entry.ServiceTierMultipliers["fast"]; hasFast {
+					if priority, hasPriority := entry.ServiceTierMultipliers["priority"]; hasPriority && !fast.Equal(priority) {
+						return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers sets fast (%s) and priority (%s) to different values: they are one price column (OpenAI bills both alike and echoes either), so set one or make them equal", model, fast, priority)
+					}
+				}
 			}
 			cfg.PriceTable[model] = entry
 		}

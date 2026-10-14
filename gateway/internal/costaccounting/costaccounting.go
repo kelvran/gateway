@@ -7,7 +7,11 @@
 // to since the initial scaffolding pass.
 package costaccounting
 
-import "github.com/shopspring/decimal"
+import (
+	"strings"
+
+	"github.com/shopspring/decimal"
+)
 
 // Usage is token accounting for a single completion. This is a local
 // type (mirroring internal/adapter.Usage's shape, including the
@@ -37,6 +41,16 @@ type Usage struct {
 	// (adapter.Usage.InferenceGeo); InferenceGeoUS applies the model's
 	// USInferenceMultiplier to every token category.
 	InferenceGeo string
+	// ServiceTier is the processing tier the provider reports it served
+	// (adapter.Usage.ServiceTier; OpenAI's response service_tier) and
+	// RequestedServiceTier the tier the request asked for, as forwarded
+	// (empty when the deployment stripped it or has no such member). The
+	// served tier is billed when present; when the response is silent a
+	// requested PREMIUM tier is billed at its multiplier -- never undercount a
+	// lever the client pulled -- and a requested discount is never applied
+	// unconfirmed. See ServiceTierMultipliers and billedTierMultiplier.
+	ServiceTier          string
+	RequestedServiceTier string
 }
 
 // InferenceGeoUS is the usage.inference_geo value Anthropic bills at a
@@ -70,6 +84,17 @@ type ModelPrice struct {
 	// the provider reports InferenceGeoUS (price_table.<model>.
 	// us_inference_multiplier, at least 1). nil applies no multiplier.
 	USInferenceMultiplier *decimal.Decimal
+	// ServiceTierMultipliers scales the token cost (not the search fees) by
+	// the tier a request was served at (price_table.<model>.
+	// service_tier_multipliers; round-5 Tier A item 4): OpenAI prices every
+	// tier as a per-model multiple of Standard across input, cached input,
+	// cache write and output (flex 0.5x, priority/fast 2x on the GPT-6 and
+	// GPT-5.6 families, ultrafast 6x where offered). Keys are the lower-case
+	// tier names; fast and priority are one price column, so either key
+	// serves both (OpenAI accepts both and bills them alike; which literal it
+	// echoes depends on the model generation). nil, or a tier the map does
+	// not carry, applies no multiplier.
+	ServiceTierMultipliers map[string]decimal.Decimal
 }
 
 // PriceTable maps a model name to its ModelPrice.
@@ -150,10 +175,87 @@ func (c *Calculator) Calculate(model string, usage Usage) decimal.Decimal {
 	if usage.InferenceGeo == InferenceGeoUS && price.USInferenceMultiplier != nil {
 		cost = cost.Mul(*price.USInferenceMultiplier)
 	}
+	if m := billedTierMultiplier(price, usage); !m.Equal(decimalOne) {
+		cost = cost.Mul(m)
+	}
 	if price.WebSearchPerRequest != nil && usage.WebSearchRequests > 0 {
 		cost = cost.Add(decimal.NewFromInt(int64(usage.WebSearchRequests)).Mul(*price.WebSearchPerRequest))
 	}
 	return cost
+}
+
+var decimalOne = decimal.NewFromInt(1)
+
+// isBaseServiceTier reports whether tier names the Standard rate itself:
+// empty (not reported), OpenAI's default, Anthropic's standard, or auto (a
+// request-side routing preference, never a served tier).
+func isBaseServiceTier(tier string) bool {
+	switch tier {
+	case "", "default", "standard", "auto":
+		return true
+	}
+	return false
+}
+
+// tierMultiplier resolves one tier against price.ServiceTierMultipliers: 1
+// for a base tier, the configured multiple for a priced tier (fast and
+// priority serve as each other's alias), and (1, false) for a non-base tier
+// the map does not carry -- the caller bills Standard and may warn.
+func tierMultiplier(price ModelPrice, tier string) (decimal.Decimal, bool) {
+	// Lower-cased and trimmed: OpenAI emits lower case, but a self-hosted
+	// backend's echo is its own say-so and a stray space must not turn a
+	// priced tier into an "unknown" one.
+	tier = strings.TrimSpace(strings.ToLower(tier))
+	if isBaseServiceTier(tier) {
+		return decimalOne, true
+	}
+	if m, ok := price.ServiceTierMultipliers[tier]; ok {
+		return m, true
+	}
+	switch tier {
+	case "fast":
+		if m, ok := price.ServiceTierMultipliers["priority"]; ok {
+			return m, true
+		}
+	case "priority":
+		if m, ok := price.ServiceTierMultipliers["fast"]; ok {
+			return m, true
+		}
+	}
+	return decimalOne, false
+}
+
+// billedTierMultiplier is the multiple Calculate applies for usage: the
+// served tier when the response names one (the provider bills what it ran --
+// a fast request ramp-downgraded to default is Standard), else the requested
+// tier only when its multiple is at least 1 (never an unconfirmed discount),
+// else 1.
+func billedTierMultiplier(price ModelPrice, usage Usage) decimal.Decimal {
+	if usage.ServiceTier != "" {
+		m, _ := tierMultiplier(price, usage.ServiceTier)
+		return m
+	}
+	if m, known := tierMultiplier(price, usage.RequestedServiceTier); known && m.GreaterThanOrEqual(decimalOne) {
+		return m
+	}
+	return decimalOne
+}
+
+// ServiceTierMultiplier reports the multiple model's price table applies to
+// a served tier and whether the table accounts for it -- the dataplane's
+// input for the service_tier_unpriced warning. A base tier is 1 and
+// accounted for on every model (tierMultiplier says so for a priced model;
+// the common "default" echo must never warn);
+// a model with no price row is 1 and accounted for too (it bills $0 by
+// design and kelvran doctor already names it -- there is no multiplier to
+// add before the row exists); only a priced model served at a non-base tier
+// its map lacks is (1, false).
+func (c *Calculator) ServiceTierMultiplier(model, tier string) (decimal.Decimal, bool) {
+	price, ok := c.prices[model]
+	if !ok {
+		return decimalOne, true
+	}
+	return tierMultiplier(price, tier)
 }
 
 // clampOneHourTokens bounds the 1-hour write count to [0, writes]: a count

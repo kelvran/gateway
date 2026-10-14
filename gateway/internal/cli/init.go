@@ -100,6 +100,9 @@ type deployment struct {
 // priceRow is one emitted price_table.<model> block.
 type priceRow struct {
 	Model, Prompt, Completion, CacheRead, CacheWrite, CacheWrite1h string
+	// Tiers is service_tier_multipliers (tier -> decimal string), nil when the
+	// model prices no tiers.
+	Tiers map[string]string
 }
 
 // initPlan is everything the renderer needs, resolved and validated.
@@ -522,6 +525,15 @@ func deploymentsFor(provider string, o initOptions, getenv func(string) string, 
 // prices a vendor's hosted endpoint, not an arbitrary compatible server).
 func priceFor(provider, model string, overrides map[string]priceRow) (priceRow, error) {
 	if row, ok := overrides[model]; ok {
+		// --price replaces the two base rates. The embedded row's cache rates
+		// are absolute dollars that cannot survive a rate change, so they are
+		// dropped; its service_tier_multipliers are ratios of Standard and stay
+		// true, so they are kept -- dropping them would bill a served fast or
+		// priority at Standard while OpenAI charges 2x (the undercounting
+		// direction; security re-read, round-5 Tier A item 4).
+		if e, known := lookupModel(model); known && e.Vendor == providerVendor[provider] {
+			return priceRow{Model: row.Model, Prompt: row.Prompt, Completion: row.Completion, Tiers: e.TierMultipliers}, nil
+		}
 		return row, nil
 	}
 	if provider == "openaicompat" {
@@ -532,7 +544,7 @@ func priceFor(provider, model string, overrides map[string]priceRow) (priceRow, 
 		return priceRow{}, runtimeErr("%q is not in the embedded price table for %s (as of %s it prices %s); pass --price %s=<prompt_per_token>,<completion_per_token> — an unpriced model never decrements a budget",
 			model, provider, priceTableAsOf, strings.Join(embeddedModelsFor(provider), ", "), model)
 	}
-	return priceRow{Model: model, Prompt: e.PromptUSD, Completion: e.CompletionUSD, CacheRead: e.CacheReadUSD, CacheWrite: e.CacheWriteUSD, CacheWrite1h: e.CacheWrite1hUSD}, nil
+	return priceRow{Model: model, Prompt: e.PromptUSD, Completion: e.CompletionUSD, CacheRead: e.CacheReadUSD, CacheWrite: e.CacheWriteUSD, CacheWrite1h: e.CacheWrite1hUSD, Tiers: e.TierMultipliers}, nil
 }
 
 // resolvePersistPath picks admin.persist_path for team mode: --persist-path

@@ -137,3 +137,38 @@ func containsString(s, sub string) bool {
 		return false
 	})())
 }
+
+// The OpenAI rows carry the pricing page's per-tier multiples of Standard
+// (read 2026-10-14): Flex 0.5x and Fast/Priority 2x on every GPT-6 and GPT-5.6
+// model, Ultrafast 6x on gpt-6-astra and gpt-6.1-sol only, Fast 1.7x and no
+// Flex on gpt-4o; Anthropic and Gemini rows carry none (Anthropic's priority
+// tier is a commitment, not a per-token price).
+func TestOpenAIRowsCarryTheServiceTierMultipliers(t *testing.T) {
+	for id, e := range models {
+		if e.Vendor != "openai" {
+			if len(e.TierMultipliers) != 0 {
+				t.Errorf("%s (%s) carries service-tier multipliers; only OpenAI prices tiers", id, e.Vendor)
+			}
+			continue
+		}
+		for tier, raw := range e.TierMultipliers {
+			d, err := decimal.NewFromString(raw)
+			if err != nil || !d.IsPositive() {
+				t.Errorf("%s %s = %q, want a positive decimal (err %v)", id, tier, raw, err)
+			}
+		}
+		if id == "gpt-4o" {
+			if e.TierMultipliers["priority"] != "1.7" || e.TierMultipliers["flex"] != "" || e.TierMultipliers["ultrafast"] != "" {
+				t.Errorf("gpt-4o multipliers = %v, want priority 1.7 and nothing else", e.TierMultipliers)
+			}
+			continue
+		}
+		if e.TierMultipliers["flex"] != "0.5" || e.TierMultipliers["priority"] != "2" {
+			t.Errorf("%s multipliers = %v, want flex 0.5 and priority 2", id, e.TierMultipliers)
+		}
+		wantUltrafast := id == "gpt-6-astra" || id == "gpt-6.1-sol"
+		if (e.TierMultipliers["ultrafast"] == "6") != wantUltrafast {
+			t.Errorf("%s ultrafast = %q, want %v", id, e.TierMultipliers["ultrafast"], map[bool]string{true: "6", false: "absent"}[wantUltrafast])
+		}
+	}
+}
