@@ -375,6 +375,20 @@ type ModelPriceConfig struct {
 	// (tier -> multiple of Standard; round-5 Tier A item 4), nil unless
 	// configured -- see costaccounting.ModelPrice.ServiceTierMultipliers.
 	ServiceTierMultipliers map[string]decimal.Decimal
+	// LongContext is the optional long_context mapping (round-5 Tier A item
+	// 5), nil unless configured -- see costaccounting.LongContextTier.
+	LongContext *LongContextTierConfig
+}
+
+// LongContextTierConfig is price_table.<model>.long_context: above_tokens
+// (the cache-inclusive prompt count a request must exceed, a positive
+// integer), input_multiplier and output_multiplier (ratios of Standard, at
+// least 1). All three keys are required; see
+// costaccounting.LongContextTier for the pricing rule.
+type LongContextTierConfig struct {
+	AboveTokens      int
+	InputMultiplier  decimal.Decimal
+	OutputMultiplier decimal.Decimal
 }
 
 // VirtualKeyConfig is one statically-configured virtual key, per
@@ -1826,6 +1840,42 @@ func Parse(data []byte, source string) (*Config, error) {
 						return nil, fmt.Errorf("controlplane: price_table entry %q service_tier_multipliers sets fast (%s) and priority (%s) to different values: they are one price column (OpenAI bills both alike and echoes either), so set one or make them equal", model, fast, priority)
 					}
 				}
+			}
+			if rawLong, present := priceMap["long_context"]; present {
+				// A nested mapping like service_tier_multipliers: malformed is a load
+				// error, never "unset" -- a silently dropped tier undercounts every
+				// long request 2x to 5x. All three keys are required so a misspelt
+				// one cannot leave half a tier behind.
+				long, ok := rawLong.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("controlplane: price_table entry %q long_context must be a mapping with above_tokens, input_multiplier and output_multiplier", model)
+				}
+				for key := range long {
+					switch key {
+					case "above_tokens", "input_multiplier", "output_multiplier":
+					default:
+						return nil, fmt.Errorf("controlplane: price_table entry %q long_context.%s is not a known key (above_tokens, input_multiplier, output_multiplier): the tier is two ratios of Standard, one for the input side and one for the output", model, key)
+					}
+				}
+				above, ok := getInt(long, "above_tokens")
+				if !ok {
+					return nil, fmt.Errorf("controlplane: price_table entry %q long_context.above_tokens is missing or not an integer (the cache-inclusive prompt count a request must exceed, e.g. 100000 or 272000)", model)
+				}
+				if above <= 0 {
+					return nil, fmt.Errorf("controlplane: price_table entry %q long_context.above_tokens must be positive (%d)", model, above)
+				}
+				tier := LongContextTierConfig{AboveTokens: above}
+				for key, dst := range map[string]*decimal.Decimal{"input_multiplier": &tier.InputMultiplier, "output_multiplier": &tier.OutputMultiplier} {
+					m, ok := getDecimal(long, key)
+					if !ok {
+						return nil, fmt.Errorf("controlplane: price_table entry %q long_context.%s is missing or not a decimal", model, key)
+					}
+					if m.LessThan(decimal.NewFromInt(1)) {
+						return nil, fmt.Errorf("controlplane: price_table entry %q long_context.%s is below 1 (%s): a long prompt never bills under the standard rate", model, key, m)
+					}
+					*dst = m
+				}
+				entry.LongContext = &tier
 			}
 			cfg.PriceTable[model] = entry
 		}

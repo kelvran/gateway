@@ -172,3 +172,27 @@ func TestOpenAIRowsCarryTheServiceTierMultipliers(t *testing.T) {
 		}
 	}
 }
+
+// The long-context tiers (round-5 Tier A item 5; pricing pages read
+// 2026-10-14): Claude Haiku 5.5 pays 5x on every category for a prompt over
+// 100,000 cache-inclusive tokens; every GPT-6 and GPT-5.6 row pays 2x
+// input-side and 1.5x output above 272K input tokens. No other embedded model
+// is tiered: Claude 4.6+ bill the 1M window at Standard, gpt-4o and
+// gemini-2.5-flash are flat.
+func TestTieredRowsCarryTheLongContextTier(t *testing.T) {
+	for id, e := range models {
+		var want *longContextTier
+		switch {
+		case id == "claude-haiku-5-5":
+			want = &longContextTier{AboveTokens: 100000, InputMultiplier: "5", OutputMultiplier: "5"}
+		case e.Vendor == "openai" && id != "gpt-4o":
+			want = &longContextTier{AboveTokens: 272000, InputMultiplier: "2", OutputMultiplier: "1.5"}
+		}
+		switch {
+		case want == nil && e.LongContext != nil:
+			t.Errorf("%s carries a long-context tier %+v; the pricing pages show none", id, *e.LongContext)
+		case want != nil && (e.LongContext == nil || *e.LongContext != *want):
+			t.Errorf("%s long-context tier = %+v, want %+v", id, e.LongContext, *want)
+		}
+	}
+}

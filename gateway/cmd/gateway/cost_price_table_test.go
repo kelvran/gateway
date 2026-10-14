@@ -18,6 +18,7 @@ func TestCostPriceTableCarriesEveryOptionalRate(t *testing.T) {
 			CacheReadPerToken: d("0.00000025"), CacheCreationPerToken: d("0.0000125"),
 			CacheCreation1hPerToken: d("0.00002"), WebSearchPerRequest: d("0.01"), USInferenceMultiplier: d("1.1"),
 			ServiceTierMultipliers: map[string]decimal.Decimal{"flex": decimal.RequireFromString("0.5"), "priority": decimal.RequireFromString("2")},
+			LongContext:            &controlplane.LongContextTierConfig{AboveTokens: 272000, InputMultiplier: decimal.RequireFromString("2"), OutputMultiplier: decimal.RequireFromString("1.5")},
 		},
 		"bare": {PromptPerToken: decimal.RequireFromString("0.0000025"), CompletionPerToken: decimal.RequireFromString("0.00001")},
 	}
@@ -40,8 +41,11 @@ func TestCostPriceTableCarriesEveryOptionalRate(t *testing.T) {
 	if len(full.ServiceTierMultipliers) != 2 || !full.ServiceTierMultipliers["flex"].Equal(decimal.RequireFromString("0.5")) || !full.ServiceTierMultipliers["priority"].Equal(decimal.RequireFromString("2")) {
 		t.Errorf("full.ServiceTierMultipliers = %v, want flex 0.5 and priority 2", full.ServiceTierMultipliers)
 	}
+	if lc := full.LongContext; lc == nil || lc.AboveTokens != 272000 || !lc.InputMultiplier.Equal(decimal.RequireFromString("2")) || !lc.OutputMultiplier.Equal(decimal.RequireFromString("1.5")) {
+		t.Errorf("full.LongContext = %+v, want above 272000, input 2, output 1.5", lc)
+	}
 	bare := got["bare"]
-	if bare.CacheReadPerToken != nil || bare.CacheCreationPerToken != nil || bare.CacheCreation1hPerToken != nil || bare.WebSearchPerRequest != nil || bare.USInferenceMultiplier != nil || bare.ServiceTierMultipliers != nil {
+	if bare.CacheReadPerToken != nil || bare.CacheCreationPerToken != nil || bare.CacheCreation1hPerToken != nil || bare.WebSearchPerRequest != nil || bare.USInferenceMultiplier != nil || bare.ServiceTierMultipliers != nil || bare.LongContext != nil {
 		t.Errorf("bare = %+v, want every optional rate nil", bare)
 	}
 }

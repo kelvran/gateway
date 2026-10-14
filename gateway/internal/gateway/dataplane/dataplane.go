@@ -4935,6 +4935,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		)...)
 	}
 	var cost decimal.Decimal
+	var longContextTier bool
 	if err == nil || billable {
 		// Priced against realServingModel(dep, req.Model), NOT req.Model
 		// directly — closes
@@ -4965,6 +4966,9 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			ServiceTier:           servedServiceTierFor(dep, resp.Usage.ServiceTier),
 			RequestedServiceTier:  requestedServiceTierFor(dep, req),
 		})
+		// The same decision Calculate just took, surfaced to the span (round-5
+		// Tier A item 5): a long prompt priced at its tier.
+		longContextTier = p.costCalc.LongContextEngaged(realServingModel(dep, req.Model), resp.Usage.PromptTokens)
 		// A served tier the price table does not carry (scale, a future tier, or
 		// a map the operator never wrote) was billed at Standard; say so once so
 		// the multiplier can be added (round-5 Tier A item 4). openai only, like
@@ -5164,6 +5168,8 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// foreign string that reaches a span attribute (item (m)).
 		InferenceGeo: boundedForTelemetry(resp.Usage.InferenceGeo),
 		ServiceTier:  boundedForTelemetry(resp.Usage.ServiceTier),
+		// Whether the long-context price tier applied (round-5 Tier A item 5).
+		LongContextTier: longContextTier,
 		// The compaction iterations the request paid for (round-5 Tier A
 		// item 3); their tokens are already in InputTokens/OutputTokens.
 		CompactionIterations: resp.Usage.CompactionIterations,

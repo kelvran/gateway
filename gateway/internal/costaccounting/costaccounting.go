@@ -95,6 +95,40 @@ type ModelPrice struct {
 	// echoes depends on the model generation). nil, or a tier the map does
 	// not carry, applies no multiplier.
 	ServiceTierMultipliers map[string]decimal.Decimal
+	// LongContext is price_table.<model>.long_context (round-5 Tier A item
+	// 5): the price tier a request pays once its cache-inclusive prompt
+	// exceeds AboveTokens. nil means the model has one price schedule for
+	// every prompt length (Claude 4.6+ bill the 1M window at Standard;
+	// gpt-4o and gemini-2.5-flash are flat).
+	LongContext *LongContextTier
+}
+
+// LongContextTier is one model's long-context price tier. Both pricing
+// pages (read 2026-10-14) express it the same way: above a prompt-length
+// threshold the WHOLE request -- not the excess -- pays higher rates, with
+// one ratio for the input side and one for the output. Anthropic: Claude
+// Haiku 5.5, "prompts over 100,000 tokens" counting cache reads and cache
+// writes, 5x on every category. OpenAI: the GPT-6, GPT-5.6 and GPT-5.5
+// lines, "> 272K input tokens", 2x input, cached input and cache writes,
+// 1.5x output. Gemini 2.5-pro/3.1-pro: 200k, 2x input and caching, 1.5x
+// output. Ratios of Standard rather than absolute rates because every
+// published tier is an exact multiple, and a ratio stays true when the
+// base rates change (`kelvran init --price` keeps it, like the
+// service-tier multipliers).
+type LongContextTier struct {
+	// AboveTokens is the cache-inclusive prompt count (Usage.PromptTokens:
+	// fresh + cache reads + cache writes) a request must EXCEED -- strictly
+	// greater -- to pay the tier. The pricing pages' "over 100,000" and
+	// "> 272K" are both strict; OpenAI's K is taken as 1,000 (its 128K
+	// max output is 128,000), an assumption the docs record.
+	AboveTokens int
+	// InputMultiplier scales the fresh prompt, the cache reads and both
+	// cache-write slices; OutputMultiplier scales the completion. Both at
+	// least 1 (the loader refuses less: a long prompt never bills under
+	// Standard). The US and service-tier multipliers and the search fee
+	// compose on top exactly as without the tier.
+	InputMultiplier  decimal.Decimal
+	OutputMultiplier decimal.Decimal
 }
 
 // PriceTable maps a model name to its ModelPrice.
@@ -155,6 +189,13 @@ func NewCalculator(prices PriceTable) *Calculator {
 // USInferenceMultiplier when InferenceGeo is InferenceGeoUS; the web-search
 // fee (WebSearchRequests x WebSearchPerRequest) is added last, unscaled --
 // the pricing page applies the US multiplier to token categories only.
+//
+// The long-context tier (round-5 Tier A item 5): when the row carries
+// LongContext and the cache-inclusive PromptTokens exceeds AboveTokens, the
+// input side (fresh prompt, cache reads, both cache-write slices) is scaled
+// by InputMultiplier and the completion by OutputMultiplier BEFORE the US
+// and service-tier multipliers -- selecting the tier's rates, which both
+// pricing pages then multiply further; the search fee stays outside.
 func (c *Calculator) Calculate(model string, usage Usage) decimal.Decimal {
 	price, ok := c.prices[model]
 	if !ok {
@@ -165,13 +206,18 @@ func (c *Calculator) Calculate(model string, usage Usage) decimal.Decimal {
 		cacheReadTokens, cacheCreationTokens = 0, 0
 	}
 	freshPromptTokens := usage.PromptTokens - cacheReadTokens - cacheCreationTokens
-	cost := decimal.NewFromInt(int64(freshPromptTokens)).Mul(price.PromptPerToken)
-	cost = cost.Add(decimal.NewFromInt(int64(cacheReadTokens)).Mul(resolveCacheRate(price.CacheReadPerToken, price.PromptPerToken)))
+	inputCost := decimal.NewFromInt(int64(freshPromptTokens)).Mul(price.PromptPerToken)
+	inputCost = inputCost.Add(decimal.NewFromInt(int64(cacheReadTokens)).Mul(resolveCacheRate(price.CacheReadPerToken, price.PromptPerToken)))
 	oneHourTokens := clampOneHourTokens(usage.CacheCreation1hTokens, cacheCreationTokens)
 	fiveMinuteRate := resolveCacheRate(price.CacheCreationPerToken, price.PromptPerToken)
-	cost = cost.Add(decimal.NewFromInt(int64(cacheCreationTokens - oneHourTokens)).Mul(fiveMinuteRate))
-	cost = cost.Add(decimal.NewFromInt(int64(oneHourTokens)).Mul(resolveCacheRate(price.CacheCreation1hPerToken, fiveMinuteRate)))
-	cost = cost.Add(decimal.NewFromInt(int64(usage.CompletionTokens)).Mul(price.CompletionPerToken))
+	inputCost = inputCost.Add(decimal.NewFromInt(int64(cacheCreationTokens - oneHourTokens)).Mul(fiveMinuteRate))
+	inputCost = inputCost.Add(decimal.NewFromInt(int64(oneHourTokens)).Mul(resolveCacheRate(price.CacheCreation1hPerToken, fiveMinuteRate)))
+	outputCost := decimal.NewFromInt(int64(usage.CompletionTokens)).Mul(price.CompletionPerToken)
+	if price.longContextEngaged(usage.PromptTokens) {
+		inputCost = inputCost.Mul(price.LongContext.InputMultiplier)
+		outputCost = outputCost.Mul(price.LongContext.OutputMultiplier)
+	}
+	cost := inputCost.Add(outputCost)
 	if usage.InferenceGeo == InferenceGeoUS && price.USInferenceMultiplier != nil {
 		cost = cost.Mul(*price.USInferenceMultiplier)
 	}
@@ -182,6 +228,24 @@ func (c *Calculator) Calculate(model string, usage Usage) decimal.Decimal {
 		cost = cost.Add(decimal.NewFromInt(int64(usage.WebSearchRequests)).Mul(*price.WebSearchPerRequest))
 	}
 	return cost
+}
+
+// longContextEngaged reports whether promptTokens (cache-inclusive) puts a
+// request into the row's long-context tier: strictly above AboveTokens, on
+// a row that has one. The raw prompt count is compared, not the
+// invariant-corrected cache split -- the threshold is about prompt length,
+// which the provider reported whole even when its cache breakdown is off.
+func (p ModelPrice) longContextEngaged(promptTokens int) bool {
+	return p.LongContext != nil && promptTokens > p.LongContext.AboveTokens
+}
+
+// LongContextEngaged reports whether a request of promptTokens
+// (cache-inclusive) to model was priced at its long-context tier -- the
+// dataplane's input for the kelvran.pricing.long_context_tier span
+// attribute. False for an unpriced model or a row without the tier.
+func (c *Calculator) LongContextEngaged(model string, promptTokens int) bool {
+	price, ok := c.prices[model]
+	return ok && price.longContextEngaged(promptTokens)
 }
 
 var decimalOne = decimal.NewFromInt(1)

@@ -757,6 +757,27 @@ price_table:
     service_tier_multipliers:
       priority: 1.7
 
+  # Claude Haiku 5.5 is the one current Claude model priced by prompt length
+  # (pricing page, 2026-10-14): a request whose prompt exceeds 100,000 tokens
+  # -- cache reads and cache writes included -- pays 5x on every category for
+  # the whole request. long_context expresses that as the threshold plus two
+  # ratios of Standard (input side, output); the GPT-6 and GPT-5.6 rows use
+  # above_tokens 272000 with 2 / 1.5. `kelvran init` writes both. A row
+  # without the block bills every prompt length at Standard.
+  claude-haiku-5-5:
+    prompt_per_token: 0.0000001
+    completion_per_token: 0.0000005
+    cache_read_per_token: 0.00000001
+    cache_creation_per_token: 0.000000125
+    cache_creation_1h_per_token: 0.0000002
+    web_search_per_request: 0.01
+    # The US-only 1.1x stacks on the long-context prices too (pricing page).
+    us_inference_multiplier: 1.1
+    long_context:
+      above_tokens: 100000
+      input_multiplier: 5
+      output_multiplier: 5
+
   # cache_read_per_token/cache_creation_per_token, per
   # docs/rfcs/2026-09-10-gateway-cache-token-cost-accounting.md, price a
   # cache-read/cache-write token slice (Anthropic cache_read_input_tokens

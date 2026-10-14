@@ -58,7 +58,29 @@ type modelEntry struct {
 	// gpt-6.1-sol only; gpt-4o Fast 1.7x and no Flex. Written as decimal
 	// strings like the rates; nil for vendors that price no tiers.
 	TierMultipliers map[string]string
+	// LongContext is price_table.<model>.long_context (round-5 Tier A item 5;
+	// pricing pages read 2026-10-14): the whole request pays the two ratios
+	// once its cache-inclusive prompt exceeds AboveTokens. nil = one price
+	// schedule for every prompt length.
+	LongContext *longContextTier
 }
+
+// longContextTier mirrors controlplane.LongContextTierConfig with the
+// multipliers as decimal strings, like every other rate in this table.
+type longContextTier struct {
+	AboveTokens      int
+	InputMultiplier  string
+	OutputMultiplier string
+}
+
+// haikuLongContext is Claude Haiku 5.5's tier: "prompts over 100,000
+// tokens" (cache reads and writes included) pay 5x on every category.
+var haikuLongContext = &longContextTier{AboveTokens: 100000, InputMultiplier: "5", OutputMultiplier: "5"}
+
+// gpt6LongContext is the GPT-6 / GPT-5.6 lines' tier: "> 272K input tokens"
+// pay 2x input, cached input and cache writes and 1.5x output for the full
+// request; K read as 1,000 (OpenAI's 128K max output is 128,000).
+var gpt6LongContext = &longContextTier{AboveTokens: 272000, InputMultiplier: "2", OutputMultiplier: "1.5"}
 
 // gpt6Tiers are the GPT-6 / GPT-5.6 families' tier multiples.
 var gpt6Tiers = map[string]string{"flex": "0.5", "priority": "2"}
@@ -70,20 +92,21 @@ var gpt6UltrafastTiers = map[string]string{"flex": "0.5", "priority": "2", "ultr
 var models = map[string]modelEntry{
 	"claude-sonnet-5-5": {Canonical: "claude-sonnet-5-5", Vendor: "anthropic", PromptUSD: "0.000002", CompletionUSD: "0.00001", CacheReadUSD: "0.0000001", CacheWriteUSD: "0.0000025", CacheWrite1hUSD: "0.000004", BedrockID: "global.anthropic.claude-sonnet-5-5"},
 	"claude-opus-5-5":   {Canonical: "claude-opus-5-5", Vendor: "anthropic", PromptUSD: "0.000004", CompletionUSD: "0.00002", CacheReadUSD: "0.0000002", CacheWriteUSD: "0.000005", CacheWrite1hUSD: "0.000008", BedrockID: "global.anthropic.claude-opus-5-5"},
-	"claude-haiku-5-5":  {Canonical: "claude-haiku-5-5", Vendor: "anthropic", PromptUSD: "0.0000001", CompletionUSD: "0.0000005", CacheReadUSD: "0.00000001", CacheWriteUSD: "0.000000125", CacheWrite1hUSD: "0.0000002", BedrockID: "global.anthropic.claude-haiku-5-5"},
+	"claude-haiku-5-5":  {Canonical: "claude-haiku-5-5", Vendor: "anthropic", PromptUSD: "0.0000001", CompletionUSD: "0.0000005", CacheReadUSD: "0.00000001", CacheWriteUSD: "0.000000125", CacheWrite1hUSD: "0.0000002", BedrockID: "global.anthropic.claude-haiku-5-5", LongContext: haikuLongContext},
 	"claude-fable-5-1":  {Canonical: "claude-fable-5-1", Vendor: "anthropic", PromptUSD: "0.00001", CompletionUSD: "0.00005", CacheReadUSD: "0.00000025", CacheWriteUSD: "0.0000125", CacheWrite1hUSD: "0.00002", BedrockID: "global.anthropic.claude-fable-5-1"},
 	"gpt-4o":            {Canonical: "gpt-4o", Vendor: "openai", PromptUSD: "0.0000025", CompletionUSD: "0.00001", TierMultipliers: map[string]string{"priority": "1.7"}},
-	// OpenAI GPT-6.x and GPT-5.6 rows: the Standard tier at <= 272K input tokens
-	// (the > 272K long-context rows are a separate price tier, round-5 item 5);
+	// OpenAI GPT-6.x and GPT-5.6 rows: the Standard tier at <= 272K input tokens;
+	// the > 272K tier is long_context (gpt6LongContext: 2x input-side, 1.5x
+	// output, round-5 item 5);
 	// cache writes are 1.25x input on every one of them, cache reads 0.1x (0.05x
 	// on gpt-6.1-sol). OpenAI has no 1-hour cache TTL, so CacheWrite1hUSD stays "".
-	"gpt-6-astra":      {Canonical: "gpt-6-astra", Vendor: "openai", PromptUSD: "0.00001", CompletionUSD: "0.00005", CacheReadUSD: "0.000001", CacheWriteUSD: "0.0000125", TierMultipliers: gpt6UltrafastTiers},
-	"gpt-6.1-sol":      {Canonical: "gpt-6.1-sol", Vendor: "openai", PromptUSD: "0.000002", CompletionUSD: "0.00001", CacheReadUSD: "0.0000001", CacheWriteUSD: "0.0000025", TierMultipliers: gpt6UltrafastTiers},
-	"gpt-6-sol":        {Canonical: "gpt-6-sol", Vendor: "openai", PromptUSD: "0.000002", CompletionUSD: "0.00001", CacheReadUSD: "0.0000002", CacheWriteUSD: "0.0000025", TierMultipliers: gpt6Tiers},
-	"gpt-6-luna":       {Canonical: "gpt-6-luna", Vendor: "openai", PromptUSD: "0.0000001", CompletionUSD: "0.0000005", CacheReadUSD: "0.00000001", CacheWriteUSD: "0.000000125", TierMultipliers: gpt6Tiers},
-	"gpt-5.6-sol":      {Canonical: "gpt-5.6-sol", Vendor: "openai", PromptUSD: "0.000004", CompletionUSD: "0.00002", CacheReadUSD: "0.0000004", CacheWriteUSD: "0.000005", TierMultipliers: gpt6Tiers},
-	"gpt-5.6-luna":     {Canonical: "gpt-5.6-luna", Vendor: "openai", PromptUSD: "0.0000002", CompletionUSD: "0.0000012", CacheReadUSD: "0.00000002", CacheWriteUSD: "0.00000025", TierMultipliers: gpt6Tiers},
-	"gpt-5.6-terra":    {Canonical: "gpt-5.6-terra", Vendor: "openai", PromptUSD: "0.000002", CompletionUSD: "0.000012", CacheReadUSD: "0.0000002", CacheWriteUSD: "0.0000025", TierMultipliers: gpt6Tiers},
+	"gpt-6-astra":      {Canonical: "gpt-6-astra", Vendor: "openai", PromptUSD: "0.00001", CompletionUSD: "0.00005", CacheReadUSD: "0.000001", CacheWriteUSD: "0.0000125", TierMultipliers: gpt6UltrafastTiers, LongContext: gpt6LongContext},
+	"gpt-6.1-sol":      {Canonical: "gpt-6.1-sol", Vendor: "openai", PromptUSD: "0.000002", CompletionUSD: "0.00001", CacheReadUSD: "0.0000001", CacheWriteUSD: "0.0000025", TierMultipliers: gpt6UltrafastTiers, LongContext: gpt6LongContext},
+	"gpt-6-sol":        {Canonical: "gpt-6-sol", Vendor: "openai", PromptUSD: "0.000002", CompletionUSD: "0.00001", CacheReadUSD: "0.0000002", CacheWriteUSD: "0.0000025", TierMultipliers: gpt6Tiers, LongContext: gpt6LongContext},
+	"gpt-6-luna":       {Canonical: "gpt-6-luna", Vendor: "openai", PromptUSD: "0.0000001", CompletionUSD: "0.0000005", CacheReadUSD: "0.00000001", CacheWriteUSD: "0.000000125", TierMultipliers: gpt6Tiers, LongContext: gpt6LongContext},
+	"gpt-5.6-sol":      {Canonical: "gpt-5.6-sol", Vendor: "openai", PromptUSD: "0.000004", CompletionUSD: "0.00002", CacheReadUSD: "0.0000004", CacheWriteUSD: "0.000005", TierMultipliers: gpt6Tiers, LongContext: gpt6LongContext},
+	"gpt-5.6-luna":     {Canonical: "gpt-5.6-luna", Vendor: "openai", PromptUSD: "0.0000002", CompletionUSD: "0.0000012", CacheReadUSD: "0.00000002", CacheWriteUSD: "0.00000025", TierMultipliers: gpt6Tiers, LongContext: gpt6LongContext},
+	"gpt-5.6-terra":    {Canonical: "gpt-5.6-terra", Vendor: "openai", PromptUSD: "0.000002", CompletionUSD: "0.000012", CacheReadUSD: "0.0000002", CacheWriteUSD: "0.0000025", TierMultipliers: gpt6Tiers, LongContext: gpt6LongContext},
 	"gemini-2.5-flash": {Canonical: "gemini-2.5-flash", Vendor: "gemini", PromptUSD: "0.0000003", CompletionUSD: "0.0000025"},
 }
 

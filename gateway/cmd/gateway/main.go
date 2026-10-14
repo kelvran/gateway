@@ -2442,7 +2442,17 @@ func costPriceTable(cfg map[string]controlplane.ModelPriceConfig) costaccounting
 			WebSearchPerRequest:     price.WebSearchPerRequest,
 			USInferenceMultiplier:   price.USInferenceMultiplier,
 			ServiceTierMultipliers:  price.ServiceTierMultipliers,
+			LongContext:             costLongContext(price.LongContext),
 		}
 	}
 	return priceTable
+}
+
+// costLongContext copies the optional long_context tier onto the
+// calculator's type; nil stays nil (no tier).
+func costLongContext(tier *controlplane.LongContextTierConfig) *costaccounting.LongContextTier {
+	if tier == nil {
+		return nil
+	}
+	return &costaccounting.LongContextTier{AboveTokens: tier.AboveTokens, InputMultiplier: tier.InputMultiplier, OutputMultiplier: tier.OutputMultiplier}
 }

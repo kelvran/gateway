@@ -103,6 +103,8 @@ type priceRow struct {
 	// Tiers is service_tier_multipliers (tier -> decimal string), nil when the
 	// model prices no tiers.
 	Tiers map[string]string
+	// LongContext is long_context, nil when the model has one price schedule.
+	LongContext *longContextTier
 }
 
 // initPlan is everything the renderer needs, resolved and validated.
@@ -532,7 +534,7 @@ func priceFor(provider, model string, overrides map[string]priceRow) (priceRow, 
 		// priority at Standard while OpenAI charges 2x (the undercounting
 		// direction; security re-read, round-5 Tier A item 4).
 		if e, known := lookupModel(model); known && e.Vendor == providerVendor[provider] {
-			return priceRow{Model: row.Model, Prompt: row.Prompt, Completion: row.Completion, Tiers: e.TierMultipliers}, nil
+			return priceRow{Model: row.Model, Prompt: row.Prompt, Completion: row.Completion, Tiers: e.TierMultipliers, LongContext: e.LongContext}, nil
 		}
 		return row, nil
 	}
@@ -544,7 +546,7 @@ func priceFor(provider, model string, overrides map[string]priceRow) (priceRow, 
 		return priceRow{}, runtimeErr("%q is not in the embedded price table for %s (as of %s it prices %s); pass --price %s=<prompt_per_token>,<completion_per_token> — an unpriced model never decrements a budget",
 			model, provider, priceTableAsOf, strings.Join(embeddedModelsFor(provider), ", "), model)
 	}
-	return priceRow{Model: model, Prompt: e.PromptUSD, Completion: e.CompletionUSD, CacheRead: e.CacheReadUSD, CacheWrite: e.CacheWriteUSD, CacheWrite1h: e.CacheWrite1hUSD, Tiers: e.TierMultipliers}, nil
+	return priceRow{Model: model, Prompt: e.PromptUSD, Completion: e.CompletionUSD, CacheRead: e.CacheReadUSD, CacheWrite: e.CacheWriteUSD, CacheWrite1h: e.CacheWrite1hUSD, Tiers: e.TierMultipliers, LongContext: e.LongContext}, nil
 }
 
 // resolvePersistPath picks admin.persist_path for team mode: --persist-path

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/kelvran/gateway/gateway/internal/adapter"
@@ -98,7 +99,9 @@ func renderConfig(p *initPlan) (string, error) {
 	y.comment(0, "absent from this table costs $0 and never decrements a budget. OpenAI rows carry")
 	y.comment(0, "service_tier_multipliers: the tier a response says it was served at (flex, priority/fast,")
 	y.comment(0, "ultrafast) multiplies the token cost; a request's service_tier is forwarded by default")
-	y.comment(0, "(deployments.<name>.service_tier_policy: strip closes the lever).")
+	y.comment(0, "(deployments.<name>.service_tier_policy: strip closes the lever). long_context is a model's")
+	y.comment(0, "long-context price tier: a prompt over above_tokens (cache reads and writes included) pays")
+	y.comment(0, "input_multiplier on the input side and output_multiplier on the output, whole request.")
 	y.section(0, "price_table")
 	for _, r := range p.prices {
 		y.section(1, r.Model)
@@ -120,6 +123,12 @@ func renderConfig(p *initPlan) (string, error) {
 					y.raw(3, tier, v)
 				}
 			}
+		}
+		if r.LongContext != nil {
+			y.section(2, "long_context")
+			y.raw(3, "above_tokens", strconv.Itoa(r.LongContext.AboveTokens))
+			y.raw(3, "input_multiplier", r.LongContext.InputMultiplier)
+			y.raw(3, "output_multiplier", r.LongContext.OutputMultiplier)
 		}
 	}
 	return y.String()
@@ -163,6 +172,9 @@ func selfCheck(yaml string, p *initPlan) error {
 	for _, r := range p.prices {
 		if len(cfg.PriceTable[r.Model].ServiceTierMultipliers) != len(r.Tiers) {
 			problems = append(problems, "price_table."+r.Model+".service_tier_multipliers")
+		}
+		if got := cfg.PriceTable[r.Model].LongContext; (got != nil) != (r.LongContext != nil) || (got != nil && got.AboveTokens != r.LongContext.AboveTokens) {
+			problems = append(problems, "price_table."+r.Model+".long_context")
 		}
 	}
 	if len(problems) > 0 {

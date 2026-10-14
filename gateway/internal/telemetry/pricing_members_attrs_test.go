@@ -18,6 +18,7 @@ func TestRecordChatCompletionResultEmitsPricingMemberAttributesOnlyWhenSet(t *te
 	RecordChatCompletionResult(span, ChatCompletionResult{
 		InputTokens: 1000, OutputTokens: 10, CacheCreationTokens: 500,
 		CacheCreation1hTokens: 300, WebSearchRequests: 3, InferenceGeo: "us", ServiceTier: "standard",
+		LongContextTier: true,
 	})
 	span.End()
 	_, span = tracer.Start(t.Context(), "unset")
@@ -37,7 +38,10 @@ func TestRecordChatCompletionResultEmitsPricingMemberAttributesOnlyWhenSet(t *te
 	if v, ok := attrValue(t, set, attribute.Key(AttrKelvranUsageServiceTier)); !ok || v.AsString() != "standard" {
 		t.Errorf("%s = %v, ok=%v, want standard", AttrKelvranUsageServiceTier, v, ok)
 	}
-	for _, key := range []string{AttrKelvranUsageCacheCreation1hInputTokens, AttrKelvranUsageWebSearchRequests, AttrKelvranUsageInferenceGeo, AttrKelvranUsageServiceTier} {
+	if v, ok := attrValue(t, set, attribute.Key(AttrKelvranPricingLongContextTier)); !ok || !v.AsBool() {
+		t.Errorf("%s = %v, ok=%v, want true", AttrKelvranPricingLongContextTier, v, ok)
+	}
+	for _, key := range []string{AttrKelvranUsageCacheCreation1hInputTokens, AttrKelvranUsageWebSearchRequests, AttrKelvranUsageInferenceGeo, AttrKelvranUsageServiceTier, AttrKelvranPricingLongContextTier} {
 		if _, ok := attrValue(t, unset, attribute.Key(key)); ok {
 			t.Errorf("%s emitted on a result without the member", key)
 		}

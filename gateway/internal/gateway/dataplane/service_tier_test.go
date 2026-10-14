@@ -43,9 +43,15 @@ func tierPriceTable() costaccounting.PriceTable {
 	}
 }
 
-// tierPipeline is memberPipeline with the tier price table, a buffered AND a
-// streaming upstream, and an optional JSON log sink.
+// tierPipeline is pricedPipeline with the tier price table.
 func tierPipeline(t *testing.T, deployments []Deployment, adapters adapter.Registry, upstream UpstreamCaller, upstreamStream UpstreamStreamCaller, logBuf *bytes.Buffer) (*Pipeline, *budget.Tracker) {
+	t.Helper()
+	return pricedPipeline(t, tierPriceTable(), deployments, adapters, upstream, upstreamStream, logBuf)
+}
+
+// pricedPipeline is memberPipeline with the given price table, a buffered AND
+// a streaming upstream, and an optional JSON log sink.
+func pricedPipeline(t *testing.T, prices costaccounting.PriceTable, deployments []Deployment, adapters adapter.Registry, upstream UpstreamCaller, upstreamStream UpstreamStreamCaller, logBuf *bytes.Buffer) (*Pipeline, *budget.Tracker) {
 	t.Helper()
 	keys := defaultTestVirtualKeys()
 	verifier, err := identity.NewVerifier(keys)
@@ -74,7 +80,7 @@ func tierPipeline(t *testing.T, deployments []Deployment, adapters adapter.Regis
 		Adapters:       adapters,
 		Router:         testRouter(deployments),
 		Deployments:    deployments,
-		CostCalculator: costaccounting.NewCalculator(tierPriceTable()),
+		CostCalculator: costaccounting.NewCalculator(prices),
 		Upstream:       upstream,
 		UpstreamStream: upstreamStream,
 		Logger:         logger,

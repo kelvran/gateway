@@ -652,3 +652,31 @@ func TestInitPriceOverrideKeepsTheEmbeddedServiceTierMultipliers(t *testing.T) {
 		t.Errorf("x-unknown (outside the table) got multipliers %v", u.ServiceTierMultipliers)
 	}
 }
+
+// `kelvran init` writes the long-context tier for the tiered rows, omits it
+// on flat rows, and keeps it on a --price override (ratios of Standard, like
+// the service-tier multipliers: still true after a rate change).
+func TestInitWritesAndKeepsTheLongContextTier(t *testing.T) {
+	code, stdout, stderr := runInit(t, nil, "--dry-run", "--provider", "openai", "--models", "gpt-6-sol,gpt-4o", "--price", "gpt-6-sol=0.000001,0.000002")
+	if code != 0 {
+		t.Fatalf("openai: exit %d: %s", code, stderr)
+	}
+	cfg := loadYAML(t, stdout)
+	if lc := cfg.PriceTable["gpt-6-sol"].LongContext; lc == nil || lc.AboveTokens != 272000 || lc.InputMultiplier.String() != "2" || lc.OutputMultiplier.String() != "1.5" {
+		t.Errorf("gpt-6-sol long_context after --price = %+v, want above 272000, input 2, output 1.5", lc)
+	}
+	if lc := cfg.PriceTable["gpt-4o"].LongContext; lc != nil {
+		t.Errorf("gpt-4o long_context = %+v, want none (a flat row)", *lc)
+	}
+	code, stdout, stderr = runInit(t, nil, "--dry-run", "--provider", "anthropic", "--models", "claude-haiku-5-5,claude-sonnet-5-5")
+	if code != 0 {
+		t.Fatalf("anthropic: exit %d: %s", code, stderr)
+	}
+	cfg = loadYAML(t, stdout)
+	if lc := cfg.PriceTable["claude-haiku-5-5"].LongContext; lc == nil || lc.AboveTokens != 100000 || lc.InputMultiplier.String() != "5" || lc.OutputMultiplier.String() != "5" {
+		t.Errorf("claude-haiku-5-5 long_context = %+v, want above 100000, input 5, output 5", lc)
+	}
+	if lc := cfg.PriceTable["claude-sonnet-5-5"].LongContext; lc != nil {
+		t.Errorf("claude-sonnet-5-5 long_context = %+v, want none (the 1M window at Standard)", *lc)
+	}
+}

@@ -405,6 +405,14 @@ type ChatCompletionResult struct {
 	// RecordChatCompletionResult emits kelvran.usage.compaction_iterations
 	// only then.
 	CompactionIterations int
+	// LongContextTier is true when the request was priced at its model's
+	// long-context tier (price_table.<model>.long_context; round-5 Tier A
+	// item 5): the cache-inclusive prompt exceeded above_tokens, so every
+	// token was priced at the tier's multiples (on a cache hit this qualifies
+	// the hypothetical cost, not a charge). RecordChatCompletionResult
+	// emits kelvran.pricing.long_context_tier only then -- a trace shows why
+	// a long request cost 2x to 5x what its token counts suggest.
+	LongContextTier bool
 	// ReasoningTokens mirrors adapter.Usage.ReasoningTokens — the subset
 	// of OutputTokens spent on reasoning/extended thinking (Anthropic
 	// thinking_tokens, Bedrock's copy of it, OpenAI reasoning_tokens).
@@ -620,6 +628,9 @@ func RecordChatCompletionResult(span trace.Span, r ChatCompletionResult) {
 	if r.CompactionIterations > 0 {
 		attrs = append(attrs, attribute.Int(AttrKelvranUsageCompactionIterations, r.CompactionIterations))
 	}
+	if r.LongContextTier {
+		attrs = append(attrs, attribute.Bool(AttrKelvranPricingLongContextTier, true))
+	}
 	if r.FallbackHops > 0 {
 		attrs = append(attrs, attribute.Int(AttrKelvranFallbackHops, r.FallbackHops))
 	}
@@ -729,6 +740,11 @@ const (
 	AttrKelvranUsageWebSearchRequests          = "kelvran.usage.web_search_requests"
 	AttrKelvranUsageInferenceGeo               = "kelvran.usage.inference_geo"
 	AttrKelvranUsageServiceTier                = "kelvran.usage.service_tier"
+	// AttrKelvranPricingLongContextTier is true when the request was priced
+	// at price_table.<model>.long_context (round-5 Tier A item 5); kelvran.
+	// pricing.* because it is the gateway's billing decision, not a usage
+	// member the provider reported.
+	AttrKelvranPricingLongContextTier = "kelvran.pricing.long_context_tier"
 	// AttrKelvranUsageCompactionIterations counts the compaction entries of
 	// Anthropic's usage.iterations (round-5 Tier A item 3): how many
 	// server-side summarization calls the request paid for; the token counts
