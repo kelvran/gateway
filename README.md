@@ -23,7 +23,7 @@ What it does that most gateways do not, with the code that proves it:
 ## Quickstart (five minutes)
 
 ```bash
-# (a) Go 1.26.9+ (or any Go 1.21+ with the default GOTOOLCHAIN=auto, which fetches 1.26.9); the binary lands at $(go env GOPATH)/bin/gateway
+# (a) Go 1.27.2+ (or any Go 1.21+ with the default GOTOOLCHAIN=auto, which fetches 1.27.2); the binary lands at $(go env GOPATH)/bin/gateway
 go install github.com/kelvran/gateway/gateway/cmd/gateway@latest
 ```
 
@@ -89,7 +89,7 @@ By default the gateway prints every OTel span and a metrics dump every 60 s as J
 /tmp/kelvran-gateway -validate -config config.yaml            # (c) source build
 $(go env GOPATH)/bin/gateway -validate -config config.yaml    # (a) go install
 docker run --rm -v "$PWD/config.yaml:/config.yaml:ro" ghcr.io/kelvran/gateway:latest -validate -config /config.yaml   # (b) image; no -p or -e needed
-# Which build is this? Prints one line, e.g. "kelvran-gateway 0.17.0 (<commit>, built <date>, go1.27.1, linux/amd64)"; a source build says "dev".
+# Which build is this? Prints one line, e.g. "kelvran-gateway 0.19.0 (<commit>, built <date>, go1.26.9, linux/amd64)"; a source build says "dev".
 /tmp/kelvran-gateway -version
 export OPENAI_API_KEY="<your provider key>"
 # Run. (b) only now that config.yaml exists: Docker bind-mounts a missing host file as an empty directory and the container exits with "read /config.yaml: is a directory".

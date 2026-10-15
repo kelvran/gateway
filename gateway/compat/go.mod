@@ -1,6 +1,6 @@
 module github.com/kelvran/gateway/gateway/compat
 
-go 1.26.9
+go 1.27.2
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.80.0

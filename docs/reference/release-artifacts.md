@@ -59,7 +59,7 @@ One `gateway/vX.Y.Z` tag produces the following set. Every file except `checksum
 | `CGO_ENABLED` | `0` |
 | Flags | `-trimpath` |
 | ldflags | `-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}` |
-| Go toolchain | `go 1.26.9`, the `go` directive of `gateway/go.mod`, resolved by `actions/setup-go` (`go-version-file`). The container image is built with `golang:1.27.2-alpine` instead (see "Image contents"), so the `<go version>` field of `-version` differs between a package and the image of the same release |
+| Go toolchain | `go 1.27.2`, the `go` directive of `gateway/go.mod` (and of `gateway/compat/go.mod`), resolved by `actions/setup-go` (`go-version-file`). On `main` since 2026-10-15 (not in `gateway/v0.20.0`) the container image is built with the same version (`golang:1.27.2-alpine`, see "Image contents"), kept equal by `TestOneGoToolchain` and preflight check 7, so the `<go version>` field of `-version` is the same for a package and the image of one release; `gateway/v0.20.0` and earlier packages report `go1.26.9` against the image's `go1.27.2` |
 | GoReleaser mode | `release --snapshot --clean --skip=publish,validate`, `GORELEASER_CURRENT_TAG` set to the pushed tag |
 | Version source in snapshot mode | `snapshot.version_template: '{{ trimprefix (trimprefix .Tag "gateway/") "v" }}'` |
 | GoReleaser changelog | Disabled (`changelog.disable: true`); the Release body is the dated changelog file |
@@ -144,6 +144,8 @@ A dry run still signs and attests for real, so it leaves a public Rekor entry an
 | 3 | Every `**BREAKING**` entry (matched case-insensitively) in the dated changelog has a table row in [UPGRADE.md](../../UPGRADE.md) of the form `| `<deployable>/v<version>` |` | FAIL |
 | 4 | Evals only: `evals/pyproject.toml` declares exactly `<version>`, and `scripts/check_versions.py` passes | FAIL |
 | 5 | The support-window table in [docs/VERSIONING.md](../VERSIONING.md) lists `<deployable>/v<version>` as the latest minor | WARN only (a `::warning::` annotation under GitHub Actions) |
+| 6 | Gateway only: `gateway/openapi/kelvran-gateway.openapi.yaml` exists and its `info.version` equals `<version>` | FAIL (a WARN until 2026-10-12) |
+| 7 | Gateway only (added 2026-10-15): one Go toolchain — the `go` directive of `gateway/go.mod` and `gateway/compat/go.mod` equals the tag of every `golang:<version>-alpine` `FROM` line in `gateway/Dockerfile`, neither `go.mod` carries a `toolchain` directive (`actions/setup-go` would install it in preference to the `go` line; the `GOTOOLCHAIN=local` image ignores it), no workflow (`*.yml` or `*.yaml`) pins a literal `go-version`, and every `actions/setup-go` step reads `go-version-file: gateway/go.mod`. `TestOneGoToolchain` (`gateway/cmd/gateway`) fails on every push for the same drift; the preflight repeats it at the tag, in a job that runs no `setup-go` (the check is pure shell) | FAIL |
 
 Exit codes: `0` when every check passes; `1` with one `preflight FAIL:` line per failure; `2` on a usage error (wrong argument count, unknown deployable, or a version that is not SemVer without the `v`). On a dry run the step is advisory: the synthetic version has no changelog file, so check 1 fails without blocking the run.
 

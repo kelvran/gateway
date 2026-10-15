@@ -20,6 +20,15 @@
 # where Go then defaults to the host). Only the tiny FROM scratch stage
 # below is per-platform, and it only COPYs files, so a linux/arm64 image
 # needs neither an emulated compile nor QEMU at all.
+#
+# The tag's version equals the `go` directive of go.mod and compat/go.mod
+# (TestOneGoToolchain in cmd/gateway on every push, release preflight check
+# 7 at the tag; one toolchain since 2026-10-15). This image sets
+# GOTOOLCHAIN=local, so a newer go.mod would fail `go mod download` below
+# instead of fetching a toolchain, and an older one would ship a standard
+# library the suite never ran on: bump both go.mod files, and the two
+# comment lines above that name the tag, in the same change as this line
+# (Dependabot's docker updates touch only this line).
 FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:85dc1069ac644ea3c527b177303a406eb3358192816cd7f9e5848eb658851673 AS builder
 
 WORKDIR /src

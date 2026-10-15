@@ -49,7 +49,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version-file: gateway/go.mod
           # No Go cache in a job that runs third-party npm code before the
           # cache's post-step would save it: nothing a compromised dependency
           # touches may be stored for another job.

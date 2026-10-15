@@ -92,6 +92,9 @@ updates:
   # golang:<version>-alpine builder stage only -- the final stage is FROM
   # scratch). Without this ecosystem, Dependabot never tracks that pin for
   # version/CVE updates, unlike the gomod/uv/github-actions deps above.
+  # Every PR from this ecosystem fails TestOneGoToolchain (gateway/cmd/gateway)
+  # until gateway/go.mod and gateway/compat/go.mod are bumped to the same
+  # version on the PR branch (one Go toolchain, 2026-10-15).
   - package-ecosystem: "docker"
     directory: "/gateway"
     schedule:

@@ -26,6 +26,17 @@
 #      requires setting it and the file ships inside the tag's Go module zip,
 #      so a stale value reaches anyone generating a client from it (a WARNING
 #      until 2026-10-12).
+#   7. (gateway only, added 2026-10-15) one Go toolchain: the `go` directive
+#      of gateway/go.mod and gateway/compat/go.mod equals the
+#      tag of every golang:<version>-alpine FROM line in
+#      gateway/Dockerfile, neither go.mod carries a `toolchain` directive
+#      (actions/setup-go would install it in preference to the go line; the
+#      GOTOOLCHAIN=local image ignores it), no workflow (*.yml or *.yaml)
+#      pins a literal go-version, and every actions/setup-go step reads
+#      go-version-file: gateway/go.mod. FAIL on any. The suite's
+#      TestOneGoToolchain (gateway/cmd/gateway) fails on every push for the
+#      same drift; this repeats it at the tag, in a job that runs no
+#      setup-go (pure shell).
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -107,6 +118,61 @@ if [ "$deployable" = "gateway" ]; then
     if [ "$declared" != "$version" ]; then
       fail "gateway/openapi/kelvran-gateway.openapi.yaml declares info.version ${declared:-<none>}, tag says $version -- set it (RELEASE.md gateway step 2)"
     fi
+  fi
+fi
+
+# One Go toolchain (gateway only): the official golang image and actions/setup-go
+# both run with GOTOOLCHAIN=local, so a go.mod ahead of the image breaks
+# `docker build` and an image ahead of go.mod ships a standard library the
+# suite never ran on. Dependabot moves the image alone, so the declarations are
+# compared as whole versions, every golang:<version>-alpine FROM line counts
+# (the variant this Dockerfile uses; another variant would be skipped, not
+# compared), a `toolchain`
+# directive is refused (setup-go installs it in preference to the go line, the
+# image ignores it), and every setup-go step must read gateway/go.mod. Pure
+# shell: the release preflight job runs no setup-go. The go.mod sed prints its
+# first match and quits (one process per file, no SIGPIPE under pipefail).
+if [ "$deployable" = "gateway" ]; then
+  directive='/^go [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*[[:space:]]*$/{s/^go //;s/[[:space:]]*$//;p;q;}'
+  gomod=$(sed -n "$directive" "$root/gateway/go.mod")
+  compat=$(sed -n "$directive" "$root/gateway/compat/go.mod")
+  images=$(sed -nE 's/^FROM .*golang:([0-9]+\.[0-9]+\.[0-9]+)-alpine.*$/\1/p' "$root/gateway/Dockerfile")
+  if [ -z "$gomod" ] || [ -z "$compat" ] || [ -z "$images" ]; then
+    fail "one Go toolchain: could not read a go X.Y.Z directive (gateway/go.mod: ${gomod:-<none>}, gateway/compat/go.mod: ${compat:-<none>}) or a builder tag (gateway/Dockerfile golang:<version>-alpine: ${images:-<none>})"
+  else
+    for image in $images; do
+      if [ "$gomod" != "$compat" ] || [ "$gomod" != "$image" ]; then
+        fail "one Go toolchain: gateway/go.mod says go $gomod, gateway/compat/go.mod says go $compat, gateway/Dockerfile builds with golang:$image-alpine -- bump them together"
+        break
+      fi
+    done
+  fi
+  if grep -Eq '^toolchain([[:space:]]|$)' "$root/gateway/go.mod" "$root/gateway/compat/go.mod"; then
+    fail "one Go toolchain: a toolchain directive in go.mod -- actions/setup-go installs it in preference to the go line while the GOTOOLCHAIN=local image builds with the go line; delete it and move the go line instead"
+  fi
+  # Workflows: *.yml and *.yaml both run. grep's exit 1 (no match) is a result,
+  # exit 2 is a scan failure, so the status is read instead of masked.
+  set +e
+  workflows=$(find "$root/.github/workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  # shellcheck disable=SC2086 # newline-separated repository paths without spaces
+  literal=$(grep -lE '^[[:space:]]*go-version:' $workflows /dev/null 2>&1)
+  literal_rc=$?
+  # shellcheck disable=SC2086
+  steps=$(cat $workflows /dev/null | grep -cE '^[[:space:]]*-?[[:space:]]*uses: ["'"'"']?actions/setup-go@')
+  # shellcheck disable=SC2086
+  reads=$(cat $workflows /dev/null | grep -cE '^[[:space:]]*go-version-file: gateway/go\.mod[[:space:]]*$')
+  set -e
+  if [ -z "$workflows" ]; then
+    fail "one Go toolchain: no workflow files under .github/workflows -- the workflows moved?"
+  elif [ "$literal_rc" -eq 0 ]; then
+    fail "one Go toolchain: $(printf '%s\n' "$literal" | sed "s#^$root/##" | tr '\n' ' ')pin a literal go-version -- every actions/setup-go step reads go-version-file: gateway/go.mod"
+  elif [ "$literal_rc" -ne 1 ]; then
+    fail "one Go toolchain: could not scan .github/workflows for go-version (grep exit $literal_rc: $literal)"
+  fi
+  if [ "${steps:-0}" -eq 0 ]; then
+    fail "one Go toolchain: no actions/setup-go step under .github/workflows -- the workflows moved?"
+  elif [ "$steps" != "$reads" ]; then
+    fail "one Go toolchain: $steps actions/setup-go step(s) but $reads go-version-file: gateway/go.mod line(s) across .github/workflows -- every step reads gateway/go.mod"
   fi
 fi
 
