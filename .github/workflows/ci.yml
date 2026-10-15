@@ -147,12 +147,13 @@ jobs:
         working-directory: gateway
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Log in to GHCR for the test-image mirror
-        # Read-only: the mirror packages are linked to this repository, so
-        # the built-in token can pull them while they are private (GitHub's
-        # default on first publish; the owner makes them public after the
-        # first mirror run -- see mirror-test-images.yml's header) and,
-        # trivially, once they are public. No id-token: this is a
-        # username/password login, not OIDC.
+        # Read-only. The mirror packages are public (a package first
+        # published by a workflow inherits its repository's visibility --
+        # see mirror-test-images.yml's header), so the login is not needed
+        # for the pull itself; it is kept so the pull keeps working if a
+        # package is ever made private (the packages are linked to this
+        # repository, whose built-in token may read them). No id-token:
+        # this is a username/password login, not OIDC.
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -171,9 +172,9 @@ jobs:
         # shared by every runner behind one IP, failed this step three times
         # in two days (2026-10-14 run 38588156130, the A4 re-run; 2026-10-15
         # runs 38739420505 and 38782791139). When a mirror tag is missing
-        # (the first run before the mirror exists, a fork PR whose read-only
-        # token may not be able to read a private package, or a tag the test
-        # code adopts before mirror-test-images.yml's list is updated -- the
+        # (the first run before the mirror exists, a fork PR should a package
+        # ever be made private, or a tag the test code adopts before
+        # mirror-test-images.yml's list is updated -- the
         # image list lives here, there and in the test code; a lagging
         # refresh is a stale digest under the same tag, not a miss) the pull
         # falls back to ECR with the growing pause and re-tags the

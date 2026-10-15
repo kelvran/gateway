@@ -17,12 +17,13 @@ name: mirror test images
 # can use (plus its attestation manifest), registry to registry, client-side:
 # the buildx plugin that ships with Docker on the runner does it with no builder
 # container, so nothing is pulled from Docker Hub here either (the colima recipe
-# in AGENTS.md pulls from Docker Hub directly and is untouched). GitHub creates
-# a package private on first publish, and private package storage is a 500 MB
-# quota shared with Actions artifacts on a Free-plan org, so after the first run
-# the owner makes both packages public in their package settings (free; the
-# content is the public upstream image). Only the repo's own GITHUB_TOKEN is
-# used -- no new secret.
+# in AGENTS.md pulls from Docker Hub directly and is untouched). A package first
+# published by a workflow with GITHUB_TOKEN inherits the visibility of the
+# repository that runs it, so both packages are public from their first push
+# (proven by the first run, 38822997384: anonymous pulls work) -- which matters
+# because private package storage is a 500 MB quota shared with Actions
+# artifacts on a Free-plan org, while public packages are free. Only the repo's
+# own GITHUB_TOKEN is used -- no new secret.
 on:
   schedule:
     - cron: '17 3 * * 1' # Mondays 03:17 UTC
