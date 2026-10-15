@@ -61,6 +61,7 @@ All rate-limit fields sit under `rate_limit:` inside the key:
       refill_per_second: 10
       tpm_capacity: 100000          # optional pair: tokens per minute
       tpm_refill_per_second: 1000
+      tokens_per_day: 2000000       # optional: rolling 24-hour token allowance
       max_concurrent_requests: 10   # optional; <= 0 = unlimited
       per_model:
         gpt-4o:
@@ -72,7 +73,8 @@ All rate-limit fields sit under `rate_limit:` inside the key:
 
 - `burst` and `refill_per_second` must both be set or both omitted, and may not be negative. Omitted resolves to the gateway default of 20 burst and 10 per second, on both the YAML and the admin-API path.
 - `tpm_capacity` and `tpm_refill_per_second` follow the same pair rule and add a tokens-per-minute dimension. TPM is reserved before the upstream call from past usage (in Redis mode too since gateway/v0.20.0; before, Redis mode reserved the whole capacity, one request per key at a time) and reconciled to real usage afterwards. It is enforced in both in-memory and Redis mode; the Redis path uses GCRA and ships in gateway/v0.14.0 (2026-09-21) and later.
-- `max_concurrent_requests` caps the key's simultaneously in-flight requests. It is counted in memory per gateway instance. The concurrency check runs after the RPM and TPM checks, so a request rejected for concurrency has already spent one RPM token; its TPM reservation is returned when the request finalizes.
+- `tokens_per_day` adds a third dimension: a rolling 24-hour token allowance — a bucket of that capacity refilling at `tokens_per_day/86400` tokens per second, so a key that spends it all at 09:00 is whole again at 09:00 the next day (never a midnight reset). It is checked after RPM and TPM on the same reserve-then-reconcile path — a bucket with no usage history reserves at most one hour's share of the day (`tokens_per_day/24`), or the request's minute reservation when smaller, so one request never claims the whole day; in Redis mode the usage history expires 24 h after the last settle, in memory it lasts until the key is re-registered — and a refusal returns the TPM reservation at once. Like TPM it counts chat and messages turns only (embeddings and `count_tokens` draw RPM alone) and cache hits release their reservation. A single value, valid alone or beside the TPM pair; negative or non-numeric fails startup; key-level only — written under `per_model` or on a deployment it is a load error, never silently ignored. Its 429 is the same `rate_limit_exceeded`, with `Retry-After` floored on the bucket's own wait until a request of the key's typical size fits again — that reservation's share of the day, `reservation / (tokens_per_day/86400)` seconds, so a 2,000-token request on a 2,000,000-a-day key waits about 86 s — capped at 24 h; the per-key backoff still applies when it is larger, and a refusal decided before the key has any usage history carries the backoff alone. Enforced in both in-memory (per replica) and Redis mode. On `main` since 2026-10-15, not in `gateway/v0.20.0`.
+- `max_concurrent_requests` caps the key's simultaneously in-flight requests. It is counted in memory per gateway instance. The concurrency check runs after the RPM, TPM and tokens-per-day checks, so a request rejected for concurrency has already spent one RPM token; its TPM and tokens-per-day reservations are returned when the request finalizes.
 - `per_model.<model>` gives one model its own RPM bucket and, optionally, its own TPM pair. Every other model keeps the key's default bucket.
 
 ### 4. Restrict models and source IPs
@@ -99,7 +101,7 @@ Allow-lists are YAML mappings of value to `true`. They are not lists; the parser
 
 `-validate` exits 0 when the file loads and 1 otherwise. It checks shape, the rate-limit pair rules and CIDR syntax; it does not resolve environment variables and never dials Redis. It does not check `key_hash` format or duplicates: a malformed or duplicate hash passes `-validate` and fails at startup with `constructing identity verifier`. Then start the gateway as described in the [deployment runbook](../operations/DEPLOY.md).
 
-Per request, after authentication, the gateway checks in this order: source-IP allow-list, model allow-list, idempotency claim, prompt resolution, RPM then TPM, concurrency slot, budget reservation, then the cache lookup.
+Per request, after authentication, the gateway checks in this order: source-IP allow-list, model allow-list, idempotency claim, prompt resolution, RPM, TPM, then tokens-per-day (a refusal there returns the TPM reservation at once), concurrency slot, budget reservation, then the cache lookup.
 
 ## Variants
 
@@ -140,11 +142,11 @@ config_propagation:
   redis_addr: "localhost:6379"               # live upsert/delete/rotate reach running replicas
   signing_secret_env: "KELVRAN_CONFIG_PROPAGATION_SIGNING_SECRET"   # REQUIRED with redis_addr
 rate_limit:
-  redis_addr: "localhost:6379"               # optional: RPM and TPM decided in Redis via Lua
+  redis_addr: "localhost:6379"               # optional: RPM, TPM and tokens-per-day decided in Redis via Lua
 ```
 
 - Set `budget.redis_addr`, `admin.redis_addr` and `config_propagation.redis_addr` together. Without them a key's effective cap becomes N times `budget_usd` across N replicas, and a live admin mutation stays invisible to the other replicas until each restarts. [`deploy/k8s/README.md`](../../deploy/k8s/README.md) explains why.
-- Add `rate_limit.redis_addr` when RPM and TPM must be shared across replicas; otherwise each process keeps its own buckets.
+- Add `rate_limit.redis_addr` when RPM, TPM and tokens-per-day must be shared across replicas; otherwise each process keeps its own buckets (a daily cap enforced per replica admits the cap once per replica).
 - `config_propagation.signing_secret_env` is required once its `redis_addr` is set; startup fails without it. Events are HMAC-signed and published on `kelvran:config:mutations`. Pub/sub does not replay: re-apply any mutation made during a Redis outage.
 - If a section sets both `redis_addr` and `persist_path`, `redis_addr` wins and a warning is logged.
 - Per-key concurrency, deployment ceilings, idempotency, prompts and the response cache stay per replica regardless.
@@ -183,11 +185,11 @@ curl -sS -X POST http://127.0.0.1:8081/admin/virtual_keys/team-gamma \
     "budget_reset_interval_seconds": 2592000,
     "budget_warn_percent": 0.8,
     "allowed_models": ["gpt-4o"],
-    "rate_limit": {"burst": 20, "refill_per_second": 10, "tpm_capacity": 100000, "tpm_refill_per_second": 1000}
+    "rate_limit": {"burst": 20, "refill_per_second": 10, "tpm_capacity": 100000, "tpm_refill_per_second": 1000, "tokens_per_day": 2000000}
   }'
 ```
 
-Success is `204`. The handler answers `400` for a name over 256 characters, a negative `budget_usd` or `budget_reset_interval_seconds`, a `budget_warn_percent` outside `[0, 100]`, a per-model entry without positive `burst` and `refill_per_second` or with only one of its two TPM values, an unparsable CIDR, or a malformed `key_hash`. Unlike the YAML loader, it does not check the key-level `tpm_capacity`/`tpm_refill_per_second` pair: a lone `tpm_capacity` is accepted and creates a TPM bucket that never refills, so always send both.
+Success is `204`. The handler answers `400` for a name over 256 characters, a negative `budget_usd` or `budget_reset_interval_seconds`, a `budget_warn_percent` outside `[0, 100]`, a per-model entry without positive `burst` and `refill_per_second` or with only one of its two TPM values, a negative `tokens_per_day`, an unparsable CIDR, or a malformed `key_hash`. Unlike the YAML loader, it does not check the key-level `tpm_capacity`/`tpm_refill_per_second` pair: a lone `tpm_capacity` is accepted and creates a TPM bucket that never refills, so always send both.
 
 Delete a key. This also purges its budget state, in memory and in the persisted or Redis store:
 
@@ -201,7 +203,7 @@ Rotation (`POST /admin/virtual_keys/{name}/rotate` with `new_key_hash` and `grac
 Two restart rules apply once `admin.persist_path` or `admin.redis_addr` is set:
 
 - A persisted admin mutation is authoritative over `config.yaml` on restart. Config is seed state only, and a persisted key with no config entry is added.
-- `per_model` and TPM overrides are not persisted for any key that has ever been upserted or rotated through the admin API, including a key declared in `config.yaml`: on restart the persisted record wins and its rate limit is rebuilt from `burst`/`refill_per_second` only, so the config file's `per_model`/`tpm_*` for that key are ignored. Re-apply them with another upsert after every restart.
+- `per_model` and TPM overrides are not persisted for any key that has ever been upserted or rotated through the admin API, including a key declared in `config.yaml`: on restart the persisted record wins and its rate limit is rebuilt from `burst`/`refill_per_second` only, so the config file's `per_model`/`tpm_*`/`tokens_per_day` for that key are ignored. Re-apply them with another upsert after every restart.
 
 Every admin mutation is audit-logged unless `admin.enable_audit_log: false`. With `admin.audit_log_path` set, entries also go to a JSONL file readable through `GET /admin/audit`.
 
@@ -247,7 +249,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
    | Expired key (`expires_at` passed) | `401` | `key_expired` | no |
    | Model not in `allowed_models` | `403` | `model_not_allowed` | no |
    | Client IP outside `allowed_source_cidrs` | `403` | `source_ip_not_allowed` | yes |
-   | RPM or TPM exhausted | `429` | `rate_limit_exceeded` (type `rate_limit_error`) | yes |
+   | RPM, TPM or tokens-per-day exhausted | `429` | `rate_limit_exceeded` (type `rate_limit_error`) | yes (for tokens-per-day, the day bucket's own wait, up to 24 h) |
    | `max_concurrent_requests` reached | `429` | `concurrency_limit_exceeded` (type `rate_limit_error`) | yes |
    | Budget exhausted | `429` | `insufficient_quota` (type `insufficient_quota`) | no |
 
@@ -258,7 +260,7 @@ Every request is attributed by the client tool normalised from `User-Agent` and 
 - Team, organisation or hierarchical budgets. Only flat per-key budgets exist.
 - A distributed per-key concurrency limiter. `max_concurrent_requests` is counted per gateway instance even with Redis configured.
 - An admin route that resets a key's spend without deleting the key. The levers are `DELETE` then re-create (which also zeroes legitimate spend) or, in Redis budget mode only, `DEL budget:<url.QueryEscape(key id)>` directly in Redis; see row R7 of [FAILURE-MODES.md](../operations/FAILURE-MODES.md).
-- Persistence of `per_model` and TPM overrides across restarts for any key ever upserted or rotated through the admin API (config-declared keys included).
+- Persistence of `per_model`, TPM and `tokens_per_day` overrides across restarts for any key ever upserted or rotated through the admin API (config-declared keys included).
 - Setting `max_concurrent_requests` through the admin API. It is config.yaml-only (`billing_subject_id` and `expires_at` are body fields since `gateway/v0.18.0`). An admin upsert of a config-declared key records `max_concurrent_requests` as 0; with `admin.persist_path` or `admin.redis_addr` set, that key's cap is unlimited after the next restart.
 - Server-side generation of virtual-key secrets. You generate the secret and supply the hash.
 - Propagation of prompt mutations across replicas; only virtual-key and deployment-weight mutations propagate.

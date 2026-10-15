@@ -57,6 +57,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	if alpha.TPMCapacity != 100000 || alpha.TPMRefillPerSecond != 1000 {
 		t.Errorf("team-alpha TPM rate limit = capacity=%v refill=%v, want 100000/1000", alpha.TPMCapacity, alpha.TPMRefillPerSecond)
 	}
+	if alpha.TokensPerDay != 2000000 {
+		t.Errorf("team-alpha tokens_per_day = %v, want 2000000", alpha.TokensPerDay)
+	}
 	if len(alpha.PerModelRateLimits) != 1 {
 		t.Fatalf("len(team-alpha.PerModelRateLimits) = %d, want 1", len(alpha.PerModelRateLimits))
 	}

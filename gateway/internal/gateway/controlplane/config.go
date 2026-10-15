@@ -21,6 +21,7 @@ package controlplane
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -447,12 +448,28 @@ type VirtualKeyConfig struct {
 	// TPMCapacity and TPMRefillPerSecond configure this key's optional,
 	// separate tokens-per-minute rate-limit dimension, per
 	// docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md. Zero (the default)
-	// disables it. In-memory rate-limit mode only in v1 — a no-op when
-	// rate_limit.redis_addr is configured, named explicitly as future
-	// work rather than silently ignored (cmd/gateway logs a startup
-	// warning if both are configured together).
+	// disables it. Enforced in both in-memory and Redis mode
+	// (rate_limit.redis_addr): until 2026-10-15 this comment still
+	// described the RFC's original "in-memory only in v1" scope limit and
+	// a startup warning that no longer exists -- stale since Redis-mode
+	// TPM shipped; ratelimit.KeyConfig.TPMCapacity's doc comment is the
+	// current record.
 	TPMCapacity        float64
 	TPMRefillPerSecond float64
+	// TokensPerDay is rate_limit.tokens_per_day (round-5 Tier S item 24,
+	// 2026-10-15): the key's optional tokens-per-day dimension, a bucket
+	// of this capacity refilling at tokens_per_day/86400 tokens per second
+	// -- a rolling 24 h allowance, never a midnight reset -- on the same
+	// reserve-then-reconcile path as the TPM pair above, checked after RPM
+	// and TPM. 0 (the default) disables it; a negative or non-numeric
+	// value is a load error (a daily cap that silently read as 0 is the
+	// doc-vs-code trap AGENTS.md records). A single scalar, valid alone or
+	// beside tpm_capacity -- the cap IS the window, so there is no refill
+	// knob to pair it with. Key-level only: the parser refuses it under
+	// per_model and under a deployment's rate_limit rather than ignoring
+	// it there. Enforced in both in-memory and Redis mode
+	// (ratelimit.KeyConfig.TokensPerDay).
+	TokensPerDay float64
 	// PerModelRateLimits maps a model name to that model's own, separate
 	// RPM (burst/refill_per_second) override — the "consumer x model"
 	// dimension of Kong-style multi-dimensional rate-limit matching, per
@@ -1216,6 +1233,9 @@ func Parse(data []byte, source string) (*Config, error) {
 			vk.TPMCapacity, _ = getFloat(rl, "tpm_capacity")
 			vk.TPMRefillPerSecond, _ = getFloat(rl, "tpm_refill_per_second")
 			if err := validateRateLimitPair(vk.TPMCapacity, vk.TPMRefillPerSecond, fmt.Sprintf("controlplane: virtual key %q rate_limit.tpm_capacity/tpm_refill_per_second", name)); err != nil {
+				return nil, err
+			}
+			if err := parseTokensPerDay(rl, &vk.TokensPerDay, fmt.Sprintf("controlplane: virtual key %q rate_limit.tokens_per_day", name)); err != nil {
 				return nil, err
 			}
 			vk.MaxConcurrentRequests, _ = getInt(rl, "max_concurrent_requests")
@@ -2392,6 +2412,13 @@ func parsePerModelRateLimits(keyName string, raw map[string]any) (map[string]Mod
 		if !ok {
 			return nil, fmt.Errorf("controlplane: virtual key %q rate_limit.per_model.%s must be a mapping", keyName, model)
 		}
+		// Refused, not ignored: the parser has no unknown-key check under
+		// rate_limit, so a daily cap written here would load as nothing
+		// while the operator believes it is enforced (AGENTS.md's
+		// doc-vs-code gotcha). The day dimension is key-level only.
+		if _, present := modelMap["tokens_per_day"]; present {
+			return nil, fmt.Errorf("controlplane: virtual key %q rate_limit.per_model.%s.tokens_per_day is not supported: a daily token cap is key-level only (set rate_limit.tokens_per_day on the virtual key)", keyName, model)
+		}
 		burst, _ := getFloat(modelMap, "burst")
 		refill, _ := getFloat(modelMap, "refill_per_second")
 		if burst <= 0 || refill <= 0 {
@@ -2440,6 +2467,11 @@ func validateRateLimitPair(a, b float64, context string) error {
 }
 
 func parseDeploymentRateLimit(deploymentName string, rl map[string]any, dep *DeploymentConfig) error {
+	// Refused, not ignored -- see parsePerModelRateLimits' identical check:
+	// the day dimension belongs to a virtual key, not a deployment.
+	if _, present := rl["tokens_per_day"]; present {
+		return fmt.Errorf("controlplane: deployment %q rate_limit.tokens_per_day is not supported: a daily token cap is a virtual key's rate_limit.tokens_per_day", deploymentName)
+	}
 	dep.RateLimitBurst, _ = getFloat(rl, "burst")
 	dep.RateLimitRefill, _ = getFloat(rl, "refill_per_second")
 	if err := validateRateLimitPair(dep.RateLimitBurst, dep.RateLimitRefill, fmt.Sprintf("controlplane: deployment %q rate_limit.burst/refill_per_second", deploymentName)); err != nil {
@@ -2456,6 +2488,33 @@ func parseDeploymentRateLimit(deploymentName string, rl map[string]any, dep *Dep
 		}
 	}
 	dep.MaxConcurrentRequests, _ = getInt(rl, "max_concurrent_requests")
+	return nil
+}
+
+// parseTokensPerDay reads rate_limit.tokens_per_day into dst (round-5
+// Tier S item 24): absent leaves dst at 0 (no daily cap); a PRESENT but
+// unparseable value is a loud error, mirroring
+// parseDeploymentTPMAccounting's output_token_multiplier rule -- getFloat's
+// (0, false) would otherwise read as "no cap" while the operator believes
+// one is enforced; a negative value is an error like every other
+// rate-limit number.
+func parseTokensPerDay(rl map[string]any, dst *float64, context string) error {
+	raw, present := rl["tokens_per_day"]
+	if !present {
+		return nil
+	}
+	v, ok := getFloat(rl, "tokens_per_day")
+	if !ok || math.IsNaN(v) || math.IsInf(v, 0) {
+		// strconv.ParseFloat accepts "inf" and "nan": +Inf would build a
+		// bucket that never refuses and NaN no bucket at all, both the
+		// silent no-cap this field's doc comment promises to avoid; in
+		// Redis mode either makes every reservation a script error.
+		return fmt.Errorf("%s %v is not a number", context, raw)
+	}
+	if v < 0 {
+		return fmt.Errorf("%s must not be negative", context)
+	}
+	*dst = v
 	return nil
 }
 

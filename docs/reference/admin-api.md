@@ -192,7 +192,7 @@ Each element:
 | `percent_used` | number | with `?include=spend`, unless unavailable | `spent_usd / budget_usd` as a fraction; `0` when `budget_usd` is not positive. |
 | `spend_unavailable` | bool | with `?include=spend`, when `true` | The budget backend could not be read for this key within the shared 2 s deadline; `spent_usd` and `percent_used` are omitted. |
 
-Per-model and TPM rate-limit settings are not part of this response.
+Per-model, TPM and tokens-per-day rate-limit settings are not part of this response.
 
 ## POST /admin/virtual_keys/{name}
 
@@ -223,6 +223,7 @@ Request body:
 | `refill_per_second` | number | see note | Key-level RPM refill rate. |
 | `tpm_capacity` | number | | Key-level tokens-per-minute bucket. `<= 0`: no TPM limit. |
 | `tpm_refill_per_second` | number | | Key-level TPM refill. |
+| `tokens_per_day` | number | `>= 0`, else `400` | Key-level rolling 24-hour token allowance, the same value as config.yaml's `rate_limit.tokens_per_day`; `0`: none. On `main` since 2026-10-15, not in `gateway/v0.20.0`. |
 | `per_model` | object | | Map of model name to a per-model override object. |
 
 Note on `burst` and `refill_per_second`: when both are `<= 0` (including when `rate_limit` is omitted), they resolve to the gateway defaults of `20` burst and `10` refill per second. When either is positive, both are stored as given.
@@ -697,7 +698,7 @@ When the durable append fails, the request still succeeds, the `slog` line is th
 | Prompt upsert, delete, label set, label delete | `prompt.persist_path` is set | prompt store |
 | Deployment weight | never | in memory only |
 
-At startup a persisted key is authoritative over the same id in `config.yaml`; a persisted key whose id is not in `config.yaml` is loaded as a new key. A persisted key's rate limit is rebuilt only from its stored `burst` and `refill_per_second`; a `per_model` or key-level TPM override that was set through this API does not survive a restart.
+At startup a persisted key is authoritative over the same id in `config.yaml`; a persisted key whose id is not in `config.yaml` is loaded as a new key. A persisted key's rate limit is rebuilt only from its stored `burst` and `refill_per_second`; a `per_model`, key-level TPM or `tokens_per_day` override that was set through this API does not survive a restart.
 
 ### Persistence failures
 

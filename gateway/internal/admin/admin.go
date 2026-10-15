@@ -646,11 +646,16 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 			allowedSourceCIDRs = append(allowedSourceCIDRs, network)
 		}
 		burst, refill := 0.0, 0.0
-		var tpmCapacity, tpmRefill float64
+		var tpmCapacity, tpmRefill, tokensPerDay float64
 		var perModel map[string]ratelimit.ModelRateLimit
 		if req.RateLimit != nil {
 			burst, refill = req.RateLimit.Burst, req.RateLimit.RefillPerSecond
 			tpmCapacity, tpmRefill = req.RateLimit.TPMCapacity, req.RateLimit.TPMRefillPerSecond
+			tokensPerDay = req.RateLimit.TokensPerDay
+			if tokensPerDay < 0 {
+				http.Error(w, "rate_limit.tokens_per_day must not be negative", http.StatusBadRequest)
+				return
+			}
 			if len(req.RateLimit.PerModel) > 0 {
 				perModel = make(map[string]ratelimit.ModelRateLimit, len(req.RateLimit.PerModel))
 				for model, mrl := range req.RateLimit.PerModel {
@@ -702,6 +707,7 @@ func upsertVirtualKeyHandler(pipeline *dataplane.Pipeline, logger auditLogger) h
 			RefillPerSecond:    refill,
 			TPMCapacity:        tpmCapacity,
 			TPMRefillPerSecond: tpmRefill,
+			TokensPerDay:       tokensPerDay,
 			PerModel:           perModel,
 		}
 

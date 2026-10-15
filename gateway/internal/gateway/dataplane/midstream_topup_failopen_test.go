@@ -73,8 +73,9 @@ func newTopupFailOpenTestPipeline(t *testing.T, keys []identity.VirtualKey, limi
 // counted like the pre-call Reserve/ReserveTPM sites already were -- before
 // 2026-10-08 both branches were silent. Exactly once per stream: the top-up is
 // retried on every chunk while the backend is down, and a counter whose unit is
-// {request} must not grow per chunk. The TPM branch returns before the budget
-// branch runs, so each dimension is driven by its own pipeline.
+// {request} must not grow per chunk. Each dimension is driven by its own
+// pipeline (the other dimension's backend is healthy there), so each
+// scenario exercises exactly one failing top-up.
 func TestMidStreamTopupBackendErrorsFailOpenOnceWithLogAndMetric(t *testing.T) {
 	reader := dataplaneTelemetryMetricsReaderForTest()
 	var before metricdata.ResourceMetrics

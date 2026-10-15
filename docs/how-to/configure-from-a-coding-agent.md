@@ -162,7 +162,7 @@ admin:
   redis_addr: "redis:6379"           # shared virtual-key store, loaded at start
   redis_password_env: "REDIS_PASSWORD"
 rate_limit:
-  redis_addr: "redis:6379"           # distributed per-key RPM/TPM
+  redis_addr: "redis:6379"           # distributed per-key RPM/TPM/tokens-per-day
   redis_password_env: "REDIS_PASSWORD"
 config_propagation:
   redis_addr: "redis:6379"           # live admin mutations reach other replicas

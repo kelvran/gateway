@@ -300,7 +300,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OpenAIError'
         '429':
-          description: The key's RPM/TPM or concurrency ceiling, or its budget.
+          description: The key's RPM, TPM or tokens-per-day ceiling, its concurrency ceiling, or its budget. A tokens-per-day refusal floors Retry-After on the day bucket's own wait (whole seconds, at most
+            86400; the per-key backoff still applies when larger) (on `main` since 2026-10-15, not in `gateway/v0.20.0`).
           x-kelvran-codes:
           - rate_limit_exceeded
           - concurrency_limit_exceeded
@@ -1006,7 +1007,8 @@ paths:
                 - $ref: '#/components/schemas/KelvranAnthropicError'
                 - $ref: '#/components/schemas/AnthropicUpstreamError'
         '429':
-          description: The key's RPM/TPM or concurrency ceiling, or its budget.
+          description: The key's RPM, TPM or tokens-per-day ceiling, its concurrency ceiling, or its budget. A tokens-per-day refusal floors Retry-After on the day bucket's own wait (whole seconds, at most
+            86400; the per-key backoff still applies when larger) (on `main` since 2026-10-15, not in `gateway/v0.20.0`).
           x-kelvran-codes:
           - rate_limit_exceeded
           - concurrency_limit_exceeded
@@ -1486,6 +1488,7 @@ paths:
                     refill_per_second: 10
                     tpm_capacity: 1000
                     tpm_refill_per_second: 100
+                    tokens_per_day: 0
                     per_model:
                       gpt-4o:
                         burst: 5
@@ -1499,8 +1502,8 @@ paths:
         '204':
           description: Done; no body.
         '400':
-          description: An empty or over-long name (256 bytes), a body that is not JSON, a missing `key_hash`, a negative budget or reset interval, `budget_warn_percent` outside 0–100, a past or malformed
-            `expires_at`, a bad CIDR or per-model limit, or any upsert error such as a non-hex or duplicate hash.
+          description: An empty or over-long name (256 bytes), a body that is not JSON, a missing `key_hash`, a negative budget or reset interval, a negative `tokens_per_day`, `budget_warn_percent` outside
+            0–100, a past or malformed `expires_at`, a bad CIDR or per-model limit, or any upsert error such as a non-hex or duplicate hash.
           x-kelvran-codes: []
           x-kelvran-retry-after: []
           content:
@@ -3424,8 +3427,8 @@ components:
         type: string
         pattern: ^[0-9]+$
     Retry-After:
-      description: 'Whole seconds to wait, the key''s own backoff (500 ms doubling to 30 s, rounded up, floor 1) floored by an upstream `Retry-After` capped at 60 s. Present exactly where the response''s
-        `x-kelvran-retry-after` list names the answer''s `code`.
+      description: 'Whole seconds to wait, the key''s own backoff (500 ms doubling to 30 s, rounded up, floor 1) floored by an upstream `Retry-After` capped at 60 s and, on a tokens-per-day refusal, by
+        the day bucket''s own wait capped at 86400 (on `main` since 2026-10-15, not in `gateway/v0.20.0`). Present exactly where the response''s `x-kelvran-retry-after` list names the answer''s `code`.
 
         '
       schema:
@@ -4320,6 +4323,9 @@ components:
           type: number
         tpm_refill_per_second:
           type: number
+        tokens_per_day:
+          type: number
+          description: Optional rolling 24 h token allowance for the key, 0 for none; the same value as config.yaml's rate_limit.tokens_per_day (on `main` since 2026-10-15, not in `gateway/v0.20.0`).
         per_model:
           type:
           - object

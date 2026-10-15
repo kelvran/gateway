@@ -82,6 +82,34 @@ virtual_keys:
       # comment.
       tpm_capacity: 100000
       tpm_refill_per_second: 1000
+      # Optional; omit (or 0) for no daily cap. A tokens-per-day dimension
+      # beside the two above (round-5 Tier S item 24; OWASP LLM06:2026's
+      # tokens-per-day limit): a third bucket of this capacity refilling
+      # at tokens_per_day/86400 tokens per second -- a rolling 24-hour
+      # allowance (a key that spends it all at 09:00 is whole again at
+      # 09:00 the next day), never a midnight reset. Same reserve-then-
+      # reconcile path as tpm_capacity (internal/ratelimit.KeyLimiter.
+      # ReserveTPD), checked after RPM and TPM, so those rejections still
+      # win; a day bucket with no usage history reserves at most one
+      # hour's share of the day (tokens_per_day/24), or the same request's
+      # minute reservation when that is smaller, so one request never
+      # claims the whole day; in Redis mode the usage history expires 24 h
+      # after the last settle, so a key idle for a day starts cold again
+      # (in memory it lasts until the key is re-registered through the
+      # admin API). A rejection is the same 429
+      # rate_limit_exceeded, with Retry-After floored on the bucket's own
+      # wait until a typical request fits again (whole seconds, capped at
+      # 24 h; the 1-30 s per-key backoff still applies when larger, and
+      # alone for a refusal decided before the key has any history). Like
+      # tpm_capacity it counts chat and messages turns only: embeddings and
+      # count_tokens draw RPM alone, and cache hits release their
+      # reservation. A single scalar, valid
+      # alone or beside tpm_capacity; negative or non-numeric fails
+      # startup; key-level only (refused under per_model and on a
+      # deployment, never silently ignored). Enforced in both in-memory
+      # (per replica) and Redis mode (its own Redis key beside the TPM
+      # one). On `main` since 2026-10-15, not in `gateway/v0.20.0`.
+      tokens_per_day: 2000000
       # Optional; omit for no per-model override. The "consumer x model"
       # dimension of multi-dimensional rate-limit matching, per
       # docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md: a

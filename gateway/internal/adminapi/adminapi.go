@@ -95,6 +95,12 @@ type RateLimitRequest struct {
 	RefillPerSecond    float64 `json:"refill_per_second"`
 	TPMCapacity        float64 `json:"tpm_capacity"`
 	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
+	// TokensPerDay mirrors config.yaml's rate_limit.tokens_per_day (round-5
+	// Tier S item 24, 2026-10-15): the key's rolling 24 h token allowance,
+	// 0 for none, never negative. Carried here so a daily cap set live is
+	// enforced -- the handler ignores unknown body members, so a cap sent
+	// without this field would be dropped silently.
+	TokensPerDay float64 `json:"tokens_per_day"`
 	// PerModel mirrors config.yaml's rate_limit.per_model section — see
 	// controlplane.VirtualKeyConfig.PerModelRateLimits' doc comment and
 	// docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md. An

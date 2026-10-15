@@ -13,7 +13,7 @@ The parser keeps every scalar as its raw source text and converts it per field. 
 | `string` | Raw text; a single layer of matching `"…"` or `'…'` quotes is removed | n/a |
 | `bool` | Exactly one of `true`, `True`, `TRUE`, `false`, `False`, `FALSE` | Load error (`yes`, `no`, `on`, `off`, `1`, `0` are strings, not booleans) |
 | `int` | `strconv.Atoi` on the raw text | Treated as unset (0). A value that overflows a 64-bit integer is also treated as unset, not clamped — except where a key's own row says a malformed or out-of-range value is a load error (the `ledger` bounds; `price_table.<model>.long_context.above_tokens` since `gateway/v0.20.0`) |
-| `float` | `strconv.ParseFloat` on the raw text | Treated as unset (0), including out-of-range literals such as `1e400`, except `tpm_accounting.output_token_multiplier`, where a present-but-unparseable value is a load error |
+| `float` | `strconv.ParseFloat` on the raw text | Treated as unset (0), including out-of-range literals such as `1e400`, except `tpm_accounting.output_token_multiplier` and a virtual key's `rate_limit.tokens_per_day`, where a present-but-unparseable value is a load error |
 | `decimal` | `decimal.NewFromString` on the raw text; never routed through a float | Treated as unset, except where the table says the key is required |
 | `mapping` | A nested block of `key: value` lines indented two more spaces | A scalar where a mapping is expected is a load error only for the required `virtual_keys` and `deployments` sections and for a named entry under `virtual_keys`, `deployments`, `price_table`, `models` or `per_model` (`… must be a mapping`), and for `price_table.<model>.service_tier_multipliers` and `price_table.<model>.long_context` (since `gateway/v0.20.0`), `telemetry.prometheus`, `attribution` and `ledger`; every other mapping-typed key given a scalar (`telemetry: otlp`, `rate_limit: 5`, `tls: yes`) is silently ignored, its defaults apply, and `-validate` reports `config is valid`. A mapping where a scalar is expected is treated as unset, except that a required key, a `bool` field, a `fallback_chains` value or a `category_overrides` value is a load error |
 | `name → bool` | A mapping whose values must each be a `bool`; only `true` entries are kept | Load error on any non-boolean value |
@@ -35,9 +35,9 @@ The gateway parses `config.yaml` with a hand-rolled YAML subset, not a YAML libr
 | Duplicate key at one nesting level | Load error (`duplicate key … at this nesting level`). This includes two deployments or two virtual keys with the same name |
 | Nesting depth | More than 64 nested mapping levels is a load error |
 | Quoted keys | A key may be quoted; a colon inside the quotes does not split the key (for example `"10.0.0.0/8": true`, `"my:deployment":`) |
-| Unknown keys | Silently ignored at every level, except inside `price_table.<model>.long_context` (since `gateway/v0.20.0`: all three keys are required, so a misspelt one cannot leave half a tier behind) and inside a `models.<name>` entry (`display_name` and `description` only), where an unknown key is a load error. A misspelled key elsewhere configures nothing and produces no warning. There is no strict mode |
+| Unknown keys | Silently ignored at every level, except inside `price_table.<model>.long_context` (since `gateway/v0.20.0`: all three keys are required, so a misspelt one cannot leave half a tier behind) and inside a `models.<name>` entry (`display_name` and `description` only), where an unknown key is a load error; `tokens_per_day` under `rate_limit.per_model.<model>` or under a deployment's `rate_limit` is refused rather than ignored (the cap is key-level only). A misspelled key elsewhere configures nothing and produces no warning. There is no strict mode |
 | Boolean fields | Only the six literals in the type table are booleans. A present-but-unrecognised value (`sticky: yes`) is a load error on every `bool` field |
-| Numeric fields | Converted per field (see the type vocabulary). A malformed or overflowing number is treated as unset, not reported, except `tpm_accounting.output_token_multiplier` (present but unparseable is a load error) and the two required `price_table` decimals; since `gateway/v0.20.0` a malformed `price_table.<model>.service_tier_multipliers` or `long_context` value is a load error too |
+| Numeric fields | Converted per field (see the type vocabulary). A malformed or overflowing number is treated as unset, not reported, except `tpm_accounting.output_token_multiplier` and a virtual key's `rate_limit.tokens_per_day` (present but unparseable is a load error) and the two required `price_table` decimals; since `gateway/v0.20.0` a malformed `price_table.<model>.service_tier_multipliers` or `long_context` value is a load error too |
 | Blank lines | Ignored |
 
 ## Load order and required keys
@@ -103,10 +103,11 @@ Each entry is a tenant credential issued by Kelvran. The entry name is the key's
 | `refill_per_second` | `float` | 10 | Requests added to the bucket per second. Pair rule as above |
 | `tpm_capacity` | `float` | 0 (no TPM limit) | Tokens-per-minute bucket capacity for this key, in raw tokens. Must be set together with `tpm_refill_per_second` or not at all; neither may be negative |
 | `tpm_refill_per_second` | `float` | 0 | Tokens added per second. Pair rule as above |
+| `tokens_per_day` | `float` | 0 (no daily cap) | Rolling 24-hour token allowance for this key, in raw tokens: a third bucket of this capacity refilling at `tokens_per_day/86400` tokens per second, checked after RPM and TPM on the same reserve-then-reconcile path; a bucket with no usage history reserves at most one hour's share of the day (`tokens_per_day/24`), or the request's minute reservation when smaller; in Redis mode the usage history expires 24 h after the last settle (a key idle for a day starts cold again), in memory it lasts until the key is re-registered. Not a midnight reset. Counts chat and messages turns only: `/v1/embeddings` and `/v1/messages/count_tokens` draw RPM alone, and cache hits release their reservation. A single value, valid alone or beside `tpm_capacity`; negative or non-numeric (including `inf`/`nan`) is a load error; refused (load error) under `per_model` and under a deployment's `rate_limit`. A refusal is `429` `rate_limit_exceeded` with `Retry-After` floored on the bucket's own wait until a request of the key's typical size fits again — that reservation's share of the day, `reservation / (tokens_per_day/86400)` seconds, so a 2,000-token request on a 2,000,000-a-day key waits about 86 s — capped at 24 h; the per-key backoff still applies when it is larger, and a refusal decided before the key has any usage history carries the backoff alone. On `main` since 2026-10-15, not in `gateway/v0.20.0` |
 | `max_concurrent_requests` | `int` | 0 (unlimited) | Maximum in-flight requests for this key. Values at or below 0 mean unlimited. Enforced in memory per replica regardless of `rate_limit.redis_addr` |
 | `per_model` | `mapping` | absent | Per-model overrides, one entry per canonical model name. See the next table |
 
-The key-level RPM and TPM buckets, and the `per_model` RPM and TPM buckets, are enforced in both in-memory mode and Redis mode (`rate_limit.redis_addr`).
+The key-level RPM, TPM and tokens-per-day buckets, and the `per_model` RPM and TPM buckets, are enforced in both in-memory mode and Redis mode (`rate_limit.redis_addr`); in Redis mode the tokens-per-day bucket lives under its own key beside the TPM one, never sharing its arrival time or usage history.
 
 ### `virtual_keys.<name>.rate_limit.per_model.<model>`
 
@@ -116,6 +117,8 @@ The key-level RPM and TPM buckets, and the `per_model` RPM and TPM buckets, are 
 | `refill_per_second` | `float` | required | Must be greater than 0, else load error |
 | `tpm_capacity` | `float` | 0 (use the key-level TPM bucket) | Optional per-model TPM override. Must be set together with `tpm_refill_per_second` or not at all; neither may be negative |
 | `tpm_refill_per_second` | `float` | 0 | Pair rule as above |
+
+`tokens_per_day` is not accepted under a `per_model` entry: a daily token cap is key-level only, and the key here is a load error, not a silent no-op.
 
 ## `deployments.<name>`
 
@@ -199,6 +202,8 @@ A deployment-scoped ceiling, aggregated across every virtual key that reaches th
 | `tpm_refill_per_second` | `float` | 0 | Pair rule as above |
 | `tpm_accounting` | `mapping` | absent (raw tokens) | See the next table. Requires `tpm_capacity` to be set, else load error |
 | `max_concurrent_requests` | `int` | 0 (unlimited) | Maximum in-flight requests against this deployment across all keys, checked per hop |
+
+`tokens_per_day` is not accepted on a deployment: a daily token cap belongs to a virtual key, and the key here is a load error, not a silent no-op.
 
 ### `deployments.<name>.rate_limit.tpm_accounting`
 
@@ -297,7 +302,7 @@ The backend follows `budget.redis_addr` exactly as the budget does; the Redis cl
 
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
-| `redis_addr` | `string` | empty (in-memory) | Redis `host:port`. When set, the per-virtual-key RPM, TPM and `per_model` buckets are Redis-backed and shared across replicas. Deployment ceilings and `max_concurrent_requests` stay in memory per replica |
+| `redis_addr` | `string` | empty (in-memory) | Redis `host:port`. When set, the per-virtual-key RPM, TPM, tokens-per-day and `per_model` buckets are Redis-backed and shared across replicas. Deployment ceilings and `max_concurrent_requests` stay in memory per replica |
 | `redis_password_env`, `redis_username`, `redis_tls` | see [Redis auth keys](#redis-auth-keys) | | |
 
 The Redis client dials lazily; an unreachable Redis does not stop startup.
@@ -493,7 +498,7 @@ The process exits 1 before binding a listener when any of the following holds. T
 
 | Detected by `-validate` | Condition |
 |---|---|
-| yes | Any load error in this page's tables (missing required key, pair rule, negative value, bad boolean, duplicate key, tab indentation, unknown `kind`, unknown `fallback_chains` class, bad CIDR, non-RFC-3339 `expires_at`, non-`https` `base_url` without `allow_insecure_http`, `tls`/`mtls` block rules, `tpm_accounting` without `tpm_capacity`, `models` entry for an unserved model) |
+| yes | Any load error in this page's tables (missing required key, pair rule, negative value, bad boolean, duplicate key, tab indentation, unknown `kind`, unknown `fallback_chains` class, bad CIDR, non-RFC-3339 `expires_at`, non-`https` `base_url` without `allow_insecure_http`, `tls`/`mtls` block rules, `tpm_accounting` without `tpm_capacity`, a negative or non-numeric `tokens_per_day` or one written under `per_model` or a deployment, `models` entry for an unserved model) |
 | yes | A `provider` that is not one of the five adapter names |
 | yes | A `fallback_chains` target that is not a configured deployment |
 | yes | `deployments.<name>.anthropic_beta_policy` set to a value other than `strip` or `forward_known`, or `forward_known` on a deployment whose `provider` is not `bedrock` |
@@ -558,6 +563,7 @@ virtual_keys:
       refill_per_second: 10
       tpm_capacity: 100000
       tpm_refill_per_second: 1000
+      tokens_per_day: 2000000
       max_concurrent_requests: 10
       per_model:
         gpt-4o:

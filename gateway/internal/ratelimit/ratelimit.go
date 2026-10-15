@@ -176,15 +176,40 @@ func (b *TokenBucket) Debit(n float64) {
 // re-derived — mirroring budget.Tracker.Reserve's own epoch contract;
 // see resetEpoch's field comment for why.
 func (b *TokenBucket) ReserveTPM() (allowed bool, reservedTokens float64, reservationEpoch int64) {
+	allowed, reservedTokens, reservationEpoch, _ = b.ReserveTokens(0)
+	return allowed, reservedTokens, reservationEpoch
+}
+
+// ReserveTokens is ReserveTPM with the two additions the tokens-per-day
+// dimension needs (round-5 Tier S item 24, 2026-10-15); ReserveTPM is
+// exactly ReserveTokens(0) with the wait dropped, so the TPM dimension's
+// behaviour is unchanged. coldStartCap, when positive, bounds the
+// reservation of a bucket with NO settled history (billedCount == 0) --
+// the caller passes the minute dimension's reservation for the same
+// request, so a cold DAY bucket never reserves its whole day on one
+// request and admits one request at a time until it settles (the F2
+// serialisation of 2026-10-08, at day scale); once the bucket has history
+// the running mean sizes the reservation and the cap is ignored.
+// retryAfter is, on a refusal, how long until the balance is positive
+// again at the current refill rate (zero when the bucket never refills,
+// or sits exactly at zero) -- the honest Retry-After for a dimension
+// whose wait is hours, which the per-key backoff cannot express.
+func (b *TokenBucket) ReserveTokens(coldStartCap float64) (allowed bool, reservedTokens float64, reservationEpoch int64, retryAfter time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.refillLocked()
 	if b.tokens <= 0 {
-		return false, 0, b.resetEpoch
+		if b.refillPerSecond > 0 && b.tokens < 0 {
+			retryAfter = time.Duration(-b.tokens / b.refillPerSecond * float64(time.Second))
+		}
+		return false, 0, b.resetEpoch, retryAfter
 	}
 	reservedTokens = b.reservationAmountLocked()
+	if b.billedCount == 0 && coldStartCap > 0 && reservedTokens > coldStartCap {
+		reservedTokens = coldStartCap
+	}
 	b.tokens -= reservedTokens
-	return true, reservedTokens, b.resetEpoch
+	return true, reservedTokens, b.resetEpoch, 0
 }
 
 // reservationAmountLocked mirrors

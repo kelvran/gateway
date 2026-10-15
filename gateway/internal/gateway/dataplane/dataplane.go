@@ -1702,6 +1702,7 @@ func keyConfigToPayload(cfg ratelimit.KeyConfig) *configpropagation.KeyConfigPay
 		RefillPerSecond:    cfg.RefillPerSecond,
 		TPMCapacity:        cfg.TPMCapacity,
 		TPMRefillPerSecond: cfg.TPMRefillPerSecond,
+		TokensPerDay:       cfg.TokensPerDay,
 		PerModel:           perModel,
 	}
 }
@@ -1728,6 +1729,7 @@ func payloadToKeyConfig(id string, p *configpropagation.KeyConfigPayload) *ratel
 		RefillPerSecond:    p.RefillPerSecond,
 		TPMCapacity:        p.TPMCapacity,
 		TPMRefillPerSecond: p.TPMRefillPerSecond,
+		TokensPerDay:       p.TokensPerDay,
 		PerModel:           perModel,
 	}
 }
@@ -2585,15 +2587,22 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 // bucket — a key with no PerModel entries behaves exactly as if this
 // parameter didn't exist.
 //
-// tpmReserved/tpmReservedTokens/tpmReservationEpoch are ReserveTPM's own
+// The decision's tpm and tpd fields are ReserveTPM's and ReserveTPD's own
 // return values, per docs/rfcs/2026-09-08-gateway-budget-ratelimit-
-// toctou-fix.md: the caller MUST thread all three through to finalize's
-// ReconcileTPM call on every return path (including error), or a
-// granted TPM reservation leaks permanently. All are the harmless zero
-// values whenever no real reservation was made — TPM not configured for
-// vk, or the RPM check above already rejected the request before
-// ReserveTPM was ever called.
-func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) (ok bool, failedOpen bool, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64) {
+// toctou-fix.md: the caller MUST thread both through to finalize's
+// ReconcileTPM/ReconcileTPD calls on every return path (including error),
+// or a granted reservation leaks permanently. Both are the harmless zero
+// values whenever no real reservation was made — the dimension not
+// configured for vk, or an earlier check already rejected the request.
+// Order: RPM, then TPM, then tokens-per-day (round-5 Tier S item 24), so
+// a request is always refused for the most immediate reason first; a
+// tokens-per-day refusal releases the minute reservation taken just
+// before it (nothing from a refused request stays reserved) and carries
+// the day bucket's own wait, and a tokens-per-day backend error fails
+// open with the minute reservation kept intact for finalize -- never
+// dropped (it would leak) and never released here (finalize would then
+// release it a second time).
+func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) rateLimitDecision {
 	allowed, err := p.limiter.AllowForModel(ctx, vk.ID, model)
 	if err != nil {
 		p.logger.Warn("ratelimit_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", err.Error())...)
@@ -2604,10 +2613,10 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 		// "how many times has this happened recently" without scanning
 		// every log line or trace.
 		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
-		return true, true, false, 0, 0
+		return rateLimitDecision{ok: true, failedOpen: true}
 	}
 	if !allowed {
-		return false, false, false, 0, 0
+		return rateLimitDecision{}
 	}
 	// TPM dimension, per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md,
 	// now via ReserveTPM (docs/rfcs/2026-09-08-gateway-budget-ratelimit-
@@ -2618,14 +2627,54 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, 
 	// genuinely fail open on a Redis-mode backend error (closing the
 	// prior "TPM is unconditionally a no-op in Redis mode" gap) — treated
 	// identically to the RPM dimension's own fail-open policy above.
+	var d rateLimitDecision
 	var tpmErr error
-	ok, tpmReserved, tpmReservedTokens, tpmReservationEpoch, tpmErr = p.limiter.ReserveTPM(ctx, vk.ID, model)
+	d.ok, d.tpm.reserved, d.tpm.tokens, d.tpm.epoch, tpmErr = p.limiter.ReserveTPM(ctx, vk.ID, model)
 	if tpmErr != nil {
+		// Logged now, counted below: the {request} counter means "allowed
+		// through after a backend error", and whether this request is
+		// allowed through is only known once the day check has run.
 		p.logger.Warn("ratelimit_tpm_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", tpmErr.Error())...)
-		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
-		return true, true, false, 0, 0
+		d = rateLimitDecision{ok: true, failedOpen: true}
 	}
-	return ok, false, tpmReserved, tpmReservedTokens, tpmReservationEpoch
+	if !d.ok {
+		return rateLimitDecision{}
+	}
+	// Tokens-per-day dimension (round-5 Tier S item 24, 2026-10-15), the
+	// same reserve-then-reconcile shape one window over. The minute
+	// reservation just taken is the cold-start cap for a day bucket with
+	// no history yet, so a cold key's first request never reserves its
+	// whole day (ReserveTPD's doc comment). A backend error fails open like
+	// the two dimensions above, counted once per request: the counter's
+	// unit is {request}, so a day error after a TPM fail-open on the same
+	// request must not add a second increment.
+	var tpdErr error
+	var dayOK bool
+	var wait time.Duration
+	dayOK, d.tpd.reserved, d.tpd.tokens, d.tpd.epoch, wait, tpdErr = p.limiter.ReserveTPD(ctx, vk.ID, d.tpm.tokens)
+	if tpdErr != nil {
+		p.logger.Warn("ratelimit_tpd_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", tpdErr.Error())...)
+		d.failedOpen = true
+		d.tpd = tokenReservation{}
+		telemetry.RecordRateLimitFailOpen(ctx, vk.ID) // once, whether one or both token dimensions errored
+		return d
+	}
+	if !dayOK {
+		// Nothing from a refused request stays reserved: hand the minute
+		// reservation back now (nil real: a release, teaching the history
+		// nothing), exactly as finalize would have, and return the zero
+		// reservations the RPM/TPM refusals return so finalize has nothing
+		// left to release. Not counted as a fail-open even when the minute
+		// check errored above: the request was refused, not let through.
+		if d.tpm.reserved {
+			p.limiter.ReconcileTPM(ctx, vk.ID, model, d.tpm.tokens, d.tpm.epoch, nil)
+		}
+		return rateLimitDecision{rejectedByDay: true, retryAfter: wait}
+	}
+	if d.failedOpen {
+		telemetry.RecordRateLimitFailOpen(ctx, vk.ID) // the minute check erred and the request is admitted
+	}
+	return d
 }
 
 // checkFallbackTargetRateLimit reports whether a fallback_chains hop to
@@ -3855,6 +3904,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		tpmReserved            bool
 		tpmReservedTokens      float64
 		tpmReservationEpoch    int64
+		tpd                    tokenReservation
 		budgetReserved         bool
 		budgetReservedUSD      decimal.Decimal
 		budgetReservationEpoch int64
@@ -3886,7 +3936,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// estimates, via estimateOrRealUsage (streaming.go). streaming is
 		// also always false here — this is HandleChatCompletion, never
 		// HandleChatCompletionStream.
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, cacheAttempted, false, false, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, tpd, cacheAttempted, false, false, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -3935,10 +3985,10 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		return
 	}
 
-	var rateLimitOK bool
-	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens, tpmReservationEpoch = p.checkRateLimit(ctx, vk, req.Model)
-	if !rateLimitOK {
-		err = ErrRateLimited
+	rl := p.checkRateLimit(ctx, vk, req.Model)
+	rateLimitFailedOpen, tpmReserved, tpmReservedTokens, tpmReservationEpoch, tpd = rl.failedOpen, rl.tpm.reserved, rl.tpm.tokens, rl.tpm.epoch, rl.tpd
+	if !rl.ok {
+		err = rl.rejection()
 		return
 	}
 
@@ -4900,7 +4950,7 @@ func genAITokenModalityFor(req adapter.ChatRequest) string {
 	return telemetry.GenAITokenModalityText
 }
 
-func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64, cacheAttempted bool, costEstimated bool, streaming bool, err error, duration time.Duration) {
+func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.VirtualKey, dep Deployment, req adapter.ChatRequest, resp adapter.ChatResponse, cacheInfo cacheProvenance, rateLimitFailedOpen bool, fallback fallbackInfo, budgetSpentAtDecision decimal.Decimal, billable bool, budgetReserved bool, budgetReservedUSD decimal.Decimal, budgetReservationEpoch int64, tpmReserved bool, tpmReservedTokens float64, tpmReservationEpoch int64, tpd tokenReservation, cacheAttempted bool, costEstimated bool, streaming bool, err error, duration time.Duration) {
 	// Settlement writes must outlive the client: see settlementContext.
 	settleCtx, cancelSettle := settlementContext(ctx)
 	defer cancelSettle()
@@ -5024,6 +5074,12 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		}
 		if tpmReserved || realTokens != nil {
 			p.limiter.ReconcileTPM(settleCtx, vk.ID, req.Model, tpmReservedTokens, tpmReservationEpoch, realTokens)
+		}
+		// The tokens-per-day dimension settles the same real count (a
+		// release when nil), on the same gate: a key with a day cap but no
+		// reservation (the check failed open) still records what it used.
+		if tpd.reserved || realTokens != nil {
+			p.limiter.ReconcileTPD(settleCtx, vk.ID, tpd.tokens, tpd.epoch, realTokens)
 		}
 	}
 

@@ -83,7 +83,7 @@ These are produced after the request body is accepted, by the shared error write
 | 401 | `authentication_error` | `null` | `null` | no | `Authorization: Bearer` header missing or malformed | `dataplane: auth: identity: missing or malformed Authorization header` |
 | 401 | `authentication_error` | `invalid_api_key` | `null` | no | The bearer token hashes to no configured virtual key | `dataplane: auth: identity: invalid virtual key` |
 | 401 | `authentication_error` | `key_expired` | `null` | no | The bearer token matches a configured virtual key whose `expires_at` has passed (RFC 3339 instant, inclusive). The message never names the key; on `/v1/chat/completions` and `/v1/embeddings` the gateway's log line carries `virtual_key_id` and `key_expired_at` (`/v1/models` writes no request log line). Since `gateway/v0.18.0` | `dataplane: auth: identity: virtual key expired` |
-| 429 | `rate_limit_error` | `rate_limit_exceeded` | `null` | yes | The key's RPM or TPM bucket is empty | `dataplane: rate limit exceeded` |
+| 429 | `rate_limit_error` | `rate_limit_exceeded` | `null` | yes | The key's RPM or TPM bucket is empty, or its tokens-per-day allowance (`rate_limit.tokens_per_day`, on `main` since 2026-10-15, not in `gateway/v0.20.0`) | `dataplane: rate limit exceeded`; `dataplane: rate limit exceeded (tokens_per_day)` for the tokens-per-day refusal |
 | 429 | `rate_limit_error` | `concurrency_limit_exceeded` | `null` | yes | The key already has its `rate_limit.max_concurrent_requests` requests outstanding | `dataplane: concurrency limit exceeded` |
 | 429 | `insufficient_quota` | `insufficient_quota` | `null` | no | The key has spent its `budget_usd` | `dataplane: budget exceeded` |
 | 403 | `permission_error` | `model_not_allowed` | `null` | no | The key has an `allowed_models` list that excludes the requested model | `dataplane: model not allowed for this virtual key` |
@@ -171,7 +171,7 @@ In a mid-stream error frame `param` is always `null`; the seven pipeline codes t
 | Property | Value |
 |---|---|
 | Format | a plain integer number of seconds (RFC 9110 delay-seconds form) |
-| Value | the key's per-key retry backoff: 500 ms doubled per consecutive rejection with equal jitter, capped at 30 s, rounded up to a whole second, floor 1 (so 1-30 s). When the final upstream response carried its own `Retry-After`, that value (capped at 60 s) is a floor on the delay |
+| Value | the key's per-key retry backoff: 500 ms doubled per consecutive rejection with equal jitter, capped at 30 s, rounded up to a whole second, floor 1 (so 1-30 s). When the final upstream response carried its own `Retry-After`, that value (capped at 60 s) is a floor on the delay. A tokens-per-day refusal floors it on the day bucket's own wait until a request of the key's typical size fits again — that reservation's share of the day, from seconds to hours — capped at 24 h (`86400`); a refusal decided before the key has usage history carries the backoff alone (on `main` since 2026-10-15, not in `gateway/v0.20.0`) |
 | Routes | `/v1/chat/completions` and `/v1/messages` (the same rule on both envelopes; `/v1/messages/count_tokens` on its `429`; not on an `anthropic` deployment's relayed `400`/`422`). `/v1/embeddings` and `/v1/models` never set it |
 | Before authentication | never (401 responses carry no `Retry-After`) |
 

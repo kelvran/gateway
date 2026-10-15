@@ -385,7 +385,7 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              docs/rfcs/2026-09-07-gateway-retry-storm-mitigation.md) bounds how many of
                              one virtual key's requests may be simultaneously outstanding
                              (`VirtualKeyConfig.MaxConcurrentRequests`) — a genuinely different dimension
-                             from this package's own RPM/TPM buckets above, which bound how FAST a key
+                             from this package's own RPM/TPM/tokens-per-day buckets above, which bound how FAST a key
                              may issue new requests, never how MANY may be outstanding at once. The
                              identical type is reused, unchanged, for the per-deployment aggregate cap
                              (`DeploymentConfig.MaxConcurrentRequests`, wired as `Pipeline.
@@ -906,7 +906,7 @@ diagram holds for it from the auth stage on; only the wire format at both ends a
   → rate-limit check (hierarchical: org → team → user → key → session)
     **Corrected 2026-10-08**: not hierarchical. `checkRateLimit(ctx, vk, model)`
     (internal/gateway/dataplane/dataplane.go:2330) sees only the virtual key and the model, and
-    `ratelimit.KeyConfig` (internal/ratelimit/limiter.go:13-46) holds only the key's own RPM and TPM
+    `ratelimit.KeyConfig` (internal/ratelimit/limiter.go, `KeyConfig`) holds only the key's own RPM, TPM and tokens-per-day
     buckets plus an optional per-model RPM override (`PerModel`). Org/team/user/session scope is
     target-only, as /internal/ratelimit above already records
   → cache lookup, L1 exact hash match → hit → log, return

@@ -180,6 +180,7 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 		tpmReserved            bool
 		tpmReservedTokens      float64
 		tpmReservationEpoch    int64
+		tpd                    tokenReservation
 		budgetReserved         bool
 		budgetReservedUSD      decimal.Decimal
 		budgetReservationEpoch int64
@@ -202,7 +203,7 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 		if idempotencyOwned {
 			p.completeIdempotency(ctx, vk.ID, idempotencyKey, idempotencyToken, resp, err)
 		}
-		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, cacheAttempted, costEstimated, true, err, time.Since(start))
+		p.finalize(ctx, span, vk, dep, req, resp, cacheInfo, rateLimitFailedOpen, fallback, budgetSpentAtDecision, billable, budgetReserved, budgetReservedUSD, budgetReservationEpoch, tpmReserved, tpmReservedTokens, tpmReservationEpoch, tpd, cacheAttempted, costEstimated, true, err, time.Since(start))
 	}()
 
 	vk, verifyErr := p.verifier.Load().Verify(authorizationHeader)
@@ -256,10 +257,10 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 		err = ErrEmptyMessages
 		return
 	}
-	var rateLimitOK bool
-	rateLimitOK, rateLimitFailedOpen, tpmReserved, tpmReservedTokens, tpmReservationEpoch = p.checkRateLimit(ctx, vk, req.Model)
-	if !rateLimitOK {
-		err = ErrRateLimited
+	rl := p.checkRateLimit(ctx, vk, req.Model)
+	rateLimitFailedOpen, tpmReserved, tpmReservedTokens, tpmReservationEpoch, tpd = rl.failedOpen, rl.tpm.reserved, rl.tpm.tokens, rl.tpm.epoch, rl.tpd
+	if !rl.ok {
+		err = rl.rejection()
 		return
 	}
 	// Per-identity concurrency cap — see HandleChatCompletion's identical
@@ -392,7 +393,7 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 	// notes from that outcome keeps a later top-up failure from counting the
 	// same request twice.
 	budgetTopupFailOpenNoted, tpmTopupFailOpenNoted := budgetErr != nil, rateLimitFailedOpen
-	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens, tpmReservationEpoch: &tpmReservationEpoch, budgetTopupFailOpenNoted: &budgetTopupFailOpenNoted, tpmTopupFailOpenNoted: &tpmTopupFailOpenNoted}
+	msr := midStreamReservation{vk: vk, budgetReservedUSD: &budgetReservedUSD, budgetReservationEpoch: &budgetReservationEpoch, tpmReservedTokens: &tpmReservedTokens, tpmReservationEpoch: &tpmReservationEpoch, tpd: &tpd, budgetTopupFailOpenNoted: &budgetTopupFailOpenNoted, tpmTopupFailOpenNoted: &tpmTopupFailOpenNoted}
 	var blocked bool
 	var firstChunkSent bool
 	resp, dep, fallback, blocked, costEstimated, firstChunkSent, err = p.streamDeploymentWithFallback(ctx, dep, req, sw, vk.ID, msr)

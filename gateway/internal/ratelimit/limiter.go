@@ -2,7 +2,9 @@ package ratelimit
 
 import (
 	"context"
+	"math"
 	"sync"
+	"time"
 )
 
 // KeyConfig is one virtual key's rate-limit parameters — the same
@@ -25,6 +27,18 @@ type KeyConfig struct {
 	// path (RedisBackend.AllowTPM/AdjustTPM).
 	TPMCapacity        float64
 	TPMRefillPerSecond float64
+	// TokensPerDay is the optional tokens-per-day dimension (round-5 Tier S
+	// item 24, 2026-10-15; OWASP LLM06:2026's tokens-per-day limit): a
+	// second token bucket of capacity TokensPerDay refilling at
+	// TokensPerDay/secondsPerDay tokens per second -- a rolling 24 h
+	// allowance, never a midnight reset -- on the same reserve-then-
+	// reconcile path as the TPM pair above (ReserveTPD/
+	// IncreaseReservationTPD/ReconcileTPD). <= 0 (the default) means no
+	// daily cap. Key-level only: there is no per-model day cap. Enforced in
+	// both in-memory and Redis mode; in Redis mode the bucket lives under
+	// its own NUL-tagged key suffix (tpdBackendKey), never the minute
+	// dimension's.
+	TokensPerDay float64
 	// PerModel maps a model name to that model's own, separate RPM
 	// (Capacity, RefillPerSecond) override — the "consumer x model"
 	// dimension of Kong-style multi-dimensional rate-limit matching (per
@@ -37,8 +51,9 @@ type KeyConfig struct {
 	// byte-identically. An entry with Capacity <= 0 is treated as absent
 	// — falls through to the default bucket — never as "unlimited" for
 	// that model; see NewInMemoryKeyLimiter's construction loop. Enforced
-	// in BOTH in-memory and Redis-backed mode (unlike TPMCapacity above,
-	// which is in-memory-only): RedisBackend.Allow already accepts an
+	// in BOTH in-memory and Redis-backed mode, like TPMCapacity above
+	// (this sentence called TPMCapacity in-memory-only until 2026-10-15,
+	// stale since Redis TPM shipped): RedisBackend.Allow already accepts an
 	// arbitrary per-call capacity/refill and key string, so no change to
 	// that interface, or to internal/ratelimit/redislimiter, was needed
 	// to support this second mode.
@@ -160,6 +175,7 @@ type KeyLimiter struct {
 	configs    map[string]KeyConfig
 	buckets    map[string]*TokenBucket // RPM, non-nil in in-memory mode only
 	tpmBuckets map[string]*TokenBucket // TPM, in-memory mode only; absent entirely in Redis mode
+	tpdBuckets map[string]*TokenBucket // tokens-per-day (KeyConfig.TokensPerDay), in-memory mode only; absent entirely in Redis mode
 	// perModelBuckets is keyID -> model -> that model's own TokenBucket,
 	// in-memory mode only (non-nil whenever backend == nil, mirroring
 	// buckets/tpmBuckets above). Redis mode instead reads cfg.PerModel
@@ -192,6 +208,7 @@ func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 	configs := make(map[string]KeyConfig, len(keys))
 	buckets := make(map[string]*TokenBucket, len(keys))
 	tpmBuckets := make(map[string]*TokenBucket, len(keys))
+	tpdBuckets := make(map[string]*TokenBucket, len(keys))
 	perModelBuckets := make(map[string]map[string]*TokenBucket, len(keys))
 	perModelTPMBuckets := make(map[string]map[string]*TokenBucket, len(keys))
 	for _, k := range keys {
@@ -199,6 +216,9 @@ func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 		buckets[k.ID] = NewTokenBucket(k.Capacity, k.RefillPerSecond)
 		if k.TPMCapacity > 0 {
 			tpmBuckets[k.ID] = NewTokenBucket(k.TPMCapacity, k.TPMRefillPerSecond)
+		}
+		if k.TokensPerDay > 0 {
+			tpdBuckets[k.ID] = newDayBucket(k.TokensPerDay)
 		}
 		if models := buildPerModelBuckets(k.PerModel); len(models) > 0 {
 			perModelBuckets[k.ID] = models
@@ -216,7 +236,75 @@ func NewInMemoryKeyLimiter(keys []KeyConfig) *KeyLimiter {
 	// per-deployment-concurrency-2026-09-09.md) is indistinguishable from
 	// a real, deliberately-exhausted bucket by inspecting buckets alone —
 	// both have zero tokens and both return false from Allow().
-	return &KeyLimiter{configs: configs, buckets: buckets, tpmBuckets: tpmBuckets, perModelBuckets: perModelBuckets, perModelTPMBuckets: perModelTPMBuckets}
+	return &KeyLimiter{configs: configs, buckets: buckets, tpmBuckets: tpmBuckets, tpdBuckets: tpdBuckets, perModelBuckets: perModelBuckets, perModelTPMBuckets: perModelTPMBuckets}
+}
+
+// secondsPerDay is the tokens-per-day dimension's refill window: a bucket of
+// capacity TokensPerDay refills at TokensPerDay/secondsPerDay tokens per
+// second, so a key that spends its whole allowance is whole again 24 h
+// later -- rolling, not reset at midnight (round-5 Tier S item 24).
+const secondsPerDay = 86400.0
+
+// newDayBucket builds the in-memory bucket for KeyConfig.TokensPerDay.
+func newDayBucket(tokensPerDay float64) *TokenBucket {
+	return NewTokenBucket(tokensPerDay, tokensPerDay/secondsPerDay)
+}
+
+// tpdBackendKey builds the Redis-mode key suffix for keyID's tokens-per-day
+// bucket, distinct from the minute dimension's plain keyID (and from every
+// perModelBackendKey) under the SAME "ratelimit:tpm:" namespace and Lua
+// scripts -- the same NUL-tagged field shape perModelBackendKey uses, for
+// the same collision reasons that function's doc comment gives. Its
+// ":hist" running mean is derived from this suffix too, so the day
+// dimension keeps its own usage history.
+func tpdBackendKey(keyID string) string {
+	return keyID + "\x00dim=day"
+}
+
+// tpdRedisParams resolves cfg's tokens-per-day bucket as GCRA parameters
+// at the 1 s period every other backend call uses: burst = TokensPerDay,
+// rate = TokensPerDay/secondsPerDay tokens per second. Passing periodSec
+// 86400 with rate = TokensPerDay would be numerically identical inside
+// the script (emission_interval = period*1000/rate) but ReconcileTPD's
+// settle delta, like ReconcileTPM's, hard-codes the 1 s period -- so the
+// period stays 1.0 and the rate is derived.
+func tpdRedisParams(cfg KeyConfig) (burst, rate float64) {
+	return cfg.TokensPerDay, cfg.TokensPerDay / secondsPerDay
+}
+
+// dayColdStartHours bounds what a day bucket with NO usage history may
+// reserve for one request: one hour's share of the day, TokensPerDay/24
+// (what the bucket refills in an hour). Without it a cold day-only key
+// (tokens_per_day with no tpm_capacity) would reserve its whole day on the
+// first request and admit one request at a time until it settled -- the
+// 2026-10-08 F2 serialisation at day scale -- and, in Redis mode, tell a
+// concurrent sibling to wait a day for pressure that clears in seconds.
+// With history the running mean sizes the reservation and this bound is
+// not consulted (TokenBucket.ReserveTokens; tpmReserveLuaSrc).
+const dayColdStartHours = 24.0
+
+// dayColdStartCap is the cold-start reservation for a day bucket of
+// tokensPerDay: one hour's share, or the same request's minute reservation
+// when that is smaller (0 = no minute reservation: TPM not configured for
+// the key, or its check failed open).
+func dayColdStartCap(tokensPerDay, minuteReservation float64) float64 {
+	cold := tokensPerDay / dayColdStartHours
+	if minuteReservation > 0 && minuteReservation < cold {
+		cold = minuteReservation
+	}
+	return cold
+}
+
+// isColdRefusal reports whether the cost a refusing reserve script
+// reported is the cold-start cost the caller passed, within the relative
+// tolerance of the script's %.14g number formatting -- see ReserveTPD.
+func isColdRefusal(reportedCost, coldStart float64) bool {
+	return math.Abs(reportedCost-coldStart) <= 1e-9*math.Max(1, coldStart)
+}
+
+// secondsDuration converts the backend's retry_after_sec to a Duration.
+func secondsDuration(sec float64) time.Duration {
+	return time.Duration(sec * float64(time.Second))
 }
 
 // buildPerModelBuckets constructs one TokenBucket per PerModel entry with
@@ -661,6 +749,139 @@ func (l *KeyLimiter) IncreaseReservationTPM(ctx context.Context, keyID, model st
 	return allowed, appliedTokens, newReservationEpoch, nil
 }
 
+// ReserveTPD is ReserveTPM's tokens-per-day sibling (round-5 Tier S item
+// 24, 2026-10-15): a reservation against keyID's day bucket
+// (KeyConfig.TokensPerDay), sized like the TPM one -- the bucket's own
+// running mean once it has history, else a cold-start reservation of one
+// hour's share of the day, or the same request's minute reservation when
+// that is smaller (dayColdStartCap; minuteReservation 0 means none), so
+// a cold key never reserves its whole day on one request. Key-level
+// only: there is no per-model day bucket, so no model parameter. allowed
+// is true unconditionally (reserved false) when tokens_per_day isn't
+// configured for keyID. retryAfter is set only on a refusal the bucket's
+// own usage history decided: in memory the time until the balance is
+// positive again; in Redis mode the GCRA script's wait until a mean-sized
+// reservation fits. A refusal decided with NO history (the script sized
+// the attempt at the cold-start cost) carries no wait: that wait would
+// count the provisional reservations of requests still in flight, which
+// settle within seconds -- the caller then keeps the per-key backoff, as
+// for every RPM and TPM refusal. The caller floors the client's
+// Retry-After on a non-zero wait -- the backoff alone would tell a
+// day-exhausted client to retry within 30 s all day. Every true
+// `reserved` MUST be paired with exactly one ReconcileTPD call, on every
+// return path. A Redis error fails open, returned for the caller's own
+// policy exactly like ReserveTPM.
+func (l *KeyLimiter) ReserveTPD(ctx context.Context, keyID string, minuteReservation float64) (allowed bool, reserved bool, reservedTokens float64, reservationEpoch int64, retryAfter time.Duration, err error) {
+	l.mu.RLock()
+	if l.backend != nil {
+		cfg := l.configs[keyID]
+		l.mu.RUnlock()
+		burst, rate := tpdRedisParams(cfg)
+		if burst <= 0 {
+			return true, false, 0, 0, 0, nil
+		}
+		coldStart := dayColdStartCap(burst, minuteReservation)
+		allowedRedis, retryAfterSec, reservedCost, tpdErr := l.backend.ReserveTPM(ctx, tpdBackendKey(keyID), burst, rate, 1.0, coldStart)
+		if tpdErr != nil {
+			return true, false, 0, 0, 0, tpdErr
+		}
+		if !allowedRedis {
+			// The script reports the cost it sized the attempt at: the
+			// running mean when the key has history, the cold-start cost
+			// otherwise. A cold refusal carries no wait (see above). The
+			// comparison tolerates the script's number formatting: Lua
+			// 5.1 prints with %.14g, so 2000000/24 comes back as
+			// 83333.333333333, not 83333.33333333333 -- an exact compare
+			// would surface the inflated wait for most real caps. A
+			// running mean within that tolerance of the cold-start cost
+			// is read as cold too and keeps the backoff: a coincidence
+			// that costs one refusal its wait, never a wrong admission.
+			wait := secondsDuration(retryAfterSec)
+			if isColdRefusal(reservedCost, coldStart) {
+				wait = 0
+			}
+			return false, false, 0, 0, wait, nil
+		}
+		return true, true, reservedCost, 0, 0, nil
+	}
+	cfg := l.configs[keyID]
+	bucket := l.tpdBuckets[keyID]
+	l.mu.RUnlock()
+	if bucket == nil {
+		return true, false, 0, 0, 0, nil
+	}
+	allowed, reservedTokens, reservationEpoch, retryAfter = bucket.ReserveTokens(dayColdStartCap(cfg.TokensPerDay, minuteReservation))
+	return allowed, allowed, reservedTokens, reservationEpoch, retryAfter, nil
+}
+
+// ReconcileTPD is ReconcileTPM for the tokens-per-day bucket: the same
+// contract (reservedTokens/reservationEpoch exactly as ReserveTPD or the
+// latest IncreaseReservationTPD returned; realTokens nil releases without
+// teaching the history), the same Redis settle arithmetic at the 1 s
+// period (1000/rate ms per token, rate = TokensPerDay/secondsPerDay),
+// a no-op when tokens_per_day isn't configured.
+func (l *KeyLimiter) ReconcileTPD(ctx context.Context, keyID string, reservedTokens float64, reservationEpoch int64, realTokens *float64) {
+	l.mu.RLock()
+	if l.backend != nil {
+		cfg := l.configs[keyID]
+		l.mu.RUnlock()
+		burst, rate := tpdRedisParams(cfg)
+		if burst <= 0 {
+			return
+		}
+		var effectiveRealTokens float64
+		if realTokens != nil {
+			effectiveRealTokens = *realTokens
+		}
+		emissionInterval := 1000.0 / rate
+		deltaIncrement := emissionInterval * (effectiveRealTokens - reservedTokens)
+		_ = l.backend.SettleTPM(ctx, tpdBackendKey(keyID), deltaIncrement, realTokens)
+		return
+	}
+	bucket := l.tpdBuckets[keyID]
+	l.mu.RUnlock()
+	if bucket == nil {
+		return
+	}
+	bucket.ReconcileTPM(reservedTokens, reservationEpoch, realTokens)
+}
+
+// IncreaseReservationTPD is IncreaseReservationTPM for the tokens-per-day
+// bucket -- the mid-stream top-up: a fresh AllowTPM for the delta on the
+// day key in Redis mode, TokenBucket.IncreaseReservation in memory, a
+// no-op (always allowed, values unchanged) when tokens_per_day isn't
+// configured for keyID.
+func (l *KeyLimiter) IncreaseReservationTPD(ctx context.Context, keyID string, currentReservedTokens, newReservedTokens float64, reservationEpoch int64) (allowed bool, appliedTokens float64, newReservationEpoch int64, err error) {
+	if newReservedTokens <= currentReservedTokens {
+		return true, currentReservedTokens, reservationEpoch, nil
+	}
+	l.mu.RLock()
+	if l.backend != nil {
+		cfg := l.configs[keyID]
+		l.mu.RUnlock()
+		burst, rate := tpdRedisParams(cfg)
+		if burst <= 0 {
+			return true, currentReservedTokens, reservationEpoch, nil
+		}
+		delta := newReservedTokens - currentReservedTokens
+		allowedRedis, _, tpdErr := l.backend.AllowTPM(ctx, tpdBackendKey(keyID), burst, rate, 1.0, delta)
+		if tpdErr != nil {
+			return true, currentReservedTokens, reservationEpoch, tpdErr
+		}
+		if !allowedRedis {
+			return false, currentReservedTokens, reservationEpoch, nil
+		}
+		return true, newReservedTokens, 0, nil
+	}
+	bucket := l.tpdBuckets[keyID]
+	l.mu.RUnlock()
+	if bucket == nil {
+		return true, currentReservedTokens, reservationEpoch, nil
+	}
+	allowed, appliedTokens, newReservationEpoch = bucket.IncreaseReservation(currentReservedTokens, newReservedTokens, reservationEpoch)
+	return allowed, appliedTokens, newReservationEpoch, nil
+}
+
 // resolveTPMBucket resolves keyID's TPM bucket for model — its own
 // per-model override if one is configured, else keyID's key-level
 // default TPM bucket, else nil (no TPM configured at all). Callers MUST
@@ -730,6 +951,18 @@ func (l *KeyLimiter) Register(cfg KeyConfig) {
 		// bucket the caller no longer configures must actually stop
 		// being enforced, not silently keep applying an old limit.
 		delete(l.tpmBuckets, cfg.ID)
+	}
+	// The tokens-per-day bucket follows the TPM rules exactly, one
+	// dimension over: Reset in place (its reservations stay open for a
+	// whole request too), and an update without tokens_per_day removes it.
+	if cfg.TokensPerDay > 0 {
+		if existing := l.tpdBuckets[cfg.ID]; existing != nil {
+			existing.Reset(cfg.TokensPerDay, cfg.TokensPerDay/secondsPerDay)
+		} else {
+			l.tpdBuckets[cfg.ID] = newDayBucket(cfg.TokensPerDay)
+		}
+	} else {
+		delete(l.tpdBuckets, cfg.ID)
 	}
 	// Same "an update must not leave a stale entry behind" rule as TPM
 	// above, applied per-model: cfg.PerModel is always treated as the

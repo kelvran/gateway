@@ -81,6 +81,7 @@
     "refill_per_second": 0,
     "tpm_capacity": 0,
     "tpm_refill_per_second": 0,
+    "tokens_per_day": 0,
     "per_model": null
   },
   "RotateVirtualKeyRequest": {
@@ -198,6 +199,7 @@
       "refill_per_second": 10,
       "tpm_capacity": 1000,
       "tpm_refill_per_second": 100,
+      "tokens_per_day": 0,
       "per_model": {
         "gpt-4o": {
           "burst": 5,

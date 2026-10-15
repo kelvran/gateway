@@ -77,6 +77,15 @@ func isRetryStormEligible(err error) bool {
 // local backoff is never lowered by it, so a long per-key streak still
 // escalates past a short upstream hint. Per
 // docs/upgrade-research/kelvran-deep-research-round3-2026-10-07.md.
+//
+// A tokens-per-day refusal (round-5 Tier S item 24, 2026-10-15) carries
+// the limiter's own wait until a request of the key's typical size fits
+// again -- the reservation's share of the day, from seconds to hours --
+// which floors the delay the same way, capped at
+// maxLimiterRetryAfter (24 h): the 1-30 s backoff alone would tell a
+// day-exhausted client to retry within half a minute all day, each
+// retry consuming an RPM token and escalating its streak. RPM and TPM
+// refusals carry no such wait and keep the backoff alone, unchanged.
 func (p *Pipeline) attachRetryAfter(vk *identity.VirtualKey, err error) error {
 	if vk == nil {
 		return err
@@ -91,6 +100,9 @@ func (p *Pipeline) attachRetryAfter(vk *identity.VirtualKey, err error) error {
 	delay := p.retryBackoff.Record(vk.ID)
 	if upstream := upstreamRetryAfter(err); upstream > delay {
 		delay = upstream
+	}
+	if wait := limiterRetryAfter(err); wait > delay {
+		delay = wait
 	}
 	return &RetryAfterError{err: err, RetryAfter: delay}
 }

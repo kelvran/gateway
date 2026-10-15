@@ -122,7 +122,7 @@ When the request hits the response cache (L1, L2 or L3) or replays a completed `
 Two guards can end a live stream early. Both end it as a normal truncated stream with `[DONE]`, never with an error frame, and no live frame sets `finish_reason` (`null` on every one).
 
 - Runaway guard: output is cut once accumulated characters exceed `max_tokens * 4 * 10`, or 750,000 characters when `max_tokens` is unset. Log event: `streaming_runaway_guard_triggered`.
-- Reservation top-up: on every decoded batch the gateway raises this request's TPM and budget reservations to match the estimated output. When the key has no headroom left the stream is cut. Log event: `streaming_midstream_reservation_topup_exhausted`.
+- Reservation top-up: on every decoded batch the gateway raises this request's TPM, tokens-per-day and budget reservations to match the estimated output. When the key has no headroom left the stream is cut. Log event: `streaming_midstream_reservation_topup_exhausted`.
 
 A stream cut by either guard is recorded as `finish_reason: "length"` on the canonical response, so it is never written to the response cache (gateway/v0.18.0 and earlier cached it with an empty `finish_reason` and replayed it, truncated, for the entry's TTL; since gateway/v0.19.0 it is never cached); an `Idempotency-Key` replay of it carries `finish_reason: "length"`. The U5 note in [FAILURE-MODES](../operations/FAILURE-MODES.md) keeps the remaining classification gap.
 

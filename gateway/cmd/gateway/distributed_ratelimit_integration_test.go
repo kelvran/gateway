@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -175,5 +176,80 @@ func TestIntegrationRedisRateLimitFailsOpenWhenRedisUnreachable(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("mock upstream calls = %d, want 1 (the request must have actually proceeded to the upstream, not just returned 200 by coincidence)", got)
+	}
+}
+
+// TestIntegrationTwoGatewayInstancesShareOneRedisTokensPerDay is the
+// tokens-per-day twin of the test above (round-5 Tier S item 24,
+// 2026-10-15): two instances on one Redis share a key's 30-token day. The
+// mock upstream bills 11 tokens a call: the first call reserves the cold
+// bucket's hour share (30/24 = 1.25; no TPM reservation to bound it
+// further) and settles to 11;
+// the second reserves the running mean (11 -> 22 of 30) and settles; the
+// third would need 33 of 30 and is refused by the GCRA script with its own
+// wait -- 3 tokens at 86400/30 s each, 8640 s -- which the gateway relays
+// as Retry-After. Exactly 2 of 6 succeed across both instances; a
+// per-instance bucket would admit 4.
+func TestIntegrationTwoGatewayInstancesShareOneRedisTokensPerDay(t *testing.T) {
+	ctx := context.Background()
+	container, err := tcredis.Run(ctx, "redis:7-alpine")
+	if err != nil {
+		t.Fatalf("starting test Redis container: %v", err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	connStr, err := container.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("getting test Redis connection string: %v", err)
+	}
+	redisAddr := strings.TrimPrefix(connStr, "redis://")
+
+	upstream, calls := newMockUpstream(t)
+	keys := []controlplane.VirtualKeyConfig{
+		{Name: "team-day", KeyHash: testKeyHash("day-shared-secret"), RateLimitBurst: 100, RateLimitRefill: 100, TokensPerDay: 30},
+	}
+	gw1 := newIntegrationServerWithRedisRateLimit(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_D1", redisAddr, keys)
+	gw2 := newIntegrationServerWithRedisRateLimit(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_D2", redisAddr, keys)
+
+	doRequest := func(gw *httptest.Server, i int) (int, string) {
+		reqBody := fmt.Sprintf(`{"model":"gpt-4o","messages":[{"role":"user","content":"consume the shared day #%d"}]}`, i)
+		httpReq, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		httpReq.Header.Set("Authorization", "Bearer day-shared-secret")
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.ReadAll(resp.Body)
+		return resp.StatusCode, resp.Header.Get("Retry-After")
+	}
+
+	succeeded := 0
+	var lastRetryAfter string
+	for i := 0; i < 6; i++ {
+		gw := gw1
+		if i%2 == 1 {
+			gw = gw2
+		}
+		status, retryAfter := doRequest(gw, i)
+		switch status {
+		case http.StatusOK:
+			succeeded++
+		case http.StatusTooManyRequests:
+			lastRetryAfter = retryAfter
+		default:
+			t.Fatalf("request %d: status %d, want 200 or 429", i, status)
+		}
+	}
+	if succeeded != 2 {
+		t.Fatalf("succeeded = %d across both instances combined, want exactly 2 (30 tokens a day, 11 a call, shared through Redis) -- a per-instance bucket would allow 4", succeeded)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("mock upstream calls = %d, want 2", got)
+	}
+	if n, err := strconv.Atoi(lastRetryAfter); err != nil || n <= 3600 || n > 86400 {
+		t.Fatalf("Retry-After on the day refusal = %q, want the GCRA script's own wait in whole seconds (about 8640), above an hour and at most a day", lastRetryAfter)
 	}
 }

@@ -111,7 +111,7 @@ Every error is Anthropic's envelope with Kelvran's `code` kept — except an `an
 | 401 | `authentication_error` | `invalid_api_key` / `key_expired` / none | The credential is not a virtual key, has expired, or two variables carry different values; set exactly one current key. |
 | 403 | `permission_error` | `model_not_allowed` | The key's `allowed_models` excludes the model. |
 | 404 | `not_found_error` | `count_tokens_unavailable` | `/context` on a deployment other than `anthropic`; Claude Code estimates locally. |
-| 429 | `rate_limit_error` | `rate_limit_exceeded` / `concurrency_limit_exceeded` | Retry after `Retry-After` (integer seconds, at most 60). |
+| 429 | `rate_limit_error` | `rate_limit_exceeded` / `concurrency_limit_exceeded` | Retry after `Retry-After` (integer seconds; at most 60, or at most 86400 for a tokens-per-day refusal). |
 | 429 | `rate_limit_error` | `insufficient_quota` | The key's budget is spent; no `Retry-After`, Claude Code retries on its own schedule until an operator raises the budget or the window resets. |
 | 502 / 503 | `api_error` | `upstream_error` / `deployment_capacity_exceeded` | A provider or capacity failure after fallback; the message is redacted. |
 

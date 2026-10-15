@@ -297,11 +297,17 @@ type ModelRateLimitPayload struct {
 // ratelimit.KeyConfig.ID must carry; dataplane.go's own conversion
 // reuses it rather than encoding it twice.
 type KeyConfigPayload struct {
-	Capacity           float64                          `json:"capacity"`
-	RefillPerSecond    float64                          `json:"refill_per_second"`
-	TPMCapacity        float64                          `json:"tpm_capacity"`
-	TPMRefillPerSecond float64                          `json:"tpm_refill_per_second"`
-	PerModel           map[string]ModelRateLimitPayload `json:"per_model,omitempty"`
+	Capacity           float64 `json:"capacity"`
+	RefillPerSecond    float64 `json:"refill_per_second"`
+	TPMCapacity        float64 `json:"tpm_capacity"`
+	TPMRefillPerSecond float64 `json:"tpm_refill_per_second"`
+	// TokensPerDay mirrors ratelimit.KeyConfig.TokensPerDay (round-5 Tier S
+	// item 24, 2026-10-15). A receiving replica built before this field
+	// existed ignores it (an unknown member) and registers the key without
+	// its daily cap -- the same silent divergence the 2026-09-21 fix below
+	// closed for a nil config, bounded here to a mixed-version rollout.
+	TokensPerDay float64                          `json:"tokens_per_day"`
+	PerModel     map[string]ModelRateLimitPayload `json:"per_model,omitempty"`
 }
 
 // VirtualKeyUpsertPayload is MutationEvent.Payload's shape when Type ==

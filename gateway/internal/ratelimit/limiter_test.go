@@ -30,6 +30,7 @@ type fakeBackend struct {
 	lastReserveBurst         float64
 	lastReserveRate          float64
 	lastReserveColdStartCost float64
+	lastReservePeriodSec     float64
 	lastSettleKey            string
 	lastSettleDelta          float64
 	lastSettleReal           *float64
@@ -66,6 +67,7 @@ func (f *fakeBackend) AllowTPM(ctx context.Context, key string, burst, rate, per
 
 func (f *fakeBackend) ReserveTPM(ctx context.Context, key string, burst, rate, periodSec, coldStartCost float64) (bool, float64, float64, error) {
 	f.lastReserveKey, f.lastReserveBurst, f.lastReserveRate, f.lastReserveColdStartCost = key, burst, rate, coldStartCost
+	f.lastReservePeriodSec = periodSec
 	if f.reserveTPMFunc != nil {
 		return f.reserveTPMFunc(ctx, key, burst, rate, periodSec, coldStartCost)
 	}

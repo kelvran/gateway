@@ -170,6 +170,7 @@ func virtualKeysEqual(a, b []controlplane.VirtualKeyConfig) bool {
 			!slices.Equal(x.AllowedModels, y.AllowedModels) || !slices.Equal(x.AllowedRegions, y.AllowedRegions) ||
 			!slices.Equal(x.AllowedSourceCIDRs, y.AllowedSourceCIDRs) || x.RateLimitBurst != y.RateLimitBurst ||
 			x.RateLimitRefill != y.RateLimitRefill || x.TPMCapacity != y.TPMCapacity || x.TPMRefillPerSecond != y.TPMRefillPerSecond ||
+			x.TokensPerDay != y.TokensPerDay ||
 			!maps.Equal(x.PerModelRateLimits, y.PerModelRateLimits) || x.MaxConcurrentRequests != y.MaxConcurrentRequests ||
 			x.BillingSubjectID != y.BillingSubjectID || x.CacheScopeToEndUser != y.CacheScopeToEndUser ||
 			x.AttributionIDsDisabled != y.AttributionIDsDisabled || !x.ExpiresAt.Equal(y.ExpiresAt) {

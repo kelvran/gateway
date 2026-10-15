@@ -150,7 +150,7 @@ Unlike a client library, curl prints everything, so expect these Kelvran additio
 
 Both are HTTP 429. Read `error.type` before retrying:
 
-- `rate_limit_error` (`rate_limit_exceeded`, `concurrency_limit_exceeded`): transient. `Retry-After` is whole seconds (minimum 1): a per-key backoff whose ceiling starts at 500 ms, doubles per consecutive rejection and caps at 30 s, jittered between half and all of that ceiling and rounded up to the next second (on a `502` that carries the provider's own `Retry-After`, the larger of the two is sent, with the provider's value capped at 60 s). Sleep for it, then retry.
+- `rate_limit_error` (`rate_limit_exceeded`, `concurrency_limit_exceeded`): transient. `Retry-After` is whole seconds (minimum 1): a per-key backoff whose ceiling starts at 500 ms, doubles per consecutive rejection and caps at 30 s, jittered between half and all of that ceiling and rounded up to the next second (on a `502` that carries the provider's own `Retry-After`, the larger of the two is sent, with the provider's value capped at 60 s; on a tokens-per-day refusal the larger of the backoff and the day bucket's own wait, capped at 24 h). Sleep for it, then retry.
 - `insufficient_quota`: the key's `budget_usd` is spent. There is no `Retry-After` and retrying cannot succeed; stop and raise the budget or use another key ([virtual keys and budgets](../virtual-keys-and-budgets.md)).
 
 `curl --retry N` treats every 429 as transient and retries budget rejections too, so do not use it unattended against the gateway. Which statuses and whether `Retry-After` is honoured depend on your curl build: check your client version. This loop makes the distinction explicit:

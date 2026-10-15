@@ -162,7 +162,7 @@ except RateLimitError as e:                      # 429, check your client versio
     # retry once here
 ```
 
-- `rate_limit_exceeded` and `concurrency_limit_exceeded` are transient. `Retry-After` is an integer number of seconds (minimum 1) from a per-key exponential backoff with equal jitter: the Nth consecutive rejection waits between half and all of 500 ms × 2^(N-1), capped at 30 s. Sleep for it, then retry. (Only a `502` can carry a larger value: there the provider's own `Retry-After`, capped at 60 s, acts as a floor.)
+- `rate_limit_exceeded` and `concurrency_limit_exceeded` are transient. `Retry-After` is an integer number of seconds (minimum 1) from a per-key exponential backoff with equal jitter: the Nth consecutive rejection waits between half and all of 500 ms × 2^(N-1), capped at 30 s. Sleep for it, then retry. (Two cases carry a larger value: a `502` where the provider's own `Retry-After`, capped at 60 s, acts as a floor, and a `429` for a key's tokens-per-day allowance, floored on the day bucket's own wait, capped at 24 h.)
 - `insufficient_quota` means the key's `budget_usd` is spent. No `Retry-After` is sent. Retrying only produces the same answer until the budget window resets or an operator raises the cap. LangChain and LiteLLM stop retrying on this `type`; the OpenAI SDK's default policy retries every `429` (check your client version), which is why the example sets `max_retries=0` and inspects `code` itself.
 
 ## What Kelvran adds that the client ignores

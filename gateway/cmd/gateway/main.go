@@ -1065,6 +1065,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 			RefillPerSecond:    refill,
 			TPMCapacity:        vk.TPMCapacity,
 			TPMRefillPerSecond: vk.TPMRefillPerSecond,
+			TokensPerDay:       vk.TokensPerDay,
 			PerModel:           perModel,
 		})
 		concurrencyConfigs = append(concurrencyConfigs, ratelimit.ConcurrencyConfig{

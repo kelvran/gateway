@@ -142,6 +142,12 @@ type midStreamReservation struct {
 	// closed-over-pointer shape, for the TPM dimension's own epoch
 	// contract — see TokenBucket.resetEpoch's field comment.
 	tpmReservationEpoch *int64
+	// tpd is a pointer into HandleChatCompletionStream's own tokens-per-day
+	// reservation (round-5 Tier S item 24), updated on every successful
+	// day top-up exactly like the two TPM pointers above, so the eventual
+	// finalize/ReconcileTPD call settles the topped-up amount. nil when
+	// the caller tracks no day dimension.
+	tpd *tokenReservation
 	// budgetTopupFailOpenNoted / tpmTopupFailOpenNoted record that this
 	// stream has already logged and counted a top-up backend error, so a
 	// Redis outage that fails every chunk's retry produces ONE
@@ -208,14 +214,43 @@ func (p *Pipeline) checkMidStreamReservationTopup(ctx context.Context, dep Deplo
 			// Redis-reachability problem, never for a real, decided
 			// TPM-exhaustion rejection. Logged and counted once per
 			// stream, like the pre-call site (silent until 2026-10-08).
+			// Falls through to the day and budget top-ups (until
+			// 2026-10-15 this branch returned here, skipping both for
+			// the chunk): a minute-key error is no reason to leave the
+			// other two dimensions under-reserved.
 			if msr.tpmTopupFailOpenNoted != nil && !*msr.tpmTopupFailOpenNoted {
 				*msr.tpmTopupFailOpenNoted = true
 				p.logger.Warn("ratelimit_tpm_backend_unavailable", append(traceLogFields(ctx), "key_id", msr.vk.ID, "op", "mid_stream_topup", "error", tpmErr.Error())...)
 				telemetry.RecordRateLimitFailOpen(ctx, msr.vk.ID)
 			}
-			return true
+		} else if !allowed {
+			return false
 		}
-		if !allowed {
+	}
+
+	// The tokens-per-day dimension tops up the same estimate against the
+	// day bucket (round-5 Tier S item 24): a stream that outgrows the
+	// day's remaining allowance stops exactly like one that outgrows the
+	// minute's. A backend error fails open and shares the TPM note above
+	// -- one fail-open log line and one {request} increment per stream,
+	// whichever token dimension errors first.
+	if msr.tpd != nil && estimatedTokens > msr.tpd.tokens {
+		allowed, applied, newEpoch, tpdErr := p.limiter.IncreaseReservationTPD(ctx, msr.vk.ID, msr.tpd.tokens, estimatedTokens, msr.tpd.epoch)
+		msr.tpd.tokens = applied
+		msr.tpd.epoch = newEpoch
+		// A top-up taken after the pre-call reserve failed open (reserved
+		// false, tokens 0) is a real reservation from here on: mark it so
+		// finalize releases it even when the stream ends non-billable.
+		if applied > 0 {
+			msr.tpd.reserved = true
+		}
+		if tpdErr != nil {
+			if msr.tpmTopupFailOpenNoted != nil && !*msr.tpmTopupFailOpenNoted {
+				*msr.tpmTopupFailOpenNoted = true
+				p.logger.Warn("ratelimit_tpd_backend_unavailable", append(traceLogFields(ctx), "key_id", msr.vk.ID, "op", "mid_stream_topup", "error", tpdErr.Error())...)
+				telemetry.RecordRateLimitFailOpen(ctx, msr.vk.ID)
+			}
+		} else if !allowed {
 			return false
 		}
 	}
