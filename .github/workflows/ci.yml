@@ -122,9 +122,13 @@ jobs:
     runs-on: ubuntu-latest
     # Explicit, minimal grant — see the proto job's identical comment
     # just above: this job is also entirely read-only (build/vet/lint/
-    # test, no writes anywhere).
+    # test, no writes anywhere). packages: read (added 2026-10-16) is the
+    # one addition: the test container images are pulled from this org's
+    # own GHCR mirror, ghcr.io/kelvran/testimg (mirror-test-images.yml),
+    # which the repo's GITHUB_TOKEN may read; it writes nothing.
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -142,24 +146,59 @@ jobs:
       - name: govulncheck (dependency CVE scanning)
         working-directory: gateway
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-      - name: Pre-pull the test container images, once each, with retries
+      - name: Log in to GHCR for the test-image mirror
+        # Read-only: the mirror packages are linked to this repository, so
+        # the built-in token can pull them while they are private (GitHub's
+        # default on first publish; the owner makes them public after the
+        # first mirror run -- see mirror-test-images.yml's header) and,
+        # trivially, once they are public. No id-token: this is a
+        # username/password login, not OIDC.
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pre-pull the test container images, once each, from the GHCR mirror with ECR as fallback
         # The Redis-backed packages and cmd/gateway's chaos test start their
         # containers concurrently; without this, several packages race to
         # pull the same image and run 37994788338 (2026-10-10) hit ECR
         # Public's own `toomanyrequests: Rate exceeded` on the nginx pull
-        # after the redis pulls had succeeded. One pull per image per run,
-        # retried with a growing pause, keeps every later start a local
-        # image lookup. The names must be the post-substitution ones (the
-        # TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX below), or the daemon's cache
-        # would not match what testcontainers-go asks for.
+        # after the redis pulls had succeeded. One pull per image per run
+        # keeps every later start a local image lookup. Since 2026-10-16 the
+        # source is this org's own mirror, ghcr.io/kelvran/testimg
+        # (mirror-test-images.yml, weekly and on demand): ECR Public's
+        # anonymous DATA limit (`toomanyrequests: Data limit exceeded`),
+        # shared by every runner behind one IP, failed this step three times
+        # in two days (2026-10-14 run 38588156130, the A4 re-run; 2026-10-15
+        # runs 38739420505 and 38782791139). When a mirror tag is missing
+        # (the first run before the mirror exists, a fork PR whose read-only
+        # token may not be able to read a private package, or a tag the test
+        # code adopts before mirror-test-images.yml's list is updated -- the
+        # image list lives here, there and in the test code; a lagging
+        # refresh is a stale digest under the same tag, not a miss) the pull
+        # falls back to ECR with the growing pause and re-tags the
+        # image under the mirror's name, so the daemon's cache still matches
+        # what testcontainers-go asks for (the post-substitution name from
+        # TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX below).
         run: |
           set -u
-          for img in public.ecr.aws/docker/library/redis:7-alpine public.ecr.aws/docker/library/nginx:alpine; do
+          mirror=ghcr.io/kelvran/testimg
+          upstream=public.ecr.aws/docker/library
+          for img in redis:7-alpine nginx:alpine; do
+            if docker pull --quiet "$mirror/$img"; then
+              echo "pulled $mirror/$img"
+              continue
+            fi
+            echo "::warning::$mirror/$img is not available; falling back to $upstream/$img (run mirror-test-images.yml)"
             for attempt in 1 2 3 4 5 6; do
-              if docker pull --quiet "$img"; then break; fi
-              if [ "$attempt" = 6 ]; then echo "::error::could not pull $img after 6 attempts"; exit 1; fi
+              if docker pull --quiet "$upstream/$img"; then break; fi
+              if [ "$attempt" = 6 ]; then echo "::error::could not pull $upstream/$img after 6 attempts"; exit 1; fi
               sleep $((attempt * 15))
             done
+            docker tag "$upstream/$img" "$mirror/$img" || { echo "::error::could not tag $upstream/$img as $mirror/$img"; exit 1; }
+          done
+          for img in redis:7-alpine nginx:alpine; do
+            docker image inspect "$mirror/$img" > /dev/null || { echo "::error::$mirror/$img is not in the daemon's cache"; exit 1; }
           done
           docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E 'redis|nginx'
       - name: build + test
@@ -174,17 +213,21 @@ jobs:
           # pull limit is per source IP and shared by every GitHub-hosted
           # runner behind that IP: run 37992388342 (2026-10-10) failed with
           # `toomanyrequests` on exactly those pulls, with no code change
-          # involved. The prefix makes testcontainers-go pull the official
-          # image from AWS's ECR Public mirror instead (its prependHubRegistry
-          # substitutor does path.Join(prefix, image), so `redis:7-alpine`
-          # becomes public.ecr.aws/docker/library/redis:7-alpine; proven
-          # locally against colima before this landed). Ryuk is disabled
-          # because the same prefix would rewrite its Hub-only image to a
-          # path the mirror does not serve, and a runner VM discarded after
-          # the job needs no container reaper. The test code still names
+          # involved. The prefix makes testcontainers-go pull the image from
+          # somewhere other than Docker Hub (its prependHubRegistry
+          # substitutor does path.Join(prefix, image)): AWS's ECR Public
+          # mirror from 2026-10-10, whose own anonymous data limit then
+          # failed three pulls in two days, and since 2026-10-16 this org's
+          # GHCR mirror, so `redis:7-alpine` becomes
+          # ghcr.io/kelvran/testimg/redis:7-alpine -- the exact name the
+          # pre-pull step above has already placed in the daemon's cache,
+          # mirrored or re-tagged from ECR. Ryuk is disabled because the
+          # same prefix would rewrite its Hub-only image to a path the
+          # mirror does not serve, and a runner VM discarded after the job
+          # needs no container reaper. The test code still names
           # `redis:7-alpine`; local runs are untouched (AGENTS.md's colima
           # gotcha already documents the Ryuk trade-off).
-          TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: public.ecr.aws/docker/library
+          TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: ghcr.io/kelvran/testimg
           TESTCONTAINERS_RYUK_DISABLED: "true"
         # -coverprofile/-covermode=atomic/-coverpkg=./... generate a real
         # coverage profile from this same run -- no second test pass, no

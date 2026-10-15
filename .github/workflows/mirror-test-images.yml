@@ -1,0 +1,56 @@
+name: mirror test images
+# Copies the two container images the gateway test suite starts -- `redis:7-alpine`
+# for the seven Redis-backed packages and `nginx:alpine` for cmd/gateway's chaos
+# test -- from ECR Public into this org's own GHCR namespace,
+# ghcr.io/kelvran/testimg/<image>, so ci.yml's gateway job pulls them from GitHub
+# itself. ECR Public's anonymous data limit (`toomanyrequests: Data limit
+# exceeded`) is shared by every GitHub-hosted runner behind one source IP and
+# failed that pre-pull three times in two days with no code change involved
+# (2026-10-14 run 38588156130, the A4 re-run; 2026-10-15 runs 38739420505 and
+# 38782791139; each failed on attempt 1 and passed on re-run) -- the third
+# occurrence made it a fix item, recorded in the 2026-10-16 entry of
+# docs/agents/LOGS.md for this change. The gateway job still falls back to ECR,
+# and re-tags the image under the mirror's name, when a mirror tag is missing,
+# so this workflow is a refresh, never a gate: weekly, and on demand before the
+# first CI run that needs it. `docker buildx imagetools create --platform
+# linux/amd64` copies the one manifest the gateway job's ubuntu-latest runner
+# can use (plus its attestation manifest), registry to registry, client-side:
+# the buildx plugin that ships with Docker on the runner does it with no builder
+# container, so nothing is pulled from Docker Hub here either (the colima recipe
+# in AGENTS.md pulls from Docker Hub directly and is untouched). GitHub creates
+# a package private on first publish, and private package storage is a 500 MB
+# quota shared with Actions artifacts on a Free-plan org, so after the first run
+# the owner makes both packages public in their package settings (free; the
+# content is the public upstream image). Only the repo's own GITHUB_TOKEN is
+# used -- no new secret.
+on:
+  schedule:
+    - cron: '17 3 * * 1' # Mondays 03:17 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  mirror:
+    name: copy redis:7-alpine and nginx:alpine to ghcr.io/kelvran/testimg
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: copy both tags (linux/amd64) with retries against ECR Public
+        run: |
+          set -u -o pipefail
+          for img in redis:7-alpine nginx:alpine; do
+            for attempt in 1 2 3 4 5 6; do
+              if docker buildx imagetools create --platform linux/amd64 --tag "ghcr.io/kelvran/testimg/$img" "public.ecr.aws/docker/library/$img"; then break; fi
+              if [ "$attempt" = 6 ]; then echo "::error::could not copy $img after 6 attempts"; exit 1; fi
+              sleep $((attempt * 15))
+            done
+            echo "::notice::mirrored ghcr.io/kelvran/testimg/$img"
+            docker buildx imagetools inspect "ghcr.io/kelvran/testimg/$img" | sed -n '1,4p'
+          done
