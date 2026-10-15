@@ -63,7 +63,7 @@ Run these from the repository root.
 
    `budget.persist_path`, `prompt.persist_path`, `admin.persist_path` and `admin.backup_dir` are single-process file paths. The base mounts no writable volume and sets `readOnlyRootFilesystem: true`, so leave them unset unless you add a volume and drop to one replica.
 
-3. **Re-pin the image.** `deploy/k8s/base/deployment.yaml` pins `ghcr.io/kelvran/gateway:v0.19.0@sha256:672097a81b46e1f8cb99b483cad413e2f2ff7cd95493afdcb5d5f544354ca664`, that release's multi-platform index digest, and it goes stale with each release. Multi-platform images (`linux/amd64` and `linux/arm64` as one index) ship since gateway/v0.18.0; gateway/v0.17.0 is amd64-only. For gateway/v0.18.0 and any later tag pin the index digest:
+3. **Re-pin the image.** `deploy/k8s/base/deployment.yaml` pins `ghcr.io/kelvran/gateway:v0.20.0@sha256:99663715fd52be0a5cf6bb3ac09e6fa9d55d46e509868a27f3d57e4d5e549951`, that release's multi-platform index digest, and it goes stale with each release. Multi-platform images (`linux/amd64` and `linux/arm64` as one index) ship since gateway/v0.18.0; gateway/v0.17.0 is amd64-only. For gateway/v0.18.0 and any later tag pin the index digest:
 
    ```bash
    docker buildx imagetools inspect ghcr.io/kelvran/gateway:v<X.Y.Z>   # copy the top-level Digest: line

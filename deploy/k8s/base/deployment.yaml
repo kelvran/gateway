@@ -98,7 +98,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
-          # Pinned to the real, currently-published gateway/v0.19.0
+          # Pinned to the real, currently-published gateway/v0.20.0
           # release by its multi-platform INDEX digest (linux/amd64 +
           # linux/arm64), independently re-verified before pinning via
           # `cosign verify`, `cosign verify-attestation --type cyclonedx`
@@ -107,7 +107,7 @@ spec:
           # Tag should be fixed", CKV_K8S_43 "Image should use digest").
           # Re-pin this to whatever the current release is before applying
           # -- this value goes stale the moment a newer version ships, same
-          # as any other pinned dependency. This is the index the gateway/v0.19.0
+          # as any other pinned dependency. This is the index the gateway/v0.20.0
           # tag's publish-image job produced (if that job is re-dispatched, pin the
           # re-published index instead; RELEASE.md gateway step 6); every
           # node resolves its own platform from this one reference. When
@@ -117,7 +117,7 @@ spec:
           # image" paragraph of docs/operations/DEPLOY.md and RELEASE.md's
           # verification block (`cosign sign --recursive` signs the index
           # and each platform manifest, so the index digest verifies).
-          image: ghcr.io/kelvran/gateway:v0.19.0@sha256:672097a81b46e1f8cb99b483cad413e2f2ff7cd95493afdcb5d5f544354ca664
+          image: ghcr.io/kelvran/gateway:v0.20.0@sha256:99663715fd52be0a5cf6bb3ac09e6fa9d55d46e509868a27f3d57e4d5e549951
           # Container-level securityContext, distinct from the pod-level
           # block above (Checkov's own CKV_K8S_30 checks for this
           # specifically) -- closes CKV_K8S_20 (no privilege escalation),

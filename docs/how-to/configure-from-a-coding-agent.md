@@ -126,8 +126,8 @@ The full list is in [Error codes](../reference/error-codes.md). The provider's o
 The image is `FROM scratch` (no shell), `ENTRYPOINT ["/gateway"]`, `CMD ["-config", "/config.yaml"]`, runs as `65532:65532` and listens on 8080. Extra arguments replace `CMD`, so validation needs no port and no secret:
 
 ```bash
-docker run --rm -v "$PWD/config.yaml:/config.yaml:ro" ghcr.io/kelvran/gateway:v0.19.0 -validate -config /config.yaml
-docker run --rm ghcr.io/kelvran/gateway:v0.19.0 -version
+docker run --rm -v "$PWD/config.yaml:/config.yaml:ro" ghcr.io/kelvran/gateway:v0.20.0 -validate -config /config.yaml
+docker run --rm ghcr.io/kelvran/gateway:v0.20.0 -version
 ```
 
 Create `config.yaml` before the first run: Docker bind-mounts a missing host path as an empty directory and the gateway exits with `read /config.yaml: is a directory`.
