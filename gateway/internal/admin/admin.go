@@ -207,7 +207,7 @@ func Handler(cfg *controlplane.Config, pipeline *dataplane.Pipeline, creds Crede
 // already off-by-default, loopback-default, bearer-protected mux -- never a
 // second listener, never a second credential space -- and the named profiles
 // are looked up by name through pprof.Handler, the indirection
-// net/http/pprof's own docs recommend for a custom prefix. The eight pprof
+// net/http/pprof's own docs recommend for a custom prefix. The nine pprof
 // routes that read `seconds` sit behind capPprofSeconds (limits.go), and every
 // write route decodes its body through decodeJSONBody's bound.
 func routeHandlers(cfg *controlplane.Config, pipeline *dataplane.Pipeline, audit auditLogger, auditStore *auditstore.Store) map[string]http.Handler {

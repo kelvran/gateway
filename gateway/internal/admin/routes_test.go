@@ -55,7 +55,7 @@ func openTestAuditStore(t *testing.T) *auditstore.Store {
 }
 
 // routeCondition is one of the four registration conditions Handler can run
-// under: the audit route needs a store, the twelve pprof routes need
+// under: the audit route needs a store, the thirteen pprof routes need
 // admin.enable_pprof.
 type routeCondition struct {
 	name  string
@@ -69,8 +69,8 @@ func routeConditions(t *testing.T) []routeCondition {
 	return []routeCondition{
 		{"no audit store, pprof off", testConfig(), nil, 20},
 		{"audit store, pprof off", testConfig(), openTestAuditStore(t), 21},
-		{"no audit store, pprof on", pprofEnabledConfig(), nil, 32},
-		{"audit store, pprof on", pprofEnabledConfig(), openTestAuditStore(t), 33},
+		{"no audit store, pprof on", pprofEnabledConfig(), nil, 33},
+		{"audit store, pprof on", pprofEnabledConfig(), openTestAuditStore(t), 34},
 	}
 }
 
@@ -82,12 +82,12 @@ func patternSet(routes []Route) map[string]bool {
 	return set
 }
 
-// TestAllRoutesIsTheDocumentsRouteSet pins the table's shape: 33 rows over 28
+// TestAllRoutesIsTheDocumentsRouteSet pins the table's shape: 34 rows over 29
 // distinct paths, every pattern and operationId unique, exactly one subtree.
 func TestAllRoutesIsTheDocumentsRouteSet(t *testing.T) {
 	all := AllRoutes()
-	if len(all) != 33 {
-		t.Fatalf("AllRoutes() has %d rows, want 33", len(all))
+	if len(all) != 34 {
+		t.Fatalf("AllRoutes() has %d rows, want 34", len(all))
 	}
 	patterns, ids, paths, subtrees := map[string]bool{}, map[string]bool{}, map[string]bool{}, 0
 	for _, rt := range all {
@@ -105,8 +105,8 @@ func TestAllRoutesIsTheDocumentsRouteSet(t *testing.T) {
 			t.Errorf("%s: Tier %q admits %v, want admin first", rt.Pattern(), rt.Tier, rt.Tier.Tiers())
 		}
 	}
-	if len(paths) != 28 {
-		t.Errorf("AllRoutes() spans %d distinct paths, want 28", len(paths))
+	if len(paths) != 29 {
+		t.Errorf("AllRoutes() spans %d distinct paths, want 29", len(paths))
 	}
 	if subtrees != 1 {
 		t.Errorf("AllRoutes() has %d subtree patterns, want exactly one (GET /admin/debug/pprof/)", subtrees)

@@ -3093,6 +3093,78 @@ paths:
           type: integer
         description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
       summary: The allocs profile.
+  /admin/debug/pprof/goroutineleak:
+    servers:
+    - url: http://127.0.0.1:8081
+      description: The admin listener, `admin.listen_addr` (default `127.0.0.1:8081`), present only with `admin.token_env`.
+    get:
+      operationId: pprofGoroutineleak
+      tags:
+      - Debug
+      security:
+      - adminToken: []
+      x-kelvran-conditional: admin.enable_pprof
+      responses:
+        '200':
+          description: net/http/pprof's own output.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: 'net/http/pprof''s own: `seconds` is not a positive integer, or is combined with `debug`; or the gateway''s `seconds must be at most 60` (2026-10-12).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '401':
+          description: '`missing or malformed Authorization header` or `invalid admin token`; an insufficient tier is this, never 403.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '408':
+          description: 'net/http/pprof''s own: a request-context deadline passed while waiting `seconds` for the delta profile. The admin server sets no such deadline, so in practice the wait ends with
+            the profile or with a client cancel (`500`).'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: 'net/http/pprof''s own: the profile could not be collected or the delta not computed, or the request was cancelled while waiting `seconds`.'
+          x-kelvran-codes: []
+          x-kelvran-retry-after: []
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+      parameters:
+      - name: seconds
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 60
+        description: 'Delta profile: sample now and again after this many seconds (a positive integer, `400` otherwise; at most 60, `400` above since 2026-10-12; incompatible with `debug`).'
+      - name: debug
+        in: query
+        schema:
+          type: integer
+        description: 'net/http/pprof''s debug level: text output when non-zero, the binary profile otherwise.'
+      summary: The goroutine-leak profile (Go 1.27).
+      description: 'Go 1.27''s `goroutineleak` profile: stack traces of the goroutines the runtime judges leaked (`debug=2` writes every goroutine''s stack, leaked or not, in the panic format — the same
+        output as `goroutine?debug=2`). Each collection forces a leak-detecting garbage-collection cycle (two with `seconds`, whatever its value) and collections serialize on a package-level mutex in `runtime/pprof`,
+        so it costs more than the other named profiles; the `seconds` cap bounds the connection, not the GC work. On `main` since 2026-10-15, not in `gateway/v0.20.0`.'
   /admin/spend:
     servers:
     - url: http://127.0.0.1:8081

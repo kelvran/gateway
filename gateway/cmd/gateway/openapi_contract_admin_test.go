@@ -23,11 +23,13 @@ var adminStatusTable = map[string][]string{
 	"getSpend": {"200", "400", "500"}, "eraseSpendSession": {"200", "400", "413", "500"},
 	// net/http/pprof's own, under the pinned toolchain: the index, cmdline and symbol never fail; Profile and Trace answer 500
 	// when profiling cannot start and, since 2026-10-12, the gateway's own 400 above the 60 s `seconds` cap (internal/admin's
-	// capPprofSeconds); the six named profiles answer 400/408/500 around a delta profile (`seconds`), the cap's 400 among them.
+	// capPprofSeconds); the seven named profiles answer 400/408/500 around a delta profile (`seconds`), the cap's 400 among them
+	// (goroutineleak, Go 1.27's leak profile, since 2026-10-15).
 	// The seven write operations answer 413 over decodeJSONBody's bound (1 MiB; 4 KiB on the erase route).
 	"pprofIndex": {"200"}, "pprofCmdline": {"200"}, "pprofProfile": {"200", "400", "500"}, "pprofSymbol": {"200"}, "pprofSymbolPost": {"200"}, "pprofTrace": {"200", "400", "500"},
 	"pprofGoroutine": {"200", "400", "408", "500"}, "pprofHeap": {"200", "400", "408", "500"}, "pprofThreadcreate": {"200", "400", "408", "500"},
 	"pprofBlock": {"200", "400", "408", "500"}, "pprofMutex": {"200", "400", "408", "500"}, "pprofAllocs": {"200", "400", "408", "500"},
+	"pprofGoroutineleak": {"200", "400", "408", "500"},
 }
 
 // TestOpenAPIAdminStatuses: every admin operation declares exactly its table's

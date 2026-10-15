@@ -16,8 +16,8 @@ import (
 // Before 2026-10-12 the six routes read the body unbounded.
 const adminWriteBodyLimit int64 = 1 << 20
 
-// pprofMaxSeconds caps the `seconds` query parameter of the eight pprof routes
-// that read it: profile, trace and the six delta profiles. Under the pinned
+// pprofMaxSeconds caps the `seconds` query parameter of the nine pprof routes
+// that read it: profile, trace and the seven delta profiles. Under the pinned
 // toolchain net/http/pprof extends the connection's write deadline by
 // WriteTimeout + seconds and never bounds seconds itself, so an Admin-tier
 // caller could hold the exclusive CPU profiler and a connection for as long as

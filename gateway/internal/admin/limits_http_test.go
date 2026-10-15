@@ -23,11 +23,12 @@ func limitsRequest(t *testing.T, h http.Handler, method, target, body string) *h
 	return rec
 }
 
-// pprofSecondsRoutes are the eight pprof routes that read `seconds`.
+// pprofSecondsRoutes are the nine pprof routes that read `seconds`.
 var pprofSecondsRoutes = []string{
 	"/admin/debug/pprof/profile", "/admin/debug/pprof/trace",
 	"/admin/debug/pprof/goroutine", "/admin/debug/pprof/heap", "/admin/debug/pprof/threadcreate",
 	"/admin/debug/pprof/block", "/admin/debug/pprof/mutex", "/admin/debug/pprof/allocs",
+	"/admin/debug/pprof/goroutineleak",
 }
 
 // TestPprofRoutesRefuseSecondsAboveTheCap: under the pinned toolchain

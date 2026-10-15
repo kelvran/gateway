@@ -58,7 +58,7 @@ const (
 	// IfAuditLogPath: GET /admin/audit exists only when cmd/gateway opened an
 	// audit store, which it does only for a configured admin.audit_log_path.
 	IfAuditLogPath Condition = "admin.audit_log_path"
-	// IfEnablePprof: the twelve pprof patterns, off by default.
+	// IfEnablePprof: the thirteen pprof patterns, off by default.
 	IfEnablePprof Condition = "admin.enable_pprof"
 )
 
@@ -86,7 +86,16 @@ func (r Route) Subtree() bool { return strings.HasSuffix(r.Path, "/") }
 // pprofProfiles are the named profiles net/http/pprof registers on
 // DefaultServeMux in its init; pprof.Handler(name) looks each up by name,
 // the indirection its own docs recommend for mounting under a custom prefix.
-var pprofProfiles = []string{"goroutine", "heap", "threadcreate", "block", "mutex", "allocs"}
+// goroutineleak is Go 1.27's leak profile (GA there, an experiment in 1.26):
+// pprof.Handler answers 404 "Unknown profile" for a name the running
+// toolchain lacks, so TestPprofGoroutineleakProfileIsServed asks for the
+// profile itself and the toolchain floor (go.mod, TestOneGoToolchain) is
+// what keeps the route real. Each collection forces a leak-detecting GC
+// cycle (two with seconds=, whatever its value) and collections serialize on
+// a package-level mutex in runtime/pprof -- a cost the admin reference and
+// THREAT_MODEL name; the seconds cap applies as to its siblings and bounds
+// the connection, not the GC work.
+var pprofProfiles = []string{"goroutine", "heap", "threadcreate", "block", "mutex", "allocs", "goroutineleak"}
 
 // pprofOperationID is the operationId of a named profile's route: pprofHeap.
 func pprofOperationID(profile string) string {
@@ -94,7 +103,7 @@ func pprofOperationID(profile string) string {
 }
 
 // routeTable holds every route in registration order: 20 unconditional, the
-// audit route, the twelve pprof routes -- 33 rows over 28 paths. Prompts are
+// audit route, the thirteen pprof routes -- 34 rows over 29 paths. Prompts are
 // global operator-managed config, so their reads are viewer-or-admin like
 // GET /admin/config and their writes admin-only like the virtual-key routes;
 // POST /admin/backup is always registered so an unconfigured caller gets an
@@ -146,7 +155,7 @@ func buildRouteTable() []Route {
 }
 
 // Routes returns the rows Handler registers for cfg and hasAuditStore, in
-// registration order: 20 always, +1 with an audit store, +12 with
+// registration order: 20 always, +1 with an audit store, +13 with
 // cfg.Admin.EnablePprof. Pure.
 func Routes(cfg *controlplane.Config, hasAuditStore bool) []Route {
 	out := make([]Route, 0, len(routeTable))
@@ -170,7 +179,7 @@ func Routes(cfg *controlplane.Config, hasAuditStore bool) []Route {
 }
 
 // AllRoutes returns every row with every condition on -- the set the OpenAPI
-// document describes (33 rows over 28 paths). A copy; callers may sort it.
+// document describes (34 rows over 29 paths). A copy; callers may sort it.
 func AllRoutes() []Route {
 	out := make([]Route, len(routeTable))
 	copy(out, routeTable)
