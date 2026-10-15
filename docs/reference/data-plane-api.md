@@ -99,7 +99,7 @@ Checks run in this order, before authentication. The first failure wins. All use
 | 1 | method is not `POST` | `405` | `method_not_allowed` | `null` |
 | 2 | body larger than 32 MiB | `413` | `request_too_large` | `null` |
 | 3 | body cannot be read | `400` | `invalid_body` | `null` |
-| 4 | body is not syntactically valid JSON | `400` | `invalid_json` | `null` |
+| 4 | body is not syntactically valid JSON, or (on `main` since 2026-10-15, not in `gateway/v0.20.0`) a member appears twice in one object, the body nests beyond 64 levels or is not valid UTF-8 | `400` | `invalid_json` | `null` |
 | 5 | `tool_choice` has an unrecognised shape | `400` | `invalid_tool_choice` | `tool_choice` |
 | 6 | a field has the wrong JSON type (for example `content` as an array) | `400` | `invalid_json` | `null` |
 | 7 | more than 2000 `messages` | `400` | `invalid_request` | `null` |
@@ -397,7 +397,7 @@ Embeddings in OpenAI shape. Only `POST` is accepted. There is no streaming varia
 | `input` | string or string[] | yes | One or more texts. A bare string is normalised to a one-element array. Missing, `null` or an empty array is `400`, `code` `missing_required_parameter`, `param` `input`; a bare `""` is accepted as a one-element array and forwarded. Any other JSON type is `400`, `code` `invalid_json`. |
 | `dimensions` | integer | no | Requested output size. `0` or absent means the provider's default. |
 
-The same 32 MiB body cap and the same `405`, `413`, `invalid_body` and `invalid_json` handling as chat apply. Unknown fields are ignored.
+The same 32 MiB body cap and the same `405`, `413`, `invalid_body` and `invalid_json` handling as chat apply (including, on `main` since 2026-10-15, not in `gateway/v0.20.0`, the duplicate-member, depth and UTF-8 checks before decoding). Unknown fields are ignored.
 
 ### Pipeline
 

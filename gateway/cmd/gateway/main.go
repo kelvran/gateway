@@ -72,6 +72,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	identityboltstore "github.com/kelvran/gateway/gateway/internal/identity/boltstore"
 	identityredisstore "github.com/kelvran/gateway/gateway/internal/identity/redisstore"
+	"github.com/kelvran/gateway/gateway/internal/ingress/anthropicmsgs"
 	"github.com/kelvran/gateway/gateway/internal/prompt"
 	promptboltstore "github.com/kelvran/gateway/gateway/internal/prompt/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
@@ -1998,6 +1999,20 @@ func readyzHandler(p *dataplane.Pipeline) http.HandlerFunc {
 	}
 }
 
+// invalidBodyMessage renders anthropicmsgs.CheckBody's error in the OpenAI
+// routes' own `invalid request body: …` form: the detail (a JSON pointer and
+// member name, a depth, `not valid UTF-8`, or a decoder error that never
+// echoes the body) without the Anthropic package's sentinel text.
+func invalidBodyMessage(err error) string {
+	var be *anthropicmsgs.BodyError
+	if errors.As(err, &be) {
+		return "invalid request body: " + be.Detail
+	}
+	// Unreachable today (checkBody returns only *BodyError); if it ever ran,
+	// the fixed text keeps the Anthropic sentinel out of an OpenAI envelope.
+	return "invalid request body"
+}
+
 func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2014,6 +2029,15 @@ func chatCompletionsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 				return
 			}
 			invalidRequest(w, http.StatusBadRequest, "invalid_body", nil, "reading request body")
+			return
+		}
+		// The shapes encoding/json would silently accept -- a member twice in
+		// one object (last wins), invalid UTF-8 (U+FFFD substituted), nesting up
+		// to its own 10,000-level limit -- are refused before decoding (64 levels
+		// here), as /v1/messages has done since its parser shipped (round-5
+		// item 7, 2026-10-15).
+		if err := anthropicmsgs.CheckBody(body); err != nil {
+			invalidRequest(w, http.StatusBadRequest, "invalid_json", nil, invalidBodyMessage(err))
 			return
 		}
 
@@ -2114,6 +2138,11 @@ func embeddingsHandler(p *dataplane.Pipeline) http.HandlerFunc {
 				return
 			}
 			invalidRequest(w, http.StatusBadRequest, "invalid_body", nil, "reading request body")
+			return
+		}
+		// The same pre-decode check as chat (see chatCompletionsHandler).
+		if err := anthropicmsgs.CheckBody(body); err != nil {
+			invalidRequest(w, http.StatusBadRequest, "invalid_json", nil, invalidBodyMessage(err))
 			return
 		}
 

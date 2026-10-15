@@ -20,6 +20,31 @@ import (
 // document reaching the recursive decoders.
 const maxBodyDepth = 64
 
+// BodyError is checkBody's error: errors.Is(err, ErrInvalidBody) holds and
+// Error() is the sentinel's text followed by Detail -- exactly the message the
+// Anthropic handler relays. Detail (a JSON pointer and member name, a depth,
+// "not valid UTF-8", or a decoder error that never echoes the body) is
+// exposed for a caller that formats its own message: the OpenAI routes keep
+// their `invalid request body: ` prefix and never show the sentinel.
+type BodyError struct{ Detail string }
+
+func (e *BodyError) Error() string { return ErrInvalidBody.Error() + ": " + e.Detail }
+
+// Is makes errors.Is(err, ErrInvalidBody) true, as the %w wrap it replaced did.
+func (e *BodyError) Is(target error) bool { return target == ErrInvalidBody }
+
+func bodyError(format string, args ...any) error {
+	return &BodyError{Detail: fmt.Sprintf(format, args...)}
+}
+
+// CheckBody is checkBody for the OpenAI decode paths (round-5 item 7,
+// 2026-10-15): the same three refusals before encoding/json runs, so no
+// ingress route silently reinterprets a body (a duplicate member kept
+// last-wins, U+FFFD put where the UTF-8 was invalid, unbounded nesting). A
+// non-object body passes, and so does an out-of-range number literal:
+// object() and the typed decoders name those cases on each route.
+func CheckBody(body []byte) error { return checkBody(body) }
+
 // bodyFrame is one open object or array during checkBody's token walk.
 type bodyFrame struct {
 	isObject bool
@@ -36,12 +61,17 @@ type bodyFrame struct {
 // guardrail would have scanned a different request from the one the model
 // reads), nesting past maxBodyDepth, and invalid UTF-8 (encoding/json would
 // put U+FFFD in the shadow while the raw bytes travel on). Syntax errors
-// surface here too, wrapped in ErrInvalidBody and never echoing the body.
+// surface here too, as a BodyError (errors.Is ErrInvalidBody) that never
+// echoes the body.
 func checkBody(body []byte) error {
 	if !utf8.Valid(body) {
-		return fmt.Errorf("%w: not valid UTF-8", ErrInvalidBody)
+		return bodyError("not valid UTF-8")
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
+	// Tokens, not values: without UseNumber the decoder parses every number
+	// literal and an out-of-range one (1e999) would be refused here as a type
+	// error; that is the typed decoder's business, like a non-object body.
+	dec.UseNumber()
 	var stack []*bodyFrame
 	for {
 		tok, err := dec.Token()
@@ -49,13 +79,13 @@ func checkBody(body []byte) error {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("%w: %s", ErrInvalidBody, describe(err))
+			return bodyError("%s", describe(err))
 		}
 		if d, ok := tok.(json.Delim); ok {
 			switch d {
 			case '{', '[':
 				if len(stack) >= maxBodyDepth {
-					return fmt.Errorf("%w: nests deeper than %d levels", ErrInvalidBody, maxBodyDepth)
+					return bodyError("nests deeper than %d levels", maxBodyDepth)
 				}
 				f := &bodyFrame{isObject: d == '{', wantKey: d == '{'}
 				if f.isObject {
@@ -75,7 +105,7 @@ func checkBody(body []byte) error {
 		if top.isObject && top.wantKey {
 			key, _ := tok.(string) // encoding/json only yields strings in key position
 			if _, dup := top.keys[key]; dup {
-				return fmt.Errorf("%w: %s has a duplicate member %q", ErrInvalidBody, ptrOrBody(pointerOf(stack[:len(stack)-1])), truncate(key))
+				return bodyError("%s has a duplicate member %q", ptrOrBody(pointerOf(stack[:len(stack)-1])), truncate(key))
 			}
 			top.keys[key] = struct{}{}
 			top.key = key

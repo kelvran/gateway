@@ -190,7 +190,8 @@ paths:
               - 'data: [DONE]'
               - 'data: <OpenAIStreamErrorFrame> (then no [DONE])'
         '400':
-          description: Request-shape faults and guardrail blocks.
+          description: Request-shape faults and guardrail blocks. A duplicate member at any depth, nesting beyond 64 levels or invalid UTF-8 is `400` `invalid_json` before the body is decoded (on `main`
+            since 2026-10-15, not in `gateway/v0.20.0`; before, `encoding/json` kept the last duplicate and put U+FFFD where the UTF-8 was invalid).
           x-kelvran-codes:
           - model_not_found
           - content_policy_violation
@@ -384,7 +385,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/EmbeddingsResponse'
         '400':
-          description: Request-shape faults, a chat-kind model, a guardrail block.
+          description: Request-shape faults, a chat-kind model, a guardrail block. A duplicate member at any depth, nesting beyond 64 levels or invalid UTF-8 is `400` `invalid_json` before the body is decoded
+            (on `main` since 2026-10-15, not in `gateway/v0.20.0`; before, `encoding/json` kept the last duplicate and put U+FFFD where the UTF-8 was invalid).
           x-kelvran-codes:
           - model_not_found
           - content_policy_violation
