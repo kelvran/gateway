@@ -101,6 +101,21 @@ jobs:
           export PATH="$PATH:$(go env GOPATH)/bin"
           make lint-proto
           make check-proto
+      - name: openapi breaking (oasdiff against the previous gateway tag)
+        # The OpenAPI document is public surface since gateway/v0.20.0
+        # (docs/VERSIONING.md § 2). The contract tests pin it to the code;
+        # this compares it with the one shipped at the newest gateway/v* tag
+        # that does not contain HEAD (the previous release on a tag push), so
+        # a shipped path, operation, status, header, security requirement,
+        # operationId, request parameter, request member or response enum value
+        # cannot vanish
+        # or change shape between releases without a sanctioned break. It
+        # lives in this job because it needs the full history and tags this
+        # job already checks out, beside the other breaking gate (buf). The
+        # tool runs in-runner at a pinned version (go install, so its exit
+        # code is seen as is); the GitHub action is not used because it
+        # uploads comparisons to oasdiff.com by default (round-5 item 9).
+        run: scripts/openapi-breaking.sh
 
   gateway:
     name: gateway (build, vet, lint, test)

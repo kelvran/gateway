@@ -1,0 +1,8 @@
+response-non-success-status-removed err
+api-operation-id-removed err
+optional-response-header-removed err
+response-property-enum-value-removed err
+response-optional-property-removed err
+request-parameter-removed err
+request-property-removed err
+api-security-added err

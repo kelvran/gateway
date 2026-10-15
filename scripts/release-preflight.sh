@@ -37,6 +37,14 @@
 #      TestOneGoToolchain (gateway/cmd/gateway) fails on every push for the
 #      same drift; this repeats it at the tag, in a job that runs no
 #      setup-go (pure shell).
+#   8. (gateway only, added 2026-10-15) the OpenAPI breaking-gate waiver
+#      gateway/openapi/oasdiff-err-ignore.txt is empty unless the dated
+#      changelog carries a **BREAKING** entry: a waiver sanctions a MINOR
+#      break (docs/VERSIONING.md § 3); its lines leave in the post-tag
+#      follow-up commit (RELEASE.md gateway step 7). FAIL otherwise. The gate
+#      itself (oasdiff against the previous tag, scripts/openapi-breaking.sh)
+#      runs in release.yml's build job, which has the tags and the Go
+#      toolchain this job does not.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -173,6 +181,19 @@ if [ "$deployable" = "gateway" ]; then
     fail "one Go toolchain: no actions/setup-go step under .github/workflows -- the workflows moved?"
   elif [ "$steps" != "$reads" ]; then
     fail "one Go toolchain: $steps actions/setup-go step(s) but $reads go-version-file: gateway/go.mod line(s) across .github/workflows -- every step reads gateway/go.mod"
+  fi
+fi
+
+# OpenAPI breaking-gate waiver (gateway only): lines in the ignore file waive
+# findings of scripts/openapi-breaking.sh; they are legitimate only beside a
+# **BREAKING** entry in the release being cut; the lines leave in the post-tag
+# follow-up commit.
+if [ "$deployable" = "gateway" ]; then
+  waiver="$root/gateway/openapi/oasdiff-err-ignore.txt"
+  if [ ! -f "$waiver" ]; then
+    fail "gateway/openapi/oasdiff-err-ignore.txt is missing -- the OpenAPI breaking gate needs the (empty) waiver file"
+  elif grep -q . "$waiver" && ! { [ -s "$dated" ] && grep -Eiq '\*\*breaking\*\*' "$dated"; }; then
+    fail "gateway/openapi/oasdiff-err-ignore.txt holds waiver line(s) but $deployable/changelog/$version.md has no **BREAKING** entry -- a waiver is only for a sanctioned break; its lines leave in the post-tag follow-up commit (RELEASE.md gateway step 7)"
   fi
 fi
 

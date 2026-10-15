@@ -23,6 +23,7 @@ The document is not generated at build time and not hand-maintained on trust: th
 | The document carries no request-id header (the gateway adds none) | `TestOpenAPINoRequestIDHeader` |
 | The ServeMux behaviours the vocabulary cannot carry (`x-kelvran-servemux`) | `TestOpenAPIServeMuxBlock` and `TestAdminServeMuxSemantics` |
 | The Markdown route tables of the two reference pages name the same routes | `TestReferenceDocsRouteTablesMatchTheCode` |
+| Nothing shipped at the previous `gateway/v*` tag is broken: no path, operation, status (success or not), header, security requirement, operationId, request parameter, request member or response enum value removed, no request member made required, no security requirement added to an existing operation | `scripts/openapi-breaking.sh` (2026-10-15): oasdiff v1.33.0 `breaking --fail-on ERR` against the document at the newest `gateway/v*` release tag that does not contain `HEAD` (the previous release on a tag push; a pre-release is never a base), in CI's `proto` job on every push and pull request and in `release.yml`'s `build` job at the tag; `gateway/openapi/oasdiff-severity.txt` raises the § 2 surfaces oasdiff rates INFO or WARN by default; `gateway/openapi/oasdiff-err-ignore.txt` waives a sanctioned MINOR break and must be empty otherwise (`TestOpenAPIBreakingGateWaiverIsEmptyUnlessABreakIsInFlight`, preflight check 8); its lines leave in the post-tag follow-up commit (RELEASE.md gateway step 7). The first base is `gateway/v0.20.0`, the first release to carry the document; against an older base the gate reports nothing to compare |
 | The document passes the OpenAPI 3.1 meta-schema; the committed fixtures and the live data-plane answers conform to their schemas | the conformance tests in `gateway/compat` (libopenapi; a separate Go module, so the validator never enters the gateway's dependency graph) |
 
 ## Reading it
@@ -36,7 +37,7 @@ The document is not generated at build time and not hand-maintained on trust: th
 
 ## The `x-kelvran-*` extensions
 
-The root `x-kelvran-extensions` is the closed registry; a new extension must be added there and to the allowlist in `TestOpenAPIExtensionsAreClosed` in the same commit.
+The root `x-kelvran-extensions` is the closed registry; a new extension must be added there and to the allowlist in `TestOpenAPIExtensionsAreClosed` in the same commit. The values are pinned to the code by the contract tests, not to the previous release: oasdiff has no rule for the `x-kelvran-*` members (its extension-aware rules read only `x-extensible-enum`, `x-stability-level`, `x-sunset` and `x-since-date`), so the breaking gate below does not see a changed `x-kelvran-codes` list or `x-kelvran-retry-after` value.
 
 | Extension | Where | Meaning |
 |---|---|---|
@@ -63,7 +64,7 @@ The root `x-kelvran-extensions` is the closed registry; a new extension must be 
 
 ## What is public
 
-The public surface is the document's row in [`VERSIONING.md`](../VERSIONING.md) §2, from `gateway/v0.20.0`: paths, operations, operationIds, security requirements, response statuses, header names, the `type`/`code` vocabularies and every `x-kelvran-*` value. Description prose, example payloads and `info.version` are not. The document frozen across two consecutive minors is a `gateway/v1.0.0` precondition under §4. Release preflight (`scripts/release-preflight.sh`) fails when the document is missing or when `info.version` does not match the version being cut (a warning until 2026-10-12: the field is outside the public surface, but the file ships inside the tag's Go module zip).
+The public surface is the document's row in [`VERSIONING.md`](../VERSIONING.md) §2, from `gateway/v0.20.0`: paths, operations, operationIds, security requirements, response statuses, header names, the `type`/`code` vocabularies and every `x-kelvran-*` value. Description prose, example payloads and `info.version` are not. The document frozen across two consecutive minors is a `gateway/v1.0.0` precondition under §4. Release preflight (`scripts/release-preflight.sh`) fails when the document is missing or when `info.version` does not match the version being cut (a warning until 2026-10-12: the field is outside the public surface, but the file ships inside the tag's Go module zip), and when the breaking-gate waiver file holds lines without a `**BREAKING**` entry in the release (check 8, 2026-10-15). The gate itself — oasdiff against the document at the previous `gateway/v*` release tag, since 2026-10-15 — runs in CI on every push and in the release pipeline at the tag (the table above); a sanctioned MINOR break (§ 3) is the one way through it: a waiver line in `gateway/openapi/oasdiff-err-ignore.txt` beside the `**BREAKING**` entry; the lines leave in the post-tag follow-up commit (RELEASE.md gateway step 7), once the new tag is the base.
 
 ## Not in the document
 

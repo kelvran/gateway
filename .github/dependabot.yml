@@ -10,6 +10,14 @@
 # released dependency doesn't trigger a same-day, Bedrock-spend-incurring
 # CI run before the wider community has had a chance to flag problems
 # with it -- this repo's CI runs real AWS Bedrock calls, not free.
+#
+# Not tracked by any ecosystem here: the tool versions pinned inline in
+# workflow `run:` lines or in scripts/ -- govulncheck@v1.9.0, go-arch-lint@v1.18.0
+# and protoc-gen-go@v1.36.12 (ci.yml), kubeconform@v0.8.0 (iac-scan.yml),
+# oasdiff@v1.33.0 (scripts/openapi-breaking.sh)
+# -- and golangci-lint-action's `version:` input (v2.14.0). Bump them by hand;
+# the 2026-10-14 bump (govulncheck v1.9.0, golangci-lint v2.14.0,
+# scorecard-action v2.5.0) is the precedent.
 version: 2
 updates:
   # go.opentelemetry.io/otel/exporters/prometheus is pinned to the OTel SDK

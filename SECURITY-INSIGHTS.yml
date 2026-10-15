@@ -1,8 +1,8 @@
 header:
   schema-version: "2.0.0"
   expiration-date: "2027-09-02T00:00:00.000Z"
-  last-updated: "2026-10-08"
-  last-reviewed: "2026-10-08"
+  last-updated: "2026-10-15"
+  last-reviewed: "2026-10-15"
   commit-hash: null
   project-url: "https://github.com/kelvran/gateway"
   project-release: null
@@ -70,7 +70,7 @@ security-testing:
       release: false
   - type: "sast"
     tool-name: "gosec"
-    tool-version: "bundled in golangci-lint v2.12.2"
+    tool-version: "v2.29.0, bundled in golangci-lint v2.14.0"
     integration:
       ad-hoc: false
       ci: true

@@ -144,6 +144,19 @@ jobs:
         run: |
           PREV=$(git tag --list 'gateway/v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
           echo "previous=${PREV}" >> "$GITHUB_OUTPUT"
+      - name: OpenAPI breaking against the previous gateway tag
+        # The same gate ci.yml runs on every push, here at the tag (the
+        # preflight job has neither tags nor Go). The script resolves its own
+        # base -- the newest release tag that does not contain HEAD -- which
+        # is the previous release on a tag push and the right older base on a
+        # rebuild of a non-newest tag; PREV above is the newest OTHER tag, so
+        # it is not passed (on a rebuild it would compare backwards). Skipped
+        # for tags cut before the script landed. A sanctioned MINOR break
+        # passes only through a waiver
+        # line in gateway/openapi/oasdiff-err-ignore.txt and a **BREAKING**
+        # entry; preflight check 8 refuses a waiver without the entry.
+        if: hashFiles('scripts/openapi-breaking.sh') != ''
+        run: scripts/openapi-breaking.sh
       - name: GoReleaser (snapshot mode; publishing is this workflow's job)
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
