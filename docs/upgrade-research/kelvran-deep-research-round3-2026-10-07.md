@@ -160,6 +160,7 @@ direct read; `[O]` open — no claim survived verification.
   validating tool intent and arguments, per-tool least-privilege, a distinct `toolCallResult` hook,
   audited fail-open ("Every step that proceeds without a decision MUST be recorded as an audit
   event"), and a liveness `system/ping`. Its Core baseline changed on 2026-10-05.
+  - **Corrected 2026-10-15**: round 5 refuted 0-3 two adjacent ACS claims — "ACS as a 19-hook JSON-RPC Guardian-Agent spec and its v0.1.x release history" and "the ASI02 Intent Gate / adaptive tool budgeting detail" — and lists ACS's real release status and hook model as an open question (`kelvran-deep-research-round5-2026-10-14.md`, Refuted and Open questions); treat the `[R]` wire-spec description above as unconfirmed. Kelvran tracks ACS, it does not target it: gaps (c)/(d) below and roadmap items 4 and 6 read against the OWASP LLM03/LLM06 text, not against ACS conformance. The 2026-08-03/04 hedge above resolves to 2026-08-03 (page date, v1.0 cover) and 2026-09-01 (announcement).
 - `[R]` **LLM02:2026** Tier 1 #5: "Sanitize with classifiers, not regex alone: pattern matching plus
   NER plus trained classifiers"; reasoning traces and tool arguments are first-class disclosure
   surfaces (Kelvran already scans both post-call).

@@ -286,7 +286,7 @@ The bounded spend ledger of RFC-2 item 13d: every billable chat completion and e
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
 | `persist_path` | `string` | empty (in-memory) | Path of the bbolt file for single-process durability, governed by `admin.on_corrupt_store`. Ignored, with a warning (`ledger_redis_addr_and_persist_path_both_set`), when `budget.redis_addr` is set: the ledger then shares the budget's Redis |
-| `retention_hours` | `integer` | 168 | Hour buckets older than this are dropped by an hourly sweep; a query for the last `retention_hours` is always complete. Must be at least 1: `0` is rejected at load (a ledger is never unbounded) |
+| `retention_hours` | `integer` | 168 | Hour buckets older than this are dropped by an hourly sweep; a query for the last `retention_hours` is always complete. Must be at least 1: `0` is rejected at load (a ledger is never unbounded). Governs the ledger only: the `chat_completion` log line and its `gatewayevents_v1` event are not stored by the gateway and have no retention here — see [metrics-and-logs.md](metrics-and-logs.md) and `SECURITY.md`'s Data Retention table |
 | `max_sessions_per_key` | `integer` | 2000 | Named sessions a key keeps in the window; further sessions are recorded under `other`. At least 1 |
 | `max_rows_per_key` | `integer` | 50000 | Named cells (a row inside one hour bucket) a key keeps; further cells fold into `other` keeping model and tool. At least 1 |
 

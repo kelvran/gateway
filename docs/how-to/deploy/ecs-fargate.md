@@ -69,6 +69,8 @@ Optional overrides, shown with their defaults:
 
 `container_memory` is the cgroup limit the gateway's `automemlimit` integration reads at startup to set `GOMEMLIMIT` (at a 0.9 ratio). The task-level `memory` must also cover Fargate's own platform overhead, which is why the two defaults differ (512 and 1024).
 
+`log_retention_days` is the retention of the gateway's whole stdout, including the per-request `chat_completion` line and its `gatewayevents_v1` decision event, which the gateway stores nowhere else. A deployer whose downstream system is a high-risk AI system under the AI Act is advised to set it to at least `180` from 2 December 2027 (Annex III) or 2 August 2028 (Annex I) (Article 26(6); see `SECURITY.md`'s Data Retention & Right to Erasure section). The spend ledger's `ledger.retention_hours` is a separate, gateway-internal window.
+
 ### 3. Deliver config.yaml to the container
 
 Neither module does this. The repository names two options in `deploy/ecs/variables.tf` and `deploy/ecs/README.md` and has not chosen between them. Pick one:

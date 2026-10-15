@@ -68,7 +68,9 @@
 # `rate: 10` and add a DECISIONS.md entry once real production-scale
 # volume exists -- do not leave `rate: 1` in place indefinitely, and do
 # not edit the RFC's own text to match; this file's deviation from it is
-# the honest, disclosed record.
+# the honest, disclosed record. (A deployer that is itself a high-risk AI
+# Act deployer keeps `rate: 1` regardless -- see the gatewayevents_sample
+# comment below and SECURITY.md, Data Retention & Right to Erasure.)
 
 data_dir: /var/lib/vector
 
@@ -137,7 +139,10 @@ transforms:
   # PHASE DEVIATION (see header comment): `rate: 1` ships every
   # OUTCOME_OK event too, not the RFC-committed 1-in-10 -- flip to `10`
   # once real production-scale volume exists. key_field is kept in place
-  # unchanged so reverting to `rate: 10` later needs no other edit.
+  # unchanged so reverting to `rate: 10` later needs no other edit. A
+  # deployer that is itself a high-risk AI Act deployer keeps `rate: 1`
+  # (every outcome) whatever the volume -- see SECURITY.md, Data Retention
+  # & Right to Erasure (added 2026-10-15).
   gatewayevents_sample:
     type: sample
     inputs: ["gatewayevents_extract"]

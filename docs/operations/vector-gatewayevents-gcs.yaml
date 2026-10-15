@@ -120,7 +120,11 @@ sinks:
   # Retention (90-day expiry, per that RFC's Section 4) is a separate GCS
   # Object Lifecycle Management rule on this same bucket/prefix -- Vector
   # has no lifecycle-management capability of its own, so it is not, and
-  # cannot be, configured in this file.
+  # cannot be, configured in this file. A deployer that is itself a
+  # high-risk AI Act deployer is advised to set the rule at >= 6 months and
+  # `rate: 1` in gatewayevents_sample above (every outcome, not a 10%
+  # sample) -- see SECURITY.md, Data Retention & Right to Erasure (added
+  # 2026-10-15).
   gatewayevents_gcs:
     type: gcp_cloud_storage
     inputs: ["gatewayevents_sample"]

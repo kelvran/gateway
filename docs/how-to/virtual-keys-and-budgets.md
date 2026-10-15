@@ -161,7 +161,7 @@ curl -H "Authorization: Bearer $KELVRAN_ADMIN_TOKEN" \
   "$ADMIN/admin/spend?group_by=model&key=team-alpha&since=2026-10-10T00:00:00Z&until=2026-10-11T00:00:00Z"
 ```
 
-Rows come sorted by spend, highest first, `spend_usd` as a decimal string. `group_by=session` shows the Claude Code session ids (or the `agent_run_id` Baggage member) a key ran; a session named `other` is what the caps folded. The window is clamped to `ledger.retention_hours` (168 h by default). See [GET /admin/spend](../reference/admin-api.md#get-adminspend) and the [`ledger` section](../reference/config.md#ledger) of the configuration reference.
+Rows come sorted by spend, highest first, `spend_usd` as a decimal string. `group_by=session` shows the Claude Code session ids (or the `agent_run_id` Baggage member) a key ran; a session named `other` is what the caps folded. The window is clamped to `ledger.retention_hours` (168 h by default) — the ledger's own window; the per-request decision log line keeps whatever retention its log sink gives it ([SECURITY.md](../../SECURITY.md)). See [GET /admin/spend](../reference/admin-api.md#get-adminspend) and the [`ledger` section](../reference/config.md#ledger) of the configuration reference.
 
 ### Manage keys live through the admin API
 

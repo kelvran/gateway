@@ -15,7 +15,7 @@ OWASP published a real **2026** edition of the Top 10 for LLM Applications on 20
 ## Findings
 
 ### Finding 1 — OWASP's 2026 Top 10 is real, published, and confirms `THREAT_MODEL.md`'s rank-reshuffle claim, but the crosswalk table itself was never renumbered and now has real gaps
-**Confidence: high** — verified by fetching and reading the actual OWASP GenAI Security Project 2026 PDF (`genai.owasp.org/resource/owasp-genai-llm-top-10-2026/`, "Version 2026," dated 2026-08-04, publicly announced 2026-09-01), not a secondary source.
+**Confidence: high** — verified by fetching and reading the actual OWASP GenAI Security Project 2026 PDF (`genai.owasp.org/resource/owasp-genai-llm-top-10-2026/`, "Version 2026," dated 2026-08-04, publicly announced 2026-09-01), not a secondary source. **Corrected 2026-10-15**: the edition's resource page is dated 2026-08-03 (v1.0 cover) — per the round-5 main session's re-read (`kelvran-deep-research-round5-2026-10-14.md`, lane 5); the 2026-08-04 here is the PDF cover this pass read, and 2026-09-01 stands as the announcement date, which also introduced OWASP's Agent Control Standard. This report's Sources entry below repeats the 2026-08-04 date.
 
 The real 2025→2026 rank migration, per the report's own bump chart and prose (pages 6-7):
 

@@ -287,6 +287,8 @@ The `gatewayevents_v1` value is a `GatewayDecisionEvent` message from `api/gatew
 
 The `GatewayDecisionEvent` has no `budget_fail_open` field.
 
+The gateway keeps no copy of the `chat_completion` line or the event and applies no retention to either: both last as long as the log sink keeps them (30 days on the ECS recipe's CloudWatch group, 90 days under the Vector → S3/GCS lifecycle rule (the S3 module `terraform/vector-s3-shipper` ships it, default 90; on GCS the operator applies the equivalent Object Lifecycle rule — the Vector file cannot)). The spend ledger's `ledger.retention_hours` (168 h by default) governs the ledger only, never this line. Neither the line nor the event carries prompt or completion text, a bearer credential or key hash, or the Claude Code identifiers; on a failed request the `error` field, and whenever a fallback happened the event's `fallbackReason` — even on an `OUTCOME_OK` line — carry the abandoned hop's raw provider error body. Retention guidance, including the six-month minimum recommended for deployers who are themselves high-risk AI Act deployers, is in `SECURITY.md`'s Data Retention & Right to Erasure section.
+
 ### `embeddings`
 
 One line per embeddings request. Level `INFO` on success, `ERROR` on failure. There is no `gatewayevents_v1` field on this line.
