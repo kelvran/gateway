@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791969317658,
+  "lastUpdate": 1792054101943,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -1403,6 +1403,208 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 overhead p99",
             "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "044645d4fc2c64c0a695e81f456ded6b3d410746",
+          "message": "feat(admin): mount Go 1.27's goroutineleak pprof profile under /admin/debug/pprof/\n\nRound-5 item 8, the second leg of Tier B item 7 (after the toolchain commit\n3607d09f, which it is gated on): the named profiles are mounted by name through\npprof.Handler, which answers 404 \"Unknown profile\" for a name the running\ntoolchain does not register, so on a 1.26 build this route would have been a\n404 behind a green route table.\n\n- internal/admin/routes.go: pprofProfiles gains \"goroutineleak\" (TierAdmin,\n  admin.enable_pprof, the same capPprofSeconds wrapper as its siblings); the\n  table is now 34 rows over 29 paths, thirteen pprof patterns, nine routes\n  that read seconds=.\n- New TestPprofGoroutineleakProfileIsServed asks for the profile itself (the\n  text header under debug=1 and text/plain): without the route the request\n  falls into the /admin/debug/pprof/ subtree and the index answers 200 HTML,\n  so a status-only test would not notice a missing route.\n- Count pins moved red-first: routes_test (33/34, 29 paths), limits_http_test\n  (ninth seconds route), openapi_contract_test (37 path items, 42 operations),\n  openapi_contract_admin_test (pprofGoroutineleak: 200/400/408/500).\n- OpenAPI: one path item cloned from goroutine (load -> mutate -> dump), with\n  an operation description naming the cost; docs: admin-api.md (route index,\n  pprof table, Timeouts row, pprof prose), config.md, config.example.yaml,\n  openapi.md counts, THREAT_MODEL's Denial of Service row + change log.\n- Cost, stated where operators and threat readers look: each collection\n  forces a leak-detecting GC cycle (two with seconds=, whatever its value) and\n  collections serialize on a package-level mutex in runtime/pprof, so a caller\n  looping it slows the whole process for the duration; the 60 s seconds cap and\n  write timeout bound the connection, not the GC work; off-by-default flag and\n  Admin tier as for its siblings -- accepted as the Admin tier's own power.\n- changelog: ## Added (additive on the OpenAPI document, VERSIONING § 2/§ 3);\n  RELEASE.md's qualifier sweep now greps gateway/openapi and config.example.yaml.\n\nRed first, 5 overlay mutants caught (including the wrong profile behind the\nright route, which only the explicit test sees), whole non-Docker suite -race +\nlint + arch-lint on go1.27.2, compat, check-doc-paths; live against a scratch\ngateway: 200 text header, the 60 s cap, a one-second delta, the viewer token\nrefused, the index listing the profile. Three read-only review lanes plus a\nre-read; details in docs/agents/LOGS.md.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-15T07:36:19Z",
+          "url": "https://github.com/kelvran/gateway/commit/044645d4fc2c64c0a695e81f456ded6b3d410746"
+        },
+        "date": 1792054100961,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.493915,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 2.923728,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 4.05018,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 3,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 202.106297,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 203.382788,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 204.274862,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 568.190577,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 573.67452,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 576.873662,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 52.077262,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 54.533297,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.629838,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.398231,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.683207,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.731194,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 53.012741,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 53.873005,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 54.491285,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 3,
             "unit": "ms"
           },
           {
