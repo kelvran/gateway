@@ -91,7 +91,7 @@ extend that same already-correct technique to budget and TPM, not to invent a ne
   cold-start branch only (every reservation was the full `tpm_capacity`, a disclosed v1 simplification
   that admitted one request per key at a time — the 2026-10-08 live run's F2); it now keeps the
   key's `sum`/`count` of reconciled real tokens in Redis for 24 h beside the arrival time and reserves
-  the mean, so both modes follow this section.* This is the maximally conservative choice given zero information: it can
+  the mean, so both modes follow this section — for TPM; the Redis-mode budget reserve still takes the full headroom on every call, see the Corrected 2026-10-16 paragraph under the cold-start trade-off below and FAILURE-MODES R19.* This is the maximally conservative choice given zero information: it can
   never let a cold-start key's concurrent burst overshoot its cap, because the reservation itself
   is bounded exactly at the point past which the key would already be rejected serially.
 
@@ -181,6 +181,8 @@ would require exactly the pre-call cost/token estimate this RFC is built to avoi
 Named explicitly, matching this codebase's established practice of documenting a real, bounded
 edge rather than chasing it with an unbounded-scope fix (e.g. the guardrail corpus's case 13, the
 budget-persistence RFC's own restart/reset-window boundary).
+
+**Corrected 2026-10-16** (round-5 item 10's first Redis-mode benchmark run): the self-resolution above holds in memory only. Redis mode's reserve script (`gateway/internal/budget/redisbudget/redisbudget.go`, `budgetReserveLuaSrc`) takes `cap - spent` on every call — `budget.RedisBackend.Reserve`'s doc comment names it the "unconditional cold-start reservation strategy" — so a capped key in Redis mode never leaves the learning phase and admits one in-flight request at a time (15 % of requests refused at 100 rps against a 0 ms mock, about 4 ms end to end, on one gateway; 84 % with two replicas against a 50 ms mock), which this RFC's own requirement above ("must not simply serialize all traffic for a key") forbids. Recorded as `docs/operations/FAILURE-MODES.md` R19; the fix — a per-key billing-history mean kept in Redis, the shape `tpm_history.go` already uses for TPM — is the follow-up, not part of the measurement slice.
 
 ## Alternatives considered
 

@@ -815,6 +815,11 @@ tree nodes):
                              trail alongside the slog lines.
 /internal/bench              — (described under /cmd/kelvran-bench; since gateway/v0.18.0) benchmark
 /internal/benchupstream        schedule/SSE-timing/percentile leaves and the deterministic mock upstream.
+/internal/redishook          — (2026-10-16, round-5 item 10) the go-redis Hook that counts Redis round trips and
+                             commands per store into telemetry and the request's counter; cmd/gateway attaches
+                             it to the three request-path Redis stores (rate limiter, budget backend, spend
+                             ledger; not the identity store or config propagation) right after Open.
+                             go-redis + telemetry only.
 ```
 
 **Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose. **Corrected 2026-09-12**: `dataplane`'s and `admin`'s own lists below were each missing a real edge that `internal/prompt`'s own shipping introduced (per `docs/rfcs/2026-09-13-gateway-prompt-management.md`) and this doc never picked up — `dataplane → prompt`, and `admin → adapter, prompt` (the same commit that added `admin`'s new prompt-CRUD routes also added its first-ever `adapter` import, for those routes' own `[]adapter.Message` request/response bodies) — both re-verified against the real import graph and `gateway/.go-arch-lint.yml`'s own `mayDependOn` entries for `dataplane`/`admin`/`prompt`, not assumed:
@@ -913,7 +918,7 @@ diagram holds for it from the auth stage on; only the wire format at both ends a
     docs/rfcs/2026-09-13-gateway-prompt-management.md and /internal/prompt above
   → rate-limit check (hierarchical: org → team → user → key → session)
     **Corrected 2026-10-08**: not hierarchical. `checkRateLimit(ctx, vk, model)`
-    (internal/gateway/dataplane/dataplane.go:2330) sees only the virtual key and the model, and
+    (internal/gateway/dataplane/dataplane.go:2605) sees only the virtual key and the model, and
     `ratelimit.KeyConfig` (internal/ratelimit/limiter.go, `KeyConfig`) holds only the key's own RPM, TPM and tokens-per-day
     buckets plus an optional per-model RPM override (`PerModel`). Org/team/user/session scope is
     target-only, as /internal/ratelimit above already records

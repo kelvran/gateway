@@ -77,6 +77,7 @@ import (
 	promptboltstore "github.com/kelvran/gateway/gateway/internal/prompt/boltstore"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit/redislimiter"
+	"github.com/kelvran/gateway/gateway/internal/redishook"
 	"github.com/kelvran/gateway/gateway/internal/router"
 	"github.com/kelvran/gateway/gateway/internal/spendledger"
 	ledgerboltstore "github.com/kelvran/gateway/gateway/internal/spendledger/boltstore"
@@ -1594,6 +1595,7 @@ func newLedger(cfg controlplane.LedgerConfig, budgetCfg controlplane.BudgetConfi
 		if err != nil {
 			return nil, fmt.Errorf("opening redis spend ledger at %q: %w", budgetCfg.RedisAddr, err)
 		}
+		store.AddHook(redishook.New("ledger"))
 		return store, nil
 	}
 	if cfg.PersistPath == "" {
@@ -1615,6 +1617,7 @@ func newBudgetTracker(cfg controlplane.BudgetConfig, onCorruptStore string, logg
 		if err != nil {
 			return nil, fmt.Errorf("opening redis budget backend at %q: %w", cfg.RedisAddr, err)
 		}
+		backend.AddHook(redishook.New("budget"))
 		return budget.NewRedisTracker(backend, logger), nil
 	}
 	if cfg.PersistPath == "" {
@@ -1672,6 +1675,10 @@ func newKeyLimiter(cfg controlplane.RateLimitConfig, keys []ratelimit.KeyConfig)
 	if err != nil {
 		return nil, fmt.Errorf("opening redis rate limiter at %q: %w", cfg.RedisAddr, err)
 	}
+	// Round-5 item 10: every Redis-backed store counts its round trips
+	// (internal/redishook) so the bench and the chat span can show what
+	// Redis mode costs per request.
+	backend.AddHook(redishook.New("ratelimit"))
 	return ratelimit.NewRedisKeyLimiter(keys, backend), nil
 }
 

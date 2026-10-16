@@ -53,6 +53,7 @@ components:
   alerting:               { in: alerting }
   anomaly:                { in: anomaly }
   bench:                  { in: bench }
+  redishook:              { in: redishook }
   cli:                    { in: cli }
   # The spend ledger (RFC-2 item 13d): a pure leaf, its bbolt and Redis
   # backends and the contract suite every backend runs. dataplane writes it
@@ -134,6 +135,12 @@ deps:
   telemetry:
     mayDependOn:
       - telemetry-exporterkind
+  # redishook is the go-redis Hook that feeds telemetry's Redis counters;
+  # cmd/gateway (outside workdir) attaches it to each store, so no store
+  # package depends on it.
+  redishook:
+    mayDependOn:
+      - telemetry
   budget:
     mayDependOn:
       - telemetry

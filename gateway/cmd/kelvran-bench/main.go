@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -52,6 +53,19 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: kelvran-bench run|upstream|scenarios [flags]")
 }
 
+// urlsFlag collects a repeatable URL flag (one Prometheus endpoint per target).
+type urlsFlag []string
+
+func (u *urlsFlag) String() string { return strings.Join(*u, ",") }
+func (u *urlsFlag) Set(v string) error {
+	parsed, err := url.Parse(v)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("metrics URL %q is not an http(s) URL", v)
+	}
+	*u = append(*u, v)
+	return nil
+}
+
 type metaFlag map[string]string
 
 func (m metaFlag) String() string { return fmt.Sprint(map[string]string(m)) }
@@ -81,6 +95,8 @@ func runCmd(args []string) error {
 	summary := fs.String("summary", "", "markdown summary path (appended to; '-' = stdout)")
 	meta := metaFlag{}
 	fs.Var(meta, "meta", "key=value recorded in the result (repeatable)")
+	metricsURLs := urlsFlag{}
+	fs.Var(&metricsURLs, "metrics-url", "a target gateway's Prometheus /metrics URL, scraped at the warm-up boundary and the end for the Redis round-trip counters (repeatable, one per target)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -137,7 +153,7 @@ func runCmd(args []string) error {
 		}
 		cfg := bench.Config{
 			Scenario: stepName, Targets: strings.Split(*targets, ","), Bearer: bearer, Model: *model, Stream: preset.Stream,
-			RPS: step, Warmup: w, Duration: d, Seed: *seed, PromptPool: preset.PromptPool, GatewayPID: *gatewayPID, Meta: meta,
+			RPS: step, Warmup: w, Duration: d, Seed: *seed, PromptPool: preset.PromptPool, GatewayPID: *gatewayPID, Meta: meta, MetricsURLs: metricsURLs,
 		}
 		fmt.Fprintf(os.Stderr, "kelvran-bench: %s at %.0f rps for %s (+%s warm-up) against %s\n", stepName, step, d, w, *targets)
 		res, err := bench.Run(ctx, cfg)

@@ -161,6 +161,7 @@ func (p *Pipeline) HandleChatCompletionStreamSink(ctx context.Context, authoriza
 // pattern HandleChatCompletion uses, since a streamed generation is just
 // as billable as a buffered one.
 func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorizationHeader string, remoteAddr string, endUserIDHeader string, req adapter.ChatRequest, newSink func() (streaming.ChunkSink, error), idempotencyKey string) (err error) {
+	ctx = telemetry.WithRedisRoundTripCounter(ctx) // see HandleChatCompletion
 	var (
 		cacheInfo             cacheProvenance
 		resp                  adapter.ChatResponse

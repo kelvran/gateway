@@ -185,6 +185,11 @@ func Open(opts redis.Options) (*Limiter, error) {
 	}, nil
 }
 
+// AddHook attaches a go-redis Hook to this limiter's client -- cmd/gateway
+// attaches internal/redishook's round-trip counter right after Open. The
+// limiter itself has no opinion on telemetry.
+func (l *Limiter) AddHook(h redis.Hook) { l.client.AddHook(h) }
+
 // Allow reports whether one request against keyID may proceed, given
 // that key's configured capacity (burst) and refillPerSecond — the exact
 // same parameters internal/ratelimit.NewTokenBucket takes. A non-nil

@@ -122,3 +122,39 @@ func TestPrometheusHandlerFollowsInit(t *testing.T) {
 	}
 	_ = shutdown(context.Background())
 }
+
+// The bench harness (a stdlib leaf that cannot import this package) greps
+// the exposition for kelvran_redis_round_trips_total and
+// kelvran_redis_commands_total; this pins that the exporter's naming turns
+// redis.go's instrument names and units (shared constants, so a unit change
+// fails here) into exactly those series. The global meter is bound to a
+// ManualReader once per test binary, so the instruments are re-declared on
+// a Prometheus-backed provider from the same constants.
+func TestPrometheusNamesOfTheRedisCountersMatchWhatTheBenchScrapes(t *testing.T) {
+	pr, err := NewPrometheusReader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(pr.Reader()))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	m := provider.Meter("prometheus_redis_test")
+	rt, err := m.Int64Counter(redisRoundTripsName, metric.WithUnit(redisRoundTripsUnit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds, err := m.Int64Counter(redisCommandsName, metric.WithUnit(redisCommandsUnit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.Add(context.Background(), 9, metric.WithAttributes(attribute.String(AttrKelvranRedisStore, "ratelimit"), attribute.String(AttrKelvranRedisKind, RedisKindCommand)))
+	cmds.Add(context.Background(), 9, metric.WithAttributes(attribute.String(AttrKelvranRedisStore, "ratelimit"), attribute.String(AttrKelvranRedisCommand, "evalsha")))
+	_, _, body := scrape(t, pr.Handler(), http.MethodGet)
+	for _, want := range []string{
+		`kelvran_redis_round_trips_total{kelvran_redis_kind="command",kelvran_redis_store="ratelimit"`,
+		`kelvran_redis_commands_total{kelvran_redis_command="evalsha",kelvran_redis_store="ratelimit"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("exposition lacks %q:\n%s", want, body)
+		}
+	}
+}

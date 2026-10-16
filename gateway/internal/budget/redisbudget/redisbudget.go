@@ -314,6 +314,10 @@ func Open(opts redis.Options) (*Backend, error) {
 	}, nil
 }
 
+// AddHook attaches a go-redis Hook to this backend's client -- cmd/gateway
+// attaches internal/redishook's round-trip counter right after Open.
+func (b *Backend) AddHook(h redis.Hook) { b.client.AddHook(h) }
+
 // spendKey/alertKey percent-encode keyID (via url.QueryEscape) before
 // concatenating, rather than embedding it raw — closing a real
 // namespace-collision finding from this session's own end-to-end audit:

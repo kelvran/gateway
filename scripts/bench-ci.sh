@@ -9,12 +9,16 @@
 # Environment (all optional):
 #   BENCH_OUT         output directory (default ./bench-out)
 #   BENCH_SCENARIOS   space-separated preset names (default "S1a S1b S2 S3";
-#                     S4 is added automatically when BENCH_REDIS_ADDR is set)
+#                     S1r and S4 are added automatically when BENCH_REDIS_ADDR is set)
 #   BENCH_RPS         offered rate override (default: preset; S6 keeps its own steps and says so)
 #   BENCH_DURATION    measured window override, e.g. 30s (default: preset)
 #   BENCH_WARMUP      warm-up override, e.g. 5s (default: preset)
-#   BENCH_REDIS_ADDR  host:port of a Redis; adds S4 (two replicas sharing it). Only S4's
-#                     gateways are configured with Redis — every other scenario runs the
+#   BENCH_REDIS_ADDR  host:port of a Redis; adds S1r (one gateway in Redis mode, S1a's twin)
+#                     and S4 (two replicas sharing it). Only their gateways are configured
+#                     with Redis and scraped for Redis round trips (both are appended whenever it is
+#                     set, so there is no single-preset Redis run; they share the Redis and the
+#                     key within one run, with caps far too high for the carry-over to refuse
+#                     anything) — every other scenario runs the
 #                     gateway with its in-memory stores, so S1a-S3 measure the gateway alone
 #   BENCH_BASELINE    when set, also runs each scenario straight at the mock (no gateway),
 #                     recorded as <scenario>-baseline (S6-baseline-<rate>rps for the sweep): the
@@ -73,15 +77,28 @@ wait_http() { # url, seconds
   echo "bench-ci: $1 not ready after $2 s" >&2; return 1
 }
 
-write_config() { # path listen_port upstream_port [redis]  — the Redis block only when the 4th arg is "redis" (S4)
+write_config() { # path listen_port upstream_port [redis] [prom_port]  — the Redis block only when the 4th arg is "redis" (S1r, S4); the Prometheus pull endpoint when a 5th arg names its port
   cat > "$1" <<YAML
 listen_addr: "127.0.0.1:$2"
 virtual_keys:
   bench:
     key_hash: "$KEY_HASH"
+    # Every preset carries the same configured key (2026-10-16, round-5 item
+    # 10) so the in-memory and the Redis presets run the same code path: an RPM
+    # bucket, a TPM bucket and a daily token allowance, all far above what the
+    # offered rate can reach. No budget_usd: the first S1r run showed that the
+    # Redis budget reserve always takes the whole remaining headroom, so a capped
+    # key in Redis mode admits one request at a time (429 budget exceeded for
+    # every concurrent sibling; FAILURE-MODES R19). Until that is sized from
+    # history like TPM, the budget path runs uncapped here (its window, spend
+    # read and settlement still happen; the cap check and the warn/alert reads
+    # do not).
     rate_limit:
       burst: 100000
       refill_per_second: 100000
+      tpm_capacity: 100000000
+      tpm_refill_per_second: 100000000
+      tokens_per_day: 100000000000
       max_concurrent_requests: 10000
 deployments:
   bench:
@@ -94,6 +111,13 @@ deployments:
 telemetry:
   exporter: "none"
 YAML
+  if [ -n "${5:-}" ]; then
+    cat >> "$1" <<YAML
+  prometheus:
+    enabled: true
+    listen_addr: "127.0.0.1:$5"
+YAML
+  fi
   if [ "${4:-}" = "redis" ]; then
     cat >> "$1" <<YAML
 rate_limit:
@@ -134,37 +158,44 @@ run_args=()
 [ -n "$DURATION" ] && run_args+=(-duration "$DURATION")
 [ -n "$WARMUP" ] && run_args+=(-warmup "$WARMUP")
 
-if [ -n "$REDIS" ] && ! grep -qw S4 <<<"$SCENARIOS"; then SCENARIOS="$SCENARIOS S4"; fi
+# A Redis makes the two Redis presets part of the run: S1r (one gateway, S1a's shape, the per-request Redis cost) and S4 (two replicas sharing it).
+if [ -n "$REDIS" ]; then
+  for s in S1r S4; do grep -qw "$s" <<<"$SCENARIOS" || SCENARIOS="$SCENARIOS $s"; done
+fi
 
 port_free() { ! (echo > "/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
 
 for S in $SCENARIOS; do
-  UP_PORT=$((PORT + 1)); GW_PORT=$((PORT + 2)); GW2_PORT=$((PORT + 3))
+  UP_PORT=$((PORT + 1)); GW_PORT=$((PORT + 2)); GW2_PORT=$((PORT + 3)); PROM_PORT=$((PORT + 4)); PROM2_PORT=$((PORT + 5))
   for p in "$UP_PORT" "$GW_PORT" "$GW2_PORT"; do
     port_free "$p" || { echo "bench-ci: port $p is already in use; set BENCH_PORT_BASE or stop the listener" >&2; exit 1; }
   done
   echo "bench-ci: === $S ==="
-  REDIS_FLAG=""
-  if [ "$S" = "S4" ]; then
-    if [ -z "$REDIS" ]; then echo "bench-ci: S4 needs BENCH_REDIS_ADDR; skipping" >&2; continue; fi
-    REDIS_FLAG=redis
-  fi
+  REDIS_FLAG=""; PROM=""; METRICS_ARGS=()
+  case "$S" in S1r|S4)
+    if [ -z "$REDIS" ]; then echo "bench-ci: $S needs BENCH_REDIS_ADDR; skipping" >&2; continue; fi
+    for p in "$PROM_PORT" "$PROM2_PORT"; do
+      port_free "$p" || { echo "bench-ci: port $p is already in use; set BENCH_PORT_BASE or stop the listener" >&2; exit 1; }
+    done
+    REDIS_FLAG=redis; PROM=$PROM_PORT; METRICS_ARGS+=(-metrics-url "http://127.0.0.1:$PROM_PORT/metrics")
+  ;; esac
   start_upstream "$S" "$UP_PORT"
-  write_config "$WORK/config-$S.yaml" "$GW_PORT" "$UP_PORT" "$REDIS_FLAG"
+  write_config "$WORK/config-$S.yaml" "$GW_PORT" "$UP_PORT" "$REDIS_FLAG" "$PROM"
   "$WORK/gateway" -config "$WORK/config-$S.yaml" -validate >/dev/null
   start_gateway "$WORK/config-$S.yaml" "$GW_PORT"
   FIRST_GW_PID=$GW_PID
   TARGETS="http://127.0.0.1:$GW_PORT"
   if [ "$S" = "S4" ]; then
-    write_config "$WORK/config-$S-2.yaml" "$GW2_PORT" "$UP_PORT" "$REDIS_FLAG"
+    write_config "$WORK/config-$S-2.yaml" "$GW2_PORT" "$UP_PORT" "$REDIS_FLAG" "$PROM2_PORT"
     start_gateway "$WORK/config-$S-2.yaml" "$GW2_PORT"
     TARGETS="$TARGETS,http://127.0.0.1:$GW2_PORT"
+    METRICS_ARGS+=(-metrics-url "http://127.0.0.1:$PROM2_PORT/metrics")
   fi
   COMMON_META=(-meta "gateway_version=$GATEWAY_VERSION" -meta "host=$(uname -srm)" -meta "cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo unknown)")
   # ${arr[@]+"${arr[@]}"} expands to nothing for an empty array under set -u (bash 3.2, macOS).
   "$WORK/kelvran-bench" run -scenario "$S" -targets "$TARGETS" -key-file "$WORK/key" -model bench \
     -gateway-pid "$FIRST_GW_PID" -out "$OUT/results.json" -bench-json "$OUT/bench.json" -summary "$OUT/summary.md" \
-    "${COMMON_META[@]}" -meta "redis=$([ -n "$REDIS_FLAG" ] && echo "$REDIS" || echo none)" ${run_args[@]+"${run_args[@]}"}
+    "${COMMON_META[@]}" -meta "redis=$([ -n "$REDIS_FLAG" ] && echo "$REDIS" || echo none)" ${METRICS_ARGS[@]+"${METRICS_ARGS[@]}"} ${run_args[@]+"${run_args[@]}"}
   if [ -n "${BENCH_BASELINE:-}" ]; then
     # The same load straight at the mock: what the harness and the mock cost on their own.
     "$WORK/kelvran-bench" run -scenario "$S" -name "$S-baseline" -targets "http://127.0.0.1:$UP_PORT" -key-file "$WORK/key" -model bench \
@@ -175,6 +206,6 @@ for S in $SCENARIOS; do
   PORT=$((PORT + 10))
 done
 
-if [ ! -f "$OUT/summary.md" ]; then echo "bench-ci: no scenario ran (S4 needs BENCH_REDIS_ADDR)" >&2; exit 1; fi
+if [ ! -f "$OUT/summary.md" ]; then echo "bench-ci: no scenario ran (S1r and S4 need BENCH_REDIS_ADDR)" >&2; exit 1; fi
 echo "bench-ci: done — $OUT/results.json, $OUT/bench.json, $OUT/summary.md"
 cat "$OUT/summary.md"

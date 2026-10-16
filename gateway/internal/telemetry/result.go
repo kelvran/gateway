@@ -98,6 +98,19 @@ const (
 	// values are the closed GuardrailStage* set below — never a detector
 	// name (bounded cardinality, same rule as every other attribute here).
 	AttrKelvranGuardrailStage = "kelvran.guardrail.stage"
+	// AttrKelvranRedisStore/Kind/Command attribute the two Redis counters
+	// redis.go declares (fed by internal/redishook from inside every
+	// Redis-backed store): which store issued the call (ratelimit, budget,
+	// ledger), whether it was one command or one pipeline, and the
+	// command name. AttrKelvranRedisRoundTrips/Commands are the per-request
+	// totals finalize stamps on the chat span from the request context's
+	// counter -- the "round trips per billable request" figure round-5 item
+	// 10 measures before any pipelining.
+	AttrKelvranRedisStore      = "kelvran.redis.store"
+	AttrKelvranRedisKind       = "kelvran.redis.kind"
+	AttrKelvranRedisCommand    = "kelvran.redis.command"
+	AttrKelvranRedisRoundTrips = "kelvran.redis.round_trips"
+	AttrKelvranRedisCommands   = "kelvran.redis.commands"
 )
 
 // GuardrailStage* are the only values AttrKelvranGuardrailStage ever takes.

@@ -144,6 +144,10 @@ func Open(ropts redis.Options, lopts spendledger.Options) (*Store, error) {
 // Close closes the underlying Redis client.
 func (s *Store) Close() error { return s.client.Close() }
 
+// AddHook attaches a go-redis Hook to this store's client -- cmd/gateway
+// attaches internal/redishook's round-trip counter right after Open.
+func (s *Store) AddHook(h redis.Hook) { s.client.AddHook(h) }
+
 func hourName(hour time.Time) string { return strconv.FormatInt(hour.Unix(), 10) }
 
 // hashKey, sessionsKey and cellsKey percent-encode the key (url.QueryEscape

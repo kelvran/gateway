@@ -59,7 +59,15 @@ type Result struct {
 	// or earlier in the window (a replay keeps the stored id, a fresh
 	// upstream call mints a new one).
 	CacheHitRatio *float64 `json:"cache_hit_ratio,omitempty"`
-	RSS           *RSS     `json:"gateway_rss,omitempty"`
+	// RedisRoundTripsPerRequest and RedisCommandsPerRequest are set when the
+	// run scraped the gateway's Prometheus endpoint (Config.MetricsURLs): the
+	// window's delta of kelvran_redis_round_trips_total and
+	// kelvran_redis_commands_total over its successful requests. Round-5 item
+	// 10's pass criterion (at most 2 round trips per billable request) reads
+	// the first; the second shows how many commands those round trips carry.
+	RedisRoundTripsPerRequest *float64 `json:"redis_round_trips_per_request,omitempty"`
+	RedisCommandsPerRequest   *float64 `json:"redis_commands_per_request,omitempty"`
+	RSS                       *RSS     `json:"gateway_rss,omitempty"`
 
 	Meta map[string]string `json:"meta,omitempty"`
 }
@@ -107,6 +115,12 @@ func ToBenchmarkMetrics(results []Result) []Metric {
 		if r.InterChunk.Count > 0 {
 			add(p+"inter-chunk p99", "ms", toMs(r.InterChunk.P99))
 		}
+		if r.RedisRoundTripsPerRequest != nil {
+			add(p+"redis round trips per request", "rtt/req", *r.RedisRoundTripsPerRequest)
+		}
+		if r.RedisCommandsPerRequest != nil {
+			add(p+"redis commands per request", "cmd/req", *r.RedisCommandsPerRequest)
+		}
 		if r.Requests > 0 {
 			add(p+"error rate", "%", 100*float64(r.Errors)/float64(r.Requests))
 			if r.RPS > 0 {
@@ -124,8 +138,8 @@ func ToBenchmarkMetrics(results []Result) []Metric {
 // MarkdownSummary renders one table row per scenario, for a step summary.
 func MarkdownSummary(results []Result) string {
 	var b strings.Builder
-	b.WriteString("| Scenario | Offered rps | Sent/s | Completed/s | Requests | Errors | p50 | p95 | p99 | Overhead p99 | TTFT p50 | TTFT p99 | Inter-chunk p99 | Cache hit |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| Scenario | Offered rps | Sent/s | Completed/s | Requests | Errors | p50 | p95 | p99 | Overhead p99 | TTFT p50 | TTFT p99 | Inter-chunk p99 | Cache hit | Redis RTT/req |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	cell := func(s Summary, d time.Duration) string {
 		if s.Count == 0 {
 			return "–"
@@ -137,10 +151,14 @@ func MarkdownSummary(results []Result) string {
 		if r.CacheHitRatio != nil {
 			hit = fmt.Sprintf("%.0f %%", 100**r.CacheHitRatio)
 		}
-		fmt.Fprintf(&b, "| %s | %.0f | %.0f | %.0f | %d | %d | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+		rtt := "–"
+		if r.RedisRoundTripsPerRequest != nil {
+			rtt = fmt.Sprintf("%.1f", *r.RedisRoundTripsPerRequest)
+		}
+		fmt.Fprintf(&b, "| %s | %.0f | %.0f | %.0f | %d | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			r.Scenario, r.RPS, r.SentRPS, r.CompletedRPS, r.Requests, r.Errors,
 			cell(r.Latency, r.Latency.P50), cell(r.Latency, r.Latency.P95), cell(r.Latency, r.Latency.P99),
-			cell(r.Overhead, r.Overhead.P99), cell(r.TTFT, r.TTFT.P50), cell(r.TTFT, r.TTFT.P99), cell(r.InterChunk, r.InterChunk.P99), hit)
+			cell(r.Overhead, r.Overhead.P99), cell(r.TTFT, r.TTFT.P50), cell(r.TTFT, r.TTFT.P99), cell(r.InterChunk, r.InterChunk.P99), hit, rtt)
 	}
 	return b.String()
 }

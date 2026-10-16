@@ -3877,6 +3877,10 @@ func (p *Pipeline) logEmbeddingsRequest(ctx context.Context, vk *identity.Virtua
 // idempotencyKey (or a nil p.idempotencyStore) is a guaranteed no-op,
 // identical to this parameter never having existed.
 func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader string, remoteAddr string, endUserIDHeader string, req adapter.ChatRequest, idempotencyKey string) (resp adapter.ChatResponse, err error) {
+	// Every request carries a Redis round-trip counter (telemetry/redis.go)
+	// so finalize can stamp the chat span with what the Redis-backed stores
+	// cost it -- 0 in memory mode.
+	ctx = telemetry.WithRedisRoundTripCounter(ctx)
 	var (
 		cacheInfo             cacheProvenance
 		vk                    *identity.VirtualKey
@@ -5378,6 +5382,8 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// surfaced past that one cache-gating check.
 		FinishReason: primaryFinishReason(resp),
 	}
+	// After the ledger record above: the last Redis call of the request.
+	telemetry.RecordRedisRoundTripsOnSpan(ctx, span)
 	span.End()
 
 	p.observeAnomalySignals(ctx, event)

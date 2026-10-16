@@ -53,6 +53,14 @@ type Config struct {
 	// GatewayPID, when set, samples the gateway's RSS before, during and
 	// after the run.
 	GatewayPID int
+	// MetricsURLs are the targets' Prometheus endpoints (telemetry.prometheus,
+	// one per gateway), scraped at the warm-up boundary and after the last
+	// response for kelvran_redis_round_trips_total and
+	// kelvran_redis_commands_total; the window's deltas over its successful
+	// requests become Result.RedisRoundTripsPerRequest and
+	// RedisCommandsPerRequest. A scrape that fails is a run error, never a
+	// silent dash. The harness stays stdlib-only: plain GET, text exposition.
+	MetricsURLs []string
 	// Meta is copied into the result.
 	Meta map[string]string
 }
@@ -142,6 +150,16 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		rss.samplePeaks(rssDone)
 	}()
 
+	// The Redis counters are read once at the warm-up boundary and once after
+	// the last response; warm-up requests still in flight at the boundary add
+	// a few post-call round trips to the window, a rounding error at the
+	// window lengths the presets use. The boundary scrape runs on this
+	// scheduler goroutine, so its own duration is charged to the first
+	// measured request's schedule lateness (a loopback GET, well under the
+	// inter-arrival gap at the presets' rates).
+	var startRT, startCmd float64
+	scraped := false
+	var scrapeErr error
 	start := time.Now()
 	for i, at := range arrivals {
 		intended := start.Add(at)
@@ -149,6 +167,12 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			break
 		}
 		measured := at >= cfg.Warmup
+		if measured && !scraped && len(cfg.MetricsURLs) > 0 {
+			scraped = true
+			if startRT, startCmd, scrapeErr = scrapeRedisCounters(ctx, cfg.MetricsURLs, false); scrapeErr != nil {
+				break
+			}
+		}
 		var prompt string
 		if zipf != nil {
 			prompt = fmt.Sprintf("%s (run %s prompt %d)", cfg.Prompt, runNonce, zipf.Uint64())
@@ -190,6 +214,21 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	res.RSS = rss.finish()
 	res.Dropped = dropped
 	summarize(&res, samples, warmupIDs, cfg)
+	if scrapeErr != nil {
+		return res, scrapeErr
+	}
+	if len(cfg.MetricsURLs) > 0 && ctx.Err() == nil {
+		if !scraped {
+			return res, errMetricsNotScraped
+		}
+		endCtx, cancel := context.WithTimeout(context.Background(), metricsScrapeTimeout)
+		endRT, endCmd, err := scrapeRedisCounters(endCtx, cfg.MetricsURLs, true)
+		cancel()
+		if err != nil {
+			return res, err
+		}
+		redisPerRequest(&res, startRT, startCmd, endRT, endCmd)
+	}
 	return res, ctx.Err()
 }
 
