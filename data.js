@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792054101943,
+  "lastUpdate": 1792140222592,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -1605,6 +1605,208 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 overhead p99",
             "value": 3,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "5ac164af0e05fff0d7e5412511825a80fbd7eb7f",
+          "message": "ci(gateway): stop persisting the token in the gateway job's checkout\n\nThe gateway job runs the test code of whatever commit it checks out -- a pull\nrequest's included -- and pushes nothing, so the GITHUB_TOKEN has no business\nsitting in .git/config for that code to read. The compat, evals and docs-links\njobs already set persist-credentials: false on their checkouts; the\n2026-10-16 role-scoping review (docs/agents/LOGS.md, the ci-mirror entry's\nINFO finding and the item-25 entry's follow-up) flagged this job as the odd\none out. One key on one step; local git commands keep working, only the\nremote auth header goes. The proto and publish-image checkouts still persist\nit -- proto for the same reason could follow, publish-image pushes and is\nleft alone deliberately.\n\nVerification: actionlint (no new finding); the two tests that read ci.yml\n(TestOneGoToolchain, TestOpenAPIBreakingGateIsWired); the whole non-Docker\nsuite; CI on this push is the live proof that the job needs no token after\ncheckout.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-16T07:39:28Z",
+          "url": "https://github.com/kelvran/gateway/commit/5ac164af0e05fff0d7e5412511825a80fbd7eb7f"
+        },
+        "date": 1792140221681,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.502722,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 2.723124,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 3.673144,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 201.950327,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 202.805866,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 203.62772,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 566.549555,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 571.964605,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 573.932313,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 51.832563,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 53.829599,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.530018,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.371161,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.584487,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.597237,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 52.698278,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 53.396287,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 53.86458,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 2,
             "unit": "ms"
           },
           {
