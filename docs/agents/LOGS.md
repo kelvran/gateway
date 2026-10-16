@@ -5268,3 +5268,19 @@ Gates: gofmt/vet/build; `go test ./... -race -count=1` 40 ok; golangci-lint 0 is
 **Decisions made:** one `DECISIONS.md` line (`[2026-10-16]`, round-5 Tier S item 25): per-category key over per-detector-name; defaults unchanged over LiteLLM parity; tool-call arguments are `assistant`; post-call `assistant`, embeddings `user`; unknown roles admitted everywhere; the loader refuses an unknown role, a non-bool, a non-mapping and an empty scope while an unknown category warns and skips; the mapping-of-`true` shape is the parser's.
 
 **Next steps / resume point:** CI on this commit. Round-5 remaining on the owner's word: Tier S 26 (tamper-evident audit trail; its `event_hash` is `api/` ask-first), Tier C 10 (Redis-mode benchmark, measure-first), Tier D 30–34 owner decisions. Follow-ups from this slice: a per-detector-name scope (`guardrails.detector_scopes`) if an operator needs the ML detectors scoped differently from the regex one in the same category; a regression-corpus case once the evals harness can express a role (its `task_spec.input` is one string today). Follow-ups carried from items 24, 29 and the mirror slice stand (see their entries).
+
+## [2026-10-16] main — `persist-credentials: false` on the gateway job's checkout (the role-scoping review's hardening follow-up)
+
+**Files touched:** `.github/workflows/ci.yml` (the gateway job's `actions/checkout` step gains `with: persist-credentials: false` and a comment), `docs/agents/LOGS.md`.
+
+**Intent/summary:** the follow-up recorded twice today — as the ci-mirror review lane's INFO finding and in the item-25 entry's next steps. The gateway job runs the test code of the commit it checks out, a pull request's included, and pushes nothing, so the built-in token has no business sitting in `.git/config` for that code to read; the compat, evals and docs-links jobs already set the key, this job was the odd one out. One key on one step; local git commands keep working, only the remote auth header goes. Not changed, on purpose: the proto job's checkout (the same argument applies and it can follow) and publish-image's (it pushes).
+
+**Reviews**: none — a one-key hardening mirroring three sibling jobs; `actionlint` (no new finding; the pre-existing SC2155 at line 100 stands), the two tests that read `ci.yml` (`TestOneGoToolchain`, `TestOpenAPIBreakingGateIsWired`) pass.
+
+**Gates:** `actionlint` on `ci.yml` (only the pre-existing SC2155 at line 100); the file parses as YAML; `go test ./cmd/gateway/ -run 'TestOneGoToolchain|TestOpenAPIBreakingGateIsWired' -count=1` ok; the whole non-Docker suite `suite exit: 0` with lint and arch-lint clean (`/tmp/kelvran-r4f/gates-pc-1.log`, 13:06–13:08 IST, load1 5.7).
+
+**Live:** CI on this push is the proof that the job needs no token after checkout — the gateway job's own steps (GHCR login uses the token as a step input, not from `.git/config`) run unchanged or the job fails loudly.
+
+**Decisions made:** none.
+
+**Next steps / resume point:** CI on this commit. Round-5 Tier S item 26 (tamper-evident audit trail) is being scoped in parallel; the proto job's checkout can take the same key in that or any later commit.

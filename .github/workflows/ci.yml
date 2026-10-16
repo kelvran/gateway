@@ -131,6 +131,14 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job runs the test code of whatever commit it checks out --
+          # a pull request's included -- and pushes nothing, so the token
+          # has no business sitting in .git/config for that code to read
+          # (the compat, evals and docs-links jobs already say so; the
+          # 2026-10-16 role-scoping review flagged this job as the odd one
+          # out). Local git commands keep working; only remote auth goes.
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: gateway/go.mod
