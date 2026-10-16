@@ -48,7 +48,7 @@ func (b *recordingBackend) ReserveFixed(context.Context, string, int64, int64, i
 	return true, nil
 }
 
-func (b *recordingBackend) Adjust(_ context.Context, keyID string, deltaNanoUSD, epoch int64) error {
+func (b *recordingBackend) Adjust(_ context.Context, keyID string, deltaNanoUSD, epoch int64, _ bool) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.adjusts = append(b.adjusts, [2]int64{deltaNanoUSD, epoch})

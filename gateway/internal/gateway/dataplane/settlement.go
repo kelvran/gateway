@@ -21,9 +21,10 @@ const settlementTimeout = 5 * time.Second
 //
 // Why not the request context itself: a client that disconnects cancels it,
 // and go-redis fails fast on a cancelled context. In Redis budget mode the
-// pre-call reservation is the key's FULL remaining headroom, durably written,
-// so a cancelled Reconcile left it debited and the key stayed locked at its
-// cap for the rest of its window (for good, under a lifetime cap) -- with
+// pre-call reservation is durably written (the key's FULL remaining headroom
+// until 2026-10-16, the window's mean billed cost since -- FAILURE-MODES
+// R19), so a cancelled Reconcile left it debited and the key stayed locked at
+// its cap for the rest of its window (for good, under a lifetime cap) -- with
 // Redis perfectly healthy. Found 2026-10-08 while writing
 // docs/operations/FAILURE-MODES.md; streaming requests, where a client
 // disconnect after the first chunk is routine, were the realistic trigger.

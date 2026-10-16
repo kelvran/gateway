@@ -46,7 +46,7 @@ func (b *windowBackend) Reserve(_ context.Context, keyID string, capNanoUSD, _ i
 func (b *windowBackend) ReserveFixed(context.Context, string, int64, int64, int64) (bool, error) {
 	return true, nil
 }
-func (b *windowBackend) Adjust(_ context.Context, keyID string, delta, epoch int64) error {
+func (b *windowBackend) Adjust(_ context.Context, keyID string, delta, epoch int64, _ bool) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, open := b.spent[keyID]; !open || epoch != windowBackendEpoch {

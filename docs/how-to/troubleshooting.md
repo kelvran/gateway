@@ -139,7 +139,7 @@ curl -s -H "Authorization: Bearer $KELVRAN_ADMIN_TOKEN" http://127.0.0.1:8081/ad
 # fields: total_in_flight, by_agent_run_id
 ```
 
-If `spent_usd` equals `budget_usd` on every replica and `total_in_flight` is 0, a failed Redis settlement left its reservation behind. Either `DELETE /admin/virtual_keys/team-alpha` and re-create the key (this also zeroes legitimate spend), or in Redis run `DEL "budget:<url.QueryEscape(key id)>"`. Rotating the key does not help; the id survives rotation. Set `budget_reset_interval_seconds` so a leak is time-bounded; under a lifetime cap it is permanent.
+If `spent_usd` stays above what the key really spent on every replica while `total_in_flight` is 0, a failed Redis settlement left its reservation behind: equal to `budget_usd` on releases up to `gateway/v0.20.0`, or when the window had no billed settlement yet; about one typical request's cost too high since the 2026-10-16 fix ([FAILURE-MODES R19](../operations/FAILURE-MODES.md)). Either `DELETE /admin/virtual_keys/team-alpha` and re-create the key (this also zeroes legitimate spend), or in Redis run `DEL "budget:<url.QueryEscape(key id)>"`. Rotating the key does not help; the id survives rotation. Set `budget_reset_interval_seconds` so a leak is time-bounded; under a lifetime cap it is permanent.
 
 ### A stream ended without `data: [DONE]`
 

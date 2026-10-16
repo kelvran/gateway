@@ -38,16 +38,21 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// budgetReserveLuaSrc reserves the FULL remaining headroom under cap in
-// one atomic step — the Redis-mode analog of
-// budget.Tracker.reservationAmountLocked's own "no billing history yet"
-// cold-start-conservative fallback, used unconditionally in Redis mode
-// (no historical-average tracking exists here — a disclosed, deliberate
-// simplification: this affects concurrent-request THROUGHPUT under a
-// near-exhausted cap, since a single in-flight reservation can
-// temporarily consume all remaining headroom, but never CORRECTNESS —
-// spend can never exceed cap, and a later Reconcile's real-cost delta
-// always corrects the ledger exactly).
+// budgetReserveLuaSrc reserves, in one atomic step under cap, the window's
+// mean billed cost -- spent / billed_count, floored to an integer nano-USD
+// and clamped to the remaining headroom -- once the window has one billed
+// settlement (budgetAdjustLuaSrc counts them into the hash's billed_count,
+// which the window's TTL expires), and the FULL remaining headroom before
+// that: budget.Tracker.reservationAmountLocked's own rule, the TOCTOU RFC's
+// cold start included. Until 2026-10-16 the script reserved the full
+// headroom on every call ("a disclosed, deliberate simplification" that
+// affected throughput, not correctness); the first Redis-mode benchmark
+// run showed what that cost -- a capped key admitted one in-flight request
+// at a time, 15.7 % of requests refused at 100 rps on one gateway -- and
+// FAILURE-MODES R19 records the find and the fix. spent includes the
+// siblings' in-flight reservations, exactly as in memory, so the mean a
+// burst sees is inflated by the burst itself; spend can still never exceed
+// cap, and a later Reconcile's real-cost delta corrects the ledger exactly.
 //
 // The rolling window is implemented via Redis's OWN key expiration: a
 // TTL is set only ONCE, when the key is first created (a fresh window),
@@ -78,9 +83,10 @@ const budgetReserveLuaSrc = `
 local cap = tonumber(ARGV[1])
 local reset_interval_ms = tonumber(ARGV[2])
 
-local state = redis.call('HMGET', KEYS[1], 'spent', 'epoch')
+local state = redis.call('HMGET', KEYS[1], 'spent', 'epoch', 'billed_count')
 local spent = tonumber(state[1])
 local epoch = tonumber(state[2])
+local billed_count = tonumber(state[3])
 local is_new_window = false
 if spent == nil then
   spent = 0
@@ -109,7 +115,21 @@ if spent >= cap then
   return {0, 0, epoch}
 end
 
+-- The reservation (2026-10-16, FAILURE-MODES R19): the window's mean billed
+-- cost, spent / billed_count, once the adjust script has counted one billed
+-- settlement in this window -- the in-memory tracker's rule -- floored to an
+-- integer nano-USD so spent stays integer-valued, and clamped to the
+-- remaining headroom so spent never passes cap; the full remaining headroom
+-- for a window with no billed settlement yet (a cold key, or a hash a
+-- pre-fix replica wrote, which has no billed_count). spent includes the
+-- siblings' in-flight reservations, exactly as in memory.
 local reserved = cap - spent
+if billed_count and billed_count > 0 then
+  local mean = math.floor(spent / billed_count)
+  if mean < reserved then
+    reserved = mean
+  end
+end
 local new_spent = spent + reserved
 
 redis.call('HSET', KEYS[1], 'spent', new_spent, 'epoch', epoch)
@@ -138,8 +158,10 @@ return {1, reserved, epoch}
 // remaining") — the mid-stream reservation top-up's own shape
 // (IncreaseReservation): a conditional admission check, rejecting
 // outright if delta would push spent past cap, rather than
-// budgetReserveLuaSrc's unconditional "take it all" cold-start
-// behavior. Same Hash/window/TTL handling as budgetReserveLuaSrc (same
+// budgetReserveLuaSrc's sizing (the window's mean billed cost, or the full
+// headroom before the window's first billed settlement), which refuses only
+// once spent has reached cap. Same Hash/window/TTL handling as
+// budgetReserveLuaSrc (same
 // KEYS[1], so it must speak the identical Hash shape) — but never
 // touches the 'epoch' field itself: unlike Reserve+Adjust's own
 // deferred, potentially-cross-window reconciliation, ReserveFixed's
@@ -202,6 +224,7 @@ return {1}
 const budgetAdjustLuaSrc = `
 local delta = tonumber(ARGV[1])
 local expected_epoch = tonumber(ARGV[2])
+local billed = tonumber(ARGV[3])
 
 local state = redis.call('HMGET', KEYS[1], 'spent', 'epoch')
 local spent = tonumber(state[1])
@@ -212,6 +235,13 @@ end
 
 local new_spent = math.max(spent + delta, 0)
 redis.call('HSET', KEYS[1], 'spent', new_spent)
+-- A billed settlement teaches the window's mean (the reserve script divides
+-- spent by this count); a release does not. Only ever written after the
+-- window check above, so a late settlement never manufactures a hash
+-- without a TTL. 2026-10-16, FAILURE-MODES R19.
+if billed == 1 then
+  redis.call('HINCRBY', KEYS[1], 'billed_count', 1)
+end
 return redis.status_reply('OK')
 `
 
@@ -404,8 +434,12 @@ func (b *Backend) ReserveFixed(ctx context.Context, keyID string, capNanoUSD, de
 // see budgetAdjustLuaSrc's own doc comment for why a mismatch (a newer
 // window has since started under this same keyID) makes this a silent
 // no-op rather than corrupting that newer window's spend.
-func (b *Backend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error {
-	if _, err := b.adjustScript.Run(ctx, b.client, []string{spendKey(keyID)}, deltaNanoUSD, epoch).Result(); err != nil {
+func (b *Backend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) error {
+	billedArg := 0
+	if billed {
+		billedArg = 1
+	}
+	if _, err := b.adjustScript.Run(ctx, b.client, []string{spendKey(keyID)}, deltaNanoUSD, epoch, billedArg).Result(); err != nil {
 		return fmt.Errorf("redisbudget: running adjust script for key %q: %w", keyID, err)
 	}
 	return nil

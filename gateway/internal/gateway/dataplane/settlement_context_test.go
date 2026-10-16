@@ -34,7 +34,7 @@ func (b *settlementCapturingBudgetBackend) ReserveFixed(context.Context, string,
 	return true, nil
 }
 
-func (b *settlementCapturingBudgetBackend) Adjust(ctx context.Context, _ string, _, _ int64) error {
+func (b *settlementCapturingBudgetBackend) Adjust(ctx context.Context, _ string, _, _ int64, _ bool) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.adjustCalls++

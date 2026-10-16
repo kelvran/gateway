@@ -2,8 +2,10 @@ package redisbudget
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -143,7 +145,7 @@ func TestAdjustReconcilesReservationDownToRealCost(t *testing.T) {
 	}
 
 	delta := realCostNano - reservedNano // negative: real cost (20) well below the reserved estimate (100)
-	if err := b.Adjust(ctx, key, delta, epoch); err != nil {
+	if err := b.Adjust(ctx, key, delta, epoch, true); err != nil {
 		t.Fatalf("Adjust() error = %v", err)
 	}
 
@@ -155,13 +157,14 @@ func TestAdjustReconcilesReservationDownToRealCost(t *testing.T) {
 		t.Fatalf("SpentNanoUSD() after reconciling down to the real cost = %v, want %v", spent, realCostNano)
 	}
 
-	// The freed headroom (80) must now be available to a fresh reservation.
+	// The window now has one billed settlement of 20, so the next reservation
+	// is that mean -- not the 80 of headroom the pre-fix script took (R19).
 	allowed, reserved, _, err := b.Reserve(ctx, key, capNano, 0)
 	if err != nil {
 		t.Fatalf("Reserve() #2 error = %v", err)
 	}
-	if !allowed || reserved != capNano-realCostNano {
-		t.Fatalf("Reserve() after reconciliation = (%v, %v), want (true, %v)", allowed, reserved, capNano-realCostNano)
+	if !allowed || reserved != realCostNano {
+		t.Fatalf("Reserve() after reconciliation = (%v, %v), want (true, %v): the window's mean billed cost", allowed, reserved, realCostNano)
 	}
 }
 
@@ -189,7 +192,7 @@ func TestAdjustClampPreventsNegativeSpend(t *testing.T) {
 
 	// A wildly excessive release, far beyond the single $10 reservation
 	// above.
-	if err := b.Adjust(ctx, key, -1_000*usdScale, epoch); err != nil {
+	if err := b.Adjust(ctx, key, -1_000*usdScale, epoch, false); err != nil {
 		t.Fatalf("Adjust() error = %v", err)
 	}
 
@@ -228,7 +231,7 @@ func TestAdjustOnAnAlreadyExpiredKeyIsANoOp(t *testing.T) {
 	ctx := context.Background()
 	key := uniqueKey(t)
 
-	if err := b.Adjust(ctx, key, -50*usdScale, 0); err != nil {
+	if err := b.Adjust(ctx, key, -50*usdScale, 0, true); err != nil {
 		t.Fatalf("Adjust() against a never-reserved key error = %v, want nil (silent no-op)", err)
 	}
 
@@ -481,7 +484,8 @@ func TestReserveWindowExpiresViaRedisTTL(t *testing.T) {
 // unaffected. Break this by reverting budgetAdjustLuaSrc's own
 // `epoch ~= expected_epoch` check (making it ignore the epoch again):
 // this test starts failing because window #2's spend reflects the
-// stale Adjust's delta.
+// stale Adjust's delta. Since 2026-10-16 the stale Adjust is also flagged
+// billed, and window #2's billed_count must stay untouched by it (R19).
 func TestAdjustDoesNotCorruptALaterWindowThatReplacedTheOneItWasReservedAgainst(t *testing.T) {
 	b, err := Open(redis.Options{Addr: redisAddr})
 	if err != nil {
@@ -515,7 +519,7 @@ func TestAdjustDoesNotCorruptALaterWindowThatReplacedTheOneItWasReservedAgainst(
 	// A large release, using window #1's STALE epoch -- if this were
 	// wrongly applied to window #2's ledger, it would drive window #2's
 	// spend negative (clamped to 0), corrupting it.
-	if err := b.Adjust(ctx, key, -5*usdScale, staleEpoch); err != nil {
+	if err := b.Adjust(ctx, key, -5*usdScale, staleEpoch, true); err != nil {
 		t.Fatalf("Adjust() (stale epoch) error = %v", err)
 	}
 
@@ -526,9 +530,14 @@ func TestAdjustDoesNotCorruptALaterWindowThatReplacedTheOneItWasReservedAgainst(
 	if spent != capNano {
 		t.Fatalf("SpentNanoUSD() after a stale-epoch Adjust = %v, want unchanged %v -- window #2 was corrupted by window #1's stale reservation", spent, capNano)
 	}
+	c := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer func() { _ = c.Close() }()
+	if cnt, err := c.HGet(ctx, spendKey(key), "billed_count").Result(); !errors.Is(err, redis.Nil) {
+		t.Fatalf("billed_count after a stale-epoch billed Adjust = (%q, %v), want unset (redis.Nil) -- window #1's settlement taught window #2's mean", cnt, err)
+	}
 
 	// A correctly-epoched Adjust against window #2 must still work.
-	if err := b.Adjust(ctx, key, -3*usdScale, freshEpoch); err != nil {
+	if err := b.Adjust(ctx, key, -3*usdScale, freshEpoch, true); err != nil {
 		t.Fatalf("Adjust() (fresh epoch) error = %v", err)
 	}
 	spent, err = b.SpentNanoUSD(ctx, key)
@@ -537,6 +546,9 @@ func TestAdjustDoesNotCorruptALaterWindowThatReplacedTheOneItWasReservedAgainst(
 	}
 	if spent != capNano-3*usdScale {
 		t.Fatalf("SpentNanoUSD() after a correctly-epoched Adjust = %v, want %v", spent, capNano-3*usdScale)
+	}
+	if cnt, _ := c.HGet(ctx, spendKey(key), "billed_count").Result(); cnt != "1" {
+		t.Fatalf("billed_count after a correctly-epoched billed Adjust = %q, want \"1\"", cnt)
 	}
 }
 
@@ -552,5 +564,250 @@ func TestOpenNeverFailsOnUnreachableAddr(t *testing.T) {
 
 	if _, _, _, err := b.Reserve(ctx, "any-key", usdScale, 0); err == nil {
 		t.Fatal("Reserve() against an unreachable Redis address succeeded, want an error")
+	}
+}
+
+// The R19 fix (2026-10-16): once a window has one billed settlement the
+// reservation is the window's mean billed cost, spent / billed_count, the
+// in-memory tracker's rule -- clamped to the remaining headroom -- and no
+// longer the whole headroom on every call.
+func TestReserveSizesFromTheWindowsMeanAfterABilledSettlement(t *testing.T) {
+	b, err := Open(redis.Options{Addr: redisAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	ctx := context.Background()
+	key := uniqueKey(t)
+	const capNano = 100 * usdScale
+	const realNano = 20 * usdScale
+
+	_, reserved, epoch, err := b.Reserve(ctx, key, capNano, 0)
+	if err != nil || reserved != capNano {
+		t.Fatalf("cold start: reserved %v err %v, want the full cap %v", reserved, err, capNano)
+	}
+	if err := b.Adjust(ctx, key, realNano-reserved, epoch, true); err != nil {
+		t.Fatal(err)
+	}
+	// spent 20, one billed settlement: the mean is 20, not the 80 of headroom.
+	allowed, second, _, err := b.Reserve(ctx, key, capNano, 0)
+	if err != nil || !allowed || second != realNano {
+		t.Fatalf("second Reserve = (%v, %v, %v), want (true, %v): the window's mean billed cost", allowed, second, err, realNano)
+	}
+	// A sibling in flight: spent is 40 over one settlement, so its reservation
+	// is the inflated mean 40 -- exactly what the in-memory tracker does.
+	allowed, third, _, err := b.Reserve(ctx, key, capNano, 0)
+	if err != nil || !allowed || third != 2*realNano {
+		t.Fatalf("third Reserve with one sibling in flight = (%v, %v, %v), want (true, %v)", allowed, third, err, 2*realNano)
+	}
+	if err := b.Adjust(ctx, key, realNano-second, epoch, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Adjust(ctx, key, realNano-third, epoch, true); err != nil {
+		t.Fatal(err)
+	}
+	// Three billed settlements of 20: spent 60, mean 20.
+	allowed, fourth, _, err := b.Reserve(ctx, key, capNano, 0)
+	if err != nil || !allowed || fourth != realNano {
+		t.Fatalf("fourth Reserve = (%v, %v, %v), want (true, %v) after three settlements of 20", allowed, fourth, err, realNano)
+	}
+	spent, err := b.SpentNanoUSD(ctx, key)
+	if err != nil || spent != 3*realNano+realNano {
+		t.Fatalf("SpentNanoUSD = %v (err %v), want 80: three settled plus one in flight", spent, err)
+	}
+}
+
+func TestReserveClampsTheMeanToTheRemainingHeadroom(t *testing.T) {
+	b, err := Open(redis.Options{Addr: redisAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	ctx := context.Background()
+	key := uniqueKey(t)
+	const capNano = 100 * usdScale
+	_, reserved, epoch, _ := b.Reserve(ctx, key, capNano, 0)
+	if err := b.Adjust(ctx, key, 90*usdScale-reserved, epoch, true); err != nil {
+		t.Fatal(err)
+	}
+	// The mean is 90 but only 10 is left: reserve exactly the headroom, never past the cap.
+	allowed, next, _, err := b.Reserve(ctx, key, capNano, 0)
+	if err != nil || !allowed || next != 10*usdScale {
+		t.Fatalf("Reserve = (%v, %v, %v), want (true, 10 USD): the mean clamped to the headroom", allowed, next, err)
+	}
+	if allowed, _, _, _ := b.Reserve(ctx, key, capNano, 0); allowed {
+		t.Fatal("at the cap the next Reserve must be refused")
+	}
+}
+
+func TestReleaseOnlyAndStaleSettlementsTeachNothing(t *testing.T) {
+	b, err := Open(redis.Options{Addr: redisAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	ctx := context.Background()
+	key := uniqueKey(t)
+	const capNano = 100 * usdScale
+	_, reserved, epoch, _ := b.Reserve(ctx, key, capNano, 0)
+	// A release (realCost nil in the tracker) is not a billed settlement.
+	if err := b.Adjust(ctx, key, -reserved, epoch, false); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, again, _, _ := b.Reserve(ctx, key, capNano, 0); !allowed || again != capNano {
+		t.Fatalf("after a release-only settlement the key is still cold: reserved %v, want %v", again, capNano)
+	}
+	// A settlement against a stale epoch is a complete no-op: no spend, no
+	// history, and -- for a window that is gone -- no key manufactured.
+	gone := uniqueKey(t)
+	if err := b.Adjust(ctx, gone, 5*usdScale, 12345, true); err != nil {
+		t.Fatal(err)
+	}
+	c := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer func() { _ = c.Close() }()
+	if n, _ := c.Exists(ctx, spendKey(gone)).Result(); n != 0 {
+		t.Fatal("a stale settlement must not create a window hash (it would never expire)")
+	}
+	if cnt, err := c.HGet(ctx, spendKey(key), "billed_count").Result(); !errors.Is(err, redis.Nil) {
+		t.Fatalf("billed_count after a release and a stale settlement = (%q, %v), want unset (redis.Nil)", cnt, err)
+	}
+}
+
+func TestAnOldShapedWindowWithoutHistoryColdStarts(t *testing.T) {
+	b, err := Open(redis.Options{Addr: redisAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	ctx := context.Background()
+	key := uniqueKey(t)
+	c := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer func() { _ = c.Close() }()
+	// A hash a pre-fix replica wrote: spent and epoch, nothing else.
+	if err := c.HSet(ctx, spendKey(key), "spent", 30*usdScale, "epoch", 777).Err(); err != nil {
+		t.Fatal(err)
+	}
+	allowed, reserved, epoch, err := b.Reserve(ctx, key, 100*usdScale, 0)
+	if err != nil || !allowed || reserved != 70*usdScale || epoch != 777 {
+		t.Fatalf("Reserve on an old-shape window = (%v, %v, %v, %v), want (true, 70 USD, 777): no history means the full headroom", allowed, reserved, epoch, err)
+	}
+}
+
+func TestHistoryDiesWithTheWindow(t *testing.T) {
+	b, err := Open(redis.Options{Addr: redisAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	ctx := context.Background()
+	key := uniqueKey(t)
+	const capNano = 100 * usdScale
+	_, reserved, epoch, _ := b.Reserve(ctx, key, capNano, 300) // a 300 ms window
+	if err := b.Adjust(ctx, key, 10*usdScale-reserved, epoch, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, warm, _, _ := b.Reserve(ctx, key, capNano, 300); warm != 10*usdScale {
+		t.Fatalf("warm reservation = %v, want the mean 10 USD", warm)
+	}
+	time.Sleep(450 * time.Millisecond)
+	// A fresh window has no billing history of its own: cold start again.
+	if _, cold, _, _ := b.Reserve(ctx, key, capNano, 300); cold != capNano {
+		t.Fatalf("reservation in the next window = %v, want the full cap %v", cold, capNano)
+	}
+}
+
+func TestSpentStaysAnIntegerAcrossFractionalMeans(t *testing.T) {
+	b, err := Open(redis.Options{Addr: redisAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	ctx := context.Background()
+	key := uniqueKey(t)
+	const capNano = 100 * usdScale
+	// Costs 7, 11 and 13 nano-USD: every mean from here on is fractional.
+	_, reserved, epoch, _ := b.Reserve(ctx, key, capNano, 0)
+	for _, cost := range []int64{7, 11, 13} {
+		if err := b.Adjust(ctx, key, cost-reserved, epoch, true); err != nil {
+			t.Fatal(err)
+		}
+		_, reserved, _, _ = b.Reserve(ctx, key, capNano, 0)
+	}
+	c := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer func() { _ = c.Close() }()
+	raw, err := c.HGet(ctx, spendKey(key), "spent").Result()
+	if err != nil || strings.ContainsAny(raw, ".e") {
+		t.Fatalf("spent = %q (err %v): must stay an integer string, never a float", raw, err)
+	}
+	if _, err := b.SpentNanoUSD(ctx, key); err != nil {
+		t.Fatalf("SpentNanoUSD must parse the stored spend: %v", err)
+	}
+}
+
+// The R19 reproduction, inverted: after one billed settlement ten
+// concurrent reservations are all admitted (before the fix the first took
+// the whole headroom and the other nine were refused). The arithmetic is
+// the in-memory rule's, in-flight reservations included: with one
+// settlement the mean is spent / 1, so the ten reservations grow 1, 2, 4 ...
+// 256 USD and the tenth is clamped to the 488 USD left; spent sits at the
+// cap and an eleventh request is refused until one of the ten settles. Once
+// all ten settle at 1 USD the window holds 11 USD over 11 settlements and
+// the mean is 1 USD again (FAILURE-MODES, known gaps).
+func TestTenConcurrentReservesAreAdmittedAfterOneBilledSettlement(t *testing.T) {
+	b, err := Open(redis.Options{Addr: redisAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	ctx := context.Background()
+	key := uniqueKey(t)
+	const capNano = 1_000 * usdScale
+	_, reserved, epoch, _ := b.Reserve(ctx, key, capNano, 0)
+	if err := b.Adjust(ctx, key, 1*usdScale-reserved, epoch, true); err != nil {
+		t.Fatal(err)
+	}
+	type taken struct{ reserved, epoch int64 }
+	results := make([]taken, 10)
+	errs := make([]error, 10)
+	var wg sync.WaitGroup
+	var admitted atomic.Int32
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ok, reserved, epoch, err := b.Reserve(ctx, key, capNano, 0)
+			errs[i] = err
+			if err == nil && ok {
+				admitted.Add(1)
+				results[i] = taken{reserved, epoch}
+			}
+		}(i)
+	}
+	wg.Wait()
+	if admitted.Load() != 10 {
+		t.Fatalf("admitted %d of 10 concurrent reservations after a billed settlement, want 10 (errors: %v)", admitted.Load(), errors.Join(errs...))
+	}
+	spent, err := b.SpentNanoUSD(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spent != capNano {
+		t.Fatalf("spent after the burst = %v, want the cap %v: the reservations double (1, 2, 4 ... 256 USD) and the tenth is clamped to the headroom", spent, capNano)
+	}
+	if ok, _, _, err := b.Reserve(ctx, key, capNano, 0); err != nil || ok {
+		t.Fatalf("an eleventh reservation while the burst is in flight = (%v, %v), want refused: spent is at the cap", ok, err)
+	}
+	// The burst settles at 1 USD each: the window self-corrects to 11 USD
+	// over 11 settlements and the mean is 1 USD again.
+	for _, r := range results {
+		if err := b.Adjust(ctx, key, 1*usdScale-r.reserved, r.epoch, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if spent, _ = b.SpentNanoUSD(ctx, key); spent != 11*usdScale {
+		t.Fatalf("spent after the burst settled = %v, want 11 USD", spent)
+	}
+	if _, next, _, _ := b.Reserve(ctx, key, capNano, 0); next != 1*usdScale {
+		t.Fatalf("reservation after the burst settled = %v, want the 1 USD mean", next)
 	}
 }

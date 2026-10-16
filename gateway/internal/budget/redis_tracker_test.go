@@ -39,6 +39,7 @@ type fakeRedisBudgetBackend struct {
 	adjustCalls          int
 	lastAdjustDeltaNano  int64
 	lastAdjustEpoch      int64
+	lastAdjustBilled     bool
 	markAlertCalls       int
 	lastMarkAlertHighest float64
 	markWarnAlertedCalls int
@@ -66,10 +67,11 @@ func (f *fakeRedisBudgetBackend) ReserveFixed(ctx context.Context, keyID string,
 	return true, nil
 }
 
-func (f *fakeRedisBudgetBackend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error {
+func (f *fakeRedisBudgetBackend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) error {
 	f.adjustCalls++
 	f.lastAdjustDeltaNano = deltaNanoUSD
 	f.lastAdjustEpoch = epoch
+	f.lastAdjustBilled = billed
 	if f.adjustFunc != nil {
 		return f.adjustFunc(ctx, keyID, deltaNanoUSD, epoch)
 	}
@@ -559,5 +561,24 @@ func TestCloseRedisModeRoutesToBackend(t *testing.T) {
 	}
 	if backend.closeCalls != 1 {
 		t.Errorf("backend.Close called %d times, want 1", backend.closeCalls)
+	}
+}
+
+func TestReconcileRedisModeMarksOnlyBilledSettlements(t *testing.T) {
+	backend := &fakeRedisBudgetBackend{}
+	tr := NewRedisTracker(backend, nil)
+	realCost := d("2")
+	tr.Reconcile(context.Background(), "k", d("10"), 0, &realCost, 0)
+	if !backend.lastAdjustBilled {
+		t.Error("a settlement with a real cost must reach the backend as billed: it is what teaches the window's mean")
+	}
+	tr.Reconcile(context.Background(), "k", d("10"), 0, nil, 0)
+	if backend.lastAdjustBilled {
+		t.Error("a release (nil real cost) must not count as billed")
+	}
+	negative := d("-1")
+	tr.Reconcile(context.Background(), "k", d("10"), 0, &negative, 0)
+	if backend.lastAdjustBilled {
+		t.Error("a negative real cost is release-only, never billed")
 	}
 }

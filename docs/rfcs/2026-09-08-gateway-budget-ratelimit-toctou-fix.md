@@ -87,11 +87,11 @@ extend that same already-correct technique to budget and TPM, not to invent a ne
   `max_tokens`-as-worst-case guess.
 - If the key has no history yet (`billedCount == 0` — a brand-new key, or one whose window/store
   just reset), reserve the full remaining headroom (`capUSD - spent`, or the bucket's own current
-  balance for TPM). *Implementation note, 2026-10-13: Redis-mode TPM shipped on 2026-09-21 with the
+  balance for TPM). *Implementation note, 2026-10-13, extended 2026-10-16: Redis-mode TPM shipped on 2026-09-21 with the
   cold-start branch only (every reservation was the full `tpm_capacity`, a disclosed v1 simplification
   that admitted one request per key at a time — the 2026-10-08 live run's F2); it now keeps the
   key's `sum`/`count` of reconciled real tokens in Redis for 24 h beside the arrival time and reserves
-  the mean, so both modes follow this section — for TPM; the Redis-mode budget reserve still takes the full headroom on every call, see the Corrected 2026-10-16 paragraph under the cold-start trade-off below and FAILURE-MODES R19.* This is the maximally conservative choice given zero information: it can
+  the mean, so both modes follow this section — for TPM since 2026-10-13 and for budget since 2026-10-16; until then the Redis-mode budget reserve took the full headroom on every call, see the Corrected and Implemented 2026-10-16 paragraphs under the cold-start trade-off below and FAILURE-MODES R19.* This is the maximally conservative choice given zero information: it can
   never let a cold-start key's concurrent burst overshoot its cap, because the reservation itself
   is bounded exactly at the point past which the key would already be rejected serially.
 
@@ -184,6 +184,8 @@ budget-persistence RFC's own restart/reset-window boundary).
 
 **Corrected 2026-10-16** (round-5 item 10's first Redis-mode benchmark run): the self-resolution above holds in memory only. Redis mode's reserve script (`gateway/internal/budget/redisbudget/redisbudget.go`, `budgetReserveLuaSrc`) takes `cap - spent` on every call — `budget.RedisBackend.Reserve`'s doc comment names it the "unconditional cold-start reservation strategy" — so a capped key in Redis mode never leaves the learning phase and admits one in-flight request at a time (15 % of requests refused at 100 rps against a 0 ms mock, about 4 ms end to end, on one gateway; 84 % with two replicas against a 50 ms mock), which this RFC's own requirement above ("must not simply serialize all traffic for a key") forbids. Recorded as `docs/operations/FAILURE-MODES.md` R19; the fix — a per-key billing-history mean kept in Redis, the shape `tpm_history.go` already uses for TPM — is the follow-up, not part of the measurement slice.
 
+**Implemented 2026-10-16** (the same day): Redis mode now follows the sizing rule above. `budgetAdjustLuaSrc` counts a billed settlement into a `billed_count` field of the key's window hash (a release counts nothing; a settlement against a stale epoch writes nothing), and `budgetReserveLuaSrc` reserves `spent / billed_count` — floored to an integer nano-USD, clamped to the remaining headroom — once that count is positive, and the full remaining headroom before that, so the cold-start learning phase is one settlement long in Redis too and reruns with the window, exactly as in memory (the hash's TTL expires the count with the window). `budget.RedisBackend.Adjust` carries a `billed` flag for it. A replica on an earlier release still takes the full headroom and never teaches the mean until it is upgraded; each replica evaluates its own script, so the fleet interoperates meanwhile. Both modes take the mean over `spent`, which holds the siblings' in-flight reservations, so a burst right after the first settlement sees each reservation grow by `1 + 1/billed_count` over the one before (doubling after one settlement) — FAILURE-MODES's known gaps quantify it; Redis-mode TPM's settled `sum`/`count` history does not have it. FAILURE-MODES R19 records the find and the fix; the live proof is `docs/operations/BENCHMARKS.md`'s second 2026-10-16 record — S1r and S4 with `budget_usd` on the key, no refusals where the first run saw 15.7 % and 84.3 %.
+
 ## Alternatives considered
 
 **Hold `Tracker.mu`/the TPM bucket's `mu` across the entire request, from `Allow` through
@@ -237,9 +239,9 @@ and "TPM's Redis mode is already a deliberate no-op" ended when Redis-mode TPM s
 (`ReserveTPM` admits through the backend's `AllowTPM` and `ReconcileTPM` settles through `AdjustTPM`). The crash analysis in
 this RFC's scope section ("the reservation is transient, in-memory-only, never persisted") therefore
 holds only for `NewTracker`/`NewTrackerWithStore`. In Redis mode the reservation IS durably
-written — `Reserve` debits the full remaining headroom into the key's window hash — so a replica
+written — `Reserve` debits the full remaining headroom into the key's window hash (**2026-10-16**: the window's mean billed cost once the window has a billed settlement, the full headroom for every reservation until then — see the Implemented paragraph above) — so a replica
 that dies between `Reserve` and `Reconcile`, or a `Reconcile` whose `Adjust` fails, leaves the key
-at its cap for every replica until the window's `PEXPIRE` fires (or for good, when
+at its cap (a reservation taken before the window's first billed settlement) or short by one mean request (one taken after it) for every replica until the window's `PEXPIRE` fires (or for good, when
 `budget_reset_interval_seconds` is unset). The per-subsystem consequences, the operator levers and
 the 2026-10-08 settlement-context fix (a client disconnect no longer cancels the `Reconcile`) are
 recorded in `docs/operations/FAILURE-MODES.md`; the text above is left as written.

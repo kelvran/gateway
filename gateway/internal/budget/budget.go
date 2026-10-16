@@ -101,11 +101,16 @@ type Store interface {
 // never a decimal.Decimal directly, since that type cannot cross the Lua
 // boundary redisbudget's scripts run inside.
 type RedisBackend interface {
-	// Reserve atomically reserves the FULL remaining headroom under
-	// capNanoUSD for keyID (Redis mode's unconditional cold-start
-	// reservation strategy — see redisbudget's own doc comment for why),
-	// starting a fresh resetIntervalMs-TTL'd window if keyID has no
-	// existing entry. resetIntervalMs <= 0 means no expiry (a
+	// Reserve atomically reserves, under capNanoUSD for keyID, the window's
+	// mean billed cost (spent / billed_count, floored to an integer nano-USD
+	// and clamped to the remaining headroom -- two deliberate departures from
+	// the in-memory rule, which does neither) once the window has one billed
+	// settlement, and the FULL remaining headroom before that -- otherwise the
+	// in-memory Tracker's own reservationAmountLocked rule, in Redis since
+	// 2026-10-16 (FAILURE-MODES R19: until then Redis mode reserved the full
+	// headroom on every call and a capped key admitted one in-flight request
+	// at a time). It starts a fresh resetIntervalMs-TTL'd window if keyID has
+	// no existing entry. resetIntervalMs <= 0 means no expiry (a
 	// lifetime-of-the-key cap, mirroring the in-memory Tracker's own
 	// resetInterval<=0 convention). capNanoUSD <= 0 (an uncapped key, since
 	// 2026-10-12) opens the window the same way, reserves nothing and
@@ -132,7 +137,11 @@ type RedisBackend interface {
 	// redisbudget.budgetAdjustLuaSrc's own doc comment for why both
 	// cases matter, not just the first. epoch must be exactly the value
 	// the matching Reserve call returned.
-	Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error
+	// billed is true for a settlement with a real cost (the window's mean
+	// learns from it: billed_count++), false for a release of the reservation
+	// alone -- the Redis twin of Tracker.billedCount, since 2026-10-16
+	// (FAILURE-MODES R19).
+	Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) error
 	// SpentNanoUSD reads keyID's current cumulative spend — a plain read,
 	// no atomicity requirement of its own (mirrors SpentUSD's identical
 	// in-memory read-only contract).
@@ -691,7 +700,9 @@ func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decim
 		if billed {
 			delta = realCost.Sub(reservedUSD)
 		}
-		if err := t.backend.Adjust(ctx, keyID, USDToNanoUSD(delta), reservationEpoch); err != nil {
+		// billed teaches the window's mean (the Redis twin of billedCount++
+		// below): a release never counts as a settlement.
+		if err := t.backend.Adjust(ctx, keyID, USDToNanoUSD(delta), reservationEpoch, billed); err != nil {
 			// A lost settlement write, not a read: the reservation stays
 			// debited and the real cost is never recorded, so it counts
 			// under the same durable-write-failure counter the bbolt Save

@@ -10,7 +10,8 @@ import (
 
 // TestReconcileRedisModeBackendErrorIncrementsPersistenceFailedCounter: a
 // Redis-mode Reconcile whose Adjust fails is a durable-ledger write that was
-// lost (the reservation stays debited at the full headroom and the real cost
+// lost (the reservation stays debited -- the full headroom before 2026-10-16,
+// the window's mean billed cost since, FAILURE-MODES R19 -- and the real cost
 // is never recorded), so it must count under kelvran.persistence.failed
 // exactly like a bbolt Save failure does — before 2026-10-08 it was Warn-only.
 func TestReconcileRedisModeBackendErrorIncrementsPersistenceFailedCounter(t *testing.T) {

@@ -85,14 +85,16 @@ virtual_keys:
     key_hash: "$KEY_HASH"
     # Every preset carries the same configured key (2026-10-16, round-5 item
     # 10) so the in-memory and the Redis presets run the same code path: an RPM
-    # bucket, a TPM bucket and a daily token allowance, all far above what the
-    # offered rate can reach. No budget_usd: the first S1r run showed that the
-    # Redis budget reserve always takes the whole remaining headroom, so a capped
-    # key in Redis mode admits one request at a time (429 budget exceeded for
-    # every concurrent sibling; FAILURE-MODES R19). Until that is sized from
-    # history like TPM, the budget path runs uncapped here (its window, spend
-    # read and settlement still happen; the cap check and the warn/alert reads
-    # do not).
+    # bucket, a TPM bucket, a daily token allowance and a budget with a warn
+    # threshold, all far above what the offered rate can reach. budget_usd was
+    # off the key for part of 2026-10-16: the first S1r run found that the Redis budget
+    # reserve took the whole remaining headroom on every call, so a capped key
+    # in Redis mode admitted one request at a time (FAILURE-MODES R19, found
+    # and fixed 2026-10-16 -- the reservation is the window's mean billed cost
+    # once the window has a billed settlement). The capped path is in the
+    # round-trip count again.
+    budget_usd: 1000000
+    budget_warn_percent: 0.8
     rate_limit:
       burst: 100000
       refill_per_second: 100000

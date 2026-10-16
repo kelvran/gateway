@@ -83,7 +83,7 @@ Each entry is a tenant credential issued by Kelvran. The entry name is the key's
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
 | `key_hash` | `string` | required | Hex-encoded SHA-256 digest of the raw secret (64 hex characters, case-insensitive). Empty or absent is a load error. A value that is not valid hex, or does not decode to 32 bytes, passes `-validate` and fails startup (`constructing identity verifier: … key_hash …`) |
-| `budget_usd` | `decimal` | 0 (unlimited) | Cumulative spending cap in USD. 0 or absent means no cap. With `budget.redis_addr` a capped key admits one in-flight request at a time (found 2026-10-16; [FAILURE-MODES R19](../operations/FAILURE-MODES.md)) |
+| `budget_usd` | `decimal` | 0 (unlimited) | Cumulative spending cap in USD. 0 or absent means no cap. In Redis mode the reservation follows the key's billing history since 2026-10-16 (on `main`, not in `gateway/v0.20.0`; before, a capped key admitted one in-flight request at a time: [FAILURE-MODES R19](../operations/FAILURE-MODES.md)) |
 | `budget_reset_interval_seconds` | `int` | 0 | 0 keeps `budget_usd` a lifetime cap. A positive value makes it a rolling window of that many seconds (2592000 for 30 days) |
 | `budget_warn_percent` | `float` | 0 (off) | Fraction of `budget_usd` (for example `0.8`) at or above which every billable completion logs `budget_warn_threshold_crossed`; when `alerting.webhook_url_env` is set, one `budget_warn_threshold_crossed` webhook event is also sent per budget window. Never blocks. Meaningless when `budget_usd` is 0 |
 | `rate_limit` | `mapping` | gateway default | See the next table |

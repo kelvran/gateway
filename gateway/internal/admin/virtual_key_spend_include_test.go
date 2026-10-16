@@ -41,7 +41,7 @@ func (f *failingBudgetBackend) Reserve(context.Context, string, int64, int64) (b
 func (f *failingBudgetBackend) ReserveFixed(context.Context, string, int64, int64, int64) (bool, error) {
 	return true, nil
 }
-func (f *failingBudgetBackend) Adjust(context.Context, string, int64, int64) error { return nil }
+func (f *failingBudgetBackend) Adjust(context.Context, string, int64, int64, bool) error { return nil }
 func (f *failingBudgetBackend) SpentNanoUSD(context.Context, string) (int64, error) {
 	return 0, f.err
 }

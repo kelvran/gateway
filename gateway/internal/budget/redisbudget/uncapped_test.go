@@ -51,13 +51,13 @@ func TestReserveOpensAWindowForAnUncappedKey(t *testing.T) {
 			if _, _, again, err := b.Reserve(ctx, key, tc.cap, 0); err != nil || again != epoch {
 				t.Fatalf("second Reserve epoch = %d (err %v), want the same window %d", again, err, epoch)
 			}
-			if err := b.Adjust(ctx, key, 500, epoch); err != nil {
+			if err := b.Adjust(ctx, key, 500, epoch, true); err != nil {
 				t.Fatal(err)
 			}
 			if spent, _ := b.SpentNanoUSD(ctx, key); spent != 500 {
 				t.Fatalf("spent after Adjust(+500, epoch) = %d, want 500", spent)
 			}
-			if err := b.Adjust(ctx, key, 500, epoch+1); err != nil {
+			if err := b.Adjust(ctx, key, 500, epoch+1, true); err != nil {
 				t.Fatal(err)
 			}
 			if spent, _ := b.SpentNanoUSD(ctx, key); spent != 500 {
