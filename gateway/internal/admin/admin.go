@@ -125,6 +125,11 @@ type rotateVirtualKeyRequest = adminapi.RotateVirtualKeyRequest
 // comment for why the plain slog line above is genuinely write-only.
 // Governed by the same `enabled` switch as the slog line, not a second
 // one, per controlplane.AdminConfig.AuditLogPath's own doc comment.
+// Since 2026-10-16 the durable append runs FIRST, so the slog line can
+// carry the chain head it produced (audit_seq, audit_hash): the stdout
+// sink then holds an independent copy of the trail's head that a
+// truncated or deleted file cannot erase. A failed append still writes
+// the slog line -- without a head -- plus the Warn below.
 type auditLogger struct {
 	logger  *slog.Logger
 	enabled bool
@@ -135,16 +140,24 @@ func (a auditLogger) Info(msg string, args ...any) {
 	if !a.enabled {
 		return
 	}
-	a.logger.Info(msg, args...)
-	if a.store != nil {
-		if err := a.store.Append(msg, args...); err != nil {
-			// The operational slog line above already succeeded --
-			// losing the durable copy is a real, worth-knowing failure
-			// (e.g. a full disk) but must never be mistaken for the
-			// audit event itself having failed to record anywhere.
-			a.logger.Warn("admin_audit_durable_append_failed", "error", err.Error())
-		}
+	if a.store == nil {
+		a.logger.Info(msg, args...)
+		return
 	}
+	head, err := a.store.Append(msg, args...)
+	if err != nil {
+		// The slog line still goes out -- losing the durable copy is a
+		// real, worth-knowing failure (e.g. a full disk) but must never
+		// be mistaken for the audit event itself having failed to record
+		// anywhere -- and the Warn says why it carries no chain head.
+		a.logger.Info(msg, args...)
+		a.logger.Warn("admin_audit_durable_append_failed", "error", err.Error())
+		return
+	}
+	withHead := make([]any, 0, len(args)+4)
+	withHead = append(withHead, args...)
+	withHead = append(withHead, "audit_seq", head.Seq, "audit_hash", head.Hash)
+	a.logger.Info(msg, withHead...)
 }
 
 // Warn writes an operational warning — not an audit entry, so it is not
@@ -455,8 +468,10 @@ func getConfigHandler(cfg *controlplane.Config, logger auditLogger) http.Handler
 }
 
 // auditEntryResponse is one entry in GET /admin/audit's own JSON
-// response array -- a direct field-for-field mirror of
-// auditstore.Entry, kept as its own type rather than exposing that
+// response array -- auditstore.Entry's time, msg and fields,
+// deliberately WITHOUT its seq, prev_hash and mac (file-only, read by
+// kelvran audit verify; the owner's pick, 2026-10-16) -- kept as its
+// own type rather than exposing that
 // package's type directly on the wire, matching this file's own
 // established convention (e.g. virtualKeyListEntry vs.
 // identity.VirtualKey) of a dedicated response shape per route.

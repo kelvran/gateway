@@ -680,11 +680,16 @@ func run(configPath string, logger *slog.Logger) error {
 		// posture, per that field's own doc comment.
 		var auditStore *auditstore.Store
 		if cfg.Admin.AuditLogPath != "" {
-			auditStore, err = auditstore.Open(cfg.Admin.AuditLogPath)
+			auditKey, keyErr := resolveAuditSigningKey(cfg.Admin, os.Getenv, logger)
+			if keyErr != nil {
+				return keyErr
+			}
+			auditStore, err = auditstore.Open(cfg.Admin.AuditLogPath, auditKey)
 			if err != nil {
 				return fmt.Errorf("opening admin.audit_log_path %q: %w", cfg.Admin.AuditLogPath, err)
 			}
 			defer func() { _ = auditStore.Close() }()
+			warnOnUnsignedAuditHistory(auditStore.Resumed(), len(auditKey) > 0, cfg.Admin.AuditLogPath, logger)
 		}
 		// newAdminServer (admin_server.go) carries the listener's four
 		// timeouts; the pprof routes extend the write bound themselves.
@@ -1691,6 +1696,49 @@ func newConfigPublisher(cfg controlplane.ConfigPropagationConfig) (configpropaga
 		return nil, err
 	}
 	return configpropagation.Open(redisOptions(cfg.RedisAddr, cfg.Redis), secret), nil
+}
+
+// resolveAuditSigningKey resolves admin.audit_signing_secret_env for the
+// durable admin audit trail (round-5 Tier S item 26). Unset: the trail
+// is chained but unsigned -- every line still carries seq and prev_hash,
+// which detects an edit by anyone who does not recompute the chain -- and
+// a Warn says what to set; this is deliberately not a refusal, so no
+// deployment that set audit_log_path before the key existed changes
+// behaviour on upgrade (kelvran doctor reports it too). Set but resolving
+// to an empty variable: refuse to start, the rule every other *_env
+// secret follows, since a trail that claims to be signed must be.
+// warnOnUnsignedAuditHistory logs admin_audit_resumed_unsigned_history at
+// startup when a keyed audit store resumed a file that has lines but not a
+// single signed one. That is legitimate on every start until the first
+// signed line is appended after admin.audit_signing_secret_env was
+// introduced over an existing trail (nothing appends at startup), and
+// otherwise the file was rewritten while the gateway was down (every
+// line stripped to legacy, or an older copy restored), which the file alone
+// can no longer show: kelvran audit verify accepts a legacy prefix in front
+// of the fresh chain this process is about to start. The stdout sink keeps
+// the independent record (the audit_seq series restarting at 1).
+func warnOnUnsignedAuditHistory(resumed auditstore.Resumed, keyed bool, path string, logger *slog.Logger) bool {
+	if !keyed || resumed.Lines == 0 || resumed.SawMAC {
+		return false
+	}
+	logger.Warn("admin_audit_resumed_unsigned_history",
+		"path", path,
+		"lines", resumed.Lines,
+		"last_seq", resumed.LastSeq,
+		"hint", "expected on every start until the first signed line is appended after the key is introduced over an existing trail; otherwise the file was rewritten while the gateway was down -- compare with the stdout sink's last audit_seq")
+	return true
+}
+
+func resolveAuditSigningKey(admin controlplane.AdminConfig, getenv func(string) string, logger *slog.Logger) ([]byte, error) {
+	if admin.AuditSigningSecretEnv == "" {
+		logger.Warn("admin_audit_unsigned", "path", admin.AuditLogPath, "hint", "set admin.audit_signing_secret_env to add a per-line HMAC; the hash chain alone detects edits only by someone who does not recompute it")
+		return nil, nil
+	}
+	secret := getenv(admin.AuditSigningSecretEnv)
+	if secret == "" {
+		return nil, fmt.Errorf("admin.audit_signing_secret_env %q is set but resolves to an empty environment variable — refusing to write an audit trail that claims to be signed", admin.AuditSigningSecretEnv)
+	}
+	return []byte(secret), nil
 }
 
 // resolveConfigPropagationSigningSecret resolves and validates

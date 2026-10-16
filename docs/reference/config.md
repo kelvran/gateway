@@ -440,7 +440,8 @@ The admin HTTP server starts only when `token_env` is set. It listens on its own
 | `enable_pprof` | `bool` | `false` | Mounts `net/http/pprof` under `/admin/debug/pprof/` behind the Admin token; `seconds=` is capped at 60 on the nine routes that read it (`400` above, since `gateway/v0.20.0`; the ninth, Go 1.27's `goroutineleak` profile, on `main` since 2026-10-15, not in `gateway/v0.20.0`) |
 | `backup_dir` | `string` | empty (route answers 501) | Directory `POST /admin/backup` writes into. The route is always registered; with `backup_dir` empty it returns `501 Not Implemented` (`admin.backup_dir is not configured`) |
 | `enable_audit_log` | `bool` | `true` | Gates every admin-route audit event, both the log line and the durable trail. Defaults to `true` even when the `admin` section is absent |
-| `audit_log_path` | `string` | empty (no durable trail) | JSONL file for admin audit events; enables `GET /admin/audit`. Governed by `enable_audit_log`. If the file cannot be opened the process refuses to start. Not read when `token_env` is unset |
+| `audit_log_path` | `string` | empty (no durable trail) | JSONL file for admin audit events; enables `GET /admin/audit`. Governed by `enable_audit_log`. If the file cannot be opened, or its existing contents cannot be read to resume the chain (a line past 1 MiB), the process refuses to start. Not read when `token_env` is unset. Since 2026-10-16 (on `main`, not in `gateway/v0.20.0`) every line carries `seq` and `prev_hash` (a hash chain) and `kelvran audit verify` checks the file |
+| `audit_signing_secret_env` | `string` | empty (chained, unsigned) | Name of the environment variable holding the HMAC-SHA256 key that signs every audit line (`mac`). Empty: the trail is chained but unsigned, the gateway logs `admin_audit_unsigned` at startup and `kelvran doctor` warns. Set but resolving to an empty variable while `audit_log_path` is set: the process refuses to start; without `audit_log_path` (or without `token_env`) the key is never read |
 | `on_corrupt_store` | `string` | `"fail"` | `fail` or `reset`. Any other value is a load error. Applies to every `persist_path` (identity, budget, prompt). Defaults to `fail` even when the `admin` section is absent. See [Persistence files](#persistence-files) |
 | `mtls` | `mapping` | absent (plain HTTP) | See the next table |
 
@@ -526,10 +527,11 @@ The process exits 1 before binding a listener when any of the following holds. T
 | yes | A `fallback_chains` target that is not a configured deployment |
 | yes | `deployments.<name>.anthropic_beta_policy` set to a value other than `strip` or `forward_known`, or `forward_known` on a deployment whose `provider` is not `bedrock` |
 | no | `admin.token_env`, `viewer_token_env`, `cost_viewer_token_env` or `operator_token_env` set but resolving to an empty variable |
+| no | `admin.audit_signing_secret_env` set while `audit_log_path` is set, but resolving to an empty variable |
 | no | `config_propagation.redis_addr` set without `signing_secret_env`, or the secret resolving empty |
 | no | `admin.redis_addr` set and Redis unreachable or the key hydration failing |
 | no | A `persist_path` bbolt file that cannot be opened (locked, corrupt under `fail`, or unopenable) or hydrated |
-| no | `admin.audit_log_path` that cannot be opened |
+| no | `admin.audit_log_path` that cannot be opened, or whose existing contents cannot be read to resume the chain (a line past 1 MiB) |
 | no | `guardrails.embed_sim` cannot be constructed: `similarity_threshold` above 1, a `corpus_path` that cannot be read or parsed or has zero entries, or a corpus that cannot be embedded (bad or expired credentials) |
 | no | `telemetry.exporter` set to a value other than `stdout`, `otlp`, `none` |
 | no | `telemetry.prometheus` present but not a mapping, `telemetry.prometheus.enabled` not a boolean, or `telemetry.prometheus.listen_addr` present but empty or not a string |

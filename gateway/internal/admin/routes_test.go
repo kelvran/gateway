@@ -46,7 +46,7 @@ func probePath(rt Route) string {
 
 func openTestAuditStore(t *testing.T) *auditstore.Store {
 	t.Helper()
-	store, err := auditstore.Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	store, err := auditstore.Open(filepath.Join(t.TempDir(), "audit.jsonl"), nil)
 	if err != nil {
 		t.Fatalf("auditstore.Open: %v", err)
 	}

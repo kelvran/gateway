@@ -7,7 +7,8 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 ```
 /cmd/gateway              — main binary entrypoint (static binary)
 /cmd/kelvran              — companion CLI (RFC-3, 2026-10-10): `init`, `doctor`, `keys`, `status`, `spend` and `connect` — every
-                             RFC-3 Stage 1 verb. A second static binary in the same archives, deb/rpm/apk and
+                             RFC-3 Stage 1 verb — plus `audit` (2026-10-16, round-5 Tier S item 26:
+                             `kelvran audit verify`). A second static binary in the same archives, deb/rpm/apk and
                              image (/kelvran); a thin dispatcher — the logic is /internal/cli, a leaf over
                              adminapi, controlplane, identity, adapter, credentialstate and telemetry/exporterkind only.
 /cmd/kelvran-bench        — benchmark harness (added 2026-10-08): `run` drives open-loop Poisson load
@@ -727,8 +728,15 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
                              superset. A new `internal/admin/auditstore` package (2026-09-25) writes
                              each audit event to a durable, queryable JSONL file alongside the existing
                              `slog.Info` line — the prior structured-log-only trail was write-only with
-                             no read/query path at all; purely additive, gated by the same
-                             `EnableAuditLog` switch. See `THREAT_MODEL.md`'s Gateway
+                             no read/query path at all; purely additive until 2026-10-16, gated by the
+                             same `EnableAuditLog` switch. Tamper-evident since 2026-10-16 (round-5
+                             Tier S item 26): each line carries `seq` and `prev_hash` (the
+                             SHA-256 of the previous line's bytes) and, under
+                             `admin.audit_signing_secret_env`, an HMAC-SHA256 `mac`;
+                             `auditstore.Verify` / `kelvran audit verify` check a file, and
+                             `Append` returns the chain head that the slog audit line carries
+                             as `audit_seq`/`audit_hash` when the append succeeded (a failed
+                             append writes the line without them). See `THREAT_MODEL.md`'s Gateway
                              Elevation-of-Privilege row for the mTLS/Operator-tier detail and
                              `SECURITY.md`'s Data Retention table for the auditstore detail
 /internal/prompt             — **Corrected 2026-09-12**: missing from a prior pass of this tree, a

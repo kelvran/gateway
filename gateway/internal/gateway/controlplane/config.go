@@ -1051,6 +1051,17 @@ type AdminConfig struct {
 	// durable trail -- mirrors BackupDir's own "off unless configured"
 	// posture exactly.
 	AuditLogPath string
+	// AuditSigningSecretEnv names the environment variable holding the
+	// HMAC-SHA256 key every line of AuditLogPath is signed with (2026-10-16,
+	// round-5 Tier S item 26; YAML admin.audit_signing_secret_env). The
+	// NAME only, like every other *_env field -- the key never sits in
+	// config. Empty (the default) means the trail is chained but unsigned:
+	// every line still carries seq and prev_hash, cmd/gateway warns
+	// (admin_audit_unsigned) and kelvran doctor flags it, and no v0.15+
+	// deployment changes behaviour on upgrade. Set but resolving to an
+	// empty variable refuses startup, the rule every other *_env secret
+	// follows. Meaningful only with AuditLogPath.
+	AuditSigningSecretEnv string
 	// OnCorruptStore controls what happens when a configured
 	// persist_path (identity/budget/prompt) exists but bbolt fails to
 	// open it -- distinct from "path absent," which is always handled
@@ -1756,6 +1767,7 @@ func Parse(data []byte, source string) (*Config, error) {
 			return nil, err
 		}
 		cfg.Admin.AuditLogPath, _ = getString(adminRaw, "audit_log_path")
+		cfg.Admin.AuditSigningSecretEnv, _ = getString(adminRaw, "audit_signing_secret_env")
 		if v, present := getString(adminRaw, "on_corrupt_store"); present {
 			switch v {
 			case "fail", "reset":

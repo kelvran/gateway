@@ -124,6 +124,9 @@ func envChecks(cfg *controlplane.Config) []envCheck {
 	add("admin.viewer_token_env", cfg.Admin.ViewerTokenEnv, true, "the gateway refuses to start rather than run an unauthenticated viewer tier")
 	add("admin.cost_viewer_token_env", cfg.Admin.CostViewerTokenEnv, true, "the gateway refuses to start rather than run an unauthenticated cost-viewer tier")
 	add("admin.operator_token_env", cfg.Admin.OperatorTokenEnv, true, "the gateway refuses to start rather than run an unauthenticated operator tier")
+	if cfg.Admin.AuditLogPath != "" {
+		add("admin.audit_signing_secret_env", cfg.Admin.AuditSigningSecretEnv, true, "the gateway refuses to start rather than write an audit trail that claims to be signed")
+	}
 	add("admin.redis_password_env", cfg.Admin.Redis.PasswordEnv, false, "the identity store's Redis connection authenticates with an empty password")
 	add("budget.redis_password_env", cfg.Budget.Redis.PasswordEnv, false, "the budget backend's Redis connection authenticates with an empty password")
 	add("rate_limit.redis_password_env", cfg.RateLimit.Redis.PasswordEnv, false, "the rate limiter's Redis connection authenticates with an empty password")
@@ -352,6 +355,17 @@ func checkAdminAndListen(cfg *controlplane.Config, r *doctorReport) {
 		if d.AllowInsecureHTTP {
 			r.add("warning", "deployments."+d.Name+".allow_insecure_http", "requests to "+redactedURL(d.BaseURL)+" leave this host in clear text, credential included")
 		}
+	}
+}
+
+// checkAuditSigningKey: admin.audit_log_path without an
+// audit_signing_secret_env KEY is not fatal (the trail is still chained)
+// but unsigned: anyone who recomputes the chain can rewrite history
+// undetected, so it is a warning here; the *_env check above cannot see
+// an absent key.
+func checkAuditSigningKey(cfg *controlplane.Config, r *doctorReport) {
+	if cfg.Admin.AuditLogPath != "" && cfg.Admin.AuditSigningSecretEnv == "" {
+		r.add("warning", "admin.audit_signing_secret_env", "missing while audit_log_path is set: the durable audit trail is chained but unsigned, so anyone who recomputes the chain can rewrite it undetected; name a variable holding an HMAC key and verify with `kelvran audit verify --key-env` (kelvran-gateway -validate does not check this)")
 	}
 }
 

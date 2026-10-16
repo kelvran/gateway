@@ -817,3 +817,15 @@ func TestDoctorLossyIngressWarningPerNonAnthropicDeployment(t *testing.T) {
 		}
 	}
 }
+
+// An audit_log_path without admin.audit_signing_secret_env is not fatal (the
+// trail is still chained) but it is unsigned: anyone who recomputes the chain
+// can rewrite history undetected, so doctor says so.
+func TestDoctorWarnsWhenAuditLogPathIsSetWithoutASigningKey(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeCfg(t, dir, cfgOpts{telemetry: "none", adminTokenEnv: "DOCTOR_TEST_ADMIN", adminAudit: filepath.Join(dir, "audit.jsonl")})
+	_, stdout, _ := runDoctorCmd(t, envWith("DOCTOR_TEST_UPSTREAM", "DOCTOR_TEST_ADMIN"), "--config", cfg)
+	if !strings.Contains(stdout, "warning   admin.audit_signing_secret_env") || !strings.Contains(stdout, "missing while audit_log_path is set") {
+		t.Errorf("an unsigned durable audit trail must be a doctor warning naming the key to set:\n%s", stdout)
+	}
+}

@@ -8,13 +8,13 @@ import (
 
 func TestAppendThenQueryRoundTripsFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	s, err := Open(path)
+	s, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = s.Close() }()
 
-	if err := s.Append("admin_virtual_key_upserted", "name", "team-alpha", "authorized_by", "admin"); err != nil {
+	if _, err := s.Append("admin_virtual_key_upserted", "name", "team-alpha", "authorized_by", "admin"); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -35,14 +35,14 @@ func TestAppendThenQueryRoundTripsFields(t *testing.T) {
 
 func TestQueryFiltersByMsg(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	s, err := Open(path)
+	s, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = s.Close() }()
 
-	_ = s.Append("admin_virtual_key_upserted", "name", "team-alpha")
-	_ = s.Append("admin_virtual_key_deleted", "name", "team-beta")
+	_, _ = s.Append("admin_virtual_key_upserted", "name", "team-alpha")
+	_, _ = s.Append("admin_virtual_key_deleted", "name", "team-beta")
 
 	entries, err := Query(path, Filter{Msg: "admin_virtual_key_deleted"})
 	if err != nil {
@@ -55,15 +55,15 @@ func TestQueryFiltersByMsg(t *testing.T) {
 
 func TestQueryFiltersByFieldKeyValue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	s, err := Open(path)
+	s, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = s.Close() }()
 
-	_ = s.Append("admin_virtual_key_upserted", "name", "team-alpha")
-	_ = s.Append("admin_virtual_key_upserted", "name", "team-beta")
-	_ = s.Append("admin_virtual_key_deleted", "name", "team-alpha")
+	_, _ = s.Append("admin_virtual_key_upserted", "name", "team-alpha")
+	_, _ = s.Append("admin_virtual_key_upserted", "name", "team-beta")
+	_, _ = s.Append("admin_virtual_key_deleted", "name", "team-alpha")
 
 	entries, err := Query(path, Filter{FieldKey: "name", FieldValue: "team-alpha"})
 	if err != nil {
@@ -76,17 +76,17 @@ func TestQueryFiltersByFieldKeyValue(t *testing.T) {
 
 func TestQueryFiltersByTimeRange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	s, err := Open(path)
+	s, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = s.Close() }()
 
-	_ = s.Append("event-1")
+	_, _ = s.Append("event-1")
 	time.Sleep(10 * time.Millisecond)
 	cutoff := time.Now()
 	time.Sleep(10 * time.Millisecond)
-	_ = s.Append("event-2")
+	_, _ = s.Append("event-2")
 
 	entries, err := Query(path, Filter{Since: cutoff})
 	if err != nil {
@@ -123,21 +123,21 @@ func TestQueryOnNeverCreatedFileReturnsEmptyNotError(t *testing.T) {
 // restart scenario this store exists to survive.
 func TestAppendPersistsAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	s1, err := Open(path)
+	s1, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	_ = s1.Append("event-before-restart")
+	_, _ = s1.Append("event-before-restart")
 	if err := s1.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(path)
+	s2, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("re-Open: %v", err)
 	}
 	defer func() { _ = s2.Close() }()
-	_ = s2.Append("event-after-restart")
+	_, _ = s2.Append("event-after-restart")
 
 	entries, err := Query(path, Filter{})
 	if err != nil {

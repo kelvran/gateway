@@ -649,7 +649,19 @@ telemetry:
 # token is silently ignored. A failed append is a Warn
 # (admin_audit_durable_append_failed) that never fails the admin request;
 # the file is not part of POST /admin/backup. See
-# docs/operations/FAILURE-MODES.md.
+# docs/operations/FAILURE-MODES.md. Every line is chained to the previous
+# one (seq, prev_hash) and, when audit_signing_secret_env names a variable
+# holding an HMAC key, signed (mac); `kelvran audit verify` checks the
+# file. Without the key the trail is chained but unsigned -- the gateway
+# warns (admin_audit_unsigned) and doctor flags it; a key variable that is
+# set but empty refuses startup like every other *_env secret; a keyed
+# gateway that resumes a file with no signed line warns at every start
+# until the first signed append (admin_audit_resumed_unsigned_history) --
+# expected when the key is first introduced, otherwise the file was
+# rewritten while the gateway was down.
+# The chain head also rides on each slog audit line written while the trail
+# is open and the append succeeded (audit_seq, audit_hash); a failed append
+# writes the line without them, followed by that Warn.
 # operator_token_env (added 2026-09-20, per
 # docs/rfcs/2026-09-20-gateway-admin-rbac-risk-tiering.md) is an optional,
 # write-capable-but-narrower-than-admin credential tier: an operator
@@ -679,6 +691,7 @@ telemetry:
 #   backup_dir: "/var/lib/kelvran-gateway/backups"
 #   enable_audit_log: true
 #   audit_log_path: "/var/lib/kelvran-gateway/admin-audit.jsonl"
+#   audit_signing_secret_env: "KELVRAN_AUDIT_SIGNING_SECRET"
 #   persist_path: "/var/lib/kelvran-gateway/identity.db"
 #   # redis_addr: "localhost:6379"
 #   # redis_password_env: "REDIS_ADMIN_PASSWORD"

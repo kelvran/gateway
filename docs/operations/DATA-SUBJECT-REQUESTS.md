@@ -68,8 +68,15 @@ what Kelvran's software can and cannot do when a real data-subject request arriv
   it to `false` stops NEW entries in both; it still removes nothing already written. The JSONL file
   is a store under the operator's control that this document previously said did not exist: Kelvran
   never truncates or rotates it (`Open` uses `O_APPEND`; its doc comment says the file is never
-  truncated) and `auditstore` exposes only `Open`/`Append`/`Query`/`Close` — no per-entry delete,
-  so the "no per-entry deletion path" limitation below still stands. If `audit_log_path` is unset
+  truncated) and `auditstore` exposes `Open`/`Append`/`Query`/`Verify` (and
+  `VerifyWithOptions`)/`Close` — no per-entry delete,
+  so the "no per-entry deletion path" limitation below still stands. **Added 2026-10-16** (round-5
+  Tier S item 26): each line is now chained to the previous one (`seq`, `prev_hash`; an HMAC per
+  line when `admin.audit_signing_secret_env` is set), so a removed or edited line is reported by
+  `kelvran audit verify` to anyone without the key — erasure of a single record would be detectable
+  by design, not merely unoffered (whole-file deletion, a tail cut at a line boundary or a restored
+  older copy are visible only against the `audit_seq`/`audit_hash` the stdout sink keeps, once the
+  gateway has restarted). If `audit_log_path` is unset
   (the default), the original sentence remains accurate. See `docs/how-to/admin-api-rbac.md`
   ("Read the audit trail").
 

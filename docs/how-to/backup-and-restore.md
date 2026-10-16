@@ -24,7 +24,7 @@ Every route, flag and key on this page is in gateway/v0.17.0 unless marked other
 
 Each file is a byte copy of the whole database, taken inside a bbolt read transaction. A key deleted later with `DELETE /admin/virtual_keys/{name}` also loses its persisted budget record, but a backup taken earlier still holds both (see [Data subject requests](../operations/DATA-SUBJECT-REQUESTS.md)).
 
-Not in a backup: the admin audit JSONL at `admin.audit_log_path` (it is not bbolt), and anything held in Redis.
+Not in a backup: the admin audit JSONL at `admin.audit_log_path` (it is not bbolt), and anything held in Redis. Since 2026-10-16 that file is self-verifying (`kelvran audit verify`): copy it with any file tool (a copy taken mid-write may end in a torn line that `verify` reports as `truncated_tail`: re-copy, or compare the head with the log sink), and keep the log sink's `audit_seq`/`audit_hash` fields as the independent record of where its chain stood.
 
 ## Steps
 

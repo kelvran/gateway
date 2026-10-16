@@ -44,6 +44,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cli.Status(args[1:], cli.IO{Stdout: stdout, Stderr: stderr, Getenv: os.Getenv})
 	case "spend":
 		return cli.Spend(args[1:], cli.IO{Stdout: stdout, Stderr: stderr, Getenv: os.Getenv})
+	case "audit":
+		return cli.Audit(args[1:], cli.IO{Stdout: stdout, Stderr: stderr, Getenv: os.Getenv})
 	case "connect":
 		return cli.Connect(args[1:], cli.IO{Stdout: stdout, Stderr: stderr, Getenv: os.Getenv})
 	default:
@@ -61,6 +63,7 @@ func usage(w io.Writer) {
   keys       create, list, rotate and delete virtual keys through the admin API, or offline in the config file (kelvran keys -h)
   status     what the gateway serves: /readyz, listen_addr, deployments, keys, the admin store (kelvran status -h)
   spend      spend per virtual key, or by model, tool or session from the spend ledger (kelvran spend -h)
+  audit      verify the durable admin audit trail: seq, prev_hash chain and macs (kelvran audit -h)
   connect    the client configuration for claude (printed, --written or --checked), codex, aider or continue (kelvran connect -h)
   -version   print the build identity
 

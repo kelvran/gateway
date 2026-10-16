@@ -238,6 +238,7 @@ func runDoctor(o doctorOptions, env IO) (*doctorReport, error) {
 	checkPricesAndTelemetry(cfg, report)
 	checkAdminAndListen(cfg, report)
 	checkPropagationKey(cfg, report)
+	checkAuditSigningKey(cfg, report)
 	if o.url != "" {
 		probeDataPlane(context.Background(), o.url, report)
 	}

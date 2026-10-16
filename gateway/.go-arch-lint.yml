@@ -217,6 +217,12 @@ deps:
       # doctor's *_file check reads credential files with the gateway's own
       # reader (stdlib-only leaf) so the two can never disagree on "empty".
       - credentialstate
+      # `kelvran audit verify` checks the durable admin audit trail with the
+      # gateway's own chain and MAC rules (admin/auditstore, a stdlib-only
+      # leaf: it imports nothing project-internal), so the writer and the
+      # verifier can never disagree on a line's canonical bytes. Still
+      # never admin itself: the CLI reads the file, not the HTTP surface.
+      - admin-auditstore
   adminapi:
     mayDependOn:
       - adapter

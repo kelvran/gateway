@@ -19,7 +19,7 @@ import (
 // fields.
 func TestAdminMutationAlsoLandsInDurableAuditStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	store, err := auditstore.Open(path)
+	store, err := auditstore.Open(path, nil)
 	if err != nil {
 		t.Fatalf("auditstore.Open: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestAdminMutationAlsoLandsInDurableAuditStore(t *testing.T) {
 // line and the durable JSONL append, never just one of the two.
 func TestDisablingAuditLogAlsoSuppressesDurableAppend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	store, err := auditstore.Open(path)
+	store, err := auditstore.Open(path, nil)
 	if err != nil {
 		t.Fatalf("auditstore.Open: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestDisablingAuditLogAlsoSuppressesDurableAppend(t *testing.T) {
 // route, filtered by both action-type and field value together.
 func TestGetAdminAuditRouteFiltersByFieldAndMsg(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	store, err := auditstore.Open(path)
+	store, err := auditstore.Open(path, nil)
 	if err != nil {
 		t.Fatalf("auditstore.Open: %v", err)
 	}
