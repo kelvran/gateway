@@ -81,7 +81,7 @@ func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller,
 	return p
 }
 
-func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream UpstreamStreamCaller, deployments []Deployment, adapters adapter.Registry, keys []identity.VirtualKey, tracker *budget.Tracker) *Pipeline {
+func newStreamingTestPipelineWithKeysBudgetAndLogger(t *testing.T, upstreamStream UpstreamStreamCaller, deployments []Deployment, adapters adapter.Registry, keys []identity.VirtualKey, tracker *budget.Tracker, logger *slog.Logger) *Pipeline {
 	t.Helper()
 	verifier, err := identity.NewVerifier(keys)
 	if err != nil {
@@ -107,12 +107,19 @@ func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream Upst
 			return nil, nil
 		},
 		UpstreamStream: upstreamStream,
-		Logger:         discardLogger(),
+		Logger:         logger,
 	})
 	if err != nil {
 		t.Fatalf("NewPipeline: %v", err)
 	}
 	return p
+}
+
+// newStreamingTestPipelineWithKeysAndBudget is the logger-less form most
+// streaming tests want.
+func newStreamingTestPipelineWithKeysAndBudget(t *testing.T, upstreamStream UpstreamStreamCaller, deployments []Deployment, adapters adapter.Registry, keys []identity.VirtualKey, tracker *budget.Tracker) *Pipeline {
+	t.Helper()
+	return newStreamingTestPipelineWithKeysBudgetAndLogger(t, upstreamStream, deployments, adapters, keys, tracker, discardLogger())
 }
 
 // TestHandleChatCompletionStreamModelNotAllowedCheckedFirst mirrors

@@ -121,8 +121,12 @@ type RedisBackend interface {
 	// (see Reserve's own doc comment below and
 	// redisbudget.budgetReserveLuaSrc's doc comment for why this is a
 	// real correctness requirement in Redis mode too, not merely an
-	// in-memory-mode concept).
-	Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (allowed bool, reservedNanoUSD int64, epoch int64, err error)
+	// in-memory-mode concept). spentBeforeNanoUSD is the window's spend before
+	// this reservation (0 for a new window) on every branch -- the value the
+	// decision event's budget_spent_usd carries, reported by the script itself
+	// since 2026-10-16 (round-5 item 10 phase 2a) so the dataplane needs no
+	// separate read.
+	Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (allowed bool, reservedNanoUSD int64, epoch int64, spentBeforeNanoUSD int64, err error)
 	// ReserveFixed atomically admits exactly deltaNanoUSD (not "everything
 	// remaining") against capNanoUSD — IncreaseReservation's mid-stream
 	// top-up shape. Never takes/needs an epoch: unlike Reserve+Adjust's
@@ -140,8 +144,12 @@ type RedisBackend interface {
 	// billed is true for a settlement with a real cost (the window's mean
 	// learns from it: billed_count++), false for a release of the reservation
 	// alone -- the Redis twin of Tracker.billedCount, since 2026-10-16
-	// (FAILURE-MODES R19).
-	Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) error
+	// (FAILURE-MODES R19). spentAfterNanoUSD is the window's spend once the
+	// adjustment has landed -- the current window's spend, untouched, when the
+	// epoch no longer matches; 0 when the window is gone -- so the post-call
+	// threshold checks need no second read (round-5 item 10 phase 2a,
+	// 2026-10-16).
+	Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) (spentAfterNanoUSD int64, err error)
 	// SpentNanoUSD reads keyID's current cumulative spend — a plain read,
 	// no atomicity requirement of its own (mirrors SpentUSD's identical
 	// in-memory read-only contract).
@@ -562,42 +570,71 @@ func (t *Tracker) Record(keyID string, costUSD decimal.Decimal, resetInterval ti
 // like the in-memory branch's value, since Reconcile's Redis-mode
 // branch now genuinely consults it too.
 func (t *Tracker) Reserve(ctx context.Context, keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (allowed bool, reserved bool, reservedUSD decimal.Decimal, reservationEpoch int64, err error) {
+	r, err := t.ReserveWithSpend(ctx, keyID, capUSD, resetInterval)
+	return r.Allowed, r.Reserved, r.ReservedUSD, r.Epoch, err
+}
+
+// Reservation is ReserveWithSpend's decision: Reserve's four decision values
+// plus SpentBeforeUSD, the key's spend the decision was made against -- before
+// this reservation, after every earlier one (the siblings' in-flight
+// reservations included) and every settled cost.
+type Reservation struct {
+	Allowed        bool
+	Reserved       bool
+	ReservedUSD    decimal.Decimal
+	Epoch          int64
+	SpentBeforeUSD decimal.Decimal
+}
+
+// ReserveWithSpend is Reserve reporting the spend it decided against, read
+// in the same lock acquisition (in memory) or the same script (Redis) as
+// the decision. It is what the dataplane calls: the decision event's
+// budget_spent_usd used to come from a separate SpentUSD call just before
+// Reserve -- one more Redis round trip on every request, and the two lock
+// acquisitions docs/rfcs/2026-09-03-gatewayevents-decision-enrichment.md
+// accepted as a limitation -- until round-5 item 10 phase 2a (2026-10-16).
+// The field keeps its meaning: the spend before this request's own cost.
+// On a backend error the zero Reservation is returned with the error, so
+// the spend reads 0 exactly as the separate read did when it failed open.
+func (t *Tracker) ReserveWithSpend(ctx context.Context, keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (Reservation, error) {
 	if t.backend != nil {
-		allowedRedis, reservedNano, epoch, redisErr := t.backend.Reserve(ctx, keyID, USDToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
+		allowedRedis, reservedNano, epoch, spentBeforeNano, redisErr := t.backend.Reserve(ctx, keyID, USDToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
 		if redisErr != nil {
-			return false, false, decimal.Zero, 0, redisErr
+			return Reservation{}, redisErr
 		}
+		spentBefore := NanoUSDToUSD(spentBeforeNano)
 		if capUSD.Sign() <= 0 {
 			// An uncapped key: the backend opened (or kept) the key's window
 			// and reserved nothing; the window's epoch is what Reconcile's
 			// Adjust needs to land the real cost, so it is returned with
-			// reserved=false (nothing to release). Until 2026-10-12 this
+			// Reserved=false (nothing to release). Until 2026-10-12 this
 			// branch returned before the backend was called, no window
 			// existed, and the key's spend read 0 in Redis mode while the
 			// in-memory tracker recorded it.
-			return true, false, decimal.Zero, epoch, nil
+			return Reservation{Allowed: true, Epoch: epoch, SpentBeforeUSD: spentBefore}, nil
 		}
 		if !allowedRedis {
-			return false, false, decimal.Zero, 0, nil
+			return Reservation{SpentBeforeUSD: spentBefore}, nil
 		}
-		return true, true, NanoUSDToUSD(reservedNano), epoch, nil
+		return Reservation{Allowed: true, Reserved: true, ReservedUSD: NanoUSDToUSD(reservedNano), Epoch: epoch, SpentBeforeUSD: spentBefore}, nil
 	}
 
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
 		t.persistZeroIfStoreConfigured(keyID, ps, pe)
 	}
-	if capUSD.Sign() <= 0 {
-		return true, false, decimal.Zero, 0, nil
-	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.spent[keyID].LessThan(capUSD) {
-		return false, false, decimal.Zero, 0, nil
+	spentBefore := t.spent[keyID]
+	if capUSD.Sign() <= 0 {
+		return Reservation{Allowed: true, SpentBeforeUSD: spentBefore}, nil
 	}
-	reservedUSD = t.reservationAmountLocked(keyID, capUSD)
-	t.spent[keyID] = t.spent[keyID].Add(reservedUSD)
-	return true, true, reservedUSD, t.periodEpoch[keyID], nil
+	if !spentBefore.LessThan(capUSD) {
+		return Reservation{SpentBeforeUSD: spentBefore}, nil
+	}
+	reservedUSD := t.reservationAmountLocked(keyID, capUSD)
+	t.spent[keyID] = spentBefore.Add(reservedUSD)
+	return Reservation{Allowed: true, Reserved: true, ReservedUSD: reservedUSD, Epoch: t.periodEpoch[keyID], SpentBeforeUSD: spentBefore}, nil
 }
 
 // reservationAmountLocked computes keyID's Reserve reservation amount:
@@ -693,7 +730,17 @@ func (t *Tracker) reservationAmountLocked(keyID string, capUSD decimal.Decimal) 
 // spend/enforcement path has already run its course by the time this is
 // called, exactly as a Store.Save persistence failure is already
 // non-fatal here today.
-func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decimal.Decimal, reservationEpoch int64, realCost *decimal.Decimal, resetInterval time.Duration) {
+//
+// The returns (round-5 item 10 phase 2a, 2026-10-16): spentAfterUSD is the
+// window's spend after the Adjust reply -- the new total when the settlement
+// landed, the current window's spend untouched on an epoch mismatch, 0 when
+// the window is gone (budgetAdjustLuaSrc's deliberate no-ops) -- and
+// spendKnown is false only when the Redis call itself failed and the spend
+// is unknown. finalize's warn-threshold and alert-ladder checks read this
+// value instead of re-reading Redis twice, and skip the request (logging
+// budget_threshold_checks_skipped) when it is unknown. In memory spendKnown
+// is always true.
+func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decimal.Decimal, reservationEpoch int64, realCost *decimal.Decimal, resetInterval time.Duration) (spentAfterUSD decimal.Decimal, spendKnown bool) {
 	if t.backend != nil {
 		billed := realCost != nil && realCost.Sign() >= 0
 		delta := decimal.Zero.Sub(reservedUSD)
@@ -702,15 +749,17 @@ func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decim
 		}
 		// billed teaches the window's mean (the Redis twin of billedCount++
 		// below): a release never counts as a settlement.
-		if err := t.backend.Adjust(ctx, keyID, USDToNanoUSD(delta), reservationEpoch, billed); err != nil {
+		spentAfterNano, err := t.backend.Adjust(ctx, keyID, USDToNanoUSD(delta), reservationEpoch, billed)
+		if err != nil {
 			// A lost settlement write, not a read: the reservation stays
 			// debited and the real cost is never recorded, so it counts
 			// under the same durable-write-failure counter the bbolt Save
 			// path below records (added 2026-10-08; this was Warn-only).
 			telemetry.RecordPersistenceFailed(ctx, "budget", keyID)
 			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "reconcile", "error", err.Error())
+			return decimal.Zero, false
 		}
-		return
+		return NanoUSDToUSD(spentAfterNano), true
 	}
 
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
@@ -732,12 +781,13 @@ func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decim
 	t.mu.Unlock()
 
 	if !billed || t.store == nil {
-		return
+		return newTotal, true
 	}
 	if err := t.store.Save(context.Background(), keyID, state); err != nil {
 		telemetry.RecordPersistenceFailed(context.Background(), "budget", keyID)
 		t.logger.Warn("budget_persist_failed", "key_id", keyID, "error", err.Error())
 	}
+	return newTotal, true
 }
 
 // IncreaseReservation attempts to raise an existing outstanding

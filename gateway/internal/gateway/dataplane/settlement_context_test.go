@@ -26,20 +26,20 @@ type settlementCapturingBudgetBackend struct {
 	adjustCtxErr error
 }
 
-func (b *settlementCapturingBudgetBackend) Reserve(_ context.Context, _ string, capNanoUSD, _ int64) (bool, int64, int64, error) {
-	return true, capNanoUSD, 7, nil
+func (b *settlementCapturingBudgetBackend) Reserve(_ context.Context, _ string, capNanoUSD, _ int64) (bool, int64, int64, int64, error) {
+	return true, capNanoUSD, 7, 0, nil
 }
 
 func (b *settlementCapturingBudgetBackend) ReserveFixed(context.Context, string, int64, int64, int64) (bool, error) {
 	return true, nil
 }
 
-func (b *settlementCapturingBudgetBackend) Adjust(ctx context.Context, _ string, _, _ int64, _ bool) error {
+func (b *settlementCapturingBudgetBackend) Adjust(ctx context.Context, _ string, _, _ int64, _ bool) (int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.adjustCalls++
 	b.adjustCtxErr = ctx.Err()
-	return nil
+	return 0, nil
 }
 
 func (b *settlementCapturingBudgetBackend) SpentNanoUSD(context.Context, string) (int64, error) {

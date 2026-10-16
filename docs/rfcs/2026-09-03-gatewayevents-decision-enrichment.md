@@ -178,6 +178,8 @@ func (t *Tracker) SpentUSD(keyID string) decimal.Decimal {
 
 Accepted, deliberately-not-fixed limitation: `SpentUSD` and `Allow` are two separate lock acquisitions, not one atomic read — under concurrent requests for the *same* key, another goroutine's `Record` could land in the gap between them. This is fine: it's an observability field, not part of the enforcement decision itself (`Allow`'s own correctness is untouched), and adding a combined atomic accessor purely to close a race that only affects an audit-log number is unneeded complexity for what it buys.
 
+**Implemented 2026-10-16** (round-5 item 10 phase 2a): `Tracker.ReserveWithSpend` reports the spend in the same lock acquisition (in memory) or the same Lua script (Redis) as the decision, and the dataplane reads `budget_spent_usd` from it; the separate `SpentUSD` call before the reservation left the request path, and with it one Redis round trip per request. The field's meaning is unchanged: the spend before this request's own cost. The limitation above closed as a side effect of the round-trip work, not for its own sake.
+
 ### Non-breaking, confirmed against `buf`'s real rule taxonomy
 
 `api/buf.yaml` is configured `breaking: use: [FILE]` — the strictest category buf defines. Every rule in every category (`FILE`, `PACKAGE`, `WIRE`, `WIRE_JSON`) targets either deletion of an existing element or enforced sameness of an already-existing field (`FIELD_NO_DELETE`, `FIELD_SAME_TYPE`, `FIELD_SAME_NAME`, etc.) — none targets *addition*. Appending five new fields at five new, previously-unused field numbers (7–11) does not delete or renumber fields 1–6 or touch the `Outcome` enum, so no rule in any category fires. No `UPGRADE.md` entry needed. The one real (non-`buf breaking`) caveat: old code emitting the old 6-field message, read by new code, simply sees zero-value defaults for the 5 new fields — correctly interpreted as "not populated," never as false data, given the doc comments above.
@@ -185,7 +187,7 @@ Accepted, deliberately-not-fixed limitation: `SpentUSD` and `Allow` are two sepa
 ## Drawbacks
 
 - `fallback_reason` is free text (an arbitrary upstream error string), not an enum — a real, accepted inconsistency with `Outcome`'s structured-enum precedent, justified because upstream/provider failures have no existing sentinel-error taxonomy to classify into (inventing one now would be scope creep beyond what this RFC needs).
-- `SpentUSD`+`Allow`'s two-lock-acquisition gap (above) means the recorded `budget_spent_usd` can, in a narrow concurrent-request-to-the-same-key race, be stale by one in-flight `Record` relative to what `Allow` itself compared against. Accepted as an observability-only imprecision, not an enforcement bug.
+- `SpentUSD`+`Allow`'s two-lock-acquisition gap (above) means the recorded `budget_spent_usd` can, in a narrow concurrent-request-to-the-same-key race, be stale by one in-flight `Record` relative to what `Allow` itself compared against. Accepted as an observability-only imprecision, not an enforcement bug. (Closed 2026-10-16 — see the Implemented note above; the spend is read inside the reservation.)
 - `finalize`'s parameter list grows to 11 — a real, if minor, readability cost, deferred rather than addressed now (see "future refactor" note above).
 
 ## Alternatives Considered
@@ -200,7 +202,7 @@ Accepted, deliberately-not-fixed limitation: `SpentUSD` and `Allow` are two sepa
 
 - `finalize`'s parameter list will need a real refactor (likely a struct) if it grows again — not addressed now, per YAGNI.
 - Whether `fallback_reason`'s free-text shape should eventually gain a coarse classification (network timeout vs. 4xx vs. 5xx, etc.) once real fallback volume exists to justify the added taxonomy — deferred, same as the original contract RFC's own posture on inventing categories ahead of real data.
-- Producer-side latency cost of the two new decimal-to-string conversions and the additional `SpentUSD` lock acquisition per request — unmeasured, expected to be small (comparable to work `logRequest` already does), not benchmarked.
+- Producer-side latency cost of the two new decimal-to-string conversions and the additional `SpentUSD` lock acquisition per request — unmeasured, expected to be small (comparable to work `logRequest` already does), not benchmarked (the separate acquisition is gone since 2026-10-16).
 
 ## Research Trail
 

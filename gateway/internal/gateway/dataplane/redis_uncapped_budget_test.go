@@ -27,33 +27,34 @@ type windowBackend struct {
 
 const windowBackendEpoch = int64(4242)
 
-func (b *windowBackend) Reserve(_ context.Context, keyID string, capNanoUSD, _ int64) (bool, int64, int64, error) {
+func (b *windowBackend) Reserve(_ context.Context, keyID string, capNanoUSD, _ int64) (bool, int64, int64, int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, open := b.spent[keyID]; !open {
 		b.spent[keyID] = 0
 	}
+	spent := b.spent[keyID]
 	if capNanoUSD <= 0 {
-		return true, 0, windowBackendEpoch, nil
+		return true, 0, windowBackendEpoch, spent, nil
 	}
-	headroom := capNanoUSD - b.spent[keyID]
+	headroom := capNanoUSD - spent
 	if headroom <= 0 {
-		return false, 0, windowBackendEpoch, nil
+		return false, 0, windowBackendEpoch, spent, nil
 	}
 	b.spent[keyID] = capNanoUSD
-	return true, headroom, windowBackendEpoch, nil
+	return true, headroom, windowBackendEpoch, spent, nil
 }
 func (b *windowBackend) ReserveFixed(context.Context, string, int64, int64, int64) (bool, error) {
 	return true, nil
 }
-func (b *windowBackend) Adjust(_ context.Context, keyID string, delta, epoch int64, _ bool) error {
+func (b *windowBackend) Adjust(_ context.Context, keyID string, delta, epoch int64, _ bool) (int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, open := b.spent[keyID]; !open || epoch != windowBackendEpoch {
-		return nil
+		return b.spent[keyID], nil
 	}
 	b.spent[keyID] = max(b.spent[keyID]+delta, 0)
-	return nil
+	return b.spent[keyID], nil
 }
 func (b *windowBackend) SpentNanoUSD(_ context.Context, keyID string) (int64, error) {
 	b.mu.Lock()

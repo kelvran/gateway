@@ -275,10 +275,15 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 	}
 	defer p.releaseConcurrency(ctx, vk)
 
-	budgetSpentAtDecision = p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
-	var budgetOK bool
-	var budgetErr error
-	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch, budgetErr = p.budget.Reserve(ctx, vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	// One call decides and reports the spend it decided against (round-5
+	// item 10 phase 2a, 2026-10-16): the decision event's budget_spent_usd
+	// used to be a separate SpentUSD read here, one more Redis round trip on
+	// every request. On a backend error it is 0, as it was whenever that read
+	// failed (the two calls could fail independently; one error zeroes both now).
+	reservation, budgetErr := p.budget.ReserveWithSpend(ctx, vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	budgetSpentAtDecision = reservation.SpentBeforeUSD
+	budgetOK := reservation.Allowed
+	budgetReserved, budgetReservedUSD, budgetReservationEpoch = reservation.Reserved, reservation.ReservedUSD, reservation.Epoch
 	if budgetErr != nil {
 		p.logger.Warn("budget_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", budgetErr.Error())...)
 		telemetry.RecordBudgetFailOpen(ctx, vk.ID)

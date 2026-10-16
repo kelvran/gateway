@@ -35,13 +35,15 @@ import (
 // so the fail-open shape of both spend routes can be driven without Redis.
 type failingBudgetBackend struct{ err error }
 
-func (f *failingBudgetBackend) Reserve(context.Context, string, int64, int64) (bool, int64, int64, error) {
-	return true, 0, 0, nil
+func (f *failingBudgetBackend) Reserve(context.Context, string, int64, int64) (bool, int64, int64, int64, error) {
+	return true, 0, 0, 0, nil
 }
 func (f *failingBudgetBackend) ReserveFixed(context.Context, string, int64, int64, int64) (bool, error) {
 	return true, nil
 }
-func (f *failingBudgetBackend) Adjust(context.Context, string, int64, int64, bool) error { return nil }
+func (f *failingBudgetBackend) Adjust(context.Context, string, int64, int64, bool) (int64, error) {
+	return 0, nil
+}
 func (f *failingBudgetBackend) SpentNanoUSD(context.Context, string) (int64, error) {
 	return 0, f.err
 }

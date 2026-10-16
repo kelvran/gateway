@@ -26,7 +26,7 @@ func newRecordingBackend(epoch int64) *recordingBackend {
 	return &recordingBackend{epoch: epoch, spent: map[string]int64{}}
 }
 
-func (b *recordingBackend) Reserve(_ context.Context, keyID string, capNanoUSD, _ int64) (bool, int64, int64, error) {
+func (b *recordingBackend) Reserve(_ context.Context, keyID string, capNanoUSD, _ int64) (bool, int64, int64, int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.reserves = append(b.reserves, capNanoUSD)
@@ -35,28 +35,28 @@ func (b *recordingBackend) Reserve(_ context.Context, keyID string, capNanoUSD, 
 		b.spent[keyID] = 0
 	}
 	if capNanoUSD <= 0 {
-		return true, 0, b.epoch, nil
+		return true, 0, b.epoch, spent, nil
 	}
 	if spent >= capNanoUSD {
-		return false, 0, b.epoch, nil
+		return false, 0, b.epoch, spent, nil
 	}
 	b.spent[keyID] = capNanoUSD
-	return true, capNanoUSD - spent, b.epoch, nil
+	return true, capNanoUSD - spent, b.epoch, spent, nil
 }
 
 func (b *recordingBackend) ReserveFixed(context.Context, string, int64, int64, int64) (bool, error) {
 	return true, nil
 }
 
-func (b *recordingBackend) Adjust(_ context.Context, keyID string, deltaNanoUSD, epoch int64, _ bool) error {
+func (b *recordingBackend) Adjust(_ context.Context, keyID string, deltaNanoUSD, epoch int64, _ bool) (int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.adjusts = append(b.adjusts, [2]int64{deltaNanoUSD, epoch})
 	if _, open := b.spent[keyID]; !open || epoch != b.epoch {
-		return nil // Redis's own no-op: no window, or a window this epoch does not name
+		return b.spent[keyID], nil // Redis's own no-op: no window, or a window this epoch does not name
 	}
 	b.spent[keyID] = max(b.spent[keyID]+deltaNanoUSD, 0)
-	return nil
+	return b.spent[keyID], nil
 }
 
 func (b *recordingBackend) SpentNanoUSD(_ context.Context, keyID string) (int64, error) {
@@ -128,6 +128,6 @@ func TestRedisTrackerUncappedKeyStillFailsOpenOnABackendError(t *testing.T) {
 
 type erroringBackend struct{ *recordingBackend }
 
-func (erroringBackend) Reserve(context.Context, string, int64, int64) (bool, int64, int64, error) {
-	return false, 0, 0, context.DeadlineExceeded
+func (erroringBackend) Reserve(context.Context, string, int64, int64) (bool, int64, int64, int64, error) {
+	return false, 0, 0, 0, context.DeadlineExceeded
 }

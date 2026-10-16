@@ -19,8 +19,8 @@ func TestReconcileRedisModeBackendErrorIncrementsPersistenceFailedCounter(t *tes
 	before := budgetPersistFailedCount(t, reader)
 
 	backend := &fakeRedisBudgetBackend{
-		adjustFunc: func(context.Context, string, int64, int64) error {
-			return errors.New("simulated redis outage")
+		adjustFunc: func(context.Context, string, int64, int64) (int64, error) {
+			return 0, errors.New("simulated redis outage")
 		},
 	}
 	tr := NewRedisTracker(backend, slog.New(slog.NewTextHandler(io.Discard, nil)))

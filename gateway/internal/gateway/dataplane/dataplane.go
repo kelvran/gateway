@@ -4014,10 +4014,15 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 	}
 	defer p.releaseConcurrency(ctx, vk)
 
-	budgetSpentAtDecision = p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
-	var budgetOK bool
-	var budgetErr error
-	budgetOK, budgetReserved, budgetReservedUSD, budgetReservationEpoch, budgetErr = p.budget.Reserve(ctx, vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	// One call decides and reports the spend it decided against (round-5
+	// item 10 phase 2a, 2026-10-16): the decision event's budget_spent_usd
+	// used to be a separate SpentUSD read here, one more Redis round trip on
+	// every request. On a backend error it is 0, as it was whenever that read
+	// failed (the two calls could fail independently; one error zeroes both now).
+	reservation, budgetErr := p.budget.ReserveWithSpend(ctx, vk.ID, vk.BudgetUSD, vk.BudgetResetInterval)
+	budgetSpentAtDecision = reservation.SpentBeforeUSD
+	budgetOK := reservation.Allowed
+	budgetReserved, budgetReservedUSD, budgetReservationEpoch = reservation.Reserved, reservation.ReservedUSD, reservation.Epoch
 	if budgetErr != nil {
 		p.logger.Warn("budget_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", budgetErr.Error())...)
 		telemetry.RecordBudgetFailOpen(ctx, vk.ID)
@@ -5068,15 +5073,25 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		if billable {
 			realCost = &cost
 		}
+		settledSpend, spendKnown := decimal.Zero, false
 		if budgetReserved || realCost != nil {
-			p.budget.Reconcile(settleCtx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
+			settledSpend, spendKnown = p.budget.Reconcile(settleCtx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
 		}
-		if realCost != nil {
-			// Redis reads after the response: under the settlement context too,
-			// or a client disconnect reads spend as 0 and logs spurious
-			// budget_redis_backend_unavailable lines with Redis healthy.
-			p.checkBudgetWarnThreshold(settleCtx, vk)
-			p.checkBudgetAlertLadder(settleCtx, vk)
+		if realCost != nil && spendKnown {
+			// The threshold checks read the spend Reconcile just reported
+			// (round-5 item 10 phase 2a, 2026-10-16); until then each re-read
+			// it from Redis -- two more round trips on a capped key, under the
+			// settlement context so a client disconnect did not read 0. A lost
+			// settlement (spendKnown=false, logged and counted by Reconcile)
+			// skips both checks for this request: the spend is unknown and
+			// the next billable request evaluates them.
+			p.checkBudgetWarnThreshold(settleCtx, vk, settledSpend)
+			p.checkBudgetAlertLadder(settleCtx, vk, settledSpend)
+		}
+		if realCost != nil && !spendKnown {
+			// FAILURE-MODES R7's greppable twin: the settlement was lost, so
+			// the thresholds were not evaluated for this request.
+			p.logger.Info("budget_threshold_checks_skipped", append(traceLogFields(settleCtx), "key_id", vk.ID, "reason", "settlement_lost")...)
 		}
 
 		var realTokens *float64
@@ -5414,7 +5429,8 @@ func (p *Pipeline) observeAnomalySignals(ctx context.Context, event *gatewayeven
 }
 
 // checkBudgetWarnThreshold logs a budget_warn_threshold_crossed warning
-// once vk's spend (after the real charge finalize just recorded) is at
+// once vk's spend (spent: after the real charge finalize just recorded, as
+// Reconcile reported it -- no second read since round-5 item 10 phase 2a) is at
 // or above vk.BudgetWarnPercent of its BudgetUSD cap, per
 // docs/rfcs/2026-09-05-gateway-budget-warn-threshold.md: never rejects
 // or alters the request, no new API surface. The slog line itself is
@@ -5437,11 +5453,10 @@ func (p *Pipeline) observeAnomalySignals(ctx context.Context, event *gatewayeven
 // key. This function now embeds two genuinely independent mechanisms
 // side by side: the slog line fires on every request (unchanged), the
 // webhook fires once per window (new).
-func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.VirtualKey) {
+func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.VirtualKey, spent decimal.Decimal) {
 	if vk.BudgetWarnPercent <= 0 || !vk.BudgetUSD.IsPositive() {
 		return
 	}
-	spent := p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
 	warnAt := vk.BudgetUSD.Mul(decimal.NewFromFloat(vk.BudgetWarnPercent))
 	if spent.GreaterThanOrEqual(warnAt) {
 		p.logger.Warn("budget_warn_threshold_crossed", append(traceLogFields(ctx),
@@ -5471,7 +5486,8 @@ func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.Vi
 
 // checkBudgetAlertLadder emits a kelvran.budget.threshold_crossed OTel
 // counter increment + structured log line the first time vk's spend
-// (after the real charge finalize just recorded) newly crosses one of
+// (spent: after the real charge finalize just recorded, as Reconcile
+// reported it -- no second read since round-5 item 10 phase 2a) newly crosses one of
 // budget.BudgetAlertBuckets' fixed 50/75/90/100%-of-cap thresholds, once
 // per rolling-window epoch per bucket — a NEW, separate mechanism
 // alongside checkBudgetWarnThreshold's existing single, per-tenant-
@@ -5479,11 +5495,10 @@ func (p *Pipeline) checkBudgetWarnThreshold(ctx context.Context, vk *identity.Vi
 // docs/upgrade-research/cost-intelligence-finops-2026-09-14.md's own
 // finding that a fixed percent-of-cap ladder is the only verified 2026
 // production pattern for aggregate-queryable budget alerting.
-func (p *Pipeline) checkBudgetAlertLadder(ctx context.Context, vk *identity.VirtualKey) {
+func (p *Pipeline) checkBudgetAlertLadder(ctx context.Context, vk *identity.VirtualKey, spent decimal.Decimal) {
 	if !vk.BudgetUSD.IsPositive() {
 		return
 	}
-	spent := p.budget.SpentUSD(ctx, vk.ID, vk.BudgetResetInterval)
 	percentUsed, _ := spent.Div(vk.BudgetUSD).Float64()
 	bucket, crossed := p.budget.CheckAndMarkBudgetAlertBucket(ctx, vk.ID, percentUsed, vk.BudgetResetInterval)
 	if !crossed {

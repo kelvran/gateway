@@ -108,11 +108,11 @@ if cap <= 0 then
       redis.call('PEXPIRE', KEYS[1], reset_interval_ms)
     end
   end
-  return {1, 0, epoch}
+  return {1, 0, epoch, spent}
 end
 
 if spent >= cap then
-  return {0, 0, epoch}
+  return {0, 0, epoch, spent}
 end
 
 -- The reservation (2026-10-16, FAILURE-MODES R19): the window's mean billed
@@ -151,7 +151,11 @@ end
 -- denied branch above returns a bare 0 (not '0') for the identical
 -- reason -- Go's Reserve must be able to type-assert every branch's
 -- elements the same way.
-return {1, reserved, epoch}
+--
+-- The fourth element is the window's spend BEFORE this reservation (0 for
+-- a new window), returned on every branch, so the caller's decision event
+-- needs no separate HGET (round-5 item 10 phase 2a, 2026-10-16).
+return {1, reserved, epoch, spent}
 `
 
 // budgetReserveFixedLuaSrc admits exactly delta (not "everything
@@ -229,8 +233,16 @@ local billed = tonumber(ARGV[3])
 local state = redis.call('HMGET', KEYS[1], 'spent', 'epoch')
 local spent = tonumber(state[1])
 local epoch = tonumber(state[2])
-if spent == nil or epoch ~= expected_epoch then
-  return redis.status_reply('OK')
+-- The reply is the window's spend once this call is done, a bare number
+-- (see budgetReserveLuaSrc's note on tostring): 0 when the window is gone,
+-- the current window's spend untouched when the epoch no longer matches --
+-- exactly what the two post-call HGETs this reply replaces used to read
+-- (round-5 item 10 phase 2a, 2026-10-16).
+if spent == nil then
+  return 0
+end
+if epoch ~= expected_epoch then
+  return spent
 end
 
 local new_spent = math.max(spent + delta, 0)
@@ -242,7 +254,7 @@ redis.call('HSET', KEYS[1], 'spent', new_spent)
 if billed == 1 then
   redis.call('HINCRBY', KEYS[1], 'billed_count', 1)
 end
-return redis.status_reply('OK')
+return new_spent
 `
 
 // budgetAlertLuaSrc is a compare-and-set primitive for the budget-alert
@@ -382,18 +394,18 @@ func alertKey(keyID string) string { return "budget:alert:" + url.QueryEscape(ke
 func warnAlertKey(keyID string) string { return "budget:warnalert:" + url.QueryEscape(keyID) }
 
 // Reserve implements budget.RedisBackend.
-func (b *Backend) Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (allowed bool, reservedNanoUSD int64, epoch int64, err error) {
+func (b *Backend) Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (allowed bool, reservedNanoUSD int64, epoch int64, spentBeforeNanoUSD int64, err error) {
 	val, err := b.reserveScript.Run(ctx, b.client, []string{spendKey(keyID)}, capNanoUSD, resetIntervalMs).Result()
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("redisbudget: running reserve script for key %q: %w", keyID, err)
+		return false, 0, 0, 0, fmt.Errorf("redisbudget: running reserve script for key %q: %w", keyID, err)
 	}
 	results, ok := val.([]interface{})
-	if !ok || len(results) != 3 {
-		return false, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result shape %v for key %q", val, keyID)
+	if !ok || len(results) != 4 {
+		return false, 0, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result shape %v for key %q", val, keyID)
 	}
 	allowedInt, ok := results[0].(int64)
 	if !ok {
-		return false, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result[0] type %T for key %q", results[0], keyID)
+		return false, 0, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result[0] type %T for key %q", results[0], keyID)
 	}
 	// reserved/epoch are bare Lua numbers (Redis's own Lua-to-RESP
 	// conversion delivers them as Integer replies, parsed by go-redis as
@@ -403,13 +415,17 @@ func (b *Backend) Reserve(ctx context.Context, keyID string, capNanoUSD, resetIn
 	// budgetReserveLuaSrc's own doc comment for the full explanation.
 	reservedNanoUSD, ok = results[1].(int64)
 	if !ok {
-		return false, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result[1] type %T for key %q", results[1], keyID)
+		return false, 0, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result[1] type %T for key %q", results[1], keyID)
 	}
 	epoch, ok = results[2].(int64)
 	if !ok {
-		return false, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result[2] type %T for key %q", results[2], keyID)
+		return false, 0, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result[2] type %T for key %q", results[2], keyID)
 	}
-	return allowedInt == 1, reservedNanoUSD, epoch, nil
+	spentBeforeNanoUSD, ok = results[3].(int64)
+	if !ok {
+		return false, 0, 0, 0, fmt.Errorf("redisbudget: unexpected reserve script result[3] type %T for key %q", results[3], keyID)
+	}
+	return allowedInt == 1, reservedNanoUSD, epoch, spentBeforeNanoUSD, nil
 }
 
 // ReserveFixed implements budget.RedisBackend.
@@ -433,16 +449,25 @@ func (b *Backend) ReserveFixed(ctx context.Context, keyID string, capNanoUSD, de
 // value Reserve returned alongside the reservation being reconciled —
 // see budgetAdjustLuaSrc's own doc comment for why a mismatch (a newer
 // window has since started under this same keyID) makes this a silent
-// no-op rather than corrupting that newer window's spend.
-func (b *Backend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) error {
+// no-op rather than corrupting that newer window's spend. The reply is the
+// window's spend after the adjustment (round-5 item 10 phase 2a,
+// 2026-10-16): finalize's two post-call threshold reads are gone.
+func (b *Backend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) (spentAfterNanoUSD int64, err error) {
 	billedArg := 0
 	if billed {
 		billedArg = 1
 	}
-	if _, err := b.adjustScript.Run(ctx, b.client, []string{spendKey(keyID)}, deltaNanoUSD, epoch, billedArg).Result(); err != nil {
-		return fmt.Errorf("redisbudget: running adjust script for key %q: %w", keyID, err)
+	val, err := b.adjustScript.Run(ctx, b.client, []string{spendKey(keyID)}, deltaNanoUSD, epoch, billedArg).Result()
+	if err != nil {
+		return 0, fmt.Errorf("redisbudget: running adjust script for key %q: %w", keyID, err)
 	}
-	return nil
+	// A bare Lua number (an Integer reply), never a string -- see
+	// budgetReserveLuaSrc's note on tostring and the %.14g cliff.
+	spentAfterNanoUSD, ok := val.(int64)
+	if !ok {
+		return 0, fmt.Errorf("redisbudget: unexpected adjust script result type %T for key %q", val, keyID)
+	}
+	return spentAfterNanoUSD, nil
 }
 
 // SpentNanoUSD implements budget.RedisBackend. A plain HGET (spendKey

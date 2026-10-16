@@ -22,9 +22,9 @@ import (
 )
 
 type fakeRedisBudgetBackend struct {
-	reserveFunc         func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error)
+	reserveFunc         func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, int64, error)
 	reserveFixedFunc    func(ctx context.Context, keyID string, capNanoUSD, deltaNanoUSD, resetIntervalMs int64) (bool, error)
-	adjustFunc          func(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error
+	adjustFunc          func(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) (int64, error)
 	spentNanoUSDFunc    func(ctx context.Context, keyID string) (int64, error)
 	markAlertBucketFunc func(ctx context.Context, keyID string, newHighest float64, resetIntervalMs int64) (bool, error)
 	markWarnAlertedFunc func(ctx context.Context, keyID string, resetIntervalMs int64) (bool, error)
@@ -48,14 +48,14 @@ type fakeRedisBudgetBackend struct {
 	closeCalls           int
 }
 
-func (f *fakeRedisBudgetBackend) Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error) {
+func (f *fakeRedisBudgetBackend) Reserve(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, int64, error) {
 	f.reserveCalls++
 	f.lastReserveCapNano = capNanoUSD
 	f.lastReserveResetMs = resetIntervalMs
 	if f.reserveFunc != nil {
 		return f.reserveFunc(ctx, keyID, capNanoUSD, resetIntervalMs)
 	}
-	return true, capNanoUSD, 0, nil
+	return true, capNanoUSD, 0, 0, nil
 }
 
 func (f *fakeRedisBudgetBackend) ReserveFixed(ctx context.Context, keyID string, capNanoUSD, deltaNanoUSD, resetIntervalMs int64) (bool, error) {
@@ -67,7 +67,7 @@ func (f *fakeRedisBudgetBackend) ReserveFixed(ctx context.Context, keyID string,
 	return true, nil
 }
 
-func (f *fakeRedisBudgetBackend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) error {
+func (f *fakeRedisBudgetBackend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) (int64, error) {
 	f.adjustCalls++
 	f.lastAdjustDeltaNano = deltaNanoUSD
 	f.lastAdjustEpoch = epoch
@@ -75,7 +75,7 @@ func (f *fakeRedisBudgetBackend) Adjust(ctx context.Context, keyID string, delta
 	if f.adjustFunc != nil {
 		return f.adjustFunc(ctx, keyID, deltaNanoUSD, epoch)
 	}
-	return nil
+	return 0, nil
 }
 
 func (f *fakeRedisBudgetBackend) SpentNanoUSD(ctx context.Context, keyID string) (int64, error) {
@@ -152,8 +152,8 @@ const usdScaleForTest = 1_000_000_000
 
 func TestReserveRedisModeConvertsUnitsCorrectly(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{
-		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error) {
-			return true, capNanoUSD, 777, nil
+		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, int64, error) {
+			return true, capNanoUSD, 777, 0, nil
 		},
 	}
 	tr := NewRedisTracker(backend, nil)
@@ -193,11 +193,11 @@ func TestReserveRedisModeConvertsUnitsCorrectly(t *testing.T) {
 // for Reconcile.
 func TestReserveRedisModeUnlimitedCapOpensTheWindowWithoutReserving(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{
-		reserveFunc: func(_ context.Context, _ string, capNanoUSD, _ int64) (bool, int64, int64, error) {
+		reserveFunc: func(_ context.Context, _ string, capNanoUSD, _ int64) (bool, int64, int64, int64, error) {
 			if capNanoUSD != 0 {
 				t.Errorf("backend received capNanoUSD = %d for an unlimited key, want 0", capNanoUSD)
 			}
-			return true, 0, 4242, nil
+			return true, 0, 4242, 0, nil
 		},
 	}
 	tr := NewRedisTracker(backend, nil)
@@ -219,8 +219,8 @@ func TestReserveRedisModeUnlimitedCapOpensTheWindowWithoutReserving(t *testing.T
 
 func TestReserveRedisModeRejectionAppliesNoReservation(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{
-		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error) {
-			return false, 0, 0, nil
+		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, int64, error) {
+			return false, 0, 0, 0, nil
 		},
 	}
 	tr := NewRedisTracker(backend, nil)
@@ -241,8 +241,8 @@ func TestReserveRedisModeRejectionAppliesNoReservation(t *testing.T) {
 func TestReserveRedisModeBackendErrorReturnsAllowedFalse(t *testing.T) {
 	wantErr := errors.New("simulated redis outage")
 	backend := &fakeRedisBudgetBackend{
-		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, error) {
-			return false, 0, 0, wantErr
+		reserveFunc: func(ctx context.Context, keyID string, capNanoUSD, resetIntervalMs int64) (bool, int64, int64, int64, error) {
+			return false, 0, 0, 0, wantErr
 		},
 	}
 	tr := NewRedisTracker(backend, nil)
@@ -319,8 +319,8 @@ func TestReconcileRedisModePassesReservationEpochThroughToBackend(t *testing.T) 
 
 func TestReconcileRedisModeLogsAndSwallowsBackendError(t *testing.T) {
 	backend := &fakeRedisBudgetBackend{
-		adjustFunc: func(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) error {
-			return errors.New("simulated redis outage")
+		adjustFunc: func(ctx context.Context, keyID string, deltaNanoUSD, epoch int64) (int64, error) {
+			return 0, errors.New("simulated redis outage")
 		},
 	}
 	var logBuf bytes.Buffer

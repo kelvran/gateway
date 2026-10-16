@@ -29,8 +29,8 @@ type outageBudgetBackend struct {
 	settlementCapturingBudgetBackend
 }
 
-func (*outageBudgetBackend) Reserve(context.Context, string, int64, int64) (bool, int64, int64, error) {
-	return false, 0, 0, errors.New("simulated redis outage")
+func (*outageBudgetBackend) Reserve(context.Context, string, int64, int64) (bool, int64, int64, int64, error) {
+	return false, 0, 0, 0, errors.New("simulated redis outage")
 }
 
 func (*outageBudgetBackend) ReserveFixed(context.Context, string, int64, int64, int64) (bool, error) {

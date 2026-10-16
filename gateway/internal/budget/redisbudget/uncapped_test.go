@@ -31,7 +31,7 @@ func TestReserveOpensAWindowForAnUncappedKey(t *testing.T) {
 	}{{"cap 0", 0}, {"negative cap", -5}} {
 		t.Run(tc.name, func(t *testing.T) {
 			key := uniqueKey(t)
-			allowed, reserved, epoch, err := b.Reserve(ctx, key, tc.cap, 0)
+			allowed, reserved, epoch, _, err := b.Reserve(ctx, key, tc.cap, 0)
 			if err != nil {
 				t.Fatalf("Reserve: %v", err)
 			}
@@ -48,16 +48,16 @@ func TestReserveOpensAWindowForAnUncappedKey(t *testing.T) {
 			if ttl := client.PTTL(ctx, spendKey(key)).Val(); ttl != -1 {
 				t.Fatalf("PTTL = %v, want -1 (a lifetime window when the reset interval is 0)", ttl)
 			}
-			if _, _, again, err := b.Reserve(ctx, key, tc.cap, 0); err != nil || again != epoch {
+			if _, _, again, _, err := b.Reserve(ctx, key, tc.cap, 0); err != nil || again != epoch {
 				t.Fatalf("second Reserve epoch = %d (err %v), want the same window %d", again, err, epoch)
 			}
-			if err := b.Adjust(ctx, key, 500, epoch, true); err != nil {
+			if _, err := b.Adjust(ctx, key, 500, epoch, true); err != nil {
 				t.Fatal(err)
 			}
 			if spent, _ := b.SpentNanoUSD(ctx, key); spent != 500 {
 				t.Fatalf("spent after Adjust(+500, epoch) = %d, want 500", spent)
 			}
-			if err := b.Adjust(ctx, key, 500, epoch+1, true); err != nil {
+			if _, err := b.Adjust(ctx, key, 500, epoch+1, true); err != nil {
 				t.Fatal(err)
 			}
 			if spent, _ := b.SpentNanoUSD(ctx, key); spent != 500 {
@@ -68,7 +68,7 @@ func TestReserveOpensAWindowForAnUncappedKey(t *testing.T) {
 
 	t.Run("a reset interval sets the window's TTL", func(t *testing.T) {
 		key := uniqueKey(t)
-		if _, _, _, err := b.Reserve(ctx, key, 0, 60_000); err != nil {
+		if _, _, _, _, err := b.Reserve(ctx, key, 0, 60_000); err != nil {
 			t.Fatal(err)
 		}
 		if ttl := client.PTTL(ctx, spendKey(key)).Val(); ttl <= 0 || ttl > 60*time.Second {
