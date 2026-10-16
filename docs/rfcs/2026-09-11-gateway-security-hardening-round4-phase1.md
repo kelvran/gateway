@@ -23,6 +23,8 @@ how the pre-call check is implemented, not because anyone designed it with that 
 This changed the item from "build a scanner" to "add the missing regression test, correct any
 documentation that doesn't already say so."
 
+**Implementation note, 2026-10-16.** The scan is role-aware on request: `guardrails.role_scopes.<category>` (round-5 Tier S item 25; `guardrail.Engine.CheckSegments`, one role-tagged segment per message from the dataplane's `guardrailScanSegments`) narrows a category's detectors to the roles it lists, and a `role:"tool"` result is scanned for that category only while `tool` is listed. Absent, the behaviour described above is unchanged — every role, the same bytes — and the regression test still holds.
+
 Separately, wiring `govulncheck`/`pip-audit` into CI (both previously absent) surfaced a real,
 independent finding: `gateway/go.mod`'s `go 1.25.0` directive matched CI's `setup-go@v5
 go-version: "1.25"` pin, and Go 1.25 is now end-of-life (Go supports only the latest 2 major

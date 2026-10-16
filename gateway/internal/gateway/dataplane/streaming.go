@@ -21,6 +21,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/adapter"
 	"github.com/kelvran/gateway/gateway/internal/adapter/bedrock"
 	"github.com/kelvran/gateway/gateway/internal/cache"
+	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/idempotency"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/streaming"
@@ -349,9 +350,9 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 	// all miss, before the router. The request text is fully known here
 	// regardless of streaming/buffered, so there is no half-formed-
 	// content problem on the input side.
-	verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages))
+	verdict := p.guardrails.CheckSegments(ctx, guardrailScanSegments(req.Messages))
 	if verdict.Blocked {
-		p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())...)
+		p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames(), "finding_roles", verdict.FindingRoles())...)
 		err = ErrGuardrailBlocked
 		return
 	}
@@ -1179,10 +1180,10 @@ func (p *Pipeline) finishStreamedResponse(ctx context.Context, dep Deployment, r
 	// — so *blocked signals the caller (HandleChatCompletionStream) to
 	// skip writeCache, even though the client-delivery decision above
 	// stays audit-only.
-	postVerdict := p.guardrails.Check(ctx, serializeResponse(resp))
+	postVerdict := p.guardrails.CheckSegments(ctx, []guardrail.Segment{{Role: guardrail.RoleAssistant, Text: serializeResponse(resp)}})
 	if postVerdict.Blocked {
 		p.logger.Warn("guardrail_blocked_postcall_streaming_audit_only",
-			append(traceLogFields(ctx), "key_id", keyID, "deployment", dep.Name, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames())...)
+			append(traceLogFields(ctx), "key_id", keyID, "deployment", dep.Name, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames(), "finding_roles", postVerdict.FindingRoles())...)
 		*blocked = true
 	}
 	// Audit-only or not, a detector error here means the response went to

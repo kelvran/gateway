@@ -519,6 +519,31 @@ telemetry:
 #   category_overrides:
 #     contact_info: "warn"
 #
+#   # Optional role scopes: run a category's detectors only on the message
+#   # roles listed -- system/user/assistant/tool, as a mapping of role ->
+#   # true like allowed_models (this parser has no lists). Absent = every
+#   # role, the behaviour before this key existed. The example widens
+#   # LiteLLM v1.97.0's scan_only_tool_results (tool results only) to both
+#   # untrusted channels: prompt_injection runs on user turns and on tool
+#   # results the caller fed back, and NOT on messages the caller labels
+#   # system or assistant. A role is the caller's own label on the wire
+#   # (every role on /v1/chat/completions; on /v1/messages the top-level
+#   # system field or a system-role entry, every assistant turn and the
+#   # tool_result blocks, which become tool), so omitting one states that
+#   # everything this gateway's callers place under it is trusted --
+#   # including retrieved documents, tool descriptions or repository files
+#   # a harness interpolates into its system prompt. The response scan is
+#   # the assistant role (omit assistant and the post-call scan is off for
+#   # that category); an embeddings input is the user role; a role outside
+#   # the four is recorded as "other" and always scanned. A scope is part
+#   # of the cache policy fingerprint, so no policy_version bump is needed
+#   # when it changes. An unknown role, a non-bool value or a scope
+#   # admitting no role is a load error.
+#   role_scopes:
+#     prompt_injection:
+#       user: true
+#       tool: true
+#
 #   # Optional AWS Bedrock Guardrails ML detector, per
 #   # docs/rfcs/2026-09-13-gateway-bedrock-guardrails-ml-detector-design.md
 #   # -- an ADDITIONAL PROMPT_ATTACK check, never a replacement for the

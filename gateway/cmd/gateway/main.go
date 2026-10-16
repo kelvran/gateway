@@ -1802,6 +1802,22 @@ func newGuardrailEngine(cfg controlplane.GuardrailsConfig, logger *slog.Logger) 
 		policy.Actions[category] = action
 		policy.ErrorActions[category] = action
 	}
+	// Role scopes (guardrails.role_scopes): controlplane has already
+	// rejected unknown roles, non-bool values and empty scopes at load
+	// time; an unknown CATEGORY is this function's call and gets the same
+	// warn-and-skip as a category_overrides one -- a scope on a category
+	// that does not exist narrows nothing.
+	for categoryStr, roles := range cfg.RoleScopes {
+		category := guardrail.Category(categoryStr)
+		if _, known := policy.Actions[category]; !known {
+			logger.Warn("guardrail_config_unknown_category", "category", categoryStr, "field", "role_scopes")
+			continue
+		}
+		if policy.RoleScopes == nil {
+			policy.RoleScopes = make(map[guardrail.Category][]string, len(cfg.RoleScopes))
+		}
+		policy.RoleScopes[category] = roles
+	}
 
 	detectors := guardrail.DefaultDetectors()
 	if bg := cfg.BedrockGuardrails; bg != nil {

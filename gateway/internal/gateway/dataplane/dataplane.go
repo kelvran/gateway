@@ -3702,8 +3702,12 @@ func (p *Pipeline) HandleEmbeddings(ctx context.Context, authorizationHeader str
 	// the loop (the counter's unit is {request}, not {input}), and only
 	// if no input was blocked — a block anywhere returns before it.
 	var failOpenVerdict guardrail.Verdict
+	// Each embeddings input is caller-supplied text with no message role
+	// of its own; it is scanned as the user role, the role a client's own
+	// content carries on the chat routes, so a role scope treats the two
+	// ingress shapes alike.
 	for _, text := range req.Input {
-		verdict := p.guardrails.Check(ctx, text)
+		verdict := p.guardrails.CheckSegments(ctx, []guardrail.Segment{{Role: guardrail.RoleUser, Text: text}})
 		if verdict.Blocked {
 			err = ErrGuardrailBlocked
 			return
@@ -4138,9 +4142,9 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// above never reaches this check at all — its provenance was already
 		// checked under the current policy at write time, per this same RFC's
 		// cache-key/GuardrailPolicyVersion mechanism.
-		verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages))
+		verdict := p.guardrails.CheckSegments(ctx, guardrailScanSegments(req.Messages))
 		if verdict.Blocked {
-			p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())...)
+			p.logger.Warn("guardrail_blocked_precall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames(), "finding_roles", verdict.FindingRoles())...)
 			return nil, ErrGuardrailBlocked
 		}
 		p.noteGuardrailFailOpen(ctx, vk.ID, telemetry.GuardrailStagePrecall, verdict)
@@ -4261,9 +4265,13 @@ func (p *Pipeline) runMissPath(ctx context.Context, vk *identity.VirtualKey, req
 		// populated here and nothing downstream (cache write, return to
 		// client) has happened yet — a Block verdict can still refuse
 		// DELIVERY, but never the billing for the real call already made.
-		postVerdict := p.guardrails.Check(ctx, serializeResponse(resp))
+		// The response is assistant content: one segment under
+		// guardrail.RoleAssistant, so a role scope applies to the post-call
+		// scan the same way it applies to an assistant turn fed back
+		// pre-call.
+		postVerdict := p.guardrails.CheckSegments(ctx, []guardrail.Segment{{Role: guardrail.RoleAssistant, Text: serializeResponse(resp)}})
 		if postVerdict.Blocked {
-			p.logger.Warn("guardrail_blocked_postcall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames())...)
+			p.logger.Warn("guardrail_blocked_postcall", append(traceLogFields(ctx), "key_id", vk.ID, "finding_count", len(postVerdict.Findings), "finding_detectors", postVerdict.DetectorNames(), "finding_roles", postVerdict.FindingRoles())...)
 			// Captured via the side channel, not the shadowed local resp/
 			// dep, so finalize's cost calculation (keyed on the real
 			// Usage/dep that were just obtained) still runs correctly on
@@ -5841,8 +5849,10 @@ func reasoningBlocksFingerprint(messages []adapter.Message) string {
 	return string(b)
 }
 
-// guardrailScanMessages returns the exact string handed to the
-// guardrail engine for the pre-call check. Extracts plain text only
+// guardrailScanMessages returns the string the pre-call check scanned
+// before role scoping (2026-10-16): the "\n"-join of guardrailScanSegments'
+// texts, kept as the byte-identity oracle its tests compare against -- no
+// request path calls it any more. Extracts plain text only
 // (Content, Parts[Type=="text"].Text, ToolCalls[].ArgumentsJSON,
 // plaintext ReasoningBlocks.Text), newline-joined — mirroring
 // serializeResponse's own identical extraction shape for the post-call
@@ -5876,24 +5886,71 @@ func reasoningBlocksFingerprint(messages []adapter.Message) string {
 // sanitizing pass is needed the way the old json.Marshal-based
 // implementation required.
 func guardrailScanMessages(messages []adapter.Message) string {
-	contents := make([]string, 0, len(messages))
+	segments := guardrailScanSegments(messages)
+	texts := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		texts = append(texts, seg.Text)
+	}
+	return strings.Join(texts, "\n")
+}
+
+// guardrailScanSegments is guardrailScanMessages split per message, each
+// piece tagged with that message's role, for guardrail.Engine.CheckSegments
+// (round-5 Tier S item 25, role-scoped detectors): one Segment per
+// message whose Text is that message's scannable pieces -- Content, text
+// Parts, tool-call ArgumentsJSON, plaintext ReasoningBlocks, the exact
+// extraction above -- newline-joined. Joining the segments' Texts with
+// "\n" reproduces guardrailScanMessages byte for byte (an empty Content
+// is still a piece, so an assistant tool-call-only turn contributes its
+// empty line exactly as before), which is what keeps an unscoped policy's
+// scan input, and therefore its verdicts, identical to the pre-scoping
+// behaviour. Message.Role is one of "system", "user", "assistant" and
+// "tool" (a tool-call RESULT fed back by the caller; the model's own
+// tool-call arguments stay with the assistant message that emitted them),
+// or anything else the caller wrote on the wire -- see guardrailRoleForScan
+// for why anything else becomes guardrail.RoleOther here.
+func guardrailScanSegments(messages []adapter.Message) []guardrail.Segment {
+	segments := make([]guardrail.Segment, 0, len(messages))
 	for _, m := range messages {
-		contents = append(contents, m.Content)
+		pieces := make([]string, 0, 1+len(m.Parts)+len(m.ToolCalls)+len(m.ReasoningBlocks))
+		pieces = append(pieces, m.Content)
 		for _, part := range m.Parts {
 			if part.Type == "text" {
-				contents = append(contents, part.Text)
+				pieces = append(pieces, part.Text)
 			}
 		}
 		for _, tc := range m.ToolCalls {
-			contents = append(contents, tc.ArgumentsJSON)
+			pieces = append(pieces, tc.ArgumentsJSON)
 		}
 		for _, rb := range m.ReasoningBlocks {
 			if !rb.Redacted {
-				contents = append(contents, rb.Text)
+				pieces = append(pieces, rb.Text)
 			}
 		}
+		segments = append(segments, guardrail.Segment{Role: guardrailRoleForScan(m.Role), Text: strings.Join(pieces, "\n")})
 	}
-	return strings.Join(contents, "\n")
+	return segments
+}
+
+// guardrailRoleForScan bounds a client-supplied Message.Role before it
+// becomes a Segment.Role and, through Finding.Role, the finding_roles log
+// field: the four guardrail.KnownRole values pass through unchanged and
+// anything else -- "developer", an empty string, a 30 MiB string, a role
+// carrying control runes -- becomes guardrail.RoleOther. Neither ingress
+// bounds Role (adapter.ValidateFieldSizes caps Content and Parts, not
+// Role), so without this a caller could put megabytes, or a forged log
+// line, into every guardrail_blocked_* and guardrail_verdict_* line at
+// the key's RPM. boundedForTelemetry (drop control runes, cap at 256
+// bytes) is how the model name is made safe for a log field; a closed
+// vocabulary is the stronger fit here, since finding_roles is an enum
+// and must not grow a cardinality. Admission is unchanged: RoleOther is not
+// a KnownRole, so the engine admits it to every detector exactly as it
+// would the raw unknown role.
+func guardrailRoleForScan(role string) string {
+	if guardrail.KnownRole(role) {
+		return role
+	}
+	return guardrail.RoleOther
 }
 
 // responseFormatFingerprint computes the cache-key fold value for

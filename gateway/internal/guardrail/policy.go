@@ -11,6 +11,19 @@ package guardrail
 type Policy struct {
 	Actions      map[Category]Action
 	ErrorActions map[Category]Action
+	// RoleScopes narrows a Category's detectors to the message roles it
+	// lists (RoleSystem/RoleUser/RoleAssistant/RoleTool). A Category with
+	// no entry -- and every Category when the map is nil -- is scanned on
+	// every role, which is exactly the behaviour before role scoping
+	// existed; an entry that is nil or empty means the same (the loader
+	// refuses one at load time, and the Go API treats it as absent, never
+	// as "off" -- category_overrides deliberately has no off action). The
+	// dataplane scans the post-call response as the assistant role and an
+	// embeddings input as the user role. Operator shape:
+	// guardrails.role_scopes.<category>, a mapping of role -> true
+	// (round-5 Tier S item 25, LiteLLM v1.97.0's scan_only_tool_results
+	// generalised to a role set per category).
+	RoleScopes map[Category][]string
 }
 
 // DefaultPolicy returns the RFC's own v1 fail-open/fail-closed table.

@@ -109,6 +109,8 @@ already exists (`TestHandleChatCompletionPreCallScansToolResultMessagesFedBackFr
 already cites it (lines 14/71/75/103). This RFC's outbound-credential design does not need to
 duplicate or re-verify that finding — it is orthogonal to credential delegation.
 
+**Implementation note, 2026-10-16.** The scan is role-aware on request: `guardrails.role_scopes.<category>` (round-5 Tier S item 25; `guardrail.Engine.CheckSegments`, one role-tagged segment per message from the dataplane's `guardrailScanSegments`) narrows a category's detectors to the roles it lists, and a `role:"tool"` result is scanned for that category only while `tool` is listed. Absent, the behaviour described above is unchanged — every role, the same bytes — and the regression test still holds.
+
 ## Drawbacks
 
 A new identity-object concept, however small, is a real ongoing maintenance surface once built —

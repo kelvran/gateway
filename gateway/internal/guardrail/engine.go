@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 )
 
 // Engine is Kelvran's guardrail check — one instance shared across every
@@ -127,6 +128,29 @@ func policyFingerprint(p Policy) string {
 		// convention of discarding it explicitly rather than checking.
 		_, _ = fmt.Fprintf(h, "%s:%d:%d;", catStr, p.Actions[cat], p.ErrorActions[cat])
 	}
+	// Role scopes change WHAT is scanned, so they are policy too: a cache
+	// entry admitted under a narrower scope must miss once the scope
+	// widens (and the one rule, "any Policy change is a new fingerprint",
+	// is simpler than reasoning about direction). Sorted by category and
+	// by role so the result is independent of map and list order; a
+	// Policy without scopes hashes exactly as before this field existed,
+	// so no existing deployment's cache keys move. Role values reaching
+	// this point are the four KnownRole constants (controlplane rejects
+	// others at load time), so the comma/semicolon encoding is as
+	// collision-safe as the category encoding above.
+	scoped := make([]string, 0, len(p.RoleScopes))
+	for cat, roles := range p.RoleScopes {
+		if len(roles) == 0 {
+			continue // the same as no entry, so it must hash the same (see Policy.RoleScopes)
+		}
+		scoped = append(scoped, string(cat))
+	}
+	sort.Strings(scoped)
+	for _, catStr := range scoped {
+		roles := append([]string(nil), p.RoleScopes[Category(catStr)]...)
+		sort.Strings(roles)
+		_, _ = fmt.Fprintf(h, "scope:%s=%s;", catStr, strings.Join(roles, ","))
+	}
 	return "#policy-" + hex.EncodeToString(h.Sum(nil))[:12]
 }
 
@@ -147,8 +171,24 @@ func (e *Engine) Detectors() []Detector { return e.detectors }
 // LiteLLM's own "critical"-level fail-open logging convention for
 // exactly this kind of decision.
 func (e *Engine) Check(ctx context.Context, text string) Verdict {
+	return e.CheckSegments(ctx, []Segment{{Text: text}})
+}
+
+// CheckSegments is Check for a role-tagged input: each detector runs over
+// the newline-join of the segments its Category's RoleScopes entry admits
+// (every segment when there is no entry; always a segment with no known
+// role -- see KnownRole), and every Finding carries the Role of the
+// segment it starts in. With no scopes configured the join is the whole
+// input, byte for byte, so the Verdict is the one Check would return. A
+// detector admitted no segment at all is skipped -- it did not run, so
+// it neither finds nor errors.
+func (e *Engine) CheckSegments(ctx context.Context, segments []Segment) Verdict {
 	var verdict Verdict
 	for _, d := range e.detectors {
+		text, roleAt, ok := admittedText(e.policy.RoleScopes[d.Category()], segments)
+		if !ok {
+			continue
+		}
 		// **Fixed 2026-09-17, real bug**: a Detector panicking (e.g. a
 		// nil-pointer deref, or bedrockguard hitting an unexpected
 		// response shape) previously had no recover anywhere in this
@@ -172,6 +212,7 @@ func (e *Engine) Check(ctx context.Context, text string) Verdict {
 			continue
 		}
 		for _, f := range findings {
+			f.Role = roleAt(f.Start)
 			verdict.Findings = append(verdict.Findings, f)
 			if e.policy.Actions[f.Category] == ActionBlock {
 				verdict.Blocked = true
@@ -189,11 +230,66 @@ func (e *Engine) Check(ctx context.Context, text string) Verdict {
 	// zero metric, zero audit trail anywhere, indistinguishable from the
 	// detector never firing at all.
 	if verdict.Blocked {
-		e.logger.Warn("guardrail_verdict_blocked", "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())
+		e.logger.Warn("guardrail_verdict_blocked", "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames(), "finding_roles", verdict.FindingRoles())
 	} else if len(verdict.Findings) > 0 {
-		e.logger.Warn("guardrail_verdict_warn", "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())
+		e.logger.Warn("guardrail_verdict_warn", "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames(), "finding_roles", verdict.FindingRoles())
 	}
 	return verdict
+}
+
+// admittedText joins, with "\n", the segments whose Role the scope admits
+// (every segment when scope is nil or empty; a segment whose Role is empty
+// or not a KnownRole regardless of scope) and returns a lookup from a byte
+// offset in that joined text to the Role of the segment it falls in -- the
+// separator newline belongs to the segment that follows it, since it is
+// written just before that segment's text. ok is false when no segment was
+// admitted, so the caller skips the detector instead of scanning an empty
+// string.
+func admittedText(scope []string, segments []Segment) (text string, roleAt func(offset int) string, ok bool) {
+	type span struct {
+		end  int
+		role string
+	}
+	var b strings.Builder
+	spans := make([]span, 0, len(segments))
+	for _, seg := range segments {
+		if !roleAdmitted(scope, seg.Role) {
+			continue
+		}
+		if len(spans) > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(seg.Text)
+		spans = append(spans, span{end: b.Len(), role: seg.Role})
+	}
+	if len(spans) == 0 {
+		return "", nil, false
+	}
+	roleAt = func(offset int) string {
+		for _, s := range spans {
+			if offset < s.end {
+				return s.role
+			}
+		}
+		return spans[len(spans)-1].role
+	}
+	return b.String(), roleAt, true
+}
+
+// roleAdmitted is the one rule behind role scoping: a nil or empty scope
+// admits everything (empty is "no entry", never "off"); a role that is not
+// one of the four KnownRole values is admitted by every scope; otherwise
+// the role must be listed.
+func roleAdmitted(scope []string, role string) bool {
+	if len(scope) == 0 || !KnownRole(role) {
+		return true
+	}
+	for _, r := range scope {
+		if r == role {
+			return true
+		}
+	}
+	return false
 }
 
 // detectSafely calls d.Detect, recovering a panic into a plain error so

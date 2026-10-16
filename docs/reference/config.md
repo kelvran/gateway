@@ -28,7 +28,7 @@ The gateway parses `config.yaml` with a hand-rolled YAML subset, not a YAML libr
 | Rule | Behaviour |
 |---|---|
 | Supported syntax | `key: value` scalars and nested mappings only. Indentation is two spaces per level |
-| Lists | Not supported. Every naturally list-shaped field is a mapping keyed by name (`virtual_keys`, `deployments`, `allowed_models`, `allowed_regions`, `allowed_source_cidrs`, `category_overrides`, `price_table`, `models`, `per_model`, `service_tier_multipliers`), and ordered sequences are `csv string` values (`fallback_chains`) |
+| Lists | Not supported. Every naturally list-shaped field is a mapping keyed by name (`virtual_keys`, `deployments`, `allowed_models`, `allowed_regions`, `allowed_source_cidrs`, `category_overrides`, `role_scopes.<category>`, `price_table`, `models`, `per_model`, `service_tier_multipliers`), and ordered sequences are `csv string` values (`fallback_chains`) |
 | Flow style, anchors, aliases, multi-line strings | Not supported |
 | Comments | `#` starts a comment anywhere on a line, including inside a quoted value. A value cannot contain a literal `#`; the text from `#` onward is dropped |
 | Tab in leading whitespace | Load error (`leading tab characters are not valid YAML indentation`) |
@@ -352,6 +352,7 @@ Unknown keys under `cache` are ignored like everywhere else, and because flow st
 |---|---|---|---|
 | `policy_version` | `string` | `"v1"` | Stamped into every cache key. Change it when detectors or policy change so entries written under the old policy miss |
 | `category_overrides` | `mapping` | absent (default policy) | See the next table |
+| `role_scopes` | `mapping` | absent (every role) | See [role_scopes](#guardrailsrole_scopescategory) |
 | `bedrock_guardrails` | `mapping` | absent (off) | See [bedrock_guardrails](#guardrailsbedrock_guardrails) |
 | `embed_sim` | `mapping` | absent (off) | See [embed_sim](#guardrailsembed_sim) |
 
@@ -369,6 +370,28 @@ A flat mapping of category name to action string. The value must be a `string`; 
 | `prompt_injection` | `warn` |
 
 Allowed values: `block`, `warn`.
+
+### `guardrails.role_scopes.<category>`
+
+Runs a category's detectors only on the message roles listed — LiteLLM v1.97.0's per-guardrail `scan_only_tool_results` flag generalised to a role set per category (on `main` since 2026-10-16, not in `gateway/v0.20.0`). The value is a mapping of role → `true`, like a virtual key's `allowed_models`; this parser has no YAML lists. The roles are `system`, `user`, `assistant` and `tool` (`tool` is a tool-call result message fed back by the caller; a model's own tool-call arguments are `assistant` content). A category with no entry is scanned on every role, which is the default and the behaviour before this key existed. A role is the caller's own label on the wire — all four on `/v1/chat/completions`; on `/v1/messages` the top-level `system` field (or a `system`-role entry), every `assistant` turn (a prefill included) and the `tool_result` blocks, which become `tool` — so omitting a role is a trust decision about everything that key's callers place under it, including retrieved documents, tool descriptions or repository files a harness interpolates into its system prompt; the gateway cannot verify the label. The post-call response scan is the `assistant` role (a scope that omits `assistant` turns the post-call scan off for that category), an embeddings input is the `user` role, and `count_tokens` scans its messages by role like the chat routes. A message whose role is none of the four is recorded as `other` and scanned by every detector regardless of scope, so a scope can only ever exclude text whose label is one of the four. One policy per gateway: a scope is as global as an override, narrower in role, not in deployment or key.
+
+```yaml
+guardrails:
+  role_scopes:
+    prompt_injection:
+      user: true
+      tool: true
+```
+
+| Mistake | Outcome |
+|---|---|
+| Value is a string or a list (`prompt_injection: "user, tool"`) | Load error |
+| A role value that is not `true` or `false` | Load error |
+| An unknown role (`tools`) | Load error — a typo must not narrow a control silently |
+| A scope whose entries are all `false`, or empty | Load error — there is no "off" action, by design |
+| An unknown category | Logged at startup (`guardrail_config_unknown_category`, `field=role_scopes`) and skipped, like `category_overrides` — the real category stays scanned on every role, so a misspelt category can only widen the scan, never narrow it |
+
+A scope is part of the policy fingerprint folded into every cache key, so changing one forces cache misses without a `policy_version` bump. Findings carry the role they were found in: `finding_roles` on the `guardrail_blocked_precall`/`guardrail_blocked_postcall` and `guardrail_verdict_blocked`/`guardrail_verdict_warn` log lines.
 
 ### `guardrails.bedrock_guardrails`
 

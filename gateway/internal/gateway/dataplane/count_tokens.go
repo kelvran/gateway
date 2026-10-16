@@ -104,9 +104,9 @@ func (p *Pipeline) HandleCountTokens(ctx context.Context, authorizationHeader, r
 		p.logger.Info("count_tokens_invalid_body", append(fields, "deployment", dep.Name, "error", parseErr.Error())...)
 		return nil, &CountTokensBodyError{Err: parseErr}
 	}
-	verdict := p.guardrails.Check(ctx, guardrailScanMessages(req.Messages))
+	verdict := p.guardrails.CheckSegments(ctx, guardrailScanSegments(req.Messages))
 	if verdict.Blocked {
-		p.logger.Warn("guardrail_blocked_precall", append(fields, "deployment", dep.Name, "route", "count_tokens", "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames())...)
+		p.logger.Warn("guardrail_blocked_precall", append(fields, "deployment", dep.Name, "route", "count_tokens", "finding_count", len(verdict.Findings), "finding_detectors", verdict.DetectorNames(), "finding_roles", verdict.FindingRoles())...)
 		return nil, ErrGuardrailBlocked
 	}
 	p.noteGuardrailFailOpen(ctx, vk.ID, telemetry.GuardrailStagePrecall, verdict)

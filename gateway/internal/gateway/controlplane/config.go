@@ -816,6 +816,27 @@ type CacheConfig struct {
 	L3             CacheL3Config
 }
 
+// knownGuardrailRoles is the message-role vocabulary a guardrails.role_scopes
+// entry may name -- the same four strings as internal/guardrail's
+// RoleSystem/RoleUser/RoleAssistant/RoleTool (guardrail.KnownRole). Spelled
+// out here rather than imported because controlplane is a pure leaf under
+// .go-arch-lint.yml and may import nothing project-internal;
+// cmd/gateway's TestGuardrailRoleScopeVocabularyMatchesTheEngine pins
+// the two lists to each other.
+var knownGuardrailRoles = map[string]bool{"system": true, "user": true, "assistant": true, "tool": true}
+
+// KnownGuardrailRoles returns the role names a guardrails.role_scopes entry
+// accepts, sorted -- for the cross-package test that keeps this list and
+// internal/guardrail's in step.
+func KnownGuardrailRoles() []string {
+	roles := make([]string, 0, len(knownGuardrailRoles))
+	for r := range knownGuardrailRoles {
+		roles = append(roles, r)
+	}
+	sort.Strings(roles)
+	return roles
+}
+
 // GuardrailsConfig configures the guardrail pre-call/post-call content
 // checks, per docs/rfcs/2026-09-03-guardrails-pii-regex-classifier.md.
 // Optional — a zero-valued GuardrailsConfig means the default v1
@@ -840,6 +861,17 @@ type GuardrailsConfig struct {
 	// docs/rfcs/2026-09-13-gateway-bedrock-guardrails-ml-detector-design.md.
 	// nil (the default) reproduces today's regex-only behavior exactly.
 	BedrockGuardrails *BedrockGuardrailsConfig
+	// RoleScopes narrows a Category's detectors to the message roles
+	// listed -- YAML `role_scopes.<category>`, a mapping of role -> true
+	// (this parser has no lists), each role one of system/user/assistant/
+	// tool; the loader rejects any other role, a non-bool value, and a
+	// scope that admits no role (a security control silently narrowed is
+	// a load error, never a warning). Only the true entries are kept,
+	// sorted. nil (the default) scans every category on every role --
+	// the pre-scoping behaviour exactly. An unknown CATEGORY is
+	// cmd/gateway's call, logged and skipped like a category_overrides
+	// one. Round-5 Tier S item 25.
+	RoleScopes map[string][]string
 	// EmbedSim, when non-nil, opts this deployment into the
 	// embedding-similarity prompt-injection detector (internal/guardrail/
 	// embedsim) as an additional (never a replacement) backend, catching
@@ -1624,6 +1656,40 @@ func Parse(data []byte, source string) (*Config, error) {
 					return nil, fmt.Errorf("controlplane: guardrails.category_overrides entry %q: value must be a string (e.g. %q: \"block\"), got %T -- this field is a flat mapping of category -> action string, see config.example.yaml", category, category, v)
 				}
 				cfg.Guardrails.CategoryOverrides[category] = action
+			}
+		}
+		if scopesRaw, ok := getMap(guardrailsRaw, "role_scopes"); ok {
+			cfg.Guardrails.RoleScopes = make(map[string][]string, len(scopesRaw))
+			for category, v := range scopesRaw {
+				rolesRaw, ok := v.(map[string]any)
+				if !ok {
+					// A string ("user, tool") or a list is the plausible
+					// mistake here; the mapping-of-true shape is the
+					// one every set-valued key in this file uses
+					// (allowed_models, allowed_regions,
+					// allowed_source_cidrs), for the same reason.
+					return nil, fmt.Errorf("controlplane: guardrails.role_scopes entry %q: value must be a mapping of role -> true (e.g. %q: {user: true, tool: true} written as nested keys), got %T -- this parser has no YAML list support, see config.example.yaml", category, category, v)
+				}
+				roles := make([]string, 0, len(rolesRaw))
+				for role, rv := range rolesRaw {
+					enabled, ok := rv.(bool)
+					if !ok {
+						return nil, fmt.Errorf("controlplane: guardrails.role_scopes.%s entry %q: value must be true or false, got %v (%T) -- this field is a mapping of role -> true, see config.example.yaml", category, role, rv, rv)
+					}
+					if !knownGuardrailRoles[role] {
+						// A typo ("tools") would narrow the category to
+						// whatever was spelled right, silently: refuse.
+						return nil, fmt.Errorf("controlplane: guardrails.role_scopes.%s entry %q: unknown role -- the message roles are system, user, assistant and tool", category, role)
+					}
+					if enabled {
+						roles = append(roles, role)
+					}
+				}
+				if len(roles) == 0 {
+					return nil, fmt.Errorf("controlplane: guardrails.role_scopes entry %q admits no role: at least one of system/user/assistant/tool must be true -- an empty scope would switch the category off, which category_overrides deliberately has no action for", category)
+				}
+				sort.Strings(roles)
+				cfg.Guardrails.RoleScopes[category] = roles
 			}
 		}
 		if bgRaw, ok := getMap(guardrailsRaw, "bedrock_guardrails"); ok {
