@@ -124,6 +124,8 @@ old `Record`/`RecordTokens` calls used, so the billable/cache-hit/coalesced-foll
 counting invariant (`docs/rfcs/2026-09-05-gateway-cost-double-counting.md`) carries over
 unchanged.
 
+**Implemented 2026-10-17** (round-5 item 10 phase 2b): `finalize` settles the TPM and tokens-per-day reservations in one `KeyLimiter.SettleTokens` call (one Redis script for both), and the one exception the code had grown since — a tokens-per-day refusal releasing the minute reservation inline, before `finalize` (item 24, 2026-10-15; `DECISIONS.md`'s consequence (4)) — is gone: the admission gate reserves nothing unless every dimension admits.
+
 A process crash between `Reserve` and `Reconcile` is explicitly out of scope for the same reason a
 crash is already out of scope for the rest of `budget.Tracker`'s in-memory state: the reservation
 is transient, in-memory-only, never persisted — a crash loses it together with everything else,
@@ -236,7 +238,7 @@ revision 2 with `output` updated to the real, re-verified fixed behavior.
 Two statements above are stale. "Budget has no Redis-backed mode at all today" ended when
 `budget.NewRedisTracker` over `internal/budget/redisbudget` shipped (wired by `budget.redis_addr`),
 and "TPM's Redis mode is already a deliberate no-op" ended when Redis-mode TPM shipped
-(`ReserveTPM` admits through the backend's `AllowTPM` and `ReconcileTPM` settles through `AdjustTPM`). The crash analysis in
+(`ReserveTPM` admits through the backend's `AllowTPM` and `ReconcileTPM` settles through `AdjustTPM`). (**Corrected 2026-10-17**: since 2026-10-13 `ReserveTPM`/`SettleTPM` have sized the reservation from a usage history, and since 2026-10-17 one `Admit` gate for RPM, TPM and tokens-per-day and one `SettleTokens` call for both token dimensions.) The crash analysis in
 this RFC's scope section ("the reservation is transient, in-memory-only, never persisted") therefore
 holds only for `NewTracker`/`NewTrackerWithStore`. In Redis mode the reservation IS durably
 written — `Reserve` debits the full remaining headroom into the key's window hash (**2026-10-16**: the window's mean billed cost once the window has a billed settlement, the full headroom for every reservation until then — see the Implemented paragraph above) — so a replica

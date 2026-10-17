@@ -31,6 +31,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/idempotency"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit/admission"
 	"github.com/kelvran/gateway/gateway/internal/telemetry"
 )
 
@@ -200,6 +201,12 @@ func (failingRedisBackend) SettleTPM(_ context.Context, _ string, _ float64, _ *
 	return errors.New("simulated redis backend failure")
 }
 
+func (failingRedisBackend) Admit(context.Context, admission.Request) (admission.Result, error) {
+	return admission.Result{}, errors.New("simulated redis outage")
+}
+func (failingRedisBackend) SettleTokens(context.Context, []admission.Settlement) error {
+	return errors.New("simulated redis outage")
+}
 func (failingRedisBackend) Close() error { return nil }
 
 // TestGatewayEventRateLimitFailOpenTrueWhenBackendErrors is the

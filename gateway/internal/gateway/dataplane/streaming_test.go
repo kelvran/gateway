@@ -81,7 +81,7 @@ func newStreamingTestPipeline(t *testing.T, upstreamStream UpstreamStreamCaller,
 	return p
 }
 
-func newStreamingTestPipelineWithKeysBudgetAndLogger(t *testing.T, upstreamStream UpstreamStreamCaller, deployments []Deployment, adapters adapter.Registry, keys []identity.VirtualKey, tracker *budget.Tracker, logger *slog.Logger) *Pipeline {
+func newStreamingTestPipelineWithLimiter(t *testing.T, upstreamStream UpstreamStreamCaller, deployments []Deployment, adapters adapter.Registry, keys []identity.VirtualKey, tracker *budget.Tracker, limiter *ratelimit.KeyLimiter, logger *slog.Logger) *Pipeline {
 	t.Helper()
 	verifier, err := identity.NewVerifier(keys)
 	if err != nil {
@@ -92,7 +92,7 @@ func newStreamingTestPipelineWithKeysBudgetAndLogger(t *testing.T, upstreamStrea
 	}
 	p, err := NewPipeline(Config{
 		Verifier:       verifier,
-		Limiter:        ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)),
+		Limiter:        limiter,
 		Budget:         tracker,
 		Cache:          inprocess.New(0),
 		CacheL2:        inprocess.New(0),
@@ -113,6 +113,13 @@ func newStreamingTestPipelineWithKeysBudgetAndLogger(t *testing.T, upstreamStrea
 		t.Fatalf("NewPipeline: %v", err)
 	}
 	return p
+}
+
+// newStreamingTestPipelineWithKeysBudgetAndLogger is the in-memory-limiter
+// form of newStreamingTestPipelineWithLimiter.
+func newStreamingTestPipelineWithKeysBudgetAndLogger(t *testing.T, upstreamStream UpstreamStreamCaller, deployments []Deployment, adapters adapter.Registry, keys []identity.VirtualKey, tracker *budget.Tracker, logger *slog.Logger) *Pipeline {
+	t.Helper()
+	return newStreamingTestPipelineWithLimiter(t, upstreamStream, deployments, adapters, keys, tracker, ratelimit.NewInMemoryKeyLimiter(keyConfigsFromVirtualKeys(keys)), logger)
 }
 
 // newStreamingTestPipelineWithKeysAndBudget is the logger-less form most

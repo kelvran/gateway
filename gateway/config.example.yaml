@@ -72,7 +72,11 @@ virtual_keys:
       # (2026-09-21, gateway/changelog/0.14.0.md): with rate_limit.redis_addr
       # (below) set, the same reserve-then-reconcile runs as a GCRA
       # admission check inside Redis (redislimiter.Limiter.ReserveTPM/
-      # SettleTPM; since 2026-10-13 the estimate there is the same running
+      # SettleTPM until 2026-10-17; since round-5 item 10 phase 2b one
+      # admission script, Admit, and one settlement script, SettleTokens,
+      # cover RPM, TPM and tokens_per_day together, and a refusal in any
+      # dimension reserves nothing; since 2026-10-13 the estimate there is
+      # the same running
       # mean of the key's real usage, kept in Redis for 24 h beside the
       # arrival time, with the full tpm_capacity only for a key with no
       # history — before, it was ALWAYS the full tpm_capacity, which
@@ -89,7 +93,9 @@ virtual_keys:
       # allowance (a key that spends it all at 09:00 is whole again at
       # 09:00 the next day), never a midnight reset. Same reserve-then-
       # reconcile path as tpm_capacity (internal/ratelimit.KeyLimiter.
-      # ReserveTPD), checked after RPM and TPM, so those rejections still
+      # ReserveTPD in memory, under KeyLimiter.Admit, which since
+      # 2026-10-17 decides RPM, TPM and the day in one call), checked
+      # after RPM and TPM, so those rejections still
       # win; a day bucket with no usage history reserves at most one
       # hour's share of the day (tokens_per_day/24), or the same request's
       # minute reservation when that is smaller, so one request never

@@ -19,6 +19,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit/admission"
 )
 
 // Round-5 Tier S item 24 (2026-10-15): tokens_per_day on the virtual key,
@@ -173,6 +174,7 @@ type recordingDayBackend struct {
 	refuseDay        bool
 	dayErr           error
 	minuteErr        error
+	admits           []admission.Request
 	dayRetryAfterSec float64
 	reserves         []backendReserve
 	settles          []backendSettle
@@ -226,6 +228,41 @@ func (b *recordingDayBackend) SettleTPM(_ context.Context, key string, deltaIncr
 	return nil
 }
 
+// Admit is the phase-2b gate: one call for all three dimensions. Either
+// configured error fails the whole gate (one error, one fail-open); refuseDay
+// is a day refusal with the configured wait; otherwise both token dimensions
+// reserve their cold start, the day one lowered to the minute reservation as
+// the script does.
+func (b *recordingDayBackend) Admit(_ context.Context, req admission.Request) (admission.Result, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.admits = append(b.admits, req)
+	if b.minuteErr != nil {
+		return admission.Result{}, b.minuteErr
+	}
+	if b.dayErr != nil {
+		return admission.Result{}, b.dayErr
+	}
+	tpmCost := req.TPM.ColdStart
+	tpdCold := req.TPD.ColdStart
+	if tpmCost > 0 && tpmCost < tpdCold {
+		tpdCold = tpmCost
+	}
+	if b.refuseDay {
+		return admission.Result{RefusedBy: ratelimit.RefusedByTPD, RetryAfterSec: b.dayRetryAfterSec, TPMCost: tpmCost, TPDCost: 1, TPDColdStart: tpdCold}, nil
+	}
+	return admission.Result{Allowed: true, TPMCost: tpmCost, TPDCost: tpdCold, TPDColdStart: tpdCold}, nil
+}
+
+func (b *recordingDayBackend) SettleTokens(_ context.Context, settlements []admission.Settlement) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, s := range settlements {
+		b.settles = append(b.settles, backendSettle{key: s.Key, delta: s.DeltaIncrement, real: s.RealTokens})
+	}
+	return nil
+}
+
 func (*recordingDayBackend) Close() error { return nil }
 
 func redisDayPipeline(backend *recordingDayBackend) (*Pipeline, *identity.VirtualKey) {
@@ -251,17 +288,18 @@ func TestCheckRateLimitCountsAFailOpenOnlyWhenTheRequestIsAdmitted(t *testing.T)
 	}
 	beforeSnap := snapshotDataplaneTelemetry(t, before)
 
-	minuteErr := errors.New("simulated redis outage on the minute key")
+	// Since round-5 item 10 phase 2b the three dimensions are one gate call:
+	// an error anywhere fails the whole gate open (counted once), a day
+	// refusal is a refusal with nothing counted, an admit counts nothing.
 	cases := []struct {
 		key     string
 		backend *recordingDayBackend
 		wantOK  bool
 		want    int64
 	}{
-		{"team-day-minute-err-day-refuses", &recordingDayBackend{minuteErr: minuteErr, refuseDay: true, dayRetryAfterSec: 3600}, false, 0},
-		{"team-day-minute-err-day-admits", &recordingDayBackend{minuteErr: minuteErr}, true, 1},
-		{"team-day-minute-err-day-err", &recordingDayBackend{minuteErr: minuteErr, dayErr: errors.New("simulated redis outage on the day key")}, true, 1},
-		{"team-day-day-err", &recordingDayBackend{dayErr: errors.New("simulated redis outage on the day key")}, true, 1},
+		{"team-day-gate-err", &recordingDayBackend{minuteErr: errors.New("simulated redis outage")}, true, 1},
+		{"team-day-gate-refuses", &recordingDayBackend{refuseDay: true, dayRetryAfterSec: 3600}, false, 0},
+		{"team-day-gate-admits", &recordingDayBackend{}, true, 0},
 	}
 	for _, c := range cases {
 		p, vk := redisDayPipelineFor(c.backend, c.key)
@@ -282,56 +320,61 @@ func TestCheckRateLimitCountsAFailOpenOnlyWhenTheRequestIsAdmitted(t *testing.T)
 	}
 }
 
-// Redis mode, both dimensions admit: the minute key is reserved first with
-// its full cold-start burst, then the day key with that minute reservation
-// as its own cold-start cap.
-func TestCheckRateLimitReservesTheMinuteThenTheDayInRedisMode(t *testing.T) {
+// Redis mode, both dimensions admit: one gate request carries both -- the
+// minute cold start 1000 and the day cold cap 3600, which the script lowers
+// to the minute reservation it has just sized.
+func TestCheckRateLimitReservesBothTokenDimensionsThroughOneGateCallInRedisMode(t *testing.T) {
 	backend := &recordingDayBackend{}
 	p, vk := redisDayPipeline(backend)
 	d := p.checkRateLimit(context.Background(), vk, "gpt-4o")
 	if !d.ok || d.failedOpen || !d.tpm.reserved || d.tpm.tokens != 1000 || !d.tpd.reserved || d.tpd.tokens != 1000 || d.retryAfter != 0 {
-		t.Fatalf("decision = %+v, want ok with 1000 reserved on both dimensions", d)
+		t.Fatalf("decision = %+v, want ok with 1000 reserved on both dimensions (the day cold start lowered to the minute reservation)", d)
 	}
-	if len(backend.reserves) != 2 || backend.reserves[0].key != "test-key" || !isDayKey(backend.reserves[1].key) || backend.reserves[1].coldStart != 1000 {
-		t.Errorf("reserves = %+v, want the minute key then the day key with cold start 1000", backend.reserves)
+	if len(backend.admits) != 1 || len(backend.reserves) != 0 {
+		t.Fatalf("admits = %d, single-dimension reserves = %d; want one gate call and no single-dimension call (phase 2b)", len(backend.admits), len(backend.reserves))
+	}
+	req := backend.admits[0]
+	if req.RPMKey != "test-key" || req.TPM.Key != "test-key" || req.TPM.ColdStart != 1000 || !isDayKey(req.TPD.Key) || req.TPD.ColdStart != 3600 {
+		t.Errorf("gate request = %+v, want the minute key with cold start 1000 and the day key with the 86400/24 cold cap", req)
 	}
 	if len(backend.settles) != 0 {
 		t.Errorf("settles = %+v, want none before finalize", backend.settles)
 	}
 }
 
-// Redis mode, the day refuses: the decision is a rejection carrying the
-// script's wait, nothing stays reserved, and exactly one settlement -- the
-// minute key's release, nil real, the full reservation moved back -- has
-// already run.
-func TestCheckRateLimitDayRejectionReleasesTheMinuteReservationInRedisMode(t *testing.T) {
+// Redis mode, the day refuses: one gate call, a rejection carrying the
+// script's wait, nothing reserved and nothing to release (until phase 2b a
+// second call released the minute reservation the first had taken).
+func TestCheckRateLimitDayRejectionReservesNothingInRedisMode(t *testing.T) {
 	backend := &recordingDayBackend{refuseDay: true, dayRetryAfterSec: 3600}
 	p, vk := redisDayPipeline(backend)
 	d := p.checkRateLimit(context.Background(), vk, "gpt-4o")
-	if d.ok || d.failedOpen || d.tpm.reserved || d.tpm.tokens != 0 || d.tpd.reserved || d.retryAfter != time.Hour {
-		t.Fatalf("decision = %+v, want a rejection with nothing reserved and a 1 h wait", d)
+	if d.ok || d.failedOpen || !d.rejectedByDay || d.tpm.reserved || d.tpm.tokens != 0 || d.tpd.reserved || d.retryAfter != time.Hour {
+		t.Fatalf("decision = %+v, want a day rejection with nothing reserved and a 1 h wait", d)
 	}
-	if len(backend.settles) != 1 {
-		t.Fatalf("settles = %+v, want exactly one (the minute release)", backend.settles)
-	}
-	s := backend.settles[0]
-	if s.key != "test-key" || s.real != nil || s.delta != 1000.0/50*(0-1000) {
-		t.Errorf("minute release = key %q delta %v real %v; want the minute key, -20000 ms, nil", s.key, s.delta, s.real)
+	// Until phase 2b the day refusal had to release the minute reservation
+	// the previous call had taken (one more round trip); the gate reserves
+	// nothing unless all three admit, so there is nothing to release.
+	if len(backend.admits) != 1 || len(backend.settles) != 0 {
+		t.Fatalf("admits = %d, settles = %+v; want one gate call and no release", len(backend.admits), backend.settles)
 	}
 }
 
-// Redis mode, the day backend errors after the minute reserved: fail open
-// (the request proceeds, counted as a fail-open) and the minute reservation
-// is kept for finalize -- never dropped, never released twice.
-func TestCheckRateLimitDayBackendErrorFailsOpenAndKeepsTheMinuteReservation(t *testing.T) {
+// Redis mode, the gate errors: fail open (the request proceeds, counted
+// once) with nothing reserved -- one script, so no dimension can have
+// reserved before the error.
+func TestCheckRateLimitGateErrorFailsOpenWithNothingReserved(t *testing.T) {
 	backend := &recordingDayBackend{dayErr: errors.New("simulated redis outage")}
 	p, vk := redisDayPipeline(backend)
 	d := p.checkRateLimit(context.Background(), vk, "gpt-4o")
-	if !d.ok || !d.failedOpen || !d.tpm.reserved || d.tpm.tokens != 1000 || d.tpd.reserved || d.tpd.tokens != 0 {
-		t.Fatalf("decision = %+v, want ok, failed open, the minute reservation intact and no day reservation", d)
+	// One script, one error: every dimension fails open together and nothing
+	// is reserved (until phase 2b a day error kept the minute reservation
+	// the previous call had taken, for finalize to release).
+	if !d.ok || !d.failedOpen || d.tpm.reserved || d.tpm.tokens != 0 || d.tpd.reserved || d.tpd.tokens != 0 {
+		t.Fatalf("decision = %+v, want ok, failed open, nothing reserved", d)
 	}
 	if len(backend.settles) != 0 {
-		t.Errorf("settles = %+v, want none (finalize releases the minute reservation later)", backend.settles)
+		t.Errorf("settles = %+v, want none", backend.settles)
 	}
 }
 

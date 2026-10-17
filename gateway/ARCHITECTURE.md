@@ -321,7 +321,7 @@ Go binary. Contains the Gateway (routing/proxying) and Cache (embedded, internal
 /internal/ratelimit        — per-virtual-key token bucket — ACTIVE, per
                              docs/rfcs/2026-09-03-distributed-rate-limiting.md. In-memory by default
                              (single-process); optionally Redis-backed (internal/ratelimit/redislimiter,
-                             a Lua script over go-redis, atomic across any number of gateway instances)
+                             Lua scripts over go-redis, atomic across any number of gateway instances — since 2026-10-17 one admission script for RPM, TPM and tokens-per-day and one settlement script for both token dimensions, round-5 item 10 phase 2b)
                              when `rate_limit.redis_addr` is configured — a Redis backend error fails
                              open (logged, request allowed), since internal/budget's per-key USD cap is
                              an independent backstop. A consumer x model dimension is now real too, per
@@ -798,7 +798,7 @@ tree nodes):
 /internal/ratelimit
     /redislimiter/           — (already described in /internal/ratelimit's prose) `ratelimit.RedisBackend` over
                              Redis: the same continuous-refill token bucket as `ratelimit.TokenBucket`, made
-                             atomic across every gateway instance by one Lua script (EVALSHA, EVAL fallback
+                             atomic across every gateway instance by Lua scripts (EVALSHA, EVAL fallback
                              on NOSCRIPT); used only when `rate_limit.redis_addr` is set, fail-open on a
                              Redis error.
 /internal/prompt
@@ -918,7 +918,7 @@ diagram holds for it from the auth stage on; only the wire format at both ends a
     docs/rfcs/2026-09-13-gateway-prompt-management.md and /internal/prompt above
   → rate-limit check (hierarchical: org → team → user → key → session)
     **Corrected 2026-10-08**: not hierarchical. `checkRateLimit(ctx, vk, model)`
-    (internal/gateway/dataplane/dataplane.go:2605) sees only the virtual key and the model, and
+    (internal/gateway/dataplane/dataplane.go, `checkRateLimit`; one `KeyLimiter.Admit` call since 2026-10-17) sees only the virtual key and the model, and
     `ratelimit.KeyConfig` (internal/ratelimit/limiter.go, `KeyConfig`) holds only the key's own RPM, TPM and tokens-per-day
     buckets plus an optional per-model RPM override (`PerModel`). Org/team/user/session scope is
     target-only, as /internal/ratelimit above already records

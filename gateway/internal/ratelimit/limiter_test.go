@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/kelvran/gateway/gateway/internal/ratelimit/admission"
 )
 
 // fakeBackend is a small in-memory RedisBackend test double, keeping
@@ -39,6 +41,12 @@ type fakeBackend struct {
 	// recorded captures the last call's arguments, so tests can assert
 	// KeyLimiter passed the right per-key Capacity/RefillPerSecond
 	// through, not just that Allow was called at all.
+	admitFunc         func(admission.Request) (admission.Result, error)
+	admitCalls        int
+	lastAdmit         admission.Request
+	settleTokensCalls int
+	lastSettlements   []admission.Settlement
+
 	recordedKeyID           string
 	recordedCapacity        float64
 	recordedRefillPerSecond float64
@@ -95,6 +103,26 @@ func (f *fakeBackend) AdjustTPM(ctx context.Context, key string, deltaIncrement 
 	if f.adjustTPMFunc != nil {
 		return f.adjustTPMFunc(ctx, key, deltaIncrement)
 	}
+	return nil
+}
+
+func (f *fakeBackend) Admit(_ context.Context, req admission.Request) (admission.Result, error) {
+	f.admitCalls++
+	f.lastAdmit = req
+	if f.admitFunc != nil {
+		return f.admitFunc(req)
+	}
+	// The script's own day rule: the cold cap, lowered to the minute cost.
+	tpdCold := req.TPD.ColdStart
+	if req.TPM.ColdStart > 0 && req.TPM.ColdStart < tpdCold {
+		tpdCold = req.TPM.ColdStart
+	}
+	return admission.Result{Allowed: true, TPMCost: req.TPM.ColdStart, TPDCost: tpdCold, TPDColdStart: tpdCold}, nil
+}
+
+func (f *fakeBackend) SettleTokens(_ context.Context, s []admission.Settlement) error {
+	f.settleTokensCalls++
+	f.lastSettlements = s
 	return nil
 }
 

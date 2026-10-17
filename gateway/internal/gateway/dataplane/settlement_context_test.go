@@ -15,6 +15,7 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/guardrail"
 	"github.com/kelvran/gateway/gateway/internal/identity"
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
+	"github.com/kelvran/gateway/gateway/internal/ratelimit/admission"
 )
 
 // settlementCapturingBudgetBackend is a budget.RedisBackend that admits every
@@ -146,6 +147,16 @@ func (b *settlementCapturingTPMBackend) AdjustTPM(ctx context.Context, _ string,
 	b.adjustCalls++
 	b.adjustCtxErr = ctx.Err()
 	return nil
+}
+
+func (*settlementCapturingTPMBackend) Admit(_ context.Context, req admission.Request) (admission.Result, error) {
+	return admission.Result{Allowed: true, TPMCost: req.TPM.ColdStart, TPDCost: req.TPD.ColdStart, TPDColdStart: req.TPD.ColdStart}, nil
+}
+
+// SettleTokens is the paired settle the chat path makes since round-5 item 10
+// phase 2b: one call for both token dimensions, captured like the single one.
+func (b *settlementCapturingTPMBackend) SettleTokens(ctx context.Context, _ []admission.Settlement) error {
+	return b.AdjustTPM(ctx, "", 0)
 }
 
 func (*settlementCapturingTPMBackend) Close() error { return nil }

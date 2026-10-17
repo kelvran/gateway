@@ -143,6 +143,16 @@ func (b *TokenBucket) HasBalance() bool {
 	return b.tokens > 0
 }
 
+// Credit returns n tokens to the bucket, never above its capacity -- the
+// inverse of Debit, used to refund the RPM token of a request a later
+// dimension refused (round-5 item 10 phase 2b).
+func (b *TokenBucket) Credit(n float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refillLocked()
+	b.tokens = math.Min(b.capacity, b.tokens+n)
+}
+
 // Debit refills for elapsed time, then subtracts n — deliberately
 // allowed to leave tokens negative (an overdraft), since n (real token
 // usage) is only known retrospectively, after HasBalance's own decision

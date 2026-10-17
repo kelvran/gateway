@@ -1338,7 +1338,7 @@ var ErrVirtualKeyNotFound = errors.New("dataplane: virtual key not found")
 // rateLimit is registered with the rate limiter BEFORE the new Verifier
 // is swapped in — never the other way around. p.verifier.Load() is what
 // makes an ID resolvable to callers of HandleChatCompletion at all, and
-// checkRateLimit calls p.limiter.Allow(ctx, vk.ID) with no burst/refill
+// checkRateLimit calls p.limiter.Admit(ctx, vk.ID, model) with no burst/refill
 // parameters of its own; an ID that became resolvable before its rate
 // limiter entry existed would hit the exact nil-bucket/zero-capacity
 // hazard docs/rfcs/2026-09-05-gateway-admin-api.md's Design section
@@ -2576,111 +2576,65 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 // internal/budget/redisbudget) when the deployment is configured that
 // way, so an outage of the rate-limiter's own Redis backend alone does
 // not necessarily remove every spending control at once. In in-memory
-// mode, p.limiter.AllowForModel never returns an error at all, so this
+// mode, p.limiter.Admit never returns an error at all, so this
 // fail-open path is only ever exercised when a Redis backend is
 // configured.
 //
-// model is threaded through to AllowForModel so a virtual key's own
+// model is threaded through to Admit so a virtual key's own
 // PerModel override (per
 // docs/rfcs/2026-09-07-gateway-multi-dimensional-rate-limits.md), if one
 // is configured for this specific model, is consulted before vk's default
 // bucket — a key with no PerModel entries behaves exactly as if this
 // parameter didn't exist.
 //
-// The decision's tpm and tpd fields are ReserveTPM's and ReserveTPD's own
-// return values, per docs/rfcs/2026-09-08-gateway-budget-ratelimit-
-// toctou-fix.md: the caller MUST thread both through to finalize's
-// ReconcileTPM/ReconcileTPD calls on every return path (including error),
-// or a granted reservation leaks permanently. Both are the harmless zero
-// values whenever no real reservation was made — the dimension not
-// configured for vk, or an earlier check already rejected the request.
-// Order: RPM, then TPM, then tokens-per-day (round-5 Tier S item 24), so
-// a request is always refused for the most immediate reason first; a
-// tokens-per-day refusal releases the minute reservation taken just
-// before it (nothing from a refused request stays reserved) and carries
-// the day bucket's own wait, and a tokens-per-day backend error fails
-// open with the minute reservation kept intact for finalize -- never
-// dropped (it would leak) and never released here (finalize would then
-// release it a second time).
+// The decision's tpm and tpd fields are Admit's TPM and TPD reservations,
+// per docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md: the
+// caller MUST thread both through to finalize's single SettleTokens call
+// on every return path (including error), or a granted reservation leaks
+// permanently. Both are the harmless zero values whenever no real
+// reservation was made — the dimension not configured for vk, the gate
+// refused, or it failed open. Order inside the gate: RPM, then TPM, then
+// tokens-per-day (round-5 Tier S item 24), so a request is always refused
+// for the most immediate reason first; since round-5 item 10 phase 2b
+// (2026-10-17) the three are one Admit call that reserves nothing unless
+// all three admit -- no RPM token, no reservation (the in-memory path
+// refunds and releases to match) -- so a refusal leaves nothing to
+// release, a tokens-per-day refusal carries the day bucket's own wait,
+// and a backend error fails the whole gate open at once with nothing
+// reserved, logged and counted once. Until then the three were separate
+// calls: a later refusal had already consumed the RPM token, a day refusal
+// released the minute reservation inline, and each check failed open on
+// its own.
 func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey, model string) rateLimitDecision {
-	allowed, err := p.limiter.AllowForModel(ctx, vk.ID, model)
+	// One admission over RPM, TPM and tokens-per-day (round-5 item 10 phase
+	// 2b, 2026-10-17): one Redis round trip that reserves nothing unless all
+	// three admit, so a refused request consumes no RPM token and leaves nothing to
+	// release. Until then this was three conditional calls -- and a fourth
+	// releasing the minute reservation on a day refusal -- each failing open
+	// on its own; a backend error now fails the whole gate open, once.
+	a, err := p.limiter.Admit(ctx, vk.ID, model)
 	if err != nil {
 		p.logger.Warn("ratelimit_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", err.Error())...)
-		// A real, aggregate-friendly metric alongside the log line above,
-		// per docs/rfcs/2026-09-05-gateway-ratelimit-fail-open-metric.md
-		// — the structured log/GatewayDecisionEvent field already
-		// existed per-request; this is what lets an operator alert on
-		// "how many times has this happened recently" without scanning
-		// every log line or trace.
 		telemetry.RecordRateLimitFailOpen(ctx, vk.ID)
 		return rateLimitDecision{ok: true, failedOpen: true}
 	}
-	if !allowed {
-		return rateLimitDecision{}
-	}
-	// TPM dimension, per docs/rfcs/2026-09-05-gateway-tpm-rate-limit.md,
-	// now via ReserveTPM (docs/rfcs/2026-09-08-gateway-budget-ratelimit-
-	// toctou-fix.md). Checked only after the RPM check passes, so an
-	// RPM-exhausted request is always rejected for that reason first,
-	// matching this codebase's own existing check-ordering discipline
-	// (model-allowed before rate-limit before budget). ReserveTPM can now
-	// genuinely fail open on a Redis-mode backend error (closing the
-	// prior "TPM is unconditionally a no-op in Redis mode" gap) — treated
-	// identically to the RPM dimension's own fail-open policy above.
-	var d rateLimitDecision
-	var tpmErr error
-	d.ok, d.tpm.reserved, d.tpm.tokens, d.tpm.epoch, tpmErr = p.limiter.ReserveTPM(ctx, vk.ID, model)
-	if tpmErr != nil {
-		// Logged now, counted below: the {request} counter means "allowed
-		// through after a backend error", and whether this request is
-		// allowed through is only known once the day check has run.
-		p.logger.Warn("ratelimit_tpm_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", tpmErr.Error())...)
-		d = rateLimitDecision{ok: true, failedOpen: true}
-	}
-	if !d.ok {
-		return rateLimitDecision{}
-	}
-	// Tokens-per-day dimension (round-5 Tier S item 24, 2026-10-15), the
-	// same reserve-then-reconcile shape one window over. The minute
-	// reservation just taken is the cold-start cap for a day bucket with
-	// no history yet, so a cold key's first request never reserves its
-	// whole day (ReserveTPD's doc comment). A backend error fails open like
-	// the two dimensions above, counted once per request: the counter's
-	// unit is {request}, so a day error after a TPM fail-open on the same
-	// request must not add a second increment.
-	var tpdErr error
-	var dayOK bool
-	var wait time.Duration
-	dayOK, d.tpd.reserved, d.tpd.tokens, d.tpd.epoch, wait, tpdErr = p.limiter.ReserveTPD(ctx, vk.ID, d.tpm.tokens)
-	if tpdErr != nil {
-		p.logger.Warn("ratelimit_tpd_backend_unavailable", append(traceLogFields(ctx), "key_id", vk.ID, "error", tpdErr.Error())...)
-		d.failedOpen = true
-		d.tpd = tokenReservation{}
-		telemetry.RecordRateLimitFailOpen(ctx, vk.ID) // once, whether one or both token dimensions errored
-		return d
-	}
-	if !dayOK {
-		// Nothing from a refused request stays reserved: hand the minute
-		// reservation back now (nil real: a release, teaching the history
-		// nothing), exactly as finalize would have, and return the zero
-		// reservations the RPM/TPM refusals return so finalize has nothing
-		// left to release. Not counted as a fail-open even when the minute
-		// check errored above: the request was refused, not let through.
-		if d.tpm.reserved {
-			p.limiter.ReconcileTPM(ctx, vk.ID, model, d.tpm.tokens, d.tpm.epoch, nil)
+	if !a.Allowed {
+		if a.RefusedBy == ratelimit.RefusedByTPD {
+			return rateLimitDecision{rejectedByDay: true, retryAfter: a.RetryAfter}
 		}
-		return rateLimitDecision{rejectedByDay: true, retryAfter: wait}
+		return rateLimitDecision{}
 	}
-	if d.failedOpen {
-		telemetry.RecordRateLimitFailOpen(ctx, vk.ID) // the minute check erred and the request is admitted
+	return rateLimitDecision{
+		ok:  true,
+		tpm: tokenReservation{reserved: a.TPM.Reserved, tokens: a.TPM.Tokens, epoch: a.TPM.Epoch},
+		tpd: tokenReservation{reserved: a.TPD.Reserved, tokens: a.TPD.Tokens, epoch: a.TPD.Epoch},
 	}
-	return d
 }
 
 // checkFallbackTargetRateLimit reports whether a fallback_chains hop to
 // model may proceed, consulting ONLY the RPM dimension
 // (p.limiter.AllowForModel) — never TPM, which stays scoped to the single
-// pre-routing checkRateLimit/ReserveTPM call the caller already made
+// pre-routing checkRateLimit/Admit call the caller already made
 // against req.Model before this chain walk ever started. Closes
 // evals/tests/fixtures/regression_corpus_cost_abuse.json's
 // costabuse-permodel-ratelimit-bypassed-via-crossmodel-fallback-chain
@@ -3906,7 +3860,7 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// tpmReserved/tpmReservedTokens/tpmReservationEpoch and
 		// budgetReserved/budgetReservedUSD/budgetReservationEpoch are
 		// checkRateLimit's/budget.Reserve's own return values, threaded
-		// through to finalize's ReconcileTPM/Reconcile calls on every
+		// through to finalize's SettleTokens/Reconcile calls on every
 		// return path — including error — per
 		// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
 		tpmReserved            bool
@@ -4927,14 +4881,14 @@ func realServingModel(dep Deployment, fallbackModel string) string {
 //
 // budgetReserved/budgetReservedUSD/budgetReservationEpoch and
 // tpmReserved/tpmReservedTokens are
-// budget.Tracker.Reserve's/KeyLimiter.ReserveTPM's own return values,
+// budget.Tracker.Reserve's/KeyLimiter.Admit's own return values,
 // captured by the caller at the point each check ran, per
 // docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md — finalize
 // is where every granted reservation MUST be reconciled or released,
 // unconditionally of err/billable, since this is the one hook guaranteed
 // to run on every return path (including error, via defer). Both pairs
 // are the harmless zero/false values whenever no real reservation was
-// ever made (the corresponding Reserve/ReserveTPM call was never
+// ever made (the corresponding Reserve/Admit call was never
 // reached, or ran and was rejected) — see budget.Tracker.Reconcile's own
 // doc comment for why calling it with a zero reservedUSD is always safe.
 //
@@ -5056,7 +5010,7 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
 	// Deliberately NOT nested inside `if err == nil` the way the old
 	// Record/RecordTokens calls were — a reservation made by an earlier
-	// Reserve/ReserveTPM call must be released even when the request
+	// Reserve/Admit call must be released even when the request
 	// later errors out, times out, or turns out non-billable (a cache
 	// hit or coalesced singleflight follower), or that capacity leaks
 	// permanently. realCost/realTokens stay nil (release-only) unless
@@ -5099,15 +5053,15 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 			rt := float64(resp.Usage.TotalTokens)
 			realTokens = &rt
 		}
-		if tpmReserved || realTokens != nil {
-			p.limiter.ReconcileTPM(settleCtx, vk.ID, req.Model, tpmReservedTokens, tpmReservationEpoch, realTokens)
-		}
-		// The tokens-per-day dimension settles the same real count (a
-		// release when nil), on the same gate: a key with a day cap but no
-		// reservation (the check failed open) still records what it used.
-		if tpd.reserved || realTokens != nil {
-			p.limiter.ReconcileTPD(settleCtx, vk.ID, tpd.tokens, tpd.epoch, realTokens)
-		}
+		// Both token dimensions settle in one call -- one Redis round trip
+		// since round-5 item 10 phase 2b -- each on its own gate: a dimension
+		// with a reservation, or with a real count to record even without one
+		// (the check failed open), is settled; a release when realTokens is
+		// nil.
+		p.limiter.SettleTokens(settleCtx, vk.ID, req.Model,
+			ratelimit.TokenReservation{Reserved: tpmReserved, Tokens: tpmReservedTokens, Epoch: tpmReservationEpoch},
+			ratelimit.TokenReservation{Reserved: tpd.reserved, Tokens: tpd.tokens, Epoch: tpd.epoch},
+			realTokens)
 	}
 
 	var virtualKeyID string

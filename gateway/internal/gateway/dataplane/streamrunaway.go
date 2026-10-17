@@ -15,8 +15,8 @@ import (
 // docs/rfcs/2026-09-08-gateway-streaming-runaway-completion-guard.md.
 //
 // dataplane.go's checkRateLimit/budget.Reserve and streaming.go's
-// HandleChatCompletionStream call limiter.ReserveTPM/budget.Reserve exactly
-// ONCE, before a streamed request begins, and finalize's ReconcileTPM/
+// HandleChatCompletionStream call limiter.Admit/budget.Reserve exactly
+// ONCE, before a streamed request begins, and finalize's SettleTokens/
 // Reconcile (dataplane.go, run via defer) run exactly ONCE, after the
 // entire stream has finished. Between those two points, a single streaming
 // request could otherwise run for an arbitrarily long time and generate an

@@ -4,8 +4,11 @@ package dataplane
 // Tier S item 24, 2026-10-15; OWASP LLM06:2026's tokens-per-day limit):
 // the types checkRateLimit, finalize, the mid-stream top-up and
 // attachRetryAfter share. The limiter side lives in
-// internal/ratelimit (KeyConfig.TokensPerDay, ReserveTPD/
-// IncreaseReservationTPD/ReconcileTPD). Kept in its own file like
+// internal/ratelimit (KeyConfig.TokensPerDay; since round-5 item 10 phase
+// 2b, 2026-10-17, Admit decides all three dimensions in one call and
+// SettleTokens settles the two token dimensions in another; ReserveTPD and
+// ReconcileTPD remain underneath in memory, IncreaseReservationTPD for the
+// mid-stream top-up in both modes). Kept in its own file like
 // retry_after.go: one concern, not more lines in dataplane.go.
 
 import (
@@ -29,8 +32,9 @@ type tokenReservation struct {
 // rateLimitDecision is checkRateLimit's result: whether the request may
 // proceed (ok), whether a backend error made that answer a fail-open one
 // (failedOpen, already logged and counted once -- it means "admitted
-// because of a backend error", so it is false on every rejection, even
-// one whose minute check errored before the day check refused), the two token
+// because of a backend error", so it is false on every rejection -- since
+// 2026-10-17 one gate call decides all three dimensions, so an error and a
+// refusal cannot both happen to one request), the two token
 // reservations the caller MUST thread to finalize on every return path,
 // and -- on a tokens-per-day refusal -- the bucket's own wait, which
 // rejection() turns into the error attachRetryAfter floors the client's

@@ -15,7 +15,13 @@ components:
   budget:            { in: budget }
   budget-boltstore:  { in: budget/boltstore }
   budget-redisbudget: { in: budget/redisbudget }
-  ratelimit:         { in: [ratelimit, ratelimit/**] }
+  ratelimit:         { in: [ratelimit, ratelimit/redislimiter] }
+  # ratelimit's one project-internal import is its own stdlib-only sub-leaf,
+  # the admission request/result/settlement value types (round-5 item 10 phase
+  # 2b, 2026-10-17): the consumer and its Redis backend both import the leaf,
+  # so redislimiter keeps satisfying ratelimit.RedisBackend structurally
+  # without importing ratelimit.
+  ratelimit-admission: { in: ratelimit/admission }
   router:            { in: router }
   costaccounting:    { in: costaccounting }
   guardrail:         { in: guardrail }
@@ -69,7 +75,7 @@ components:
   benchupstream:          { in: benchupstream }
 
 # Components deliberately absent from `deps:` below (credentialstate,
-# identity, ratelimit, router, costaccounting, guardrail,
+# identity, ratelimit-admission, router, costaccounting, guardrail,
 # telemetry-exporterkind, cache-correlation, cache, adapter, controlplane,
 # backup, idempotency,
 # configpropagation, alerting, budget-redisbudget, anomaly, bench,
@@ -116,6 +122,11 @@ components:
 # budget.RedisBackend/ratelimit.RedisBackend were deliberately designed
 # to allow.
 deps:
+  # ratelimit (the consumer and its Redis backend, one component) imports
+  # only the admission value-type leaf; see the component comment above.
+  ratelimit:
+    mayDependOn:
+      - ratelimit-admission
   identity-boltstore:
     mayDependOn:
       - identity

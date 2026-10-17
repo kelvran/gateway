@@ -126,7 +126,7 @@ Two guards can end a live stream early. Both end it as a normal truncated stream
 
 A stream cut by either guard is recorded as `finish_reason: "length"` on the canonical response, so it is never written to the response cache (gateway/v0.18.0 and earlier cached it with an empty `finish_reason` and replayed it, truncated, for the entry's TTL; since gateway/v0.19.0 it is never cached); an `Idempotency-Key` replay of it carries `finish_reason: "length"`. The U5 note in [FAILURE-MODES](../operations/FAILURE-MODES.md) keeps the remaining classification gap.
 
-If the Redis-backed limiter or budget tracker errors during a top-up, the stream keeps its prior reservation and continues. Since gateway/v0.18.0, this is logged (`ratelimit_tpm_backend_unavailable` / `budget_backend_unavailable` with `op=mid_stream_topup`) and counted (`kelvran.ratelimit.fail_open` / `kelvran.budget.fail_open`) once per stream. Row R4 of [FAILURE-MODES](../operations/FAILURE-MODES.md) covers this. Key limits are configured per [virtual keys and budgets](virtual-keys-and-budgets.md).
+If the Redis-backed limiter or budget tracker errors during a top-up, the stream keeps its prior reservation and continues. Since gateway/v0.18.0, this is logged (`ratelimit_tpm_backend_unavailable` or `ratelimit_tpd_backend_unavailable` / `budget_backend_unavailable` with `op=mid_stream_topup`) and counted (`kelvran.ratelimit.fail_open` / `kelvran.budget.fail_open`) once per stream. Row R4 of [FAILURE-MODES](../operations/FAILURE-MODES.md) covers this. Key limits are configured per [virtual keys and budgets](virtual-keys-and-budgets.md).
 
 ### Idle timeout and fallback
 

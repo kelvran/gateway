@@ -1,8 +1,10 @@
 // Package redislimiter implements internal/ratelimit.RedisBackend over
 // Redis, running the exact same continuous-refill token-bucket algorithm
 // as internal/ratelimit.TokenBucket, but atomically across any number of
-// gateway instances via a single Lua script (EVALSHA, with go-redis's
-// built-in fallback to EVAL on a NOSCRIPT miss).
+// gateway instances via Lua scripts (EVALSHA, with go-redis's built-in
+// fallback to EVAL on a NOSCRIPT miss): the RPM bucket, the GCRA token
+// dimensions and, since 2026-10-17, one admission and one settlement
+// script over all of them (admit.go).
 //
 // Per docs/rfcs/2026-09-03-distributed-rate-limiting.md, this package
 // deliberately does not import internal/ratelimit — *Limiter satisfies

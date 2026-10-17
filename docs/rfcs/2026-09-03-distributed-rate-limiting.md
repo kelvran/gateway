@@ -148,6 +148,8 @@ func (p *Pipeline) checkRateLimit(ctx context.Context, vk *identity.VirtualKey) 
 }
 ```
 
+**Implemented 2026-10-17** (round-5 item 10 phase 2b): `checkRateLimit` is one call again — `KeyLimiter.Admit`, which in Redis mode runs one Lua script over the RPM bucket and the TPM and tokens-per-day GCRA reservations and reserves only when all three admit (the RPM state is persisted on every call, the token taken only then). By 2026-10-17 the two token dimensions this sketch predates (Redis-mode TPM 2026-09-21, tokens-per-day 2026-10-15) had grown into two more scripts per request, and a fourth on a tokens-per-day refusal. The fail-open policy is unchanged and now covers the three dimensions as one decision; `docs/operations/FAILURE-MODES.md` R1.
+
 ### Fail-open, not fail-closed, on Redis errors
 
 Industry precedent (Kong's Redis rate-limit policy, Envoy's global rate-limit filter) defaults to configurable-but-default-fail-open specifically because a rate-limiter *outage* shouldn't become a full gateway outage. The real counter-argument — if rate limiting is the *only* abuse control, failing open during an outage removes protection exactly when it's most needed — does not fully apply to Kelvran: `internal/budget.Tracker`'s per-key USD cap is a second, independent enforcement layer that never touches Redis at all. So failing open here is defensible specifically because the worst case (a Redis outage) still leaves the budget cap bounding total cost exposure — the two controls `THREAT_MODEL.md`'s LLM10 row names aren't fully redundant with each other, and this RFC leans on that. The `Warn`-level log on every fail-open decision makes an outage observable rather than silent, which is the actual mitigation for this tradeoff, not a decorative afterthought.
