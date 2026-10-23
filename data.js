@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792660125928,
+  "lastUpdate": 1792746163424,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -3339,6 +3339,263 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 overhead p99",
             "value": 3,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 redis round trips per request",
+            "value": 5.001326699834163,
+            "unit": "rtt/req"
+          },
+          {
+            "name": "S4 redis commands per request",
+            "value": 5.001990049751244,
+            "unit": "cmd/req"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "5c7fa0ac034b91fc70aa1b26b9f9d79a42cccb62",
+          "message": "perf(ratelimit): one gate script for RPM, TPM and tokens-per-day and one settlement script for both token dimensions -- 8.0 -> 5.0 Redis round trips per billable request; a refused request consumes nothing (round-5 item 10 phase 2b)\n\nAfter phase 2a a billable Redis-mode request still made three pre-call rate-limit calls, each\nconditional on the previous one, a fourth releasing the minute reservation on a tokens-per-day\nrefusal, and two settle calls after the response. The three become one script that reserves nothing\nunless all three dimensions admit, the two settles one script.\n\n- redislimiter: admitLuaSrc (KEYS: the RPM hash, the TPM TAT and history, the day TAT and\n  history) evaluates RPM, then TPM, then tokens-per-day -- the day cold cap lowered to the minute\n  cost it has just sized, dayColdStartCap's rule -- and reserves every dimension only on a full\n  admit; the RPM state is still persisted on every call (TTL refresh, Allow's own write), the token\n  taken only on an admit; the RPM part keeps the client clock and the GCRA parts Redis TIME, as before. Returns\n  {allowed, refused_by, retry_after, tpm_cost, tpd_cost, tpd_cold}, floats tostring()'d.\n  settlePairLuaSrc settles up to two dimensions in one EVAL (not a pipeline: go-redis's NOSCRIPT\n  fallback is inert inside one and a retried pipeline would settle twice).\n- ratelimit: RedisBackend gains Admit and SettleTokens over the new leaf package\n  ratelimit/admission (redislimiter keeps satisfying the interface structurally, without\n  importing ratelimit); KeyLimiter.Admit builds the request (per-model RPM/TPM keys, the day key\n  with the 1/24 cold cap) and maps the result with the cold-refusal tolerance; in memory it runs\n  the three buckets and, for parity, refunds the RPM token (TokenBucket.Credit) and releases the\n  minute reservation when a later dimension refuses. KeyLimiter.SettleTokens keeps finalize's\n  per-dimension gates and skips the call when nothing is configured. .go-arch-lint.yml declares the\n  leaf as the ratelimit-admission component the ratelimit component may depend on.\n- dataplane: checkRateLimit is one Admit call -- a backend error fails the whole gate open once\n  (one ratelimit_backend_unavailable line, one kelvran.ratelimit.fail_open increment, nothing\n  reserved); a day refusal keeps its wait; RPM and TPM refusals keep the backoff alone. finalize\n  settles both token dimensions with one SettleTokens call.\n- tests: redislimiter admit_test.go (real Redis: a fresh key reserves all three; nothing written\n  on a TPM, day or RPM refusal; off dimensions; the paired settle teaches the mean), ratelimit\n  admit_test.go (in-memory refund and release; the Redis request's keys and cold cap; refusal\n  mapping incl. the %.14g cold case; settle entries and gates), dataplane admit_gate_test.go (one\n  gate call, a day refusal reserving nothing, one fail-open for all dimensions, one paired settle,\n  two streaming twins); the three Redis-mode tokens-per-day tests and the fail-open table\n  re-pinned to the gate; four fakes extended (a fifth inherits by embedding) and one new gate fake;\n  the streaming harness gains a limiter-taking form.\n- docs: FAILURE-MODES R1 (the gate), R2/R2b historical with dated notes, the settle-discard bullet\n  and a double-settle known gap; TELEMETRY, metrics-and-logs, the how-to, config.md, caching,\n  glossary, troubleshooting, data-plane-api; Implemented notes on the distributed-rate-limiting\n  and TOCTOU RFCs (+ a Corrected note on the stale addendum); ARCHITECTURE; BENCHMARKS 2026-10-17\n  record; the round-5 report's item-10 note; changelog Changed; DECISIONS; LOGS.\n\nVerification: red first, then green; 15 one-at-a-time mutants, all caught; gofmt, vet,\ngolangci-lint, go-arch-lint; the redislimiter package through Docker under -race; the real-Redis\ncmd/gateway integration tests; the whole non-Docker suite; compat module; check-doc-paths; lychee;\na live run of the real recipe against a scratch Redis (S1a/S1r/S4) recorded in BENCHMARKS.md;\nreview lanes and a re-read as recorded in docs/agents/LOGS.md.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-17T07:35:49Z",
+          "url": "https://github.com/kelvran/gateway/commit/5c7fa0ac034b91fc70aa1b26b9f9d79a42cccb62"
+        },
+        "date": 1792746162555,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.582486,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 3.343465,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 4.905716,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 4,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 202.337775,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 204.022416,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 205.275775,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 4,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 572.472574,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 578.051169,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 580.212132,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 52.271393,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 55.575849,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.580764,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.38192,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.714939,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.794972,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1r latency p50",
+            "value": 2.192879,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r latency p95",
+            "value": 4.099959,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r latency p99",
+            "value": 6.338701,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r overhead p99",
+            "value": 5,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r redis round trips per request",
+            "value": 5.001990049751244,
+            "unit": "rtt/req"
+          },
+          {
+            "name": "S1r redis commands per request",
+            "value": 5.002985074626865,
+            "unit": "cmd/req"
+          },
+          {
+            "name": "S1r error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1r rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 52.491847,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 53.850988,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 57.134332,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 5,
             "unit": "ms"
           },
           {
