@@ -3,7 +3,7 @@
 // per single command, one per pipeline however many commands it carries
 // (client retries inside go-redis are not counted; a logical call is one
 // round trip). Every count goes to telemetry's two Redis counters,
-// attributed with the store's name, and to the per-request counter the
+// attributed with the store's name (or "shared"), and to the per-request counter the
 // pipeline installs on the request context, which finalize stamps on the
 // chat span. Round-5 Tier C item 10 (2026-10-16): the measurement that must
 // exist before the per-request Redis calls are pipelined -- the pass
@@ -11,8 +11,12 @@
 // client-side count can show that once pipelining lands (the server's
 // INFO commandstats keeps counting commands).
 //
-// cmd/gateway attaches one Hook per store right after Open; the stores
-// themselves know nothing about telemetry.
+// cmd/gateway attaches one Hook per client right after it creates the client
+// (a store's Open, or openSharedRedis); the stores themselves know nothing
+// about telemetry. A client carries exactly one: go-redis
+// appends hooks, so a second one would count every command twice. When the
+// rate limiter, the budget and the ledger share one client (round-5 item 10
+// phase 2c-1, 2026-10-23) that one hook is labelled "shared".
 package redishook
 
 import (
@@ -31,7 +35,7 @@ type Hook struct {
 var _ redis.Hook = (*Hook)(nil)
 
 // New returns a Hook attributing its counts to store ("ratelimit",
-// "budget", "ledger").
+// "budget", "ledger", or "shared" for the client the three run over).
 func New(store string) *Hook { return &Hook{store: store} }
 
 // DialHook passes through: the dial itself is not a command. go-redis does

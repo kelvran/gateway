@@ -327,9 +327,12 @@ return 1
 `
 
 // Backend is a Redis-backed implementation of internal/budget.RedisBackend.
-// The zero value is not usable — construct with Open.
+// The zero value is not usable — construct with Open or NewOn.
 type Backend struct {
-	client          *redis.Client
+	client *redis.Client
+	// closeFn is what Close runs: client.Close when Open owns the client,
+	// the shared holder's release when NewOn built the Backend over one.
+	closeFn         func() error
 	reserveScript   *redis.Script
 	fixedScript     *redis.Script
 	adjustScript    *redis.Script
@@ -346,18 +349,30 @@ type Backend struct {
 // start even when Redis is briefly unreachable.
 func Open(opts redis.Options) (*Backend, error) {
 	client := redis.NewClient(&opts)
+	return NewOn(client, client.Close), nil
+}
+
+// NewOn builds a Backend over a client somebody else owns -- the shared
+// client of round-5 item 10 phase 2c-1 (2026-10-23); see
+// internal/ratelimit/redislimiter.NewOn. Close runs release and never closes
+// the client; the owner attached the hook.
+func NewOn(client *redis.Client, release func() error) *Backend {
 	return &Backend{
 		client:          client,
+		closeFn:         release,
 		reserveScript:   redis.NewScript(budgetReserveLuaSrc),
 		fixedScript:     redis.NewScript(budgetReserveFixedLuaSrc),
 		adjustScript:    redis.NewScript(budgetAdjustLuaSrc),
 		alertScript:     redis.NewScript(budgetAlertLuaSrc),
 		warnAlertScript: redis.NewScript(budgetWarnAlertLuaSrc),
-	}, nil
+	}
 }
 
 // AddHook attaches a go-redis Hook to this backend's client -- cmd/gateway
 // attaches internal/redishook's round-trip counter right after Open.
+// On a store built with NewOn this would hook the SHARED client, and so every
+// store on it: the owner (cmd/gateway's openSharedRedis) already attached the
+// one hook, and a second would count every command twice. Do not call it there.
 func (b *Backend) AddHook(h redis.Hook) { b.client.AddHook(h) }
 
 // spendKey/alertKey percent-encode keyID (via url.QueryEscape) before
@@ -536,7 +551,7 @@ func (b *Backend) Delete(ctx context.Context, keyID string) error {
 	return nil
 }
 
-// Close closes the underlying Redis client.
+// Close closes the underlying Redis client, or releases a shared one (NewOn).
 func (b *Backend) Close() error {
-	return b.client.Close()
+	return b.closeFn()
 }

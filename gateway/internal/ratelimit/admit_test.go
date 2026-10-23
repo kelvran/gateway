@@ -189,3 +189,128 @@ func TestSettleTokensRedisModeSettlesTheConfiguredDimensionsInOneCall(t *testing
 		t.Errorf("SettleTokens must not fall back to the single-dimension SettleTPM: %q %q", fb.lastSettleKey, only.lastSettleKey)
 	}
 }
+
+// Round-5 item 10 phase 2c-1: the request builder, the result mapper and the
+// settle-entry builder are public so a fused path built on a shared Redis
+// client can reuse them; the existing paths call them too, so the two can
+// never drift.
+func TestPlanAdmitIsExactlyTheRequestAdmitSends(t *testing.T) {
+	fb := &fakeBackend{}
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "k", Capacity: 100, RefillPerSecond: 5, TPMCapacity: 1000, TPMRefillPerSecond: 50, TokensPerDay: 86400,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 7, RefillPerSecond: 1, TPMCapacity: 300, TPMRefillPerSecond: 3}},
+	}}, fb)
+	for _, model := range []string{"", "gpt-4o", "other-model"} {
+		planned, ok := l.PlanAdmit("k", model)
+		if !ok {
+			t.Fatalf("model %q: PlanAdmit reported no plan in Redis mode", model)
+		}
+		if _, err := l.Admit(context.Background(), "k", model); err != nil {
+			t.Fatal(err)
+		}
+		if planned != fb.lastAdmit {
+			t.Errorf("model %q: planned %+v, Admit sent %+v", model, planned, fb.lastAdmit)
+		}
+	}
+	if _, ok := NewInMemoryKeyLimiter([]KeyConfig{{ID: "k", Capacity: 1}}).PlanAdmit("k", ""); ok {
+		t.Error("an in-memory limiter has no Redis plan")
+	}
+}
+
+// The plan's own values, not only its agreement with what Admit sends (Admit
+// calls PlanAdmit, so that agreement alone cannot catch a wrong plan).
+func TestPlanAdmitResolvesPerModelOverridesAndTheDayColdCap(t *testing.T) {
+	l := NewRedisKeyLimiter([]KeyConfig{{
+		ID: "k", Capacity: 100, RefillPerSecond: 5, TPMCapacity: 1000, TPMRefillPerSecond: 50, TokensPerDay: 86400,
+		PerModel: map[string]ModelRateLimit{"gpt-4o": {Capacity: 7, RefillPerSecond: 1, TPMCapacity: 300, TPMRefillPerSecond: 3}},
+	}}, &fakeBackend{})
+	override, _ := l.PlanAdmit("k", "gpt-4o")
+	want := admission.Request{
+		RPMKey: "k\x00model=gpt-4o", RPMCapacity: 7, RPMRefillPerSecond: 1,
+		TPM: admission.Dimension{Key: "k\x00model=gpt-4o", Burst: 300, Rate: 3, ColdStart: 300},
+		TPD: admission.Dimension{Key: "k\x00dim=day", Burst: 86400, Rate: 1, ColdStart: 3600},
+	}
+	if override != want {
+		t.Errorf("per-model plan = %+v, want %+v", override, want)
+	}
+	plain, _ := l.PlanAdmit("k", "other-model")
+	want = admission.Request{
+		RPMKey: "k", RPMCapacity: 100, RPMRefillPerSecond: 5,
+		TPM: admission.Dimension{Key: "k", Burst: 1000, Rate: 50, ColdStart: 1000},
+		TPD: admission.Dimension{Key: "k\x00dim=day", Burst: 86400, Rate: 1, ColdStart: 3600},
+	}
+	if plain != want {
+		t.Errorf("key-level plan = %+v, want %+v", plain, want)
+	}
+	off, _ := NewRedisKeyLimiter([]KeyConfig{{ID: "k", Capacity: 10, RefillPerSecond: 1}}, &fakeBackend{}).PlanAdmit("k", "")
+	if off.TPM.Burst != 0 || off.TPD.Burst != 0 || off.TPM.Key != "k" || off.TPD.Key != "k\x00dim=day" {
+		t.Errorf("unconfigured dimensions = %+v / %+v, want Burst 0 with their keys derived", off.TPM, off.TPD)
+	}
+}
+
+func TestMapAdmissionAppliesTheColdRefusalRuleAndTheDimensionsThatAreOn(t *testing.T) {
+	on := admission.Request{TPM: admission.Dimension{Burst: 1000}, TPD: admission.Dimension{Burst: 86400}}
+	off := admission.Request{}
+	cases := []struct {
+		name string
+		req  admission.Request
+		res  admission.Result
+		want Admission
+	}{
+		{"admitted, both on", on, admission.Result{Allowed: true, TPMCost: 300, TPDCost: 90}, Admission{Allowed: true, TPM: TokenReservation{Reserved: true, Tokens: 300}, TPD: TokenReservation{Reserved: true, Tokens: 90}}},
+		{"admitted, both off", off, admission.Result{Allowed: true, TPMCost: 300, TPDCost: 90}, Admission{Allowed: true}},
+		{"rpm refusal", on, admission.Result{RefusedBy: "rpm", RetryAfterSec: 9}, Admission{RefusedBy: "rpm"}},
+		{"tpm refusal carries no wait", on, admission.Result{RefusedBy: "tpm", RetryAfterSec: 9}, Admission{RefusedBy: "tpm"}},
+		{"warm day refusal carries the wait", on, admission.Result{RefusedBy: "tpd", RetryAfterSec: 3600, TPDCost: 100, TPDColdStart: 3600}, Admission{RefusedBy: "tpd", RetryAfter: time.Hour}},
+		{"cold day refusal carries none", on, admission.Result{RefusedBy: "tpd", RetryAfterSec: 3600, TPDCost: 3600, TPDColdStart: 3600}, Admission{RefusedBy: "tpd"}},
+		{"cold within the %.14g tolerance", on, admission.Result{RefusedBy: "tpd", RetryAfterSec: 3600, TPDCost: 83333.333333333, TPDColdStart: 83333.33333333333}, Admission{RefusedBy: "tpd"}},
+	}
+	for _, c := range cases {
+		if got := MapAdmission(c.req, c.res); got != c.want {
+			t.Errorf("%s: MapAdmission = %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestPlanSettleIsExactlyWhatSettleTokensSends(t *testing.T) {
+	fb := &fakeBackend{}
+	l := NewRedisKeyLimiter([]KeyConfig{{ID: "k", Capacity: 100, RefillPerSecond: 100, TPMCapacity: 1000, TPMRefillPerSecond: 100, TokensPerDay: 86400}}, fb)
+	real := 100.0
+	cases := []struct {
+		name     string
+		tpm, tpd TokenReservation
+		real     *float64
+		entries  int
+	}{
+		{"both reserved, real", TokenReservation{Reserved: true, Tokens: 1000}, TokenReservation{Reserved: true, Tokens: 3600}, &real, 2},
+		{"both reserved, release", TokenReservation{Reserved: true, Tokens: 1000}, TokenReservation{Reserved: true, Tokens: 3600}, nil, 2},
+		{"nothing reserved, no real count", TokenReservation{}, TokenReservation{}, nil, 0},
+		{"real count without a reservation", TokenReservation{}, TokenReservation{}, &real, 2},
+		{"only the day reserved", TokenReservation{}, TokenReservation{Reserved: true, Tokens: 3600}, nil, 1},
+	}
+	for _, c := range cases {
+		planned := l.PlanSettle("k", "", c.tpm, c.tpd, c.real)
+		if len(planned) != c.entries {
+			t.Errorf("%s: %d entries planned, want %d", c.name, len(planned), c.entries)
+		}
+		fb.lastSettlements, fb.settleTokensCalls = nil, 0
+		l.SettleTokens(context.Background(), "k", "", c.tpm, c.tpd, c.real)
+		if c.entries == 0 {
+			if fb.settleTokensCalls != 0 {
+				t.Errorf("%s: SettleTokens called the backend with nothing to settle", c.name)
+			}
+			continue
+		}
+		if len(fb.lastSettlements) != len(planned) {
+			t.Fatalf("%s: SettleTokens sent %d entries, planned %d", c.name, len(fb.lastSettlements), len(planned))
+		}
+		for i := range planned {
+			if planned[i].Key != fb.lastSettlements[i].Key || planned[i].DeltaIncrement != fb.lastSettlements[i].DeltaIncrement || (planned[i].RealTokens == nil) != (fb.lastSettlements[i].RealTokens == nil) {
+				t.Errorf("%s: entry %d planned %+v, sent %+v", c.name, i, planned[i], fb.lastSettlements[i])
+			}
+		}
+	}
+	if got := NewInMemoryKeyLimiter([]KeyConfig{{ID: "k", Capacity: 1, TPMCapacity: 10}}).PlanSettle("k", "", TokenReservation{Reserved: true, Tokens: 1}, TokenReservation{}, nil); got != nil {
+		t.Errorf("an in-memory limiter plans no Redis settlement, got %+v", got)
+	}
+}

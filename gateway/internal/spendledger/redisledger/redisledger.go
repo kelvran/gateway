@@ -127,25 +127,40 @@ return folded
 `
 
 // Store is a Redis-backed spendledger.Ledger. The zero value is not usable;
-// construct with Open.
+// construct with Open or NewOn.
 type Store struct {
 	client *redis.Client
-	opts   spendledger.Options
-	record *redis.Script
+	// closeFn is what Close runs: client.Close when Open owns the client,
+	// the shared holder's release when NewOn built the Store over one.
+	closeFn func() error
+	opts    spendledger.Options
+	record  *redis.Script
 }
 
 // Open constructs a Store against the Redis server described by ropts with
 // the ledger bounds in lopts (zero fields take the defaults). It never fails
 // on an unreachable address; the first operation reports that.
 func Open(ropts redis.Options, lopts spendledger.Options) (*Store, error) {
-	return &Store{client: redis.NewClient(&ropts), opts: lopts.WithDefaults(), record: redis.NewScript(recordLuaSrc)}, nil
+	client := redis.NewClient(&ropts)
+	return NewOn(client, lopts, client.Close), nil
 }
 
-// Close closes the underlying Redis client.
-func (s *Store) Close() error { return s.client.Close() }
+// NewOn builds a Store over a client somebody else owns -- the shared client
+// of round-5 item 10 phase 2c-1 (2026-10-23); see
+// internal/ratelimit/redislimiter.NewOn. Close runs release and never closes
+// the client; the owner attached the hook.
+func NewOn(client *redis.Client, lopts spendledger.Options, release func() error) *Store {
+	return &Store{client: client, closeFn: release, opts: lopts.WithDefaults(), record: redis.NewScript(recordLuaSrc)}
+}
+
+// Close closes the underlying Redis client, or releases a shared one (NewOn).
+func (s *Store) Close() error { return s.closeFn() }
 
 // AddHook attaches a go-redis Hook to this store's client -- cmd/gateway
 // attaches internal/redishook's round-trip counter right after Open.
+// On a store built with NewOn this would hook the SHARED client, and so every
+// store on it: the owner (cmd/gateway's openSharedRedis) already attached the
+// one hook, and a second would count every command twice. Do not call it there.
 func (s *Store) AddHook(h redis.Hook) { s.client.AddHook(h) }
 
 func hourName(hour time.Time) string { return strconv.FormatInt(hour.Unix(), 10) }
@@ -231,8 +246,23 @@ func (s *Store) keyHashes(ctx context.Context, key string) ([]hashRef, error) {
 
 // Record implements spendledger.Ledger.
 func (s *Store) Record(ctx context.Context, e spendledger.Entry) error {
-	if err := spendledger.ValidateEntry(e); err != nil {
+	keys, args, err := s.PlanRecord(e)
+	if err != nil {
 		return err
+	}
+	if err := s.record.Run(ctx, s.client, keys, args...).Err(); err != nil {
+		return fmt.Errorf("redisledger: recording hour %s for key %q: %w", hourName(spendledger.HourBucket(e.At)), e.Key, err)
+	}
+	return nil
+}
+
+// PlanRecord validates e and returns the three keys and eleven arguments
+// recordLuaSrc takes, in the order Record hands them to the script -- the
+// input the fused settlement planned for round-5 item 10 phase 2c-2 will
+// compose with the budget and token settlements. Nothing is sent.
+func (s *Store) PlanRecord(e spendledger.Entry) (keys []string, args []any, err error) {
+	if err := spendledger.ValidateEntry(e); err != nil {
+		return nil, nil, err
 	}
 	hour := spendledger.HourBucket(e.At)
 	ck := spendledger.CellKey{Key: e.Key, Model: e.Model, Tool: e.Tool, Session: e.Session}
@@ -242,16 +272,12 @@ func (s *Store) Record(ctx context.Context, e spendledger.Entry) error {
 	if spendledger.CountsTowardsCaps(e.Session) {
 		counts = "1"
 	}
-	err := s.record.Run(ctx, s.client,
-		[]string{hashKey(hour, e.Key), sessionsKey(e.Key), cellsKey(e.Key)},
-		fieldOf(ck), fieldOf(ck)+requestsSuffix, e.SpendNanoUSD, e.Requests, e.Session, counts,
-		s.opts.MaxSessionsPerKey, s.opts.MaxRowsPerKey, (s.opts.Retention + ttlSlack).Milliseconds(),
-		fieldOf(other), fieldOf(other)+requestsSuffix,
-	).Err()
-	if err != nil {
-		return fmt.Errorf("redisledger: recording hour %s for key %q: %w", hourName(hour), e.Key, err)
-	}
-	return nil
+	return []string{hashKey(hour, e.Key), sessionsKey(e.Key), cellsKey(e.Key)},
+		[]any{
+			fieldOf(ck), fieldOf(ck) + requestsSuffix, e.SpendNanoUSD, e.Requests, e.Session, counts,
+			s.opts.MaxSessionsPerKey, s.opts.MaxRowsPerKey, (s.opts.Retention + ttlSlack).Milliseconds(),
+			fieldOf(other), fieldOf(other) + requestsSuffix,
+		}, nil
 }
 
 // fieldPair is one cell's two hash fields, read back.

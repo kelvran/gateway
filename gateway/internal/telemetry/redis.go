@@ -43,7 +43,7 @@ var (
 )
 
 // RecordRedisRoundTrip counts one round trip for store (ratelimit, budget,
-// ledger) of the given kind.
+// ledger, or shared for the one client the three run over) of the given kind.
 func RecordRedisRoundTrip(ctx context.Context, store, kind string) {
 	redisRoundTripsCounter.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(AttrKelvranRedisStore, store),

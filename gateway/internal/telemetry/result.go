@@ -101,7 +101,8 @@ const (
 	// AttrKelvranRedisStore/Kind/Command attribute the two Redis counters
 	// redis.go declares (fed by internal/redishook from inside every
 	// Redis-backed store): which store issued the call (ratelimit, budget,
-	// ledger), whether it was one command or one pipeline, and the
+	// ledger, or shared when the three run over one client), whether it was one
+	// command or one pipeline, and the
 	// command name. AttrKelvranRedisRoundTrips/Commands are the per-request
 	// totals finalize stamps on the chat span from the request context's
 	// counter -- the "round trips per billable request" figure round-5 item

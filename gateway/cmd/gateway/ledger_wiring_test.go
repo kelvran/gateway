@@ -24,7 +24,7 @@ func TestNewLedgerPicksTheBackendByConfig(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	ledgerCfg := controlplane.LedgerConfig{RetentionHours: 168, MaxSessionsPerKey: 2000, MaxRowsPerKey: 50000}
 
-	mem, err := newLedger(ledgerCfg, controlplane.BudgetConfig{}, "fail", logger)
+	mem, err := newLedger(ledgerCfg, controlplane.BudgetConfig{}, "fail", logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestNewLedgerPicksTheBackendByConfig(t *testing.T) {
 
 	fileCfg := ledgerCfg
 	fileCfg.PersistPath = filepath.Join(t.TempDir(), "ledger.db")
-	file, err := newLedger(fileCfg, controlplane.BudgetConfig{}, "fail", logger)
+	file, err := newLedger(fileCfg, controlplane.BudgetConfig{}, "fail", logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestNewLedgerPicksTheBackendByConfig(t *testing.T) {
 	}
 
 	logs.Reset()
-	rds, err := newLedger(fileCfg, controlplane.BudgetConfig{RedisAddr: "127.0.0.1:1"}, "fail", logger)
+	rds, err := newLedger(fileCfg, controlplane.BudgetConfig{RedisAddr: "127.0.0.1:1"}, "fail", logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,7 +40,19 @@ func (p *Pipeline) recordLedgerEntry(ctx context.Context, keyID, model string, a
 	if p.ledger == nil {
 		return
 	}
-	err := p.ledger.Record(ctx, spendledger.Entry{
+	if err := p.ledger.Record(ctx, p.ledgerEntry(ctx, keyID, model, a, cost)); err != nil {
+		p.noteLedgerFailure(ctx, keyID, err)
+	}
+}
+
+// ledgerEntry is the row one billable request writes: the served model, the
+// client tool, the session identifier (dropped when it is not a valid one,
+// counted on kelvran.attribution.dropped), the request's time and its cost in
+// nano-USD. recordLedgerEntry records it; the fused settlement planned
+// for round-5 item 10 phase 2c-2 will compose it with the budget's and the
+// token settlements instead.
+func (p *Pipeline) ledgerEntry(ctx context.Context, keyID, model string, a telemetry.Attribution, cost decimal.Decimal) spendledger.Entry {
+	return spendledger.Entry{
 		Key:          keyID,
 		Model:        model,
 		Tool:         a.ClientTool,
@@ -48,11 +60,14 @@ func (p *Pipeline) recordLedgerEntry(ctx context.Context, keyID, model string, a
 		At:           p.now(),
 		SpendNanoUSD: budget.USDToNanoUSD(cost),
 		Requests:     1,
-	})
-	if err != nil {
-		telemetry.RecordPersistenceFailed(ctx, ledgerStoreKind, keyID)
-		p.logger.Warn("ledger_record_failed", append(traceLogFields(ctx), "key_id", keyID, "error", err.Error())...)
 	}
+}
+
+// noteLedgerFailure counts and logs a lost ledger write; it never fails the
+// request.
+func (p *Pipeline) noteLedgerFailure(ctx context.Context, keyID string, err error) {
+	telemetry.RecordPersistenceFailed(ctx, ledgerStoreKind, keyID)
+	p.logger.Warn("ledger_record_failed", append(traceLogFields(ctx), "key_id", keyID, "error", err.Error())...)
 }
 
 // sessionFor is the ledger's session dimension: the Claude Code session id

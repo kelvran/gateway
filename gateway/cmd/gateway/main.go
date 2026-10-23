@@ -1266,12 +1266,17 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 
 	priceTable := costPriceTable(cfg.PriceTable)
 
-	budgetTracker, err := newBudgetTracker(cfg.Budget, cfg.Admin.OnCorruptStore, logger)
+	// One go-redis client for the rate limiter, the budget and the ledger when
+	// they point at the same Redis (round-5 item 10 phase 2c-1); nil keeps a
+	// client per store.
+	shared := openSharedRedis(cfg)
+
+	budgetTracker, err := newBudgetTracker(cfg.Budget, cfg.Admin.OnCorruptStore, logger, shared)
 	if err != nil {
 		return nil, fmt.Errorf("constructing budget tracker: %w", err)
 	}
 
-	ledger, err := newLedger(cfg.Ledger, cfg.Budget, cfg.Admin.OnCorruptStore, logger)
+	ledger, err := newLedger(cfg.Ledger, cfg.Budget, cfg.Admin.OnCorruptStore, logger, shared)
 	if err != nil {
 		return nil, fmt.Errorf("constructing spend ledger: %w", err)
 	}
@@ -1281,7 +1286,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		return nil, fmt.Errorf("constructing prompt store: %w", err)
 	}
 
-	keyLimiter, err := newKeyLimiter(cfg.RateLimit, keyConfigs)
+	keyLimiter, err := newKeyLimiter(cfg.RateLimit, keyConfigs, shared)
 	if err != nil {
 		return nil, fmt.Errorf("constructing rate limiter: %w", err)
 	}
@@ -1580,8 +1585,10 @@ const ledgerSweepInterval = time.Hour
 // (admin.on_corrupt_store applies); neither → in memory, lost on restart,
 // still bounded. The bounds come from the config (never zero: Load
 // rejects 0). Opening the Redis backend never fails on an unreachable
-// address, like every other Redis client here.
-func newLedger(cfg controlplane.LedgerConfig, budgetCfg controlplane.BudgetConfig, onCorruptStore string, logger *slog.Logger) (spendledger.Ledger, error) {
+// address, like every other Redis client here. A non-nil shared client
+// (see openSharedRedis) is used instead of opening one, and the store
+// then only releases its hold on Close.
+func newLedger(cfg controlplane.LedgerConfig, budgetCfg controlplane.BudgetConfig, onCorruptStore string, logger *slog.Logger, shared *sharedRedis) (spendledger.Ledger, error) {
 	opts := spendledger.Options{
 		Retention:         time.Duration(cfg.RetentionHours) * time.Hour,
 		MaxSessionsPerKey: cfg.MaxSessionsPerKey,
@@ -1590,6 +1597,9 @@ func newLedger(cfg controlplane.LedgerConfig, budgetCfg controlplane.BudgetConfi
 	if budgetCfg.RedisAddr != "" {
 		if cfg.PersistPath != "" {
 			logger.Warn("ledger_redis_addr_and_persist_path_both_set", "redis_addr", budgetCfg.RedisAddr, "persist_path", cfg.PersistPath)
+		}
+		if shared != nil {
+			return redisledger.NewOn(shared.client, opts, shared.acquire()), nil
 		}
 		store, err := redisledger.Open(redisOptions(budgetCfg.RedisAddr, budgetCfg.Redis), opts)
 		if err != nil {
@@ -1608,10 +1618,16 @@ func newLedger(cfg controlplane.LedgerConfig, budgetCfg controlplane.BudgetConfi
 	return store, nil
 }
 
-func newBudgetTracker(cfg controlplane.BudgetConfig, onCorruptStore string, logger *slog.Logger) (*budget.Tracker, error) {
+// newBudgetTracker constructs the budget tracker on the Redis backend when
+// cfg.RedisAddr is set (over the shared client when openSharedRedis
+// returned one), else on bbolt or in memory by cfg.PersistPath.
+func newBudgetTracker(cfg controlplane.BudgetConfig, onCorruptStore string, logger *slog.Logger, shared *sharedRedis) (*budget.Tracker, error) {
 	if cfg.RedisAddr != "" {
 		if cfg.PersistPath != "" {
 			logger.Warn("budget_redis_addr_and_persist_path_both_set", "redis_addr", cfg.RedisAddr, "persist_path", cfg.PersistPath)
+		}
+		if shared != nil {
+			return budget.NewRedisTracker(redisbudget.NewOn(shared.client, shared.acquire()), logger), nil
 		}
 		backend, err := redisbudget.Open(redisOptions(cfg.RedisAddr, cfg.Redis))
 		if err != nil {
@@ -1666,10 +1682,14 @@ func newPromptStore(cfg controlplane.PromptConfig, onCorruptStore string, logger
 // error here means the address itself is malformed, not that Redis is
 // currently unavailable, which is exactly the distinction this RFC's
 // fail-open policy depends on: gateway startup should not fail-closed on
-// Redis being down.
-func newKeyLimiter(cfg controlplane.RateLimitConfig, keys []ratelimit.KeyConfig) (*ratelimit.KeyLimiter, error) {
+// Redis being down. A non-nil shared client (see openSharedRedis) is used
+// instead of opening one.
+func newKeyLimiter(cfg controlplane.RateLimitConfig, keys []ratelimit.KeyConfig, shared *sharedRedis) (*ratelimit.KeyLimiter, error) {
 	if cfg.RedisAddr == "" {
 		return ratelimit.NewInMemoryKeyLimiter(keys), nil
+	}
+	if shared != nil {
+		return ratelimit.NewRedisKeyLimiter(keys, redislimiter.NewOn(shared.client, shared.acquire())), nil
 	}
 	backend, err := redislimiter.Open(redisOptions(cfg.RedisAddr, cfg.Redis))
 	if err != nil {

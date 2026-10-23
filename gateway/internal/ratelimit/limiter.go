@@ -963,13 +963,17 @@ func (l *KeyLimiter) Admit(ctx context.Context, keyID, model string) (Admission,
 	}, nil
 }
 
-// admitRedis builds the gate request from the key's config -- the RPM and
-// TPM parts honour the per-model overrides exactly as allow and ReserveTPM
-// do, the day part is key-level under tpdBackendKey with the 1/24 cold cap
-// (dayColdStartCap's first term; the script lowers it to the minute
-// reservation it has just sized) -- and maps the result back, including
-// ReserveTPD's cold-refusal rule for the wait.
-func (l *KeyLimiter) admitRedis(ctx context.Context, keyID, model string) (Admission, error) {
+// PlanAdmit builds the gate request for keyID and model from the key's
+// config -- the RPM and TPM parts honour the per-model overrides exactly as
+// allow and ReserveTPM do, the day part is key-level under tpdBackendKey with
+// the 1/24 cold cap (dayColdStartCap's first term; the script lowers it to the
+// minute reservation it has just sized). ok is false in memory mode, which
+// has no Redis request. Admit sends this request; the fused admission planned for
+// round-5 item 10 phase 2c-3 will compose it with the budget's.
+func (l *KeyLimiter) PlanAdmit(keyID, model string) (admission.Request, bool) {
+	if l.backend == nil {
+		return admission.Request{}, false
+	}
 	l.mu.RLock()
 	cfg := l.configs[keyID]
 	l.mu.RUnlock()
@@ -989,25 +993,42 @@ func (l *KeyLimiter) admitRedis(ctx context.Context, keyID, model string) (Admis
 	if tpdBurst > 0 {
 		req.TPD = admission.Dimension{Key: tpdBackendKey(keyID), Burst: tpdBurst, Rate: tpdRate, ColdStart: tpdBurst / dayColdStartHours}
 	}
-	r, err := l.backend.Admit(ctx, req)
-	if err != nil {
-		return Admission{}, err
-	}
+	return req, true
+}
+
+// MapAdmission turns the gate script's result for req into an Admission,
+// including ReserveTPD's cold-refusal rule for the wait: a refusal whose
+// reported cost is the cold start (within the %.14g rendering's tolerance)
+// carries no wait, any other tokens-per-day refusal carries the script's.
+// RPM and TPM refusals carry none. A reservation is reported only for a
+// dimension that is on (Burst > 0).
+func MapAdmission(req admission.Request, r admission.Result) Admission {
 	if !r.Allowed {
 		a := Admission{RefusedBy: r.RefusedBy}
 		if r.RefusedBy == RefusedByTPD && !isColdRefusal(r.TPDCost, r.TPDColdStart) {
 			a.RetryAfter = secondsDuration(r.RetryAfterSec)
 		}
-		return a, nil
+		return a
 	}
 	a := Admission{Allowed: true}
-	if tpmBurst > 0 {
+	if req.TPM.Burst > 0 {
 		a.TPM = TokenReservation{Reserved: true, Tokens: r.TPMCost}
 	}
-	if tpdBurst > 0 {
+	if req.TPD.Burst > 0 {
 		a.TPD = TokenReservation{Reserved: true, Tokens: r.TPDCost}
 	}
-	return a, nil
+	return a
+}
+
+// admitRedis is the gate in one backend call: the planned request, the
+// script, the mapped result.
+func (l *KeyLimiter) admitRedis(ctx context.Context, keyID, model string) (Admission, error) {
+	req, _ := l.PlanAdmit(keyID, model)
+	r, err := l.backend.Admit(ctx, req)
+	if err != nil {
+		return Admission{}, err
+	}
+	return MapAdmission(req, r), nil
 }
 
 // creditRPM returns the RPM token a refused in-memory admission took, so the
@@ -1044,6 +1065,24 @@ func (l *KeyLimiter) SettleTokens(ctx context.Context, keyID, model string, tpm,
 		}
 		return
 	}
+	entries := l.PlanSettle(keyID, model, tpm, tpd, realTokens)
+	if len(entries) == 0 {
+		return
+	}
+	_ = l.backend.SettleTokens(ctx, entries)
+}
+
+// PlanSettle returns the settlement entries SettleTokens sends in Redis
+// mode: each configured dimension that holds a reservation, or has a real
+// count to record without one, with ReconcileTPM's and ReconcileTPD's own
+// arithmetic (a release when realTokens is nil). Nil when nothing needs
+// settling, and in memory mode, which has no Redis settlement. The fused
+// settlement planned for round-5 item 10 phase 2c-2 will compose these entries
+// with the budget's and the ledger's.
+func (l *KeyLimiter) PlanSettle(keyID, model string, tpm, tpd TokenReservation, realTokens *float64) []admission.Settlement {
+	if l.backend == nil {
+		return nil
+	}
 	l.mu.RLock()
 	cfg := l.configs[keyID]
 	l.mu.RUnlock()
@@ -1058,10 +1097,7 @@ func (l *KeyLimiter) SettleTokens(ctx context.Context, keyID, model string, tpm,
 	if burst, rate := tpdRedisParams(cfg); burst > 0 && (tpd.Reserved || realTokens != nil) {
 		entries = append(entries, admission.Settlement{Key: tpdBackendKey(keyID), DeltaIncrement: (1000.0 / rate) * (real - tpd.Tokens), RealTokens: realTokens})
 	}
-	if len(entries) == 0 {
-		return
-	}
-	_ = l.backend.SettleTokens(ctx, entries)
+	return entries
 }
 
 // resolveTPMBucket resolves keyID's TPM bucket for model — its own

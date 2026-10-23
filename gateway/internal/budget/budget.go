@@ -574,6 +574,57 @@ func (t *Tracker) Reserve(ctx context.Context, keyID string, capUSD decimal.Deci
 	return r.Allowed, r.Reserved, r.ReservedUSD, r.Epoch, err
 }
 
+// PlanReserve converts a key's cap and reset interval to the units the Redis
+// backend's Reserve takes: nano-USD and milliseconds (0 keeps "no cap" and "no
+// expiry"). ReserveWithSpend sends these; the fused admission planned for
+// round-5 item 10 phase 2c-3 will compose them with the rate-limit gate's
+// request.
+func PlanReserve(capUSD decimal.Decimal, resetInterval time.Duration) (capNano, resetMs int64) {
+	return USDToNanoUSD(capUSD), resetIntervalToMs(resetInterval)
+}
+
+// MapReservation turns the backend's Reserve reply into a Reservation. An
+// uncapped key (capUSD <= 0) is always allowed and reserves nothing: the
+// backend opened (or kept) the key's window, and the window's epoch is what
+// Reconcile's Adjust needs to land the real cost, so it is returned with
+// Reserved=false (nothing to release). Until 2026-10-12 that case returned
+// before the backend was called, no window existed, and the key's spend read 0
+// in Redis mode while the in-memory tracker recorded it. A refusal reports the
+// spend it was decided against and nothing else.
+func MapReservation(capUSD decimal.Decimal, allowed bool, reservedNano, epoch, spentBeforeNano int64) Reservation {
+	spentBefore := NanoUSDToUSD(spentBeforeNano)
+	if capUSD.Sign() <= 0 {
+		return Reservation{Allowed: true, Epoch: epoch, SpentBeforeUSD: spentBefore}
+	}
+	if !allowed {
+		return Reservation{SpentBeforeUSD: spentBefore}
+	}
+	return Reservation{Allowed: true, Reserved: true, ReservedUSD: NanoUSDToUSD(reservedNano), Epoch: epoch, SpentBeforeUSD: spentBefore}
+}
+
+// PlanReconcile returns the signed nano-USD delta (real cost minus the
+// reservation) and the billed flag Reconcile sends the Redis backend's Adjust:
+// billed is true for a settlement with a non-negative real cost, which teaches
+// the window's mean; a release (nil or negative cost) frees the reservation
+// alone.
+func PlanReconcile(reservedUSD decimal.Decimal, realCost *decimal.Decimal) (deltaNano int64, billed bool) {
+	billed = realCost != nil && realCost.Sign() >= 0
+	delta := decimal.Zero.Sub(reservedUSD)
+	if billed {
+		delta = realCost.Sub(reservedUSD)
+	}
+	return USDToNanoUSD(delta), billed
+}
+
+// NoteAdjustFailure records a lost Redis settlement write: the reservation
+// stays debited and the real cost is never recorded, so it counts under the
+// same durable-write-failure counter the bbolt Save path records (added
+// 2026-10-08; this was Warn-only) and logs the Redis-unavailable line.
+func (t *Tracker) NoteAdjustFailure(ctx context.Context, keyID string, err error) {
+	telemetry.RecordPersistenceFailed(ctx, "budget", keyID)
+	t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "reconcile", "error", err.Error())
+}
+
 // Reservation is ReserveWithSpend's decision: Reserve's four decision values
 // plus SpentBeforeUSD, the key's spend the decision was made against -- before
 // this reservation, after every earlier one (the siblings' in-flight
@@ -598,25 +649,12 @@ type Reservation struct {
 // the spend reads 0 exactly as the separate read did when it failed open.
 func (t *Tracker) ReserveWithSpend(ctx context.Context, keyID string, capUSD decimal.Decimal, resetInterval time.Duration) (Reservation, error) {
 	if t.backend != nil {
-		allowedRedis, reservedNano, epoch, spentBeforeNano, redisErr := t.backend.Reserve(ctx, keyID, USDToNanoUSD(capUSD), resetIntervalToMs(resetInterval))
+		capNano, resetMs := PlanReserve(capUSD, resetInterval)
+		allowedRedis, reservedNano, epoch, spentBeforeNano, redisErr := t.backend.Reserve(ctx, keyID, capNano, resetMs)
 		if redisErr != nil {
 			return Reservation{}, redisErr
 		}
-		spentBefore := NanoUSDToUSD(spentBeforeNano)
-		if capUSD.Sign() <= 0 {
-			// An uncapped key: the backend opened (or kept) the key's window
-			// and reserved nothing; the window's epoch is what Reconcile's
-			// Adjust needs to land the real cost, so it is returned with
-			// Reserved=false (nothing to release). Until 2026-10-12 this
-			// branch returned before the backend was called, no window
-			// existed, and the key's spend read 0 in Redis mode while the
-			// in-memory tracker recorded it.
-			return Reservation{Allowed: true, Epoch: epoch, SpentBeforeUSD: spentBefore}, nil
-		}
-		if !allowedRedis {
-			return Reservation{SpentBeforeUSD: spentBefore}, nil
-		}
-		return Reservation{Allowed: true, Reserved: true, ReservedUSD: NanoUSDToUSD(reservedNano), Epoch: epoch, SpentBeforeUSD: spentBefore}, nil
+		return MapReservation(capUSD, allowedRedis, reservedNano, epoch, spentBeforeNano), nil
 	}
 
 	if justReset, ps, pe := t.resetIfNeeded(keyID, resetInterval); justReset {
@@ -742,21 +780,12 @@ func (t *Tracker) reservationAmountLocked(keyID string, capUSD decimal.Decimal) 
 // is always true.
 func (t *Tracker) Reconcile(ctx context.Context, keyID string, reservedUSD decimal.Decimal, reservationEpoch int64, realCost *decimal.Decimal, resetInterval time.Duration) (spentAfterUSD decimal.Decimal, spendKnown bool) {
 	if t.backend != nil {
-		billed := realCost != nil && realCost.Sign() >= 0
-		delta := decimal.Zero.Sub(reservedUSD)
-		if billed {
-			delta = realCost.Sub(reservedUSD)
-		}
 		// billed teaches the window's mean (the Redis twin of billedCount++
 		// below): a release never counts as a settlement.
-		spentAfterNano, err := t.backend.Adjust(ctx, keyID, USDToNanoUSD(delta), reservationEpoch, billed)
+		deltaNano, billed := PlanReconcile(reservedUSD, realCost)
+		spentAfterNano, err := t.backend.Adjust(ctx, keyID, deltaNano, reservationEpoch, billed)
 		if err != nil {
-			// A lost settlement write, not a read: the reservation stays
-			// debited and the real cost is never recorded, so it counts
-			// under the same durable-write-failure counter the bbolt Save
-			// path below records (added 2026-10-08; this was Warn-only).
-			telemetry.RecordPersistenceFailed(ctx, "budget", keyID)
-			t.logger.Warn("budget_redis_backend_unavailable", "key_id", keyID, "op", "reconcile", "error", err.Error())
+			t.NoteAdjustFailure(ctx, keyID, err)
 			return decimal.Zero, false
 		}
 		return NanoUSDToUSD(spentAfterNano), true

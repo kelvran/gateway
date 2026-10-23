@@ -800,7 +800,11 @@ tree nodes):
                              Redis: the same continuous-refill token bucket as `ratelimit.TokenBucket`, made
                              atomic across every gateway instance by Lua scripts (EVALSHA, EVAL fallback
                              on NOSCRIPT); used only when `rate_limit.redis_addr` is set, fail-open on a
-                             Redis error.
+                             Redis error. On `main` since 2026-10-23, not in `gateway/v0.20.0` (round-5
+                             item 10 phase 2c-1), it runs over a client shared with the budget and the
+                             ledger when `budget.redis_addr` names the same Redis (same address,
+                             username, resolved password and TLS; `NewOn`;
+                             cmd/gateway/shared_redis.go).
 /internal/prompt
     /boltstore/              — (already described in /internal/prompt's prose) `prompt.Persister` over bbolt,
                              file-for-file the identity/boltstore and budget/boltstore pattern; wired by
@@ -817,9 +821,10 @@ tree nodes):
 /internal/benchupstream        schedule/SSE-timing/percentile leaves and the deterministic mock upstream.
 /internal/redishook          — (2026-10-16, round-5 item 10) the go-redis Hook that counts Redis round trips and
                              commands per store into telemetry and the request's counter; cmd/gateway attaches
-                             it to the three request-path Redis stores (rate limiter, budget backend, spend
-                             ledger; not the identity store or config propagation) right after Open.
-                             go-redis + telemetry only.
+                             one to each client the three request-path Redis stores (rate limiter, budget
+                             backend, spend ledger; not the identity store or config propagation) run on:
+                             one per store on separate clients, ONE labelled `shared` when they share a
+                             client (round-5 item 10 phase 2c-1). go-redis + telemetry only.
 ```
 
 **Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose. **Corrected 2026-09-12**: `dataplane`'s and `admin`'s own lists below were each missing a real edge that `internal/prompt`'s own shipping introduced (per `docs/rfcs/2026-09-13-gateway-prompt-management.md`) and this doc never picked up — `dataplane → prompt`, and `admin → adapter, prompt` (the same commit that added `admin`'s new prompt-CRUD routes also added its first-ever `adapter` import, for those routes' own `[]adapter.Message` request/response bodies) — both re-verified against the real import graph and `gateway/.go-arch-lint.yml`'s own `mayDependOn` entries for `dataplane`/`admin`/`prompt`, not assumed:

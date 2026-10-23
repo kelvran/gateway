@@ -274,7 +274,7 @@ Durability for virtual-key spend. With neither key set, spend is in memory and r
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
 | `persist_path` | `string` | empty (in-memory) | Path of the bbolt file for single-process durability |
-| `redis_addr` | `string` | empty | Redis `host:port` for a cross-replica budget backend. When both keys are set, `redis_addr` wins and a warning (`budget_redis_addr_and_persist_path_both_set`) is logged |
+| `redis_addr` | `string` | empty | Redis `host:port` for a cross-replica budget backend. When both keys are set, `redis_addr` wins and a warning (`budget_redis_addr_and_persist_path_both_set`) is logged. Shares one client with the rate limiter and the ledger when `rate_limit.redis_addr` names the same Redis (see there) |
 | `redis_password_env`, `redis_username`, `redis_tls` | see [Redis auth keys](#redis-auth-keys) | | |
 
 The Redis client dials lazily; an unreachable Redis does not stop startup. Opening the bbolt file follows the rules in [Persistence files](#persistence-files).
@@ -290,7 +290,7 @@ The bounded spend ledger of RFC-2 item 13d: every billable chat completion and e
 | `max_sessions_per_key` | `integer` | 2000 | Named sessions a key keeps in the window; further sessions are recorded under `other`. At least 1 |
 | `max_rows_per_key` | `integer` | 50000 | Named cells (a row inside one hour bucket) a key keeps; further cells fold into `other` keeping model and tool. At least 1 |
 
-The backend follows `budget.redis_addr` exactly as the budget does; the Redis client dials lazily. A ledger write failure never fails the request: it is one `ledger_record_failed` line and `kelvran.persistence.failed{store_kind=ledger}`.
+The backend follows `budget.redis_addr` exactly as the budget does, including the client it shares with the rate limiter when `rate_limit.redis_addr` names the same Redis; the Redis client dials lazily. A ledger write failure never fails the request: it is one `ledger_record_failed` line and `kelvran.persistence.failed{store_kind=ledger}`.
 
 ## `prompt`
 
@@ -302,7 +302,7 @@ The backend follows `budget.redis_addr` exactly as the budget does; the Redis cl
 
 | Key | Type | Default | Meaning and validation |
 |---|---|---|---|
-| `redis_addr` | `string` | empty (in-memory) | Redis `host:port`. When set, the per-virtual-key RPM, TPM, tokens-per-day and `per_model` buckets are Redis-backed and shared across replicas. Deployment ceilings and `max_concurrent_requests` stay in memory per replica |
+| `redis_addr` | `string` | empty (in-memory) | Redis `host:port`. When set, the per-virtual-key RPM, TPM, tokens-per-day and `per_model` buckets are Redis-backed and shared across replicas. Deployment ceilings and `max_concurrent_requests` stay in memory per replica. When `budget.redis_addr` names the same Redis (same address, username, resolved password and TLS setting) the rate limiter, the budget and the spend ledger share one client and one connection pool, on `main` since 2026-10-23, not in `gateway/v0.20.0` (round-5 item 10 phase 2c-1); any difference, including two spellings of one host, keeps a client per store |
 | `redis_password_env`, `redis_username`, `redis_tls` | see [Redis auth keys](#redis-auth-keys) | | |
 
 The Redis client dials lazily; an unreachable Redis does not stop startup.
@@ -479,7 +479,7 @@ Rotation procedures are in [rotate-credentials](../how-to/rotate-credentials.md)
 
 ## Redis auth keys
 
-Each of the four Redis-backed sections (`budget`, `rate_limit`, `admin`, `config_propagation`) accepts the same three optional keys next to its `redis_addr`. They are meaningless when that section's `redis_addr` is empty.
+Each of the four Redis-backed sections (`budget`, `rate_limit`, `admin`, `config_propagation`) accepts the same three optional keys next to its `redis_addr`. They are meaningless when that section's `redis_addr` is empty. They also decide client sharing: `rate_limit` and `budget` sections with the same address, username, resolved password and TLS setting run the rate limiter, the budget and the ledger over one client (on `main` since 2026-10-23, not in `gateway/v0.20.0`).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -648,7 +648,7 @@ deployments:
 
 ### Redis-backed multi-replica state
 
-All four Redis consumers, each with its own address and auth keys.
+All four Redis consumers, each with its own address and auth keys. Here `rate_limit` and `budget` match, so the rate limiter, the budget and the ledger share one client.
 
 ```yaml
 rate_limit:

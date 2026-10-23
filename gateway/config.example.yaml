@@ -448,8 +448,13 @@ telemetry:
 # omit the whole section for an in-memory ledger with these defaults (lost
 # on restart, still bounded). The backend follows budget.redis_addr: when
 # it is set the ledger shares the budget's Redis and persist_path is
-# ignored with a warning. Every bound must be a positive integer -- a
-# ledger is never unbounded, so retention_hours: 0 is rejected at load.
+# ignored with a warning. When rate_limit.redis_addr names the same Redis too
+# (same address, username, resolved password and TLS -- the *_env names may
+# differ, the resolved values may not) the rate limiter, the budget and the
+# ledger run over ONE client and pool and kelvran.redis.store reads "shared"
+# (round-5 item 10 phase 2c-1); two spellings of one host do not match.
+# Every bound must be a positive integer -- a ledger is never unbounded,
+# so retention_hours: 0 is rejected at load.
 # ledger:
 #   persist_path: "/var/lib/kelvran-gateway/ledger.db"
 #   retention_hours: 168

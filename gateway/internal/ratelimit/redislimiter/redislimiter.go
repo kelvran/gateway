@@ -152,9 +152,13 @@ return redis.status_reply('OK')
 `
 
 // Limiter is a Redis-backed distributed rate limiter. The zero value is
-// not usable — construct with Open.
+// not usable — construct with Open or NewOn.
 type Limiter struct {
-	client          *redis.Client
+	client *redis.Client
+	// closeFn is what Close runs: client.Close for a Limiter that owns its
+	// client (Open), the shared holder's release for one built over a client
+	// somebody else owns (NewOn).
+	closeFn         func() error
 	script          *redis.Script
 	tpmScript       *redis.Script
 	tpmAdjustScript *redis.Script
@@ -179,17 +183,30 @@ type Limiter struct {
 // can still start).
 func Open(opts redis.Options) (*Limiter, error) {
 	client := redis.NewClient(&opts)
+	return NewOn(client, client.Close), nil
+}
+
+// NewOn builds a Limiter over a client somebody else owns -- the one go-redis
+// client the rate-limit, budget and ledger stores share when they point at the
+// same Redis (round-5 item 10 phase 2c-1, 2026-10-23). Close runs release
+// and never closes the client itself; the owner closes it when its last
+// holder has released. The Limiter does not attach a hook: the owner did.
+func NewOn(client *redis.Client, release func() error) *Limiter {
 	return &Limiter{
 		client:          client,
+		closeFn:         release,
 		script:          redis.NewScript(luaSrc),
 		tpmScript:       redis.NewScript(tpmLuaSrc),
 		tpmAdjustScript: redis.NewScript(tpmAdjustLuaSrc),
-	}, nil
+	}
 }
 
 // AddHook attaches a go-redis Hook to this limiter's client -- cmd/gateway
 // attaches internal/redishook's round-trip counter right after Open. The
 // limiter itself has no opinion on telemetry.
+// On a store built with NewOn this would hook the SHARED client, and so every
+// store on it: the owner (cmd/gateway's openSharedRedis) already attached the
+// one hook, and a second would count every command twice. Do not call it there.
 func (l *Limiter) AddHook(h redis.Hook) { l.client.AddHook(h) }
 
 // Allow reports whether one request against keyID may proceed, given
@@ -290,7 +307,7 @@ func (l *Limiter) AdjustTPM(ctx context.Context, key string, deltaIncrement floa
 	return nil
 }
 
-// Close closes the underlying Redis client.
+// Close closes the underlying Redis client, or releases a shared one (NewOn).
 func (l *Limiter) Close() error {
-	return l.client.Close()
+	return l.closeFn()
 }

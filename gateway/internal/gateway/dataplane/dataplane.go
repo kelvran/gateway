@@ -1261,7 +1261,10 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 // both), so this always has real values to close, even ones with
 // nothing to actually release (a no-op in the in-memory/no-store cases).
 // Both Close calls always run, even if the first errors — a resource
-// leak in one must never suppress cleanup of the other.
+// leak in one must never suppress cleanup of the other. When the rate
+// limiter, the budget and the ledger share one Redis client (round-5 item 10
+// phase 2c-1) it is closed by the last of their three Close calls, so none may
+// be skipped.
 func (p *Pipeline) Close() error {
 	budgetErr := p.budget.Close()
 	limiterErr := p.limiter.Close()
