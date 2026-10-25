@@ -6,7 +6,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.80.0
 	github.com/openai/openai-go/v3 v3.76.0
 	github.com/pb33f/libopenapi v0.41.6
-	github.com/pb33f/libopenapi-validator v0.16.0
+	github.com/pb33f/libopenapi-validator v0.16.1
 )
 
 require (
