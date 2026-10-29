@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793182714534,
+  "lastUpdate": 1793270523720,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -4871,6 +4871,263 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 latency p99",
             "value": 54.247318,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 redis round trips per request",
+            "value": 5,
+            "unit": "rtt/req"
+          },
+          {
+            "name": "S4 redis commands per request",
+            "value": 5,
+            "unit": "cmd/req"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "96915141ab7f232ff26f650aaf5960db7d1f8393",
+          "message": "refactor(redis): one go-redis client for the rate limiter, the budget and the ledger when they share a Redis, and the request builders their Redis paths use (round-5 item 10 phase 2c-1)\n\nPhase 2c reaches the report's 2.0 round trips by fusing the pre-call scripts\ninto one EVAL and the post-call scripts into another, which needs ONE client\nunder the three stores. This first commit lays that groundwork without\nchanging what a request does: it still costs 5.0 round trips.\n\n- cmd/gateway: when rate_limit.redis_addr and budget.redis_addr name the same\n  Redis (same address, username, resolved password, TLS; the ledger follows\n  the budget) openSharedRedis builds ONE client with exactly ONE hook labelled\n  \"shared\" (go-redis appends hooks, so one per store would count every command\n  three times). The match is conservative: two spellings of one host keep a\n  client per store and their own labels. sharedRedis hands each store a\n  release; the client closes when the last one is released, so Pipeline.Close\n  closes it once without an ErrClosed.\n- redislimiter / redisbudget / redisledger: NewOn constructors over a client\n  somebody else owns, with a closeFn (client.Close for Open, the release for\n  NewOn); Open is unchanged for callers.\n- Request builders and result mappers extracted from the paths that used them,\n  which now call them: ratelimit.KeyLimiter.PlanAdmit / PlanSettle and the\n  package-level ratelimit.MapAdmission; budget.PlanReserve / MapReservation / PlanReconcile and\n  Tracker.NoteAdjustFailure; redisledger.Store.PlanRecord; the dataplane's\n  ledgerEntry / noteLedgerFailure. A fused path reuses them instead of\n  copying the arithmetic.\n- tests: shared_redis_test.go (the match table, eligibility from config, the\n  refcounted close, one count per command under \"shared\", and two real-Redis\n  integration tests: 20 round trips over four billable requests all under\n  \"shared\" and the pool's connections gone from the server after\n  Pipeline.Close, and per-store labels unchanged when the addresses differ), NewOn\n  tests in all three stores, table tests for every extracted function.\n- docs: config.md, config.example.yaml, metrics-and-logs.md, TELEMETRY.md,\n  FAILURE-MODES.md (the one shared pool), the virtual-keys how-to, ARCHITECTURE.md, changelog, the round-5 report note,\n  BENCHMARKS.md record, DECISIONS (the owner's four answers: 2c in three\n  commits, single fused EVALs instead of pipelines, concurrency check first,\n  a budget refusal keeps today's behaviour), LOGS.\n\nVerification: red first, then green; 24 one-at-a-time mutants all caught (two\nfirst tripped the compiler and were re-run compile-safe, one survived a\ntautological test until a test pinned the explicit values, and the Docker\nones were re-run with green baselines and real failure text);\ngofmt, vet, golangci-lint, go-arch-lint; the three stores through Docker under\n-race; the whole non-Docker suite; compat module; check-doc-paths; lychee; a\nlive run of the real recipe (S1a/S1r/S4) at 5.0; review lanes as recorded in\ndocs/agents/LOGS.md.\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-23T11:06:44Z",
+          "url": "https://github.com/kelvran/gateway/commit/96915141ab7f232ff26f650aaf5960db7d1f8393"
+        },
+        "date": 1793270522717,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 1.191197,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 2.266939,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 3.218381,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 201.85033,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 202.975545,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 203.738943,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 572.779544,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 578.168381,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 580.009379,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 51.789123,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 53.98258,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.474659,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.315695,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.522694,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.473605,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1r latency p50",
+            "value": 2.099041,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r latency p95",
+            "value": 3.419463,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r latency p99",
+            "value": 4.31098,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r overhead p50",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r overhead p99",
+            "value": 3,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r redis round trips per request",
+            "value": 5,
+            "unit": "rtt/req"
+          },
+          {
+            "name": "S1r redis commands per request",
+            "value": 5,
+            "unit": "cmd/req"
+          },
+          {
+            "name": "S1r error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1r rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 52.540591,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 53.315758,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 53.774581,
             "unit": "ms"
           },
           {
