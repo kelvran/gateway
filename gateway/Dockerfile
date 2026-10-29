@@ -6,11 +6,12 @@
 
 # --- builder stage ---
 # Pinned by digest (independently re-verified via `docker buildx
-# imagetools inspect golang:1.27.2-alpine` -- matches exactly, not
+# imagetools inspect golang:1.27.3-alpine` -- matched exactly on 2026-10-23, not
 # blindly copied from a remediation suggestion) -- closes a real open
 # OpenSSF Scorecard Pinned-Dependencies finding (PinnedDependenciesID:
-# "containerImage not pinned by hash"). Resolves to golang:1.27.2-alpine
-# as of this pin -- a trailing "# 1.27.1-alpine" comment on the FROM
+# "containerImage not pinned by hash"). Resolves to golang:1.27.3-alpine
+# as of this pin (2026-10-23; Docker Hub has since re-pushed the tag's
+# index with only the riscv64 child changed) -- a trailing "# 1.27.1-alpine" comment on the FROM
 # line itself is NOT valid Dockerfile syntax (confirmed by a real local
 # build failure, "FROM requires either one or three arguments", not
 # assumed), so the human-readable tag is named here instead.
@@ -29,7 +30,7 @@
 # library the suite never ran on: bump both go.mod files, and the two
 # comment lines above that name the tag, in the same change as this line
 # (Dependabot's docker updates touch only this line).
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:85dc1069ac644ea3c527b177303a406eb3358192816cd7f9e5848eb658851673 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS builder
 
 WORKDIR /src
 

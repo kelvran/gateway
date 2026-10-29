@@ -60,7 +60,7 @@ One `gateway/vX.Y.Z` tag produces the following set. Every file except `checksum
 | `CGO_ENABLED` | `0` |
 | Flags | `-trimpath` |
 | ldflags | `-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}` |
-| Go toolchain | `go 1.27.2`, the `go` directive of `gateway/go.mod` (and of `gateway/compat/go.mod`), resolved by `actions/setup-go` (`go-version-file`). On `main` since 2026-10-15 (not in `gateway/v0.20.0`) the container image is built with the same version (`golang:1.27.2-alpine`, see "Image contents"), kept equal by `TestOneGoToolchain` and preflight check 7, so the `<go version>` field of `-version` is the same for a package and the image of one release; `gateway/v0.20.0` and earlier packages report `go1.26.9` against the image's `go1.27.2` |
+| Go toolchain | `go 1.27.3`, the `go` directive of `gateway/go.mod` (and of `gateway/compat/go.mod`), resolved by `actions/setup-go` (`go-version-file`). On `main` since 2026-10-15 (not in `gateway/v0.20.0`) the container image is built with the same version (`golang:1.27.3-alpine` since 2026-10-30, `golang:1.27.2-alpine` before; see "Image contents"), kept equal by `TestOneGoToolchain` and preflight check 7, so the `<go version>` field of `-version` is the same for a package and the image of one release; `gateway/v0.20.0` and earlier packages report `go1.26.9` against the image's `go1.27.2` |
 | GoReleaser mode | `release --snapshot --clean --skip=publish,validate`, `GORELEASER_CURRENT_TAG` set to the pushed tag |
 | Version source in snapshot mode | `snapshot.version_template: '{{ trimprefix (trimprefix .Tag "gateway/") "v" }}'` |
 | GoReleaser changelog | Disabled (`changelog.disable: true`); the Release body is the dated changelog file |
@@ -224,7 +224,7 @@ Build arguments passed to `gateway/Dockerfile`: `VERSION=<build identity>`, `COM
 | `ENTRYPOINT` | `["/gateway"]` |
 | `CMD` | `["-config", "/config.yaml"]` |
 | Default build args | `VERSION=dev`, `COMMIT=none`, `DATE=unknown` |
-| Builder base | `golang:1.27.2-alpine`, pinned by digest |
+| Builder base | `golang:1.27.3-alpine`, pinned by digest (on `main` since 2026-10-30, not in `gateway/v0.20.0`, whose image builds on `golang:1.27.2-alpine`) |
 
 No shell, package manager or libc is present. The config is not baked in; mount it at `/config.yaml`.
 

@@ -15,8 +15,9 @@ an in-process pytest suite. `get_tracer()` is called directly on this
 module's own `TracerProvider` instance instead.
 
 Attribute names are hardcoded string literals rather than imported from
-`opentelemetry.semantic_conventions` (a 0.65b0 beta package) -- confirmed
-via inspection that `process.command_args`/`process.exit.code` are real
+`opentelemetry.semantic_conventions` (a beta 0.x package; 0.65b0 when this
+was written) -- confirmed via inspection that
+`process.command_args`/`process.exit.code` are real
 but "_incubating"-only attributes (no stable `process` module exists in
 this SDK version at all), while `container.image.name` is stable.
 `gen_ai.operation.name` is deliberately never used here -- confirmed, via

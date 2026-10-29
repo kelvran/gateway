@@ -17,3 +17,5 @@ Versioning: [SemVer](https://semver.org/) by default. Revisit CalVer (`YYYY.MM.P
 - `pyproject.toml` declared `version = "0.8.0"` for the `v0.10.1` code (and had since `v0.9.0`): the release procedure had no version-bump step. Bumped to `0.10.1`, `uv.lock` refreshed, and `scripts/check_versions.py` now fails CI when the declared version lags the newest `evals/changelog/<version>.md`.
 
 ## Security
+
+- Dependency floor and lock: `opentelemetry-sdk` is now `>=1.45.1` in `pyproject.toml` (it was `>=1.44.0`), and `uv.lock` moves `opentelemetry-api` `1.44.0` to `1.45.1` (GHSA-xcq7-p3pf-p88h) together with `opentelemetry-sdk`, which pins it exactly, and `opentelemetry-semantic-conventions` `0.65b0` to `0.66b1`, and moves the transitive `certifi` `2026.7.22` to `2026.10.19` (PYSEC-2026-4320), so the CI `pip-audit` step reports no known vulnerabilities again. No `evals` behaviour changed; the suite passes on the refreshed lock (579 passed, 15 skipped).
