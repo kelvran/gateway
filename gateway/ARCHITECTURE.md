@@ -804,7 +804,8 @@ tree nodes):
                              item 10 phase 2c-1), it runs over a client shared with the budget and the
                              ledger when `budget.redis_addr` names the same Redis (same address,
                              username, resolved password and TLS; `NewOn`;
-                             cmd/gateway/shared_redis.go).
+                             cmd/gateway/shared_redis.go), and a chat completion's post-call writes are one
+                             command over it (internal/redisfused, phase 2c-2, on `main` since 2026-10-30, not in `gateway/v0.20.0`).
 /internal/prompt
     /boltstore/              — (already described in /internal/prompt's prose) `prompt.Persister` over bbolt,
                              file-for-file the identity/boltstore and budget/boltstore pattern; wired by
@@ -825,6 +826,16 @@ tree nodes):
                              backend, spend ledger; not the identity store or config propagation) run on:
                              one per store on separate clients, ONE labelled `shared` when they share a
                              client (round-5 item 10 phase 2c-1). go-redis + telemetry only.
+/internal/redisfused         — (round-5 item 10 phase 2c-2; on `main` since 2026-10-30, not in `gateway/v0.20.0`) the post-call settlement as ONE
+                             Redis command: the budget adjust, the token settlement and the ledger record
+                             composed into a single EVAL from the three stores' own exported Lua constants
+                             (so it cannot drift from them) and their own request planners, each part under
+                             `pcall` so a part that raises is reported on its own while server-level errors
+                             still surface, the ledger last. cmd/gateway builds it only over the shared
+                             client (`newFusedSettler`); the dataplane holds it as `Config.Fused`, which
+                             NewPipeline refuses over a limiter or tracker that is not Redis-backed. go-redis plus the
+                             three Redis stores (redisbudget, redislimiter, redisledger) and their leaf
+                             packages, as .go-arch-lint.yml enforces.
 ```
 
 **Dependency direction rules** — enforced by `go-arch-lint` in CI since 2026-09-05 (`gateway/.go-arch-lint.yml`, wired into `.github/workflows/ci.yml`'s `gateway` job and `make lint-gateway`), since Go's `internal/` visibility only catches direct imports, not transitive ones. Previously (until 2026-09-04) this was followed only by manual discipline with nothing to catch a future violation automatically. The rules below also correct two stale package names caught while wiring the linter (`gateway` → the real `internal/gateway/dataplane`/`internal/gateway/controlplane`; `provideradapter` → the real `internal/adapter`), confirmed against the actual import graph (`grep` across every non-test `.go` file), not assumed from this doc's own prior prose. **Corrected 2026-09-12**: `dataplane`'s and `admin`'s own lists below were each missing a real edge that `internal/prompt`'s own shipping introduced (per `docs/rfcs/2026-09-13-gateway-prompt-management.md`) and this doc never picked up — `dataplane → prompt`, and `admin → adapter, prompt` (the same commit that added `admin`'s new prompt-CRUD routes also added its first-ever `adapter` import, for those routes' own `[]adapter.Message` request/response bodies) — both re-verified against the real import graph and `gateway/.go-arch-lint.yml`'s own `mayDependOn` entries for `dataplane`/`admin`/`prompt`, not assumed:
@@ -833,7 +844,10 @@ tree nodes):
 dataplane → cache, adapter, adapter/{anthropic,bedrock,gemini,openai,openaicompat}, streaming,
             budget, ratelimit, router, costaccounting, telemetry, guardrail, identity, prompt,
             api/gatewayevents/v1, alerting, ingress/anthropicmsgs (permitted since 2026-10-10 S7; imported by dataplane/count_tokens.go since S11c),
-            spendledger (item 13d slice 3: the write hook, the key cascade, the sweep loop and the backup candidate; the leaf's interface only — the backends are cmd/gateway's choice)
+            spendledger (item 13d slice 3: the write hook, the key cascade, the sweep loop and the backup candidate; the leaf's interface only — the backends are cmd/gateway's choice),
+            redisfused (phase 2c-2: the fused post-call settlement's request and result types; cmd/gateway builds the settler)
+redisfused → budget/redisbudget, ratelimit/redislimiter, ratelimit/admission, spendledger, spendledger/redisledger
+                                  (phase 2c-2: the one package that sees all three Redis stores; each exports its own Lua and planners)
 adapter/{anthropic,bedrock,gemini,openai,openaicompat} → adapter, streaming
 ingress/anthropicmsgs → adapter, streaming   (RFC-1 §1's Anthropic Messages parser/encoders, item 11 S7: a leaf
                                   beside the provider adapters, never importing one of them — its block

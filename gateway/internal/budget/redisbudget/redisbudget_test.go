@@ -169,7 +169,7 @@ func TestAdjustReconcilesReservationDownToRealCost(t *testing.T) {
 }
 
 // TestAdjustClampPreventsNegativeSpend is the regression proof for
-// budgetAdjustLuaSrc's own "floor of 0" contract: releasing far more than
+// AdjustLuaSrc's own "floor of 0" contract: releasing far more than
 // was ever reserved (a real caller bug, or a release-only Reconcile after
 // an unusually large cold-start reservation) must not drive spend
 // negative, which would otherwise manufacture free extra headroom for
@@ -463,7 +463,7 @@ func TestReserveWindowExpiresViaRedisTTL(t *testing.T) {
 	}
 	// The new window must carry a genuinely DIFFERENT epoch from the
 	// expired one -- this is the actual property Adjust's own
-	// epoch-mismatch check (see budgetAdjustLuaSrc's doc comment) relies
+	// epoch-mismatch check (see AdjustLuaSrc's doc comment) relies
 	// on to tell "the same window" apart from "a different, later one."
 	if epoch3 == epoch1 {
 		t.Errorf("epoch after the window expired and a fresh one started = %d, want different from the expired window's epoch %d", epoch3, epoch1)
@@ -481,7 +481,7 @@ func TestReserveWindowExpiresViaRedisTTL(t *testing.T) {
 // window now). Proven here by: Reserve (window #1) -> let the window
 // expire -> Reserve again (window #2, a fresh cap) -> Adjust using
 // window #1's STALE epoch -> confirm window #2's spend is completely
-// unaffected. Break this by reverting budgetAdjustLuaSrc's own
+// unaffected. Break this by reverting AdjustLuaSrc's own
 // `epoch ~= expected_epoch` check (making it ignore the epoch again):
 // this test starts failing because window #2's spend reflects the
 // stale Adjust's delta. Since 2026-10-16 the stale Adjust is also flagged

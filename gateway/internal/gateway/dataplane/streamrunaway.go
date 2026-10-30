@@ -16,8 +16,9 @@ import (
 //
 // dataplane.go's checkRateLimit/budget.Reserve and streaming.go's
 // HandleChatCompletionStream call limiter.Admit/budget.Reserve exactly
-// ONCE, before a streamed request begins, and finalize's SettleTokens/
-// Reconcile (dataplane.go, run via defer) run exactly ONCE, after the
+// ONCE, before a streamed request begins, and finalize's settlement
+// (SettleTokens/Reconcile, or the fused settlement; dataplane.go, run via
+// defer) runs exactly ONCE, after the
 // entire stream has finished. Between those two points, a single streaming
 // request could otherwise run for an arbitrarily long time and generate an
 // arbitrarily large completion with zero mid-flight check against what was

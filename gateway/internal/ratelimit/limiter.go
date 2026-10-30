@@ -1072,13 +1072,17 @@ func (l *KeyLimiter) SettleTokens(ctx context.Context, keyID, model string, tpm,
 	_ = l.backend.SettleTokens(ctx, entries)
 }
 
+// RedisBacked reports whether the limiter's counters live in Redis (a limiter
+// built by NewRedisKeyLimiter), as opposed to this process's memory.
+func (l *KeyLimiter) RedisBacked() bool { return l.backend != nil }
+
 // PlanSettle returns the settlement entries SettleTokens sends in Redis
 // mode: each configured dimension that holds a reservation, or has a real
 // count to record without one, with ReconcileTPM's and ReconcileTPD's own
 // arithmetic (a release when realTokens is nil). Nil when nothing needs
 // settling, and in memory mode, which has no Redis settlement. The fused
-// settlement planned for round-5 item 10 phase 2c-2 will compose these entries
-// with the budget's and the ledger's.
+// settlement (internal/redisfused, round-5 item 10 phase 2c-2) composes these
+// entries with the budget's and the ledger's.
 func (l *KeyLimiter) PlanSettle(keyID, model string, tpm, tpd TokenReservation, realTokens *float64) []admission.Settlement {
 	if l.backend == nil {
 		return nil

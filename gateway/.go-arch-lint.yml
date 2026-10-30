@@ -72,6 +72,9 @@ components:
   spendledger-boltstore:  { in: spendledger/boltstore }
   spendledger-redisledger: { in: spendledger/redisledger }
   spendledger-ledgertest: { in: spendledger/ledgertest }
+  # The fused post-call settlement (round-5 item 10 phase 2c-2): the one package
+  # that sees all three Redis stores, composing their own Lua and planners.
+  redisfused:             { in: redisfused }
   benchupstream:          { in: benchupstream }
 
 # Components deliberately absent from `deps:` below (credentialstate,
@@ -198,6 +201,13 @@ deps:
   spendledger-ledgertest:
     mayDependOn:
       - spendledger
+  redisfused:
+    mayDependOn:
+      - budget-redisbudget
+      - ratelimit
+      - ratelimit-admission
+      - spendledger
+      - spendledger-redisledger
   dataplane:
     mayDependOn:
       - adapter
@@ -218,6 +228,7 @@ deps:
       - ingress-anthropicmsgs
       - prompt
       - ratelimit
+      - redisfused
       - router
       - streaming
       - telemetry

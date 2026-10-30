@@ -138,7 +138,7 @@ type RedisBackend interface {
 	// if keyID's window already expired, OR if a DIFFERENT, newer window
 	// has since started under this same keyID (epoch no longer matches
 	// what this reservation was taken against) — see
-	// redisbudget.budgetAdjustLuaSrc's own doc comment for why both
+	// redisbudget.AdjustLuaSrc's own doc comment for why both
 	// cases matter, not just the first. epoch must be exactly the value
 	// the matching Reserve call returned.
 	// billed is true for a settlement with a real cost (the window's mean
@@ -602,6 +602,10 @@ func MapReservation(capUSD decimal.Decimal, allowed bool, reservedNano, epoch, s
 	return Reservation{Allowed: true, Reserved: true, ReservedUSD: NanoUSDToUSD(reservedNano), Epoch: epoch, SpentBeforeUSD: spentBefore}
 }
 
+// RedisBacked reports whether the tracker's windows live in Redis (a tracker
+// built by NewRedisTracker), as opposed to this process's memory or a bbolt file.
+func (t *Tracker) RedisBacked() bool { return t.backend != nil }
+
 // PlanReconcile returns the signed nano-USD delta (real cost minus the
 // reservation) and the billed flag Reconcile sends the Redis backend's Adjust:
 // billed is true for a settlement with a non-negative real cost, which teaches
@@ -772,7 +776,7 @@ func (t *Tracker) reservationAmountLocked(keyID string, capUSD decimal.Decimal) 
 // The returns (round-5 item 10 phase 2a, 2026-10-16): spentAfterUSD is the
 // window's spend after the Adjust reply -- the new total when the settlement
 // landed, the current window's spend untouched on an epoch mismatch, 0 when
-// the window is gone (budgetAdjustLuaSrc's deliberate no-ops) -- and
+// the window is gone (AdjustLuaSrc's deliberate no-ops) -- and
 // spendKnown is false only when the Redis call itself failed and the spend
 // is unknown. finalize's warn-threshold and alert-ladder checks read this
 // value instead of re-reading Redis twice, and skip the request (logging

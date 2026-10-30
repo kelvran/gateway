@@ -6,7 +6,10 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kelvran/gateway/gateway/internal/gateway/controlplane"
+	"github.com/kelvran/gateway/gateway/internal/gateway/dataplane"
+	"github.com/kelvran/gateway/gateway/internal/redisfused"
 	"github.com/kelvran/gateway/gateway/internal/redishook"
+	"github.com/kelvran/gateway/gateway/internal/spendledger"
 )
 
 // sharedStoreLabel is the kelvran.redis.store value of the one hook on the
@@ -19,8 +22,9 @@ const sharedStoreLabel = "shared"
 // stores share when rate_limit.redis_addr and budget.redis_addr are the same
 // Redis (the ledger always follows the budget) -- round-5 item 10 phase 2c-1,
 // 2026-10-23. One pool, one hook, one close: the stores run over it through
-// their NewOn constructors, and a single client is what lets a later phase fuse
-// their scripts into one round trip before the upstream call and one after it.
+// their NewOn constructors, and a single client is what lets the post-call writes
+// travel as one round trip (phase 2c-2, newFusedSettler below) and, later, the
+// pre-call scripts as another (phase 2c-3).
 type sharedRedis struct {
 	client *redis.Client
 	mu     sync.Mutex
@@ -77,4 +81,24 @@ func openSharedRedis(cfg *controlplane.Config) *sharedRedis {
 	client := redis.NewClient(&budget)
 	client.AddHook(redishook.New(sharedStoreLabel))
 	return &sharedRedis{client: client}
+}
+
+// newFusedSettler builds the fused post-call settlement (round-5 item 10 phase
+// 2c-2: the budget adjust, the token settlement and the ledger record as one
+// Redis command) over the shared client, and returns a genuine nil interface
+// when there is none to build it over -- separate clients, or a ledger that is
+// not the Redis store -- so the pipeline keeps its three standalone settlements.
+// It is the same predicate that already routes all three stores through NewOn,
+// and it plans ledger rows with the pipeline's own ledger, so a row lands where
+// the admin queries read it. The settler takes a hold of its own on the client;
+// Pipeline.Close releases it.
+func newFusedSettler(shared *sharedRedis, ledger spendledger.Ledger) dataplane.FusedSettler {
+	if shared == nil {
+		return nil
+	}
+	planner, ok := ledger.(redisfused.LedgerPlanner)
+	if !ok {
+		return nil
+	}
+	return redisfused.New(shared.client, planner, shared.acquire())
 }

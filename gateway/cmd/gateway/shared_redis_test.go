@@ -172,6 +172,11 @@ func redisRoundTripsByStore(t *testing.T, reader interface {
 
 func newSharedRedisIntegrationServer(t *testing.T, upstreamURL, upstreamKeyEnvVar, rateLimitAddr, budgetAddr string, keys []controlplane.VirtualKeyConfig) (*httptest.Server, *dataplane.Pipeline) {
 	t.Helper()
+	return newSharedRedisIntegrationServerWithLogger(t, upstreamURL, upstreamKeyEnvVar, rateLimitAddr, budgetAddr, keys, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func newSharedRedisIntegrationServerWithLogger(t *testing.T, upstreamURL, upstreamKeyEnvVar, rateLimitAddr, budgetAddr string, keys []controlplane.VirtualKeyConfig, logger *slog.Logger) (*httptest.Server, *dataplane.Pipeline) {
+	t.Helper()
 	t.Setenv(upstreamKeyEnvVar, "fake-upstream-key-not-a-real-secret")
 	cfg := &controlplane.Config{
 		ListenAddr:  ":0",
@@ -186,7 +191,7 @@ func newSharedRedisIntegrationServer(t *testing.T, upstreamURL, upstreamKeyEnvVa
 		RateLimit: controlplane.RateLimitConfig{RedisAddr: rateLimitAddr},
 		Budget:    controlplane.BudgetConfig{RedisAddr: budgetAddr},
 	}
-	pipeline, err := buildPipeline(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pipeline, err := buildPipeline(cfg, logger)
 	if err != nil {
 		t.Fatalf("buildPipeline: %v", err)
 	}
@@ -250,37 +255,43 @@ func sharedRedisTestKeys(secret string) []controlplane.VirtualKeyConfig {
 // TestIntegrationSharedRedisClientServesAllThreeStores is the end-to-end proof:
 // with rate_limit.redis_addr and budget.redis_addr equal, every Redis round
 // trip of a billable request goes through the one shared client (labelled
-// "shared"), the count is still the 5.0 of phase 2b, and closing the pipeline
-// closes the client exactly once without an error (the server sees the pool's
-// connections go).
+// "shared"), the count is the 3.0 of phase 2c-2 (the gate, the budget reserve,
+// and ONE fused settlement for the budget adjust, the token settle and the
+// ledger record), and closing the pipeline closes the client exactly once
+// without an error even though a fourth holder, the fused settler, took a hold
+// of its own (the server sees the pool's connections go).
 func TestIntegrationSharedRedisClientServesAllThreeStores(t *testing.T) {
 	redisAddr := openTestRedisForMain(t)
+	// The baseline: the observer plus any other client already on this server
+	// (none on this test's own container, but connected_clients is server-wide).
+	observer := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer func() { _ = observer.Close() }()
+	baseline := connectedRedisClients(t, observer)
 	upstream, _ := newMockUpstream(t)
 	gw, pipeline := newSharedRedisIntegrationServer(t, upstream.URL, "KELVRAN_INTEGRATION_TEST_UPSTREAM_KEY_SHARED", redisAddr, redisAddr, sharedRedisTestKeys("shared-client-secret"))
 
 	got := chatRoundTripsOverFourWarmRequests(t, gw, "shared-client-secret")
-	if len(got) != 1 || got["shared"] != 20 {
-		t.Fatalf("round trips by store over 4 requests = %v, want only shared=20 (5.0 each: gate, budget reserve, budget adjust, token settle, ledger record)", got)
+	if len(got) != 1 || got["shared"] != 12 {
+		t.Fatalf("round trips by store over 4 requests = %v, want only shared=12 (3.0 each: gate, budget reserve, one fused settlement)", got)
 	}
-	observer := redis.NewClient(&redis.Options{Addr: redisAddr})
-	defer func() { _ = observer.Close() }()
 	before := connectedRedisClients(t, observer)
-	if before < 2 {
-		t.Fatalf("connected clients before Close = %d, want the observer plus the gateway's pooled connections", before)
+	if before <= baseline {
+		t.Fatalf("connected clients before Close = %d against a baseline of %d, want the gateway's pooled connections on top of it", before, baseline)
 	}
 	if err := pipeline.Close(); err != nil {
-		t.Fatalf("closing a pipeline over one shared client = %v, want nil (three closes, one client: a second go-redis Close would return ErrClosed)", err)
+		t.Fatalf("closing a pipeline over one shared client = %v, want nil (four closes, one client: a second go-redis Close would return ErrClosed)", err)
 	}
 	// Closed once, not leaked: the gateway's pooled connections are gone from
-	// the server (only the observer is left on this test's own container).
+	// the server and the count is back to the baseline (the observer alone on
+	// this test's own container).
 	deadline := time.Now().Add(3 * time.Second)
 	after := connectedRedisClients(t, observer)
-	for after != 1 && time.Now().Before(deadline) {
+	for after != baseline && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 		after = connectedRedisClients(t, observer)
 	}
-	if after != 1 {
-		t.Fatalf("connected clients after Close = %d (was %d), want 1 (the observer): the shared client must be closed exactly once, not leaked", after, before)
+	if after != baseline {
+		t.Fatalf("connected clients after Close = %d (was %d, baseline %d): the shared client must be closed exactly once, not leaked", after, before, baseline)
 	}
 }
 

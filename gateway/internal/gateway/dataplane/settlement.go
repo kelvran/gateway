@@ -6,8 +6,9 @@ import (
 )
 
 // settlementTimeout bounds the deferred settlement calls a request makes
-// after its outcome is decided: budget.Reconcile, limiter.ReconcileTPM and
-// the two budget threshold checks (Redis reads and alert de-dup writes); all
+// after its outcome is decided: the budget settlement, the token settlement
+// and the ledger record (one fused call over a shared Redis client) and the
+// two budget threshold checks (Redis reads and alert de-dup writes); all
 // of them share the one window, so a hung backend holds the handler for at
 // most this long in total.
 // Five seconds comfortably covers a healthy Redis round trip and a go-redis

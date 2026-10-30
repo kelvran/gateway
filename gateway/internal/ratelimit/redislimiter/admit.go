@@ -133,7 +133,7 @@ end
 return {1, '', '0', tostring(tpm_cost), tostring(tpd_cost), tostring(tpd_cold)}
 `
 
-// settlePairLuaSrc settles up to two GCRA dimensions in one round trip:
+// SettlePairLuaSrc settles up to two GCRA dimensions in one round trip:
 // tpmSettleLuaSrc's body once per dimension (the history learns the real
 // count when one is given; the TAT moves by the delta, never into the past),
 // in one atomic EVAL rather than a pipeline of two EVALSHAs -- go-redis's
@@ -141,7 +141,7 @@ return {1, '', '0', tostring(tpm_cost), tostring(tpd_cost), tostring(tpd_cold)}
 // settle twice. ARGV[1] is the dimension count n; KEYS[2i-1]/KEYS[2i] are
 // dimension i's TAT and history, ARGV[2+4(i-1) ..] its delta increment,
 // has_real, real tokens and history TTL in ms.
-const settlePairLuaSrc = `
+const SettlePairLuaSrc = `
 local n = tonumber(ARGV[1])
 local time = redis.call('TIME')
 local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
@@ -166,7 +166,7 @@ return redis.status_reply('OK')
 
 var (
 	admitScript      = redis.NewScript(admitLuaSrc)
-	settlePairScript = redis.NewScript(settlePairLuaSrc)
+	settlePairScript = redis.NewScript(SettlePairLuaSrc)
 )
 
 func tatKey(key string) string { return "ratelimit:tpm:" + url.QueryEscape(key) }
@@ -219,8 +219,26 @@ func (l *Limiter) SettleTokens(ctx context.Context, settlements []admission.Sett
 	if len(settlements) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, 2*len(settlements))
-	args := make([]interface{}, 0, 1+4*len(settlements))
+	keys, args := PlanSettleTokens(settlements)
+	if _, err := settlePairScript.Run(ctx, l.client, keys, args...).Result(); err != nil {
+		return fmt.Errorf("redislimiter: running settle-tokens script for key %q: %w", settlements[0].Key, err)
+	}
+	return nil
+}
+
+// SettleMaxDims is how many GCRA dimensions SettlePairLuaSrc settles in one
+// call: the per-minute and the per-day token buckets.
+const SettleMaxDims = 2
+
+// PlanSettleTokens returns the keys (a TAT and a history per settlement) and
+// the arguments (the count, then four per settlement) SettleTokens hands
+// SettlePairLuaSrc -- the input the fused settlement (internal/redisfused,
+// round-5 item 10 phase 2c-2) composes with the budget and ledger
+// settlements. The caller bounds len(settlements) by SettleMaxDims. Nothing
+// is sent.
+func PlanSettleTokens(settlements []admission.Settlement) (keys []string, args []any) {
+	keys = make([]string, 0, 2*len(settlements))
+	args = make([]any, 0, 1+4*len(settlements))
 	args = append(args, len(settlements))
 	for _, s := range settlements {
 		keys = append(keys, tatKey(s.Key), tpmHistoryKey(s.Key))
@@ -230,8 +248,10 @@ func (l *Limiter) SettleTokens(ctx context.Context, settlements []admission.Sett
 		}
 		args = append(args, s.DeltaIncrement, hasReal, real, tpmHistoryTTL.Milliseconds())
 	}
-	if _, err := settlePairScript.Run(ctx, l.client, keys, args...).Result(); err != nil {
-		return fmt.Errorf("redislimiter: running settle-tokens script for key %q: %w", settlements[0].Key, err)
-	}
-	return nil
+	return keys, args
 }
+
+// PlaceholderSettleKeys are the TAT and history keys a fused call declares in
+// the slots of a dimension it does not settle. They are never read or
+// written.
+func PlaceholderSettleKeys() (tat, history string) { return tatKey(""), tpmHistoryKey("") }

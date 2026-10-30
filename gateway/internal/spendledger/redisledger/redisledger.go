@@ -84,7 +84,7 @@ const (
 // A variable so the tests can shrink it and cross the boundaries.
 var chunkSize = 1000
 
-// recordLuaSrc applies both caps and writes one entry atomically.
+// RecordLuaSrc applies both caps and writes one entry atomically.
 //
 // KEYS[1] the hour hash, KEYS[2] the key's session set, KEYS[3] the key's
 // counting-cell count. ARGV: 1 the field, 2 the requests field, 3 the spend
@@ -98,7 +98,7 @@ var chunkSize = 1000
 // then takes no cell slot; a live session's new cell beyond the cell cap
 // folds likewise. Amounts cross as integer strings for HINCRBY, never as
 // Lua numbers (a float64 double), per redisbudget's own precision note.
-const recordLuaSrc = `
+const RecordLuaSrc = `
 local field, nfield = ARGV[1], ARGV[2]
 local session = ARGV[5]
 local counts = ARGV[6] == '1'
@@ -150,7 +150,7 @@ func Open(ropts redis.Options, lopts spendledger.Options) (*Store, error) {
 // internal/ratelimit/redislimiter.NewOn. Close runs release and never closes
 // the client; the owner attached the hook.
 func NewOn(client *redis.Client, lopts spendledger.Options, release func() error) *Store {
-	return &Store{client: client, closeFn: release, opts: lopts.WithDefaults(), record: redis.NewScript(recordLuaSrc)}
+	return &Store{client: client, closeFn: release, opts: lopts.WithDefaults(), record: redis.NewScript(RecordLuaSrc)}
 }
 
 // Close closes the underlying Redis client, or releases a shared one (NewOn).
@@ -256,10 +256,23 @@ func (s *Store) Record(ctx context.Context, e spendledger.Entry) error {
 	return nil
 }
 
+// RecordKeys and RecordArgs are how many keys and arguments RecordLuaSrc
+// takes.
+const (
+	RecordKeys = 3
+	RecordArgs = 11
+)
+
+// PlaceholderRecordKeys are the three keys a fused call declares in the slots
+// of a record it does not run. They are never read or written.
+func PlaceholderRecordKeys() []string {
+	return []string{hashKey(time.Time{}, ""), sessionsKey(""), cellsKey("")}
+}
+
 // PlanRecord validates e and returns the three keys and eleven arguments
-// recordLuaSrc takes, in the order Record hands them to the script -- the
-// input the fused settlement planned for round-5 item 10 phase 2c-2 will
-// compose with the budget and token settlements. Nothing is sent.
+// RecordLuaSrc takes, in the order Record hands them to the script -- the
+// input the fused settlement (internal/redisfused, round-5 item 10 phase
+// 2c-2) composes with the budget and token settlements. Nothing is sent.
 func (s *Store) PlanRecord(e spendledger.Entry) (keys []string, args []any, err error) {
 	if err := spendledger.ValidateEntry(e); err != nil {
 		return nil, nil, err

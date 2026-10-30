@@ -215,7 +215,7 @@ jobs:
         env:
           # The Redis-backed suites (budget/redisbudget, identity/redisstore,
           # ratelimit/redislimiter, spendledger/redisledger, configpropagation,
-          # dataplane, cmd/gateway)
+          # redisfused (two: a primary and a read-only replica), dataplane, cmd/gateway)
           # each start a `redis:7-alpine` testcontainer, cmd/gateway's chaos test
           # starts `nginx:alpine`, and testcontainers-go's Ryuk reaper is a third
           # Docker Hub image. Docker Hub's anonymous

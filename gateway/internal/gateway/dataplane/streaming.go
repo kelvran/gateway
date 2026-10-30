@@ -177,7 +177,7 @@ func (p *Pipeline) handleChatCompletionStream(ctx context.Context, authorization
 		idempotencyToken idempotency.Token
 		// See HandleChatCompletion's identical fields: checkRateLimit's/
 		// budget.Reserve's own return values, threaded through to
-		// finalize's ReconcileTPM/Reconcile calls on every return path,
+		// finalize's settlement (SettleTokens/Reconcile, or the fused settlement) on every return path,
 		// per docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
 		tpmReserved            bool
 		tpmReservedTokens      float64

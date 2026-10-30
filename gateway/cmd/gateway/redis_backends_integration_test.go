@@ -16,10 +16,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,13 +40,17 @@ import (
 	"github.com/kelvran/gateway/gateway/internal/ratelimit"
 )
 
-// openTestRedisForMain starts a real Redis container for this package's
-// own integration tests — mirrors internal/gateway/dataplane's identical
+// openTestRedisForMain returns the Redis for this package's own integration
+// tests: KELVRAN_TEST_REDIS_ADDR when set (a scratch server, see
+// scratchRedisAddrForMain), else a real Redis container — mirrors internal/gateway/dataplane's identical
 // openTestRedis helper (Phase 8), duplicated here rather than exported
 // cross-package, matching this file's own doc comment on why cmd/gateway
 // tests stay self-contained package main.
 func openTestRedisForMain(t *testing.T) string {
 	t.Helper()
+	if addr := scratchRedisAddrForMain(t); addr != "" {
+		return addr
+	}
 	ctx := context.Background()
 	container, err := tcredis.Run(ctx, "redis:7-alpine")
 	if err != nil {
@@ -326,4 +334,46 @@ func TestIntegrationTwoLiveReplicasConvergeOnVirtualKeyUpsertViaConfigPropagatio
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("instance B never converged to accept instance A's newly-upserted key within 5s -- cross-instance propagation did not converge through the full buildPipeline stack")
+}
+
+// scratchRedisAddrForMain is KELVRAN_TEST_REDIS_ADDR when set: an already
+// running SCRATCH server a developer without Docker points the integration
+// tests at (the same override internal/redisfused's tests honour). It is
+// refused unless it is loopback and not port 6379, where a real Redis lives.
+// No test flushes a database. The tests added for phase 2c-2 use their own key
+// names; two older ones (team-durable, team-shared) do not and need a fresh
+// server for every run, so a scratch server must be dedicated and restarted
+// between runs.
+func scratchRedisAddrForMain(t *testing.T) string {
+	t.Helper()
+	addr := os.Getenv("KELVRAN_TEST_REDIS_ADDR")
+	if addr == "" {
+		return ""
+	}
+	if err := checkScratchAddr(addr); err != nil {
+		t.Fatalf("KELVRAN_TEST_REDIS_ADDR=%q: %v", addr, err)
+	}
+	return addr
+}
+
+// checkScratchAddr reports why addr must not be used as a scratch Redis: not a
+// host:port, a port that is not a canonical decimal number (net's dialer
+// accepts a leading '+' and leading zeros, so 06379 and +6379 reach 6379),
+// port 6379 itself, or a host that is not loopback.
+func checkScratchAddr(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	n, perr := strconv.ParseUint(port, 10, 16)
+	if perr != nil || strconv.FormatUint(n, 10) != port {
+		return errors.New("the port must be a plain decimal number")
+	}
+	if n == 6379 {
+		return errors.New("refusing port 6379, that is where a real Redis lives; start a scratch server on another port")
+	}
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return errors.New("refusing a non-loopback host")
+	}
+	return nil
 }

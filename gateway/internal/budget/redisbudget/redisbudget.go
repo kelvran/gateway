@@ -41,7 +41,7 @@ import (
 // budgetReserveLuaSrc reserves, in one atomic step under cap, the window's
 // mean billed cost -- spent / billed_count, floored to an integer nano-USD
 // and clamped to the remaining headroom -- once the window has one billed
-// settlement (budgetAdjustLuaSrc counts them into the hash's billed_count,
+// settlement (AdjustLuaSrc counts them into the hash's billed_count,
 // which the window's TTL expires), and the FULL remaining headroom before
 // that: budget.Tracker.reservationAmountLocked's own rule, the TOCTOU RFC's
 // cold start included. Until 2026-10-16 the script reserved the full
@@ -205,7 +205,7 @@ end
 return {1}
 `
 
-// budgetAdjustLuaSrc reconciles a prior reservation with the real cost,
+// AdjustLuaSrc reconciles a prior reservation with the real cost,
 // once known — adds deltaNanoUSD (signed: realCost - reservedUSD) onto
 // the stored spend, clamped at a floor of 0 (an over-release larger than
 // what was ever reserved must not drive spend negative, which would
@@ -225,7 +225,7 @@ return {1}
 // end-to-end audit — before it existed, only "key absent" was checked,
 // which misses exactly this cross-window case (the key isn't absent,
 // it's just a DIFFERENT window now).
-const budgetAdjustLuaSrc = `
+const AdjustLuaSrc = `
 local delta = tonumber(ARGV[1])
 local expected_epoch = tonumber(ARGV[2])
 local billed = tonumber(ARGV[3])
@@ -362,7 +362,7 @@ func NewOn(client *redis.Client, release func() error) *Backend {
 		closeFn:         release,
 		reserveScript:   redis.NewScript(budgetReserveLuaSrc),
 		fixedScript:     redis.NewScript(budgetReserveFixedLuaSrc),
-		adjustScript:    redis.NewScript(budgetAdjustLuaSrc),
+		adjustScript:    redis.NewScript(AdjustLuaSrc),
 		alertScript:     redis.NewScript(budgetAlertLuaSrc),
 		warnAlertScript: redis.NewScript(budgetWarnAlertLuaSrc),
 	}
@@ -462,17 +462,14 @@ func (b *Backend) ReserveFixed(ctx context.Context, keyID string, capNanoUSD, de
 
 // Adjust implements budget.RedisBackend. epoch must be exactly the
 // value Reserve returned alongside the reservation being reconciled —
-// see budgetAdjustLuaSrc's own doc comment for why a mismatch (a newer
+// see AdjustLuaSrc's own doc comment for why a mismatch (a newer
 // window has since started under this same keyID) makes this a silent
 // no-op rather than corrupting that newer window's spend. The reply is the
 // window's spend after the adjustment (round-5 item 10 phase 2a,
 // 2026-10-16): finalize's two post-call threshold reads are gone.
 func (b *Backend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch int64, billed bool) (spentAfterNanoUSD int64, err error) {
-	billedArg := 0
-	if billed {
-		billedArg = 1
-	}
-	val, err := b.adjustScript.Run(ctx, b.client, []string{spendKey(keyID)}, deltaNanoUSD, epoch, billedArg).Result()
+	keys, args := PlanAdjust(keyID, deltaNanoUSD, epoch, billed)
+	val, err := b.adjustScript.Run(ctx, b.client, keys, args...).Result()
 	if err != nil {
 		return 0, fmt.Errorf("redisbudget: running adjust script for key %q: %w", keyID, err)
 	}
@@ -484,6 +481,29 @@ func (b *Backend) Adjust(ctx context.Context, keyID string, deltaNanoUSD, epoch 
 	}
 	return spentAfterNanoUSD, nil
 }
+
+// AdjustKeys and AdjustArgs are how many keys and arguments AdjustLuaSrc
+// takes.
+const (
+	AdjustKeys = 1
+	AdjustArgs = 3
+)
+
+// PlanAdjust returns the key and the three arguments Adjust hands
+// AdjustLuaSrc -- the input the fused settlement (internal/redisfused,
+// round-5 item 10 phase 2c-2) composes with the token and ledger
+// settlements. Nothing is sent.
+func PlanAdjust(keyID string, deltaNanoUSD, epoch int64, billed bool) (keys []string, args []any) {
+	billedArg := 0
+	if billed {
+		billedArg = 1
+	}
+	return []string{spendKey(keyID)}, []any{deltaNanoUSD, epoch, billedArg}
+}
+
+// PlaceholderKey is the key a fused call declares in the slot of an adjust
+// it does not run. It is never read or written.
+func PlaceholderKey() string { return spendKey("") }
 
 // SpentNanoUSD implements budget.RedisBackend. A plain HGET (spendKey
 // is a Hash — see budgetReserveLuaSrc's own doc comment for why),

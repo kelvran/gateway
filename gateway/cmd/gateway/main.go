@@ -1267,7 +1267,8 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	priceTable := costPriceTable(cfg.PriceTable)
 
 	// One go-redis client for the rate limiter, the budget and the ledger when
-	// they point at the same Redis (round-5 item 10 phase 2c-1); nil keeps a
+	// they point at the same Redis (round-5 item 10 phase 2c-1), which is also
+	// what the fused post-call settlement runs over (phase 2c-2); nil keeps a
 	// client per store.
 	shared := openSharedRedis(cfg)
 
@@ -1290,6 +1291,10 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 	if err != nil {
 		return nil, fmt.Errorf("constructing rate limiter: %w", err)
 	}
+
+	// The post-call settlement as one Redis command, only over the shared client
+	// (round-5 item 10 phase 2c-2); nil keeps three.
+	fused := newFusedSettler(shared, ledger)
 
 	// A SEPARATE *redis.Client connection from the one run()'s own
 	// subscriber goroutine opens below (see newConfigPublisher's own
@@ -1351,6 +1356,7 @@ func buildPipeline(cfg *controlplane.Config, logger *slog.Logger) (*dataplane.Pi
 		DeploymentLimiter:     ratelimit.NewInMemoryKeyLimiter(deploymentRateLimitConfigs),
 		Budget:                budgetTracker,
 		Ledger:                ledger,
+		Fused:                 fused,
 		Cache:                 inprocess.NewWithClockAndJitter(cfg.Cache.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.JitterFraction), rand.Float64),
 		CacheL2:               inprocess.NewWithClockAndJitter(cfg.Cache.L2.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.L2.JitterFraction), rand.Float64),
 		CacheL3:               inprocess.NewLexicalCacheWithClockAndJitter(cfg.Cache.L3.MaxEntries, time.Now, resolveJitterFraction(cfg.Cache.L3.JitterFraction), rand.Float64),

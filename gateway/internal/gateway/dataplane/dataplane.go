@@ -625,6 +625,15 @@ type Config struct {
 	// (in memory when nothing is configured); nil, which tests use, means
 	// no ledger and the hook is a no-op.
 	Ledger spendledger.Ledger
+	// Fused, if set, settles a chat request's budget adjust, token settlement
+	// and ledger record as ONE Redis command instead of three (round-5 item 10
+	// phase 2c-2, internal/redisfused: 5.0 to 3.0 Redis round trips per
+	// billable request). cmd/gateway sets it only when the rate limiter, the
+	// budget and the ledger share one Redis client, and NewPipeline refuses it
+	// over a limiter or tracker that is not Redis-backed. Optional: nil keeps the three
+	// standalone calls. Embeddings, mid-stream top-ups and the alert marks
+	// never use it.
+	Fused FusedSettler
 	// Prompts holds every operator-managed server-side prompt/template
 	// (see internal/prompt), resolved into real Messages content on a
 	// request naming PromptID. Optional -- nil defaults to a fresh,
@@ -810,6 +819,8 @@ type Pipeline struct {
 	budget       *budget.Tracker
 	// ledger is Config.Ledger; nil means no ledger (see ledger.go).
 	ledger spendledger.Ledger
+	// fused is Config.Fused; nil keeps the three standalone settlements.
+	fused FusedSettler
 	// prompts is always non-nil (NewPipeline defaults it to a fresh
 	// prompt.NewStore() when Config.Prompts is unset) -- every real call
 	// site (resolvePromptIfSet, UpsertPrompt/DeletePrompt/GetPrompt/
@@ -1171,6 +1182,10 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		return nil, fmt.Errorf("dataplane: Config.CostCalculator is required")
 	case cfg.Upstream == nil:
 		return nil, fmt.Errorf("dataplane: Config.Upstream is required")
+	case cfg.Fused != nil && !cfg.Limiter.RedisBacked():
+		return nil, fmt.Errorf("dataplane: Config.Fused requires a Redis-backed Config.Limiter")
+	case cfg.Fused != nil && !cfg.Budget.RedisBacked():
+		return nil, fmt.Errorf("dataplane: Config.Fused requires a Redis-backed Config.Budget")
 	}
 
 	byName := map[string]Deployment{}
@@ -1209,6 +1224,7 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 		retryBackoff:          ratelimit.NewRetryBackoff(),
 		budget:                cfg.Budget,
 		ledger:                cfg.Ledger,
+		fused:                 cfg.Fused,
 		prompts:               prompts,
 		cache:                 cfg.Cache,
 		cacheL2:               cfg.CacheL2,
@@ -1263,8 +1279,9 @@ func NewPipeline(cfg Config) (*Pipeline, error) {
 // Both Close calls always run, even if the first errors — a resource
 // leak in one must never suppress cleanup of the other. When the rate
 // limiter, the budget and the ledger share one Redis client (round-5 item 10
-// phase 2c-1) it is closed by the last of their three Close calls, so none may
-// be skipped.
+// phase 2c-1) it is closed by the last of their Close calls -- the fused
+// settler, when there is one (phase 2c-2), takes a hold of its own and is the
+// fourth -- so none may be skipped.
 func (p *Pipeline) Close() error {
 	budgetErr := p.budget.Close()
 	limiterErr := p.limiter.Close()
@@ -1277,7 +1294,11 @@ func (p *Pipeline) Close() error {
 	if p.ledger != nil {
 		ledgerErr = p.ledger.Close()
 	}
-	return errors.Join(budgetErr, limiterErr, identityErr, promptErr, ledgerErr)
+	var fusedErr error
+	if p.fused != nil {
+		fusedErr = p.fused.Close()
+	}
+	return errors.Join(budgetErr, limiterErr, identityErr, promptErr, ledgerErr, fusedErr)
 }
 
 // BackupStores backs up every configured, bbolt-backed durable store
@@ -2592,7 +2613,8 @@ func (p *Pipeline) resolvePromptIfSet(req adapter.ChatRequest) (adapter.ChatRequ
 //
 // The decision's tpm and tpd fields are Admit's TPM and TPD reservations,
 // per docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md: the
-// caller MUST thread both through to finalize's single SettleTokens call
+// caller MUST thread both through to finalize's token settlement (one
+// SettleTokens call, or one part of the fused settlement)
 // on every return path (including error), or a granted reservation leaks
 // permanently. Both are the harmless zero values whenever no real
 // reservation was made — the dimension not configured for vk, the gate
@@ -3863,7 +3885,8 @@ func (p *Pipeline) HandleChatCompletion(ctx context.Context, authorizationHeader
 		// tpmReserved/tpmReservedTokens/tpmReservationEpoch and
 		// budgetReserved/budgetReservedUSD/budgetReservationEpoch are
 		// checkRateLimit's/budget.Reserve's own return values, threaded
-		// through to finalize's SettleTokens/Reconcile calls on every
+		// through to finalize's settlement (SettleTokens/Reconcile, or the
+		// fused settlement) on every
 		// return path — including error — per
 		// docs/rfcs/2026-09-08-gateway-budget-ratelimit-toctou-fix.md.
 		tpmReserved            bool
@@ -5025,46 +5048,54 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	// (docs/rfcs/2026-09-05-gateway-cost-double-counting.md) carries over
 	// unchanged for every OTHER path, while that one exception now bills
 	// correctly instead of only releasing.
+	// attribution is read once, here: the fused settlement below needs it for
+	// the ledger entry, and the span, the spend metric and the standalone
+	// ledger write further down read the same value.
+	attribution := p.effectiveAttribution(ctx, vk)
+	// ledgerHandled: the fused settlement already carried the ledger entry.
+	ledgerHandled := false
 	if vk != nil {
 		var realCost *decimal.Decimal
 		if billable {
 			realCost = &cost
 		}
-		settledSpend, spendKnown := decimal.Zero, false
-		if budgetReserved || realCost != nil {
-			settledSpend, spendKnown = p.budget.Reconcile(settleCtx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
-		}
-		if realCost != nil && spendKnown {
-			// The threshold checks read the spend Reconcile just reported
-			// (round-5 item 10 phase 2a, 2026-10-16); until then each re-read
-			// it from Redis -- two more round trips on a capped key, under the
-			// settlement context so a client disconnect did not read 0. A lost
-			// settlement (spendKnown=false, logged and counted by Reconcile)
-			// skips both checks for this request: the spend is unknown and
-			// the next billable request evaluates them.
-			p.checkBudgetWarnThreshold(settleCtx, vk, settledSpend)
-			p.checkBudgetAlertLadder(settleCtx, vk, settledSpend)
-		}
-		if realCost != nil && !spendKnown {
-			// FAILURE-MODES R7's greppable twin: the settlement was lost, so
-			// the thresholds were not evaluated for this request.
-			p.logger.Info("budget_threshold_checks_skipped", append(traceLogFields(settleCtx), "key_id", vk.ID, "reason", "settlement_lost")...)
-		}
-
 		var realTokens *float64
 		if billable {
 			rt := float64(resp.Usage.TotalTokens)
 			realTokens = &rt
 		}
-		// Both token dimensions settle in one call -- one Redis round trip
-		// since round-5 item 10 phase 2b -- each on its own gate: a dimension
-		// with a reservation, or with a real count to record even without one
-		// (the check failed open), is settled; a release when realTokens is
-		// nil.
-		p.limiter.SettleTokens(settleCtx, vk.ID, req.Model,
-			ratelimit.TokenReservation{Reserved: tpmReserved, Tokens: tpmReservedTokens, Epoch: tpmReservationEpoch},
-			ratelimit.TokenReservation{Reserved: tpd.reserved, Tokens: tpd.tokens, Epoch: tpd.epoch},
-			realTokens)
+		if p.fused != nil {
+			// The budget adjust, the token settlement and the ledger record as
+			// one Redis command (round-5 item 10 phase 2c-2); each part is gated
+			// and its failure attributed exactly as below. The threshold checks
+			// read the spend it reports.
+			var settledSpend decimal.Decimal
+			var spendKnown bool
+			settledSpend, spendKnown, ledgerHandled = p.settleFused(settleCtx, fusedInputs{
+				vk: vk, reqModel: req.Model, servedModel: realServingModel(dep, req.Model),
+				cost: cost, realCost: realCost, realTokens: realTokens, attribution: attribution,
+				budgetReserved: budgetReserved, budgetReservedUSD: budgetReservedUSD, budgetEpoch: budgetReservationEpoch,
+				tpmReserved: tpmReserved, tpmReservedTokens: tpmReservedTokens, tpmReservationEpoch: tpmReservationEpoch,
+				tpd: tpd,
+			})
+			p.budgetThresholdChecks(settleCtx, vk, realCost, settledSpend, spendKnown)
+		} else {
+			settledSpend, spendKnown := decimal.Zero, false
+			if budgetReserved || realCost != nil {
+				settledSpend, spendKnown = p.budget.Reconcile(settleCtx, vk.ID, budgetReservedUSD, budgetReservationEpoch, realCost, vk.BudgetResetInterval)
+			}
+			p.budgetThresholdChecks(settleCtx, vk, realCost, settledSpend, spendKnown)
+
+			// Both token dimensions settle in one call -- one Redis round trip
+			// since round-5 item 10 phase 2b -- each on its own gate: a dimension
+			// with a reservation, or with a real count to record even without one
+			// (the check failed open), is settled; a release when realTokens is
+			// nil.
+			p.limiter.SettleTokens(settleCtx, vk.ID, req.Model,
+				ratelimit.TokenReservation{Reserved: tpmReserved, Tokens: tpmReservedTokens, Epoch: tpmReservationEpoch},
+				ratelimit.TokenReservation{Reserved: tpd.reserved, Tokens: tpd.tokens, Epoch: tpd.epoch},
+				realTokens)
+		}
 	}
 
 	var virtualKeyID string
@@ -5174,7 +5205,6 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 	if dep.Name == "" {
 		requestModelForMetrics = "unresolved"
 	}
-	attribution := p.effectiveAttribution(ctx, vk)
 	result := telemetry.ChatCompletionResult{
 		VirtualKeyID:   virtualKeyID,
 		Provider:       dep.Provider,
@@ -5296,8 +5326,11 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		telemetry.RecordLLMSpend(ctx, spendUSD, virtualKeyID, attribution.ClientTool, attribution.RequestClass)
 		// The spend ledger (RFC-2 item 13d), under the same gate, priced
 		// against the same served model, on the settlement context so a
-		// client that has already disconnected does not lose the row.
-		p.recordLedgerEntry(settleCtx, virtualKeyID, realServingModel(dep, req.Model), attribution, cost)
+		// client that has already disconnected does not lose the row -- unless
+		// the fused settlement above already carried it.
+		if !ledgerHandled {
+			p.recordLedgerEntry(settleCtx, virtualKeyID, realServingModel(dep, req.Model), attribution, cost)
+		}
 	}
 
 	// savingsUsd was already computed above (before result), shared by
@@ -5354,7 +5387,9 @@ func (p *Pipeline) finalize(ctx context.Context, span trace.Span, vk *identity.V
 		// surfaced past that one cache-gating check.
 		FinishReason: primaryFinishReason(resp),
 	}
-	// After the ledger record above: the last Redis call of the request.
+	// After every Redis call of the request: the fused settlement, the
+	// threshold marks and, when the fused path did not carry it, the ledger
+	// record above.
 	telemetry.RecordRedisRoundTripsOnSpan(ctx, span)
 	span.End()
 
