@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794227376964,
+  "lastUpdate": 1794312211153,
   "repoUrl": "https://github.com/kelvran/gateway",
   "entries": {
     "kelvran-gateway (hosted-runner trend)": [
@@ -7975,6 +7975,263 @@ window.BENCHMARK_DATA = {
           {
             "name": "S4 redis commands per request",
             "value": 3,
+            "unit": "cmd/req"
+          },
+          {
+            "name": "S4 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S4 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "committer": {
+            "name": "sairam0424",
+            "username": "sairam0424",
+            "email": "uggesairam0000@gmail.com"
+          },
+          "id": "2281e37e60e08f9989d09462d8a02da9dada7239",
+          "message": "build(evals): relock pyasn1 0.6.4 -> 0.6.5 -- four advisories had turned the evals job's pip-audit red and skipped its tests\n\nThe evals job runs `pip-audit` before `uv sync` + pytest, the coverage gate,\nthe CI gate smoke test and the regression corpus gate. pip-audit reports\npyasn1 0.6.4 as vulnerable (GHSA-2qm8-x737-gmw5, GHSA-fm9c-5rcf-2q5p,\nGHSA-mm57-4v3p-rchx, GHSA-9m75-vc3g-4x39; all fixed in 0.6.5), so the step\nfails and every step after it is skipped. main was last green on 2026-10-30,\nbefore the advisories landed; any push to main now goes red at that step\nwithout running the evals tests, and the open Dependabot evals PRs inherit the\nsame failing check. The same failure pattern is what 23f183b2 fixed for\ncertifi and opentelemetry-api.\n\npyasn1 is only transitive (google-cloud-storage -> google-auth ->\npyasn1-modules -> pyasn1), so this is a lock-only change: `uv lock\n--upgrade-package pyasn1` moves that one package, not a full upgrade. A\ntomllib comparison of the old and new lock shows 62 packages before and after,\nnone added or removed, and pyasn1 (version, sdist and wheel url/hash) the only\nentry that differs. evals/pyproject.toml is untouched: a direct floor on a\ntransitive package would be a separate decision, and the lock is what CI\naudits.\n\nVerification (the evals job's own steps, run bare in order on Python 3.12\nagainst the changed lock, with evals/uv.lock the only file changed):\n- pip-audit (`uv run --with pip-audit==2.9.0 pip-audit`) failed before with\n  \"Found 4 known vulnerabilities in 1 package\" (exit 1) and passes after with\n  \"No known vulnerabilities found\" (exit 0)\n- scripts/check_versions.py, ruff check, ruff format --check, mypy (28 files),\n  lint-imports (3 kept, 0 broken): all exit 0\n- uv sync + pytest --cov-fail-under=93: 579 passed, 15 skipped, 96.10% covered\n- CI gate smoke test and the regression corpus gate with all thresholds\n  (101/115, every category above its gate): exit 0\n\nNot run locally: the python-coverage-comment-action steps, which only exist on\nGitHub, and the gateway job (no gateway file changed).\n\nSigned-off-by: Sairam Ugge <uggesairam0000@gmail.com>",
+          "timestamp": "2026-11-04T10:36:55Z",
+          "url": "https://github.com/kelvran/gateway/commit/2281e37e60e08f9989d09462d8a02da9dada7239"
+        },
+        "date": 1794312210248,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "S1a latency p50",
+            "value": 0.741797,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p95",
+            "value": 1.249788,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a latency p99",
+            "value": 1.898066,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a overhead p99",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S1a error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1a rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1b latency p50",
+            "value": 201.371974,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p95",
+            "value": 202.137886,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b latency p99",
+            "value": 203.080007,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b overhead p99",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S1b error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1b rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S2 latency p50",
+            "value": 572.381741,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p95",
+            "value": 576.396379,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 latency p99",
+            "value": 578.30726,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p50",
+            "value": 51.312723,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 ttft p99",
+            "value": 52.941487,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 inter-chunk p99",
+            "value": 11.296368,
+            "unit": "ms"
+          },
+          {
+            "name": "S2 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S2 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S3 latency p50",
+            "value": 0.204561,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p95",
+            "value": 0.408181,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 latency p99",
+            "value": 201.045814,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 overhead p99",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S3 error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S3 rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S1r latency p50",
+            "value": 1.127341,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r latency p95",
+            "value": 1.816314,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r latency p99",
+            "value": 2.698217,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r overhead p99",
+            "value": 2,
+            "unit": "ms"
+          },
+          {
+            "name": "S1r redis round trips per request",
+            "value": 3.0013266998341623,
+            "unit": "rtt/req"
+          },
+          {
+            "name": "S1r redis commands per request",
+            "value": 3.0019900497512437,
+            "unit": "cmd/req"
+          },
+          {
+            "name": "S1r error rate",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "S1r rps shortfall",
+            "value": 0,
+            "unit": "req/s"
+          },
+          {
+            "name": "S4 latency p50",
+            "value": 51.693068,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p95",
+            "value": 52.482076,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 latency p99",
+            "value": 53.28201,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p50",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 overhead p99",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "S4 redis round trips per request",
+            "value": 3.0006633499170814,
+            "unit": "rtt/req"
+          },
+          {
+            "name": "S4 redis commands per request",
+            "value": 3.000995024875622,
             "unit": "cmd/req"
           },
           {
